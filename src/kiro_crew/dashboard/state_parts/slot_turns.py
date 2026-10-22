@@ -626,6 +626,16 @@ def register_approval(
     mid = row_mid(permission_row)
     if mid:
         self._approval_instances[request_id] = (future, mid)
+    # A code-channel conductor's worker: its channel's work board shows the wait
+    # while it lasts and clears it when answered (one dict lookup otherwise). The
+    # board is a bystander here: nothing it does may fail the registration, so a
+    # future without done-callbacks (a test double) only skips the clearing hop.
+    from kiro_crew.slack.code_channels.board import note_session_turn
+
+    note_session_turn(self.key)
+    add_done = getattr(future, "add_done_callback", None)
+    if callable(add_done):
+        add_done(lambda _done: note_session_turn(self.key))
 
 
 def approval_instance(self: _ChatSlot, request_id: str, message: dict | None = None) -> str | None:

@@ -83,6 +83,9 @@ class Facts:
     #: None when git could not say.
     uncommitted: bool | None = None
     worktree: str = ""
+    #: One outcome line per worker of a conductor-led channel
+    #: (``• Fix login: PR #12 merged``), already escaped and redacted.
+    workers: tuple[str, ...] = ()
 
 
 def _gather_facts_sync(binding: Binding) -> Facts:
@@ -131,9 +134,17 @@ def _gather_facts_sync(binding: Binding) -> Facts:
 
 async def gather_facts(binding: Binding) -> Facts:
     try:
-        return await asyncio.to_thread(_gather_facts_sync, binding)
+        facts = await asyncio.to_thread(_gather_facts_sync, binding)
     except Exception:
-        return Facts()
+        facts = Facts()
+    try:
+        from kiro_crew.slack.code_channels import board
+
+        lines = await board.outcome_lines(binding)
+    except Exception:
+        logger.debug("code channel %s: worker outcomes unavailable", binding.channel_id)
+        lines = []
+    return replace(facts, workers=tuple(lines)) if lines else facts
 
 
 _PR_WORDS = {"open": "open", "draft": "draft", "merged": "merged", "closed": "closed"}
@@ -158,7 +169,26 @@ def _fact_lines(facts: Facts) -> list[str]:
         lines.append(f"Changed since the branch was cut: {facts.changes}")
     if facts.uncommitted:
         lines.append("⚠️ The worktree has uncommitted changes. Archiving keeps them on disk.")
+    if facts.workers:
+        lines.append("*Workers*\n" + _bounded_lines(facts.workers, _MAX_WORKER_CHARS))
     return lines
+
+
+#: Room the worker outcomes may take in the facts block (Slack caps a text at 3,000).
+_MAX_WORKER_CHARS = 1800
+
+
+def _bounded_lines(lines: tuple[str, ...], limit: int) -> str:
+    """*lines* joined, whole lines only, within *limit* characters, then ``+N more``."""
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        if used + len(line) + 1 > limit:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    rest = len(lines) - len(kept)
+    return "\n".join(kept + ([f"+{rest} more"] if rest else []))
 
 
 _BROADCAST = re.compile(r"<!(channel|here|everyone)(?:\|[^>]*)?>")

@@ -552,4 +552,8 @@ class SlotProjection:
             # a join that trusted the claim alone would nest a session under
             # whoever a transcript happened to name.
             "lineage_minted": bool(getattr(slot, "_lineage_minted", False)),
+            # A code-channel conductor's workers at a glance, for the sidebar row:
+            # ``{"state", "label", "counts"}`` (see ``board.model.work_aggregate``),
+            # or ``None`` for every other session. Counts and fixed words only.
+            "work_aggregate": getattr(slot, "_work_aggregate", None),
         }

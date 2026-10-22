@@ -1,5 +1,9 @@
 """The channel's context bar: repo, branch, PR, CI (or the folder, without git).
 
+A conductor-led channel adds one item per worker (its PR and CI, else its
+branch) in the slots left after the channel's own items, the last slot saying how
+many more workers there are when they do not all fit (:mod:`..board.render`).
+
 Slack keeps at most five items, keyed uniquely; ``context_bar_items`` is a FULL
 replacement on every ``setProperties``, so the whole list is rebuilt and resent
 each time. Keys follow Slack's documented conventions (``repo``, ``branch``,
@@ -11,10 +15,14 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from kiro_crew.platform.context import redact_via_context as redact
 from kiro_crew.slack.code_channels.workspace.pr import PullRequest
 from kiro_crew.slack.code_channels.workspace.remote import RepoRef
+
+if TYPE_CHECKING:
+    from kiro_crew.slack.code_channels.board.model import BoardSnapshot
 
 MAX_ITEMS = 5
 _MAX_KEY = 64
@@ -59,6 +67,8 @@ class BarState:
     #: Whether ``branch`` exists on the remote, so its web link resolves.
     branch_pushed: bool = False
     pr: PullRequest | None = None
+    #: The channel conductor's work board, when it has one: one item per worker.
+    board: BoardSnapshot | None = None
 
 
 def _item(key: str, label: str, icon: str, url: str = "") -> dict[str, str]:
@@ -91,10 +101,21 @@ def build_items(state: BarState) -> list[dict[str, str]]:
         # CI belongs to a live PR; a merged or closed one's last run is history.
         if pr.ci in _CI_LABEL and pr.state in {"open", "draft"}:
             items.append(_item("ci", _CI_LABEL[pr.ci], "terminal", f"{pr.url}/checks"))
+    unique = _unique(items)
+    if state.board is not None and state.board.rows:
+        from kiro_crew.slack.code_channels.board.render import worker_bar_items
+
+        for spec in worker_bar_items(state.board, MAX_ITEMS - len(unique)):
+            unique.append(_item(spec["key"], spec["label"], spec["icon"], spec.get("url", "")))
+        unique = _unique(unique)
+    return unique[:MAX_ITEMS]
+
+
+def _unique(items: list[dict[str, str]]) -> list[dict[str, str]]:
     seen: set[str] = set()
     unique = []
     for item in items:
         if item["key"] not in seen and item["icon"] in ICONS:
             seen.add(item["key"])
             unique.append(item)
-    return unique[:MAX_ITEMS]
+    return unique

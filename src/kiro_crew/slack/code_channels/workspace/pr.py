@@ -40,6 +40,16 @@ class PullRequest:
     url: str
     state: str
     ci: str = ""
+    #: ``"<passed>/<total>/<running>"`` for the checks ``ci`` rolls up, or ``""``.
+    checks: str = ""
+
+
+def _checks(status: dict) -> str:
+    raw = status.get("ciCounts")
+    if not isinstance(raw, str):
+        return ""
+    parts = raw.split("/")
+    return raw if len(parts) == 3 and all(p.isdigit() and len(p) <= 4 for p in parts) else ""
 
 
 @dataclass(frozen=True)
@@ -145,5 +155,33 @@ async def find_pull_request(repo: RepoRef, branch: str) -> PrLookup:
     if isinstance(status, dict):
         state = status.get("state") if status.get("state") in PR_STATES else pr.state
         ci = status.get("ci") if status.get("ci") in CI_STATES else ""
-        pr = PullRequest(pr.number, pr.url, str(state), str(ci or ""))
+        pr = PullRequest(pr.number, pr.url, str(state), str(ci or ""), _checks(status))
     return PrLookup("found", pr)
+
+
+async def pull_request_by_number(repo: RepoRef, number: int) -> PrLookup:
+    """PR *number* on *repo* with its state and CI, read like :func:`find_pull_request`.
+
+    For a worker that reported a PR number but no branch. The URL is built from
+    the channel's own repository, so a number can only ever name a PR there.
+    """
+    if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+        return PrLookup("unavailable", reason="number")
+    if repo.host not in _PUBLIC_GITHUB:
+        await _load_enterprise_hosts()
+    if not _github_host_allowed(repo.host):
+        return PrLookup("unavailable", reason="host")
+    from kiro_crew.dashboard.source_providers import chip_refresh
+
+    url = f"https://{repo.host}/{repo.owner}/{repo.name}/pull/{number}"
+    try:
+        status = await chip_refresh._fetch_check_status(url)
+    except Exception as exc:
+        logger.info("code channel PR read unavailable for %s: %s", url, exc)
+        return PrLookup("unavailable", reason="gh")
+    if not isinstance(status, dict) or status.get("state") not in PR_STATES:
+        return PrLookup("unavailable", reason="state")
+    ci = status.get("ci") if status.get("ci") in CI_STATES else ""
+    return PrLookup(
+        "found", PullRequest(number, url, str(status["state"]), str(ci or ""), _checks(status))
+    )

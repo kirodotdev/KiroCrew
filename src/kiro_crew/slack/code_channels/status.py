@@ -43,6 +43,14 @@ _slack_provider: Callable[[], Any] | None = None
 #: and waits on the people in the channel); the turn end shows it instead of
 #: ``active``. Cleared when the next turn starts.
 _held: dict[str, str] = {}
+#: What the bound session's last turn end left showing, until its next turn
+#: starts: the workspace's worker status keeps a ``suspended`` conductor suspended.
+_after_turn: dict[str, str] = {}
+
+
+def after_turn(channel_id: str) -> str:
+    """What the conductor's last turn end showed (``""`` while a turn runs or none ended)."""
+    return _after_turn.get(channel_id, "")
 
 
 def hold_after_turn(channel_id: str, status: str | None) -> None:
@@ -97,11 +105,16 @@ async def settle_after_stop(channel_id: str) -> None:
 
 async def _on_start(binding: Binding, _event: hooks.TurnEvent) -> None:
     _held.pop(binding.channel_id, None)
+    _after_turn.pop(binding.channel_id, None)
     await set_status(binding.channel_id, SESSION_STATUS_PROCESSING)
 
 
 async def _on_end(binding: Binding, _event: hooks.TurnEvent) -> None:
-    await set_status(binding.channel_id, _held.pop(binding.channel_id, SESSION_STATUS_ACTIVE))
+    shown = _held.pop(binding.channel_id, SESSION_STATUS_ACTIVE)
+    if len(_after_turn) > 4096:
+        _after_turn.clear()
+    _after_turn[binding.channel_id] = shown
+    await set_status(binding.channel_id, shown)
 
 
 def install(slack_provider: Callable[[], Any]) -> None:

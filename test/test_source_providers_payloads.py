@@ -1059,7 +1059,47 @@ async def test_github_check_status_collapses_superseded_runs(monkeypatch) -> Non
 
     status = await source._fetch_check_status("https://github.com/acme/repo/pull/12")
 
-    assert status == {"state": "open", "ci": "passed"}
+    # ``ciCounts`` (passed/total/running) counts the same collapsed rollup: the
+    # superseded run is not a check. The chip consumer strips it before caching.
+    assert status == {"state": "open", "ci": "passed", "ciCounts": "1/1/0"}
+
+
+@pytest.mark.asyncio
+async def test_github_check_status_counts_ride_beside_ci_pending(monkeypatch) -> None:
+    """A failed rollup with a run still going keeps the base's ``ciPending`` AND
+    the board's ``ciCounts``: the one CI writer and the counts read the same rows."""
+
+    async def fake_run(*argv: str, **_kwargs: int):
+        if "statusCheckRollup" in " ".join(argv):
+            return _rollup_reply(
+                [
+                    {
+                        "name": "Lint",
+                        "status": "COMPLETED",
+                        "conclusion": "FAILURE",
+                        "checkSuite": _suite(20, "FAILURE", definition=2),
+                    },
+                    {
+                        "name": "Tests",
+                        "status": "IN_PROGRESS",
+                        "conclusion": None,
+                        "checkSuite": _suite(21, "", definition=3),
+                    },
+                    {
+                        "name": "Docs",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "checkSuite": _suite(22, "SUCCESS", definition=4),
+                    },
+                ]
+            )
+        return {"state": "OPEN"}
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    status = await source._fetch_check_status("https://github.com/acme/repo/pull/12")
+
+    assert status == {"state": "open", "ci": "failed", "ciPending": "1", "ciCounts": "1/3/1"}
 
 
 @pytest.mark.asyncio

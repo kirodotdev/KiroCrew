@@ -84,6 +84,12 @@ class ApprovalCoordinator:
             "ts": time.time(),
         }
         state.broadcast_ws("approval", state._pending_approvals[approval_id])
+        # A code-channel conductor's worker: its channel's work board shows this
+        # wait too, and clears it when answered (one dict lookup otherwise).
+        from kiro_crew.slack.code_channels.board import note_session_turn
+
+        note_session_turn(slot)
+        future.add_done_callback(lambda _done: note_session_turn(slot))
         # The record names its owning slot, and the slot projection reads the
         # live records through ``pending_coordinator_approvals``: this push is
         # what moves the parent slot into the Needs Approval lane. Without it

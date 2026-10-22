@@ -204,6 +204,7 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 | `slack/thread_parent.py` | The first message of a thread a new Slack-born session was opened in: fetched once for the fenced prompt block and recorded once as a display-only `notice` transcript row (see "Thread parent for a new Slack-born session") |
 | `slack/thread_replies.py` | Thread replies a turn has not seen yet, bounded, redacted and injection-screened, for the fenced `[SLACK THREAD REPLIES — UNTRUSTED DATA]` prompt block (see "Thread replies since the last turn") |
 | `slack/code_channels/workspace/` | A code channel's workspace: per-channel git worktree, the Code-tab diff (`setView type=diff`), the context bar (repo/branch/PR/CI). See [Code-channel workspace](#code-channel-workspace) |
+| `slack/code_channels/board/` | A conductor-led code channel's work board: the pinned, edited-in-place board message, the per-worker context-bar items, the combined per-worker Code-tab diff and the wrap-up's worker outcomes. See [Conductor work board](#conductor-work-board) |
 
 ## Composition
 
@@ -1992,6 +1993,188 @@ gateway behaves as it does without it.
   as an argument or raises mid-turn, and a rebind that re-adopts the same
   worktree keeps the channel's folder, the session already pointed and its open
   tab.
+
+## Conductor work board
+
+`slack/code_channels/board/` shows a conductor-led channel's work IN the channel. A
+code channel's bound session is often a `kirocrew-conductor` that splits the work and
+hands each piece to its own worker session through its work ledger; the board makes
+that ledger and those sessions visible without anyone reading a transcript. It is
+published by the workspace's own per-channel refresh (`WorkspaceService.refresh`, which
+`workspace/core.install` builds with `board.read` and `board.publish`), so the board,
+the context bar and the Code tab come from one snapshot, read and published outside the
+channel lock (held only to merge the refresh's own fields back, as for any refresh), with
+one coalescing worker. No store is added: the board's pointers (`board_ts`,
+`board_digest`, `board_pinned`, `board_alerts`) are fields of the channel's existing
+`SurfaceRecord`.
+
+- **Data path (`board/source.py`).** `read_board(state, binding)` is the only reader.
+  It asks `scope_admits` FIRST -- the board's one scope predicate: the channel's
+  stored binding still names its live bound slot and is not archived, AND the
+  dispatch exemption's publish clauses (`code_channel_exemption._publish_clauses`:
+  its `slack.code_channel_dispatch` switch, the channel's own state and ONE read of
+  the slot's outbound binding naming exactly this channel) admit it; the exemption's
+  sender clause judges who drove a turn, which the board's publisher is not. So with
+  `slack.code_channel_dispatch` off a code channel shows no board at all (its
+  conductor can keep no ledger then either). A refusal only because the channel's
+  sharing is not freshly on record re-arms the board once, 10 s later (at most once
+  per channel per 5 minutes), since nothing else would. Then it reads the
+  ledger of `ledger_key(binding.session_key)` through
+  `handlers/work_ledger_board.own_worker_records`, the existing permitted store seam
+  (no new importer of `work_ledger`), as ONE snapshot under the board's own lock;
+  a board whose cache is flagged dirty reads as no board, so a report the record
+  rolls back is never published (or alerted on). That reader keeps an item's
+  `worker_session_key` only when the worker's own binding file names this conductor
+  AND this item; otherwise the row reads as not dispatched. The scope is re-checked
+  after the read. Each worker's liveness is joined server-side from the conductor
+  wake gate's own resolvers (`ledger_wake.worker_running` / `worker_closed`), the
+  session-status verb's pending-approval answer and the slot's queue, and reduced
+  to a word.
+- **Published set (`board/model.py`).** Exactly: the conductor's goal (first line, at
+  most 200 characters), the item title, the DERIVED state, the first line of the last
+  report `summary` (at most 140 characters), `artifacts["branch"]` (only a name
+  `is_valid_followup_branch` accepts), the PR number/URL/CI, and for a worker whose
+  tool approval is pending WHAT it asks for, as one phrase of a closed vocabulary
+  picked by the approval's ACP tool-call kind (`model.APPROVAL_WORDS`: "a command",
+  "a file edit", "a web fetch", "a sub-agent" ...; anything else "a tool"), so the
+  thread reply reads "approve a command". The board row itself shows the call (owner's
+  design): a working row's STEP is the worker's call in flight, read from its slot's own
+  transcript rows (the newest `tool` row of the running turn, the rows the dashboard's
+  live line renders), worded `Running <command>` / `Editing <path>` / `Reading <path>` /
+  an MCP tool's short name; with no call in flight, a `progress` report made during
+  this turn, else "thinking". A waiting row shows the call its pending approval asks
+  for the same way. `model.step_text` takes host paths out first (relative to the
+  worker's worktree, `~` for home, any other absolute path as `…/<name>`, the
+  machine's own host name replaced), folds line breaks, then `clean_text` redacts the
+  WHOLE line before cutting it to 70 characters and redacts again. The turn's start
+  time rides along for an elapsed time. Every text field has
+  its Slack mention forms defused, then `redact_for_display` over
+  `redact_via_context` (so a credential split by Slack emphasis cannot reassemble on
+  screen), then the cut, then the redaction once more, last. Never the acceptance
+  bar, the conductor's decision, the event log or any transcript text; `WorkerRow`
+  has no field that could carry one.
+- **State mapping.** `accepted` -> done; `rejected`/`abandoned` -> closed; a pending
+  tool approval -> waiting on you; a turn in flight or queued -> working; a
+  `blocked`/`question` report the conductor already answered (a `decide` at or after
+  it, the ledger's own rule) or a `done` its evaluator failed -> idle (lost when the
+  session is gone); a `blocked`/`question` report with
+  reason `needs_human`/`approval` -> waiting on you, any other -> blocked; a gone
+  session -> done if it last reported done, else lost; a `done` report -> done;
+  otherwise idle. The overall state is done / needs you / working / stuck / idle, and
+  the aggregate line names the non-zero counts, then the done count, then open PRs
+  ("2 working · 1 waiting on you · 1 of 4 done · 1 PR open"). Totals count every item.
+- **Look (`board/render.py`).** A context line ("Work board · updated HH:MM UTC" and
+  the conductor's dashboard link), the aggregate in bold, then ONE Slack `plan` block
+  titled with the aggregate: one task per direct worker (`task_id` = the item id;
+  the title without a `#123: ` prefix every row shares), status `in_progress` for
+  working / waiting / idle, `complete` for done or closed, `error` for lost, blocked
+  or rejected; `details` the step (`Running` + the call in code style + `· 4m`),
+  "**Waiting on you:** approve `<call>`", or "Idle · 12m · <last progress note>";
+  `output` the PR linked plus "CI 12/20 passing · 3 running" (counts from the PR
+  chip's own collapsed rollup, an internal `ciCounts` marker its cache consumer
+  strips); `sources` the PR URL. At most 50 tasks: 49 plus "+N more". No custom
+  emoji: Slack's own spinner, check and error are the only marks. Every edit gets
+  new `block_id`s. A Slack that refuses the plan (`invalid_blocks`,
+  `invalid_blocks_format`, `feature_disabled`) gets the same content as mrkdwn rows
+  at once, logged once, for the rest of the process. The message `text` stays the
+  plain aggregate for notifications.
+- **Board message (`board/publisher.py`).** Posted once and pinned (`already_pinned`
+  counts), then edited with `chat.update` when a digest of what it RENDERS (the
+  "Updated" stamp left out) moved, and at least every 60 s while a row is working or
+  waiting, so the stamp is never older than that. One board is edited at most once
+  per 20 s (`chat.update` is Tier 3, 50+ a minute per workspace); a change inside
+  the gap re-arms the channel's refresh for when it ends. A failed edit or post is
+  retried through the same refresh with backoff (5 s, x3, at most 300 s, or Slack's
+  `Retry-After` when longer), logged once per failure spell; a message Slack no longer
+  has is reposted and pinned again, and a live board's pin is put back every 10
+  minutes. A row that newly waits on
+  a person gets ONE threaded reply under the board mentioning the owner
+  (`state.owner_id`), once per `<item_id>:<last_report_at>`, and once per spell of a
+  pending tool approval (forgotten when the approval is answered, so the next one
+  pages again). Every write checks the
+  `channels` policy, the archive stamp and the Stop fence first. Deep links are
+  `session_deep_link` over the dashboard (or opted-in tunnel) origin and NEVER carry a
+  click token, because the board is in a shared channel.
+- **Sidebar field (`work_aggregate`).** Each board read also writes the conductor's
+  dashboard slot field `work_aggregate` (`board.model.work_aggregate`), pushed through
+  the dashboard's existing per-field `slot_patch` frame only when it changed:
+  `{"state": "waiting"|"stuck"|"working"|"done"|"idle", "label": <the board's
+  summary line>, "counts": {"working", "waiting", "stuck", "done", "total"}}`.
+  `state` is worst first: any worker waiting on you, else any blocked or lost, else
+  any working, else `done` when every item is settled, else `idle`. `None` when the
+  channel has no workers or no board. The sidebar collapses the conductor's workers
+  under its row with it.
+- **Status.** `agents.sessions.setStatus` takes no text in a code channel (no
+  `loading_messages`), so the aggregate lives in the board. Between the conductor's
+  own turns the channel's status follows the workers (`WorkspaceService._worker_status`):
+  `suspended` while a row waits on you, or the conductor's last turn ended waiting
+  (`status.after_turn`); `processing` while a worker runs; otherwise back to what the
+  conductor's turn end showed. No reaction ladder in a code channel either
+  (`binding.no_reactions`, read by the native turn, the transport renderer and the
+  queued-message mark); every other channel, DM and thread keeps it.
+- **Refresh triggers.** The watcher (`WorkspaceService.watch_tick`, every 15 s, started
+  at gateway boot) watches every bound channel, folder or not. Besides the sessions in
+  the channel's folder it watches the conductor's workers BY LINEAGE: the code-channel
+  store's worker records for the bound session (`workers_of`, written at each worker's
+  birth) plus every session the last board names; one level only, so a worker's own
+  sessions are neither watched nor shown, and a worker in its own worktree counts the
+  same. A worker's turn start (debounced), end, or closed session refreshes the board;
+  a tool approval raised or answered on one (the slot's own registry and the
+  coordinator's) does too, matched through the board or, before any board names it,
+  through its worker record. Every ledger write (`work` fold advance) does. While a
+  row is working or waiting, the watcher refreshes the board at least every 60 s
+  (which also re-reads the workers' PRs and CI); it stops when all is idle or done.
+  The first pass after a restart reads again every board the surface record names.
+- **Context bar.** After the channel's own items, the workers most urgent first: one
+  item per worker (`PR #n open · tests passing` linked to the PR, else its branch,
+  the title cut so the detail fits), in the slots left of five; the last slot says
+  "+N more workers" when they do not all fit, and a single free slot carries the
+  aggregate line instead.
+- **Combined diff.** With workers that have commits on their own branches, the Code
+  tab shows the channel's diff under `==== Channel branch <b> (conductor) ====`, then
+  each worker's `merge-base(channel HEAD, worker)..worker` under `==== Worker i of n:
+  <title> · branch <b> · PR #n ... ====`. Worker diffs read git's object database in
+  the channel's checkout only (`git_ops.commit_range_diff`, full shas only), so no file
+  in a worker's worktree is opened; the branch is looked up only under `refs/heads/`
+  or `refs/remotes/origin/` (`git_ops.branch_commit`). Every group shares the one
+  1,000,000-byte budget (`diff.assemble_groups`), only the board's shown rows are
+  read and no further worker diff is read once the budget is spent; every group
+  passes the same redaction. With no workers the single diff is unchanged.
+- **Worker PRs.** Looked up, concurrently and only for the rows shown, on the
+  channel's own repository by branch (`find_pull_request`) or, when the worker gave
+  only a number, by number (`pull_request_by_number`); cached per forge host,
+  repository, branch and number, 60 s for a live PR and 15 min for a merged or closed
+  one; a number the forge cannot confirm is shown without a link or CI. A refresh only
+  the board triggered re-reads the channel's own PR at most once a minute; any turn
+  end in the channel always re-reads it.
+- **Triggers.** The conductor's own turn end (the core's hooks); a session in the
+  channel's folder starting or ending a turn (the workspace's own folder watcher,
+  `watch_tick`: an end refreshes as it always did, a start -- idle to running, or a new
+  turn generation while running -- refreshes a channel that has a board); a tool approval raised on or answered for one of its workers
+  (`slot_turns.register_approval` calls `board.note_session_turn(slot.key)` on
+  registration and from the approval future's done-callback, one dict lookup for any
+  other session); and its ledger moving (one unkeyed crew-log
+  bus subscription to `work` fold advances, made when the workspace's watcher starts,
+  filtered on the bus thread and hopped to the gateway loop). A conductor not yet on
+  a board is looked up in the code-channel store's in-memory bindings (a key bound to
+  no channel is not looked up again for 30 s, or until a channel is next bound), so
+  its first `goal`, `create` or
+  `bind` posts and pins the board instead of waiting for its turn to end. A turn end -- the conductor's or a folder session's --
+  refreshes with no debounce of its own and re-reads the channel's PR; a turn start,
+  an approval and a ledger move arm the refresh through a 3-second debounce, which a
+  rerun coalesced into a running refresh keeps, so a burst of reports costs one
+  publish.
+- **Sidebar.** Workers already nest under their conductor through the session tree's
+  creator edge. A board read also files each live, UNFILED worker into the
+  conductor's own folder, at most once per worker (the channel's surface record
+  remembers it: a worker the person moves back out stays out), through the
+  dashboard's slot-metadata lock and persistence (`board/filing.py`, SEL
+  `slack.code_channel.file_worker`); a worker already in a folder is never moved.
+- **Wrap-up.** `wrapup.gather_facts` adds one outcome line per worker
+  (`• Fix login: PR #12 merged`, `rejected, PR #9 closed`, `abandoned`,
+  `lost, no PR`) to the summary the channel is archived with, whole lines within
+  1,800 characters and then `+N more`, so the facts block stays inside Slack's
+  3,000-character text limit.
 
 ## Code-channel agent surface
 

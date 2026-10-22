@@ -454,6 +454,20 @@ def active_binding(channel_id: str | None, thread_ts: str | None = None) -> Bind
     return binding
 
 
+def no_reactions(channel_id: str | None) -> bool:
+    """Whether *channel_id* is a live code channel, which shows no per-message reactions.
+
+    A code channel's progress lives in Slack's own session status and the work
+    board, so the eyes / thinking / coding / done ladder is not added there. Every
+    other channel, DM and thread keeps it. Never raises (a store not loaded yet
+    reads as "not a code channel").
+    """
+    try:
+        return active_binding(channel_id) is not None
+    except Exception:
+        return False
+
+
 def mirror_post_thread(channel_id: str | None, thread_ts: str | None) -> str | None:
     """The ``thread_ts`` a dashboard-to-Slack mirror post uses.
 
