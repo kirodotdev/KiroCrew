@@ -108,8 +108,10 @@ export type PluginRefusalCopy = {
 }
 
 /** The next step when no command is known, chosen by the refusal's kind: a
- *  root gateway and the strict policy are not fixed by an ownership change. */
+ *  root gateway and the strict policy are not fixed by an ownership change, and
+ *  another account's file must not be made trusted, so its step is AWS's copy. */
 function nextStep(code: string | undefined): string {
+  if (code === 'other_owner') return i18nT('pages.settings.remoteCrewPanel.plugin_refused_next_other_owner')
   if (code === 'root_gateway') return i18nT('pages.settings.remoteCrewPanel.plugin_refused_next_root_gateway')
   if (code === 'strict_policy') return i18nT('pages.settings.remoteCrewPanel.plugin_refused_next_strict_policy')
   return i18nT('pages.settings.remoteCrewPanel.plugin_refused_next')

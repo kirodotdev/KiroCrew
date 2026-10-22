@@ -671,7 +671,7 @@ class TestDoctor:
     @pytest.mark.parametrize(
         ("code", "next_step"),
         [
-            ("other_owner", "Fix the file's ownership or permissions"),
+            ("other_owner", "Install a copy with AWS's own installer, then rerun."),
             ("world_writable", "Fix the file's ownership or permissions"),
             ("root_gateway", "Start the gateway from a regular account instead of root"),
             ("strict_policy", "Install it where only root can change the file"),
@@ -705,11 +705,53 @@ class TestDoctor:
         out = capsys.readouterr().out
         assert "aws CLI found at /opt/homebrew/bin/aws but refused: the check's words" in out
         assert next_step in out
+        if code == "other_owner":
+            # Making another account's file trusted is the risk the check guards.
+            assert "Fix the file's ownership or permissions" not in out
+            assert "/usr/local/bin belongs to the other account" in out
         assert "aws CLI not found" not in out
         assert "https://aws.amazon.com/cli/" not in out
         # The profile was never checked, so its advice would point the wrong way.
         assert "Profile did not resolve" not in out
         assert "The aws CLI above was refused, so the profile was not checked." in out
+
+    @pytest.mark.parametrize(
+        ("code", "next_step"),
+        [
+            ("other_owner", "Install a copy with AWS's own installer, then rerun."),
+            ("root_gateway", "Start the gateway from a regular account instead of root"),
+            ("", "Fix the file's ownership or permissions"),
+        ],
+    )
+    def test_doctor_gives_a_refused_plugin_with_no_command_its_code_s_step(
+        self, monkeypatch, capsys, code, next_step
+    ):
+        """The plugin line takes the same step per code as the aws CLI line."""
+        monkeypatch.setattr(cli_cloud, "resolve_aws_bin", lambda: "/opt/aws-cli/aws")
+        monkeypatch.setattr(shutil, "which", lambda *_a, **_k: "/opt/aws-cli/aws")
+        monkeypatch.setattr(cli_cloud, "_resolve", lambda _args: ("dev", "us-west-2"))
+        monkeypatch.setattr(cli_cloud.ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(
+            cli_cloud.ssm,
+            "session_manager_plugin_refusal",
+            lambda: cli_cloud.ssm.PluginRefusal(
+                path="/opt/homebrew/bin/session-manager-plugin",
+                reason="the check's words",
+                remedy_command="",
+                code=code,
+            ),
+        )
+        monkeypatch.setattr(
+            cli_cloud.iam,
+            "reachability_check",
+            lambda profile, region: {"reachable": False, "note": ""},
+        )
+
+        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 0
+        out = capsys.readouterr().out
+        assert next_step in out
+        if code == "other_owner":
+            assert "Fix the file's ownership or permissions" not in out
 
 
 _ACCT = "123456789012"

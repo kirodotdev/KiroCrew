@@ -205,7 +205,7 @@ for (const theme of ['dark', 'light']) {
   }
   const alert = row.locator('[role="alert"]')
   const alertText = await alert.innerText()
-  if (!/belongs to another account \(user ID 1501, which has no name on the computer that runs /.test(alertText)) {
+  if (!/belongs to another user account \(user ID 1501, which has no name on the computer that runs /.test(alertText)) {
     fail(`${theme}: the alert must give the reason in its own words: ${JSON.stringify(alertText)}`)
   }
   if ((await alert.locator('.font-mono', { hasText: 'owned by another user (uid 1501)' }).count()) !== 1) {
@@ -242,13 +242,14 @@ for (const theme of ['dark', 'light']) {
   const { page, row } = await openRow(theme, 'Session Manager plugin')
   const text = await row.innerText()
   const alertText = await row.locator('[role="alert"]').innerText()
-  if (!/belongs to another account \(builder, user ID 502\)/.test(alertText)) {
+  if (!/belongs to another user account \(builder, user ID 502\)/.test(alertText)) {
     fail(`${theme}: the alert must name the owning account and its user ID: ${JSON.stringify(alertText)}`)
   }
-  if (!/Fix the file’s ownership or permissions, then re-check\. If you are not sure how, use “Ask the agent”\./.test(text)) {
-    fail(`${theme}: the row must name the remedy and the hand-off`)
+  if (!/Install a copy with AWS’s own installer, then re-check\..+If a folder such as \/usr\/local\/bin belongs to the other account, an administrator must make root its owner first\./.test(text)) {
+    fail(`${theme}: the row must name the step that clears another account's copy`)
   }
-  if (/Fix the file’s ownership/.test(alertText)) fail(`${theme}: the next step must sit outside the alert`)
+  if (/Fix the file’s ownership/.test(text)) fail(`${theme}: another account's file must not be made trusted`)
+  if (/Install a copy/.test(alertText)) fail(`${theme}: the next step must sit outside the alert`)
   if (/Run it in a terminal/.test(text)) fail(`${theme}: no command note without a command`)
   if (await row.getByRole('button', { name: /Copy command/i }).count()) {
     fail(`${theme}: no Copy button with no command to copy`)

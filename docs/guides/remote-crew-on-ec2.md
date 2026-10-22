@@ -192,10 +192,27 @@ gateway started from the Dock or Finder has a minimal `PATH`.
 - **"Your AWS credentials were not checked. Found at `<path>`, but … will not
   run it: `<reason>`."** The same check refused the `aws` binary at the path the row names,
   so the credentials row says why instead of "not found", and reinstalling the CLI
-  the same way does not help. No command is offered. Fix the ownership or
-  permissions the reason names (or, for a root gateway, start it from a regular
-  account), then re-check.
+  the same way does not help. No command is offered. For a root gateway, start it
+  from a regular account. For any other reason except "belongs to another user
+  account", fix the ownership or permissions the reason names, then re-check.
   `kirocrew cloud doctor` reports it on its `aws CLI` line.
+- **"… belongs to another user account …"** (either row). The file, or a folder
+  above it, belongs to an account on that computer that is neither root nor the
+  account Kiro Crew runs as, for example a Homebrew managed by a second account
+  (Workbrew). Do not make that file root-owned: that account could have replaced it.
+  Install a separate copy with AWS's own installer
+  ([AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html),
+  [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)),
+  then re-check: Kiro Crew looks in `/opt/homebrew/bin` and then `/usr/local/bin`,
+  and runs the first copy that, with every folder above it, belongs to root or to
+  Kiro Crew's own account. If the plugin row then offers the `chown` command above,
+  run it. If the new copy's reason starts `executable parent`, a folder above it
+  belongs to the other account (on an Intel Mac whose Homebrew a second account
+  runs, that is `/usr/local/bin`). An administrator must make root its owner and
+  only writer:
+  `sudo chown root:wheel /usr/local/bin && sudo chmod 755 /usr/local/bin`. That
+  account's Homebrew can then no longer add programs there, so agree it with
+  whoever manages it.
 
 ### Non-fatal warnings you can ignore
 
