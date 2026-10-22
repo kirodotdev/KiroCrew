@@ -731,7 +731,12 @@ def test_a_crew_with_no_crew_log_reads_as_the_empty_record(tmp_path):
     assert cs.crew_log_units(OWNER, REPO, cid, tmp_path) == ()
     ledger = cs.read_ledger(OWNER, REPO, cid, tmp_path)
     assert (ledger["items"], ledger["events"], ledger["skips"]) == ([], [], {})
-    assert ledger["counts"] == {"open": 0, "evicted_items": 0, "evicted_skips": 0}
+    assert ledger["counts"] == {
+        "open": 0,
+        "evicted_items": 0,
+        "evicted_skips": 0,
+        "evicted_answers": 0,
+    }
     assert cs.list_work_items(OWNER, REPO, cid, tmp_path) == []
     assert cs.read_events(OWNER, REPO, tmp_path) == []
     assert cs.read_skips(OWNER, REPO, tmp_path) == {}

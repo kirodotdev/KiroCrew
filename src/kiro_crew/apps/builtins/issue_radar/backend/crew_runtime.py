@@ -31,7 +31,9 @@ from:
 
 Nothing here writes to the forge, and nothing here writes a work item: a change
 detector that touched ``last_progress_at`` would renew the very claim TTL the
-protocol measures from it. Its own state lives in ``crew-signals.json``, beside
+protocol measures from it. The one ledger write it makes is a human ANSWER to a
+needs-human pass (:func:`detect_human_answers`), which patches no work item. Its own
+state lives in ``crew-signals.json`` and ``crew-answer-checks.json``, beside
 the crews dir rather than inside it — ``crew_store.list_crews`` globs ``*.json``
 there, so a state file dropped in that directory would read back as a phantom crew.
 """
@@ -44,6 +46,7 @@ import json
 import logging
 import sys as _sys
 import time
+from collections.abc import Mapping, Sequence
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -402,6 +405,362 @@ def _latest_review_decision(
     return latest
 
 
+# ── human answers to a needs-human pass ─────────────────────────────────────
+#
+# A crew that needs a human records a pass with an answerable scope
+# (``crew_store.ANSWERABLE_SKIP_SCOPES``: ``needs-decision``, ``needs-investigation``
+# and the four scope gates ``architecture``, ``new-feature``, ``needs-design``,
+# ``breaking-change``) and labels the issue with the repo's needs-human label.
+# The pass keeps every crew off the issue, so without this nothing ever hands it
+# back. The hand-back is the LABEL: a human removing it on an open issue says
+# "answered, take it again". A comment alone is not a hand-back -- people comment
+# without deciding -- and a removal the crew made is not an answer. A removal under
+# the gateway's own forge login never counts, even when a person made it: the forge
+# cannot tell the two apart (:func:`find_human_answer`).
+#
+# Cost, per sweep: the forge's first page of open issues (``list_open_issues_first_page``,
+# newest update first, labels included; when that read fails the sweep reads nothing
+# and the next one retries), zero further calls for a number whose issue still
+# carries the label, and ONE timeline read for a qualifying number the first time it
+# is seen without the label. A read that finds no human removal is remembered in
+# ``crew-answer-checks.json`` against that pass AND the issue's ``updated_at``, so a
+# pass that simply lost its label is not re-read every minute, while any later
+# activity on the issue re-arms the read.
+
+SIG_HUMAN_ANSWERED = "human-answered"
+
+ANSWER_CHECKS_SCHEMA = 1
+
+#: Label-event reads one sweep may spend. A repo that just had a dozen questions
+#: answered gets them over a few cycles instead of one burst.
+MAX_ANSWER_READS_PER_SWEEP = 10
+
+
+def _read_updated_open_issues(
+    key: provider.RepoKey,
+) -> list[dict[str, Any]] | None:
+    """The forge's first page of open issues, newest UPDATE first, kept to the fields
+    the sweep reads: number, labels and ``updated_at``.
+
+    This is the same ``list_open_issues_first_page`` the dashboard's first paint uses,
+    on every provider. Removing a label moves an issue's update time, so an issue a
+    person just handed back is at the top of it. A number missing from the page is
+    UNKNOWN, not closed: the page may stop before an older issue. ``None`` when the
+    read failed: unknown is not "no issues".
+    """
+    try:
+        rows = provider.client_for(key).list_open_issues_first_page(
+            key.owner, key.repo, **provider.call_kwargs(key)
+        )
+    except Exception:
+        logger.debug("issue-radar: open-issues read for human answers failed", exc_info=True)
+        return None
+    return [
+        {
+            "number": r.get("number"),
+            "labels": r.get("labels") or [],
+            "updated_at": str(r.get("updated_at") or "")[:40],
+        }
+        for r in rows or []
+        if isinstance(r, dict)
+    ]
+
+
+def answer_checks_path(owner: str, repo: str, root: Path | None = None) -> Path:
+    """Beside ``crew-signals.json`` and for the same reason: not inside ``crews/``."""
+    return store.repo_data_dir(owner, repo, root) / "crew-answer-checks.json"
+
+
+def read_answer_checks(owner: str, repo: str, root: Path | None = None) -> dict[str, Any]:
+    path = answer_checks_path(owner, repo, root)
+    if not path.is_file():
+        return {}
+    doc = read_json_or(path, None, logger=logger, what="crew answer checks")
+    if not isinstance(doc, dict) or doc.get("schema") != ANSWER_CHECKS_SCHEMA:
+        return {}
+    items = doc.get("items")
+    return items if isinstance(items, dict) else {}
+
+
+def write_answer_checks(
+    owner: str, repo: str, items: dict[str, Any], root: Path | None = None
+) -> None:
+    atomic_write(
+        answer_checks_path(owner, repo, root),
+        json.dumps({"schema": ANSWER_CHECKS_SCHEMA, "items": items}, indent=2),
+    )
+
+
+def _forge_identity(key: provider.RepoKey) -> str:
+    """The crew's forge login, or ``""`` when it cannot be read (then nothing fires).
+
+    Read afresh on every sweep that needs it: the operator can switch the CLI login
+    while the gateway runs, and a remembered login would then attribute the crew's own
+    removals to someone else.
+    """
+    try:
+        client = provider.client_for(key)
+        # Azure caches the identity for the life of the process; its uncached read
+        # sees a login switched mid-run. The other clients read afresh every call.
+        reader = getattr(client, "get_current_login_uncached", None) or client.get_current_login
+        login = reader(**provider.call_kwargs(key))
+    except Exception:
+        logger.debug("issue-radar: forge identity read failed", exc_info=True)
+        return ""
+    return str(login or "").strip()
+
+
+def _label_names(issue: Mapping[str, Any]) -> set[str]:
+    out: set[str] = set()
+    for label in issue.get("labels") or []:
+        name = label.get("name") if isinstance(label, Mapping) else label
+        if isinstance(name, str) and name:
+            out.add(name.casefold())
+    return out
+
+
+def _list_label_events(key: provider.RepoKey, number: int) -> list[dict[str, Any]]:
+    """The label removals on one issue, read from its timeline."""
+    client = provider.client_for(key)
+    rows = client.list_issue_timeline(key.owner, key.repo, number, **provider.call_kwargs(key))
+    return [r for r in rows or [] if isinstance(r, dict) and r.get("kind") == "unlabeled"]
+
+
+def find_human_answer(
+    events: Sequence[Mapping[str, Any]], label: str, since: str, identity: str
+) -> dict[str, str] | None:
+    """The newest removal of *label* after *since* by someone other than *identity*.
+
+    *since* is the pass's ``decided_at`` in the fold's spelling; event times are
+    normalized to the same spelling before comparing. ``None`` when there is none,
+    including when *identity* is unknown (fail closed: a removal nobody can attribute
+    must not read as a human's).
+
+    *identity* is the login the crew acts through, so a removal under it is never an
+    answer, even when a person made it: the forge cannot tell the two apart, and
+    counting it would let a crew hand an issue back to itself. An operator who shares
+    that login answers from another account.
+    """
+    if not identity:
+        return None
+    found: dict[str, str] | None = None
+    for actor, at in _removals_after(events, label, since):
+        if actor.casefold() == identity.casefold():
+            continue
+        if found is None or at > found["at"]:
+            found = {"actor": actor, "at": at}
+    return found
+
+
+def _removals_after(
+    events: Sequence[Mapping[str, Any]], label: str, since: str
+) -> list[tuple[str, str]]:
+    """Every ``(actor, at)`` removal of *label* after *since* -- the one scan both
+    the answer and the own-login warning read."""
+    wanted = label.casefold()
+    out: list[tuple[str, str]] = []
+    for ev in events:
+        if ev.get("kind") != "unlabeled":
+            continue
+        name = (ev.get("label") or {}).get("name") if isinstance(ev.get("label"), Mapping) else None
+        if not isinstance(name, str) or name.casefold() != wanted:
+            continue
+        actor = str(ev.get("actor") or "").strip()
+        at = crew_store.normalize_forge_time(ev.get("created_at"))
+        if actor and at and at > since:
+            out.append((actor, at))
+    return out
+
+
+def _crew_live_unit(state: Any, crew: Mapping[str, Any]) -> str:
+    """The crew log unit *crew*'s slot serves on now, or ``""`` -- the write route's
+    own resolution (``crew_routes._crew_live_unit``), from the gateway state."""
+    from kiro_crew.crew_log.resolve import unit_for_session_key
+
+    # Read from the owner at call time: this facade binds the session helpers only
+    # for type checkers, and a bare global read here never reaches its __getattr__.
+    from .crew_runtime_session import _slot_key as slot_key_of
+
+    slot = slot_key_of(dict(crew))
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return ""
+    try:
+        return unit_for_session_key(sessions, f"dashboard:{slot}")
+    except Exception:
+        logger.debug("issue-radar: resolving crew %s's unit failed", crew.get("id"), exc_info=True)
+        return ""
+
+
+async def detect_human_answers(
+    state: Any,
+    key: provider.RepoKey,
+    live: list[dict[str, Any]],
+    scope: Path | None,
+) -> dict[str, list[tuple[int, str]]]:
+    """Find needs-human passes a human handed back; record each and say whom to wake.
+
+    Returns ``{crew_id: [(number, actor), ...]}``, *actor* being the forge user who
+    removed the label. A number qualifies when its standing pass is answerable, its
+    issue is OPEN, the needs-human label is absent from it (read from the forge, newest
+    update first; when that read fails nothing is read and the next sweep retries),
+    and the label's newest removal after the pass was made under a login other than
+    the gateway's own (:func:`find_human_answer`).
+
+    The answer is written into the log of the crew that recorded the pass when that
+    crew is live with a session (so its own re-skip replaces its own row), else into
+    the woken crew's. The crew woken is the one that recorded the pass when it is
+    live, else the first live crew by id. An answer that cannot be written wakes
+    nobody and is retried next sweep.
+    """
+    if not live:
+        return {}
+    owner, repo = key.owner, key.repo
+    settings = await asyncio.to_thread(partial(crew_store.read_settings, owner, repo, scope))
+    label = str(settings.get("needs_human_label") or "").strip()
+    skips = await asyncio.to_thread(partial(crew_store.read_skips, owner, repo, scope))
+    candidates = {
+        k: row for k, row in skips.items() if row.get("scope") in crew_store.ANSWERABLE_SKIP_SCOPES
+    }
+    checks = await asyncio.to_thread(partial(read_answer_checks, owner, repo, scope))
+    before = dict(checks)
+    # An answer whose write was still queued in the crew log writer when it answered
+    # (``durable: False``) has woken nobody yet. Its number leaves ``candidates`` once
+    # the entry lands, so it is carried here until a read confirms it, and only then
+    # does the wake go out.
+    pending = {
+        k: m for k, m in checks.items() if isinstance(m, dict) and isinstance(m.get("answer"), dict)
+    }
+    for k in [k for k in checks if k not in candidates and k not in pending]:
+        checks.pop(k, None)
+    out: dict[str, list[tuple[int, str]]] = {}
+    if pending:
+        landed = await asyncio.to_thread(partial(crew_store.read_answers, owner, repo, scope))
+        live_ids = {str(c.get("id")) for c in live}
+        for k, held in pending.items():
+            answer = held["answer"]
+            got = landed.get(k)
+            if not isinstance(got, dict) or str(got.get("at") or "") < str(answer.get("at") or ""):
+                continue  # still queued: keep the mark, wake nobody
+            crew_id = str(held.get("crew_id") or "")
+            if crew_id not in live_ids:
+                crew_id = min(live_ids)
+            out.setdefault(crew_id, []).append((int(k), str(answer.get("actor") or "")))
+            checks.pop(k, None)
+            candidates.pop(k, None)
+    open_issues = None
+    if candidates and label:
+        # Straight from the forge: the dashboard cache is refreshed only when a person
+        # opens Issue Radar, and the timeline read below hits the same forge anyway. A
+        # failed read leaves every mark as it was; the next sweep (a minute later)
+        # tries again.
+        open_issues = await asyncio.to_thread(partial(_read_updated_open_issues, key))
+    if open_issues is not None:
+        by_number = {str(i.get("number")): i for i in open_issues if isinstance(i, dict)}
+        live_by_id = {str(c.get("id")): c for c in live}
+        fallback = live_by_id[min(live_by_id)]
+        reads = 0
+        identity: str | None = None
+        for k, row in sorted(candidates.items(), key=lambda kv: int(kv[0])):
+            issue = by_number.get(k)
+            if issue is None:
+                # One page: a candidate missing from it may be older, not closed.
+                continue
+            # Label still present: no call, and the mark is dropped so a label that
+            # comes back and goes again is read afresh.
+            if label.casefold() in _label_names(issue):
+                checks.pop(k, None)
+                continue
+            # A removal at or before the pass, or before the answer the pass was
+            # recorded after, is already consumed: whatever the clocks, it never
+            # wakes a crew twice.
+            decided_at = max(str(row.get("decided_at") or ""), str(row.get("answered_at") or ""))
+            updated_at = str(issue.get("updated_at") or "")
+            mark = checks.get(k)
+            # A mark holds only while the issue is untouched: any later activity (a
+            # comment, a second removal) moves updated_at and re-arms the read, so a
+            # timeline that lagged the list is read again.
+            if (
+                isinstance(mark, dict)
+                and mark.get("decided_at") == decided_at
+                and mark.get("updated_at") == updated_at
+            ):
+                continue
+            if reads >= MAX_ANSWER_READS_PER_SWEEP:
+                break
+            if identity is None:
+                identity = await asyncio.to_thread(partial(_forge_identity, key))
+            if not identity:
+                break
+            reads += 1
+            try:
+                events = await asyncio.to_thread(partial(_list_label_events, key, int(k)))
+            except Exception:
+                logger.debug("issue-radar: label events for #%s failed", k, exc_info=True)
+                continue
+            answer = find_human_answer(events, label, decided_at, identity)
+            if answer is None:
+                if any(
+                    actor.casefold() == identity.casefold()
+                    for actor, _at in _removals_after(events, label, decided_at)
+                ):
+                    # The label was removed, but under the gateway's own forge login,
+                    # which never counts (see the section note). Say so once, at the
+                    # read that is about to be marked, so an operator who shares the
+                    # login learns why the hand-back did nothing.
+                    logger.warning(
+                        "issue-radar: #%s in %s/%s: the needs-human label was removed "
+                        "by @%s, the gateway's own forge login, so it does not count as "
+                        "an answer. Remove it from a different account (see #22527).",
+                        k,
+                        owner,
+                        repo,
+                        identity,
+                    )
+                # A mark stops later reads until the issue changes again.
+                checks[k] = {
+                    "decided_at": decided_at,
+                    "updated_at": updated_at,
+                    "checked_at": time.time(),
+                }
+                continue
+            owner_crew = live_by_id.get(str(row.get("crew_id") or ""))
+            woken = owner_crew or fallback
+            writer = owner_crew if owner_crew and _crew_live_unit(state, owner_crew) else woken
+            unit = _crew_live_unit(state, writer)
+            try:
+                written = await asyncio.to_thread(
+                    partial(
+                        crew_store.record_human_answer,
+                        owner,
+                        repo,
+                        str(writer.get("id")),
+                        int(k),
+                        answer["actor"],
+                        answer["at"],
+                        scope,
+                        session_id=unit,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "issue-radar: recording the human answer on #%s failed; retrying next sweep",
+                    k,
+                    exc_info=True,
+                )
+                continue
+            if isinstance(written, Mapping) and written.get("durable") is False:
+                # Queued, not yet in the log: publishing the wake now would hand a
+                # crew an issue the snapshot it reads still lists as skipped.
+                checks[k] = {"answer": dict(answer), "crew_id": str(woken.get("id"))}
+                continue
+            checks.pop(k, None)
+            out.setdefault(str(woken.get("id")), []).append((int(k), str(answer["actor"])))
+    if checks != before:
+        await asyncio.to_thread(partial(write_answer_checks, owner, repo, checks, scope))
+    return out
+
+
 # ── the sweep ───────────────────────────────────────────────────────────────
 
 
@@ -455,6 +814,22 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
     if not live:
         return {}
 
+    # Human answers first, and regardless of whether any work item is due: an answered
+    # pass has no work item to come due, which is exactly why it needs its own read.
+    answered: dict[str, list[tuple[int, str]]] = {}
+    if state is not None:
+        try:
+            answered = await detect_human_answers(state, key, live, scope)
+        except Exception:
+            logger.warning("issue-radar: human-answer detection failed", exc_info=True)
+    woken: dict[str, Any] = {}
+    reasons: dict[str, list[str]] = {}
+    for crew_id, numbers in answered.items():
+        for number, actor in numbers:
+            woken.setdefault(crew_id, []).append(SIG_HUMAN_ANSWERED)
+            reasons.setdefault(crew_id, []).append(f"#{number} {SIG_HUMAN_ANSWERED} by @{actor}")
+    crews_by_id = {str(c.get("id")): c for c in live}
+
     stored = await asyncio.to_thread(partial(read_signals, key.owner, key.repo, scope))
     # WALL clock, not the loop's monotonic one: this value is persisted, and a
     # monotonic reading restarts near zero on the next gateway launch — every
@@ -494,7 +869,8 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
     if not due:
         if stale:
             await asyncio.to_thread(partial(write_signals, key.owner, key.repo, stored, scope))
-        return {}
+        await _wake_for(state, key, crews_by_id, reasons, scope)
+        return woken
 
     prs = sorted({pr for _, it in due if isinstance(pr := it.get("pr_number"), int) and pr > 0})
     enriched = await _enrich(key, prs) if prs else {}
@@ -511,9 +887,6 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
     deps = await asyncio.to_thread(partial(_read_or_refresh_deps, key, scope))
 
     # Pass 2 — fingerprint each due item, compare, then wake each crew ONCE.
-    woken: dict[str, Any] = {}
-    reasons: dict[str, list[str]] = {}
-    crews_by_id = {str(c.get("id")): c for c in live}
     for crew, item in due:
         crew_id = str(crew.get("id"))
         ikey = _item_key(crew_id, item.get("number"))
@@ -539,25 +912,38 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
         reasons.setdefault(crew_id, []).append(f"#{item.get('number')} {', '.join(signals)}")
 
     await asyncio.to_thread(partial(write_signals, key.owner, key.repo, stored, scope))
-
-    # ONE wake per crew, carrying every reason. Two items signalling in the same
-    # sweep is one turn's worth of work, and the second call would be dropped as
-    # mid-turn anyway — so the crew would have been told about only the first.
-    if state is not None:
-        for crew_id, why in reasons.items():
-            try:
-                await wake_crew(
-                    state,
-                    key.owner,
-                    key.repo,
-                    crews_by_id[crew_id],
-                    "; ".join(why),
-                    scope,
-                    key,
-                )
-            except Exception:  # pragma: no cover - defensive
-                logger.warning("issue-radar: waking crew %s failed", crew_id, exc_info=True)
+    await _wake_for(state, key, crews_by_id, reasons, scope)
     return woken
+
+
+async def _wake_for(
+    state: Any,
+    key: provider.RepoKey,
+    crews_by_id: dict[str, dict[str, Any]],
+    reasons: dict[str, list[str]],
+    scope: Path | None,
+) -> None:
+    """ONE wake per crew, carrying every reason.
+
+    Two items signalling in the same sweep is one turn's worth of work, and the second
+    call would be dropped as mid-turn anyway — so the crew would have been told about
+    only the first.
+    """
+    if state is None:
+        return
+    for crew_id, why in reasons.items():
+        try:
+            await wake_crew(
+                state,
+                key.owner,
+                key.repo,
+                crews_by_id[crew_id],
+                "; ".join(why),
+                scope,
+                key,
+            )
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("issue-radar: waking crew %s failed", crew_id, exc_info=True)
 
 
 async def _enrich(key: provider.RepoKey, prs: list[int]) -> dict[int, dict[str, Any]]:
