@@ -706,6 +706,14 @@ either auth flavor can grant (see `_verify_unix_peer`):
    the MAC).
 4. Resolved key **differs** from the declared header → **403** + SEL
    `dashboard.peer-identity-mismatch` (outcome=denied, peer pid recorded).
+   One exception: a complete roster that omits the declared key while the
+   ownership tables (`_bound_session_keys_on_chain`) bind that key to the
+   peer's process chain. That is a `spawn_run` shared subagent, whose session
+   the manager never registers, so the roster names only its parent. Such a
+   declaration takes the step 5 token demand instead of the flat denial:
+   without a token naming the declared key it is still refused
+   `peer_session_unattested`, and a key the tables do not bind there is still
+   `peer_session_mismatch`.
    Resolved and equal → proceed with `request["peer_verified"] = True`.
    Unresolvable (warm-pool runtime before claim, cron scripts, pooled MCP
    backends — no pidfile in the ancestry; or a mapping published unsigned) →
