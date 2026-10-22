@@ -87,7 +87,7 @@ const PAGE_HOOKS = [
   'useNavigate', 'useQueryClient', 'useCloudDeploymentEnabled', 'usePreviewFlag', 'useState', 'useIsMobile',
   'useState', 'useState', 'useState', 'useState', 'useState', 'useSearchParams', 'useArtifactFolders',
   'useState', 'useInvalidateArtifactFolders', 'useMutation', 'useMutation', 'useState',
-  'useMoveArtifactToFolder', 'useState', 'useState', 'useState', 'useRef', 'useState', 'useState',
+  'useMoveArtifactToFolder', 'useState', 'useState', 'useState', 'useState', 'useRef', 'useState', 'useState',
   'useMutation', 'useMutation', 'useQuery', 'useQuery', 'useMoveUndo', 'useMoveUndo', 'useDndSensors',
   'useState', 'useState', 'useRef', 'useEffect', 'useQuery', 'useMutation', 'useMutation', 'useQuery',
   'useState', 'useRef', 'useEffect', 'useState', 'useState', 'useEffect', 'useMutation', 'useGuideSelection',

@@ -228,7 +228,7 @@ export interface SidebarScope {
   activeDrag: { type: string; id: string } | null
   derivedHintCol: string | null
   setDerivedHintCol: SetState<string | null>
-  renameCommit: (id: string, name: string) => void
+  renameCommit: (id: string, name: string) => boolean
   closeRefused: RootState['chat']['closeRefused']
   rowActions: React.ComponentProps<typeof SessionRow>['actions']
   tintAgents: AgentInfo[]
@@ -345,6 +345,7 @@ export interface SidebarScope {
 
   // From `useFolderRename`
   folderEditInputRef: ReturnType<typeof useFolderRename>['folderEditInputRef']
+  folderCancelEscapeRef: ReturnType<typeof useFolderRename>['folderCancelEscapeRef']
   editingId: ReturnType<typeof useFolderRename>['editingId']
   setEditingId: ReturnType<typeof useFolderRename>['setEditingId']
   editScope: ReturnType<typeof useFolderRename>['editScope']

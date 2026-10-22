@@ -251,7 +251,7 @@ function ChatSidebar({
   )
   const {
     renamingSlot, renameScope, renameValue, renameError, setRenameError, renameInputRef,
-    suppressMenuRestoreRef, onRenameStart, onRenameChange, onRenameCancel, onRenameCommit,
+    suppressMenuRestoreRef, onRenameStart, onRenameChange, onRenameCancel, onRenameCommit, renameAnnouncement, slotRenameEnterRef,
     onMenuCloseAutoFocus,
   } = useSessionRename({ dispatch, store, queryClient })
   const { autoTitleError, setAutoTitleError, onAutoTitle } = useSessionAutoTitle({ dispatch, store })
@@ -332,8 +332,9 @@ function ChatSidebar({
   } = useFolderSort({ queryClient, mcCfg, mcCfgStatus, mcCfgError, mcCfgErrorUpdatedAt, setFolderActionError })
 
   const {
-    folderEditInputRef, editingId, setEditingId, editScope, setEditScope, editName, setEditName,
+    folderEditInputRef, folderCancelEscapeRef, editingId, setEditingId, editScope, setEditScope, editName, setEditName,
   } = useFolderRename({ renamingSlot, suppressMenuRestoreRef })
+  const [folderRenameAnnouncement, setFolderRenameAnnouncement] = useState('')
 
   // Folders via React Query. `isSuccess` gates the stale-collapse move
   // watcher below: before folder data has actually ARRIVED `folders` is the
@@ -630,17 +631,24 @@ function ChatSidebar({
   const {
     revealFlash,
   } = useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors: expandRevealAncestors, folders, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView })
-  const renameCommit = useCallback((id: string, name: string) => {
+  const renameCommit = useCallback((id: string, name: string): boolean => {
     // Re-checked here, not only where the editor opens: the gateway can drop
     // while an editor is open. Keep the editor and its draft, and say why,
     // instead of firing a PATCH whose rollback would discard the typed name.
+    // Returns false when the commit is refused (editor stays open); callers
+    // skip the focus-restore rAF so keyboard focus stays in the input.
     if (!connected) {
       setFolderOfflineNotice(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.rename_folders') }))
-      return
+      return false
     }
-    if (name.trim()) updateFolderMutation.mutate({ id, body: { name: name.trim() } })
+    const trimmed = name.trim()
+    if (trimmed) {
+      setFolderRenameAnnouncement('')
+      updateFolderMutation.mutate({ id, body: { name: trimmed }, onCommitted: () => setFolderRenameAnnouncement(i18nT('pages.chatSidebar.folder_renamed_to', { name: trimmed })) })
+    }
     setEditingId(null)
-  }, [updateFolderMutation, setEditingId, connected])
+    return true
+  }, [updateFolderMutation, setEditingId, connected, setFolderOfflineNotice, setFolderRenameAnnouncement])
   const {
     dragMove, undoDragMove, undoBar, folderMove, undoFolderMove, folderUndoBar, moveByDrag, moveFolderByDrag,
     dismissMoves,
@@ -697,7 +705,7 @@ function ChatSidebar({
   // What every session row can do, built once: the row's memo compares this one
   // reference, so none of these may take a new identity per render.
   const rowActions = useMemo(() => ({
-    renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle,
+    renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle, slotRenameEnterRef,
     onDuplicate: sessionActions.duplicate, onCloseSession: sessionActions.close,
     onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource: stableOpenSource,
     onOpenPeerSession: openPeerSession,
@@ -705,7 +713,7 @@ function ChatSidebar({
     onPinnedKeyboardReorder: reorderPinnedByKeyboard, onManualKeyboardReorder: reorderManualByKeyboard,
     openElsewhere, toggleConductor: toggleConductorExpanded,
   }), [
-    renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle,
+    renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle, slotRenameEnterRef,
     sessionActions.duplicate, sessionActions.close, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab,
     stableOpenSource, openPeerSession, startBoardCardDrag, endNativeSessionDrag, reorderPinnedByKeyboard,
     reorderManualByKeyboard, openElsewhere, toggleConductorExpanded,
@@ -787,7 +795,7 @@ function ChatSidebar({
     deleteFolderWithConfirm, deleteHistorySessionWithConfirm, derivedHintCol, disarmHold, dismissSortError, dispatch,
     dndSensors, dropSlotMutation, editingId, editName, editScope, filterCounts, filterHiddenFolders,
     filterSortOpen, filtersPaused, flatLaneActive, flatSlots, flatView, folderActionError, folderCleanupOpen, folderOfflineNotice,
-    folderCompare, folderConductorPin, folderCreateError, folderDragWithheld, folderEditInputRef,
+    folderCompare, folderConductorPin, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef,
     folderFilterRows, folderNameMatchIds, folderReorderable, folderReorderHint, folderReorderHintRef,
     folderRowsDrawn, folders, foldersError, foldersFailed, folderSortMode, folderSortMut, folderSortRead,
     foldersShelved, folderSubtrees, foldersWithActiveSubtree, handleSidebarDragCancel, handleSidebarDragEnd,
@@ -828,7 +836,10 @@ function ChatSidebar({
     // stable theming hook 'sidebar' — see website/docs/theming-contract.md
     // The region is the session picker a guide's "choose the session" step
     // points at (`sessions.list`): both layouts draw their rows inside it.
-    <div role="region" aria-label={i18nT('pages.chatSidebar.sessions')} {...uiLocation('sessions.list', sidebarRootRef)} data-row-anim={rowAnimSettled ? 'settled' : 'holding'} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={rootStyle}>
+    <>
+      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="slot-rename-status">{renameAnnouncement}</span>
+      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="folder-rename-status">{folderRenameAnnouncement}</span>
+      <div role="region" aria-label={i18nT('pages.chatSidebar.sessions')} {...uiLocation('sessions.list', sidebarRootRef)} data-row-anim={rowAnimSettled ? 'settled' : 'holding'} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={rootStyle}>
       {/* Scroll peek: full titles in a floating, click-through layer. The
           card itself keeps `sidebarWidth`. */}
       <ScrollPeekLayer titles={peekTitles} />
@@ -979,6 +990,7 @@ function ChatSidebar({
        *  ever open one, and so the ProjectPicker it hosts has a single owner. */}
       {folderModal && renderFolderModal(scope, folderModal)}
     </div>
+    </>
   )
 }
 

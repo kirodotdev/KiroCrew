@@ -35,7 +35,12 @@ export function useSessionRename({ dispatch, store, queryClient }: {
   // Set when the server refuses a rename; rendered through the sidebar-root
   // ErrorNotice cluster so the revert (below) never happens silently.
   const [renameError, setRenameError] = useState('')
+  const [renameAnnouncement, setRenameAnnouncement] = useState('')
   const cancelRenameRef = useRef(false)
+  // Set by the textarea's onEnter so onRenameCommit (fired via the blur that
+  // follows) can distinguish an Enter commit from a pointer-blur commit and
+  // restore focus to the session row accordingly.
+  const slotRenameEnterRef = useRef(false)
   // Per-slot rename recovery state, keyed by slot. `gen` is a monotonic attempt
   // counter: a refused rename's delayed recovery may apply ONLY while its own
   // generation is still the latest (`rec.gen === myGen`). This defeats the
@@ -78,9 +83,26 @@ export function useSessionRename({ dispatch, store, queryClient }: {
   }, [])
   const onRenameCancel = useCallback(() => {
     cancelRenameRef.current = true
+    // Capture the row while the textarea is still mounted. For sessions inside
+    // a board folder, renameScope is `${folderLaneScope}:${folder.id}` but the
+    // row carries only folderLaneScope in data-session-scope, so a scope-keyed
+    // DOM query finds nothing. closest('[data-session-row]') resolves correctly
+    // across all views without relying on scope equality.
+    const targetRow = renameInputRef.current?.closest('[data-session-row]') as HTMLElement | null
     setRenamingSlot(null)
+    requestAnimationFrame(() => {
+      targetRow?.focus({ preventScroll: true })
+    })
   }, [])
   const onRenameCommit = useCallback((key: string, value: string) => {
+    const viaEnter = slotRenameEnterRef.current
+    slotRenameEnterRef.current = false
+    // Capture the row while the textarea is still mounted, before the
+    // setRenamingSlot(null) re-render below unmounts it. For board-folder rows
+    // the renameScope is `${folderLaneScope}:${folder.id}`, which does not
+    // match data-session-scope (folderLaneScope only), so closest is the only
+    // reliable path to the target row.
+    const targetRow = renameInputRef.current?.closest('[data-session-row]') as HTMLElement | null
     if (!cancelRenameRef.current && value.trim()) {
       const refused = value.trim()
       // Take a generation for THIS attempt before any async work. A later
@@ -98,6 +120,7 @@ export function useSessionRename({ dispatch, store, queryClient }: {
         rec.inflight.delete(refused)
         if (rec.inflight.size === 0 && rec.gen === myGen) renameRecoveryRef.current.delete(key)
       }
+      setRenameAnnouncement('')
       dispatch(sseSlotTitle({ key, title: refused }))
       // Recovery on a refused rename must go through Redux: slot titles live in
       // the dashboard slice (written by `sseSlots` / `fetchSlots.fulfilled`),
@@ -121,7 +144,7 @@ export function useSessionRename({ dispatch, store, queryClient }: {
       const mayRecover = () =>
         rec.gen === myGen &&
         store.getState().dashboard.slots.find(s => s.key === key)?.title === refused
-      api.renameSlot(key, refused).then(() => settle(), async e => {
+      api.renameSlot(key, refused).then(() => { settle(); setRenameAnnouncement(i18nT('pages.chatPage.session_renamed_to', { title: refused })) }, async e => {
         setRenameError(errMessage(e) || i18nT('pages.chatPage.unknown_error'))
         try {
           const server = (await queryClient.fetchQuery({
@@ -142,6 +165,13 @@ export function useSessionRename({ dispatch, store, queryClient }: {
     }
     cancelRenameRef.current = false
     setRenamingSlot(null)
+    // Restore focus via the captured row (set above, before the unmount).
+    // Pointer blur does NOT restore focus (WCAG 3.2.2).
+    if (viaEnter) {
+      requestAnimationFrame(() => {
+        targetRow?.focus({ preventScroll: true })
+      })
+    }
   }, [dispatch, queryClient, store])
   // Input modality tracker for menu-close focus handling: true while the most
   // recent interaction was a keyboard press. Capture-phase listeners so Radix's
@@ -205,6 +235,7 @@ export function useSessionRename({ dispatch, store, queryClient }: {
   }, [])
   return {
     renamingSlot, renameScope, renameValue, renameError, setRenameError, renameInputRef,
+    renameAnnouncement, slotRenameEnterRef,
     suppressMenuRestoreRef, onRenameStart, onRenameChange, onRenameCancel, onRenameCommit,
     onMenuCloseAutoFocus,
   }
@@ -237,6 +268,9 @@ export function useFolderRename({ renamingSlot, suppressMenuRestoreRef }: {
 }) {
   // Folder rename ref. See the focus effect below for why the rAF re-grab is needed.
   const folderEditInputRef = useRef<HTMLInputElement | null>(null)
+  // Set true in onEscape so the onBlur handler (always fired when the input
+  // unmounts) knows not to commit — Escape means cancel, not save.
+  const folderCancelEscapeRef = useRef(false)
   // Folder editing state
   const [editingId, setEditingId] = useState<string | null>(null)
   // Board view renders a folder once per column, so `editingId === folder.id`
@@ -277,5 +311,5 @@ export function useFolderRename({ renamingSlot, suppressMenuRestoreRef }: {
   useEffect(() => {
     if (!renamingSlot && !editingId) suppressMenuRestoreRef.current = false
   }, [renamingSlot, editingId, suppressMenuRestoreRef])
-  return { folderEditInputRef, editingId, setEditingId, editScope, setEditScope, editName, setEditName }
+  return { folderEditInputRef, folderCancelEscapeRef, editingId, setEditingId, editScope, setEditScope, editName, setEditName }
 }
