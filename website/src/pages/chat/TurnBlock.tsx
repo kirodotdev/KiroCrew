@@ -185,7 +185,8 @@ type FoldMode = 'interim' | 'collapseAll' | 'default'
  *   The window is counted over all tool rows FIRST, so a live row among the
  *   newest five never shifts an older one into view.
  * - Settled, on top: the mode's own collapse. Default folds every tool row;
- *   collapseAll folds what precedes the conclusion; an interim fan-out folds
+ *   collapseAll folds what precedes the conclusion, or every working step
+ *   when the turn has none (collapseAllFoldRange); an interim fan-out folds
  *   every row. `isVisibleInline` rows never fold.
  *
  * The settled set contains the running set, so completion only ever folds
@@ -196,10 +197,14 @@ function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, 
   const out = new Set(tools.slice(0, Math.max(0, tools.length - LIVE_ACTIVITY_WINDOW)))
   if (complete && mode === 'default') tools.forEach(i => out.add(i))
   if (complete && mode !== 'default') {
-    const end = mode === 'interim' ? items.length : Math.max(0, findConclusionIdx(items))
+    const { end, wholeTurn } = mode === 'interim'
+      ? { end: items.length, wholeTurn: false }
+      : collapseAllFoldRange(items)
     const pinned = mode === 'interim' ? NO_PINNED_ROWS : answeredRefusalRows
     for (let i = 0; i < end; i++) {
-      if (isCountedRow(items[i]) && !isVisibleInline(items[i], appToolCallIds, pinned)) out.add(i)
+      const it = items[i]
+      if (wholeTurn && !isWorkingStepRow(it)) continue
+      if (isCountedRow(it) && !isVisibleInline(it, appToolCallIds, pinned)) out.add(i)
     }
   }
   return Array.from(out).sort((a, b) => a - b)
@@ -240,6 +245,43 @@ function findConclusionIdx(items: TurnItem[]): number {
     }
   }
   return conclusionIdx === -1 ? fallbackIdx : conclusionIdx
+}
+
+/**
+ * Where the collapseAll fold stops: the conclusion's index, so everything the
+ * agent did BEFORE handing the user its conclusion may fold. A turn with no
+ * conclusion handed the user nothing, so there is nothing to keep out of the
+ * fold and every row is a working step: the end is the whole turn. That is a
+ * quiet `nothing_to_do` end, a turn that stopped on an error, and the rows
+ * above a mid-turn steer: the steer is its own display row (the pinned-prompt
+ * band pins it, so it cannot live inside a turn), which leaves the work before
+ * it as a turn of its own with no answer. A conclusion at `0` is the other
+ * boundary, nothing precedes it. Mapping "no conclusion" to `0` instead left
+ * every such turn flat, each tool row expanded.
+ *
+ * `wholeTurn` marks that fold, and it folds only WORKING STEPS
+ * (isWorkingStepRow). A turn with no answer usually ends on the row that says
+ * why: a Stop card, a `notice`, a compaction or stuck-turn notice. Those rows
+ * are not the agent's work, they are the turn's outcome, so they stay in view.
+ * An allowlist, not a list of exemptions, so a row kind added later stays
+ * visible rather than silently folding. A turn that has a conclusion folds
+ * exactly as before.
+ */
+const collapseAllFoldRange = (items: TurnItem[]): { end: number; wholeTurn: boolean } => {
+  const conclusionIdx = findConclusionIdx(items)
+  return conclusionIdx < 0
+    ? { end: items.length, wholeTurn: true }
+    : { end: conclusionIdx, wholeTurn: false }
+}
+
+/** A row the agent produced while working: a tool call, a reasoning burst, or
+ *  its own text (a system notice is the gateway's, not the agent's). */
+const isWorkingStepRow = (it: TurnItem): boolean => {
+  if (it.kind !== 'single') return it.kind === 'group'
+  const { role } = it.msg
+  if (role === 'tool') return true
+  if (role === 'assistant' || role === 'streaming') return !isSystemNoticeRow(it.msg)
+  return isReasoningBurst(it)
 }
 
 /**
