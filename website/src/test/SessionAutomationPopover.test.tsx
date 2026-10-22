@@ -1573,7 +1573,7 @@ describe('SessionAutomationPopover', () => {
        reader now lands on, this sentence is the only cost cue the surface
        carries, so muting it would have weakened that cue in the same change
        that made the surface the default. */
-    expect(notice).toHaveClass('border-warn/30', 'bg-warn-subtle', 'text-warn-fg')
+    expect(notice).toHaveClass('border-warn/30', 'bg-warn-subtle', 'text-warn-text')
     expect(panel).toHaveClass(
       'w-[min(calc(100vw-1rem),26.25rem)]',
       'max-h-[min(80vh,42rem)]',
