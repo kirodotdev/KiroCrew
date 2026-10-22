@@ -2907,6 +2907,43 @@ class TestDisabledAppSkillsAreNotTriggered:
 
         assert loader.get_triggered_skills("find hotspots for me") == ["ai-discover"]
 
+    def test_a_flat_link_into_a_linked_apps_root_is_gated(self, tmp_path, monkeypatch):
+        """The default data home keeps ``$HOME``'s spelling, so ``apps_dir()`` can
+        reach the apps root through a link that the skill's real path has followed."""
+        import kiro_crew.apps.manager as mgr
+        from conftest import make_dir_link
+
+        real_home = tmp_path / "crew"
+        monkeypatch.setenv("KIROCREW_HOME", str(real_home))
+        skill_dir = real_home / "apps" / "deploy_web" / "skills" / "artifact-deploy"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: artifact-deploy\ndescription: d\ntriggers: deploy\n---\n\nb\n"
+        )
+        linked_home = tmp_path / "home"
+        make_dir_link(linked_home, real_home)
+        monkeypatch.setattr(mgr, "apps_dir", lambda: linked_home / "apps")
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        make_dir_link(
+            skills / "artifact-deploy",
+            linked_home / "apps" / "deploy_web" / "skills" / "artifact-deploy",
+        )
+        self._apps(monkeypatch, deploy_web=False)
+        loader = _settled(
+            SkillsLoader(
+                skills_path=skills,
+                install_builtins=False,
+                config=KiroCrewConfig(skills=SkillsConfig(max_triggered=3)),
+            )
+        )
+
+        assert loader.get_triggered_skills("please deploy this") == []
+
+        loader._invalidate_iter_cache()
+        self._apps(monkeypatch, deploy_web=True)
+        assert _settled(loader).get_triggered_skills("please deploy this") == ["artifact-deploy"]
+
     def test_disabled_app_skills_excluded_from_list_skills_and_context(self, tmp_path, monkeypatch):
         """Disabled app skills must not appear in list_skills or get_context index."""
         skills = tmp_path / "skills"

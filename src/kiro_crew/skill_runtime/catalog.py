@@ -1116,7 +1116,8 @@ def _owning_app(
         from kiro_crew.apps.manager import apps_dir
 
         real = Path(os.path.realpath(skill_file))
-        root = apps_dir()
+        # Resolved like ``real``: the default data home keeps $HOME's spelling.
+        root = Path(os.path.realpath(apps_dir()))
         if real.is_relative_to(root):
             # <apps root>/<app>/... — the segment directly under the root.
             return real.relative_to(root).parts[0]
