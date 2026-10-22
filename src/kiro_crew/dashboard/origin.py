@@ -28,6 +28,7 @@ import re
 # shared stdlib module object, patching it through this name still reaches the
 # helpers in ``urls``.
 import socket  # noqa: F401
+import time
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -240,6 +241,84 @@ def mark_audit_claimed(request: web.Request) -> None:
     request[AUDIT_CLAIMED_KEY] = True
 
 
+#: Seconds during which a repeat refusal for the same (reason, origin) pair is
+#: not logged again. A reconnecting dashboard retries ``/api/ws`` every few
+#: seconds, and a hostile page can send refused requests at will; without the
+#: throttle either one fills the size-capped, rotating gateway log.
+_REFUSAL_LOG_INTERVAL_SECS = 60.0
+
+#: Most refusal lines written per interval across ALL origins. The per-origin
+#: throttle alone does not bound the log: the origin is attacker-chosen, so a
+#: peer that varies it on every request would get a line each time and could
+#: rotate every retained ``gateway.log`` file away. Past the budget one
+#: "suppressed" line is written and the rest of the interval stays silent.
+_REFUSAL_LOG_BUDGET = 20
+
+#: Most (reason, origin) pairs remembered by the throttle. The keys come from a
+#: request header, so the map is cleared when it reaches this size instead of
+#: growing without bound.
+_REFUSAL_LOG_MAX_KEYS = 256
+
+#: Longest request path written to the log, in characters.
+_REFUSAL_LOG_PATH_CHARS = 200
+
+_refusal_log_last: dict[tuple[str, str], float] = {}
+_refusal_window = {"start": 0.0, "count": 0}
+
+
+def _log_origin_refusal(request: web.Request, reason: str, origin_base: str) -> None:
+    """Write one throttled WARNING for an origin refusal to the gateway log.
+
+    Every caller already records the refusal in the SEL, but the SEL is a
+    separate file. Without this line a dashboard served from an origin that is
+    not allowlisted (for example a tunnel URL missing from ``dashboard.url``)
+    reconnect-loops with nothing in ``gateway.log`` to say why.
+
+    Only the origin's ``scheme://host[:port]`` is logged, never the raw header:
+    with ``fallback_header="Referer"`` the value is a full URL, and dashboard
+    URLs can carry a token in their query string. The request path is logged
+    without its query string for the same reason.
+
+    Every request-derived value is formatted with ``%r``: ``request.path`` is
+    percent-DECODED, so an encoded ``%0A`` would otherwise start a forged line
+    in a log that operators and agents read.
+    """
+    key = (reason, origin_base)
+    now = time.monotonic()
+    last = _refusal_log_last.get(key)
+    if last is not None and now - last < _REFUSAL_LOG_INTERVAL_SECS:
+        return
+    window = _refusal_window
+    if now - window["start"] >= _REFUSAL_LOG_INTERVAL_SECS:
+        window["start"] = now
+        window["count"] = 0
+    if window["count"] >= _REFUSAL_LOG_BUDGET:
+        if window["count"] == _REFUSAL_LOG_BUDGET:
+            logger.warning(
+                "Origin check refused more than %d requests in %ds; further "
+                "refusals are not logged until the interval ends.",
+                _REFUSAL_LOG_BUDGET,
+                int(_REFUSAL_LOG_INTERVAL_SECS),
+            )
+        window["count"] += 1
+        return
+    window["count"] += 1
+    if len(_refusal_log_last) >= _REFUSAL_LOG_MAX_KEYS:
+        _refusal_log_last.clear()
+    _refusal_log_last[key] = now
+    logger.warning(
+        "Origin check refused %s %r: %s (origin=%r, peer=%r). If this is the "
+        "dashboard's own address, add it to dashboard.url or "
+        "KIROCREW_ALLOWED_LOOPBACK_PORTS. Repeats are suppressed for %ds.",
+        request.method[:16],
+        request.path[:_REFUSAL_LOG_PATH_CHARS],
+        reason,
+        origin_base,
+        request.remote or "unknown",
+        int(_REFUSAL_LOG_INTERVAL_SECS),
+    )
+
+
 def check_origin(
     request: web.Request,
     *,
@@ -252,6 +331,9 @@ def check_origin(
     always trusted — local processes like mcp-core and doctor don't
     send Origin headers but are not cross-origin attacks.  A browser
     on the same machine would always send an Origin header.
+
+    Every ``False`` result is a refusal at all call sites, so each one is
+    also logged here (see :func:`_log_origin_refusal`).
     """
     allowed: set[str] = request.app["allowed_origins"]
     origin = request.headers.get("Origin") or ""
@@ -265,6 +347,8 @@ def check_origin(
         # exist on that transport). Reject others.
         if is_loopback(request.remote or "") or request_is_unix_socket(request):
             return True
+        if require:
+            _log_origin_refusal(request, "no Origin header from a non-loopback peer", "")
         return not require
     origin_base = "/".join(origin.split("/")[:3]) if "://" in origin else ""
     if origin_base in allowed:
@@ -291,6 +375,13 @@ def check_origin(
     # CSRF check (cookies are auto-attached). SSH-tunnel users whose browser
     # sends a different local port must opt that port in via
     # ``KIROCREW_ALLOWED_LOOPBACK_PORTS`` (folded into the allowed set above).
+    if origin_base:
+        _log_origin_refusal(request, "origin not in the allowlist", origin_base[:100])
+    elif origin == "null":
+        # Opaque origin: a sandboxed iframe, a file:// page or a redirect chain.
+        _log_origin_refusal(request, "opaque origin", "null")
+    else:
+        _log_origin_refusal(request, "malformed origin header", "")
     return False
 
 
