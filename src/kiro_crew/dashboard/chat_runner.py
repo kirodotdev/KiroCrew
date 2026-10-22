@@ -128,7 +128,13 @@ from kiro_crew.constants import (
     STEER_NOTICE_BOUND_SECS,
     reflow_and_label_glued_option_marker,
 )
-from kiro_crew.context import embed_startup_query, prepare_store_vectors
+from kiro_crew.context import (
+    discard_memory_prefetch,
+    embed_startup_query,
+    prefetch_session_memory,
+    prepare_store_vectors,
+    reserve_memory_prefetch,
+)
 from kiro_crew.context_blocks import (
     PHASE_PER_TURN,
     PHASE_SESSION_START,
@@ -1152,20 +1158,24 @@ async def _prewarm_startup_query(
     *,
     memory_store: str | None,
     execution_context: Any,
+    prefetch_memory: bool = False,
 ) -> None:
     """Start embedding a turn's first message ahead of its session-start build.
 
     Runs beside whatever the turn does next (``session/new`` on a cold start). The
     build then reads the cached vector, or joins the running embed and waits for it
     up to ``memory.startup_recall_timeout_secs``, ranking by keyword past it.
+
+    With *prefetch_memory* (a cold start on the send path), the build's memory
+    reads start too, after the embed so they join it. The build takes their result
+    only when every input still matches (``store_admission``'s early memory reads).
     """
     builder = state.context_builder
     if not _startup_query_prewarm_applies(builder, slot, text, execution_context):
         return
+    workspace = slot.workspace or None
     task = asyncio.create_task(
-        _embed_startup_query_off_loop(
-            builder, text, workspace=slot.workspace or None, memory_store=memory_store
-        )
+        _embed_startup_query_off_loop(builder, text, workspace=workspace, memory_store=memory_store)
     )
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
@@ -1174,6 +1184,41 @@ async def _prewarm_startup_query(
     # within its own deadline. A pool too busy to start it first leaves the build to
     # embed for itself, as it does without this.
     await asyncio.sleep(0)
+    if not prefetch_memory:
+        return
+    # Reserved on the loop, before the thread exists: a build that comes first
+    # finds it not started and reads for itself rather than waiting on it.
+    reserve_memory_prefetch(workspace, memory_store, text)
+    task = asyncio.create_task(
+        _prefetch_session_memory_off_loop(
+            builder, text, workspace=workspace, memory_store=memory_store
+        )
+    )
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+    await asyncio.sleep(0)
+
+
+async def _prefetch_session_memory_off_loop(
+    builder: Any, text: str, *, workspace: str | None, memory_store: str | None
+) -> None:
+    """Run ``prefetch_session_memory`` on the recall pool. A failure only costs the head start."""
+    from kiro_crew.embeddings import PRIORITY_INTERACTIVE, EmbeddingWork, embedding_work
+
+    # Same deadline as the early embed it joins, so the reads wait for that vector
+    # rather than rank by keyword while the session is still starting.
+    token = embedding_work.set(
+        EmbeddingWork(time.monotonic() + _STARTUP_QUERY_PREWARM_SECS, priority=PRIORITY_INTERACTIVE)
+    )
+    try:
+        await run_in_embed_pool(
+            prefetch_session_memory, builder, text, workspace=workspace, memory_store=memory_store
+        )
+    except Exception:  # noqa: BLE001 - the build reads for itself when this does not
+        discard_memory_prefetch(workspace, memory_store, text)
+        logger.debug("Session memory was not read early", exc_info=True)
+    finally:
+        embedding_work.reset(token)
 
 
 async def _embed_startup_query_off_loop(

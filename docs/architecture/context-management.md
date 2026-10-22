@@ -171,7 +171,9 @@ seconds; a missed embedding is ranked by keyword. A dashboard turn starts the fi
 message's embedding before the build (`embed_startup_query`), beside session startup
 when the turn has to start the session itself. A build that finds that embedding
 cached reads it at once, and one that finds it still running joins it and waits
-`memory.startup_recall_timeout_secs` (one second) instead.
+`memory.startup_recall_timeout_secs` (one second) instead. On that same cold start
+the build's memory reads start early too (`prefetch_session_memory`); the build
+takes them only when none of their inputs moved, and reads for itself otherwise.
 
 - **Admission is by whole block, never by slicing the joined prompt.** Protected
   blocks (rules, preferences, identity, steering, pinned skill bodies) go first and

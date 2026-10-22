@@ -126,3 +126,14 @@ def clear(kind: str) -> None:
     sink = _SINK.get()
     if sink is not None:
         sink.pop(kind, None)
+
+
+def replay(records: dict[str, dict[str, Any]]) -> None:
+    """Record cuts another collection gathered, as if they were made here.
+
+    For reads done ahead of the build that uses them (an early memory read): their
+    records were collected apart and belong to the build that takes the result.
+    """
+    sink = _SINK.get()
+    if sink is not None:
+        sink.update({kind: dict(entry) for kind, entry in records.items()})

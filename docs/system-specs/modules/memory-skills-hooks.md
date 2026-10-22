@@ -1531,7 +1531,24 @@ readers rank by keyword. A dashboard turn starts the inference early through
 starts the session itself. The build then reads the cached vector, or joins the
 running inference and waits `memory.startup_recall_timeout_secs` for it; a build
 that runs its own inference keeps the five-second deadline. Only the query's vector
-is cached, and the store is read when the build runs. The synchronous
+is cached. When the turn starts the session itself, it also starts the build's V1
+memory reads there (`prefetch_session_memory`, same pool): preferences, the
+activity index and the `[Memory activity]` block. The build takes that result
+only if every input still matches: the store and its vector store, the message,
+the caps, the activity switch, today's date, the `lstat` of the preferences,
+projects and history files (taken only behind the local file seam's own root and
+leaf link checks; a refused root, a linked source or another file provider turns
+the prefetch off), and the vector store's validity token (its scoring generations
+and `PRAGMA data_version`). The prefetch keeps its result only if none of these
+moved during the reads, and the build checks them again. A prefetch still running
+started before the build could, so the build joins it rather than reading again.
+It first cuts the prefetch's embedding deadline down to its own, and ends the join
+at that same deadline (never later than `_PROMPT_BUILD_EMBED_TIMEOUT_SECS`), so
+neither waits past what the build's own read would have spent. A result over 512K
+characters is not held, and the table keys and compares the message by its
+SHA-256, never the text. Anything else (none, not started, failed, moved, too
+large, past the bound, or older than 60 s) and the build reads for itself. A
+failed session start drops its prefetch. The synchronous
 `ContextBuilder.build_message` call remains off the event loop in the bounded
 `mc-embed` pool.
 V2 context includes essential preference/project anchors and query-free,
@@ -6465,7 +6482,7 @@ importable from `kiro_crew.context`:
 | `replay.py` | replay and recall projection of transcript rows: row quotas, delivery-identity merge, replay budget, thread-history fallback, turn restores |
 | `inclusion.py` | context-group scope, the folder-steering renderer, the skills loader call session start and re-injection share |
 | `member.py` | the member identity section and the V2 essentials envelope; delivery stays at the `member_turn_context` chokepoint |
-| `store_admission.py` | which store answers each memory and lesson section, the first message's early embed (`embed_startup_query`), the per-message lessons block, the shown-lesson record |
+| `store_admission.py` | which store answers each memory and lesson section, the first message's early embed (`embed_startup_query`), the early memory reads (`prefetch_session_memory`), the per-message lessons block, the shown-lesson record |
 | `turn.py` | follow-up turn additions (post-compaction re-injection, Slack thread context, per-turn rails, guidance) and the user's own turn text |
 | `output_contract.py` | the output contract a session starts with: the critical-rules block per runtime (`_critical_rules_for`) and the `[UI LANGUAGE]` steer (`ui_language_tag` stays on the facade) |
 | `session_start.py` | `ContextBuilder.build_session_context`: the session-start block's order, its section timings (`_mark`, `_emit_context_section_timings`) and the redaction of replayed thread history |

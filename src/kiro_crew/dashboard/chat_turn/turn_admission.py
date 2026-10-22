@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         _prewarm_startup_query,
         capabilities_of,
         crew_log_emit,
+        discard_memory_prefetch,
         durable_row_count,
         effective_session_key,
         expire_slack_options,
@@ -828,7 +829,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         and not _message_rewritten_before_build(slot, message)
     ):
         await _prewarm_startup_query(
-            state, slot, message, memory_store=memory_store, execution_context=execution_context
+            state,
+            slot,
+            message,
+            memory_store=memory_store,
+            execution_context=execution_context,
+            prefetch_memory=True,
         )
     # The crew log this slot was last writing to, read BEFORE allocation
     # publishes the successor's id over it. A slot outlives its ACP session, so
@@ -894,9 +900,14 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             break
         except SessionBusyError:
             if _wait_if_busy or _claim:
+                discard_memory_prefetch(slot.workspace or None, memory_store, message)
                 raise
             _release_dispatch_lock(turn)
             _wait_if_busy = True
+        except BaseException:
+            # A start that failed builds nothing: drop the memory read early for it.
+            discard_memory_prefetch(slot.workspace or None, memory_store, message)
+            raise
     # Registered: the switch handlers' busy scan sees this session from
     # here on, so the lock has done its job and the turn must not hold it.
     _release_dispatch_lock(turn)

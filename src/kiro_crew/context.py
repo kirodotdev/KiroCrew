@@ -236,7 +236,10 @@ from kiro_crew.context_assembly.store_admission import (  # noqa: F401
     _TURN_LESSONS_CHARS,
     _TURN_LESSONS_MAX,
     _ShownLessons,
+    discard_memory_prefetch,
     embed_startup_query,
+    prefetch_session_memory,
+    reserve_memory_prefetch,
 )
 from kiro_crew.context_assembly.turn_message import build_message as _build_message
 from kiro_crew.context_blocks import measure_prompt  # noqa: F401
