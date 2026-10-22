@@ -2307,6 +2307,10 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   Markdown is capped at `REPORT_MAX_CHARS` and a page at the crewmate Dashboard
   page's own ceiling (`REPORT_HTML_MAX_BYTES` = `dashboard_frame.MAX_PAGE_BYTES`,
   in bytes, `report_too_large`), and either is scrubbed like every goal string.
+  A page takes the plain goal-string scrub on save and the ordinary artifact
+  redaction on read, exactly as any other artifact: it draws its charts as inline
+  SVG and embeds no raster image (no `<img>`, no `data:image`), so the scrub costs
+  it nothing.
   Both formats get the same folder, tags, notification and goal-record entry, and
   the artifact carries `goal_report: true` (set only by `goal_reminder.save_report`),
   so the viewer opens it in the crewmate Dashboard page's sandbox (see

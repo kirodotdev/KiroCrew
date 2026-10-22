@@ -13,6 +13,9 @@
 
 from __future__ import annotations
 
+import base64
+import html.parser
+import random
 import re
 from typing import Any
 
@@ -139,6 +142,24 @@ def test_the_html_the_crewmate_writes_is_scrubbed(_floor_monkeypatch) -> None:
     assert TOKEN not in (artifacts_mod.get_default_store().get(body["slug"]).content or "")
 
 
+def test_a_report_page_takes_the_plain_scrub_exactly(_floor_monkeypatch) -> None:
+    """A page gets the same scrub as any other goal string; no payload is exempt.
+
+    A report page embeds no raster image by contract, so a base64 run it carries
+    anyway (here a seeded blob in a data URI) is redacted as the plain scrub would.
+    """
+    from kiro_crew import artifacts as artifacts_mod
+
+    blob = base64.b64encode(random.Random(7).randbytes(300)).decode()
+    page = PAGE + f'<img src="data:image/png;base64,{blob}"><p>{TOKEN}</p>'
+    plain = member_goals.scrub_text(page)
+    assert blob not in plain and TOKEN not in plain
+    state, slot, _pushed = _setup()
+    status, body = _call(state, REPORT, {"kind": "weekly", "title": "W", "html": page}, slot.key)
+    assert status == 200, body
+    assert artifacts_mod.get_default_store().get(body["slug"]).content == plain
+
+
 def test_only_save_report_marks_an_artifact_a_report_and_the_mark_lasts(
     _floor_monkeypatch,
 ) -> None:
@@ -156,6 +177,79 @@ def test_only_save_report_marks_an_artifact_a_report_and_the_mark_lasts(
     assert again.goal_report is True
     assert '"goal_report": true' in encode_meta(again)
     assert store.get(plain.slug).goal_report is False
+
+
+def test_a_published_html_report_is_one_frame_that_runs_no_script_and_follows_no_refresh(
+    _floor_monkeypatch,
+) -> None:
+    """The copy a destination serves is as static as the one the viewer opens."""
+    from kiro_crew import artifacts as artifacts_mod
+    from kiro_crew import publish_sync
+
+    store = artifacts_mod.get_default_store()
+    plain = store.create(name="Plain page", content=PAGE, kind="html")
+    state, slot, _pushed = _setup()
+    status, body = _call(state, REPORT, {"kind": "weekly", "title": "W", "html": PAGE}, slot.key)
+    assert status == 200, body
+    refresh = '<meta http-equiv="refresh" content="0;url=https://example.org/?reading=42">'
+    # An agent may rename the report; the title lands in the uploaded document.
+    store.update(body["slug"], content=PAGE + refresh, name=f"Week {TOKEN}")
+    published, content_type = publish_sync._render_content(store.get(body["slug"]))
+    assert content_type == "text/html"
+    outer = html.parser.HTMLParser()
+    tags: list[tuple[str, dict[str, str | None]]] = []
+    outer.handle_starttag = lambda tag, attrs: tags.append((tag, dict(attrs)))  # type: ignore[method-assign]
+    outer.feed(published)
+    # The outer document holds no page markup: one frame, with an EMPTY sandbox,
+    # which runs no script and follows no refresh.
+    assert [t for t, _ in tags] == ["meta", "title", "style", "iframe"]
+    assert TOKEN not in published
+    frame = tags[-1][1]
+    assert frame["sandbox"] == ""
+    # Inside, the no-fetch policy precedes every page byte; the page is intact.
+    inner = frame["srcdoc"] or ""
+    assert inner.startswith(publish_sync.STATIC_REPORT_PREFIX)
+    assert "default-src 'none'" in publish_sync.STATIC_REPORT_PREFIX
+    assert inner.endswith(refresh)
+    # An ordinary html artifact is published as it is today.
+    ordinary, _ = publish_sync._render_content(store.get(plain.slug))
+    assert ordinary == PAGE
+
+
+def test_a_published_report_s_links_stay_clickable_and_show_their_url_on_hover(
+    _floor_monkeypatch,
+) -> None:
+    """A link in the served copy keeps its href and shows it on hover, as in a session."""
+    from kiro_crew import publish_sync
+
+    links = (
+        '<p><a href="https://example.org/pr/7?tab=files&amp;x=1">PR 7</a>'
+        ' <a href="https://example.org/kept" title="Own title">Kept</a></p>'
+        '<map><area href="https://example.org/m" alt="M"></map>'
+    )
+    published = publish_sync._static_report_document("W", PAGE + links)
+    srcdoc: list[str] = []
+    outer = html.parser.HTMLParser()
+    outer.handle_starttag = lambda tag, attrs: srcdoc.extend(  # type: ignore[method-assign]
+        v or "" for k, v in attrs if tag == "iframe" and k == "srcdoc"
+    )
+    outer.feed(published)
+    found: list[dict[str, str | None]] = []
+    inner = html.parser.HTMLParser()
+    inner.handle_starttag = lambda tag, attrs: found.extend(  # type: ignore[method-assign]
+        [dict(attrs)] if tag in ("a", "area") else []
+    )
+    inner.feed(srcdoc[0])
+    pr, kept, area = found
+    assert pr["href"] == pr["title"] == "https://example.org/pr/7?tab=files&x=1"
+    assert kept == {"href": "https://example.org/kept", "title": "Own title"}
+    assert area["href"] == area["title"] == "https://example.org/m"
+    assert srcdoc[0].endswith(
+        PAGE
+        + links.replace(
+            '">PR 7', '" title="https://example.org/pr/7?tab=files&amp;x=1">PR 7'
+        ).replace('alt="M">', 'alt="M" title="https://example.org/m">')
+    )
 
 
 def test_both_check_in_prompts_share_the_report_look_and_name_both_formats() -> None:
@@ -282,10 +376,17 @@ def test_the_report_look_is_written_as_principles() -> None:
         "page number",
         "print-color-adjust",
         "inline svg",
+        "embed no raster image",
+        "no <img>, no data:image",
         "no scripts",
         "without internal ids",
         "agree with the readings",
         "the user has asked for wins",
+        "each colour one meaning",
+        "pair it with a word",
+        "short explanation where it first appears",
+        "by one name",
+        "one time span",
     ):
         assert phrase in look, phrase
 

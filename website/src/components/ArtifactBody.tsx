@@ -297,9 +297,10 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
         html: artifact.content, themeVars, mode: theme, enableComments: true,
         includeHeightReporter: true,
         offlineScripts: frame.offlineScripts, rewriteBareLinks: frame.rewriteBareLinks,
+        pageScripts: frame.pageScripts,
       })
       : null,
-    [artifact.content, themeVars, theme, frame.offlineScripts, frame.rewriteBareLinks],
+    [artifact.content, themeVars, theme, frame.offlineScripts, frame.rewriteBareLinks, frame.pageScripts],
   )
   // One shared hook rather than this effect in four components: the previous
   // document survives both an in-flight and a failed re-mint, and `failed`

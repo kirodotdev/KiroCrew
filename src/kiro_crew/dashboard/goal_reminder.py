@@ -341,7 +341,8 @@ def dashboard_line(slug: str, rec: dict[str, Any]) -> str:
 #: the one ``save_goal_report``'s description points at. Principles the crewmate
 #: phrases itself; the look is its own, inside them. The viewer opens the page in
 #: the crewmate Dashboard page's sandbox, so it reaches no network and loads no
-#: library, which is why a chart is inline SVG and an image inline data.
+#: library, which is why a chart is inline SVG. A page embeds no raster image, so
+#: it takes the plain credential scrub on save and read and loses nothing to it.
 REPORT_LOOK = (
     "How the report looks: send it as html, one whole self-contained page that "
     "reads like a printed document a team lead hands round as a PDF, top to "
@@ -358,7 +359,9 @@ REPORT_LOOK = (
     "as a chart drawn from the readings, a blocker as a card that says who it "
     "waits on, rather than a wall of bullets. Keep one visual system across the "
     "page, a type scale, a spacing rhythm and a small palette on light paper, so "
-    "it reads well on screen and on paper. For type, build every family from the "
+    "it reads well on screen and on paper. Give each colour one meaning across the "
+    "page and pair it with a word, so the page still reads in grey or for someone "
+    "who cannot tell the colours apart. For type, build every family from the "
     "CSS generic families alone (system-ui, sans-serif; ui-serif, serif; "
     "ui-monospace, monospace) and name no typeface, so each system draws its own "
     "face; when the page has its own :root, define them there as --font-sans, "
@@ -370,9 +373,23 @@ REPORT_LOOK = (
     "script in one style; the generic families already pick each script's system "
     "face. The page is a snapshot: its numbers are "
     "the readings at the time you wrote it, so it needs no live data, no scripts "
-    "and no motion; draw a chart as inline SVG, and give any image as inline data, "
-    "since the page opens with no network. Use plain words, without internal ids "
-    "or file paths, and only real evidence: real states and real counts that agree "
+    "and no motion; draw every chart as inline SVG, and embed no raster image "
+    "(no <img>, no data:image), since the page opens with no network. Links on "
+    "the page stay inert, so name a pull request or a task in plain text. Use plain "
+    "words, without internal ids "
+    "or file paths: the reader knows only the page, so a word like reading "
+    "gets a short explanation where it first appears (one recorded value of a key "
+    "result, with its date), or is left out. Call each key result by one name and "
+    "measure it over one time span everywhere it appears, so a table, a card and a "
+    "chart are plainly the same measure, and a chart's axis ends on the report's "
+    "last day, with the date of the last reading stated. Call the period by the "
+    "one word the report uses (a week is a week, not a sprint). Give each status "
+    "label its own word, one the page uses for nothing "
+    "else, with a short legend where the labels first appear; a colour named in a "
+    "key is the colour drawn. A blocked item names the person or outside event it "
+    "waits on, or reads like Waits on: nothing outside me. Use only real "
+    "evidence: real states and "
+    "real counts that agree "
     "with the readings above, with no invented percentage or made-up time. Your "
     "own style is welcome; a style the user has asked for wins."
 )
@@ -759,7 +776,9 @@ def save_report(
                 f"the html report is {size} bytes, over the "
                 f"{member_goals.REPORT_HTML_MAX_BYTES}-byte limit",
             )
-    # The crewmate wrote the report: scrubbed like every goal string it writes.
+    # The crewmate wrote the report: scrubbed like every goal string it writes,
+    # in either format. A page draws its charts as inline SVG and embeds no raster
+    # image, so the plain scrub costs it nothing.
     title = member_goals.scrub_text(title)
     body = member_goals.scrub_text(body)
     folder_path = REPORTS_FOLDER.format(name=_folder_label(label))

@@ -272,12 +272,12 @@ export function useArtifactDetailPageDocument({
   // constrains native document bodies.
   const contentWidthStyle = usesIframe ? undefined : mdPreviewStyle
   // A downloaded report keeps the CSP it opens with (lib/artifactFrame.ts).
-  const offlineScripts = artifactFrame(artifact).offlineScripts
+  const { offlineScripts, pageScripts } = artifactFrame(artifact)
   const exportSrcdoc = useMemo(
     () => artifact?.content && usesIframe
-      ? buildSrcdoc({ html: artifact.content, themeVars, mode: theme, offlineScripts })
+      ? buildSrcdoc({ html: artifact.content, themeVars, mode: theme, offlineScripts, pageScripts })
       : null,
-    [artifact?.content, themeVars, theme, usesIframe, offlineScripts],
+    [artifact?.content, themeVars, theme, usesIframe, offlineScripts, pageScripts],
   )
 
   return {

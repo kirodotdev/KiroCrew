@@ -773,7 +773,10 @@ def test_the_tab_ignores_a_message_from_any_other_window() -> None:
     # The DECLARATION, not the file's prose. The file explains at length that it
     # withholds same-origin access, so a text search for that token matches the
     # explanation and passes whatever the sandbox actually grants.
-    assert "export const CREW_DASHBOARD_SANDBOX = 'allow-scripts'" in text, (
+    # The grant is defined once, in lib/crewDashboardSandbox.ts, and the tab imports it.
+    grant = (tab.parents[2] / "lib" / "crewDashboardSandbox.ts").read_text(encoding="utf-8")
+    assert "import { CREW_DASHBOARD_SANDBOX } from '../../lib/crewDashboardSandbox'" in text
+    assert "export const CREW_DASHBOARD_SANDBOX = 'allow-scripts'" in grant, (
         "the frame's sandbox is no longer exactly allow-scripts; same-origin access "
         "would give the page the dashboard's own storage and cookies, and a non-opaque "
         "origin would also make the wildcard postMessage target a real choice"

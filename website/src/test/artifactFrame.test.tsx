@@ -34,11 +34,7 @@ vi.mock('../api/client', () => ({
 
 import { ArtifactBodyIframe } from '../components/ArtifactBody'
 import { WidgetThumb } from '../components/library/ArtifactThumbs'
-import {
-  ARTIFACT_FRAME_SANDBOX,
-  REPORT_FRAME_SANDBOX,
-  artifactFrame,
-} from '../lib/artifactFrame'
+import { ARTIFACT_FRAME_SANDBOX, artifactFrame } from '../lib/artifactFrame'
 import { CREW_DASHBOARD_SANDBOX } from '../pages/members/CrewDynamicDashboard'
 
 const TODAY = 'allow-scripts allow-popups allow-popups-to-escape-sandbox'
@@ -65,9 +61,8 @@ function lastSrcdocOptions(): Record<string, unknown> {
 
 describe('artifactFrame', () => {
   it('gives a report the crewmate Dashboard page sandbox', () => {
-    expect(REPORT_FRAME_SANDBOX).toBe(CREW_DASHBOARD_SANDBOX)
     expect(artifactFrame(art(true))).toEqual({
-      sandbox: CREW_DASHBOARD_SANDBOX, offlineScripts: true, rewriteBareLinks: false,
+      sandbox: CREW_DASHBOARD_SANDBOX, offlineScripts: true, rewriteBareLinks: false, pageScripts: false,
     })
   })
 
@@ -75,7 +70,7 @@ describe('artifactFrame', () => {
     expect(ARTIFACT_FRAME_SANDBOX).toBe(TODAY)
     for (const a of [art(), art(false), null, undefined]) {
       expect(artifactFrame(a)).toEqual({
-        sandbox: TODAY, offlineScripts: false, rewriteBareLinks: true,
+        sandbox: TODAY, offlineScripts: false, rewriteBareLinks: true, pageScripts: true,
       })
     }
   })
@@ -95,6 +90,7 @@ describe('the artifact body frame', () => {
     const opts = lastSrcdocOptions()
     expect(opts.offlineScripts).toBe(true)
     expect(opts.rewriteBareLinks).toBe(false)
+    expect(opts.pageScripts).toBe(false)
     // The host's own injected scripts stay on.
     expect(opts.includeHeightReporter).toBe(true)
     expect(opts.enableComments).toBe(true)
@@ -106,6 +102,7 @@ describe('the artifact body frame', () => {
     const opts = lastSrcdocOptions()
     expect(opts.offlineScripts).toBe(false)
     expect(opts.rewriteBareLinks).toBe(true)
+    expect(opts.pageScripts).toBe(true)
   })
 })
 
@@ -119,7 +116,7 @@ describe('the gallery thumbnail frame', () => {
   })
 
   it('keeps an ordinary thumbnail on today\'s frame', async () => {
-    render(<WidgetThumb content="<p>report</p>" slug="week-41" />)
+    render(<WidgetThumb content="<p>report</p>" slug="week-41" goalReport={false} />)
     expect((await frame()).getAttribute('sandbox')).toBe(TODAY)
     expect(lastSrcdocOptions().offlineScripts).toBe(false)
   })

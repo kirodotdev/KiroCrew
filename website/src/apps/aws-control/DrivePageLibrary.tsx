@@ -93,7 +93,7 @@ function ArtifactPreview({ slug, kind }: { slug: string; kind: ArtifactKind }) {
       ) : kind === 'image' ? (
         <ImageThumb a={full} />
       ) : kind === 'widget' || kind === 'html' ? (
-        <WidgetThumb content={content} slug={slug} />
+        <WidgetThumb content={content} slug={slug} goalReport={full.goal_report === true} />
       ) : (
         <ContentThumb content={content} kind={kind} />
       )}

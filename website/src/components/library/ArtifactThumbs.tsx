@@ -32,12 +32,13 @@ const THUMB_HEIGHT_SPACE = 'thumb900'
  * thumbnail: the iframe lays out at a fixed desktop width (BASE_W) so the
  * widget looks normal, then the whole frame is CSS-scaled to fit the column —
  * a minified webpage, not a cramped narrow render. */
-export function WidgetThumb({ content, slug, goalReport = false }: {
+export function WidgetThumb({ content, slug, goalReport }: {
   content: string
   slug: string
   /** The artifact's server-side `goal_report`: a crewmate's report previews in
-   *  the same sandbox it opens in (lib/artifactFrame.ts). */
-  goalReport?: boolean
+   *  the same sandbox it opens in (lib/artifactFrame.ts). Required, so no caller
+   *  falls back to the library frame by leaving it out. */
+  goalReport: boolean
 }) {
   const BASE_W = 900
   // Fixed iframe viewport height (in BASE_W space). The iframe NEVER grows past
@@ -55,9 +56,10 @@ export function WidgetThumb({ content, slug, goalReport = false }: {
       ? buildSrcdoc({
         html: content, themeVars, mode: theme, includeHeightReporter: true,
         offlineScripts: frame.offlineScripts, rewriteBareLinks: frame.rewriteBareLinks,
+        pageScripts: frame.pageScripts,
       })
       : null),
-    [content, themeVars, theme, frame.offlineScripts, frame.rewriteBareLinks],
+    [content, themeVars, theme, frame.offlineScripts, frame.rewriteBareLinks, frame.pageScripts],
   )
   // Reserve the height this content had last time, or the median of thumbnails
   // already measured, before falling back to the viewport ceiling.

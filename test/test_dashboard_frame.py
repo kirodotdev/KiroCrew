@@ -152,7 +152,13 @@ class TestTheFramesSecurityPolicy:
             / "CrewDynamicDashboard.tsx"
         )
         source = component.read_text(encoding="utf-8")
-        assert "export const CREW_DASHBOARD_SANDBOX = 'allow-scripts'" in source
+        # The grant is defined once, in lib/crewDashboardSandbox.ts, and the
+        # component imports exactly that definition.
+        grant = component.parents[2] / "lib" / "crewDashboardSandbox.ts"
+        assert "export const CREW_DASHBOARD_SANDBOX = 'allow-scripts'" in grant.read_text(
+            encoding="utf-8"
+        )
+        assert "import { CREW_DASHBOARD_SANDBOX } from '../../lib/crewDashboardSandbox'" in source
         # The static mount is the empty attribute, which is every restriction
         # applied; a non-empty value here would be a second grant set.
         assert "export const CREW_DASHBOARD_SANDBOX_STATIC = ''" in source
