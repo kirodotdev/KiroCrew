@@ -17,6 +17,7 @@
  */
 
 import type { ChatMessage } from '../types'
+import { rowSendIds } from '../utils/rowSendIds'
 
 /** One sent prompt; `id` is absent when the message carried no usable id. */
 export type PromptHistoryItem = { text: string; id?: string }
@@ -211,10 +212,8 @@ export function promptHistoryWithAttempts(
   const out = promptHistoryFromMessages(messages)
   if (!attempts.length) return out
   const onRows = new Set<string>()
-  for (const m of messages) {
-    const sendId = m.meta?.sendId
-    if (typeof sendId === 'string' && sendId) onRows.add(sendId)
-  }
+  // A merged queued row stands for every send in its `sendIds`.
+  for (const m of messages) for (const id of rowSendIds(m.meta)) onRows.add(id)
   // Only sends AFTER the newest one still on a row can be lost ones. An older
   // record without a row was either followed by a send the user made since
   // (a lost prompt recalled and resent, or simply moved past), or its row is

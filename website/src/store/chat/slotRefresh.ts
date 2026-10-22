@@ -18,6 +18,7 @@ import {
 } from './runState'
 import { retainServerTotal, seedContextUsage, setPagingCursor, writeSlotPage } from './slotCache'
 import { hydrateQueuedBubbles } from './queue'
+import { persistedSendIds, pruneDeliveredAttempts } from './sendAttempts'
 import { walkWindowBackTo } from './windowWalk'
 
 const refreshFields = [
@@ -387,6 +388,8 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       const endedTurnHistory = reportedRunning && !running
       if (endedTurnHistory) return
       if (!reportedRunning) recordEndedTurn(state, key, action.payload)
+      // A persisted row carrying a send's id proves that send was delivered.
+      pruneDeliveredAttempts(state, key, persistedSendIds(messages))
       retainServerTotal(state, key, action.payload.total, running, undefined, action.payload.boundedRead)
       // Merge permission messages: prefer state perms (have frontend resolved flags)
       // but include API perms for any we don't have locally (e.g. arrived while disconnected)

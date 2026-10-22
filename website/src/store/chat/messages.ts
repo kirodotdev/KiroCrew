@@ -13,6 +13,7 @@ import { RECONCILE_WINDOW, ensureMsgId, finalizeTrailingStreaming, mintMsgId, ta
 import { isOutOfBandRow, isTurnBoundaryUser, mergePreservedThinking } from './thinking'
 import { retainServerTotal, setPagingCursor, writeSlotPage } from './slotCache'
 import { evictMcpApps } from './mcpApps'
+import { pruneDeliveredAttempts } from './sendAttempts'
 
 export const messageReducers = {
   appendMessage(state: ChatState, action: PayloadAction<ChatMessage>) {
@@ -191,6 +192,9 @@ export const messageReducers = {
       return false
     }
     if (!confirm(state.messages)) confirm(state.slotMessages[safeKey(slot)])
+    // The receipt proves delivery, so this send (and every older one) is no
+    // longer a lost prompt even if another tab later rewinds its row away.
+    pruneDeliveredAttempts(state, slot, [sendId])
   },
   /** Record that a send's own receipt never came: the transport deadline
    *  fired (`response-late`) and no correlated echo has confirmed the row, so
@@ -372,13 +376,18 @@ export const messageReducers = {
     const removed = state.messages.slice(action.payload)
     state.messages = state.messages.slice(0, action.payload)
     // An edit-and-resend or regenerate removed these prompts on purpose; ↑
-    // must not offer them back as lost sends.
+    // must not offer them back as lost sends. Every record older than the
+    // newest removed one goes too: the user has moved past those sends, so
+    // none of them can be a lost newest prompt (and a rollback that restores
+    // the removed rows must not bring an old lost prompt back ahead of them).
     const map = state.sendAttempts
     const key = state.activeSlot ? safeKey(state.activeSlot) : null
     const list = map && key ? map[key] : undefined
     if (map && key && list?.length) {
       const gone = new Set(removed.map(m => m.meta?.sendId).filter((id): id is string => typeof id === 'string' && !!id))
-      if (gone.size) map[key] = list.filter(a => !gone.has(a.sendId))
+      let cut = -1
+      for (let i = list.length - 1; i >= 0; i--) if (gone.has(list[i].sendId)) { cut = i; break }
+      if (cut >= 0) map[key] = list.slice(cut + 1)
     }
   },
   replaceMessages(state: ChatState, action: PayloadAction<ChatMessage[]>) { state.messages = action.payload },
