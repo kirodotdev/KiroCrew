@@ -1611,4 +1611,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.events_inbound import _MAX_SEEN  # noqa: F401
     from kiro_crew.slack.events_inbound import _USER_MENTION_RE  # noqa: F401
     from kiro_crew.slack.events_inbound import _addressed_to_someone_else  # noqa: F401
+    from kiro_crew.slack.code_channels.commands import (  # noqa: F401
+        handle_slash as code_channel_slash,
+    )
 # isort: on

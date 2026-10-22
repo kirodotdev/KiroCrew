@@ -25,13 +25,14 @@ code channels to the feature's process latch.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
 import os
 import subprocess
 from types import SimpleNamespace
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security import is_sensitive_path
@@ -109,6 +110,8 @@ _REFRESH_FIELDS = (
 )
 #: What a rebind that re-adopts the same worktree keeps from the stored record.
 _ADOPTED_FIELDS = ("folder_id", "pointed_session", "view_id", "diff_hash")
+#: Longest the archive's cleanup waits for a bind still cutting the worktree.
+_QUIET_WAIT_SECS = 120.0
 
 #: Points a dashboard session at a directory; returns whether it was applied.
 ProjectSetter = Callable[[str, str], Awaitable[bool]]
@@ -700,6 +703,46 @@ class WorkspaceService:
 
     # ── turn end ────────────────────────────────────────────────────────────
 
+    @property
+    def store(self) -> WorkspaceStore:
+        """The service's record store (one lock for every writer of it)."""
+        return self._store
+
+    async def republish_bar(self, binding: Any) -> str | None:
+        """Publish the context bar now (the agent changed its own items).
+
+        Returns ``""`` when the bar is current, a Slack error code (or
+        ``publish_failed``) when it is not, and ``None`` when there is no
+        workspace record to publish from (the caller publishes the agent's items).
+        """
+        team, channel = str(binding.team_id or ""), str(binding.channel_id or "")
+        if not channel or not _gate_open():
+            return None
+        async with self._lock(f"{team}:{channel}"):
+            record = await asyncio.to_thread(self._store.get, team, channel)
+            if record is None:
+                return None
+            published = await self._publish_bar(record)
+            await asyncio.to_thread(self._store.put, record)
+            return "" if published else (record.slack_off or "publish_failed")
+
+    @contextlib.asynccontextmanager
+    async def channel_quiet(self, team_id: str, channel_id: str) -> AsyncIterator[None]:
+        """Hold the channel's lock with no bind in flight (the archive's cleanup).
+
+        A bind still cutting the worktree is waited for first (bounded), so the
+        cleanup sees what it made; a refresh in flight finishes before the lock
+        is granted.
+        """
+        key = f"{team_id}:{channel_id}"
+        for _ in range(2):
+            bind = self._binds.get(key)
+            if bind is None:
+                break
+            await asyncio.wait({bind}, timeout=_QUIET_WAIT_SECS)
+        async with self._lock(key):
+            yield
+
     async def on_turn_start(self, binding: Any, _event: Any = None) -> None:
         """Turn-start hook: make sure the workspace exists before the model runs."""
         await self.ensure(binding)
@@ -831,19 +874,25 @@ class WorkspaceService:
             pr=pr,
         )
 
-    async def _publish_bar(self, record: WorkspaceRecord) -> None:
+    async def _publish_bar(self, record: WorkspaceRecord) -> bool:
+        """Publish the bar when it changed; False when a needed write failed."""
         if record.slack_off:
-            return
+            return False
         try:
             state = await self._bar_state(record)
         except git_ops.SandboxUnavailable:
             state = BarState(folder=record.project_dir)
-        items = build_items(state)
+        from kiro_crew.slack.code_channels.agent_bar import merge_for_channel
+
+        # The agent's own items (code_channel_set_context_bar) ride after these.
+        items = await asyncio.to_thread(merge_for_channel, build_items(state), record.channel_id)
         digest = _digest(items)
         if digest == record.bar_hash or (not items and not record.bar_hash):
-            return
+            return True
         if await self._call("set_context_bar", record, items) is not None:
             record.bar_hash = digest
+            return True
+        return False
 
     async def _publish_diff(self, record: WorkspaceRecord) -> None:
         if record.slack_off or not record.worktree or not record.base_sha:

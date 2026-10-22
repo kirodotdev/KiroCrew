@@ -187,6 +187,18 @@ async def dispatch(payload: dict) -> None:
     if action_id == SESSION_LINK_ACTION:
         return
 
+    # ── Slack Code channel: the wrap-up's Archive button ──
+    # Answered there while slack.code_channels is on (origin-inherited
+    # authorization, SEL-audited); otherwise it falls through as before.
+    from kiro_crew.slack.code_channels.wrapup import ARCHIVE_ACTION_ID, handle_archive_click
+
+    if action_id == ARCHIVE_ACTION_ID:
+        if not await channel_inbound_permitted("slack"):
+            logger.info("slack code channel archive dropped: denied by channels governance policy")
+            return
+        if await handle_archive_click(_orch, payload):
+            return
+
     # ── OPTIONS Send / legacy choice buttons ──
     # Both RESOLVE an [OPTIONS:] choice: they edit/post the selection to the
     # channel AND re-dispatch it as a fresh turn. So a ``channels`` policy that

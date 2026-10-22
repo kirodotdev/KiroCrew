@@ -40,6 +40,7 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.slack.allowlist import prompt_track_channel, send_dashboard_link
 from kiro_crew.slack.blocks import channels_modal, dashboard_link_block, voice_config_modal
+from kiro_crew.slack.code_channels.commands import handle_slash as code_channel_slash
 from kiro_crew.slack.events_queue import _spawn_tracked
 from kiro_crew.slack.handler import describe_grant_lifetime, is_allowed_user, is_owner, slack_cfg
 from kiro_crew.slack.sessions_view import (
@@ -736,6 +737,11 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
             logger.debug("slash response_url failed", exc_info=True)
 
     slash_command = f"/{orch.slack_command}"
+    # Slack Code channel commands (/summarize, /wrap-up, /create-pr): answered
+    # there while slack.code_channels is on and the install can run it; a
+    # pass-through (False) otherwise, so the rest of this function is unchanged.
+    if cmd != slash_command and await code_channel_slash(orch, payload, _respond):
+        return
     if cmd != slash_command:
         if _MANIFEST_COMMAND_RE.fullmatch(cmd):
             # Slack delivers only commands this app registered, so the app was

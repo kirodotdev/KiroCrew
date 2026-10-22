@@ -712,7 +712,15 @@ async def _wait_for_creation(event: dict[str, Any], info: ChannelInfo | None) ->
 async def _dispatch_directed(
     orch: Any, result: InboundResult, event: dict[str, Any], clean_text: str, sender_id: str
 ) -> bool:
-    """Run a DIRECTED message in the channel's session; always handled here.
+    """Run a DIRECTED message in the channel's session; always handled here."""
+    await deliver_directed(orch, result, event, clean_text, sender_id)
+    return True
+
+
+async def deliver_directed(
+    orch: Any, result: InboundResult, event: dict[str, Any], clean_text: str, sender_id: str
+) -> bool:
+    """Deliver a DIRECTED message to the channel's session; True when it reached it.
 
     A message the gate admitted is never handed back to the normal path, which
     would answer it in a thread session the channel does not belong to; when it
@@ -721,7 +729,7 @@ async def _dispatch_directed(
     channel = str(event.get("channel") or "")
     if _dashboard_state() is None:
         await _post(orch, channel, UNROUTED_TEXT, None)
-        return True
+        return False
     if store().get_binding(channel) is None:
         await _wait_for_creation(event, result.info)
     try:
@@ -758,13 +766,14 @@ async def _dispatch_directed(
     except BindingUnavailable as exc:
         logger.info("code channel %s: no session to route to (%s)", channel, exc)
         await _post(orch, channel, UNROUTED_TEXT, None)
-        return True
+        return False
     except Exception:
         logger.exception("code channel %s: binding a session failed", channel)
         await _post(orch, channel, UNROUTED_TEXT, None)
-        return True
+        return False
     if not await _route_to_slot(orch, binding, clean_text, sender_id, sender=slack_sender(event)):
         await _post(orch, channel, UNSUPPORTED_COMMAND_TEXT, None)
+        return False
     return True
 
 

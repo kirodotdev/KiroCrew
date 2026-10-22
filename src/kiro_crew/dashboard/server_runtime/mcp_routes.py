@@ -505,6 +505,13 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/session-directive", handlers.api_session_directive)
     app.router.add_get("/api/session-tool-policy", handlers.api_session_tool_policy)
     app.router.add_post("/api/slack-profile", handlers.api_slack_profile)
+    # Slack code channels: the gateway leg of the code_channel_* MCP tools. STRICT
+    # (``_STRICT_INTERNAL_API_PATHS``); the handler refuses unless the transport
+    # attests the caller's session, and acts only on that session's own channel.
+    app.router.add_post(
+        "/api/slack/code-channel/tool",
+        _deferred("slack_code_channel_tools", "api_code_channel_tool"),
+    )
     app.router.add_get("/api/notifications", handlers.api_notifications)
     app.router.add_post("/api/notifications/push", handlers.api_push_notification)
     app.router.add_post("/api/notifications/clear", handlers.api_notifications_clear)

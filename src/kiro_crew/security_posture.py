@@ -945,6 +945,13 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "channel whose audience is usually wider than the dashboard's.",
     ),
     (
+        "Slack code-channel posts",
+        "slack/code_channels/wrapup.py",
+        "The bound agent's wrap-up summary, views, plan canvas and context-bar labels "
+        "posted to its code channel through the agents.conversations API rather than "
+        "slack/handler.py; one shared redact( pass, plus channel-wide pings defanged.",
+    ),
+    (
         "Slack cron / notification posts",
         "slack/gateway_runtime/subagent_injection.py",
         "Job names, cron results, and error strings before they reach a channel.",
@@ -2711,6 +2718,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "slack/handler_runtime/stream.py",
         "slack/handler_runtime/turn.py",
         "slack/handler_runtime/turn_context.py",
+        # The code-channel agent tools: every view, canvas, title and context-bar
+        # label they post goes through the redactor of slack/code_channels/wrapup.py,
+        # the registered "Slack code-channel posts" sink, so they add no egress path
+        # of their own.
+        "slack/code_channels/tools.py",
         # The owners composed into slack/gateway.py, in the same class as that
         # facade: they redact the install-repair, update and boot logs, the
         # AutoNudge notices, the nudge and heartbeat turns' posted replies, the
