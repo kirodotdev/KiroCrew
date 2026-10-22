@@ -140,6 +140,15 @@ class _WorkflowSessionWorker:
 
     async def start(self) -> None:
         """Cold-start THIS worker's session once (the only cold start it pays)."""
+        # The pool warms workers ahead of any step, so the cold start registers
+        # with the branch switch's busy check on its own, as a step does.
+        from kiro_crew.repo_checkout_guard import tracked_work
+
+        async with tracked_work(waiter=f"workflow worker {self._key}") as work:
+            await self._start_tracked()
+            await work.place(self._provider, self._cwd)
+
+    async def _start_tracked(self) -> None:
         if self._memory_scope is not None:
             await self._memory_scope.prepare(self._context_builder, self._key)
         provider, self._is_new, self._resumed = await self._sessions.get_or_create(
@@ -153,6 +162,21 @@ class _WorkflowSessionWorker:
         self._provider = provider
 
     async def send_message(self, prompt: str, timeout: float = 1800.0) -> str:
+        # A workflow step's session runs outside chat slots and the sub-agent
+        # manager, so the step registers with the branch switch's busy check
+        # itself: unplaced until its session exists, then on the folder that
+        # session reports (see repo_checkout_guard.tracked_work).
+        from kiro_crew.repo_checkout_guard import tracked_work
+
+        async with tracked_work(waiter=f"workflow worker {self._key}") as work:
+            if self._provider is None:
+                await self.start()
+            # The turn itself is counted on its prompt (repo_checkout_guard), so
+            # a failed or cancelled turn leaves the worker's session as it is.
+            await work.place(self._provider, self._cwd)
+            return await self._send_placed(prompt, timeout)
+
+    async def _send_placed(self, prompt: str, timeout: float) -> str:
         if self._provider is None:
             await self.start()
         # Publish this turn's session identity so managed MCP tools resolve
@@ -191,7 +215,20 @@ class _WorkflowSessionWorker:
         claude ACP both do), which skips the expensive spawn+initialize. If it is
         unavailable or fails, fall back to a hard ``SessionManager.reset`` so a
         reused worker can NEVER carry prior-task context into the next task
-        (correctness over speed on the fallback path)."""
+        (correctness over speed on the fallback path).
+
+        Registered with the branch switch's busy check for the whole reset, as
+        ``start`` and ``send_message`` are: even the cheap path opens a new
+        conversation, which reads the project's agent specs.
+        """
+        from kiro_crew.repo_checkout_guard import tracked_work
+
+        async with tracked_work(waiter=f"workflow worker {self._key}") as work:
+            await self._reset_tracked()
+            if self._provider is not None:
+                await work.place(self._provider, self._cwd)
+
+    async def _reset_tracked(self) -> None:
         if self._memory_scope is not None:
             await self._memory_scope.prepare(self._context_builder, self._key)
         # Lifecycle only; EssentialDelivery owns successful delivery evidence.
@@ -399,6 +436,14 @@ def build_pooled_agent_fn(
     _unpooled = itertools.count()
 
     async def _run_unpooled(prompt: str, opts: dict) -> Any:
+        # Registered with the branch switch's busy check for the whole step,
+        # as the pooled worker's turn is (see _WorkflowSessionWorker.send_message).
+        from kiro_crew.repo_checkout_guard import tracked_work
+
+        async with tracked_work(waiter=f"workflow {run_id}") as work:
+            return await _run_unpooled_tracked(prompt, opts, work)
+
+    async def _run_unpooled_tracked(prompt: str, opts: dict, work: Any) -> Any:
         named = opts.get("session")
         key = named if named is not None else f"wf-unpooled:{run_id}:{next(_unpooled)}"
         if memory_scope is not None:
@@ -414,6 +459,9 @@ def build_pooled_agent_fn(
             **step_effort_kwargs(opts),
         )
         try:
+            # As the pooled worker's turn: placed before any of its work, and
+            # counted on its prompt from there on.
+            await work.place(provider, opts.get("cwd") or cwd)
             # Same identity publication as the pooled worker (see
             # _WorkflowSessionWorker.send_message): a named ``session=`` chain
             # and the identity-cap overflow session both run on their own

@@ -12,7 +12,7 @@ Instance fields written: ``_answer_tasks``, ``_last_activity``, ``_load_replay_f
 
 Instance fields read: ``_acp_backend``, ``_kas_host_auth``, ``_launch_cwd_roots``,
 ``_map_launch_cwd_paths``, ``_max_answer_tasks``,
-``_mcp_secret_server``, ``_native_skill_projection``, ``_process``,
+``_mcp_secret_server``, ``_native_skill_projection``, ``_process``, ``_process_instance``,
 ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``,
 ``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
 ``_turn_active_sessions``, ``recording_allowed``.
@@ -26,6 +26,7 @@ import re
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import repo_checkout_guard
 from kiro_crew.acp import kas_secret_storage
 from kiro_crew.acp._frame_record import record_frame
 from kiro_crew.acp.harness import NotificationAliases
@@ -327,6 +328,19 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 self._map_launch_cwd_paths(data)
             msg = JsonRpcMessage.from_dict(data)
 
+            # A response whose result is JSON null is still the backend's answer:
+            # it falls outside the routing test below (which reads the parsed
+            # values, and None is "absent" there), so end its prompt here, as
+            # AcpClient's transport does by key presence. Routing is unchanged.
+            if (
+                msg.id is not None
+                and msg.method is None
+                and msg.result is None
+                and msg.error is None
+                and ("result" in data or "error" in data)
+            ):
+                repo_checkout_guard.prompt_answered(self._process_instance, msg.id, None)
+
             # Route responses
             if msg.id is not None and (msg.result is not None or msg.error is not None):
                 # JSON-RPC allows string ids, and this runtime only ever
@@ -355,6 +369,12 @@ async def _reader_loop(self: AcpRuntime) -> None:
                     # unknown-session line a flood.
                     logger.debug("Response with non-numeric id %r dropped", msg.id)
                     continue
+
+                # The backend has ended the turn of a prompt it answers,
+                # whether or not anyone still waits on it. Matched on the id
+                # exactly as the wire carried it, not the coerced one.
+                if msg.method is None:
+                    repo_checkout_guard.prompt_answered(self._process_instance, msg.id, msg.result)
 
                 # Check awaited requests first (init, session/new, set_mode)
                 future = self._pending_requests.pop(req_id, None)

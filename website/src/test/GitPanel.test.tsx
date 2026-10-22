@@ -23,12 +23,17 @@ vi.mock('../api/client', () => ({ api: H.api }))
 import GitPanel from '../components/GitPanel'
 import { namedCeiling } from './namedCeiling'
 
+// The header trigger sits behind LazyBranchSwitcher's import() boundary, which a cold,
+// coverage-instrumented run can take well past the 1s default to resolve.
+const LAZY_SWITCHER_TIMEOUT = { timeout: 5000 }
+
 const PROJECT = '/workspace/project'
 
 /** One open section, as the Git tab's list renders a repository the user is
  *  looking at. `defaultOpen` so the body (notices, changes, commits) is on
- *  screen without a toggle; every GitPanel is a list section now. */
-function mount(defaultOpen = true) {
+ *  screen without a toggle; every GitPanel is a list section now. `props`
+ *  makes it the chat's project section (`branchSwitch`) and sets `busy`. */
+function mount(defaultOpen = true, props: { busy?: boolean; branchSwitch?: boolean } = {}) {
   // GitPanel's reads set `retry: 1` themselves, which outranks the `retry` here,
   // so a rejected route is asked twice before it surfaces. `retryDelay: 0` (they
   // set none) makes that second ask immediate instead of React Query's real
@@ -36,7 +41,11 @@ function mount(defaultOpen = true) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <GitPanel projectDir={PROJECT} section={{ label: PROJECT, defaultOpen }} />
+      <GitPanel
+        projectDir={PROJECT}
+        section={{ label: PROJECT, defaultOpen, branchSwitch: props.branchSwitch }}
+        busy={props.busy}
+      />
     </QueryClientProvider>,
   )
 }
@@ -230,6 +239,53 @@ describe('GitPanel repository state', () => {
     expect(clean.className).not.toMatch(/\b(text-ok|bg-ok\/15)\b/)
     expect(screen.getByText('No changes or commits to display.')).toBeInTheDocument()
     expect(screen.queryByText('Not a Git repository')).toBeNull()
+  })
+
+  it('keeps the header branch copyable, not switchable, while the chat response runs', async () => {
+    mount(true, { busy: true, branchSwitch: true })
+
+    // Waits for the status query, then React.lazy -> import('./BranchSwitcher') -> the trigger.
+    const trigger = await screen.findByTestId('branch-switcher-trigger', {}, LAZY_SWITCHER_TIMEOUT)
+    expect(trigger).toBeEnabled()
+    expect(trigger).toHaveAttribute('data-mode', 'copy')
+    expect(trigger).toHaveAccessibleDescription('Copy branch name. To switch branch, first stop the response with ■ in the message box.')
+    expect(trigger).not.toHaveAttribute('aria-haspopup')
+  })
+
+  it('leaves the header branch switcher on when the chat is idle', async () => {
+    mount(true, { branchSwitch: true })
+
+    // Waits for the status query, then React.lazy -> import('./BranchSwitcher') -> the trigger.
+    const trigger = await screen.findByTestId('branch-switcher-trigger', {}, LAZY_SWITCHER_TIMEOUT)
+    expect(trigger).toBeEnabled()
+    expect(trigger).toHaveAttribute('data-mode', 'switch')
+    expect(trigger).toHaveAttribute('aria-haspopup', 'listbox')
+  })
+
+  it('keeps the switcher out of the toggle, which still covers and describes the status line', async () => {
+    mount(false, { branchSwitch: true })
+
+    const trigger = await screen.findByTestId('branch-switcher-trigger', {}, LAZY_SWITCHER_TIMEOUT)
+    const toggle = screen.getByTestId('git-repo-toggle')
+    // A button cannot nest in a button: the switcher is the toggle's sibling.
+    expect(toggle).not.toContainElement(trigger)
+    expect(within(toggle).queryByRole('button')).toBeNull()
+    // The toggle's hit area stretches over the status line (jsdom lays nothing
+    // out, so the classes are the pin), and the line still describes it.
+    expect(toggle.className).toMatch(/\bafter:absolute\b/)
+    expect(toggle.className).toMatch(/\bafter:inset-0\b/)
+    expect(toggle.parentElement?.className).toMatch(/\brelative\b/)
+    expect(toggle).toHaveAccessibleDescription(/clean/)
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('shows a plain branch label, no switcher, on a section that is not the project', async () => {
+    mount()
+
+    await screen.findByText('main')
+    expect(screen.queryByTestId('branch-switcher-trigger')).toBeNull()
+    expect(within(screen.getByTestId('git-repo-toggle')).getByText('main')).toBeInTheDocument()
   })
 
   it('keeps the dirty-repository label, count, and changed-file row', async () => {

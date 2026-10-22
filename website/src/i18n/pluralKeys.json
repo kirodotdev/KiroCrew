@@ -350,5 +350,7 @@
   "milestones.streak_days",
   "milestones.notice_count",
   "milestones.try_today_entry",
-  "milestones.streak_short"
+  "milestones.streak_short",
+  "components.branchSwitcher.ahead_count",
+  "components.branchSwitcher.behind_count"
 ]
