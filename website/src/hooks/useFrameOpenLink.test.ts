@@ -26,7 +26,7 @@ describe('useFrameOpenLink', () => {
     renderHook(() => useFrameOpenLink([{ current: frame }], open, () => true))
     post({ type: OPEN_MESSAGE_TYPE, url: PR }, frame.contentWindow)
     expect(open).toHaveBeenCalledTimes(1)
-    expect(open).toHaveBeenCalledWith(PR)
+    expect(open).toHaveBeenCalledWith(PR, frame)
   })
 
   it('drops a URL on another host', () => {

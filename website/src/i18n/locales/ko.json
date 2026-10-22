@@ -10016,10 +10016,6 @@
     }
   },
   "hooks": {
-    "frameLinkBridge": {
-      "open": "링크 열기",
-      "title": "이 링크를 여시겠습니까?"
-    },
     "mic": {
       "could_not_start_the_microphone": "마이크를 시작할 수 없습니다.",
       "microphone_is_unavailable_another_app_may_be_usi": "마이크를 사용할 수 없습니다 — 다른 앱이 사용 중일 수 있습니다.",
@@ -10176,6 +10172,9 @@
       "approval_wait_expired": "승인 대기 시간이 만료되어 요청이 거부되었습니다.",
       "approval_rejected": "승인이 거절되어 요청이 거부되었습니다.",
       "unknown": "알 수 없음"
+    },
+    "frameLinkBridge": {
+      "openHost": "{{host}} 열기"
     }
   },
   "lib": {

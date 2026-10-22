@@ -6,7 +6,7 @@ import { useEffect, useRef, type RefObject } from 'react'
  * The crew frames are `sandbox="allow-scripts"` with no `allow-popups`, so a
  * `target="_blank"` link inside them is a dead click -- deliberately: a page an
  * agent wrote must not open windows. This is the one narrow way out for a crew
- * page (artifact and widget frames use the wider, confirmed
+ * page (artifact and widget frames use the wider
  * `useFrameLinkBridge` in `useFrameLinkBridge.ts`, on the same message). The page
  * posts `{type: 'kirocrew-dashboard:open', url}` and the host opens the URL only
  * when BOTH hold:
@@ -51,12 +51,15 @@ export function openExternal(url: string): void {
 
 /**
  * Honour open messages from the given frames. `open` and `gesture` are injectable
- * for tests only.
+ * for tests only. `accept` is the URL rule: the crew pages' pull-request-only
+ * `openUrlOf` by default, and `webUrlOf` for the agent-page link bridge
+ * (`useFrameLinkBridge`). `open` receives the asking frame as well.
  */
 export function useFrameOpenLink(
   frames: ReadonlyArray<RefObject<HTMLIFrameElement | null>>,
-  open: (url: string) => void = openExternal,
+  open: (url: string, frame?: HTMLIFrameElement) => void = openExternal,
   gesture: (frame: HTMLIFrameElement) => boolean = hasGesture,
+  accept: (data: unknown) => string | null = openUrlOf,
 ): void {
   const framesRef = useRef(frames)
   framesRef.current = frames
@@ -64,13 +67,15 @@ export function useFrameOpenLink(
   openRef.current = open
   const gestureRef = useRef(gesture)
   gestureRef.current = gesture
+  const acceptRef = useRef(accept)
+  acceptRef.current = accept
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (!event.source) return
       const mine = framesRef.current.find((f) => f.current?.contentWindow === event.source)?.current
       if (!mine) return
-      const url = openUrlOf(event.data)
-      if (url && gestureRef.current(mine)) openRef.current(url)
+      const url = acceptRef.current(event.data)
+      if (url && gestureRef.current(mine)) openRef.current(url, mine)
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)

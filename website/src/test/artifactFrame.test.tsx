@@ -18,7 +18,9 @@ vi.mock('../hooks/useCommentBridge', () => ({
 vi.mock('../hooks/useNearViewport', () => ({ useNearViewport: () => true }))
 
 const { buildSrcdocSpy } = vi.hoisted(() => ({ buildSrcdocSpy: vi.fn() }))
-vi.mock('../lib/widgetSrcdoc', () => ({
+vi.mock('../lib/widgetSrcdoc', async (importOriginal) => ({
+  // The real constants (the sandbox grants); only rendering is stubbed.
+  ...(await importOriginal<typeof import('../lib/widgetSrcdoc')>()),
   THEME_VAR_NAMES: [] as string[],
   readThemeVars: () => ({}) as Record<string, string>,
   buildSrcdoc: (opts: { html: string }) => {

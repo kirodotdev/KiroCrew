@@ -355,9 +355,9 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
   useEffect(() => {
     if (scrollToCommentId?.id) scrollToAnchor(scrollToCommentId.id)
   }, [scrollToCommentId, scrollToAnchor])
-  // Links in the page open through the host, after a click in this frame and a
-  // confirm that shows the URL (the frame itself grants no popups).
-  const linkConfirm = useFrameLinkBridge([iframeRef])
+  // Links in the page open through the host after a real click in this frame
+  // (the frame itself grants no popups), or through the button it returns.
+  const linkChip = useFrameLinkBridge([iframeRef])
   return (
     // The side panel's heightStyle still wins outright — that surface fits a
     // fixed pane and scrolls inside it. On the full page the wrapper takes no
@@ -507,13 +507,13 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
             }}
             title={i18nT('components.artifactBody.artifact', { slug })}
           />
+          {linkChip}
         </>
       ) : (
         !failed && (
           <div className="p-6 text-muted">{i18nT('components.artifactBody.rendering')}</div>
         )
       )}
-      {linkConfirm}
     </div>
   )
 })

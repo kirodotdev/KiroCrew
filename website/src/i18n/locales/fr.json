@@ -10304,10 +10304,6 @@
     }
   },
   "hooks": {
-    "frameLinkBridge": {
-      "open": "Ouvrir le lien",
-      "title": "Ouvrir ce lien ?"
-    },
     "mic": {
       "could_not_start_the_microphone": "Impossible de démarrer le microphone.",
       "microphone_is_unavailable_another_app_may_be_usi": "Microphone indisponible — une autre application l’utilise peut-être.",
@@ -10466,6 +10462,9 @@
       "approval_wait_expired": "L’attente d’approbation a expiré, la demande a donc été refusée.",
       "approval_rejected": "L’approbation a été rejetée, la demande a donc été refusée.",
       "unknown": "Inconnu"
+    },
+    "frameLinkBridge": {
+      "openHost": "Ouvrir {{host}}"
     }
   },
   "lib": {

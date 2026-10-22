@@ -6035,10 +6035,6 @@
     }
   },
   "hooks": {
-    "frameLinkBridge": {
-      "open": "Open link",
-      "title": "Open this link?"
-    },
     "usePanelTabs": {
       "git": "Git"
     },
@@ -6055,6 +6051,9 @@
       "no_messages_yet": "No messages yet",
       "open_chat": "Open chat",
       "waiting_on_approval": "Waiting on approval:"
+    },
+    "frameLinkBridge": {
+      "openHost": "Open {{host}}"
     }
   },
   "pages": {

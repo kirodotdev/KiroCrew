@@ -10016,10 +10016,6 @@
     }
   },
   "hooks": {
-    "frameLinkBridge": {
-      "open": "打开链接",
-      "title": "打开此链接？"
-    },
     "mic": {
       "could_not_start_the_microphone": "无法启动麦克风。",
       "microphone_is_unavailable_another_app_may_be_usi": "麦克风不可用 — 可能有其他应用正在使用。",
@@ -10176,6 +10172,9 @@
       "approval_wait_expired": "审批等待已超时，因此该请求已被拒绝。",
       "approval_rejected": "审批已被拒绝，因此该请求未获批准。",
       "unknown": "未知"
+    },
+    "frameLinkBridge": {
+      "openHost": "打开 {{host}}"
     }
   },
   "lib": {

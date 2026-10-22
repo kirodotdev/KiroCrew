@@ -95,7 +95,7 @@ describe('a report document', () => {
     const doc = documentFor(true)
     const nonce = /'nonce-([0-9a-f]{32})'/.exec(scriptSrcOf(cspOf(doc)))?.[1]
     const scripts = Array.from(new DOMParser().parseFromString(doc, 'text/html').querySelectorAll('script'))
-    const guard = scripts.find((s) => (s.textContent ?? '').includes("addEventListener('auxclick'"))
+    const guard = scripts.find((s) => (s.textContent ?? '').includes("window.addEventListener('auxclick',stop,true)"))
     expect(guard?.getAttribute('nonce')).toBe(nonce)
     // Only a click on a link loses its default, so a <details> still opens.
     expect(guard?.textContent).toContain('composedPath')
@@ -105,7 +105,8 @@ describe('a report document', () => {
   it('leaves an ordinary artifact its markup and its links', () => {
     const doc = documentFor(false, NAVIGATING)
     expect(new DOMParser().parseFromString(doc, 'text/html').body.querySelector('meta[http-equiv]')).not.toBeNull()
-    expect(doc).not.toContain("addEventListener('auxclick'")
+    // No inert-link guard (the link bridge's own auxclick listener is another script).
+    expect(doc).not.toContain("window.addEventListener('auxclick',stop,true)")
   })
 
   it('leaves an ordinary artifact running its own inline script', () => {

@@ -91,7 +91,7 @@ MAX_PAGE_BYTES: Final[int] = 3 * 1024 * 1024
 #: (``website/src/pages/members/CrewDynamicDashboard.tsx``), whose outer policy
 #: leaves these origins out, and the two policies intersect, so a script from
 #: either origin is refused there. A page draws its chart with inline script.
-#: ``dashboard_verify`` reads the list to recognise a refused library load.
+#: The page checker reads the list to recognise a refused library load.
 #:
 #: PINNED EQUAL to the CDN list the browser wrapper adds to ``script-src`` for a
 #: document built WITHOUT ``offlineScripts`` (``cspFor`` in

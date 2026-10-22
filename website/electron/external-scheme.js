@@ -32,13 +32,15 @@
 // Whole-URL matching, because the product needs exactly these two targets and a
 // scheme-granular rule would admit unbounded attacker-chosen payloads into
 // LaunchServices. That is reachable, not theoretical: LLM-authored widget and
-// artifact content renders in iframes carrying
-// `sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"`
-// (WidgetFrame, ArtifactBody, ArtifactsPage), no CSP directive constrains a
-// `window.open` target's scheme, and remote-instance dashboard frames share this
-// same handler. A scheme-only rule would let model-generated JS pop ANY System
-// Settings pane — e.g. Sharing -> Remote Login, or Configuration Profiles — next
-// to agent-authored text telling the user to enable it.
+// artifact content renders in `sandbox="allow-scripts"` iframes (WidgetFrame,
+// ArtifactBody, RemoteArtifactDetailPage) whose links the dashboard opens
+// through its link bridge with `window.open` (useFrameLinkBridge, which passes
+// only http(s); other frames, such as the browser preview, still grant
+// `allow-popups`), no CSP directive constrains a `window.open` target's scheme,
+// and remote-instance dashboard frames share this same handler. A scheme-only
+// rule would let model-generated JS pop ANY System Settings pane — e.g. Sharing
+// -> Remote Login, or Configuration Profiles — next to agent-authored text
+// telling the user to enable it.
 //
 // Matching the raw string also removes a parser-differential class: the verdict
 // is computed from `new URL(...)` (WHATWG: lowercases the scheme, strips tabs and

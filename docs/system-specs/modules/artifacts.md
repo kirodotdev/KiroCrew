@@ -1627,8 +1627,27 @@ to this kind would store content no reader can parse.
   as a crewmate's Dashboard frame. A link in the page opens through the host:
   `buildSrcdoc({ linkBridge: true })` turns a `_blank` or bare web link click,
   and `window.open`, into a `kirocrew-dashboard:open` message, and
-  `useFrameLinkBridge` opens an absolute `http(s)` URL only after a click in
-  that frame and a confirm that shows the URL. The header also sets `connect-src 'none'`,
+  `useFrameLinkBridge` opens an absolute `http(s)` URL only on a real click in
+  that frame, once per click, with no dialog. The shim decides a click after
+  the page's own handlers, so a click the page cancels posts nothing. The host
+  opens at once only when it can tie the click to the asking frame
+  (`tiedToFrame`): focus came into that frame straight from the dashboard (the
+  dashboard's window blurred with that iframe focused), and has not been seen
+  anywhere else since, nor has the pointer reached another frame (focus moving
+  between frames fires nothing, so the entry is checked whenever the dashboard
+  hears anything and every 200 ms); the pointer is not over another frame, and no click or key in the dashboard or reported by another
+  bridged frame (`kirocrew-dashboard:input`) is within an activation's lifespan
+  (5 s). Otherwise it does not open: an "Open <host>" button
+  (`FrameLinkChip`), with the full URL as its title, appears at the frame's top
+  right corner and takes focus, and the person's click on it opens the link.
+  It has no timer, so a slow reader does not lose it. It goes on the next click
+  or key elsewhere, on a scroll or resize, or on Escape. So a page that focuses its own frame cannot open a link on a click
+  made in the dashboard or in another frame. Each web link gets its resolved URL
+  as a hover title, so the URL shows before the click, as it does for a link in a
+  session. A `<form>` in the page submits nowhere, whatever its `target`
+  (`_blank` included): the frames grant no `allow-forms` and the policy sets
+  `form-action 'none'`, as they did before the link bridge. That is not a bridge
+  fault. A page that wants to send someone elsewhere uses a link. The header also sets `connect-src 'none'`,
   `object-src 'none'`, `base-uri 'none'` and `form-action 'none'`, so a document
   cannot fetch, open a WebSocket or beacon to another host even without its own
   `<meta>` CSP. Every shipped caller's meta CSP already blocks the same channels,
@@ -1666,7 +1685,8 @@ to this kind would store content no reader can parse.
   host's injected scripts carry, so the height reporter and comment bridge run and
   a page script, inline handler or `javascript:` URL is refused whatever the
   crewmate's egress rules allow. Nothing else moves the frame either: host
-  listeners cancel every click and auxclick, so no link navigates, and the
+  listeners cancel every click and auxclick, so no link navigates, and it gets no
+  link bridge (`artifactFrame`'s `linkBridge: false`), so none opens either; the
   finished document is re-parsed as the frame will parse it, dropping each `meta`,
   `link`, `noscript` and declarative shadow root (`template[shadowrootmode]`) in
   its body until a parse finds none (three rounds, then only the host's scripts

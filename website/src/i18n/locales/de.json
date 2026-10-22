@@ -10160,10 +10160,6 @@
     }
   },
   "hooks": {
-    "frameLinkBridge": {
-      "open": "Link öffnen",
-      "title": "Diesen Link öffnen?"
-    },
     "mic": {
       "could_not_start_the_microphone": "Das Mikrofon konnte nicht gestartet werden.",
       "microphone_is_unavailable_another_app_may_be_usi": "Mikrofon nicht verfügbar — eine andere App verwendet es möglicherweise.",
@@ -10321,6 +10317,9 @@
       "approval_wait_expired": "Die Wartezeit auf die Genehmigung ist abgelaufen, deshalb wurde die Anfrage abgelehnt.",
       "approval_rejected": "Die Genehmigung wurde verweigert, deshalb wurde die Anfrage abgelehnt.",
       "unknown": "Unbekannt"
+    },
+    "frameLinkBridge": {
+      "openHost": "{{host}} öffnen"
     }
   },
   "lib": {

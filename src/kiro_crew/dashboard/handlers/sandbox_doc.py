@@ -237,8 +237,8 @@ async def serve_sandbox_doc(request: web.Request) -> web.Response:
     # those the embedding frames grant — no more: `allow-scripts`, the
     # `AGENT_PAGE_SANDBOX` grant in `website/src/lib/widgetSrcdoc.ts`. No
     # `allow-popups`: links in these documents open through the host's link
-    # bridge (`useFrameLinkBridge`), which asks the person first, so the document
-    # never opens a window of its own. `allow-forms` is not granted either: no
+    # bridge (`useFrameLinkBridge`), which opens one only on a real click, so the
+    # document never opens a window of its own. `allow-forms` is not granted either: no
     # embedding frame allows it, so including it here would let a document opened
     # top-level submit forms that the same document cannot submit inside the frame.
     #

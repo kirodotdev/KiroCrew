@@ -270,9 +270,9 @@ export default function RemoteArtifactDetailPage() {
   const { url: blobUrl, failed, pending, retry } = useSandboxDoc(srcdoc)
   // Later documents replace the first in place (hooks/useFrameSrc.ts).
   const frameSrc = useFrameSrc(iframeRef, blobUrl)
-  // Links in a shared page open through the host, after a click in this frame
-  // and a confirm that shows the URL (the frame itself grants no popups).
-  const linkConfirm = useFrameLinkBridge([iframeRef])
+  // Links in a shared page open through the host after a real click in this
+  // frame (the frame itself grants no popups), or through the button it returns.
+  const linkChip = useFrameLinkBridge([iframeRef])
   // A mint can succeed while the frame never fires `load` — a visible-but-blank
   // frame here, since this surface has no opacity gate. `silent` overlays the
   // same notice + retry the mint-`failed` branch uses so the blank is explained
@@ -394,7 +394,6 @@ export default function RemoteArtifactDetailPage() {
 
   return (
     <>
-      {linkConfirm}
       <div className="sticky top-0 z-10 bg-bg border-b border-border">
         <PageHeader title={title} subtitle={i18nT('pages.remoteArtifactDetailPage.remote_artifact_2', { provider })} />
         <div className="px-4 md:px-6 py-2 flex flex-wrap items-center gap-2">
@@ -476,6 +475,7 @@ export default function RemoteArtifactDetailPage() {
           <div className="flex-1 min-w-0">
             {isHtml ? (
               <div ref={iframeBodyRef} className="relative rounded-xl border border-border bg-card overflow-hidden" style={{ minHeight: 480 }}>
+                {linkChip}
                 {blobUrl ? (
                   /* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onLoad is a frame-load lifecycle handler (it clears the silent-load watch), not a user interaction; the frame's own content is what a keyboard reaches, and nothing here can be triggered from one */
                   <iframe

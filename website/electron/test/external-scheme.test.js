@@ -115,10 +115,11 @@ describe("classifyNavigation", () => {
   });
 
   /* The allowlist is whole-URL, not scheme-granular. This is reachable, not
-   * theoretical: LLM-authored widget/artifact content renders in iframes with
-   * `allow-popups-to-escape-sandbox`, and no CSP directive constrains a
-   * window.open target's scheme — so a scheme-only rule would let model-generated
-   * JS pop ANY System Settings pane next to text telling the user to enable it. */
+   * theoretical: the dashboard opens links from LLM-authored widget/artifact
+   * content with window.open, other frames still grant `allow-popups`, and no
+   * CSP directive constrains a window.open target's scheme — so a scheme-only
+   * rule would let model-generated JS pop ANY System Settings pane next to text
+   * telling the user to enable it. */
   it("blocks every other pane in the permitted scheme", () => {
     for (const url of [
       "x-apple.systempreferences:com.apple.preferences.sharing?Services_RemoteLogin",

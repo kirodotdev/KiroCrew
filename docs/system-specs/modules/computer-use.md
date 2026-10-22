@@ -2312,10 +2312,11 @@ The non-web allowlist (`EXTERNAL_URLS`) matches **whole URLs, exactly** — the 
 `SETTINGS_URL_*` panes — not the `x-apple.systempreferences:` scheme. A
 scheme-granular rule would admit unbounded attacker-chosen payloads into
 LaunchServices, and that is reachable rather than theoretical: LLM-authored widget
-and artifact content renders in iframes carrying
-`sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"`, no CSP
-directive constrains a `window.open` target's scheme, and remote-instance frames
-share this same handler — so model-generated JS could otherwise pop *any* pane
+and artifact content renders in `sandbox="allow-scripts"` iframes whose links the
+dashboard opens through its link bridge with `window.open` (`useFrameLinkBridge`,
+http(s) only), other frames such as the browser preview still grant
+`allow-popups`, no CSP directive constrains a `window.open` target's scheme, and
+remote-instance frames share this same handler — so model-generated JS could otherwise pop *any* pane
 (Sharing → Remote Login, Configuration Profiles) beside agent-authored text
 telling the user to enable it. Exact matching also removes a parser-differential
 class: the verdict is computed from `new URL(...)` (WHATWG lowercases the scheme,

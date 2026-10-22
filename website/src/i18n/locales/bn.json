@@ -10160,10 +10160,6 @@
     }
   },
   "hooks": {
-    "frameLinkBridge": {
-      "open": "লিঙ্ক খুলুন",
-      "title": "এই লিঙ্কটি খুলবেন?"
-    },
     "mic": {
       "could_not_start_the_microphone": "মাইক্রোফোন চালু করা যায়নি।",
       "microphone_is_unavailable_another_app_may_be_usi": "মাইক্রোফোন পাওয়া যাচ্ছে না — হয়তো অন্য কোনো অ্যাপ এটা ব্যবহার করছে।",
@@ -10321,6 +10317,9 @@
       "approval_wait_expired": "অনুমোদনের অপেক্ষার সময় শেষ হয়ে গেছে, তাই রিকোয়েস্টটি প্রত্যাখ্যাত হয়েছে।",
       "approval_rejected": "অনুমোদন নাকচ করা হয়েছে, তাই রিকোয়েস্টটি প্রত্যাখ্যাত হয়েছে।",
       "unknown": "অজানা"
+    },
+    "frameLinkBridge": {
+      "openHost": "{{host}} খোলো"
     }
   },
   "lib": {

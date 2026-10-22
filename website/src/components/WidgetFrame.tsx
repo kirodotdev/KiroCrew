@@ -223,7 +223,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
   )
   // Later documents replace the first in place (hooks/useFrameSrc.ts).
   const frameSrc = useFrameSrc(iframeRef, blobUrl)
-  const linkConfirm = useFrameLinkBridge([iframeRef])
+  const linkChip = useFrameLinkBridge([iframeRef])
   // Fade the iframe in once its document loads, so the reveal is a soft fade
   // instead of an abrupt blink-then-appear. Reset to false whenever a new blob
   // is built (first reveal, theme change, content rebuild) so each fresh render
@@ -338,10 +338,9 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
     iframe.style.border = 'none'
     doc.body.appendChild(iframe)
     // The tab's own link bridge: the widget's links post to this wrapper, which
-    // opens them after a click in the frame and a confirm showing the URL. The
-    // script is fixed text plus a JSON-encoded label; no widget content.
+    // opens them after a real click in the frame. Fixed text; no widget content.
     const linkBridge = doc.createElement('script')
-    linkBridge.textContent = popoutLinkBridgeScript(i18nT('hooks.frameLinkBridge.title'))
+    linkBridge.textContent = popoutLinkBridgeScript(i18nT('hooks.frameLinkBridge.openHost', { host: '%HOST%' }))
     doc.body.appendChild(linkBridge)
 
     const html = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
@@ -680,6 +679,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
           }}
           title={title}
         />
+        {linkChip}
       </div>}
 
       {expanded && (
@@ -689,7 +689,6 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
         <div className="fixed inset-0 bg-black/40 -z-10" onClick={() => setExpanded(false)} />
       )}
       </>)}
-      {linkConfirm}
     </div>
   )
 }

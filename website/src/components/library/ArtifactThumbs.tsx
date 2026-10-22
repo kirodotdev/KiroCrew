@@ -14,7 +14,6 @@ import { i18nT } from '../../i18n/t'
 import { stripMd } from '../notifications/notifMeta'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
 import { useFrameSrc } from '../../hooks/useFrameSrc'
-import { useFrameLinkBridge } from '../../hooks/useFrameLinkBridge'
 import { useSilentLoadWatch } from '../../hooks/useSilentLoadWatch'
 import { useNearViewport } from '../../hooks/useNearViewport'
 import type { Artifact } from '../../types'
@@ -55,12 +54,12 @@ export function WidgetThumb({ content, slug, goalReport }: {
   const srcdoc = useMemo(
     () => (content
       ? buildSrcdoc({
-        html: content, themeVars, mode: theme, includeHeightReporter: true, linkBridge: frame.linkBridge,
-        offlineScripts: frame.offlineScripts, rewriteBareLinks: frame.rewriteBareLinks,
+        html: content, themeVars, mode: theme, includeHeightReporter: true,
+        offlineScripts: frame.offlineScripts, rewriteBareLinks: false,
         pageScripts: frame.pageScripts,
       })
       : null),
-    [content, themeVars, theme, frame.linkBridge, frame.offlineScripts, frame.rewriteBareLinks, frame.pageScripts],
+    [content, themeVars, theme, frame.offlineScripts, frame.pageScripts],
   )
   // Reserve the height this content had last time, or the median of thumbnails
   // already measured, before falling back to the viewport ceiling.
@@ -104,9 +103,10 @@ export function WidgetThumb({ content, slug, goalReport }: {
   const { url: blobUrl, failed } = useSandboxDoc(near ? srcdoc : null)
   // Later documents replace the first in place (hooks/useFrameSrc.ts).
   const frameSrc = useFrameSrc(iframeRef, blobUrl)
-  // A link in the thumbnail opens through the host, after a click in this frame
-  // and a confirm that shows the URL (the frame itself grants no popups).
-  const linkConfirm = useFrameLinkBridge([iframeRef])
+  // No link bridge: every render site wraps the thumbnail in `pointer-events-none`
+  // (the card's own click opens the artifact) and the frame is `tabIndex={-1}`,
+  // so no click ever reaches it. `rewriteBareLinks: false` because the frame
+  // grants no popups.
   // Gated on the FIRST document only, and deliberately NOT reset when a new url
   // lands. A re-mint navigates the frame again, and re-hiding on every new url
   // leaves the thumb blank until the next `load` fires — long enough to read as
@@ -224,7 +224,6 @@ export function WidgetThumb({ content, slug, goalReport }: {
       ) : (
         <div className="h-full bg-bg-elevated animate-pulse" />
       )}
-      {linkConfirm}
     </div>
   )
 }

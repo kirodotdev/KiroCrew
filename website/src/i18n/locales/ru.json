@@ -10448,10 +10448,6 @@
     }
   },
   "hooks": {
-    "frameLinkBridge": {
-      "open": "Открыть ссылку",
-      "title": "Открыть эту ссылку?"
-    },
     "mic": {
       "could_not_start_the_microphone": "Не удалось включить микрофон.",
       "microphone_is_unavailable_another_app_may_be_usi": "Микрофон недоступен — возможно, его использует другое приложение.",
@@ -10611,6 +10607,9 @@
       "approval_wait_expired": "Время ожидания подтверждения истекло, поэтому запрос был отклонён.",
       "approval_rejected": "В подтверждении было отказано, поэтому запрос был отклонён.",
       "unknown": "Неизвестно"
+    },
+    "frameLinkBridge": {
+      "openHost": "Открыть {{host}}"
     }
   },
   "lib": {
