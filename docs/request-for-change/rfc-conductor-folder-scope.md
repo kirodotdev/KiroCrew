@@ -22,18 +22,44 @@ the decision recorded here before the implementing PR opens.
 
 ## Summary
 
-An agent session that runs on the person's own memory store — a conductor, the
-team lead, any ordinary agent tab the person opened — may today file a new
-session or create a folder **anywhere** in the person's sidebar tree. Apps and
-crew members are fenced to the folders they own plus the folder their own
-session sits in; the person's own agents have no fence at all, because the
-folder tree judges them as the person.
+### The rule
 
-This document adds one rule for those agents: **a new session or folder goes
-inside the folder the calling agent is filed in, or inside a folder that agent
-created itself.** An unfiled agent may still open one top-level folder, which is
-how a conductor starts a goal. The person, acting through the browser, is
-untouched.
+**An agent creates sessions and folders only inside the folder it sits in.**
+
+| The agent sits in… | It may create in… | It may NOT create in… |
+|---|---|---|
+| folder `F` | `F` and any subfolder of `F` | the top level; any other folder; a folder it created earlier outside `F` |
+| no folder (the top level) | the top level | inside any folder |
+
+"Agent" means any session that runs on the person's own memory store: a
+conductor, the team lead, an ordinary agent tab. "Create" means
+`session_create`, `session_fork`, `session_revive` and `chat_folder_create`.
+The person, acting through the browser, is not affected. Apps and crew members
+keep the fence they already have.
+
+### The problem it solves
+
+Today those agents can create **anywhere** in the person's sidebar tree. The
+folder tree judges them as the person, so no fence applies. That causes three
+things the person sees:
+
+1. **Work lands in the wrong folder.** A conductor in `Ops` that mistypes a path,
+   or reads a stale `[FOLDER]` line after the person moved it, puts its workers
+   in `Finance/Q4` or another folder the person organises by hand.
+2. **Empty folders pile up.** A conductor can create goal folders under any of
+   the person's folders and at the top level. #13449 cleans them up after the
+   fact; nothing stops them being made.
+3. **A conductor's reach is not its folder.** The folder-conductor direction
+   (#22500, #17060) treats a folder as the conductor's boundary. Without this
+   rule a conductor grows past that boundary by creating a worker outside it.
+   This RFC closes the create path only. Moving a session or itself
+   elsewhere afterwards (`chat_folder_move_session`, `chat_folder_file_self`)
+   still crosses the boundary; that is Open question 2, and the boundary is
+   not whole until it is answered.
+
+The conductor skills already tell the agent to stay inside its folder. A prompt
+rule is not enforced, so it fails the first time the agent gets the path wrong.
+This RFC moves the rule into the gateway.
 
 ## Motivation
 
@@ -117,9 +143,11 @@ it.
 ## Goals
 
 - G1. An agent on the person's store can file a new session, or create a folder,
-  only inside its own folder or a folder it created.
-- G2. An unfiled agent can still start a goal: one new top-level folder, then
-  everything beneath it.
+  only inside the folder it is filed in (that folder or a subfolder). A folder
+  it created earlier somewhere else is not in reach.
+- G2. An agent filed in a folder cannot create at the top level. An unfiled
+  agent can: it creates the goal's folder there, files itself in, and works
+  beneath it.
 - G3. The rule is one predicate, decided under the folder-store lock, shared by
   every create path (`session_create`, `session_fork`, `session_revive`,
   `chat_folder_create`).
@@ -155,52 +183,107 @@ An agent caller's **reach** is a set of folder ids, computed from the live tree
 under the folder-store lock at the moment the write is decided:
 
 ```
-home        = caller slot's folder_id                      (may be "")
-own         = { f : f.created_by_session == caller key }
-reach       = descendants_inclusive(home) ∪ ⋃ descendants_inclusive(f) for f in own
-top_level_ok = home == ""
+home  = caller slot's folder_id                 (may be "": unfiled)
+reach = descendants_inclusive(home)             when home != ""
+reach = { top level }                           when home == ""
 ```
 
 `descendants_inclusive` walks `parent_id` with the same cycle guard
 `_resolve_folder_steering_dirs` uses.
 
 A create is **in scope** when its parent (for a folder) or its target folder
-(for a session) is in `reach`, or is the top level and `top_level_ok`. Anything
-else is refused.
+(for a session) is in `reach`. Anything else is refused. Two consequences:
+
+- An agent filed in a folder never creates at the top level.
+- An unfiled agent creates at the top level only, never inside an existing
+  folder. To work beneath a folder it just made, it files itself there first
+  (`chat_folder_file_self`, a move, outside this rule) — the order the
+  goal-conductor skill's Round 0 already follows.
+
+Who created a folder plays no part: a folder the agent created earlier
+somewhere else is out of reach once the agent sits in a different folder.
+`created_by_session` keeps its one job, the `if_empty` delete rule.
+
+The folder a new session lands in is checked whether it was named or
+inherited:
+
+- `session_create` with no `folder` files the session in the caller's own
+  folder, not at the top level. An unfiled caller's child stays at the top
+  level, as today.
+- `session_fork` and `session_revive` with no `folder` inherit as today; an
+  inherited folder outside reach is refused, and the caller names one inside.
 
 Worked cases:
 
 | Caller is filed in | Call | Verdict |
 |---|---|---|
 | — (unfiled) | `chat_folder_create("Flaky tests")` | allowed, top level |
-| — | `session_create(folder="Flaky tests/kirocrew-worker")` right after | allowed: `Flaky tests` is in `own` |
+| — | `chat_folder_create("x", parent="Flaky tests")` | refused: file yourself in `Flaky tests` first |
+| — | `session_create()` | allowed, top level |
 | — | `session_create(folder="Finance/Q4")` | refused |
 | `Ops` | `session_create(folder="Ops/kirocrew-worker")` | allowed |
+| `Ops` | `session_create()` | allowed, filed in `Ops` |
 | `Ops` | `chat_folder_create("wave3", parent="Ops")` | allowed |
 | `Ops` | `chat_folder_create("Ops2")` at top level | refused |
 | `Ops` | `session_create(folder="Finance/Q4")` | refused |
+| `Ops`, earlier created `Goal` at top level | `session_create(folder="Goal/x")` | refused: `Goal` is not under `Ops` |
 | `Ops/wave2`, moved by the person to `Archive/wave2` mid-call | `session_create(folder="Ops/wave2/x")` | refused: reach is read under the lock after the move |
 
 ### 2. Where the predicate runs
 
-One function, `agent_folder_reach(folders, caller_key, caller_slot)` in
-`dashboard/chat_folders_records.py` beside `caller_home_slot`, returns
-`(reach, top_level_ok)`. Two writers call it, both already under the lock:
+One function, `agent_folder_reach(folders, caller_slot)` in
+`dashboard/chat_folders_records.py` beside `caller_home_slot`, returns the
+reach set. Four writers call it, each under the folder-store lock. Fork and
+revive do NOT route through `create_session`, so each one is its own call site:
 
 - `create_folder_record._append`: after the existing app/member nest test, when
-  `request_app == ""` and `created_by_session != ""`, refuse with a new
-  `"out_of_scope"` result when `parent_id` is not in reach (or is the top level
-  and `top_level_ok` is false).
-- `create_session`'s late folder re-check (the `folder_target_changed` block), which
-  already runs under `state.read_folders` to refuse `folder_target_changed`:
-  add the same test on the caller's slot. `session_fork` and `session_revive`
-  pass through the same folder gate and get it for free.
+  `request_app == ""` and the request names an agent caller
+  (`agent_creator_key` non-empty), refuse with a new `"out_of_scope"` result
+  when `parent_id` (`""` for the top level) is not in reach.
+- `create_session` (`session_control_parts/session_create.py`): in the late
+  folder re-check that already refuses `folder_target_changed`, test the
+  landing folder against the caller slot's reach.
+- `fork_session` (`session_control_parts/session_tree.py`): beside both of its
+  `folder_not_found` checks (the pre-allocation one and the late re-check).
+- `revive_session` (`session_control_parts/session_revive.py`): beside its
+  `folder_not_found` check.
 
-The MCP layer does not decide anything new. `_resolve_folder_for_new_session`'s
-`preflight` already dry-runs `create_session` before the first path segment is
-made, so a session create that would be refused is refused with no folder
-created (G4). `_ensure_chat_folder_path` creates segments through the folder
-endpoint, which refuses the first out-of-scope parent before any segment exists.
+In each of the three session writers the test runs on the **resolved landing
+folder**, whether the caller named it or it was inherited from the source
+session, and the top level counts as a landing folder. It does not sit inside
+the existing `if folder_id:` arm, which only runs for a named folder.
+
+### 2a. No stray path segments (G4)
+
+`session_create(folder="A/B/C")` creates missing segments one at a time through
+`_ensure_chat_folder_path`, and its `preflight` dry-runs the session create only
+against the deepest folder that **already exists**. That is not enough: an
+unfiled agent asking for `Goal/x` when `Goal` does not exist passes the probe
+(the top level is in its reach), the walk creates `Goal`, and the next segment
+is refused, leaving an empty `Goal` behind.
+
+So the reach test runs on the **whole path** before the walk creates anything:
+
+- The MCP layer resolves the path against the tree it just read: the deepest
+  existing folder `D`, plus the list of missing segments.
+- It asks the gateway one question, as part of the existing dry run: may this
+  caller create a folder under `D`, and is every folder the walk would create
+  inside the caller's reach? A dry-run `create_session` with
+  `folder_id = D` and `new_segments = n` answers it. For a filed caller this is
+  "`D` is in reach". For an unfiled caller it is "`D` is the top level and
+  `n == 0`": an unfiled agent can create one top-level folder with
+  `chat_folder_create`, but never a nested path through `session_create`,
+  because it must file itself into that folder first.
+- A refused probe ends the walk with nothing made, as the preflight does today.
+
+`chat_folder_create(parent=P)` creates one folder, so the single
+`_append` test above already covers it. The same pre-walk test applies when its
+`parent` is a path with missing segments.
+
+A race (the person moves `D` out of reach between the probe and a segment
+create) can still strand at most the segments created before the move. The
+locked test in `_append` refuses the next one. That is the residue today's
+preflight already accepts.
 
 ### 3. The refusal
 
@@ -212,14 +295,18 @@ endpoint, which refuses the first out-of-scope parent before any segment exists.
 - Session control: `SessionControlError(code="folder_out_of_scope")`.
 - The message names the home folder's path, so the agent can correct the call:
   `cannot file outside your folder "Ops" — pass a folder under it, or omit folder`.
-  An unfiled agent is told: `you are not filed in a folder — create one at the
-  top level first, or file yourself with chat_folder_file_self`.
+  It never suggests moving the agent into the target folder: that is the
+  move-verb gap in the Non-goals, and a refusal must not teach it.
+  An unfiled agent is told: `you are not filed in a folder — you may create one
+  folder at the top level; file yourself into it with chat_folder_file_self
+  before creating beneath it`. This is the goal-conductor skill's own Round 0,
+  where the agent files itself into a goal folder it just created.
 
 ### 4. What the agents are told
 
 - The four tool descriptions in `mcp_dashboard.py` gain one sentence: *You may
-  file into your own folder, its subfolders, or a folder you created; an unfiled
-  session may create one top-level folder.*
+  create only inside the folder you are filed in, or its subfolders; an unfiled
+  session creates at the top level only.*
 - `goal-conductor/SKILL.md` and the team-lead prompt already describe this
   shape; they gain the refusal code and the one-line recovery.
 - The folder-scope section in `docs/system-specs/modules/session-control.md`
@@ -231,47 +318,79 @@ endpoint, which refuses the first out-of-scope parent before any segment exists.
 
 One phase, one PR.
 
-**Phase 1 — the fence.** `agent_folder_reach`, the two writer tests, the two
-refusal codes, the tool-description sentences, the skill/prompt lines, the spec
-updates.
+**Phase 1 — the fence.** `agent_folder_reach`, the four writer tests, the
+whole-path pre-walk test, the two refusal codes, the tool-description sentences, the skill/prompt lines, the spec
+updates, and the pipeline conductor's self-filing: `pipeline-conductor/SKILL.md`
+gains a `chat_folder_file_self` into the pipeline folder right after its
+`chat_folder_create` and before the first claim, and
+`_PIPELINE_CONDUCTOR_DASHBOARD_GRANTS` in `spec_grants.py` gains
+`@kirocrew-dashboard/chat_folder_file_self`. The security conductor's tuple is
+built from the pipeline one plus that same grant, so it drops its own addition
+and inherits the grant instead of listing it twice.
 
 Exit criteria, each a test:
 
-- An unfiled person-store agent creates a top-level folder, then a session in
-  `<that folder>/x`: both succeed.
+- An unfiled person-store agent creates a top-level folder `G`: succeeds. A
+  folder under `G` is refused; after `chat_folder_file_self` into `G`, a
+  session in `G/x` succeeds.
 - A person-store agent filed in `A` creates a session in `A/x` and a folder under
   `A`: both succeed; a session in `B/x` and a folder at the top level are both
   refused `folder_out_of_scope`, and `GET /api/chat/folders` shows no new row
   after the refusals.
+- A person-store agent filed in `A` that earlier created top-level `G` is
+  refused a session in `G/x`.
+- `session_create` with no `folder` from an agent filed in `A` lands in `A`.
 - The person's browser create under any parent succeeds as before.
 - An App Kit agent and a crew member keep today's verdicts on the existing
   ownership tests (`test_chat_folder_*`, `test_session_control_*`): no change.
 - A folder moved out of the caller's subtree between the preflight and the
   locked write is refused `folder_out_of_scope`, not created.
-- `session_fork` and `session_revive` with `folder=` outside reach are refused;
-  without `folder=` they inherit as today.
+- An unfiled agent's `session_create(folder="Goal/x")` with no `Goal` is
+  refused, and `GET /api/chat/folders` shows no `Goal` row afterwards.
+- A filed agent's `session_create(folder="A/new1/new2")` with `A` in reach
+  creates both segments; with `A` out of reach it creates none.
+- `session_fork` and `session_revive` with `folder=` outside reach are refused.
+  Without `folder=`, an inherited folder inside reach succeeds and one outside
+  reach is refused, each driven through `fork_session` / `revive_session`
+  themselves, not through `create_session`.
+- The person moves the source session's folder out of the caller's reach after
+  the source was created; a fork or revive of it with no `folder=` is refused.
+- An unfiled pipeline conductor following its skill creates the pipeline
+  folder, files itself into it, and dispatches a worker `session_create` filed
+  into that folder: the dispatch succeeds. The same dispatch without the
+  self-filing step is refused `folder_out_of_scope`.
 
 ## Backward compatibility
 
-**Breaking for one caller shape:** a person-store agent that today files into a
-folder outside its own. Writer sweep at `0be5bcd9ea`:
+**Breaking for two caller shapes:** a person-store agent that today files into a
+folder outside its own, and an unfiled agent that files sessions into a folder it
+created without filing itself there first (the pipeline conductor). Writer sweep
+at `0be5bcd9ea`, the pipeline conductor re-checked at `d42544f622`:
 
 - `goal-conductor/SKILL.md` and the team-lead prompt: file into
   `<goal folder>/<agent>` where `<goal folder>` is the caller's own folder — in
   scope.
-- `pipeline-conductor/SKILL.md`: `chat_folder_create` the pipeline folder at
-  the top level from an unfiled conductor — in scope.
+- `pipeline-conductor/SKILL.md`: **breaking.** An unfiled conductor
+  `chat_folder_create`s the pipeline folder at the top level (in scope), then
+  `session_create`s each worker "filed into the pipeline folder". That folder is
+  not in an unfiled caller's reach, so every worker dispatch would be refused
+  `folder_out_of_scope`. The conductor never files itself, and it does not hold
+  `chat_folder_file_self` (`spec_grants.py`: "The pipeline conductor's procedure
+  does not file itself yet"), so it cannot take the recovery §3 tells it to.
+  Phase 1 therefore adds a self-filing step to the skill and the grant to
+  `_PIPELINE_CONDUCTOR_DASHBOARD_GRANTS`.
 - `kirocrew-dashboard-author`, `kirocrew-research`, `kirocrew-knowledge`: no
   `folder=` use in their prompts.
 - A person who asks their own chat (team lead) "open a session in Finance/Q4"
   while that chat sits in `Ops`: refused. The recovery is the message in §3.
-  This is the one behaviour a person may notice; the Open question below asks
+  This is the one refusal a person may notice; the Open question below asks
   whether it needs a release note.
+- A filed agent's `session_create` with no `folder` now lands in the agent's
+  folder instead of the top level. Every shipped prompt already names a
+  folder, so none of them sees the difference.
 
-Nothing on disk changes shape. `created_by_session` already exists on folders
-agents created since #13449; folders created before it carry no mark, so an
-agent reaches them only through its home folder. That is the conservative
-direction.
+Nothing on disk changes shape, and no stored mark is read: reach comes from the
+caller slot's `folder_id` and the tree alone.
 
 ## Security considerations
 
@@ -285,9 +404,8 @@ direction.
 - The fence narrows what an agent can do; it grants nothing. Apps and members are
   not widened: their existing test runs first and still refuses, and the new test
   applies only when `request_app == ""`.
-- `created_by_session` is cleared when the person claims a folder
-  (`claim_parent_for_person`). After that the agent reaches it only if filed in
-  it, which is the intended direction: the person took it over.
+- Reach depends only on where the agent sits now, so there is no mark an agent
+  could collect to widen it later.
 
 ## Alternatives considered
 
@@ -305,9 +423,14 @@ direction.
 - **A config switch (`agent.folder_scope`).** rfc-folder-conductor makes the
   folder the conductor's identity; an opt-out contradicts the model. Proposed on
   by default with no switch.
-- **Home folder only, no `own` set.** Breaks the unfiled start: a conductor
-  creates `Flaky tests`, and until it files itself it could not open a session
-  there. The `own` set is the mark #13449 already stamps.
+- **Also reach folders the agent created (`created_by_session`).** Lets an
+  unfiled conductor open a session in its new goal folder before filing itself.
+  Rejected by the product owner: a conductor's place is the one folder it sits
+  in, and a folder it made elsewhere earlier must not stay a back door. The
+  unfiled start still works by filing first, which the skill already does.
+- **Refuse `session_create` with no `folder` from a filed agent.** Safer-looking
+  but breaks every caller that omits it; filing the child in the caller's own
+  folder keeps it inside reach with no error.
 
 ## Open questions
 
@@ -315,5 +438,9 @@ direction.
    another folder is refused) need a release note, or is the recovery message
    enough? Proposed: the message is enough; the person can create the session
    from the sidebar.
-2. Should `chat_folder_file_self` be scoped later so a filed agent cannot move
-   itself out of its folder? Out of scope here; noted for rfc-folder-conductor.
+2. Should the move verbs get the same fence? Today a filed agent can still
+   create inside its folder and then `chat_folder_move_session` the session
+   out, or `chat_folder_file_self` into another folder and create there. This
+   RFC does not close that, so Problem 3 is only half solved by it. Scoping
+   moves is a separate decision: `chat_folder_file_self` for an unfiled agent
+   is the goal start this design depends on. Noted for rfc-folder-conductor.
