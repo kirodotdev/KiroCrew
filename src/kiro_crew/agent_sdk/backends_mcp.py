@@ -272,7 +272,7 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 #   refuses a session, AND something that computes ``zero_tools`` from the spec
 #   parse (``acp/session_mcp.py``'s ``SessionMcpProjection.zero_tools``) -- a mirror
 #   in ``providers/mirrors/registry.py``'s ``MIRRORS``, or, for a mirror-less host
-#   whose array Crew composes (``ACP_BACKENDS_SESSION_MCP_ARRAY``),
+#   whose declared projection is ``ProjectionKind.BROKER_ONLY`` (pi),
 #   ``AcpClient._mirrorless_member_mounts`` reading the same parse -- AND the
 #   session is served by ``AcpClient`` rather than ``AcpRuntime``, because the
 #   refusal that closes the gap, ``AcpClient._deny_zero_tools``, lives ONLY on

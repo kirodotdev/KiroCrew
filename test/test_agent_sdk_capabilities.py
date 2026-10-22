@@ -716,9 +716,9 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
     A backend honours the ban iff its routing is ``Routing.AGENT_SPEC`` (the
     harness enforces natively -- kiro, kas), OR its routing is in
     ``tool_gate.ENFORCED_ROUTINGS`` AND something computes ``zero_tools`` for it --
-    a mirror (``providers/mirrors/registry.py``'s ``MIRRORS``), or Crew composing
-    its array itself (``ACP_BACKENDS_SESSION_MCP_ARRAY``, which
-    ``AcpClient._mirrorless_member_mounts`` reads the spec for: pi) -- AND it is
+    a mirror (``providers/mirrors/registry.py``'s ``MIRRORS``), or Crew reading
+    the spec itself beside a ``ProjectionKind.BROKER_ONLY`` array, which
+    ``AcpClient._mirrorless_member_mounts`` does: pi) -- AND it is
     NOT in ``ACP_BACKENDS_ACP_RUNTIME`` (the refusal lives only on ``AcpClient``,
     never on the shared ``AcpRuntime`` codex and kas are served by).
 
@@ -728,13 +728,13 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
     ``ACP_BACKENDS_ACP_RUNTIME``.
     """
     from kiro_crew.agent_sdk.tool_gate import ENFORCED_ROUTINGS
-    from kiro_crew.providers.mirrors.registry import MIRRORS
+    from kiro_crew.providers.mirrors.registry import MIRRORS, ProjectionKind, projection_for
 
     for backend in sorted(sdk_backends.ACP_BACKENDS_KNOWN):
         routing = routing_for(backend)
         expected = routing is sdk_backends.Routing.AGENT_SPEC or (
             routing in ENFORCED_ROUTINGS
-            and (backend in MIRRORS or backend in sdk_backends.ACP_BACKENDS_SESSION_MCP_ARRAY)
+            and (backend in MIRRORS or projection_for(backend).kind is ProjectionKind.BROKER_ONLY)
             and backend not in sdk_backends.ACP_BACKENDS_ACP_RUNTIME
         )
         actual = backend in sdk_backends.ACP_BACKENDS_HONOR_ZERO_TOOL_BAN
@@ -742,7 +742,7 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
             f"{backend!r}: honors_zero_tool_ban membership is {actual}, the rule "
             f"says {expected} (routing={routing}, enforced={routing in ENFORCED_ROUTINGS}, "
             f"mirrored={backend in MIRRORS}, "
-            f"array={backend in sdk_backends.ACP_BACKENDS_SESSION_MCP_ARRAY}, "
+            f"projection={projection_for(backend).kind.value}, "
             f"acp_runtime={backend in sdk_backends.ACP_BACKENDS_ACP_RUNTIME})"
         )
     assert sdk_backends.ACP_BACKENDS_HONOR_ZERO_TOOL_BAN == {
