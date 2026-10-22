@@ -188,7 +188,7 @@ cron_add(
 
 | Mode | Session Key | Context | Use Case |
 |------|-------------|---------|----------|
-| `persistent_session: true` (default) | `cron:{id}` (stable) | Accumulates across runs, `last_result` prepended | Digests, trend tracking |
+| `persistent_session: true` (default) | `cron:{id}` (stable) | Accumulates across runs; `last_result` is carried as fenced reference data ahead of the request | Digests, trend tracking |
 | `persistent_session: false` | `cron:{id}:{uuid}` (fresh each run) | Clean slate, no `last_result` | Polling, scanners, alerting |
 
 The reaper tracks per-run session keys so it can still SIGKILL stuck ephemeral sessions.

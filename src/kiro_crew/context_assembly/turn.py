@@ -296,7 +296,7 @@ def thread_context_parts(
         # the delimiter and forge a trusted continuation. Matching is
         # case-insensitive and whitespace-tolerant so lowercase / spaced
         # variants of the marker are neutralized too (not just the literal).
-        safe_parent = ctx._neutralize_structural_markers(
+        safe_parent = _markers._neutralize_context_payload(
             _markers._neutralize_fence_markers(thread_parent_text or "")
         )
         blocks.append(
@@ -542,7 +542,7 @@ def rail_parts(
     # persona) travels through an explicit prefix channel rather than being
     # appended after the user's text, so the authoritative user slice owns EOF.
     if request_prefix_context:
-        parts.append(ctx._neutralize_structural_markers(request_prefix_context))
+        parts.append(_markers._neutralize_context_payload(request_prefix_context))
         # The prefix is caller-shaped text: a `$skill` body arrives with its
         # frontmatter stripped and `.strip()`ed, so it ends mid-line. Every
         # block the assembly emits opens at the start of a line, and the
