@@ -54,7 +54,7 @@ Compressed input still needs an authenticated FFmpeg decoder for WebM, M4A, and
 ogg/Opus. Desktop releases carry and verify a pinned decoder, except on Intel
 Macs, which use a system FFmpeg (`brew install ffmpeg`). A source install
 first checks fixed system locations and, if no usable binary exists, **Settings >
-Voice** offers a one-click download of the pinned `imageio-ffmpeg==0.6.0` artifact
+Voice** offers a one-click download of the pinned audio-only FFmpeg executable
 into `<data home>/models/ffmpeg/`; its SHA-256 is verified before every execution.
 Kiro Crew deliberately does not execute a decoder from an agent-writable project
 venv. Platforms without a pinned artifact must install FFmpeg into one of the

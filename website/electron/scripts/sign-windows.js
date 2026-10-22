@@ -166,12 +166,12 @@ exports.default = async function signWindows(configuration) {
   const filePath = configuration.path
   const fileName = path.basename(filePath)
 
-  // Kiro Crew authenticates this exact upstream executable by pinned size and
+  // Kiro Crew authenticates this exact pinned executable by pinned size and
   // SHA-256 immediately before every spawn. Authenticode appends bytes and
   // would make the signed desktop bundle reject its own decoder. Keep only
   // this one dependency byte-identical; the app, Python runtime, installer and
   // uninstaller continue through the normal signing path.
-  if (fileName === 'ffmpeg-win-x86_64-v7.1.exe') {
+  if (fileName === 'ffmpeg-windows-x86_64.exe') {
     log(`preserved pinned runtime payload ${fileName} without Authenticode rewriting`)
     return
   }

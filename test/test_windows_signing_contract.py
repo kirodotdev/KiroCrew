@@ -622,9 +622,9 @@ def test_the_hook_refuses_a_partially_configured_environment() -> None:
 
 
 def test_the_hook_preserves_the_pinned_ffmpeg_payload_before_signing() -> None:
-    """Authenticode must not invalidate runtime's pinned upstream digest."""
+    """Authenticode must not invalidate runtime's pinned decoder digest."""
     source = SIGN_HOOK.read_text(encoding="utf-8")
-    decoder_guard = "fileName === 'ffmpeg-win-x86_64-v7.1.exe'"
+    decoder_guard = "fileName === 'ffmpeg-windows-x86_64.exe'"
     assert decoder_guard in source
     assert source.index(decoder_guard) < source.index("const REQUIRED_ENV"), (
         "the exact decoder must return before any configured signing path; "

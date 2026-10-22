@@ -307,11 +307,10 @@ def test_dev_extra_pins_agree_with_the_dev_dependency_group():
     means a locally green pytest that never ran those guards; a version skew is
     quieter still -- both sides run, against different behavior.
 
-    imageio-ffmpeg is the loud member of the same family: ``test_transcribe_ffmpeg.py``
-    imports it at module scope deliberately, so a ``.[dev]`` install without it
-    turns that whole module into a collection error rather than a silent skip.
-    It is listed here so deleting the setup.cfg line fails on the line that
-    explains why, instead of as an unexplained ImportError.
+    imageio-ffmpeg is the video encoder the dev_fleet ``feature-demo-recording``
+    skill falls back to in a source worktree's venv (its ``deps.py`` looks for
+    it). It is listed here so deleting the setup.cfg line fails on the line that
+    explains why, instead of as a demo recording that cannot encode.
     """
     group_pins = _pinned_versions(_dependency_group_requirements("dev"))
     extra_pins = _pinned_versions(_extra_requirements("dev"))

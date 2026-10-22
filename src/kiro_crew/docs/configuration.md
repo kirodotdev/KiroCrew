@@ -432,7 +432,7 @@ AWS client are the optional `voice` extra, installed as its own dependencies
   environments use a system FFmpeg from the fixed platform paths — never an
   executable inside an agent-writable project venv — and where the host packages
   none, **Settings > Voice offers a one-click decoder download** that fetches the
-  same pinned upstream bytes into `<data home>/models/ffmpeg/` and verifies them
+  same pinned bytes into `<data home>/models/ffmpeg/` and verifies them
   against a built-in SHA-256 digest before anything is executed. The digest is the
   trust anchor, so `~/.local/bin` is still not a place a decoder can be installed
   for Kiro Crew's use. If that download fails, the page offers to hand the failure

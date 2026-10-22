@@ -1,0 +1,180 @@
+name: Build ffmpeg decoder
+
+# Builds the minimal audio-only ffmpeg (scripts/build-ffmpeg.sh) for every
+# platform the desktop app ships a decoder for, and optionally publishes the
+# binaries, the exact source tarball they were built from, the build script and
+# a SHA256SUMS file as one GitHub release.
+#
+# Publishing is manual only. The release is an input to the desktop build,
+# which pins each binary by size and SHA-256 in source, so it is cut once per
+# ffmpeg bump and never on a schedule. Re-running with the same tag refuses
+# rather than replacing assets a pin may already name.
+#
+# A pull request that changes the script or this file runs the build and
+# verify legs only (`publish` needs the dispatch input), so a broken leg shows
+# up in review instead of at release time.
+#
+# Least privilege: every build leg is read-only; only `publish` can write, and
+# only release assets.
+
+on:
+  pull_request:
+    paths:
+      - scripts/build-ffmpeg.sh
+      - .github/workflows/build-ffmpeg-decoder.yml
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. ffmpeg-decoder-7.1.1-r1)"
+        required: true
+        default: "ffmpeg-decoder-7.1.1-r1"
+        type: string
+      publish:
+        description: "Publish the release (false = build and verify only)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-ffmpeg-decoder-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      max-parallel: 4
+      matrix:
+        include:
+          - target: linux-x86_64
+            runner: ubuntu-22.04
+          - target: linux-aarch64
+            runner: ubuntu-22.04-arm
+          - target: macos-aarch64
+            runner: macos-15
+          # Cross-compiled with mingw-w64; executed by `verify-windows`.
+          - target: windows-x86_64
+            runner: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # gcc + libc6-dev: the host toolchain configure needs even when
+          # cross-compiling (libc6-dev is only a Recommends of gcc).
+          sudo apt-get install -y --no-install-recommends gcc libc6-dev make nasm diffutils
+          if [ "${{ matrix.target }}" = "windows-x86_64" ]; then
+            sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+          fi
+
+      - name: Install toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: brew install nasm
+
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          name="ffmpeg-${TARGET}"
+          [ "$TARGET" = "windows-x86_64" ] && name="${name}.exe"
+          bash scripts/build-ffmpeg.sh --target "$TARGET" --out "dist/${name}" \
+            --source-out dist/source/ffmpeg-source.tar.xz
+          ls -l dist
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ffmpeg-${{ matrix.target }}
+          path: dist/ffmpeg-${{ matrix.target }}*
+          if-no-files-found: error
+          retention-days: 30
+
+      # The source tarball is identical on every leg (the script verifies its
+      # pinned SHA-256), so one leg uploads it.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: matrix.target == 'linux-x86_64'
+        with:
+          name: ffmpeg-source
+          path: dist/source/ffmpeg-source.tar.xz
+          if-no-files-found: error
+          retention-days: 30
+
+  verify-windows:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ffmpeg-windows-x86_64
+          path: dist
+
+      - name: Run the cross-built binary
+        shell: bash
+        run: |
+          exe=dist/ffmpeg-windows-x86_64.exe
+          # Capture each output before matching: a pipe into an early-exiting
+          # reader (head, grep -q) can SIGPIPE the writer and fail under pipefail.
+          version=$("$exe" -hide_banner -version)
+          echo "${version%%$'\n'*}"
+          license_text=$("$exe" -hide_banner -L | tr -s '\r\n ' '   ')
+          case "$license_text" in
+            *"GNU Lesser General Public License"*) ;;
+            *) echo "license text mismatch" >&2; exit 1 ;;
+          esac
+          decoders=$("$exe" -hide_banner -decoders)
+          for dec in aac opus vorbis mp3 flac; do
+            grep -qE "^ A[^ ]* ${dec} " <<<"$decoders"
+          done
+
+  publish:
+    if: inputs.publish
+    needs: [build, verify-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: ffmpeg-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          case "$TAG" in
+            ffmpeg-decoder-*) ;;
+            *) echo "tag must start with ffmpeg-decoder-" >&2; exit 1 ;;
+          esac
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists; pick a new -rN" >&2
+            exit 1
+          fi
+          # Artifact upload drops the executable bit; restore it so the
+          # published POSIX binaries run as downloaded.
+          chmod +x dist/ffmpeg-linux-* dist/ffmpeg-macos-*
+          cp scripts/build-ffmpeg.sh dist/build-ffmpeg.sh
+          (cd dist && sha256sum ffmpeg-* build-ffmpeg.sh > SHA256SUMS && cat SHA256SUMS)
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --notes "Minimal audio-only ffmpeg decoder used by the Kiro Crew desktop app. Built by .github/workflows/build-ffmpeg-decoder.yml from ffmpeg-source.tar.xz with build-ffmpeg.sh (both attached)." \
+            --latest=false \
+            dist/ffmpeg-* dist/build-ffmpeg.sh dist/SHA256SUMS

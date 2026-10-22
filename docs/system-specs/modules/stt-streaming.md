@@ -32,9 +32,13 @@ meetings audio import folds both into one failure: any falsy transcript, includi
 `502` with `code: "transcription_failed"`
 (`apps/builtins/meetings/backend/routes/audio_import.py`).
 
-Compressed files are decoded by the FFmpeg executable in the pinned
-`imageio-ffmpeg` wheel. It is part of the desktop voice runtime, not a desktop
-system prerequisite. The release gate resolves that exact packaged resource and
+Compressed files are decoded by a minimal audio-only FFmpeg executable
+(`scripts/build-ffmpeg.sh`, published once per bump by
+`.github/workflows/build-ffmpeg-decoder.yml` as the release
+`stt.decoder.DECODER_RELEASE`). The desktop build installs it into
+`site-packages/kirocrew_ffmpeg/bin` through `python -m kiro_crew.stt.decoder
+--install-into`, so the build and the runtime use one pin table. It is part of
+the desktop voice runtime, not a desktop system prerequisite. The release gate resolves that exact packaged resource and
 executes `ffmpeg -version`; a supported artifact cannot publish with only
 dependency metadata or an ambient PATH copy satisfying the check. Source
 environments do not read their own site-packages, because a project venv is
@@ -43,7 +47,7 @@ platform paths, and failing that the digest-verified decoder store below.
 
 **macOS Intel ships no decoder, on purpose.** `macos-x86_64` has no pin in
 `stt.decoder.ARTIFACTS`, the Intel half of the universal app installs no
-`imageio-ffmpeg` (`desktop_decoder_requirement` in `packaging/build-desktop.sh`),
+decoder (`install_desktop_decoder` in `packaging/build-desktop.sh`),
 and the store reports that platform `unsupported`. Every branch that means "a
 desktop release owns its decoder" asks `stt.decoder.bundle_carries_decoder()` —
 a bundled interpreter that is not the decoderless backend
@@ -62,13 +66,10 @@ a distribution that packages no FFmpeg (Amazon Linux, RHEL without EPEL) previou
 had no decoder it could ever reach, so batch voice was permanently broken with a
 shell command as the only remedy — and on such a host that command was an `echo`
 of the ffmpeg.org URL. `stt.decoder` closes that: it downloads the platform's
-pinned `imageio-ffmpeg==0.6.0` **wheel** from PyPI (filename, URL, size and sha256
-pinned per platform), verifies the wheel's own digest before opening it, extracts
-only `imageio_ffmpeg/binaries/<artifact>` by exact member name through a descriptor
-it opened itself (never `ZipFile.extract`, whose destination is attacker-controlled
-name data), re-verifies the extracted bytes against the SAME
-`transcribe._PACKAGED_FFMPEG_ARTIFACTS` pin, and renames it atomically into
-`<data home>/models/ffmpeg/`. Both digest tables are one table, derived in
+pinned executable from `DECODER_RELEASE` as itself (no archive), bounded by the
+pinned size and checked against the pinned sha256 — the SAME
+`transcribe._PACKAGED_FFMPEG_ARTIFACTS` pin the resolver authenticates — and
+renames it atomically into `<data home>/models/ffmpeg/`. Both digest tables are one table, derived in
 `stt.decoder`: two copies would fail as a decoder that downloads successfully and
 is then refused at exec, with nothing to say which copy was wrong.
 
@@ -90,9 +91,10 @@ it stops the build. Whether they then **execute** is a property of the build
 machine: an image lacking an OS library the executable load-time imports makes
 the loader refuse it before its entry point runs, while the identical bytes run
 correctly for a user. Windows Server Core is the case that forced the
-distinction — it carries no Video for Windows components, so it cannot load a
-Windows ffmpeg that imports `AVICAP32.dll`, and every CodeBuild Windows image is
-built on it. So an authenticated payload that will not run **warns and ships**;
+distinction — it carries no Video for Windows components, so it could not load
+the earlier full Windows ffmpeg, which imported `AVICAP32.dll`, and every
+CodeBuild Windows image is built on it. The audio-only build imports only core
+system DLLs, but the split stays because it is the right rule. So an authenticated payload that will not run **warns and ships**;
 only an unauthenticated one fails. Collapsing the two reported a build-host
 limitation as a corrupt artifact and withheld a correct release over it.
 
@@ -101,8 +103,8 @@ doing so: the Apple notary service decompresses archive members and scans what i
 inside them, so a decoder sealed as a compressed payload is rejected as an
 unsigned nested executable and fails the entire macOS release. Shipping it plain
 means the app signer rewrites its Mach-O signature, so its released bytes cannot
-match the pinned upstream digest. The runtime therefore accepts the macOS decoder
-on **either** cryptographic anchor: the pinned upstream digest (a local or
+match the pinned digest. The runtime therefore accepts the macOS decoder
+on **either** cryptographic anchor: the pinned digest (a local or
 unsigned build, and the pre-signing release gate above) or a valid Developer ID
 signature from the release team, evaluated by `codesign` against the exact
 private snapshot staged for execution. Neither anchor is a path or a

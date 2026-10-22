@@ -229,7 +229,7 @@ def find_archived_machos(app_path: str) -> "list[str]":
     "The signature does not include a secure timestamp" and "The executable does
     not have the hardened runtime enabled" against a path of the form
     `<archive>/<member>`. That is exactly how #6746 broke the release lane
-    (submission 3dbd3c7d): the Apple-Silicon imageio-ffmpeg executable was
+    (submission 3dbd3c7d): the Apple-Silicon decoder executable was
     gzip-sealed to survive signing byte-for-byte, and Apple looked inside.
 
     Catch it HERE -- at sign time, with a bisectable trail -- instead of ~30

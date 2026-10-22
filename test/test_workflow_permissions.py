@@ -250,6 +250,16 @@ class TestReusableWorkflowPermissions:
         assert _workflow_permissions("build-wheel.yml") == {"contents": "read"}
         assert _workflow_permissions("build-desktop.yml") == {"contents": "read"}
 
+    def test_ffmpeg_decoder_only_publish_can_write(self) -> None:
+        """The decoder build legs stay read-only; only `publish` writes, and
+        only release contents -- never OIDC."""
+        name = "build-ffmpeg-decoder.yml"
+        lines = _lines(name)
+        assert _workflow_permissions(name) == {"contents": "read"}
+        assert _permission_block(lines, "  build:") is None
+        assert _permission_block(lines, "  verify-windows:") is None
+        assert _permission_block(lines, "  publish:") == {"contents": "write"}
+
     def test_build_desktop_has_no_windows_leg(self) -> None:
         """The credential-free build workflow must not build Windows.
 

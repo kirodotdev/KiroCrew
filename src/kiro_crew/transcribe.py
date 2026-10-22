@@ -17,12 +17,12 @@ first-class, and neither may add a step to the local path:
   operator consent in :mod:`kiro_crew.aws_consent`.
 
 Compressed input still needs ffmpeg: a Slack voice memo arrives as ogg/Opus and
-the dashboard records webm. Desktop releases carry a pinned imageio-ffmpeg wheel
-with that executable, so desktop users never install a system binary separately --
+the dashboard records webm. Desktop releases carry a pinned audio-only decoder
+executable (:mod:`kiro_crew.stt.decoder`), so desktop users never install a system binary separately --
 except on macOS Intel, whose release ships no decoder and resolves exactly like a
 source install. Source installs use a system FFmpeg from fixed platform paths, or
 the digest-verified store :mod:`kiro_crew.stt.decoder` fetches the same pinned
-upstream bytes into. A 16 kHz mono WAV and live PCM skip the executable entirely.
+bytes into. A 16 kHz mono WAV and live PCM skip the executable entirely.
 
 Two guards here are deliberately provider-independent, because a per-branch copy
 is a copy that will be missing from the next branch someone adds:
@@ -1146,6 +1146,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _packaged_ffmpeg_resource,
         _packaged_ffmpeg_version_probe,
         _remove_named_snapshot,
+        _resolve_once,
         _seal_linux_memfd,
         _trusted_site_package_roots,
         _write_all,
