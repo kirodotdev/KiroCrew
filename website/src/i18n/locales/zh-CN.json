@@ -16178,7 +16178,9 @@
         "default_session_folder_none": "无（不归档）",
         "default_session_folder_deleted": "已删除的文件夹",
         "default_session_folder_save_failed": "无法保存默认文件夹。请重试。",
-        "default_session_folder_load_failed": "无法加载侧边栏文件夹，因此这里没有列出它们。"
+        "default_session_folder_load_failed": "无法加载侧边栏文件夹，因此这里没有列出它们。",
+        "session_card_message_preview": "会话卡片消息预览",
+        "session_card_message_preview_desc": "在每个会话标题下显示最后一条消息。未读标记和活动状态仍会显示。"
       },
       "computerUsePanel": {
         "accessibility": "辅助功能",

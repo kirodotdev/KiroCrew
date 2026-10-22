@@ -274,7 +274,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   const {
     connected, mode, isMobile, colorMode, defaultAgent, installedAgents, memoryRows, tagById, paletteColors, boost, boostFor,
     recentTintCount, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex, manualSort,
-    guideOnRowControl,
+    guideOnRowControl, showMessagePreview,
   } = view.shell
   const {
     onNativeDragStart, onNativeDragEnd, onPinnedKeyboardReorder, onManualKeyboardReorder,
@@ -1554,7 +1554,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                *  both read as a stutter. Folder membership is carried by the tree
                *  itself in folder view; in flat view the row's own context menu
                *  still names it. */}
-              {slotActivityTs(s) || isPinned || s.muted || conductorMeta ? (
+              {slotActivityTs(s) || isPinned || s.muted || conductorMeta || (!showMessagePreview && unreadDot) ? (
                 <span className="ml-auto inline-flex items-center gap-1 shrink-0">
                   {/* FIRST in the group, so it sits immediately left of the timestamp
                    *  and the timestamp keeps the position it has in every other lane.
@@ -1568,6 +1568,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                   {/* At rest, not hover-only: a muted session must read differently
                    *  from a quiet one. Beside the pin, the other state marker. */}
                   {s.muted && <span className="shrink-0" data-testid="session-row-muted" role="img" aria-label={i18nT('pages.chatSidebar.muted')} title={i18nT('pages.chatSidebar.muted')}><VolumeX size={10} className="text-muted" /></span>}
+                  {!showMessagePreview && unreadDot}
                   {isPinned && <span className="shrink-0" title={i18nT('pages.chatSidebar.pinned')}><Pin size={10} className="text-accent" /></span>}
                 </span>
               ) : null}
@@ -1612,10 +1613,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             {/* Secondary line: one ordered resolver decides both the words and the
                 marker leading them (#3830), so the two can no longer disagree.
                 The tail is `last_message`, which is also where the `unread` dot
-                lands — the one marker with no state branch of its own. A row that
-                is unread with nothing said yet still renders the line, because the
-                dot IS the content then. */}
-            {rowState ?? ((s.last_message || unreadDot) ? (
+                lands when previews are enabled. With previews hidden, the unread
+                dot sits in the trailing meta group, distinct from the live dot
+                leading the title, and leaves no empty preview line. */}
+            {rowState ?? (showMessagePreview && (s.last_message || unreadDot) ? (
               <div className={ROW_STATUS_LINE_MUTED_CLS}>
                 {unreadDot}
                 {/* `min-w-0` or the ellipsis never renders: this is a flex child, and

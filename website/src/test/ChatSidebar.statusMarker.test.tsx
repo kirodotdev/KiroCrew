@@ -27,7 +27,7 @@
  *      it keeps a real accessible name.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render } from '@testing-library/react'
+import { act, fireEvent, render, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -62,8 +62,10 @@ vi.mock('framer-motion', async () => {
 })
 
 vi.mock('../components/ProjectPicker', () => ({ default: () => null }))
+const boardPreference = vi.hoisted(() => ({ enabled: false, mobile: false }))
+vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => boardPreference.mobile }))
 vi.mock('../pages/chat/ChatSettings', () => ({
-  loadChatConfig: () => ({ tagColumnsEnabled: false, confirmCloseSession: false }),
+  loadChatConfig: () => ({ tagColumnsEnabled: boardPreference.enabled, confirmCloseSession: false }),
   saveChatConfig: vi.fn(),
 }))
 vi.mock('../api/client', () => ({
@@ -84,7 +86,9 @@ import ChatSidebar from '../pages/ChatSidebar'
 import type { RootState } from '../store'
 import type { ChatSlot } from '../types'
 
-function renderSidebar(slots: ChatSlot[], unread: string[] = [], chat: Record<string, unknown> = {}, folders: Array<Record<string, unknown>> = []) {
+function renderSidebar(slots: ChatSlot[], unread: string[] = [], chat: Record<string, unknown> = {}, folders: Array<Record<string, unknown>> = [], options: { preview?: boolean; mode?: 'list' | 'board'; fillsHost?: boolean } = {}) {
+  boardPreference.enabled = options.mode === 'board'
+  if (boardPreference.enabled) slots = slots.map(s => ({ ...s, tags: ['preview-tag'] }))
   const legacyFixtures = chat.goalLoops as Record<string, { cycle_count: number; max_cycles: number }> | undefined
   const { goalLoops: _legacyFixtures, ...chatState } = chat
   const automations = Object.fromEntries(Object.entries(legacyFixtures ?? {}).map(([slotKey, loop]) => [
@@ -105,15 +109,20 @@ function renderSidebar(slots: ChatSlot[], unread: string[] = [], chat: Record<st
     } as unknown as RootState['dashboard'],
     chat: { activeSlot: null, slotStatusDetail: {}, ...chatState, automations } as unknown as RootState['chat'],
   })
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } })
+  qc.setQueryData(['dashboardConfig'], { session_card_message_preview: options.preview })
   qc.setQueryData(['chat-folders'], folders)
-  return render(
+  if (boardPreference.enabled) {
+    qc.setQueryData(['chat-tags'], [{ id: 'preview-tag', name: 'Preview', color: '#123456', order: 0, status: true }])
+    qc.setQueryData(['tag-columns'], [{ id: 'preview-column', name: 'Preview board', tag_ids: ['preview-tag'], mode: 'any', order: 0 }])
+  }
+  const rendered = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
           <MemoryRouter>
             <ChatSidebar
-              slots={slots} activeSlot={null} unreadSlots={unread}
+              slots={slots} activeSlot={null} unreadSlots={unread} fillsHost={options.fillsHost}
               history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
             />
           </MemoryRouter>
@@ -121,6 +130,12 @@ function renderSidebar(slots: ChatSlot[], unread: string[] = [], chat: Record<st
       </Provider>
     </QueryClientProvider>,
   )
+  if (boardPreference.enabled) {
+    const column = rendered.getByTestId('column-preview-column')
+    expect(column).toHaveTextContent('Preview board')
+    expect(column.querySelector('.session-row')).toBeTruthy()
+  }
+  return { ...rendered, qc }
 }
 
 /** With no gutter, the content column is the row's FIRST child. */
@@ -153,7 +168,10 @@ function markerOf(container: HTMLElement): HTMLElement | null {
 const slot = (over: Partial<ChatSlot> = {}): ChatSlot =>
   ({ key: 'k1', title: 'a-session', running: false, messages: 2, agent: 'kirocrew', ...over }) as ChatSlot
 
-beforeEach(() => localStorage.clear())
+beforeEach(() => {
+  localStorage.clear()
+  boardPreference.mobile = false
+})
 afterEach(() => vi.clearAllMocks())
 
 describe('chat sidebar — status marker leads the secondary line', () => {
@@ -420,5 +438,79 @@ describe('chat sidebar — status marker leads the secondary line', () => {
     const line = lineOf(container)!
     expect(line.textContent).toContain('done')
     expect(line.querySelectorAll('svg, .rounded-full')).toHaveLength(0)
+  })
+})
+
+
+describe.each(['list', 'board'] as const)('message preview setting in %s view', mode => {
+  it.each([undefined, true])('shows previews when the setting is %s', preview => {
+    const { container } = renderSidebar([slot({ last_message: 'finished work' })], [], {}, [], { preview, mode })
+    expect(lineOf(container)?.textContent).toContain('finished work')
+  })
+
+  it('removes the preview line and keeps the unread indicator in the meta line', () => {
+    const { container } = renderSidebar([slot({ last_message: 'finished work' })], ['k1'], {}, [], { preview: false, mode })
+    const column = colOf(container)
+    expect(lineOf(container)).toBeNull()
+    expect(column.textContent).not.toContain('finished work')
+    const title = column.children[1]
+    expect(title.textContent).toContain('a-session')
+    expect(title.querySelector('[role="img"]')).toBeNull()
+    expect(column.children[0].querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('Agent finished — your turn')
+  })
+
+  it('updates mounted rows when the saved preference changes', async () => {
+    const { container, qc } = renderSidebar([slot({ last_message: 'finished work' })], [], {}, [], { mode })
+    expect(lineOf(container)?.textContent).toContain('finished work')
+    act(() => qc.setQueryData(['dashboardConfig'], { session_card_message_preview: false }))
+    await waitFor(() => expect(lineOf(container)).toBeNull())
+    act(() => qc.setQueryData(['dashboardConfig'], { session_card_message_preview: true }))
+    await waitFor(() => expect(lineOf(container)?.textContent).toContain('finished work'))
+  })
+
+  it.each([
+    ['approval', { pending_approval: true, running: true }, 'Needs approval'],
+    ['question', { needs_input: true, running: true }, 'Needs your answer'],
+    ['running', { running: true }, 'Thinking'],
+    ['interrupted', { interrupted: true }, 'Turn interrupted'],
+  ] as const)('keeps the %s state visible with previews hidden', (_name, over, label) => {
+    const { container } = renderSidebar([slot(over)], ['k1'], {}, [], { preview: false, mode })
+    expect(lineOf(container)?.textContent).toContain(label)
+  })
+})
+
+describe('message preview recovery', () => {
+  it.each([[true, false], [false, false], [true, true]])('handles config failures with full-width host %s and mobile %s', async (fillsHost, mobile) => {
+    boardPreference.mobile = mobile
+    const { qc, queryByTestId, findByTestId, container } = renderSidebar([slot()], [], {}, [], { fillsHost })
+    await act(async () => {
+      await expect(qc.fetchQuery({
+        queryKey: ['dashboardConfig'], staleTime: 0,
+        queryFn: () => Promise.reject(new Error('Config read unavailable')),
+      })).rejects.toThrow('Config read unavailable')
+    })
+    if (fillsHost) {
+      const notice = await findByTestId('sidebar-config-error')
+      expect(notice).toHaveTextContent('Config read unavailable')
+      expect(notice.closest('.session-row')).toBeNull()
+      expect(!!within(notice).queryByRole('button', { name: 'Ask the agent' })).toBe(!mobile)
+      fireEvent.doubleClick(container.querySelector('[data-session-title]')!)
+      expect(container.querySelector('[data-session-title] textarea')).toBeTruthy()
+      expect(within(queryByTestId('sidebar-config-error')!).queryByRole('button', { name: 'Ask the agent' })).toBeNull()
+    } else {
+      expect(queryByTestId('sidebar-config-error')).toBeNull()
+    }
+    expect(container.querySelector('.session-row')).toBeTruthy()
+    act(() => qc.setQueryData(['dashboardConfig'], { session_card_message_preview: false }))
+    await waitFor(() => expect(queryByTestId('sidebar-config-error')).toBeNull())
+  })
+
+  it('keeps unread outside the rename line when previews are hidden', () => {
+    const { container } = renderSidebar([slot()], ['k1'], {}, [], { preview: false })
+    fireEvent.doubleClick(container.querySelector('[data-session-title]')!)
+    const title = container.querySelector('[data-session-title]')!
+    expect(title.querySelector('textarea')).toBeTruthy()
+    expect(title.querySelector('[role="img"]')).toBeNull()
+    expect(colOf(container).children[0].querySelector('[aria-label="Agent finished — your turn"]')).toBeTruthy()
   })
 })

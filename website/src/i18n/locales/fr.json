@@ -16720,7 +16720,9 @@
         "default_session_folder_none": "Aucun (non classé)",
         "default_session_folder_deleted": "Dossier supprimé",
         "default_session_folder_save_failed": "Impossible d'enregistrer le dossier par défaut. Réessaie.",
-        "default_session_folder_load_failed": "Impossible de charger tes dossiers de la barre latérale, ils ne sont donc pas listés ici."
+        "default_session_folder_load_failed": "Impossible de charger tes dossiers de la barre latérale, ils ne sont donc pas listés ici.",
+        "session_card_message_preview": "Aperçus des messages sur les cartes de session",
+        "session_card_message_preview_desc": "Affiche le dernier message sous le titre de chaque session. Les indicateurs de messages non lus et l’état d’activité restent visibles."
       },
       "computerUsePanel": {
         "accessibility": "Accessibilité",

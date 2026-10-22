@@ -3581,6 +3581,15 @@ reads one of these keys.
 them at boot via `GET /api/theme/boot`; empty `theme_mode`/`theme_color` mean
 unset (the frontend falls back to `localStorage` or the built-in default).
 
+### Session message previews
+
+`DashboardConfig.session_card_message_preview` defaults to `true` and persists
+in `config.json`. Missing or non-boolean file values retain that default.
+`GET /api/dashboard/config` returns it; the owner-gated PUT accepts only a boolean
+and saves it without changing other dashboard preferences. Settings → Chat →
+Sessions exposes the switch. It controls presentation only: slot summaries still
+carry `last_message`, and changing the preference requires no gateway restart.
+
 ### Sidebar folder order
 
 `DashboardConfig.folder_sort` is the chat sidebar's folder sort mode — `custom`

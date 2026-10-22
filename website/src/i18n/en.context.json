@@ -824,6 +824,8 @@
     "app.focus_mode_on_announce": "Spoken by a screen reader when focus mode turns on and the chrome becomes unreachable. {{chord}} is the user's live key chord in ARIA spelling (e.g. Alt+Shift+M); keep it verbatim.",
     "pages.schedulePage.type_crewmate": "Line 1 of the Type cell in the Schedule list for a job that is a mate's own schedule (runs in that mate's chat). Singular noun, same word as the Mates page.",
     "pages.schedulePage.filter_by_crewmate": "Accessible name of the dropdown next to the Schedule list's search box that narrows the list to one mate's schedules.",
-    "pages.schedulePage.all_crewmates": "First row of that dropdown, which shows every job (no mate filter)."
+    "pages.schedulePage.all_crewmates": "First row of that dropdown, which shows every job (no mate filter).",
+    "pages.settings.chatPanel.session_card_message_preview": "Settings → Chat → Sessions toggle for last-message snippets on session cards in the sidebar and board; preview is message text, not a separate preview window.",
+    "pages.settings.chatPanel.session_card_message_preview_desc": "Description of the session-card message-preview toggle: hiding snippets keeps unread markers and live activity indicators visible."
   }
 }

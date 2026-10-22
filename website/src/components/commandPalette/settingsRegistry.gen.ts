@@ -1169,6 +1169,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.message-previews-on-session-cards",
+    "label": "Message previews on session cards",
+    "labelKey": "pages.settings.chatPanel.session_card_message_preview",
+    "description": "Show the last message below each session title. Unread indicators and activity status stay visible.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.session_card_message_preview"
+  },
+  {
     "id": "chat.minimap-location",
     "label": "Minimap location",
     "labelKey": "pages.settings.chatPanel.minimap_location",

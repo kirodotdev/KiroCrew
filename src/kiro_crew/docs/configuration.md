@@ -327,6 +327,7 @@ harness for crew-member DM sessions, reads the same values.
 | Key | Description | Default |
 |-----|-------------|---------|
 | `dashboard.url` | Dashboard URL for remote access | `""` (localhost only) |
+| `dashboard.session_card_message_preview` | Show the latest message beneath session titles in list and board views. Turn off in Settings → Chat → Sessions to hide previews while keeping unread indicators, approval requests and session status visible | `true` |
 | `dashboard.restore_sessions` | Restore sessions on restart | `false` |
 | `dashboard.restore_window_minutes` | Minutes after restart within which sessions can be restored | `30` |
 | `dashboard.idle_slot_sweep_days` | Days a session may sit idle before the hourly sweep archives it to History. The sweep runs only while 450 or more sessions are open (the live cap is 500). It keeps pinned sessions, app sessions, the session in the foreground, sessions with a running turn, a pending approval or sub-agents, crew worker sessions and sessions an auto-nudge loop drives. A restart also restores at most 400 open tabs, newest first, and leaves the rest in History. Both paths post one notification that links to History. Takes effect on restart. `0` = never archive | `7` |

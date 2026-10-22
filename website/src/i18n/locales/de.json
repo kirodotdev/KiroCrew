@@ -16449,7 +16449,9 @@
         "default_session_folder_none": "Keiner (ohne Ordner)",
         "default_session_folder_deleted": "Gelöschter Ordner",
         "default_session_folder_save_failed": "Der Standardordner konnte nicht gespeichert werden. Versuche es erneut.",
-        "default_session_folder_load_failed": "Deine Seitenleistenordner konnten nicht geladen werden, daher sind sie hier nicht aufgeführt."
+        "default_session_folder_load_failed": "Deine Seitenleistenordner konnten nicht geladen werden, daher sind sie hier nicht aufgeführt.",
+        "session_card_message_preview": "Nachrichtenvorschau auf Sitzungskarten",
+        "session_card_message_preview_desc": "Zeige die letzte Nachricht unter jedem Sitzungstitel. Ungelesen-Markierungen und Aktivitätsstatus bleiben sichtbar."
       },
       "computerUsePanel": {
         "accessibility": "Bedienungshilfen",

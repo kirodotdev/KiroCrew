@@ -9301,7 +9301,9 @@
         "default_session_folder_none": "None (unfiled)",
         "default_session_folder_deleted": "Deleted folder",
         "default_session_folder_save_failed": "The default folder could not be saved. Try again.",
-        "default_session_folder_load_failed": "Your sidebar folders could not be loaded, so they are not listed here."
+        "default_session_folder_load_failed": "Your sidebar folders could not be loaded, so they are not listed here.",
+        "session_card_message_preview": "Message previews on session cards",
+        "session_card_message_preview_desc": "Show the last message below each session title. Unread indicators and activity status stay visible."
       },
       "computerUsePanel": {
         "accessibility": "Accessibility",

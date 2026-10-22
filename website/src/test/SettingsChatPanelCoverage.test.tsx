@@ -465,6 +465,38 @@ describe('ChatPanel — Messages', () => {
     )
   })
 
+  it('defaults message previews on when absent and persists only the changed key', async () => {
+    wrap('sessions')
+    const sw = await settledSwitch('Message previews on session cards')
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    // Successful saves invalidate the query; the refetch must return the saved value.
+    updateDashboardConfigMock.mockImplementation(() => {
+      dashboardConfigMock.mockResolvedValue({ ...BASE_DASH, session_card_message_preview: false })
+      return Promise.resolve({})
+    })
+    fireEvent.click(sw)
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({ session_card_message_preview: false })
+    )
+    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
+  })
+
+  it('loads disabled message previews and lets the user re-enable them', async () => {
+    dashboardConfigMock.mockResolvedValue({ ...BASE_DASH, session_card_message_preview: false })
+    wrap('sessions')
+    const sw = await settledSwitch('Message previews on session cards')
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    updateDashboardConfigMock.mockImplementation(() => {
+      dashboardConfigMock.mockResolvedValue({ ...BASE_DASH, session_card_message_preview: true })
+      return Promise.resolve({})
+    })
+    fireEvent.click(sw)
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({ session_card_message_preview: true })
+    )
+    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'))
+  })
+
   it('persists the folder-suggestions toggle', async () => {
     wrap('sessions')
     fireEvent.click(await settledSwitch('Folder suggestions'))

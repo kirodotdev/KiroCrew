@@ -16991,7 +16991,9 @@
         "default_session_folder_none": "Нет (без папки)",
         "default_session_folder_deleted": "Удалённая папка",
         "default_session_folder_save_failed": "Не удалось сохранить папку по умолчанию. Попробуй ещё раз.",
-        "default_session_folder_load_failed": "Не удалось загрузить твои папки боковой панели, поэтому их здесь нет."
+        "default_session_folder_load_failed": "Не удалось загрузить твои папки боковой панели, поэтому их здесь нет.",
+        "session_card_message_preview": "Предпросмотр сообщений на карточках сеансов",
+        "session_card_message_preview_desc": "Показывай последнее сообщение под заголовком каждого сеанса. Индикаторы непрочитанных сообщений и состояние активности остаются видимыми."
       },
       "computerUsePanel": {
         "accessibility": "Универсальный доступ",
