@@ -10,8 +10,6 @@ import { sseSlots } from '../src/store/dashboardSlice'
 import { renderWithProviders, createTestStore } from './helpers'
 import { server } from './mocks/server'
 
-const mockConfirm = vi.fn(() => true)
-Object.defineProperty(window, 'confirm', { writable: true, value: mockConfirm })
 
 const seedTags = [
   { id: 'planned', name: 'Planned', color: '#6b7280', order: 0, status: true, agent_provenanced: true, agent: 'none' },
@@ -171,7 +169,6 @@ describe('ChatSidebar tag/column UI', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     localStorage.clear()
-    mockConfirm.mockReturnValue(true)
     backend = makeMockBackend()
     server.use(...backend.handlers)
     // Enable column mode so the strip renders
@@ -406,6 +403,9 @@ describe('ChatSidebar tag/column UI', () => {
     await user.click(screen.getByTestId('column-edit-c1'))
     await waitFor(() => expect(screen.getByTestId('tag-delete-todo')).toBeInTheDocument())
     await user.click(screen.getByTestId('tag-delete-todo'))
+    // The tag editor is itself a dialog; the confirmation opens above it.
+    const dialog = (await screen.findAllByRole('dialog')).at(-1)!
+    await user.click(within(dialog).getByRole('button', { name: /delete/i }))
     await waitFor(() => expect(backend.state.tags.find(t => t.id === 'todo')).toBeUndefined())
   })
 
@@ -431,6 +431,8 @@ describe('ChatSidebar tag/column UI', () => {
     renderBoard()
     await waitFor(() => expect(screen.getByTestId('column-c1')).toBeInTheDocument())
     await user.click(screen.getByTestId('column-delete-c1'))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete this column?' })
+    await user.click(within(dialog).getByRole('button', { name: 'Delete column' }))
     await waitFor(() => expect(backend.state.columns.length).toBe(0))
   })
 

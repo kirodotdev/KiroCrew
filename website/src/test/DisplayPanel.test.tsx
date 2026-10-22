@@ -173,6 +173,29 @@ describe('DisplayPanel – ThemeEditorPanel overlay', () => {
     expect(screen.getByText('Install Theme')).toBeInTheDocument()
   })
 
+  it('keeps a theme-list delete confirmation mounted while the editor modal is closed', async () => {
+    const user = userEvent.setup()
+    const deleteCustomTheme = vi.fn().mockResolvedValue(undefined)
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      allThemes: [
+        { value: 'default', label: 'Default', custom: false },
+        { value: 'custom-ocean', label: 'Ocean', custom: true },
+      ],
+      deleteCustomTheme,
+    }))
+    renderPanel()
+
+    expect(screen.queryByRole('dialog', { name: 'Create Theme' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('Delete this custom theme?')
+    await user.click(within(dialog).getByRole('button', { name: 'Delete theme' }))
+
+    await waitFor(() => expect(deleteCustomTheme).toHaveBeenCalledWith('ocean'))
+  })
+
   it('dismisses the theme editor on Escape and on a backdrop click', async () => {
     // Escape is the capability the hand-rolled overlay lacked; the backdrop
     // click it already had must survive the conversion. Both are the ACCIDENTAL

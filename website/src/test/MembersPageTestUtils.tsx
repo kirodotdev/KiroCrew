@@ -12,7 +12,8 @@ import { namedCeiling } from './namedCeiling'
 import { defaultScheduler, notifyManager } from '@tanstack/react-query'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { renderWithProviders } from './helpers'
-import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../components/NavigationLeaveGuard'
+import { NavigationLeaveGuardProvider, settleNavigationExit, useClaimNavigationExitAttempt, useMayLeaveNow } from '../components/NavigationLeaveGuard'
+import { useMayLeaveAsPromise } from './useMayLeaveAsPromise'
 import { api } from '../api/client'
 import { MobileRosterBarContext } from '../components/MobileNavRailContext'
 import MembersPage from '../pages/members/MembersPage'
@@ -202,7 +203,8 @@ function GuideNavProbe() {
  *  nothing and navigates bare. `rail-members-raw` is a push nobody guarded (a
  *  command-bar row's plain `navigate('/members')`). */
 function RailProbe() {
-  const mayLeave = useMayLeaveForNavigation()
+  const mayLeave = useMayLeaveNow()
+  const claimExitAttempt = useClaimNavigationExitAttempt()
   const navigate = useNavigate()
   const loc = useLocation()
   const current = loc.pathname + loc.search === '/members'
@@ -210,7 +212,8 @@ function RailProbe() {
     <>
       <button type="button" data-testid="rail-members" onClick={() => {
         if (current) { navigate('/members'); return }
-        if (mayLeave()) navigate('/members', { state: { leaveGranted: true } })
+        const attempt = claimExitAttempt()
+        if (attempt) settleNavigationExit(attempt, mayLeave, () => navigate('/members', { state: { leaveGranted: true } }))
       }}>Crewmates</button>
       <button type="button" data-testid="rail-members-raw" onClick={() => navigate('/members')}>Crewmates (unguarded)</button>
     </>
@@ -220,10 +223,10 @@ function RailProbe() {
 /** Stands in for an app-shell navigation surface (sidebar, palette, Back): asks
  *  the page's registered leave guard and records the answer. */
 function LeaveProbe() {
-  const mayLeave = useMayLeaveForNavigation()
+  const mayLeave = useMayLeaveAsPromise()
   const [answer, setAnswer] = useState('')
   return (
-    <button type="button" data-testid="leave-probe" onClick={() => setAnswer(String(mayLeave()))}>
+    <button type="button" data-testid="leave-probe" onClick={() => { void mayLeave().then(ok => setAnswer(String(ok))) }}>
       {answer}
     </button>
   )

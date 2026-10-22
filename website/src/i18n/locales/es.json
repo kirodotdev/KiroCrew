@@ -3248,6 +3248,7 @@
         "deleteConfirm": "¿Eliminar “{{title}}” y todas sus notas, diagramas y tareas? Esta acción no se puede deshacer.",
         "deleteFailed": "No se pudo eliminar esta reunión.",
         "deleteMeeting": "Eliminar {{title}}",
+        "deleteMeetingButton": "Eliminar reunión",
         "deleteUnavailable": "Finaliza esta reunión antes de eliminarla",
         "deleted": "Se eliminó “{{title}}”",
         "empty": "Sin reuniones",
@@ -3289,6 +3290,7 @@
       "meeting": {
         "agentsPaused": "Los agentes se detuvieron tras varios fallos.",
         "attachPrompt": "Pega un enlace para compartir con los agentes",
+        "attachRequired": "Introduce un enlace.",
         "back": "Volver",
         "endAndReview": "Terminar y revisar",
         "ended": "Terminada",
@@ -4478,6 +4480,7 @@
       },
       "fileTree": {
         "delete_file": "Eliminar {{file}}",
+        "delete_file_button": "Eliminar archivo",
         "files": "Archivos",
         "main": "Principal",
         "new_file": "Nuevo archivo",
@@ -4509,6 +4512,7 @@
         "create": "Crear",
         "create_one_above_or_clone_an_existing_repository": "Crea uno arriba o clona un repositorio existente.",
         "delete_paper": "Eliminar {{name}}",
+        "delete_paper_button": "Eliminar artículo",
         "delete_paper_confirm": "¿Eliminar “{{name}}” y todos sus archivos? Esta acción no se puede deshacer.",
         "downloading_compiler_progress": "Descargando… {{done}} de {{total}}",
         "install_compiler": "Instalar compilador",
@@ -4570,6 +4574,7 @@
         "log": "Registro",
         "main_document": "Documento principal",
         "new_file_prompt": "Nombra el archivo nuevo, por ejemplo methods.tex",
+        "new_file_name_required": "Introduce un nombre de archivo.",
         "papers": "Artículos",
         "pull": "Traer",
         "save_and_compile_hint": "Pulsa Cmd+S (Ctrl+S en Windows y Linux) para guardar y compilar.",
@@ -7919,7 +7924,8 @@
         "search": "Buscar…",
         "show_less": "Mostrar menos",
         "show_muted_count": "Mostrar silenciadas ({{count}})",
-        "try_a_different_search": "Prueba con otra búsqueda"
+        "try_a_different_search": "Prueba con otra búsqueda",
+        "clear_failed": "No se pudieron borrar las notificaciones. Vuelve a intentarlo."
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "Recibe avisos cuando no estés",
@@ -8801,6 +8807,8 @@
       "change_color": "Cambiar el color de {{name}}",
       "delete_tag": "Eliminar la etiqueta \"{{name}}\"",
       "delete_tag_2": "Eliminar la etiqueta {{name}}",
+      "delete_tag_button": "Eliminar etiqueta",
+      "delete_tag_confirm_title": "¿Eliminar la etiqueta “{{name}}”?",
       "filter_by_tag": "Filtrar por etiqueta",
       "include_in_filter": "Incluir {{name}} en el filtro",
       "make_a_status_tag": "Convertir {{name}} en etiqueta de estado",
@@ -8855,6 +8863,7 @@
       "dark_mode_colors": "Colores del modo oscuro",
       "default_theme_name": "Mi tema",
       "delete_theme": "🗑 Eliminar tema",
+      "delete_theme_confirm": "Eliminar tema",
       "delete_this_custom_theme": "¿Eliminar este tema personalizado?",
       "editing": "Editando:",
       "emoji": "Emoji",
@@ -9051,8 +9060,9 @@
       "aws_profile_to_deploy_with": "Perfil de AWS con el que desplegar",
       "backend": "Backend",
       "billed_to_your_account": "· se factura a tu cuenta",
-      "cancel_tear_down": "Cancelar / Desmontar",
-      "cancel_tear_down_marks_the_deployment_expired_in": "Cancelar / Desmontar: marca el despliegue como caducado; la infraestructura la elimina el recolector de la propia cuenta o scripts/teardown.sh",
+      "cancel_tear_down": "Desmontar despliegue",
+      "tear_down_question": "¿Desmontar este despliegue?",
+      "cancel_tear_down_marks_the_deployment_expired_in": "Desmontar despliegue: marca el despliegue como caducado; la infraestructura la elimina el recolector de la propia cuenta o scripts/teardown.sh",
       "copy_url": "Copiar la URL",
       "deploy": "Desplegar",
       "deploy_this_app_to_your_aws_account": "Desplegar esta app en tu cuenta de AWS",
@@ -9416,7 +9426,8 @@
       "withdraw_effect": "Al retirarla, los agentes dejan de usar este servicio hasta que vuelvas a confirmar."
     },
     "confirmDialog": {
-      "cancel": "Cancelar"
+      "cancel": "Cancelar",
+      "keep_editing": "Seguir editando"
     },
     "crewWebhookSection": {
       "could_not_load_webhooks": "No se pudieron cargar los webhooks, así que ahora mismo se desconoce qué despierta a este agente.",
@@ -11157,7 +11168,6 @@
       "channels": "Canales",
       "clear_all_context": "Borrar todo el contexto",
       "clear_context": "Borrar contexto",
-      "clear_context_2": "Borrar contexto",
       "click_new_to_create_one": "Haz clic en + Nuevo para crear uno.",
       "close": "Cerrar",
       "close_agents_panel": "Cerrar el panel de agentes",
@@ -13974,6 +13984,9 @@
         "search_knowledge_press_enter_to_search": "Buscar en el conocimiento... (pulsa Enter para buscar)",
         "select_all": "Seleccionar todo",
         "selected": "seleccionados",
+        "permanently_delete_selected_items_many": "¿Eliminar permanentemente {{count}} elementos seleccionados?",
+        "permanently_delete_selected_items_one": "¿Eliminar permanentemente {{count}} elemento seleccionado?",
+        "permanently_delete_selected_items_other": "¿Eliminar permanentemente {{count}} elementos seleccionados?",
         "sources_tab": "Fuentes",
         "status_active": "Activo",
         "status_archived": "Archivadas",
@@ -18859,6 +18872,7 @@
       "create_leave_draft": "¿Salir de esta página? El diálogo Nuevo compañero se cierra y lo que escribiste se pierde.",
       "edit_leave_draft": "¿Salir de esta página? Se perderán los cambios sin guardar de este compañero.",
       "create_leave_busy": "¿Salir mientras se crea el compañero? Puede que se cree igualmente, pero su chat no se abrirá aquí; revisa la lista después.",
+      "create_leave_busy_button": "Salir de la página",
       "add_member_pending": "Reintenta o descarta el aviso sobre {{name}} antes de añadir otro compañero.",
       "add_member_pending_roster": "Actualiza la lista para {{name}} antes de añadir otro compañero.",
       "add_member_settling": "Terminando el primer mensaje de {{name}} antes de añadir otro compañero.",

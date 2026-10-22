@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
@@ -247,6 +247,18 @@ describe('KnowledgePage — help dialog', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(screen.getByText('1 selected')).toBeInTheDocument()
   })
+
+  it('Escape on the bulk-delete confirmation cancels it and keeps the selection', async () => {
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    await searchFor('ledger')
+    await userEvent.click(await screen.findByLabelText('Select Quarterly ledger notes'))
+    expect(await screen.findByText('1 selected')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await screen.findByRole('dialog', { name: 'Permanently delete 1 selected item?' })
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
+  })
 })
 
 describe('KnowledgePage — keyboard shortcuts', () => {
@@ -335,23 +347,29 @@ describe('KnowledgePage — bulk actions', () => {
   })
 
   it('deletes the selection only after the confirm prompt is accepted', async () => {
-    const confirmSpy = vi.fn(() => true)
-    vi.stubGlobal('confirm', confirmSpy)
     await selectFlatItem()
     await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await confirmAction(/delete/i)
     await waitFor(() => expect(mutationCalls('DELETE')).toHaveLength(1))
     expect(mutationCalls('DELETE')[0][0]).toBe('/items/f1')
-    expect(confirmSpy).toHaveBeenCalled()
-    vi.unstubAllGlobals()
+  })
+
+  it('shows the failure and keeps the selection when the delete fails', async () => {
+    await selectFlatItem()
+    itemMutationError = new Error('delete refused')
+    await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await confirmAction(/delete/i)
+    expect(await screen.findByTestId('knowledge-bulk-delete-error')).toHaveTextContent('delete refused')
+    expect(await screen.findByText('Quarterly ledger notes')).toBeInTheDocument()
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
   })
 
   it('writes nothing when the delete prompt is dismissed', async () => {
-    vi.stubGlobal('confirm', vi.fn(() => false))
     await selectFlatItem()
     await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await confirmAction('Cancel')
     expect(mutationCalls('DELETE')).toHaveLength(0)
     expect(screen.getByText('1 selected')).toBeInTheDocument()
-    vi.unstubAllGlobals()
   })
 
   it('copies the content of the selected items', async () => {
@@ -461,6 +479,27 @@ describe('KnowledgePage — graph tab', () => {
     expect(await screen.findByText('Items mentioning:')).toBeInTheDocument()
   })
 })
+
+
+async function confirmAction(name: string | RegExp) {
+  const dialog = await waitFor(() => {
+    const confirmDialog = screen.getAllByRole('dialog').find(candidate =>
+      candidate.querySelector('[data-guide-confirm]'),
+    )
+    if (!confirmDialog) throw new Error('Native confirmation dialog is not open')
+    return confirmDialog
+  })
+  const action = name === 'Cancel'
+    ? within(dialog).getByRole('button', { name: 'Cancel' })
+    : dialog.querySelector<HTMLButtonElement>('[data-guide-confirm]')
+  if (!action) throw new Error('Native confirmation action is not rendered')
+  const actionName = action.textContent?.trim() ?? ''
+  if (typeof name === 'string' ? actionName !== name : !name.test(actionName)) {
+    throw new Error(`Unexpected native confirmation action: ${actionName}`)
+  }
+  fireEvent.click(action)
+  await waitFor(() => expect(document.querySelector('[data-guide-confirm]')).toBeNull())
+}
 
 describe('KnowledgePage — empty states and stats', () => {
   it('sends a brand new library to the Sources tab', async () => {

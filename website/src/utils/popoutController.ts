@@ -24,6 +24,7 @@
  */
 
 import { i18nT } from '../i18n/t'
+import { appErrorNotice } from '../lib/appNotice'
 import { withBase } from '../lib/basePath'
 
 /** Heartbeat cadence (ms) for the main window's liveness ping. */
@@ -365,9 +366,7 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
       // open — and don't fail silently: tell the user why nothing happened and
       // leave an operator-diagnosable trail.
       logWarn(`window.open blocked for ${id} — pop-up blocker or browser policy`)
-      try {
-        window.alert(i18nT('utils.popoutController.your_browser_blocked_the_pop_out_window_allow_po'))
-      } catch { /* alert unavailable (e.g. sandboxed frame) — the warn above still records it */ }
+      appErrorNotice(i18nT('utils.popoutController.your_browser_blocked_the_pop_out_window_allow_po'))
       return
     }
     handles.set(id, win)

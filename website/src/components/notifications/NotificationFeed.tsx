@@ -8,6 +8,8 @@ import { deleteNotification, clearNotifications, ackAllNotifications } from '../
 import { api } from '../../api/client'
 import { EmptyState, SearchInput } from '../ui'
 import Clickable from '../Clickable'
+import { useConfirm } from '../ConfirmDialog'
+import ErrorNotice from '../ErrorNotice'
 import Glass from '../Glass'
 import MarkdownRenderer from '../MarkdownRenderer'
 import MessageErrorBoundary from '../MessageErrorBoundary'
@@ -44,7 +46,7 @@ function loadSeenChannels(): Set<string> {
  * detail panel; deleting the selected row clears it naturally because the host
  * derives `selected` from the items list by ts.
  */
-export default function NotificationFeed({ selectedTs, onSelect, variant = 'panel', header, footer, revealTs = null }: {
+export default function NotificationFeed({ selectedTs, onSelect, variant = 'panel', header, footer, revealTs = null, onConfirmOpenChange }: {
   selectedTs: string | null
   onSelect: (n: Notification) => void
   /** 'mac' renders rows as floating Notification Center-style cards. */
@@ -57,7 +59,15 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
    *  collapsed group_key stack hiding it, then scrolls it into view. Each
    *  distinct value is revealed once; selection/ack stay the host's job. */
   revealTs?: string | null
+  /** A host that dismisses on outside pointers or Escape must stand down while
+   *  the portalled confirmation is open, or answering it dismisses the host. */
+  onConfirmOpenChange?: (open: boolean) => void
 }) {
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
+  useEffect(() => {
+    onConfirmOpenChange?.(confirmOpen)
+    return () => onConfirmOpenChange?.(false)
+  }, [confirmOpen, onConfirmOpenChange])
   const dispatch = useAppDispatch()
   const items = useAppSelector(s => s.notifications.items)
   const [filter, setFilter] = useState('')
@@ -66,6 +76,10 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   // kind filter: it reveals rows that are otherwise unreachable, so it survived
   // the removal of the per-kind chips.
   const [showMuted, setShowMuted] = useState(false)
+  // The notes a failed Clear all asked to remove. The error shows only while one
+  // of them is still listed, so another clear (this feed or the other one) that
+  // got through removes it whatever order the requests settle in.
+  const [clearFailedFor, setClearFailedFor] = useState<ReadonlySet<string> | null>(null)
   // App channels the user has already kept/muted via the first-notification
   // prompt (persisted so the prompt shows exactly once per channel).
   const [seenChannels, setSeenChannels] = useState<Set<string>>(loadSeenChannels)
@@ -268,11 +282,41 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
       </button>
     </div>
   ) : null
+  // Read after the awaited question: a note delivered while it is open was not shown.
+  const itemsRef = useRef(items)
+  itemsRef.current = items
+  const clearAll = useCallback(async () => {
+    const shown = new Set(itemsRef.current.map(n => n.ts))
+    if (!(await confirm({
+      title: i18nT('components.notifications.notificationFeed.clear_all_notifications'),
+      confirmLabel: i18nT('components.notifications.notificationFeed.clear'),
+    }))) return
+    // Nothing arrived: one clear, as before. Otherwise delete only what was shown,
+    // so the new note survives; a failed delete leaves its row in place.
+    const writes = itemsRef.current.every(n => shown.has(n.ts))
+      ? [dispatch(clearNotifications()).unwrap()]
+      : [...shown].map(ts => dispatch(deleteNotification(ts)).unwrap())
+    const results = await Promise.allSettled(writes)
+    if (results.some(r => r.status === 'rejected')) setClearFailedFor(shown)
+  }, [confirm, dispatch])
+  /* No hand-off: the feed is also the bell overlay, over pages that may hold an
+     unsaved draft. The Clear button is the retry. */
+  const clearFailed = clearFailedFor !== null && items.some(n => clearFailedFor.has(n.ts))
+  const clearFailedNotice = clearFailed ? (
+    <ErrorNotice
+      variant="inline"
+      testId="notification-feed-clear-failed"
+      message={i18nT('components.notifications.notificationFeed.clear_failed')}
+      onDismiss={() => setClearFailedFor(null)}
+      className="mb-2"
+    />
+  ) : null
+
   const searchRow = (
     <div className="flex gap-2 mb-2 items-center shrink-0">
       <div className="flex-1"><SearchInput className="[&>input]:!bg-bg-elevated/40 [&>input]:!border-border/60" placeholder={i18nT('components.notifications.notificationFeed.search')} value={filter} onChange={e => setFilter(e.target.value)} /></div>
       {!mac && unread > 0 && <button {...uiLocation('notifications.page-mark-all-read')} className="px-2 py-1 rounded-md border border-ok/40 bg-ok/10 text-ok-text text-[12px] font-semibold cursor-pointer hover:bg-ok/20 transition-all font-body whitespace-nowrap" onClick={() => dispatch(ackAllNotifications())}><Check className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.all')}</button>}
-      {!mac && items.length > 0 && <button {...uiLocation('notifications.page-clear-all')} className="px-2 py-1 rounded-md border border-danger/40 bg-transparent text-danger hover:text-danger-text text-[12px] font-medium cursor-pointer hover:bg-danger/10 transition-all font-body whitespace-nowrap" onClick={() => { if (confirm(i18nT('components.notifications.notificationFeed.clear_all_notifications'))) dispatch(clearNotifications()) }}><X className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.clear')}</button>}
+      {!mac && items.length > 0 && <button {...uiLocation('notifications.page-clear-all')} className="px-2 py-1 rounded-md border border-danger/40 bg-transparent text-danger hover:text-danger-text text-[12px] font-medium cursor-pointer hover:bg-danger/10 transition-all font-body whitespace-nowrap" onClick={() => { void clearAll() }}><X className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.clear')}</button>}
     </div>
   )
 
@@ -298,6 +342,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
+      {confirmDialog}
       {/* Controls: mac mode groups header + search + muted disclosure in ONE
           floating card (search above the disclosure); panel mode puts the
           disclosure first, directly on the popover surface. */}
@@ -320,11 +365,12 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 aria-label={i18nT('components.notifications.notificationFeed.clear_all_notifications')}
                 {...uiLocation('notifications.clear-all')}
                 className="w-6 h-6 rounded-md flex items-center justify-center text-muted bg-transparent border-none cursor-pointer hover:bg-danger/10 hover:text-danger-text transition-colors shrink-0"
-                onClick={() => { if (confirm(i18nT('components.notifications.notificationFeed.clear_all_notifications'))) dispatch(clearNotifications()) }}
+                onClick={() => { void clearAll() }}
               ><Trash2 className="lucide-inline" /></button>
             )}
           </div>
           {searchRow}
+          {clearFailedNotice}
           {mutedRow}
           {/* One-time nudge toward OS notifications, shown only while the
               browser has not been asked yet and there is something to be
@@ -337,6 +383,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
         <>
           {mutedRow}
           {searchRow}
+          {clearFailedNotice}
         </>
       )}
 

@@ -14,6 +14,7 @@ import { useImeGuard } from '../../hooks/useImeGuard'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 import { servedUploadMb } from '../../utils/fileTokens'
 import ErrorNotice from '../../components/ErrorNotice'
+import { useConfirm } from '../../components/ConfirmDialog'
 
 /**
  * Indexing progress and the Kiro requests a source still owes.
@@ -418,6 +419,17 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     },
   })
 
+  const { confirm, confirmDialog } = useConfirm()
+  const handleDelete = async (source: Source) => {
+    if (deleteMutation.isPending) return
+    const id = source.id
+    const ok = await confirm({
+      title: i18nT('pages.knowledge.sourcesList.remove_this_source_and_all_its_ingested_items'),
+      confirmLabel: i18nT('pages.knowledge.sourcesList.remove_source'),
+    })
+    if (ok) deleteMutation.mutate(id)
+  }
+
   const handleAdd = () => {
     if (!addUri.trim()) return
     const body: Record<string, unknown> = { name: addName || addUri, source_type: addType, uri: addUri }
@@ -434,6 +446,14 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
 
   return (
     <div className="space-y-3">
+      {confirmDialog}
+      {/* No hand-off: the hand-off unmounts this list, losing an open add-source panel's drafts and an in-progress rename. */}
+      <ErrorNotice
+        variant="inline"
+        testId="sources-delete-error"
+        message={deleteMutation.error?.message}
+        onDismiss={() => deleteMutation.reset()}
+      />
       {/* Stated unconditionally rather than only on the add-source dialog: the cost
           is ongoing, and a user who inherits a configured folder never sees that
           dialog at all. It also carries the fact that the charge is gradual, which
@@ -657,7 +677,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                     : <><RefreshCw size={12} /> {i18nT('pages.knowledge.sourcesList.sync')}</>}
                 </button>
               )}
-              <button aria-label={i18nT('pages.knowledge.sourcesList.remove_source')} onClick={() => { if (confirm(i18nT('pages.knowledge.sourcesList.remove_this_source_and_all_its_ingested_items'))) deleteMutation.mutate(s.id) }}
+              <button aria-label={i18nT('pages.knowledge.sourcesList.remove_source')} onClick={() => { void handleDelete(s) }}
                 disabled={isDeleting}
                 className="px-2 py-1 text-[11px] border border-border rounded hover:bg-bg-elevated text-danger/70 hover:text-danger disabled:opacity-50 flex items-center gap-0.5">
                 {isDeleting ? <RefreshCw size={12} className="animate-spin" /> : <X size={12} />}

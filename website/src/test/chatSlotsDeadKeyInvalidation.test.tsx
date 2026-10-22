@@ -45,7 +45,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { fireEvent, render, renderHook, act, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, renderHook, act, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import type { ReactNode } from 'react'
@@ -105,13 +105,14 @@ afterEach(() => {
 describe('tag delete invalidates only caches a query is registered on', () => {
   it('refreshes chat-tags and tag-columns, and names no chat-slots key', async () => {
     const { qc, keys } = recordingClient()
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(
       <QueryClientProvider client={qc}>
         <TagManagerList mode="manage" />
       </QueryClientProvider>,
     )
     fireEvent.click(await screen.findByTestId('tag-delete-t1'))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: /Delete/i }))
     await waitFor(() => expect(mocks.deleteChatTag).toHaveBeenCalledWith('t1'))
     await waitFor(() => expect(keys().length).toBeGreaterThanOrEqual(2))
 
@@ -124,7 +125,6 @@ describe('tag delete invalidates only caches a query is registered on', () => {
     // And it reaches for the list no other way either: the handler must not
     // trade the dead invalidate for a whole-list GET.
     expect(mocks.chatSlots).not.toHaveBeenCalled()
-    confirmSpy.mockRestore()
   })
 })
 

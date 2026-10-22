@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
+import { within, render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 
@@ -114,6 +114,27 @@ beforeEach(() => {
   mockApi.skillTree.mockResolvedValue({ tree: [] })
   mockApi.skillPendingDetail.mockResolvedValue(FLAGGED_DETAIL)
 })
+
+
+async function confirmAction(name: string | RegExp) {
+  const dialog = await waitFor(() => {
+    const confirmDialog = screen.getAllByRole('dialog').find(candidate =>
+      candidate.querySelector('[data-guide-confirm]'),
+    )
+    if (!confirmDialog) throw new Error('Native confirmation dialog is not open')
+    return confirmDialog
+  })
+  const action = name === 'Cancel'
+    ? within(dialog).getByRole('button', { name: 'Cancel' })
+    : dialog.querySelector<HTMLButtonElement>('[data-guide-confirm]')
+  if (!action) throw new Error('Native confirmation action is not rendered')
+  const actionName = action.textContent?.trim() ?? ''
+  if (typeof name === 'string' ? actionName !== name : !name.test(actionName)) {
+    throw new Error(`Unexpected native confirmation action: ${actionName}`)
+  }
+  fireEvent.click(action)
+  await waitFor(() => expect(document.querySelector('[data-guide-confirm]')).toBeNull())
+}
 
 describe('pending-card script-validation verdict (issue #10861)', () => {
   it('renders a fails-validation badge from the list entry, before any click', async () => {
@@ -251,7 +272,7 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
       Object.assign(new Error('script validation failed'), { status: 422, body }),
     )
     mockApi.dismissPendingSkill.mockResolvedValue({ dismissed: true })
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     try {
       renderWithQuery()
       await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument())
@@ -267,6 +288,7 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
       // Dismiss the candidate; the row (still rendered from the stale list
       // mock) must no longer carry the previous candidate's refusal notice.
       fireEvent.click(screen.getByText('Dismiss'))
+    await confirmAction('Dismiss')
       await waitFor(() => expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('evil-helper'))
       await waitFor(() =>
         expect(
@@ -274,7 +296,7 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
         ).not.toBeInTheDocument(),
       )
     } finally {
-      confirmSpy.mockRestore()
+
     }
   })
 
@@ -286,11 +308,12 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
         body: JSON.stringify({ error: 'pending skill not found', code: 'pending_skill_not_found' }),
       }),
     )
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     try {
       renderWithQuery()
       await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument())
       fireEvent.click(screen.getByText('Dismiss'))
+    await confirmAction('Dismiss')
       await waitFor(() => expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('evil-helper'))
       // The mutation's rejection must not vanish: the panel renders the
       // localized failure through ErrorNotice (errors-use-error-notice —
@@ -317,13 +340,14 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
       // before the new mutation settles.
       mockApi.dismissPendingSkill.mockResolvedValue({ dismissed: true })
       fireEvent.click(screen.getByText('Dismiss'))
+    await confirmAction('Dismiss')
       await waitFor(() =>
         expect(
           screen.queryByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already dismissed in another window or by your Kiro Crew agent and does not appear in the Skills list below; a replacement candidate can be proposed again later).'),
         ).not.toBeInTheDocument(),
       )
     } finally {
-      confirmSpy.mockRestore()
+
     }
   })
 
@@ -339,11 +363,12 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
         body: JSON.stringify({ error: 'pending skill not found', code: 'pending_skill_not_found' }),
       }),
     )
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     try {
       renderWithQuery()
       await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument())
       fireEvent.click(screen.getByText('Dismiss'))
+    await confirmAction('Dismiss')
       await waitFor(() =>
         expect(
           screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — approved or dismissed in another window or by your Kiro Crew agent).'),
@@ -357,7 +382,7 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
       expect(screen.getByRole('alert').textContent).not.toContain('already dismissed')
       expect(screen.getByRole('alert').textContent).not.toContain('already approved')
     } finally {
-      confirmSpy.mockRestore()
+
     }
   })
 
@@ -375,12 +400,13 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
         body: JSON.stringify({ error: 'pending skill not found', code: 'pending_skill_not_found' }),
       }),
     )
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     try {
       renderWithQuery()
       await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument())
       live = true
       fireEvent.click(screen.getByText('Dismiss'))
+    await confirmAction('Dismiss')
       await waitFor(() =>
         expect(
           screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already approved in another window or by your Kiro Crew agent and now appears in the Skills list below).'),
@@ -388,7 +414,7 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
       )
       expect(screen.getByRole('alert').textContent).not.toContain('approved or dismissed')
     } finally {
-      confirmSpy.mockRestore()
+
     }
   })
 

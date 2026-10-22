@@ -17,6 +17,7 @@ import {
 import { api } from '../api/client'
 import { Badge } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
+import { useConfirm } from '../components/ConfirmDialog'
 import SimpleSelect from '../components/SimpleSelect'
 import { framablePreviewUrl, safeHttpUrl } from '../lib/safeUrl'
 import { useCloudDeploymentEnabled } from '../hooks/useCloudDeploymentEnabled'
@@ -306,6 +307,7 @@ export default function WebAppArtifactCard({
   const [progress, setProgress] = useState(() =>
     ttlProgressPct(lc?.expires_at ?? null, lc?.ttl_hours ?? 0),
   )
+  const { confirm, confirmDialog } = useConfirm()
   const queryClient = useQueryClient()
 
   // Live countdown timer. Eagerly resync on every lifecycle change (e.g. a
@@ -434,12 +436,17 @@ export default function WebAppArtifactCard({
     ? i18nT('components.webAppArtifactCard.estimated_cost_over_ttl_window', { hours: cost.window_hours })
     : i18nT('components.webAppArtifactCard.estimated_monthly_cost')
 
-  const handleTeardown = () => {
+  const handleTeardown = async () => {
     const resourceList = architecture.resources
       .map((r: { type: string; id: string }) => `  ${r.type}: ${r.id}`)
       .join('\n')
-    const msg = i18nT('components.webAppArtifactCard.tear_down_confirm', { resources: resourceList })
-    if (!window.confirm(msg)) return
+    if (!(await confirm({
+      title: i18nT('components.webAppArtifactCard.tear_down_question'),
+      // The resource list is one per line; a plain string body would collapse
+      // those breaks and run the irreversible list into the sentences around it.
+      body: <p className="text-sm text-text m-0 whitespace-pre-line">{i18nT('components.webAppArtifactCard.tear_down_confirm', { resources: resourceList })}</p>,
+      confirmLabel: i18nT('components.webAppArtifactCard.cancel_tear_down'),
+    }))) return
     teardownMut.mutate()
   }
 
@@ -569,6 +576,7 @@ export default function WebAppArtifactCard({
   // ------------------------------------------------------- deployed / expired
   return (
     <div className="space-y-4">
+      {confirmDialog}
       {/* Browser-framed hero: chrome bar (URL + actions) over the live site
           preview. Expired deployments show a tombstone instead — a dead URL
           must never render as something that looks alive. */}

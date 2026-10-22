@@ -180,7 +180,6 @@ export interface RowPlacement {
  *  row and nothing else does. */
 export interface RowShell {
   connected: boolean
-  mode: string | undefined
   /** A phone-width viewport or any touch screen: the single ⋯ menu instead of the
    *  hover-revealed action cluster. */
   isMobile: boolean

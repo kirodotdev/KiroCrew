@@ -123,6 +123,27 @@ beforeEach(() => {
   mockApi.deleteSteering.mockResolvedValue({ ok: true })
 })
 
+
+async function confirmAction(name: string | RegExp) {
+  const dialog = await waitFor(() => {
+    const confirmDialog = screen.getAllByRole('dialog').find(candidate =>
+      candidate.querySelector('[data-guide-confirm]'),
+    )
+    if (!confirmDialog) throw new Error('Native confirmation dialog is not open')
+    return confirmDialog
+  })
+  const action = name === 'Cancel'
+    ? within(dialog).getByRole('button', { name: 'Cancel' })
+    : dialog.querySelector<HTMLButtonElement>('[data-guide-confirm]')
+  if (!action) throw new Error('Native confirmation action is not rendered')
+  const actionName = action.textContent?.trim() ?? ''
+  if (typeof name === 'string' ? actionName !== name : !name.test(actionName)) {
+    throw new Error(`Unexpected native confirmation action: ${actionName}`)
+  }
+  fireEvent.click(action)
+  await waitFor(() => expect(document.querySelector('[data-guide-confirm]')).toBeNull())
+}
+
 describe('SteeringTab', () => {
   it('lists files from both sources with scope badges', async () => {
     renderTab()
@@ -568,17 +589,17 @@ describe('SteeringTab', () => {
   })
 
   it('Delete confirms before calling the API', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+
     renderTab()
     await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Delete'))
-    expect(confirmSpy).toHaveBeenCalled()
+    await confirmAction('Cancel')
     expect(mockApi.deleteSteering).not.toHaveBeenCalled()
 
-    confirmSpy.mockReturnValue(true)
     fireEvent.click(screen.getByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(mockApi.deleteSteering).toHaveBeenCalledWith('user/personal.md', undefined, 'pk-listed'))
-    confirmSpy.mockRestore()
+
   })
 
   it('create dialog forwards name, content and scope', async () => {
@@ -689,7 +710,7 @@ describe('SteeringTab', () => {
 
   it('sends the active chat slot as the session key on every verb', async () => {
     store.dispatch(setActiveSlot('chat-7'))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     renderTab()
 
     // The list and the detail both carry it, and both query keys include it, so
@@ -698,6 +719,7 @@ describe('SteeringTab', () => {
     await waitFor(() => expect(mockApi.steeringFile).toHaveBeenCalledWith('user/personal.md', 'dashboard:chat-7'))
 
     fireEvent.click(screen.getByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(mockApi.deleteSteering).toHaveBeenCalledWith('user/personal.md', 'dashboard:chat-7', 'pk-listed'))
   })
 
@@ -747,10 +769,11 @@ describe('SteeringTab', () => {
 
   it('surfaces mutation errors inline', async () => {
     mockApi.deleteSteering.mockRejectedValue(new Error('restricted session cannot modify steering files'))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     renderTab()
     await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(screen.getByText('restricted session cannot modify steering files')).toBeInTheDocument())
   })
 
@@ -780,11 +803,12 @@ describe('SteeringTab', () => {
     mockApi.steeringFile
       .mockResolvedValueOnce({ key: 'user/personal.md', content: 'OLD deleted body', path: '~/x', source: 'user' })
       .mockResolvedValue({ key: 'user/personal.md', content: 'NEW recreated body', path: '~/x', source: 'user' })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     renderTab()
     await waitFor(() => expect(screen.getByTestId('md')).toHaveTextContent('OLD deleted body'))
 
     fireEvent.click(screen.getByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(mockApi.deleteSteering).toHaveBeenCalled())
 
     fireEvent.click(screen.getByText('New Steering File'))
@@ -811,11 +835,12 @@ describe('SteeringTab', () => {
     // cannot answer "which project did the user think they were editing". The
     // listing's fingerprint can, and the server refuses on a mismatch.
     store.dispatch(setActiveSlot('chat-9'))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     renderTab()
     await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument())
 
     fireEvent.click(screen.getByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(mockApi.deleteSteering)
       .toHaveBeenCalledWith('user/personal.md', 'dashboard:chat-9', 'pk-listed'))
   })
@@ -825,12 +850,13 @@ describe('SteeringTab', () => {
     // them up would let the user hit the same refusal again.
     mockApi.deleteSteering.mockRejectedValue(
       new FakeApiError(409, 'the project is no longer active', JSON.stringify({ code: 'steering_project_changed' })))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     renderTab()
     await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument())
     const listCalls = mockApi.steeringFiles.mock.calls.length
 
     fireEvent.click(screen.getByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(mockApi.steeringFiles.mock.calls.length).toBeGreaterThan(listCalls))
   })
 
@@ -838,12 +864,13 @@ describe('SteeringTab', () => {
     // Only a superseded-project refusal is fixed by refetching; a permission
     // error would just spin the list.
     mockApi.deleteSteering.mockRejectedValue(new Error('restricted session cannot modify steering files'))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     renderTab()
     await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument())
     const listCalls = mockApi.steeringFiles.mock.calls.length
 
     fireEvent.click(screen.getByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(screen.getByText(/restricted session/)).toBeInTheDocument())
     expect(mockApi.steeringFiles.mock.calls.length).toBe(listCalls)
   })
@@ -932,12 +959,13 @@ describe('SteeringTab', () => {
     mockApi.steeringFiles.mockResolvedValue({ ...FILES, project_key: 'pk-A' })
     mockApi.deleteSteering.mockRejectedValue(
       new FakeApiError(409, 'the project is no longer active', JSON.stringify({ code: 'steering_project_changed' })))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     renderTab()
     await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument())
     const listCalls = mockApi.steeringFiles.mock.calls.length
 
     fireEvent.click(screen.getByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(mockApi.steeringFiles.mock.calls.length).toBeGreaterThan(listCalls))
   })
 
@@ -949,12 +977,13 @@ describe('SteeringTab', () => {
     // wording that shares NOTHING with the old regex.
     mockApi.deleteSteering.mockRejectedValue(
       new FakeApiError(409, 'totally reworded server text', JSON.stringify({ code: 'steering_project_changed' })))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     renderTab()
     await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument())
     const listCalls = mockApi.steeringFiles.mock.calls.length
 
     fireEvent.click(screen.getByText('Delete'))
+    await confirmAction('Delete')
     // Still recognised: refetched, and shown the localized conflict copy rather
     // than the server's prose.
     await waitFor(() => expect(mockApi.steeringFiles.mock.calls.length).toBeGreaterThan(listCalls))
@@ -987,12 +1016,13 @@ describe('SteeringTab', () => {
     // moved when something else entirely happened.
     mockApi.deleteSteering.mockRejectedValue(
       new FakeApiError(409, 'that file is locked by another writer', JSON.stringify({ code: 'steering_locked' })))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     renderTab()
     await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument())
     const listCalls = mockApi.steeringFiles.mock.calls.length
 
     fireEvent.click(screen.getByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(screen.getByText(/locked by another writer/)).toBeInTheDocument())
     expect(screen.queryByText(/this list has been refreshed/)).not.toBeInTheDocument()
     // And no refetch, because nothing says the listing is stale.
@@ -1004,10 +1034,11 @@ describe('SteeringTab', () => {
     // server's own reason, which is often the only actionable detail.
     mockApi.deleteSteering.mockRejectedValue(
       new FakeApiError(403, 'restricted session cannot modify steering files', '{}'))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     renderTab()
     await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Delete'))
+    await confirmAction('Delete')
     await waitFor(() => expect(screen.getByText(/restricted session cannot modify/)).toBeInTheDocument())
   })
 

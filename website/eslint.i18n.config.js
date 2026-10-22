@@ -138,6 +138,15 @@ export default [
       // Stated as a false-negative class, per this file's convention: copy added
       // to this module will not be reported. Keep it syntax-only.
       'src/utils/shellCommandParse.ts',
+      // Papyrus backend wire values: the default commit message the backend writes
+      // into git when the user leaves the message blank. It is shown verbatim as the
+      // prompt's placeholder because it is what lands in the commit in every locale;
+      // translating it would make the hint lie. Same named-boundary idiom as
+      // `askQuestionTool.ts` above, and its consumer `PapyrusPage.tsx` stays covered.
+      //
+      // Stated as a false-negative class, per this file's convention: copy added
+      // to this module will not be reported. Keep it wire-values-only.
+      'src/apps/papyrus/gitWire.ts',
       // Generated and data-only.
       'src/i18n/locales/**',
       // Generated sources: the copy's real home is the panel that declares the

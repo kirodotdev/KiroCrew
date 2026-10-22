@@ -106,6 +106,27 @@ beforeEach(() => {
   mockApi([channelOf()])
 })
 
+
+async function confirmAction(name: string | RegExp) {
+  const dialog = await waitFor(() => {
+    const confirmDialog = screen.getAllByRole('dialog').find(candidate =>
+      candidate.querySelector('[data-guide-confirm]'),
+    )
+    if (!confirmDialog) throw new Error('Native confirmation dialog is not open')
+    return confirmDialog
+  })
+  const action = name === 'Cancel'
+    ? within(dialog).getByRole('button', { name: 'Cancel' })
+    : dialog.querySelector<HTMLButtonElement>('[data-guide-confirm]')
+  if (!action) throw new Error('Native confirmation action is not rendered')
+  const actionName = action.textContent?.trim() ?? ''
+  if (typeof name === 'string' ? actionName !== name : !name.test(actionName)) {
+    throw new Error(`Unexpected native confirmation action: ${actionName}`)
+  }
+  fireEvent.click(action)
+  await waitFor(() => expect(document.querySelector('[data-guide-confirm]')).toBeNull())
+}
+
 describe('ChannelPage — empty states', () => {
   it('shows both empty states when the gateway reports no channels', async () => {
     mockApi([])
@@ -759,9 +780,10 @@ describe('ChannelPage — New Channel dialog', () => {
 
 describe('ChannelPage — close channel', () => {
   it('closes the channel on confirm and clears the selection', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     await renderPage()
     await userEvent.click(screen.getByTitle('Close channel'))
+    await confirmAction('Close')
     await waitFor(() => expect(vi.mocked(api).channelClose).toHaveBeenCalledWith('ch1'))
     await waitFor(() => expect(screen.getByText('Create a channel to get started')).toBeInTheDocument())
   })
@@ -769,10 +791,11 @@ describe('ChannelPage — close channel', () => {
   it('keeps the channel and reports it when the close request fails', async () => {
     // Removing the channel under a "Failed to close channel" notice would show
     // the action as done; a refused close leaves the list as it was.
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     vi.mocked(api).channelClose = vi.fn().mockRejectedValue(new Error('already gone'))
     await renderPage()
     await userEvent.click(screen.getByTitle('Close channel'))
+    await confirmAction('Close')
     const notice = await screen.findByTestId('channel-error')
     expect(notice).toHaveTextContent('Failed to close channel')
     expect(notice).toHaveTextContent('already gone')
@@ -781,9 +804,11 @@ describe('ChannelPage — close channel', () => {
   })
 
   it('does nothing when the confirm is cancelled', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
+
     await renderPage()
     await userEvent.click(screen.getByTitle('Close channel'))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(vi.mocked(api).channelClose).not.toHaveBeenCalled()
     expect(screen.getByRole('heading', { name: 'Gamma rollout' })).toBeInTheDocument()
   })

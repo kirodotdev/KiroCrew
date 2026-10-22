@@ -15,7 +15,7 @@ import type { AppDispatch } from '../../../store'
 import { triggerRefresh } from '../../../store/dashboardSlice'
 import { addNotification } from '../../../store/notificationsSlice'
 import type { ChatSlot } from '../../../types'
-import { uniqueNotificationTs } from './notificationTs'
+import { uniqueNotificationTs } from '../../../lib/notificationTs'
 
 interface ComposerChipsOptions {
   currentSlot: ChatSlot | undefined

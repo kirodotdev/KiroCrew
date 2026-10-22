@@ -4,7 +4,7 @@
  * the active tab. A failed write rolls the row back and says so in the menu.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -24,7 +24,7 @@ vi.mock('../api/client', () => ({
   ApiError: class ApiError extends Error {},
 }))
 
-import SessionActionsMenu from '../components/SessionActionsMenu'
+import SessionActionsMenu from './ownedSessionActionsMenu'
 import { store } from '../store'
 import { sseSlots } from '../store/dashboardSlice'
 import { setActiveSlot } from '../store/chatSlice'
@@ -60,7 +60,8 @@ function renderMenu(muted: boolean) {
 
 describe('SessionActionsMenu per-row Mute', () => {
   beforeEach(() => { setSlotMuted.mockReset() })
-  afterEach(() => { store.dispatch(sseSlots([])); store.dispatch(setActiveSlot(null)) })
+  // Unmount first: resetting the shared store under a still-open menu updates it outside act.
+  afterEach(() => { cleanup(); store.dispatch(sseSlots([])); store.dispatch(setActiveSlot(null)) })
 
   it('Mute writes the row it was opened on, not the active tab', async () => {
     setSlotMuted.mockResolvedValue({ ok: true, muted: true, changed: true })

@@ -3202,6 +3202,7 @@
         "deleteConfirm": "「{{title}}」と、そのすべてのノート、図、アクションアイテムを削除しますか？この操作は取り消せません。",
         "deleteFailed": "この会議を削除できませんでした。",
         "deleteMeeting": "{{title}}を削除",
+        "deleteMeetingButton": "会議を削除",
         "deleteUnavailable": "削除する前にこの会議を終了してください",
         "deleted": "「{{title}}」を削除しました",
         "empty": "会議なし",
@@ -3241,6 +3242,7 @@
       "meeting": {
         "agentsPaused": "繰り返されるエラー後、エージェントが停止しました。",
         "attachPrompt": "エージェントと共有するリンクを貼り付けます",
+        "attachRequired": "リンクを入力してください。",
         "back": "戻る",
         "endAndReview": "終了して確認",
         "ended": "終了",
@@ -4402,6 +4404,7 @@
       },
       "fileTree": {
         "delete_file": "{{file}} を削除",
+        "delete_file_button": "ファイルを削除",
         "files": "ファイル",
         "main": "メイン",
         "new_file": "新規ファイル",
@@ -4433,6 +4436,7 @@
         "create": "作成",
         "create_one_above_or_clone_an_existing_repository": "上記を作成するか、既存のリポジトリーをクローンしてください。",
         "delete_paper": "{{name}} を削除",
+        "delete_paper_button": "ペーパーを削除",
         "delete_paper_confirm": "「{{name}}」とそのすべてのファイルを削除しますか？これは取り消せません。",
         "downloading_compiler_progress": "ダウンロード中… {{done}} / {{total}}",
         "install_compiler": "コンパイラーをインストール",
@@ -4492,6 +4496,7 @@
         "log": "ログ",
         "main_document": "メインドキュメント",
         "new_file_prompt": "新しいファイルに名前を付けてください。例: methods.tex",
+        "new_file_name_required": "ファイル名を入力してください。",
         "papers": "論文",
         "pull": "プル",
         "save_and_compile_hint": "Cmd+S (Windows と Linux では Ctrl+S) を押して保存およびコンパイルします。",
@@ -7669,7 +7674,8 @@
         "search": "検索…",
         "show_less": "少なく表示",
         "show_muted_count": "ミュート済みを表示（{{count}}）",
-        "try_a_different_search": "別の検索を試す"
+        "try_a_different_search": "別の検索を試す",
+        "clear_failed": "通知をクリアできませんでした。もう一度操作してください。"
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "離席中も通知を受け取る",
@@ -8529,6 +8535,8 @@
       "change_color": "{{name}}の色を変更",
       "delete_tag": "タグ「{{name}}」を削除",
       "delete_tag_2": "タグ {{name}} を削除",
+      "delete_tag_button": "タグを削除",
+      "delete_tag_confirm_title": "タグ「{{name}}」を削除しますか？",
       "filter_by_tag": "タグでフィルタ",
       "include_in_filter": "フィルターに {{name}} を含める",
       "make_a_status_tag": "{{name}} をステータスタグに設定",
@@ -8583,6 +8591,7 @@
       "dark_mode_colors": "ダークモード色",
       "default_theme_name": "マイテーマ",
       "delete_theme": "🗑 テーマを削除",
+      "delete_theme_confirm": "テーマを削除",
       "delete_this_custom_theme": "このカスタムテーマを削除しますか？",
       "editing": "編集中:",
       "emoji": "絵文字",
@@ -8779,8 +8788,9 @@
       "aws_profile_to_deploy_with": "デプロイする AWS プロファイル",
       "backend": "バックエンド",
       "billed_to_your_account": "· アカウントに請求されます",
-      "cancel_tear_down": "キャンセル / 破棄",
-      "cancel_tear_down_marks_the_deployment_expired_in": "キャンセル / 破棄 — デプロイメントを期限切れとしてマークし、インフラストラクチャはアカウント内リーパーまたはscripts/teardown.shで削除されます",
+      "cancel_tear_down": "デプロイを撤去",
+      "tear_down_question": "このデプロイを撤去しますか？",
+      "cancel_tear_down_marks_the_deployment_expired_in": "デプロイを撤去 — デプロイを期限切れとしてマークし、インフラストラクチャはアカウント内リーパーまたはscripts/teardown.shで削除されます",
       "copy_url": "URLをコピー",
       "deploy": "デプロイ",
       "deploy_this_app_to_your_aws_account": "このアプリを AWS アカウントにデプロイ",
@@ -9136,7 +9146,8 @@
       "withdraw_effect": "撤回すると、再度確認するまでエージェントはこのサービスを使えなくなります。"
     },
     "confirmDialog": {
-      "cancel": "キャンセル"
+      "cancel": "キャンセル",
+      "keep_editing": "編集を続ける"
     },
     "crewWebhookSection": {
       "could_not_load_webhooks": "Webhook を読み込めなかったため、何がこのエージェントを起こすのか今は不明です。",
@@ -10837,7 +10848,6 @@
       "channels": "チャネル",
       "clear_all_context": "すべてのコンテキストをクリア",
       "clear_context": "コンテキストをクリア",
-      "clear_context_2": "コンテキストをクリア",
       "click_new_to_create_one": "+ 新規をクリックして作成してください。",
       "close": "閉じる",
       "close_agents_panel": "エージェントパネルを閉じる",
@@ -13536,6 +13546,7 @@
         "search_knowledge_press_enter_to_search": "ナレッジを検索… (Enterキーで検索)",
         "select_all": "すべて選択",
         "selected": "選択済み",
+        "permanently_delete_selected_items_other": "選択した{{count}}件のアイテムを完全に削除しますか？",
         "sources_tab": "ソース",
         "status_active": "アクティブ",
         "status_archived": "アーカイブ済み",
@@ -18285,6 +18296,7 @@
       "create_leave_draft": "このページを離れますか？「新しいクルーメイト」ダイアログが閉じ、入力した内容は失われます。",
       "edit_leave_draft": "このページを離れますか？このクルーメイトの未保存の変更は失われます。",
       "create_leave_busy": "クルーメイトの作成中に離れますか？作成はされるかもしれませんが、そのチャットはここでは開きません。あとで一覧をご確認ください。",
+      "create_leave_busy_button": "ページを離れる",
       "add_member_pending": "別のクルーメイトを追加する前に、{{name}} に関する通知を再試行するか閉じてください。",
       "add_member_pending_roster": "別のクルーメイトを追加する前に、{{name}} の一覧を更新してください。",
       "add_member_settling": "別のクルーメイトを追加する前に、{{name}} の最初のメッセージを完了しています。",

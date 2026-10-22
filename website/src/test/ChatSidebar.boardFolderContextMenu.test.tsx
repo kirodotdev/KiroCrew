@@ -233,18 +233,19 @@ describe('board view: folder right-click menu', () => {
   })
 
   it('deletes only through the same confirm as the ⋯ menu', async () => {
-    const confirmFn = vi.fn().mockReturnValue(false)
-    vi.stubGlobal('confirm', confirmFn)
     const { container } = await renderSidebar()
 
     fireEvent.contextMenu(colFolderRow(container, COL_A), { clientX: 40, clientY: 20 })
     fireEvent.click(screen.getByTestId(ctxItem(COL_A, 'delete')))
-    expect(confirmFn).toHaveBeenCalledWith('Delete “CDF”? Sessions will be ungrouped.')
+    let dialog = await screen.findByRole('dialog', { name: 'Delete “CDF”? Sessions will be ungrouped.' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete “CDF”? Sessions will be ungrouped.' })).toBeNull())
     expect(mocks.deleteChatFolder).not.toHaveBeenCalled()
 
-    confirmFn.mockReturnValue(true)
     fireEvent.contextMenu(colFolderRow(container, COL_A), { clientX: 40, clientY: 20 })
     fireEvent.click(screen.getByTestId(ctxItem(COL_A, 'delete')))
+    dialog = await screen.findByRole('dialog', { name: 'Delete “CDF”? Sessions will be ungrouped.' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete folder' }))
     await waitFor(() => expect(mocks.deleteChatFolder).toHaveBeenCalledWith(FOLDER_ID))
   })
 })

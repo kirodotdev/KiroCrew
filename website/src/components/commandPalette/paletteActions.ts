@@ -5,7 +5,7 @@ import { useMutation } from '@tanstack/react-query'
 
 import { useAppDispatch, useAppSelector } from '../../store'
 import { createSlot, setPendingInput } from '../../store/chatSlice'
-import { useMayLeaveForNavigation, useIsCurrentUrl } from '../NavigationLeaveGuard'
+import { useMayLeaveNow, settleNavigationExit, useIsCurrentUrl, useClaimNavigationExitAttempt } from '../NavigationLeaveGuard'
 
 /**
  * Shared §2 Enter-matrix engine for the Search Everywhere command palette.
@@ -102,8 +102,9 @@ export function usePaletteActions(): PaletteActions {
   // affordance, one keystroke from anywhere. One ask here covers every palette
   // consumer, because they all navigate through the single delegate returned
   // below rather than calling `navigate` themselves.
-  const mayLeave = useMayLeaveForNavigation()
+  const mayLeave = useMayLeaveNow()
   const isCurrentUrl = useIsCurrentUrl()
+  const claimExitAttempt = useClaimNavigationExitAttempt()
   const hasActiveChat = useAppSelector((s) => s.chat.activeSlot !== null)
 
   const { mutate: doCreateSlot } = useMutation({
@@ -134,12 +135,15 @@ export function usePaletteActions(): PaletteActions {
       resolveInvokableEnter(hasActiveChat, token, { insertToken, newSessionWithToken })(),
     navigate: (route: string) => {
       // A jump to where we already are unmounts nothing, so it must not ask.
-      const asked = !isCurrentUrl(route)
-      if (asked && !mayLeave()) return
-      // `leaveGranted` (the guide's `enter` and the rail's `NavItem` write the
-      // same mark): the guards were asked in this step, so a page that stays
-      // mounted through the jump and acts on it must not ask again.
-      navigate(route, asked ? { state: { leaveGranted: true } } : undefined)
+      if (isCurrentUrl(route)) {
+        navigate(route, undefined)
+        return
+      }
+      const attempt = claimExitAttempt()
+      if (!attempt) return
+      // `leaveGranted` prevents a page that stays mounted through this jump
+      // from asking again for the same draft.
+      settleNavigationExit(attempt, mayLeave, () => navigate(route, { state: { leaveGranted: true } }))
     },
-  }), [hasActiveChat, insertToken, newSessionWithToken, navigate, mayLeave, isCurrentUrl])
+  }), [hasActiveChat, insertToken, newSessionWithToken, navigate, mayLeave, isCurrentUrl, claimExitAttempt])
 }

@@ -3,7 +3,7 @@ import { useSearchParams, useLocation, useNavigate } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 import { MoreBelowCue } from './MoreBelowCue'
 import { NavBackBar } from './NavBackBar'
-import { useRegisterNavigationLeaveGuard, usePublishNavigationStake } from './NavigationLeaveGuard'
+import { settleNavigationExit, useRegisterNavigationLeaveGuard, usePublishNavigationStake, useClaimNavigationExitAttempt } from './NavigationLeaveGuard'
 import { hasSubSelection, deleteSubSelection, COARSE_TOUCH_TARGET, SUBNAV_PUSH_STATE, toPathSegment, parsePathSegments } from './subNavParams'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
@@ -114,7 +114,7 @@ export const SidePanelDockContext = React.createContext<'header' | 'bottom-float
 
 /** A mounted pane's answer to "may I leave you?". `true` allows the switch,
  *  `false` keeps the pane exactly where it is. */
-export type SidePanelLeaveGuard = () => boolean
+export type SidePanelLeaveGuard = () => boolean | Promise<boolean>
 
 /** How a pane hands its guard to the shell. Null outside a SidePanelLayout, so
  *  the hook below is a no-op for a pane rendered standalone (tests, embedded
@@ -178,7 +178,7 @@ export function useSidePanelLeaveGuard(guard: SidePanelLeaveGuard, atStake = fal
   // The app shell, for a surface that OPTS IN (`alsoGuardAppShell`) and is
   // mounted OUTSIDE any layout. Called UNCONDITIONALLY — hook rules — and
   // answers a bare `true` unless BOTH hold: the caller opted in AND there is no
-  // pane context. Inside a layout the layout already forwards `mayLeavePane`
+  // pane context. Inside a layout the layout already forwards `mayLeavePaneNow`
   // into this same channel, so answering here too would put two entries in the
   // shell's set resolving to one guard and `ask()` would raise its confirm
   // TWICE for one navigation. A caller that does NOT opt in (every pane that
@@ -212,6 +212,8 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   const [params, setParams] = useSearchParams()
   const location = useLocation()
   const navigate = useNavigate()
+  const claimExitAttempt = useClaimNavigationExitAttempt()
+  const tabRef = React.useRef('')
   const isMobile = useIsMobile()
   // "More below" cue under the desktop tab list. Settings has twenty rows, so
   // on a laptop-height window the last few (Developer, Releases, About) sit
@@ -299,6 +301,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   )
 
   const tab = rawTab && tabs.some(t => t.key === rawTab) ? rawTab : (fallbackTab || first)
+  tabRef.current = tab
   // Mobile is a two-level iOS-style navigation: NO explicit ?tab= means the
   // ROOT LIST (all tabs, grouped, tap to drill), an explicit one means the
   // drilled-in detail. The remembered tab deliberately does NOT auto-drill on
@@ -317,11 +320,23 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
     leaveGuard.current = guard
     return () => { if (leaveGuard.current === guard) leaveGuard.current = null }
   }, [])
-  /** Ask the mounted pane before an action that would unmount it. A pane with
-   *  nothing at stake registers no guard and this is a bare `true`. The guard
-   *  may show a confirm, so this must only ever be called from an event
-   *  handler — never during render. */
-  const mayLeavePane = () => leaveGuard.current?.() !== false
+  /** Ask the mounted pane before an action that would unmount it: a bare `true`
+   *  for a pane with nothing at stake, answered in the same task unless the
+   *  pane shows a confirmation. Call it only from an event handler. */
+  const mayLeavePaneNow = (): boolean | Promise<boolean> => {
+    const answer = leaveGuard.current?.()
+    if (answer === undefined || typeof answer === 'boolean') return answer !== false
+    return answer.then(a => a !== false)
+  }
+  /** Run `perform` once the pane agrees to be left and the claimed attempt
+   *  still belongs to the tab that asked; release the attempt either way. */
+  const leavePane = (sourceTab: string, perform: () => void) => {
+    const attempt = claimExitAttempt()
+    if (!attempt) return
+    settleNavigationExit(attempt, mayLeavePaneNow, () => {
+      if (tabRef.current === sourceTab) perform()
+    })
+  }
   // The pane's guard answers for exits this layout owns. An in-app route change
   // unmounts this whole layout and takes the pane's draft with it, and that click
   // belongs to the app shell. Forwarding the SAME guard keeps a pane registering
@@ -329,7 +344,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   // the channel — the rail here, the global sidebar, the command palette — reads
   // it. An in-app navigation surface that has NOT been wired still bypasses it;
   // see PromptsTab for what that leaves open.
-  useRegisterNavigationLeaveGuard(mayLeavePane)
+  useRegisterNavigationLeaveGuard(mayLeavePaneNow)
   /** The pane, with the leave-guard channel open to it. A function, not a
    *  precomputed element: the mobile root list renders no pane, and building
    *  one there would start invoking the host's render prop on a branch that
@@ -347,7 +362,10 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
     // nothing, so an unqualified ask would pop a discard-confirm over a click
     // that was never going to destroy anything. (PromptsTab's own row select
     // carries the same caveat for re-clicking the selected row.)
-    if (t !== tab && !mayLeavePane()) return
+    if (t === tab) applyTab(t)
+    else leavePane(tab, () => applyTab(t))
+  }
+  const applyTab = (t: string) => {
     // Synchronously, in the same batched update as the param write: picking the
     // FIRST tab deletes the param, so a fallback still holding the previous tab
     // would render it for a frame AND get re-written into the URL by the sync
@@ -398,11 +416,10 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
    *  history and the next platform back-swipe would visibly do nothing. The
    *  replace path remains for entries we did not mint (cold deep links),
    *  where `history.back()` would exit the app. */
-  const backToRoot = () => {
+  const backToRoot = () => leavePane(tab, () => {
     // The mobile back bar is the other exit that unmounts the pane: the root
     // list replaces it entirely. Same ask as a tab switch — a phone user one
     // thumb-width from the back bar loses the same draft.
-    if (!mayLeavePane()) return
     if ((location.state as Record<string, unknown> | null)?.[SUBNAV_PUSH_STATE]) {
       navigate(-1)
       return
@@ -422,7 +439,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
       next.delete('tab')
       return next
     }, { replace: true })
-  }
+  })
   const meta = tabs.find(t => t.key === tab)
 
   // Adjacent tabs sharing a `group` render under one header in the mobile

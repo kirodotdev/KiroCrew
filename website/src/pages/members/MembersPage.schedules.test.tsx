@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useState } from 'react'
 import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
-import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../../components/NavigationLeaveGuard'
+import { NavigationLeaveGuardProvider } from '../../components/NavigationLeaveGuard'
+import { useMayLeaveAsPromise } from '../../test/useMayLeaveAsPromise'
 import { __resetPanelTabs } from '../../hooks/usePanelTabs'
 
 /* The crewmate's schedules, on the Profile card (crewmate-panel IA).
@@ -206,7 +207,7 @@ async function openDraft(name = 'oncall', alsoRoster: string[] = []) {
 
 /** Answer the discard question. Scoped to the dialog: the section's own "Cancel new
  *  schedule" toggle is on screen at the same time and matches the same name. */
-async function answer(choice: 'Cancel' | 'Discard') {
+async function answer(choice: 'Keep editing' | 'Discard') {
   const ask = await screen.findByRole('dialog')
   fireEvent.click(within(ask).getByRole('button', { name: new RegExp(choice, 'i') }))
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
@@ -219,10 +220,13 @@ const strip = () =>
 /** Stands in for an app-shell navigation surface (sidebar, palette, Back): asks the
  *  page's registered leave guards and records the answer. */
 function LeaveProbe() {
-  const mayLeave = useMayLeaveForNavigation()
+  const mayLeave = useMayLeaveAsPromise()
   const [answer, setAnswer] = useState('')
   return (
-    <button type="button" data-testid="leave-probe" onClick={() => setAnswer(String(mayLeave()))}>
+    <button type="button" data-testid="leave-probe" onClick={() => {
+      setAnswer('')
+      void mayLeave().then((allowed) => setAnswer(String(allowed)))
+    }}>
       {answer}
     </button>
   )
@@ -232,9 +236,14 @@ function LeaveProbe() {
  *  half a test can see: a cancelled unload event means the flag is up. */
 const holdsDocument = () =>
   !window.dispatchEvent(new Event('beforeunload', { cancelable: true }))
-const askToLeave = () => {
-  fireEvent.click(screen.getByTestId('leave-probe'))
+const requestLeave = () => fireEvent.click(screen.getByTestId('leave-probe'))
+const leaveAnswer = async () => {
+  await waitFor(() => expect(screen.getByTestId('leave-probe').textContent).not.toBe(''))
   return screen.getByTestId('leave-probe').textContent
+}
+const askToLeave = async () => {
+  requestLeave()
+  return leaveAnswer()
 }
 
 beforeEach(() => {
@@ -461,10 +470,10 @@ describe('MembersPage Profile card — New schedule', () => {
 })
 
 describe('MembersPage Profile card — unsaved schedule draft', () => {
-  it('asks before the card\'s close control discards a draft, and keeps the draft on Cancel', async () => {
+  it('asks before the card\'s close control discards a draft, and keeps the draft on Keep editing', async () => {
     await openDraft()
     fireEvent.click(screen.getByTestId('crew-profile-close'))
-    await answer('Cancel')
+    await answer('Keep editing')
     expect(screen.getByTestId('crew-profile-panel')).toBeInTheDocument()
     expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
     // Confirmed: the card goes, draft and all.
@@ -477,12 +486,12 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
   it('asks before the card\'s back control or Escape pops the form away', async () => {
     await openDraft()
     fireEvent.click(screen.getByTestId('crew-profile-back'))
-    await answer('Cancel')
+    await answer('Keep editing')
     expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
     expect(screen.getByTestId('crew-profile-page-new-schedule')).toBeInTheDocument()
 
     fireEvent.keyDown(screen.getByTestId('crew-profile-panel'), { key: 'Escape' })
-    await answer('Cancel')
+    await answer('Keep editing')
     expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
 
     // Confirmed: back to the list, form gone.
@@ -509,7 +518,7 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     expect(screen.getByTestId('member-identity-pill')).toHaveAttribute('aria-expanded', 'true')
 
     fireEvent.click(screen.getByTestId('member-identity-pill'))
-    await answer('Cancel')
+    await answer('Keep editing')
     // Refused: the SAME card, still on its pushed page, with what was typed.
     expect(screen.getByTestId('crew-profile-page-new-schedule')).toBeInTheDocument()
     expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
@@ -526,7 +535,7 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     // click on the surface around it closes it — the same question as the close control.
     const scrim = screen.getByTestId('crew-profile-modal')
     fireEvent.click(scrim)
-    await answer('Cancel')
+    await answer('Keep editing')
     expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
   })
 
@@ -556,7 +565,7 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
       fireEvent.click(within(list).getByRole('option', { name: /scribe/ }))
     }
     await pickScribe()
-    await answer('Cancel')
+    await answer('Keep editing')
     // Refused: still on the same crewmate, with what was typed.
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
     expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
@@ -574,7 +583,7 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     })
     await openDraft()
     fireEvent.click(await screen.findByText('Ops'))
-    await answer('Cancel')
+    await answer('Keep editing')
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
     expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
   })
@@ -584,7 +593,7 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     // param unmounts the card and the draft with it, silently, on an ordinary tap.
     await openDraft()
     fireEvent.click(screen.getByTestId('member-back'))
-    await answer('Cancel')
+    await answer('Keep editing')
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
     expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
   })
@@ -592,7 +601,7 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
   it('asks before the quiet-chat Sessions link replaces a pushed schedule draft', async () => {
     await openDraft()
     fireEvent.click(screen.getByRole('button', { name: 'Open quiet sessions' }))
-    await answer('Cancel')
+    await answer('Keep editing')
     expect(screen.getByTestId('crew-profile-page-new-schedule')).toBeInTheDocument()
     expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
 
@@ -608,7 +617,7 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     await openDraft()
     navigateSpy.mockClear()
     fireEvent.click(screen.getByRole('button', { name: 'Open driving session' }))
-    await answer('Cancel')
+    await answer('Keep editing')
     expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
     expect(navigateSpy).not.toHaveBeenCalledWith(expect.stringContaining('/chat'))
   })
@@ -632,22 +641,16 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
   })
 
   it('vetoes leaving the route while a draft is open, and lets a clean card through', async () => {
-    // The navigation-leave registry is synchronous, so this exit uses `window.confirm`.
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
-      await openCrewmate()
-      await openSchedulesTab()
-      await openCreateForm()
-      // Clean: the shell is allowed to leave without a prompt at all.
-      expect(askToLeave()).toBe('true')
-      expect(confirmSpy).not.toHaveBeenCalled()
+    await openCrewmate()
+    await openSchedulesTab()
+    await openCreateForm()
+    // Clean: the shell is allowed to leave without a prompt at all.
+    expect(await askToLeave()).toBe('true')
 
-      await typeDraft()
-      expect(askToLeave()).toBe('false')
-      expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/lose the schedule/i))
-    } finally {
-      confirmSpy.mockRestore()
-    }
+    await typeDraft()
+    requestLeave()
+    await answer('Keep editing')
+    expect(await leaveAnswer()).toBe('false')
   })
 
   it('panel-only actions keep a dirty Profile draft mounted without asking to discard it', async () => {
@@ -861,17 +864,15 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
     ]
     for (const exit of exits) {
       exit()
-      await answer('Cancel')
+      await answer('Keep editing')
       expect(input).toBeInTheDocument()
       expect(input).toHaveValue(draftText)
       expect(screen.getByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'goals')
     }
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
-      expect(askToLeave()).toBe('false')
-      expect(confirm).toHaveBeenCalledWith('Discard unsaved changes?')
-      expect(input).toHaveValue(draftText)
-    } finally { confirm.mockRestore() }
+    requestLeave()
+    await answer('Keep editing')
+    expect(await leaveAnswer()).toBe('false')
+    expect(input).toHaveValue(draftText)
     fireEvent.click(screen.getByTestId('crew-profile-back'))
     await answer('Discard')
     await waitFor(() => expect(holdsDocument()).toBe(false))
@@ -882,7 +883,7 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
     const input = await openGoalsDraft(kind)
     fireEvent.click(screen.getByTestId('crewmate-switcher'))
     fireEvent.click(await screen.findByRole('option', { name: /scout/i }))
-    await answer('Cancel')
+    await answer('Keep editing')
     expect(input).toHaveValue(draftText)
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
   })
@@ -930,7 +931,7 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
     fireEvent.click(screen.getByTestId('crew-profile-close'))
     fireEvent.click(screen.getByTestId('crew-profile-back'))
     fireEvent.click(screen.getByRole('tab', { name: 'Sessions', hidden: true }))
-    expect(askToLeave()).toBe('false')
+    expect(await askToLeave()).toBe('false')
     expect(screen.getByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'goals')
     expect(screen.queryByRole('dialog')).toBeNull()
     await act(async () => { finish((kind === 'tracking' ? { ok: true, json: async () => ({ ok: true }) } : goals) as never) })

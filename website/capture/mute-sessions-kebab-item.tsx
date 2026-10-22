@@ -29,6 +29,7 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger,
 } from '../src/components/ui/dropdown-menu'
+import { useSessionActions } from '../src/hooks/useSessionActions'
 import { ThemeProvider } from '../src/hooks/useTheme'
 import { initI18n } from '../src/i18n'
 import { store } from '../src/store'
@@ -84,6 +85,7 @@ if (scene === 'error') {
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
 function Harness() {
+  const actions = useSessionActions()
   return (
     <div className="bg-bg min-h-screen p-10 flex items-start" data-capture-root>
       <DropdownMenu open>
@@ -93,9 +95,10 @@ function Harness() {
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="min-w-[180px]">
-          <SessionActionsMenu variant="dropdown" slotKey="capture-conductor" />
+          <SessionActionsMenu variant="dropdown" slotKey="capture-conductor" actions={actions} />
         </DropdownMenuContent>
       </DropdownMenu>
+      {actions.confirmDialog}
     </div>
   )
 }

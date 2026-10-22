@@ -18,6 +18,7 @@ import { MetricsCard } from './shell/topbar/metricsReadout'
 import { Rocket, Code, RefreshCw, Package, Download, Hammer, XCircle, Check, AlertTriangle, X, Coins, Compass, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
 import { FirstRunChapters } from './shell/boot/firstRun'
 import ErrorNotice from './components/ErrorNotice'
+import { settleNavigationExit } from './components/NavigationLeaveGuard'
 import { MobileConnectDialog } from './shell/nav/mobileConnect'
 import { isMacElectron, isWinElectron, isLinuxFramelessElectron } from './lib/electron'
 import ChatPage from './pages/ChatPage'
@@ -65,6 +66,7 @@ import CrashReportNotice from './components/CrashReportNotice'
 import RemoteUpdateOffer from './components/RemoteUpdateOffer'
 import KiroSignInNoticeFallback from './components/KiroSignInNoticeFallback'
 import { ImportSessionOutcomeNotice } from './components/ImportSessionItem'
+import AppErrorNoticeOutlet from './components/AppErrorNoticeOutlet'
 import BuiltinAppRoute from './apps/BuiltinAppRoute'
 import { MobileNavRailContext, MobileRosterBarContext, type MobileNavRailOptions } from './components/MobileNavRailContext'
 import ShortcutsModal from './components/ShortcutsModal'
@@ -299,7 +301,7 @@ export default function App() {
   const shell = useAppShell()
   const {
     isEmbed, isPopout, initialPopoutPath, dispatch, updateAvailable, terminalEnabled, terminalPoppedOut,
-    bottomTerminalOpen, mobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
+    bottomTerminalOpen, mobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation, claimExitAttempt, keyboardConfirmDialog,
     colorTheme, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
     topReservePx, focusActive, topPeek, railPeek, topPeekTrigger, railPeekTrigger, topChromeShown,
@@ -396,7 +398,12 @@ export default function App() {
               // leave guard first, as every rail row does, so a draft held
               // there (a Profile schedule form) is not dropped silently.
               onClick={() => {
-                if (!isChat) { if (mayLeaveForNavigation()) navigate('/chat', { replace: true }); return }
+                if (!isChat) {
+                  const attempt = claimExitAttempt()
+                  if (!attempt) return
+                  settleNavigationExit(attempt, mayLeaveForNavigation, () => navigate('/chat', { replace: true }))
+                  return
+                }
                 onActivate()
                 if (!(activePath === '/chat' || activePath === '/')) navigate('/chat', { replace: true })
               }}
@@ -524,6 +531,7 @@ export default function App() {
         the dashboard inside the local pane (below), where it hides with the
         local Crew. */}
     {(isPopout || isEmbed) && <ImportSessionOutcomeNotice />}
+    {(isPopout || isEmbed) && <AppErrorNoticeOutlet />}
     {isPopout ? (
       <Routes>
         <Route path="/popout/chat/:slug?" element={<ErrorBoundary><PopoutFrame /></ErrorBoundary>} />
@@ -885,6 +893,7 @@ export default function App() {
           inside this pane, so the pane's own display:none hides them; the other
           two portal. The popout and embed frames mount their own copies. */}
       <MetricsCard metrics={metrics} />
+      {keyboardConfirmDialog}
       <KiroAccountModal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} usage={kiroUsageState} />
       <Lightbox />
       <ImportSessionOutcomeNotice />
@@ -925,6 +934,8 @@ export default function App() {
       </ErrorBoundary>
     ))}
     {(isPopout || isEmbed) && <Lightbox />}
+    {/* The frames' ⌘W close question; the local dashboard mounts its copy in the local pane. */}
+    {(isPopout || isEmbed) && keyboardConfirmDialog}
     </ZoomProvider>
   )
 }

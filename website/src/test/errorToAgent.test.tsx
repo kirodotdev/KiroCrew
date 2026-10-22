@@ -20,9 +20,9 @@ import ErrorNotice, { ErrorNoticeMenuItem, type ErrorNoticeMenuItemComponent } f
 import {
   NavigationLeaveGuardProvider,
   useGuardedLeave,
-  useMayLeaveForNavigation,
   useRegisterNavigationLeaveGuard,
 } from '../components/NavigationLeaveGuard'
+import { useMayLeaveAsPromise } from './useMayLeaveAsPromise'
 import { mergeIntoDraft } from '../utils/chatDrafts'
 import { buildErrorPrompt } from '../utils/errorReport.prompt'
 import {
@@ -54,7 +54,7 @@ const navigated: string[] = []
 
 function GuardedErrorNotice({ allow }: { allow: boolean }) {
   const navigate = useNavigate()
-  const mayLeave = useMayLeaveForNavigation()
+  const mayLeave = useMayLeaveAsPromise()
   useRegisterNavigationLeaveGuard(() => allow)
   useEffect(() => {
     installSoftNavigate(navigate, mayLeave)
@@ -81,7 +81,7 @@ function LocationProbe() {
  */
 function GatedAskAgent({ guard }: { guard: () => boolean }) {
   const navigate = useNavigate()
-  const mayLeave = useMayLeaveForNavigation()
+  const mayLeave = useMayLeaveAsPromise()
   const leave = useGuardedLeave()
   useRegisterNavigationLeaveGuard(guard)
   useEffect(() => {
@@ -470,10 +470,11 @@ describe('chat hand-off channel', () => {
     expect(mergeIntoDraft('   \n ', 'P')).toBe('P')
   })
 
-  it('leaveGranted skips the installed leave guard; an ungated call still asks it', () => {
+  it('leaveGranted skips the installed leave guard; an ungated call still asks it', async () => {
     const mayNavigate = vi.fn(() => true)
     installSoftNavigate(to => { navigated.push(to) }, mayNavigate)
 
+    // A guard that answers with a plain boolean keeps the hand-off in the click.
     expect(sendErrorToChat('already asked', { leaveGranted: true })).toBe(true)
     expect(mayNavigate).not.toHaveBeenCalled()
     expect(navigated).toEqual(['/chat'])
@@ -482,22 +483,22 @@ describe('chat hand-off channel', () => {
     expect(mayNavigate).toHaveBeenCalledTimes(1)
   })
 
-  it('hard mode bypasses the soft navigator entirely', () => {
+  it('hard mode bypasses the soft navigator entirely', async () => {
     const assign = vi.fn()
     // happy-dom refuses to reassign `location`, so stub only the method.
     vi.spyOn(window.location, 'assign').mockImplementation(assign)
-    sendErrorToChat('please fix', { hard: true })
+    await sendErrorToChat('please fix', { hard: true })
     expect(navigated).toEqual([])
     expect(assign).toHaveBeenCalledWith('/chat')
     // The prompt is still staged, so it survives the page load.
     expect(consumeChatHandoff()).toBe('please fix')
   })
 
-  it('falls back to a full page load when no navigator is installed', () => {
+  it('falls back to a full page load when no navigator is installed', async () => {
     __resetNavSeamForTests()
     const assign = vi.fn()
     vi.spyOn(window.location, 'assign').mockImplementation(assign)
-    sendErrorToChat('please fix')
+    await sendErrorToChat('please fix')
     expect(assign).toHaveBeenCalledWith('/chat')
   })
 })
@@ -539,7 +540,7 @@ describe('ErrorNotice', () => {
 
   it('a gated button asks the page ONCE — the installed navigator does not repeat the discard question', async () => {
     // Regression. The sheet's `gate` and the navigator's `mayNavigate` are the
-    // same `useMayLeaveForNavigation` channel. Asked twice, a page guard that
+    // same `useMayLeaveNow` channel. Asked twice, a page guard that
     // confirms a draft away answered "yes" to the gate and then raised the same
     // confirm again from `sendErrorToChat`, because the draft is only cleared on
     // unmount. The second answer here is a veto: with the old double ask it
@@ -817,3 +818,38 @@ describe('gateway connectivity gate', () => {
     expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
   })
 })
+
+  it('closes the menu when the hand-off completes in the click', () => {
+    let selection: Event | undefined
+    const Item: ErrorNoticeMenuItemComponent = ({ onSelect, children, ...rest }) => (
+      <button type="button" {...rest} onClick={() => { selection = new Event('select', { cancelable: true }); onSelect?.(selection) }}>{children}</button>
+    )
+    render(<ErrorNoticeMenuItem Item={Item} message="export failed" describedBy="zzq-alert" />)
+    fireEvent.click(screen.getByRole('button', { name: /ask the agent/i }))
+    expect(selection?.defaultPrevented).toBe(false)
+  })
+
+  it('holds the menu open while the page is still asking whether it may be left', async () => {
+    let answer: (allowed: boolean) => void = () => {}
+    installSoftNavigate(() => {}, () => new Promise<boolean>(resolve => { answer = resolve }))
+    let selection: Event | undefined
+    const Item: ErrorNoticeMenuItemComponent = ({ onSelect, children, ...rest }) => (
+      <button
+        type="button"
+        {...rest}
+        onClick={() => {
+          selection = new Event('select', { cancelable: true })
+          onSelect?.(selection)
+        }}
+      >
+        {children}
+      </button>
+    )
+    render(<ErrorNoticeMenuItem Item={Item} message="export failed" describedBy="zzq-alert" />)
+
+    fireEvent.click(screen.getByRole('button', { name: /ask the agent/i }))
+
+    expect(selection?.defaultPrevented).toBe(true)
+    await act(async () => { answer(false) })
+    installSoftNavigate(null)
+  })

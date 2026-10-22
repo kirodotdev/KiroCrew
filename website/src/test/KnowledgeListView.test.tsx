@@ -146,6 +146,15 @@ describe('Knowledge List View — source-first rows', () => {
     })
   })
 
+  it('states the selected count in its bulk-delete confirmation', async () => {
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    await userEvent.click(await screen.findByText('Artifacts'))
+    await userEvent.click(await screen.findByLabelText(/^Select s3 item A$/))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(await screen.findByRole('dialog', { name: 'Permanently delete 1 selected item?' })).toBeInTheDocument()
+  })
+
   it('copies content of items selected inside a group', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     // happy-dom's navigator.clipboard is getter-only; defineProperty replaces it.

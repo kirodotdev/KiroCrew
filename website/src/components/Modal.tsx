@@ -25,6 +25,10 @@ interface ModalProps {
   footer?: React.ReactNode
   /** Optional actions rendered in the header (right side, before the close button) */
   headerActions?: React.ReactNode
+  /** Wrap a long title onto further lines instead of truncating it. For a
+   *  title that IS the question being asked (a confirmation), where an
+   *  ellipsis would hide the stakes the user is deciding on. */
+  wrapTitle?: boolean
   /** Max width of the modal (default: 640px) */
   maxWidth?: number
   /**
@@ -81,7 +85,7 @@ const SPRING = { type: 'spring' as const, stiffness: 500, damping: 35 }
  * therefore capture the restore target at page load and move focus into a
  * dialog that is not on screen.
  */
-function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidth, height, layoutId, dismissDisabled = false, interactionDisabled = false, guideTrustRoot: trustRootProp = false, children }: ModalDialogProps) {
+function ModalDialog({ onClose, title, wrapTitle = false, ariaLabel, footer, headerActions, maxWidth, height, layoutId, dismissDisabled = false, interactionDisabled = false, guideTrustRoot: trustRootProp = false, children }: ModalDialogProps) {
   // Asked for, or opened from inside a trust-root region (it portals out of it).
   const trustRoot = useGuideTrustRoot() || trustRootProp
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -174,7 +178,7 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
     >
       {/* Header */}
       <div className="flex items-center justify-between gap-3 px-5 min-h-12 py-2 shrink-0 border-b border-border">
-        <span id={titleId} className="text-base font-semibold text-text-strong truncate">{title}</span>
+        <span id={titleId} className={`text-base font-semibold text-text-strong ${wrapTitle ? 'min-w-0 break-words' : 'truncate'}`}>{title}</span>
         <div className="flex items-center gap-1.5 shrink-0">
           {headerActions}
           <button

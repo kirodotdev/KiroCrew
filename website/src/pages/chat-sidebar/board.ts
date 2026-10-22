@@ -125,6 +125,10 @@ export function useColumnPopover() {
       if (!t) return
       if (t.closest(`[data-column-popover="${columnEditId}"]`)) return
       if (t.closest(`[data-testid="column-edit-${columnEditId}"]`)) return
+      // A modal open above the popover (the tag-delete confirmation it raised)
+      // owns the pointer. Closing here would unmount the list that is waiting
+      // on that confirmation's answer, and the delete would never run.
+      if (document.querySelector('[aria-modal="true"]')) return
       setColumnEditId(null)
     }
     // Defer one tick so the same click that opened the popover doesn't immediately close it

@@ -44,6 +44,7 @@ import { sameRowView, type SessionRowView } from './rows'
 import { memberThreadTitle } from '../../lib/memberThreadTitle'
 import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
+import type { SessionMenuActions } from '../../hooks/useSessionActions'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
 
@@ -185,6 +186,9 @@ interface SessionRowActions {
   onAutoTitle: (key: string) => void
   onDuplicate: (key: string) => void
   onCloseSession: (key: string) => void
+  /** The sidebar's one session-action owner. Its confirmation is mounted above
+   *  the lanes, so a row that changes lane mid-question does not cancel it. */
+  sessionMenuActions: SessionMenuActions
   onMenuCloseAutoFocus: (e: Event) => void
   onSelectSlot?: (key: string) => void
   onOpenSlotInNewTab?: (key: string, opts?: { background?: boolean }) => void
@@ -272,7 +276,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       : i18nT('pages.chatSidebar.release_locally_hint_generic'))
     : conductor && conductor.childCount > 0 ? i18nT('pages.chatSidebar.close_keeps_children_hint') : undefined
   const {
-    connected, mode, isMobile, colorMode, defaultAgent, installedAgents, memoryRows, tagById, paletteColors, boost, boostFor,
+    connected, isMobile, colorMode, defaultAgent, installedAgents, memoryRows, tagById, paletteColors, boost, boostFor,
     recentTintCount, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex, manualSort,
     guideOnRowControl,
   } = view.shell
@@ -280,7 +284,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     onNativeDragStart, onNativeDragEnd, onPinnedKeyboardReorder, onManualKeyboardReorder,
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle,
     onDuplicate, onCloseSession, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession,
-    openElsewhere, toggleConductor,
+    openElsewhere, toggleConductor, sessionMenuActions,
   } = actions
   // A LOCAL row whose surface this page does not render goes where it lives: click
   // and Enter land here instead of `switchSlot`, and every local-only affordance
@@ -1012,7 +1016,6 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     const rowTitle = s.title
     const rowMenuProps = useMemo(() => ({
       slotKey: rowKey,
-      mode,
       onRename: () => onRenameStart(rowKey, scope, rowTitle && rowTitle !== rowKey ? rowTitle : '', true),
       onAutoTitle: () => onAutoTitle(rowKey),
       onOpenInNewTab: onOpenSlotInNewTab ? () => onOpenSlotInNewTab(rowKey) : undefined,
@@ -1027,7 +1030,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       // Removing an adopted remote-crew copy is reversible (the session stays on
       // its peer), so its menu item renders neutral, not destructive-red.
       closeNeutral: releaseLocally,
-    }), [rowKey, mode, onRenameStart, onAutoTitle, scope, rowTitle, onOpenSlotInNewTab, closeReachHint, releaseLocally, closeReachLabel])
+    }), [rowKey, onRenameStart, onAutoTitle, scope, rowTitle, onOpenSlotInNewTab, closeReachHint, releaseLocally, closeReachLabel])
     const rowActions = useMemo(() => (void langGen, !renamingHere && !foreignRow ? (isMobile ? (
       // In flow, not absolute: the phone ⋮ is always drawn, so the content
       // column must end before it. Absolutely placed, the column ran to the
@@ -1041,7 +1044,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             <button type="button" className="mc-touch-hit text-muted/50 active:text-text p-1 cursor-pointer bg-transparent border-none" aria-label={i18nT('pages.chatSidebar.more_options')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={14} /></button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-            <SessionActionsMenu variant="dropdown" {...rowMenuProps} onDuplicate={() => onDuplicate(rowKey)} />
+            <SessionActionsMenu variant="dropdown" actions={sessionMenuActions} {...rowMenuProps} onDuplicate={() => onDuplicate(rowKey)} />
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -1054,7 +1057,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             <IconButton title={i18nT('pages.chatSidebar.more')} aria-label={i18nT('pages.chatSidebar.more_options')} {...uiLocation('sessions.row-menu')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={12} /></IconButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-            <SessionActionsMenu variant="dropdown" {...rowMenuProps} />
+            <SessionActionsMenu variant="dropdown" actions={sessionMenuActions} {...rowMenuProps} />
           </DropdownMenuContent>
         </DropdownMenu>
         <IconButton variant="accent" title={i18nT('pages.chatSidebar.duplicate')} aria-label={i18nT('pages.chatSidebar.duplicate')} {...uiLocation('sessions.row-duplicate')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDuplicate(rowKey) }}><GitFork size={12} /></IconButton>
@@ -1070,12 +1073,12 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       </IconButtonGroup>
     )) : null
     // `langGen` (read with `void` above) because the labels are i18nT strings, which re-translate on a catalog load.
-    ), [renamingHere, foreignRow, isMobile, isActive, guideOnRowControl, rowMenuProps, onMenuCloseAutoFocus, onDuplicate, onCloseSession, closeReachLabel, releaseLocally, rowKey, langGen])
+    ), [renamingHere, foreignRow, isMobile, isActive, guideOnRowControl, rowMenuProps, sessionMenuActions, onMenuCloseAutoFocus, onDuplicate, onCloseSession, closeReachLabel, releaseLocally, rowKey, langGen])
     const rowContextMenuContent = useMemo(() => (void langGen, !foreignRow ? (
       <ContextMenuContent className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-        <SessionActionsMenu variant="context" {...rowMenuProps} />
+        <SessionActionsMenu variant="context" actions={sessionMenuActions} {...rowMenuProps} />
       </ContextMenuContent>
-    ) : null), [foreignRow, onMenuCloseAutoFocus, rowMenuProps, langGen])
+    ) : null), [foreignRow, onMenuCloseAutoFocus, rowMenuProps, sessionMenuActions, langGen])
     return (
       // A drop target in its own order: a pinned row takes pinned drags (the
       // pinned order), an unpinned row unpinned ones (the manual order, in any

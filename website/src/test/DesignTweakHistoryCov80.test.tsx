@@ -7,7 +7,7 @@
  * exercise the component's actual branching, not just bump statement counts.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, fireEvent } from '@testing-library/react'
+import { within, screen, waitFor, fireEvent } from '@testing-library/react'
 import DesignTweak from '../apps/design-tweak/DesignTweakPage'
 import { renderWithProviders } from './helpers'
 import { i18nT } from '../i18n/t'
@@ -130,6 +130,27 @@ function setupHappyPath(opts: {
   })
 }
 
+
+async function confirmAction(name: string | RegExp) {
+  const dialog = await waitFor(() => {
+    const confirmDialog = screen.getAllByRole('dialog').find(candidate =>
+      candidate.querySelector('[data-guide-confirm]'),
+    )
+    if (!confirmDialog) throw new Error('Confirmation dialog is not open')
+    return confirmDialog
+  })
+  const action = name === 'Cancel'
+    ? within(dialog).getByRole('button', { name: 'Cancel' })
+    : dialog.querySelector<HTMLButtonElement>('[data-guide-confirm]')
+  if (!action) throw new Error('Confirmation action is not rendered')
+  const actionName = action.textContent?.trim() ?? ''
+  if (typeof name === 'string' ? actionName !== name : !name.test(actionName)) {
+    throw new Error(`Unexpected confirmation action: ${actionName}`)
+  }
+  fireEvent.click(action)
+  await waitFor(() => expect(document.querySelector('[data-guide-confirm]')).toBeNull())
+}
+
 describe('DesignTweakPage — history, archive, states', () => {
   /**
    * Radix opens a dropdown on `pointerdown`, not `click`, so a plain
@@ -152,10 +173,7 @@ describe('DesignTweakPage — history, archive, states', () => {
     // polling loop actually run.
     vi.useFakeTimers({ now: FROZEN_NOW, shouldAdvanceTime: true })
     vi.clearAllMocks()
-    mockNavigate.mockClear()
-    // Suppress window.confirm for delete tests
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-  })
+    mockNavigate.mockClear()  })
 
   afterEach(() => {
     vi.useRealTimers()
@@ -388,15 +406,16 @@ describe('DesignTweakPage — history, archive, states', () => {
       i18nT('apps.designTweak.requests.delete_request'),
     )
     fireEvent.click(deleteItem)
+    await confirmAction('Delete request')
 
-    // window.confirm was mocked to return true
+    // The rendered dialog accepted the destructive action.
     await waitFor(() => {
       expect(mockedDeleteRequest).toHaveBeenCalledWith('req-1')
     })
   })
 
   it('does not delete when the user cancels the confirmation dialog', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
+
     setupHappyPath()
     renderWithProviders(<DesignTweak />)
 
@@ -415,9 +434,9 @@ describe('DesignTweakPage — history, archive, states', () => {
       i18nT('apps.designTweak.requests.delete_request'),
     )
     fireEvent.click(deleteItem)
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
 
-    // Confirm was called but returned false — deleteRequest must NOT fire
-    expect(window.confirm).toHaveBeenCalled()
     expect(mockedDeleteRequest).not.toHaveBeenCalled()
   })
 
@@ -441,6 +460,7 @@ describe('DesignTweakPage — history, archive, states', () => {
       i18nT('apps.designTweak.requests.delete_request'),
     )
     fireEvent.click(deleteItem)
+    await confirmAction('Delete request')
 
     await waitFor(() => {
       expect(

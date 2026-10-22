@@ -230,6 +230,27 @@ const builtinArt = () =>
 
 // ── The grid ───────────────────────────────────────────────────────────────
 
+
+async function confirmAction(name: string | RegExp) {
+  const dialog = await waitFor(() => {
+    const confirmDialog = screen.getAllByRole('dialog').find(candidate =>
+      candidate.querySelector('[data-guide-confirm]'),
+    )
+    if (!confirmDialog) throw new Error('Native confirmation dialog is not open')
+    return confirmDialog
+  })
+  const action = name === 'Cancel'
+    ? within(dialog).getByRole('button', { name: 'Cancel' })
+    : dialog.querySelector<HTMLButtonElement>('[data-guide-confirm]')
+  if (!action) throw new Error('Native confirmation action is not rendered')
+  const actionName = action.textContent?.trim() ?? ''
+  if (typeof name === 'string' ? actionName !== name : !name.test(actionName)) {
+    throw new Error(`Unexpected native confirmation action: ${actionName}`)
+  }
+  fireEvent.click(action)
+  await waitFor(() => expect(document.querySelector('[data-guide-confirm]')).toBeNull())
+}
+
 describe('gallery grid', () => {
   it('shows a loading line until the packs and the active id have both landed', async () => {
     let release: (packs: PackMeta[]) => void = () => {}
@@ -527,21 +548,22 @@ describe('pack detail sheet', () => {
 
 describe('deleting a pack', () => {
   it('asks first, and does nothing when the user declines', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+
     await mount()
     await openDetail('Boba')
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await confirmAction('Cancel')
 
-    expect(confirmSpy).toHaveBeenCalledWith('Delete appearance pack “Boba”? This cannot be undone.')
     expect(api.galleryDelete).not.toHaveBeenCalled()
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
   it('deletes an inactive pack and closes the sheet', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     await mount()
     await openDetail('Boba')
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await confirmAction('Delete')
 
     await waitFor(() => expect(api.galleryDelete).toHaveBeenCalledWith('boba-pack'))
     // Inactive pack: no need to repoint the active reference.
@@ -551,11 +573,12 @@ describe('deleting a pack', () => {
   })
 
   it('repoints the active reference to the built-in BEFORE deleting the active pack', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     api.getCrewCompanionConfig.mockResolvedValue({ activeAppearance: custom.id })
     await mount()
     await openDetail('Boba')
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await confirmAction('Delete')
 
     await waitFor(() => expect(api.galleryDelete).toHaveBeenCalledWith('boba-pack'))
     expect(api.gallerySetActive).toHaveBeenCalledWith(BUILTIN_ID)
@@ -566,35 +589,72 @@ describe('deleting a pack', () => {
     expect(switched).toBeLessThan(deleted)
   })
 
+  it('Escape on the delete question cancels the delete and keeps the Gallery window open', async () => {
+    await mount()
+    await openDetail('Boba')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await screen.findByRole('dialog', { name: /delete/i })
+    await act(async () => { fireEvent.keyDown(document.activeElement ?? window, { key: 'Escape' }) })
+    await waitFor(() => expect(document.querySelector('[data-guide-confirm]')).toBeNull())
+    expect(api.galleryDelete).not.toHaveBeenCalled()
+    expect(api.closeGallery).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
+  })
+
+  it('positions the delete question with inline styles, since the window may carry no dashboard stylesheet', async () => {
+    await mount()
+    await openDetail('Boba')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    const dialog = await screen.findByRole('dialog', { name: /delete/i })
+    expect((dialog.parentElement as HTMLElement).style.position).toBe('fixed')
+  })
+
+  it('repoints the active reference when another window activates the pack while the delete question is open', async () => {
+    await mount()
+    await openDetail('Boba')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await screen.findByRole('dialog', { name: /delete/i })
+    // Another window makes the doomed pack active before the user answers.
+    await act(async () => { mocks.listeners.active?.({ packId: custom.id }) })
+    await confirmAction('Delete')
+
+    await waitFor(() => expect(api.galleryDelete).toHaveBeenCalledWith('boba-pack'))
+    expect(api.gallerySetActive).toHaveBeenCalledWith(BUILTIN_ID)
+    expect(api.gallerySetActive.mock.invocationCallOrder[0]).toBeLessThan(api.galleryDelete.mock.invocationCallOrder[0])
+  })
+
   it('aborts the delete when the pre-delete switch fails', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     api.getCrewCompanionConfig.mockResolvedValue({ activeAppearance: custom.id })
     api.gallerySetActive.mockResolvedValue({ ok: false })
     await mount()
     await openDetail('Boba')
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await confirmAction('Delete')
 
     expect(await screen.findByText('Delete failed')).toBeInTheDocument()
     expect(api.galleryDelete).not.toHaveBeenCalled()
   })
 
   it('reports a refused delete', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     api.galleryDelete.mockResolvedValue(null)
     await mount()
     await openDetail('Boba')
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await confirmAction('Delete')
 
     expect(await screen.findByText('Delete failed')).toBeInTheDocument()
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
   it('reports a thrown delete', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     api.galleryDelete.mockRejectedValue(new Error('the file is locked'))
     await mount()
     await openDetail('Boba')
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await confirmAction('Delete')
     expect(await screen.findByText('the file is locked')).toBeInTheDocument()
   })
 })

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import type { ReactElement } from 'react'
@@ -130,13 +131,20 @@ describe('WebAppArtifactCard', () => {
 
   it('calls teardown API on confirm and reflects expired state', async () => {
     const onTornDown = vi.fn()
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     ;(api.artifactTeardown as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
 
     renderWithClient(<WebAppArtifactCard artifact={makeArtifact()} onTornDown={onTornDown} />)
 
-    const btn = screen.getByRole('button', { name: /Cancel \/ Tear down/i })
-    fireEvent.click(btn)
+    const user = userEvent.setup()
+    const btn = screen.getByRole('button', { name: /Tear down deployment/i })
+    await user.click(btn)
+    // The title asks the question; the confirm button restates the action.
+    const dialog = await screen.findByRole('dialog', { name: 'Tear down this deployment?' })
+    expect(within(dialog).getAllByText('Tear down deployment')).toHaveLength(1)
+    expect(within(dialog).getByText(/frontend: s3:\/\/kirocrew-deploy-base\/kanban\//)).toBeInTheDocument()
+    expect(within(dialog).getByText(/backend: kirocrew-deploy-app-kanban-demo/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/state: kirocrew-deploy-app-kanban-demo-table/)).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: /Tear down deployment/i }))
 
     await waitFor(() => {
       expect(api.artifactTeardown).toHaveBeenCalledWith('kanban-demo')
@@ -165,7 +173,7 @@ describe('WebAppArtifactCard', () => {
     expect(screen.queryByRole('link', { name: /cloudfront/i })).not.toBeInTheDocument()
     expect(screen.getByText(/torn down/i)).toBeInTheDocument()
     // Tear down stays disabled in the tombstone state
-    expect(screen.getByRole('button', { name: /Cancel \/ Tear down/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Tear down deployment/i })).toBeDisabled()
   })
 
   it('live state still renders the public link and no Redeploy', () => {

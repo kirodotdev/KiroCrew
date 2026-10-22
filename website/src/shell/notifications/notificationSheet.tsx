@@ -129,6 +129,10 @@ export function useNotificationSheet() {
   const popoverRef = useRef<HTMLDivElement>(null)
   const bellRef = useRef<HTMLButtonElement>(null)
   const sheetRef = useRef<HTMLDivElement | null>(null)
+  // The feed's Clear-all question is portalled outside the popover, so while it
+  // is open the sheet must not read its pointers or Escape as a dismissal.
+  const feedConfirmOpenRef = useRef(false)
+  const setFeedConfirmOpen = useCallback((v: boolean) => { feedConfirmOpenRef.current = v }, [])
   /** Sheet offset in px: 0 at rest, +parked offscreen to the right. */
   const sheetX = useMotionValue(0)
   /**
@@ -267,7 +271,7 @@ export function useNotificationSheet() {
       (popoverRef.current?.contains(target) ?? false) && isSheetBackgroundPress(target as Element, e)
     const onPointerDown = (e: PointerEvent) => {
       const target = e.target as Node | null
-      if (!target) return
+      if (!target || feedConfirmOpenRef.current) { pressedBackground = false; return }
       const inButton = containerRef.current?.contains(target) ?? false
       const inPopover = popoverRef.current?.contains(target) ?? false
       pressedBackground = onBackground(target, e)
@@ -309,7 +313,7 @@ export function useNotificationSheet() {
       if (isSheetBackgroundPress(target as Element, e)) closePanel()
     }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && !feedConfirmOpenRef.current) {
         if (selectedTs) setSelectedTs(null)
         // Escape is the keyboard dismissal, so return focus to the trigger.
         // The pointer paths deliberately do NOT do this: at pointerdown the
@@ -346,7 +350,7 @@ export function useNotificationSheet() {
   return {
     items, isMobile, phase, open, closing, selectedTs, setSelectedTs, selected,
     containerRef, popoverRef, bellRef, sheetRef, sheetX, leavingProps,
-    closePanel, openPanelOn, toggle,
+    closePanel, openPanelOn, toggle, setFeedConfirmOpen,
   }
 }
 
@@ -363,7 +367,7 @@ export function NotificationSheet({ sheet }: { sheet: ReturnType<typeof useNotif
   const leave = useGuardedLeave()
   const {
     isMobile, phase, open, closing, selectedTs, setSelectedTs, selected,
-    popoverRef, bellRef, sheetRef, sheetX, leavingProps, closePanel, openPanelOn,
+    popoverRef, bellRef, sheetRef, sheetX, leavingProps, closePanel, openPanelOn, setFeedConfirmOpen,
   } = sheet
   return (
     <>
@@ -458,6 +462,7 @@ export function NotificationSheet({ sheet }: { sheet: ReturnType<typeof useNotif
           <div className="flex-1 min-h-0 px-3 py-2 flex flex-col">
             <NotificationFeed
               variant="mac"
+              onConfirmOpenChange={setFeedConfirmOpen}
               header={
                 <div className="flex items-center px-1 pb-1.5">
                   <span className="text-[14px] font-bold text-text-strong">{i18nT('app.notifications')}</span>

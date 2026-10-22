@@ -358,13 +358,22 @@ describe('MembersPage create links open the New crewmate card', () => {
   // that stays mounted behind it — no `member-create-pane` wrapper, no
   // `crewmate-create-embedded` region.
   const cardOpen = () => screen.queryByRole('dialog') !== null
-  const card = () => screen.getByRole('dialog')
+  const card = () => screen.getByRole('dialog', { name: 'New crewmate' })
   const nameField = () => within(card()).getByLabelText('Name') as HTMLInputElement
   /** "What it looks after": in the Advanced settings, so present only unfolded. */
   const goalField = () => within(card()).queryByLabelText('What it looks after') as HTMLTextAreaElement | null
   // The modal's own header X carries the "Close" name (components.modal.close),
   // the Modal path's dismiss affordance in place of the embedded card's Cancel.
   const closeCard = () => fireEvent.click(within(card()).getByRole('button', { name: 'Close' }))
+  const settleLeaveConfirm = async (confirmed: boolean) => {
+    const dialog = await screen.findByRole('dialog', { name: /Leave (this page|while the crewmate)/ })
+    // A create in flight leaves the locked form behind, so its button says where it goes.
+    const busy = screen.queryByRole('dialog', { name: /^Leave while the crewmate/ }) === dialog
+    const leave = busy ? 'Leave page' : 'Discard changes'
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: confirmed ? leave : 'Keep editing' })) })
+    // The answer frees the exit slot after the dialog's promise settles; the next exit waits for it.
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /Leave (this page|while the crewmate)/ })).toBeNull())
+  }
   /** No step of the removed guided flow, and no creation receipt, anywhere. */
   const noGuidedFlow = () => {
     expect(document.querySelector('[data-testid^="meet-crewmates-"]')).toBeNull()
@@ -511,29 +520,22 @@ describe('MembersPage create links open the New crewmate card', () => {
   it('a new proposal replaces an untouched card at once; an edited card is replaced only once the user agrees to leave it', async () => {
     await openAssistant()
     const through = passedThrough()
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     try {
       fireEvent.click(screen.getByTestId('chat-link-proposal'))
       await waitFor(() => expect(cardOpen()).toBe(true))
-      // Untouched: the second proposal replaces the first, nothing asked.
       fireEvent.click(screen.getByTestId('chat-link-proposal-2'))
       await waitFor(() => expect(goalField()?.value).toBe('Second idea'))
       expect(nameField().value).toBe('')
-      expect(confirm).not.toHaveBeenCalled()
-      // Edited: the next proposal asks, and a refusal keeps the user's words.
       fireEvent.change(goalField()!, { target: { value: 'My own words' } })
       fireEvent.click(screen.getByTestId('chat-link-proposal'))
-      await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1))
+      await settleLeaveConfirm(false)
       expect(goalField()?.value).toBe('My own words')
-      // Agreed: the proposal is shown.
-      confirm.mockReturnValue(true)
       fireEvent.click(screen.getByTestId('chat-link-proposal'))
+      await settleLeaveConfirm(true)
       await waitFor(() => expect(goalField()?.value).toBe('Watch the release train'))
       expect(nameField().value).toBe('scout')
-      expect(confirm).toHaveBeenCalledTimes(2)
       expect(api.createKirocrewAgent).not.toHaveBeenCalled()
     } finally {
-      confirm.mockRestore()
       through.stop()
     }
   })
@@ -543,20 +545,12 @@ describe('MembersPage create links open the New crewmate card', () => {
     await clickAddAdvanced()
     await screen.findByRole('dialog')
     fireEvent.change(nameField(), { target: { value: 'half-typed' } })
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
-      // Unasked: the page asks once, and a refusal keeps the card.
-      fireEvent.click(screen.getByTestId('guide-nav-plain'))
-      await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1))
-      expect(nameField().value).toBe('half-typed')
-      // Asked already by the guide: no second question, the proposal fills the card.
-      fireEvent.click(screen.getByTestId('guide-nav-granted'))
-      await waitFor(() => expect(nameField().value).not.toBe('half-typed'))
-      expect(confirm).toHaveBeenCalledTimes(1)
-      noGuidedFlow()
-    } finally {
-      confirm.mockRestore()
-    }
+    fireEvent.click(screen.getByTestId('guide-nav-plain'))
+    await settleLeaveConfirm(false)
+    expect(nameField().value).toBe('half-typed')
+    fireEvent.click(screen.getByTestId('guide-nav-granted'))
+    await waitFor(() => expect(nameField().value).not.toBe('half-typed'))
+    noGuidedFlow()
   })
 
   it('a chat behind a creation surface is not the viewed thread, and is again once the chat returns', async () => {
@@ -637,8 +631,10 @@ describe('MembersPage create links open the New crewmate card', () => {
       await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
       // The user picks alpha mid-create and agrees to leave the card.
       fireEvent.click(await rosterRow('alpha'))
+      expect(await screen.findByRole('dialog', { name: /^Leave while the crewmate is being created\?/ })).toBeInTheDocument()
+      await settleLeaveConfirm(true)
       await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
-      expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Leave while the crewmate is being created\?/))
+      expect(confirm).not.toHaveBeenCalled()
       const membersMock = api.members as ReturnType<typeof vi.fn>
       membersMock.mockResolvedValue({
         members: [...assistantAndAlpha(), row({ name: 'radar', slug: 'radar', dashboard_created: true })],
@@ -670,6 +666,7 @@ describe('MembersPage create links open the New crewmate card', () => {
       fireEvent.click(screen.getByTestId('crewmate-create-submit'))
       await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
       fireEvent.click(await rosterRow('alpha'))
+      await settleLeaveConfirm(true)
       await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
       await clickAddCrewmate()
@@ -694,6 +691,7 @@ describe('MembersPage create links open the New crewmate card', () => {
       fireEvent.click(screen.getByTestId('crewmate-create-submit'))
       await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
       fireEvent.click(await rosterRow('alpha'))
+      await settleLeaveConfirm(true)
       await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
       await act(async () => { fail(new ApiError(500, 'boom')) })
       const notice = await screen.findByTestId('member-left-create-failed', undefined, PANE_READY)
@@ -718,6 +716,7 @@ describe('MembersPage create links open the New crewmate card', () => {
       fireEvent.click(screen.getByTestId('crewmate-create-submit'))
       await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
       fireEvent.click(await rosterRow('alpha'))
+      await settleLeaveConfirm(true)
       await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
       const membersMock = api.members as ReturnType<typeof vi.fn>
       membersMock.mockRejectedValue(new Error('roster down'))
@@ -740,17 +739,12 @@ describe('MembersPage create links open the New crewmate card', () => {
   })
 
   it('New crewmate again over a typed blank card, once the user agrees to leave, starts empty', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    try {
-      await openAssistant()
-      await clickAddCrewmate()
-      await screen.findByRole('dialog')
-      fireEvent.change(nameField(), { target: { value: 'half-typed' } })
-      await clickAddCrewmate()
-      await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1))
-      await waitFor(() => expect(nameField().value).toBe(''))
-    } finally {
-      confirm.mockRestore()
-    }
+    await openAssistant()
+    await clickAddCrewmate()
+    await screen.findByRole('dialog')
+    fireEvent.change(nameField(), { target: { value: 'half-typed' } })
+    await clickAddCrewmate()
+    await settleLeaveConfirm(true)
+    await waitFor(() => expect(nameField().value).toBe(''))
   })
 })

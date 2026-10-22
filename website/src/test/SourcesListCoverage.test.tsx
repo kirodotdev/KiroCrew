@@ -10,8 +10,8 @@
  * folder branch (folder picker, ignore patterns, recursive toggle) and the
  * pending-confirmation dialog that stands between a folder and a large scan.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ComponentProps } from 'react'
 import SourcesList from '../pages/knowledge/SourcesList'
@@ -68,19 +68,12 @@ const callsTo = (path: string, method?: string) =>
   vi.mocked(api.knowledgeApi).mock.calls.filter(([p, opts]) =>
     p === path && (!method || (opts as RequestInit | undefined)?.method === method))
 
-let confirmSpy: ReturnType<typeof vi.spyOn> | undefined
-
 beforeEach(() => {
   handler = () => ({ ok: true })
   vi.mocked(api.knowledgeApi).mockReset()
   vi.mocked(api.knowledgeApi).mockImplementation(
     (async (path: string, opts?: RequestInit) => handler(path, opts)) as unknown as never,
   )
-})
-
-afterEach(() => {
-  confirmSpy?.mockRestore()
-  confirmSpy = undefined
 })
 
 describe('SourcesList — inline folder scan panel', () => {
@@ -279,8 +272,7 @@ describe('SourcesList — row actions', () => {
     await waitFor(() => expect(callsTo('/sources/f1/confirm', 'POST')).toHaveLength(1))
   })
 
-  it('puts the row back when the delete fails', async () => {
-    confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+  it('puts the row back and shows the failure when the delete fails', async () => {
     handler = (path: string, opts?: RequestInit) => {
       if (path === '/sources') return [src()]
       if (path === '/sources/s1' && opts?.method === 'DELETE') throw new Error('gateway said no')
@@ -290,13 +282,16 @@ describe('SourcesList — row actions', () => {
     await screen.findByText('doc.md')
 
     fireEvent.click(screen.getByLabelText('Remove source'))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove source' }))
+    await waitFor(() => expect(callsTo('/sources/s1', 'DELETE')).toHaveLength(1))
     // The optimistic removal must be rolled back, or the source silently vanishes
     // from the UI while still being indexed.
     expect(await screen.findByText('doc.md')).toBeTruthy()
+    expect(await screen.findByTestId('sources-delete-error')).toHaveTextContent('gateway said no')
   })
 
   it('does not delete when the user declines the prompt', async () => {
-    confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     handler = (path: string) => {
       if (path === '/sources') return [src()]
       return { ok: true }
@@ -305,6 +300,9 @@ describe('SourcesList — row actions', () => {
     await screen.findByText('doc.md')
 
     fireEvent.click(screen.getByLabelText('Remove source'))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(callsTo('/sources/s1', 'DELETE')).toHaveLength(0)
     expect(screen.getByText('doc.md')).toBeTruthy()
   })

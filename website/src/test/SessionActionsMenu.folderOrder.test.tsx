@@ -19,7 +19,7 @@ import {
   __resetNavSeamForTests,
 } from '../utils/errorReport'
 import type { ChatFolder, ChatSlot } from '../types'
-import SessionActionsMenu from '../components/SessionActionsMenu'
+import SessionActionsMenu from './ownedSessionActionsMenu'
 import {
   ContextMenu,
   ContextMenuContent,

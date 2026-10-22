@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { screen, waitFor, fireEvent, act, cleanup } from '@testing-library/react'
+import { screen, waitFor, fireEvent, act, cleanup, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 vi.mock('@radix-ui/react-dropdown-menu', () => import('./__mocks__/@radix-ui/react-dropdown-menu'))
@@ -12,8 +12,6 @@ import { server } from './mocks/server'
 import { http, HttpResponse } from 'msw'
 import { __resetAuthRecoveryStateForTests } from '../src/api/client'
 
-const mockConfirm = vi.fn(() => true)
-Object.defineProperty(window, 'confirm', { writable: true, value: mockConfirm })
 
 const baseSlots = [
   { key: 'slot-1', title: 'Pipeline debug', running: false, agent: 'kirocrew', created: '2026-04-08T01:00:00Z', last_ts: '2026-04-08T02:00:00Z', folder_id: '' },
@@ -44,7 +42,6 @@ describe('ChatSidebar Folder Grouping', () => {
     vi.clearAllMocks()
     localStorage.clear()
     localStorage.setItem('mc-session-stale-collapse-ms', '0')
-    mockConfirm.mockReturnValue(true)
     // Hermetic focus baseline. api/client.ts shows a session-expired banner on an
     // unhandled auth 403 and its token input grabs focus on a rAF (client.ts
     // `showSessionExpiredBanner`). That module state latches across tests in
@@ -295,6 +292,8 @@ describe('ChatSidebar Folder Grouping', () => {
     fireEvent.click(screen.getByTestId('folder-menu-f1'))
     const deleteBtn = await screen.findByTestId('folder-delete-f1')
     fireEvent.click(deleteBtn)
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete folder' }))
 
     await waitFor(() => expect(screen.queryByText('Delete Me')).not.toBeInTheDocument())
     // Slot previously in the deleted folder is still visible, now ungrouped
@@ -478,7 +477,6 @@ describe('ChatSidebar confirmCloseSession', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     localStorage.clear()
-    mockConfirm.mockReturnValue(true)
     server.use(
       http.get('/api/chat/folders', () => HttpResponse.json([])),
       http.delete('/api/chat/slots/:key', () => HttpResponse.json({ ok: true })),
@@ -497,13 +495,12 @@ describe('ChatSidebar confirmCloseSession', () => {
     const closeBtn = screen.getByText('Pipeline debug').closest('[draggable]')!.querySelector('[aria-label="Close session"]')!
     fireEvent.click(closeBtn)
 
-    expect(mockConfirm).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: 'Close this session?' })).toBeNull()
     await waitFor(() => expect(deleteSpy).toHaveBeenCalledWith('slot-1'))
   })
 
   it('does not delete when user cancels the confirm dialog', async () => {
     localStorage.setItem('mc-chat-config', JSON.stringify({ confirmCloseSession: true }))
-    mockConfirm.mockReturnValue(false)
     const deleteSpy = vi.fn()
     server.use(
       http.delete('/api/chat/slots/:key', ({ params }) => { deleteSpy(params.key); return HttpResponse.json({ ok: true }) }),
@@ -514,7 +511,9 @@ describe('ChatSidebar confirmCloseSession', () => {
     const closeBtn = screen.getByText('Pipeline debug').closest('[draggable]')!.querySelector('[aria-label="Close session"]')!
     fireEvent.click(closeBtn)
 
-    expect(mockConfirm).toHaveBeenCalledWith(expect.stringContaining('Close this session?'))
+    const dialog = await screen.findByRole('dialog', { name: 'Close this session?' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Close this session?' })).toBeNull())
     expect(deleteSpy).not.toHaveBeenCalled()
   })
 
@@ -526,9 +525,9 @@ describe('ChatSidebar confirmCloseSession', () => {
     const closeBtn = screen.getByText('Pipeline debug').closest('[draggable]')!.querySelector('[aria-label="Close session"]')!
     fireEvent.click(closeBtn)
 
-    expect(mockConfirm).toHaveBeenCalledWith(expect.stringContaining('Close this session?'))
+    expect(await screen.findByRole('dialog', { name: 'Close this session?' })).toBeInTheDocument()
     // Nothing is running, so the prompt names the setting as its trigger.
-    expect(mockConfirm).toHaveBeenCalledWith(expect.stringContaining('Confirm Before Closing Session'))
+    expect(screen.getByRole('dialog', { name: 'Close this session?' })).toHaveTextContent('Confirm Before Closing Session')
   })
 })
 

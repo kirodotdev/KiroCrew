@@ -335,7 +335,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
     const first = await screen.findByRole('dialog')
     expect(within(first).getByText('Discard unsaved changes?')).toBeInTheDocument()
-    fireEvent.click(within(first).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(within(first).getByRole('button', { name: 'Keep editing' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     // Declined — the buffer survives.
     expect(screen.getByLabelText('body editor')).toBeInTheDocument()
@@ -400,9 +400,12 @@ describe('ArtifactDetailPage — mutation paths', () => {
     await mount(mkArtifact({ version: 2 }))
     await pickVersion('v1')
     const revert = await screen.findByRole('button', { description: 'Revert to v1' })
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const confirmSpy = vi.spyOn(window, 'confirm')
     fireEvent.click(revert)
-    expect(confirmSpy).toHaveBeenCalled()
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(confirmSpy).not.toHaveBeenCalled()
     expect(vi.mocked(api).updateArtifact).not.toHaveBeenCalled()
   })
 
@@ -414,8 +417,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
     await mount(mkArtifact({ version: 2 }))
     await pickVersion('v1')
     fireEvent.click(await screen.findByRole('button', { description: 'Revert to v1' }))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    fireEvent.click(screen.getByRole('button', { description: 'Revert to v1' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Revert' }))
     await waitFor(() => expect(screen.getByText('version gone')).toBeInTheDocument())
   })
 

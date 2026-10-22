@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
 import { apiErrorCode, isSlotCapError } from '../api/apiError'
@@ -6,9 +6,11 @@ import { store, useAppDispatch } from '../store'
 import type { MuteFlag } from '../store/dashboardSlice'
 import { captureForkOrigin, deleteSlot, forkMayOpen, listForkedSlot, switchSlot } from '../store/chatSlice'
 import { updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, markSlotRead, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
+import { appErrorNotice } from '../lib/appNotice'
 import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
+import { useConfirm } from '../components/ConfirmDialog'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { closeConfirmPrompt } from '../lib/closeConfirmPrompt'
 import { i18nT } from '../i18n/t'
@@ -116,8 +118,15 @@ export interface SessionActions {
   /** Relaunch the slot's agent process in place (fresh MCP servers/env, conversation preserved). */
   reload: (slotKey: string) => void
   /** Close (delete) a session, honouring the confirm-close preference. */
-  close: (slotKey: string) => void
+  close: (slotKey: string) => Promise<void>
+  /** Mounted at the menu/sidebar owner that invoked this hook. */
+  confirmDialog: ReactNode
 }
+
+/** The part of `SessionActions` a session menu calls. Holds no render state, so
+ *  an owner can hand one stable object to every row. */
+export type SessionMenuActions = Pick<SessionActions,
+  'toggleRead' | 'togglePin' | 'toggleMutesOpened' | 'toggleMuted' | 'copyLink' | 'move' | 'reload' | 'close'>
 
 export function useSessionActions(mode?: string, opts?: {
   /** The host's "a session was opened from here" callback (ChatSidebar's
@@ -131,6 +140,7 @@ export function useSessionActions(mode?: string, opts?: {
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   const moveSlotToFolder = useMoveSlotToFolder()
+  const { confirm, confirmDialog } = useConfirm()
 
   const finishPinMutation = useCallback(async (
     batch: PinMutationBatch, entry: PinMutationEntry, succeeded: boolean,
@@ -260,7 +270,7 @@ export function useSessionActions(mode?: string, opts?: {
     },
     // Duplicate goes through this mutation with no per-call handler, so this is
     // the only place its failure becomes visible -- surfaced the same way
-    // reloadMutation does (alert(); the dashboard has no global toast). Every
+    // reloadMutation does (the Redux notification feed). Every
     // message shares one shape: "Couldn't duplicate this session. <cause>.
     // <next step>." A non-ApiError means fetch itself rejected (nothing was
     // reached). An ApiError carries the human reason on err.message (apiFailure
@@ -296,14 +306,14 @@ export function useSessionActions(mode?: string, opts?: {
         return
       }
       if (!(err instanceof ApiError)) {
-        alert(i18nT('hooks.useSessionActions.duplicate_unreachable'))
+        appErrorNotice(i18nT('hooks.useSessionActions.duplicate_unreachable'))
       } else if (err.authRequired || isSlotCapError(err.status, err.body)) {
-        alert(i18nT('hooks.useSessionActions.duplicate_guided_reason', { reason: err.message }))
+        appErrorNotice(i18nT('hooks.useSessionActions.duplicate_guided_reason', { reason: err.message }))
       } else if (err.status === 404 && apiErrorCode(err) === 'slot_not_found') {
-        alert(i18nT('hooks.useSessionActions.duplicate_not_found'))
+        appErrorNotice(i18nT('hooks.useSessionActions.duplicate_not_found'))
       } else {
         const reason = err.message.trim().replace(/[.。!！।]+$/u, '')
-        alert(i18nT('hooks.useSessionActions.duplicate_failed_reason', { reason }))
+        appErrorNotice(i18nT('hooks.useSessionActions.duplicate_failed_reason', { reason }))
       }
     },
   })
@@ -398,15 +408,14 @@ export function useSessionActions(mode?: string, opts?: {
   // over the websocket (and lighting the row's unread indicator for a
   // non-active slot). Failure must NOT be silent -- the user would proceed
   // believing their stale MCP config was refreshed, the exact confusion the
-  // feature exists to fix. alert() is the always-available surface (the
-  // dashboard has no global toast); the copy branches on the backend's
+  // feature exists to fix. Failures use the app-wide Redux notification feed; the copy branches on the backend's
   // machine-readable code, because "try again when the session is idle" is a
   // dead end for a slot that LOOKS idle but has sub-agents still working.
   const reloadMutation = useMutation({
     mutationFn: (slot: string) => api.chatSlotReload(slot),
     onError: (err) => {
       const body = err instanceof ApiError ? err.body : ''
-      alert(i18nT(body.includes('slot_subagents_running')
+      appErrorNotice(i18nT(body.includes('slot_subagents_running')
         ? 'hooks.useSessionActions.reload_failed_subagents'
         : 'hooks.useSessionActions.reload_failed'))
     },
@@ -461,10 +470,16 @@ export function useSessionActions(mode?: string, opts?: {
   // always asks, on the same rule as Cmd+W (`closeBusyReasons`); an idle one
   // keeps the user's `confirmCloseSession` setting. The prompt names which of
   // the two made it ask (`closeConfirmPrompt`).
-  const close = useCallback((slotKey: string) => {
+  const close = useCallback(async (slotKey: string) => {
     const prompt = closeConfirmPrompt(store.getState(), slotKey, { settingOn: loadChatConfig().confirmCloseSession })
-    if (prompt === null || confirm(prompt)) dispatch(deleteSlot(slotKey))
-  }, [dispatch])
+    if (prompt === null || await confirm({
+      ...prompt,
+      confirmLabel: i18nT('components.sessionActionsMenu.close_session'),
+    })) dispatch(deleteSlot(slotKey))
+  }, [confirm, dispatch])
 
-  return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close }
+  return useMemo(
+    () => ({ duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close, confirmDialog }),
+    [duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close, confirmDialog],
+  )
 }

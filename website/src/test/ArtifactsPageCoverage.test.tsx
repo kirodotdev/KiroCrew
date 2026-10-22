@@ -1005,11 +1005,11 @@ describe('ArtifactsPage — artifact rows', () => {
   it('deletes from a row once the confirmation is accepted', async () => {
     const user = userEvent.setup()
     const m = seed({ artifacts: [mkArtifact('cr-queue')] })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
 
     await user.click(screen.getByLabelText('Remove from artifacts library'))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Remove from library' }))
 
     await waitFor(() => expect(m.deleteArtifact).toHaveBeenCalledWith('cr-queue'))
   })

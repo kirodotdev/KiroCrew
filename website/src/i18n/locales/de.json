@@ -3270,6 +3270,7 @@
         "deleteConfirm": "„{{title}}“ und alle Notizen, Diagramme und Aufgaben endgültig löschen? Dies kann nicht rückgängig gemacht werden.",
         "deleteFailed": "Diese Besprechung konnte nicht gelöscht werden.",
         "deleteMeeting": "{{title}} löschen",
+        "deleteMeetingButton": "Besprechung löschen",
         "deleteUnavailable": "Beenden Sie diese Besprechung, bevor Sie sie löschen",
         "deleted": "„{{title}}“ wurde gelöscht",
         "empty": "Keine Besprechungen",
@@ -3310,6 +3311,7 @@
       "meeting": {
         "agentsPaused": "Die Agenten haben nach mehreren Fehlern angehalten.",
         "attachPrompt": "Fügen Sie einen Link ein, den Sie mit den Agenten teilen möchten",
+        "attachRequired": "Gib einen Link ein.",
         "back": "Zurück",
         "endAndReview": "Beenden und prüfen",
         "ended": "Beendet",
@@ -4485,6 +4487,7 @@
       },
       "fileTree": {
         "delete_file": "{{file}} löschen",
+        "delete_file_button": "Datei löschen",
         "files": "Dateien",
         "main": "Haupt",
         "new_file": "Neue Datei",
@@ -4516,6 +4519,7 @@
         "create": "Erstellen",
         "create_one_above_or_clone_an_existing_repository": "Erstellen Sie oben eines, oder klonen Sie ein bestehendes Repository.",
         "delete_paper": "{{name}} löschen",
+        "delete_paper_button": "Paper löschen",
         "delete_paper_confirm": "„{{name}}“ und alle zugehörigen Dateien löschen? Dies kann nicht rückgängig gemacht werden.",
         "downloading_compiler_progress": "Wird heruntergeladen… {{done}} von {{total}}",
         "install_compiler": "Compiler installieren",
@@ -4576,6 +4580,7 @@
         "log": "Protokoll",
         "main_document": "Hauptdokument",
         "new_file_prompt": "Benennen Sie die neue Datei, zum Beispiel methods.tex",
+        "new_file_name_required": "Gib einen Dateinamen ein.",
         "papers": "Papers",
         "pull": "Holen",
         "save_and_compile_hint": "Drücken Sie Cmd+S (Ctrl+S unter Windows und Linux), um zu speichern und zu kompilieren.",
@@ -7794,7 +7799,8 @@
         "search": "Suchen…",
         "show_less": "Weniger anzeigen",
         "show_muted_count": "Stummgeschaltete anzeigen ({{count}})",
-        "try_a_different_search": "Versuche eine andere Suche"
+        "try_a_different_search": "Versuche eine andere Suche",
+        "clear_failed": "Die Benachrichtigungen konnten nicht gelöscht werden. Versuche es noch einmal."
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "Lass dich benachrichtigen, wenn du weg bist",
@@ -8665,6 +8671,8 @@
       "change_color": "Farbe von {{name}} ändern",
       "delete_tag": "Tag „{{name}}“ löschen",
       "delete_tag_2": "Tag {{name}} löschen",
+      "delete_tag_button": "Tag löschen",
+      "delete_tag_confirm_title": "Tag „{{name}}“ löschen?",
       "filter_by_tag": "Nach Tag filtern",
       "include_in_filter": "{{name}} in den Filter einbeziehen",
       "make_a_status_tag": "{{name}} zu einem Status-Tag machen",
@@ -8719,6 +8727,7 @@
       "dark_mode_colors": "Farben für den dunklen Modus",
       "default_theme_name": "Mein Theme",
       "delete_theme": "🗑 Theme löschen",
+      "delete_theme_confirm": "Theme löschen",
       "delete_this_custom_theme": "Dieses benutzerdefinierte Theme löschen?",
       "editing": "Wird bearbeitet:",
       "emoji": "Emoji",
@@ -8915,8 +8924,9 @@
       "aws_profile_to_deploy_with": "AWS-Profil für die Bereitstellung",
       "backend": "Backend",
       "billed_to_your_account": "· Ihrem Konto in Rechnung gestellt",
-      "cancel_tear_down": "Abbrechen / Abbauen",
-      "cancel_tear_down_marks_the_deployment_expired_in": "Abbrechen / Abbauen — markiert die Bereitstellung als abgelaufen; die Infrastruktur wird vom kontointernen Reaper oder von scripts/teardown.sh entfernt",
+      "cancel_tear_down": "Bereitstellung abbauen",
+      "tear_down_question": "Diese Bereitstellung abbauen?",
+      "cancel_tear_down_marks_the_deployment_expired_in": "Bereitstellung abbauen — markiert die Bereitstellung als abgelaufen; die Infrastruktur wird vom kontointernen Reaper oder von scripts/teardown.sh entfernt",
       "copy_url": "URL kopieren",
       "deploy": "Bereitstellen",
       "deploy_this_app_to_your_aws_account": "Diese App in Ihrem AWS-Konto bereitstellen",
@@ -9276,7 +9286,8 @@
       "withdraw_effect": "Nach dem Zurückziehen nutzen Agenten diesen Dienst nicht mehr, bis du erneut bestätigst."
     },
     "confirmDialog": {
-      "cancel": "Abbrechen"
+      "cancel": "Abbrechen",
+      "keep_editing": "Weiter bearbeiten"
     },
     "crewWebhookSection": {
       "could_not_load_webhooks": "Webhooks konnten nicht geladen werden, daher ist gerade unbekannt, was diesen Agenten weckt.",
@@ -10997,7 +11008,6 @@
       "channels": "Kanäle",
       "clear_all_context": "Gesamten Kontext leeren",
       "clear_context": "Kontext leeren",
-      "clear_context_2": "Kontext leeren",
       "click_new_to_create_one": "Klicken Sie auf + Neu, um eines zu erstellen.",
       "close": "Schließen",
       "close_agents_panel": "Agenten-Panel schließen",
@@ -13755,6 +13765,8 @@
         "search_knowledge_press_enter_to_search": "Wissen durchsuchen… (Enter drücken zum Suchen)",
         "select_all": "Alle auswählen",
         "selected": "ausgewählt",
+        "permanently_delete_selected_items_one": "{{count}} ausgewähltes Element endgültig löschen?",
+        "permanently_delete_selected_items_other": "{{count}} ausgewählte Elemente endgültig löschen?",
         "sources_tab": "Quellen",
         "status_active": "Aktiv",
         "status_archived": "Archiviert",
@@ -18572,6 +18584,7 @@
       "create_leave_draft": "Diese Seite verlassen? Der Dialog „Neuer Crewmate“ schließt sich und deine Eingaben gehen verloren.",
       "edit_leave_draft": "Diese Seite verlassen? Deine nicht gespeicherten Änderungen an diesem Crewmate gehen verloren.",
       "create_leave_busy": "Verlassen, während der Crewmate erstellt wird? Er wird vielleicht trotzdem erstellt, aber sein Chat öffnet sich hier nicht – prüf danach die Liste.",
+      "create_leave_busy_button": "Seite verlassen",
       "add_member_pending": "Wiederhole oder schließe zuerst den Hinweis zu {{name}}, bevor du einen weiteren Crewmate hinzufügst.",
       "add_member_pending_roster": "Aktualisiere zuerst die Liste für {{name}}, bevor du einen weiteren Crewmate hinzufügst.",
       "add_member_settling": "Die erste Nachricht von {{name}} wird abgeschlossen, bevor ein weiterer Crewmate hinzukommt.",

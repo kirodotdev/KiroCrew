@@ -10,9 +10,8 @@
 //
 // This module is the page's import path and its layout: the left rail, the
 // preview panel and the request rows (`RequestGroup`, `CommentRow`). The page's
-// state and effects, and every action but `deleteReq`, live in
-// `useDesignTweakPageState.ts`, which never imports this module.
-import { useCallback } from 'react'
+// state, effects and actions live in `useDesignTweakPageState.ts`, which never
+// imports this module.
 import type React from 'react'
 import {
   RefreshCw, ChevronDown, ChevronRight, Folder, FolderOpen,
@@ -27,9 +26,8 @@ import {
 } from '../../components/ui/dropdown-menu'
 import { i18nT } from '../../i18n/t'
 import { timeAgo as relativeTime } from '../../utils/timeAgo'
-import { deleteRequest } from './api'
 import type { Request, Comment, ThreadEntry } from './types'
-import { errMsg, useDesignTweakPageState } from './useDesignTweakPageState'
+import { useDesignTweakPageState } from './useDesignTweakPageState'
 
 const DIMS: Record<string, string> = { desktop: '100%', tablet: '768px', mobile: '390px' }
 
@@ -371,36 +369,25 @@ function RequestGroup({
 
 
 export default function DesignTweak() {
-  // The page's state, effects and actions (`useDesignTweakPageState.ts`), except
-  // `deleteReq` below: its native `confirm()` keeps it in this module, which
-  // `eslint.config.js` allows a native dialog in.
+  // The page's state, effects and actions (`useDesignTweakPageState.ts`).
   const {
     ime, selectedId, ddOpen, setDdOpen, ddIn, ddTriggerRef, ddPanelRef, adding, setAdding, newPath,
     setNewPath, detecting, devOpen, setDevOpen, devDraft, setDevDraft, starting, devError, histOpen,
     setHistOpen, previewId, setPreviewNonce, dimsOpen, setDimsOpen, dims, setDimsFor, mode, status,
-    setStatus, bridgeError, setBridgeError, reqOpen, sendingId, iframeRef, projects, booting, refresh,
+    bridgeError, setBridgeError, reqOpen, sendingId, iframeRef, projects, booting,
     withFollowUpLabels, toggleReq, postToOverlay, railW, onDragStart, selected, connected, switchTo,
     connect, disconnect, removeProject, addProject, pickFolder, sendRequest, missingIds, resendRequest,
     previewProject, myPending, myHistory, previewSrc, previewState, previewNote, isDevServer,
-    markFramed, pinItems, focusComment, openInChat, archiveReq, deleteComment, setDevServer,
-    useDetectedDevServer, startDevServer, setEditMode,
+    markFramed, pinItems, focusComment, openInChat, archiveReq, deleteReq, deleteComment,
+    setDevServer, useDetectedDevServer, startDevServer, setEditMode, confirmDialog,
   } = useDesignTweakPageState()
-
-  // Delete → permanently remove the request, its comments, and their pins.
-  // It sits one icon away from Archive but is irreversible, so it takes the same
-  // `confirm()` guard the Sessions sidebar uses for its destructive deletes.
-  // Archive stays un-confirmed on purpose: the request is still in History.
-  const deleteReq = useCallback(async (req: Request) => {
-    if (!confirm(i18nT('apps.designTweak.requests.delete_confirm', { number: req.number }))) return
-    try { await deleteRequest(req.id); refresh() }
-    catch (err) { setStatus(i18nT('apps.designTweak.status.delete_failed', { error: errMsg(err) })) }
-  }, [refresh, setStatus])
 
   const HistChevron = histOpen ? ChevronDown : ChevronRight
 
   // ---------- render ----------
   return (
     <div className="flex h-full min-h-0" style={{ padding: '8px 12px' }}>
+      {confirmDialog}
 
       {/* ================= LEFT RAIL (resizable, bordered container) ================= */}
       <div

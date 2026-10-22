@@ -80,6 +80,7 @@ import { createFolderBlocks } from './chat-sidebar/folderBlocks'
 import { createListLanes } from './chat-sidebar/listLanes'
 import { createBoardLane } from './chat-sidebar/boardLane'
 import ErrorNotice from '../components/ErrorNotice'
+import { useConfirm } from '../components/ConfirmDialog'
 import { renderSidebarHeader } from './chat-sidebar/SidebarHeader'
 import { renderSearchDock } from './chat-sidebar/SearchDock'
 export { FILTER_LABEL_KEY, FILTER_DESCRIPTION_KEY, SORT_LABEL_KEY, FOLDER_SORT_LABEL_KEY } from './chat-sidebar/SearchDock'
@@ -112,8 +113,7 @@ export { SIDEBAR_MIN, SIDEBAR_MAX } from './chat/sidebarWidth'
  * render owners, which call no hooks: the lane-row and folder-block factories (built once
  * per render, so the row stamps belong to that pass), the lanes, the header, the dock and
  * the Older Sessions pane. What stays here: every hook call, the row actions and row shell
- * the row memo compares, the native confirm() dialogs (eslint's native-dialog allowlist
- * names this file) and the root region. The owner table and the pin list are in
+ * the row memo compares, the themed sidebar confirmation owner and the root region. The owner table and the pin list are in
  * docs/system-specs/modules/history.md.
  */
 function ChatSidebar({
@@ -130,6 +130,7 @@ function ChatSidebar({
   chatDropTarget, onDropSessionRef, staticRows,
 }: ChatSidebarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  const { confirm, confirmDialog } = useConfirm()
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   // Read-only store handle for point-in-time reads inside async callbacks (the
@@ -696,9 +697,14 @@ function ChatSidebar({
   const { onOpenSource: stableOpenSource } = useStableCallbackProps({ onOpenSource })
   // What every session row can do, built once: the row's memo compares this one
   // reference, so none of these may take a new identity per render.
+  const { toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close } = sessionActions
+  const sessionMenuActions = useMemo(
+    () => ({ toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close }),
+    [toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close],
+  )
   const rowActions = useMemo(() => ({
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle,
-    onDuplicate: sessionActions.duplicate, onCloseSession: sessionActions.close,
+    onDuplicate: sessionActions.duplicate, onCloseSession: sessionActions.close, sessionMenuActions,
     onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource: stableOpenSource,
     onOpenPeerSession: openPeerSession,
     onNativeDragStart: startBoardCardDrag, onNativeDragEnd: endNativeSessionDrag,
@@ -706,7 +712,7 @@ function ChatSidebar({
     openElsewhere, toggleConductor: toggleConductorExpanded,
   }), [
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle,
-    sessionActions.duplicate, sessionActions.close, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab,
+    sessionActions.duplicate, sessionActions.close, sessionMenuActions, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab,
     stableOpenSource, openPeerSession, startBoardCardDrag, endNativeSessionDrag, reorderPinnedByKeyboard,
     reorderManualByKeyboard, openElsewhere, toggleConductorExpanded,
   ])
@@ -728,13 +734,13 @@ function ChatSidebar({
   const guideView = useGuide()?.view
   const guideOnRowControl = guideStepOnRowControl(guideView?.ownedHere && !guideView.needsEnter ? guideView.step : null)
   const rowShell: RowShell = useMemo(() => ({
-    connected, mode, defaultAgent, installedAgents: tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount,
+    connected, defaultAgent, installedAgents: tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount,
     // A session row on any touch screen (an iPad too) gets the single ⋯ menu,
     // not the overlay cluster.
     isMobile: isMobile || isTouchDevice,
     dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex, manualSort, guideOnRowControl,
   }), [
-    connected, mode, defaultAgent, tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount,
+    connected, defaultAgent, tintAgents, memoryRows, tagById, paletteColors, boost, boostFor, colorMode, recentTintCount,
     isMobile, isTouchDevice, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex,
     manualSort, guideOnRowControl,
   ])
@@ -765,12 +771,36 @@ function ChatSidebar({
   // The Older Sessions pane's guide scope (`open:chat.older-sessions`).
   useGuideDisclosureScope('chat.older-sessions', historyOpen)
 
-  // The native confirm() dialogs stay in this file, the one eslint's native-dialog
-  // allowlist names; the render owners call these.
-  const deleteFolderWithConfirm = (folder: ChatFolder) => { if (confirm(i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }))) deleteFolderMutation.mutate(folder.id) }
-  const deleteColumnWithConfirm = (columnId: string) => { if (confirm(i18nT('pages.chatSidebar.delete_this_column'))) deleteColumnMutation.mutate(columnId) }
-  const clearClosedSessionsWithConfirm = async () => { if (confirm(i18nT('pages.chatSidebar.clear_closed_sessions_active_tabs_and_pinned_ses'))) { await dispatch(clearHistorySessions()); dispatch(fetchHistory(false)) } }
-  const deleteHistorySessionWithConfirm = (key: string) => { if (confirm(i18nT('pages.chatSidebar.are_you_sure_you_want_to_delete_this_history_ses'))) dispatch(deleteHistorySession(key)) }
+  // Each destructive sidebar action uses the shared themed confirmation dialog:
+  // its button names the object being deleted instead of falling back to native
+  // browser text such as "OK".
+  const deleteFolderWithConfirm = async (folder: ChatFolder) => {
+    if (await confirm({
+      title: i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }),
+      confirmLabel: i18nT('pages.chatSidebar.delete_folder'),
+    })) deleteFolderMutation.mutate(folder.id)
+  }
+  const deleteColumnWithConfirm = async (columnId: string) => {
+    if (await confirm({
+      title: i18nT('pages.chatSidebar.delete_this_column'),
+      confirmLabel: i18nT('pages.chatSidebar.delete_column'),
+    })) deleteColumnMutation.mutate(columnId)
+  }
+  const clearClosedSessionsWithConfirm = async () => {
+    if (await confirm({
+      title: i18nT('pages.chatSidebar.clear_closed_sessions_active_tabs_and_pinned_ses'),
+      confirmLabel: i18nT('pages.chatSidebar.clear'),
+    })) {
+      await dispatch(clearHistorySessions())
+      dispatch(fetchHistory(false))
+    }
+  }
+  const deleteHistorySessionWithConfirm = async (key: string) => {
+    if (await confirm({
+      title: i18nT('pages.chatSidebar.are_you_sure_you_want_to_delete_this_history_ses'),
+      confirmLabel: i18nT('pages.chatSidebar.delete_history_session'),
+    })) dispatch(deleteHistorySession(key))
+  }
 
   // Everything the render owners draw from, built after the last hook call. The
   // factories run once per render, so the row stamps belong to this pass.
@@ -978,6 +1008,8 @@ function ChatSidebar({
        *  rather than per-row so a folder shown in several board columns can only
        *  ever open one, and so the ProjectPicker it hosts has a single owner. */}
       {folderModal && renderFolderModal(scope, folderModal)}
+      {confirmDialog}
+      {sessionActions.confirmDialog}
     </div>
   )
 }

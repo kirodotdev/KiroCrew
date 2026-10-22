@@ -12,7 +12,7 @@ import { consumeChatHandoff, handoffToChat, persistClaimedChatHandoffs, subscrib
 import { PREFILL_STORAGE_KEY, writePrefill } from '../../../utils/navIntent'
 import { safeSetSessionItem } from '../../../utils/safeStorage'
 import { revealComposer } from '../composerFocus'
-import { uniqueNotificationTs } from './notificationTs'
+import { uniqueNotificationTs } from '../../../lib/notificationTs'
 
 /**
  * How text reaches the composer from outside a keystroke: the Redux

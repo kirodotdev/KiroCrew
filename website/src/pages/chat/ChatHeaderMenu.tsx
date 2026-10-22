@@ -15,6 +15,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '../../components/ui/dropdown-menu'
+import { useSessionActions } from '../../hooks/useSessionActions'
 import { i18nT } from '../../i18n/t'
 import { deriveLoadedMcpTools } from '../../lib/mcpLoadedTools'
 import { useAppSelector } from '../../store'
@@ -40,6 +41,7 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
    *  bar's centre cell holds two controls (AUTOSDE `max-two-buttons-per-row`). */
   newSessionHere?: { label: string; disabled?: boolean; onSelect: () => void }
 }) {
+  const sessionActions = useSessionActions(mode)
   // Controlled open state: lets the colour-swatch row (not a Radix menu item)
   // close the menu after a pick, via the onColorPicked hook passed below.
   const [open, setOpen] = useState(false)
@@ -86,7 +88,8 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
   )
 
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
+    <>
+      <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         {triggerLabel !== undefined ? (
           /* No aria-label here: the visible title IS the accessible name, and the
@@ -115,8 +118,8 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
         {activeSlot && (
         <SessionActionsMenu
           variant="dropdown"
+          actions={sessionActions}
           slotKey={activeSlot}
-          mode={mode}
           sidebarOnScreen={sidebarOnScreen}
           omitPopout={omitPopout}
           // MCP servers: stateful (lazy fetch gated on the sub's open state), so
@@ -153,6 +156,8 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
         />
         )}
       </DropdownMenuContent>
-    </DropdownMenu>
+      </DropdownMenu>
+      {sessionActions.confirmDialog}
+    </>
   )
 }

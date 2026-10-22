@@ -95,7 +95,7 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(error)))
     }
   }, [dispatch])
-  useKeyboardShortcuts({ onToggleShortcutsModal: toggleShortcutsModal, onNewChat: () => newChatMutation.mutate(), disabled: shortcutsOpen,
+  const { confirmDialog } = useKeyboardShortcuts({ onToggleShortcutsModal: toggleShortcutsModal, onNewChat: () => newChatMutation.mutate(), disabled: shortcutsOpen,
     onToggleFocusMode: toggleFocusMode,
     onCycleAgent: () => {
       const slots = store.getState().dashboard.slots
@@ -285,5 +285,5 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   // (behind the default-on mc-auto-connect setting), so a crew is live without
   // a manual switcher click. Registered here once, like useInstanceShortcuts.
   useAutoConnectInstances()
-  return { shortcutsOpen, setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice }
+  return { shortcutsOpen, setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, confirmDialog }
 }

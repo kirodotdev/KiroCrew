@@ -1,4 +1,5 @@
 import type { NavIntent } from './popoutController'
+import { settleNavigationExit } from '../lib/settleNavigationExit'
 import { safeSetSessionItem } from './safeStorage'
 
 /**
@@ -50,7 +51,7 @@ export function chatDeepLinkSlot(path: string): string {
  * before the slot switch + route change so ChatPage's slot-restore effect
  * finds it when the target slot activates.
  *
- * `mayLeave` is the page-on-screen leave check (`useMayLeaveForNavigation`).
+ * `mayLeave` is the page-on-screen leave check (`useMayLeaveNow`).
  * An intent that leaves the page asks it first, like every wired in-app exit,
  * and a veto drops the whole intent: no prefill is staged and no slot switches
  * for a navigation the user refused.
@@ -61,7 +62,9 @@ export function applyNavIntentInMain(
     navigate: (path: string) => void
     switchSlot: (slotKey: string) => void
     // Required, so every caller decides whether its exit asks the page first.
-    mayLeave: () => boolean
+    mayLeave: () => boolean | Promise<boolean>
+    /** Claims the provider's one visible exit confirmation, if one exists. */
+    claimExitAttempt?: () => { isSourceCurrent: () => boolean; end: () => void } | null
     /**
      * Append `text` to the chat composer this window already shows for
      * `slotKey`, returning false when no such composer is on screen. A hand-off
@@ -72,7 +75,7 @@ export function applyNavIntentInMain(
      */
     appendToOpenComposer?: (slotKey: string, text: string) => boolean
   },
-): void {
+): void | Promise<void> {
   // Best-effort raise — a channel-delivered intent has no user activation, so
   // browsers may veto this; the opener-focus on the popout side is the
   // reliable path and this is just the assist for the claimed-but-not-opener
@@ -84,8 +87,12 @@ export function applyNavIntentInMain(
     && intent.slotKey === prefill.slotKey && deps.appendToOpenComposer?.(prefill.slotKey, prefill.append)) {
     return
   }
-  if (!deps.mayLeave()) return
-  if (prefill) writePrefill(prefill.slotKey, prefill.prompt)
-  if (intent.slotKey) deps.switchSlot(intent.slotKey)
-  deps.navigate(intent.path)
+  const attempt = deps.claimExitAttempt ? deps.claimExitAttempt() : null
+  if (deps.claimExitAttempt && !attempt) return
+  // Synchronous unless the page on screen shows a confirmation.
+  return settleNavigationExit<void>(attempt, deps.mayLeave, () => {
+    if (prefill) writePrefill(prefill.slotKey, prefill.prompt)
+    if (intent.slotKey) deps.switchSlot(intent.slotKey)
+    deps.navigate(intent.path)
+  }, undefined, undefined)
 }

@@ -276,36 +276,35 @@ describe('MeetingsPage calendar sync', () => {
 
 describe('MeetingsPage delete', () => {
   it('asks before deleting, and a declined confirm deletes nothing', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderPage()
     await userEvent.click(await screen.findByRole('button', { name: 'Delete zzz Retro' }))
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('zzz Retro'))
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: /cancel/i }))
     expect(apiMocks.deleteMeeting).not.toHaveBeenCalled()
   })
 
   it('deletes on confirm, drops that meeting from the cache, and says so', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const { queryClient } = renderPage()
     const removeQueries = vi.spyOn(queryClient, 'removeQueries')
     await userEvent.click(await screen.findByRole('button', { name: 'Delete zzz Retro' }))
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete meeting' }))
     await waitFor(() => expect(apiMocks.deleteMeeting).toHaveBeenCalledWith('zzz-retro'))
     await waitFor(() => expect(lastNotification()).toBe('Deleted “zzz Retro”'))
     expect(removeQueries).toHaveBeenCalledWith({ queryKey: ['meetings', 'zzz-retro'] })
   })
 
   it('shows a failed delete on the row it belongs to', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     apiMocks.deleteMeeting.mockRejectedValue(new Error('zzz still transcribing'))
     renderPage()
     await userEvent.click(await screen.findByRole('button', { name: 'Delete zzz Retro' }))
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete meeting' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('zzz still transcribing')
   })
 
   it('falls back to the generic message for a blank failure', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     apiMocks.deleteMeeting.mockRejectedValue(new Error('   '))
     renderPage()
     await userEvent.click(await screen.findByRole('button', { name: 'Delete zzz Retro' }))
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete meeting' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not delete this meeting.')
   })
 
