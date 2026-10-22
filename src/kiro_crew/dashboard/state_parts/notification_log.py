@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.notifications.bus import normalize_note
 from kiro_crew.owner_only_files import owner_only_opener
@@ -293,16 +294,48 @@ def _persist_notification(note: dict[str, str]) -> bool:
         return False
 
 
-def _rewrite_notifications(notifications: list[dict[str, str]]) -> None:
-    """Rewrite the entire notifications file from the in-memory list."""
+def _rewrite_notifications(notifications: list[dict[str, str]]) -> bool:
+    """Rewrite the entire notifications file from the in-memory list.
+
+    The in-memory list holds only servable rows, so the bounded window of
+    UNSERVABLE lines the file keeps for a human to look at (see
+    ``_maybe_trim_notifications``) is read back and written first, bytes intact:
+    a rewrite must not delete what the store deliberately preserves on ambiguity.
+
+    Written through :func:`atomic_write`, so a write that fails part-way (a full
+    disk) leaves the previous file intact and the caller's "nothing changed" holds.
+
+    Returns True on success; a failure is logged and reported, never raised.
+    """
     path = _notifications_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        kept_unservable = _unservable_lines(path)
         lines = [json.dumps(n) + "\n" for n in notifications[-_MAX_PERSISTED_NOTIFICATIONS:]]
-        with open(path, "w", encoding="utf-8", opener=owner_only_opener) as f:
-            f.write("".join(lines))
+        atomic_write(path, "".join(kept_unservable + lines), mode=0o600, newline="")
+        return True
     except Exception:
         logger.debug("Failed to rewrite notifications file", exc_info=True)
+        return False
+
+
+def _unservable_lines(path: Path) -> list[str]:
+    """The newest unservable lines of *path*, in file order, terminated, within their cap."""
+    if not path.exists():
+        return []
+    unservable = [line for line in _read_notification_lines(path) if _servable_note(line) is None]
+    kept = unservable[-_unservable_cap() :]
+    if kept and not kept[-1].endswith(("\n", "\r")):
+        # A final line with no terminator would glue onto the first row written after it.
+        kept[-1] += "\n"
+    return kept
+
+
+def _unservable_cap() -> int:
+    # Never zero. A zero cap does not empty the window, it removes the bound:
+    # ``unservable[-0:]`` is the WHOLE list, so a small cap would silently
+    # retain every unservable line instead of a recent sample of them.
+    return max(1, _MAX_PERSISTED_NOTIFICATIONS // _UNSERVABLE_NOTIFICATION_CAP_DIVISOR)
 
 
 def _maybe_trim_notifications(path: Path) -> None:
@@ -350,13 +383,9 @@ def _maybe_trim_notifications(path: Path) -> None:
             if sweep_expired_notifications([row]) == 1:
                 continue  # expired passive row -- drop before the cap
             live.append(index)
-        # Never zero. A zero cap does not empty the window, it removes the bound:
-        # ``unservable[-0:]`` is the WHOLE list, so a small cap would silently
-        # retain every unservable line instead of a recent sample of them.
-        unservable_cap = max(
-            1, _MAX_PERSISTED_NOTIFICATIONS // _UNSERVABLE_NOTIFICATION_CAP_DIVISOR
+        kept = sorted(
+            set(live[-_MAX_PERSISTED_NOTIFICATIONS:]) | set(unservable[-_unservable_cap() :])
         )
-        kept = sorted(set(live[-_MAX_PERSISTED_NOTIFICATIONS:]) | set(unservable[-unservable_cap:]))
         path.write_text("".join(lines[index] for index in kept), encoding="utf-8", newline="")
     except Exception:
         pass
