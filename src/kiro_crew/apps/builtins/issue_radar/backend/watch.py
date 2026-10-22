@@ -2,7 +2,7 @@
 
 A single asyncio background loop, started from ``register_routes(app)`` via
 ``app.on_startup`` and cancelled on ``app.on_cleanup``. Every
-:data:`POLL_INTERVAL_SEC` seconds it makes up to three passes over the connected repos:
+:data:`POLL_INTERVAL_SEC` seconds (or :data:`POLL_INTERVAL_ENV`) it makes up to three passes over the connected repos:
 
   1. **new-item notification** — each repo that has opted in (per-repo setting
      ``notify_on_new_issue``) is checked for tracked items (GitHub/GitLab issues,
@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from functools import partial
 from typing import Any
 
@@ -68,6 +69,14 @@ APP_NAME = "issue-radar"
 # (GitHub's authenticated 5000/hr) leaves ample headroom for a handful of
 # opted-in repos at one cheap single-page call each per minute.
 POLL_INTERVAL_SEC = 60
+
+#: Overrides :data:`POLL_INTERVAL_SEC` for this gateway. A faster watcher costs only
+#: forge calls, never model turns -- it is how a crew reacts within seconds while its
+#: own idle clock stays slow -- so it is an operator knob, read every cycle.
+POLL_INTERVAL_ENV = "KIROCREW_ISSUE_RADAR_POLL_SECS"
+#: The range the override is clamped to. The floor keeps a typo from hammering the
+#: forge's rate limit; the ceiling keeps crews' unblock signals within an hour.
+POLL_INTERVAL_RANGE = (15, 3600)
 
 # Most-recently-created open issues pulled per poll. Issue creation almost never
 # exceeds this within one interval; if it ever does, the high-water mark still
@@ -87,6 +96,23 @@ _watch_task: asyncio.Task | None = None
 _crews_suspended = False
 
 
+def poll_interval_secs() -> int:
+    """The watcher's interval: :data:`POLL_INTERVAL_ENV` clamped, else the default.
+
+    Unset, blank or not an integer reads as the default rather than an error: a bad
+    value must not stop the only always-on loop in the app.
+    """
+    raw = os.environ.get(POLL_INTERVAL_ENV, "").strip()
+    if not raw:
+        return POLL_INTERVAL_SEC
+    try:
+        value = int(raw)
+    except ValueError:
+        return POLL_INTERVAL_SEC
+    low, high = POLL_INTERVAL_RANGE
+    return max(low, min(high, value))
+
+
 async def start_watcher(app: web.Application) -> None:
     """``app.on_startup`` hook — launch the single background poll loop.
 
@@ -96,7 +122,7 @@ async def start_watcher(app: web.Application) -> None:
     if _watch_task is not None and not _watch_task.done():
         return
     _watch_task = asyncio.create_task(_watch_loop(app), name="issue-radar-watch")
-    logger.info("issue-radar watcher started (every %ds)", POLL_INTERVAL_SEC)
+    logger.info("issue-radar watcher started (every %ds)", poll_interval_secs())
 
 
 async def stop_watcher(app: web.Application) -> None:
@@ -140,15 +166,21 @@ async def _watch_loop(app: web.Application) -> None:
                 "issue-radar: this gateway has no app-disable hook registry, so "
                 "disabling the app stops the crews on the next %ds sweep rather "
                 "than immediately",
-                POLL_INTERVAL_SEC,
+                poll_interval_secs(),
             )
     except Exception:  # pragma: no cover - defensive; never block the loop
         logger.debug("issue-radar crew disable hook install failed", exc_info=True)
     # First tick waits a full interval so gateway startup isn't hit with gh
-    # subprocesses the moment it comes up.
+    # subprocesses the moment it comes up. The interval is re-read every cycle (an
+    # environment read), and a change is logged once.
+    interval = poll_interval_secs()
     while True:
         try:
-            await asyncio.sleep(POLL_INTERVAL_SEC)
+            current = poll_interval_secs()
+            if current != interval:
+                logger.info("issue-radar watcher interval now %ds", current)
+                interval = current
+            await asyncio.sleep(interval)
             await _poll_once(app)
         except asyncio.CancelledError:
             break
