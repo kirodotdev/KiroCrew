@@ -212,6 +212,32 @@ describe('muted worker turn end over the dashboard socket', () => {
     expect(unread()).toContain(WORKER)
   })
 
+  // #23084: the turn-done toast names an untitled session (its stored title
+  // can be the raw slot key) "Untitled session"; a titled one keeps its title.
+  it.each([
+    ['an untitled session (title equals the key)', WORKER, 'Untitled session'],
+    ['a titled session', 'Fix the build', 'Fix the build'],
+  ])('the turn-done toast title for %s', (_case, stored, shown) => {
+    const ws = mount(false)
+    globalStore.dispatch(sseSlots([
+      { key: CONDUCTOR, messages: 1, running: false },
+      { key: WORKER, title: stored, messages: 1, running: true, created_by: CONDUCTOR },
+    ]))
+    send(ws, row('assistant'))
+    send(ws, done)
+    expect(postNativeNotification).toHaveBeenCalledTimes(1)
+    expect(postNativeNotification.mock.calls[0][0]).toBe(shown)
+  })
+
+  it('the turn-done toast for a session missing from the slot list keeps its key', () => {
+    const ws = mount(false)
+    globalStore.dispatch(sseSlots([{ key: CONDUCTOR, messages: 1, running: false }]))
+    send(ws, row('assistant'))
+    send(ws, done)
+    expect(postNativeNotification).toHaveBeenCalledTimes(1)
+    expect(postNativeNotification.mock.calls[0][0]).toBe(WORKER)
+  })
+
   // Per-row mute (`slot.muted`, set from the worker's own kebab menu) gates
   // exactly the same signals as the creator rule, with the same exemptions.
   it('row-muted + successful turn: no chime, toast or unread', () => {

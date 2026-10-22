@@ -20,6 +20,7 @@ import { releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold,
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { isNoteRow } from '../lib/noteContract'
 import { gcSessionStorage } from '../utils/storageGc'
+import { isUntitledSession } from '../utils/sessionDisplayTitle'
 import type { RootState } from './index'
 import type { ChatMessage, TurnIdentityFields } from '../types'
 import { SOFT_STOP_DEBOUNCE_MS } from '../pages/chat/types'
@@ -690,9 +691,12 @@ export const deleteSlot = createAsyncThunk<
       dispatch(fetchSlots())
       // The row is about to come back; say why, whichever path pressed close.
       // The title is read from before the optimistic removal took the row away.
+      // An untitled row stores null, not the localized label: the notice outlives
+      // a language switch, so the sidebar localizes it at render.
+      const refusedTitle = deletedSlot ? (isUntitledSession({ key, title: deletedSlot.title }) ? null : deletedSlot.title!) : key
       dispatch({
         type: 'chat/setCloseRefused',
-        payload: { key, title: deletedSlot?.title || key, reason: closeRefusalIsHistoryWrite(err) ? 'historyWrite' : 'failed' },
+        payload: { key, title: refusedTitle, reason: closeRefusalIsHistoryWrite(err) ? 'historyWrite' : 'failed' },
       })
       throw new Error('save failed')
     } finally {

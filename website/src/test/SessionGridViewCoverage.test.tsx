@@ -762,14 +762,36 @@ describe('SessionGridView — picker controls', () => {
     const m = seedApi([{ key: 'a' }])
     m.forkChatSlot = vi.fn().mockRejectedValue(overCapacity())
     renderGrid('a')
+    const fork = within(onlyPicker()).getByRole('button', { name: 'Fork' })
+    // Wait for the slot list: until it loads the source is unknown and keeps its key.
+    await waitFor(() => expect(fork.getAttribute('title')).toBe('Fork Untitled session (child session)'))
 
-    fireEvent.click(within(onlyPicker()).getByRole('button', { name: 'Fork' }))
+    fireEvent.click(fork)
 
     const notice = await screen.findByTestId('grid-fork-error')
     // Several panes can be visible, so "This conversation" named none of them, and the
     // source is already open in a pane, so "Open it" asked for something already done.
-    expect(notice.textContent).toContain('“a”')
+    // The source is untitled, so it is named "Untitled session", never its key (#23084).
+    expect(notice.textContent).toContain('“Untitled session”')
+    expect(notice.textContent).not.toContain('“a”')
     expect(notice.textContent).not.toContain('Open it')
+  })
+
+  it.each([
+    ['an untitled source', undefined, 'Untitled session'],
+    ['a titled source', 'Zeta notes', 'Zeta notes'],
+  ])('the Fork tooltip and the refused-fork notice name %s by its label (#23084)', async (_case, title, shown) => {
+    const m = seedApi([{ key: 'a', title }])
+    m.forkChatSlot = vi.fn().mockRejectedValue(overCapacity())
+    renderGrid('a')
+    const fork = within(onlyPicker()).getByRole('button', { name: 'Fork' })
+    // Waiting on the label also waits for the slot list to load.
+    await waitFor(() => expect(fork.getAttribute('title')).toBe(`Fork ${shown} (child session)`))
+
+    fireEvent.click(fork)
+
+    const notice = await screen.findByTestId('grid-fork-error')
+    expect(notice.textContent).toContain(`“${shown}”`)
   })
 
   it('still shows the pane notice when the config lookup fails too', async () => {
@@ -805,7 +827,7 @@ describe('SessionGridView — picker controls', () => {
     expect(fork.getAttribute('title')).toBe('No session to fork yet')
   })
 
-  it('names the fork source by title, falling back to its slot key', async () => {
+  it('names the fork source by title, falling back to its slot key when the slot list lacks it', async () => {
     seedApi([{ key: 'a', title: 'Alpha' }])
     const { unmount } = renderGrid('a')
 

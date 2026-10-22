@@ -26,6 +26,7 @@ import { type RecentUnit, RECENT_WINDOW_PRESETS, formatRecentWindow } from '../r
 import { STALE_COLLAPSE_PRESETS_MS } from '../staleCollapse'
 import { SORT_LABEL_KEY, type SortKey } from '../chat/sessionOrder'
 import { i18nT } from '../../i18n/t'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { fmtList } from '../../i18n/format'
 import type { SessionFilterKey } from './types'
 import { SESSION_FILTERS } from './filters'
@@ -1062,7 +1063,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
       <ErrorNotice
         title={i18nT('pages.chatSidebar.close_refused_title')}
         message={closeRefused
-          ? i18nT(closeRefused.reason === 'historyWrite' ? 'pages.chatSidebar.close_refused' : 'pages.chatSidebar.close_refused_other', { title: closeRefused.title })
+          ? i18nT(closeRefused.reason === 'historyWrite' ? 'pages.chatSidebar.close_refused' : 'pages.chatSidebar.close_refused_other', { title: closeRefused.title ?? sessionDisplayTitle({ key: closeRefused.key, title: null }) })
           : null}
         askAgent={closeRefused?.reason === 'failed'}
         onDismiss={() => dispatch(setCloseRefused(null))}

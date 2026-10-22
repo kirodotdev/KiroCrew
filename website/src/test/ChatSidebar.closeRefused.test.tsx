@@ -8,7 +8,7 @@
  * any other failure says the close did not go through.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { fireEvent, render, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -16,6 +16,8 @@ import { createTestStore } from './helpers'
 import { ApiError } from '../api/apiError'
 import { deleteSlot } from '../store/chatSlice'
 import { ThemeProvider } from '../hooks/useTheme'
+import i18next from 'i18next'
+import { initI18n } from '../i18n/all'
 
 vi.mock('framer-motion', async () => {
   const React = await import('react')
@@ -66,12 +68,12 @@ import type { RootState } from '../store'
 
 const SLOTS = [{ key: 'k-notes', title: 'Release notes', messages: 2, running: false }]
 
-function renderSidebar() {
+function renderSidebar(slots: typeof SLOTS = SLOTS) {
   const defaults = createTestStore().getState()
   const store = createTestStore({
     dashboard: {
       ...defaults.dashboard,
-      status: {}, connected: true, slots: SLOTS, approvalMode: 'normal',
+      status: {}, connected: true, slots, approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null, slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
@@ -86,7 +88,7 @@ function renderSidebar() {
         <ThemeProvider>
           <MemoryRouter>
             <ChatSidebar
-              slots={SLOTS as never} activeSlot={null} unreadSlots={[] as never}
+              slots={slots as never} activeSlot={null} unreadSlots={[] as never}
               history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
             />
           </MemoryRouter>
@@ -144,6 +146,38 @@ describe('refused single-session close', () => {
     await store.dispatch(deleteSlot('k-notes')).catch(() => {})
     const notice = await findByTestId('close-refused')
     expect(notice.textContent).toContain('“Release notes” is still saving its last turn.')
+  })
+
+  it('an untitled session is named "Untitled session", never by its raw key (#23084)', async () => {
+    // The stored title of an untitled session can equal its key. The store keeps
+    // null, not the label, so the notice follows a later language switch.
+    const untitled = [{ key: 'chat-untitled', title: 'chat-untitled', messages: 1, running: false }]
+    mocks.chatSlots.mockResolvedValue(untitled)
+    mocks.deleteChatSlot.mockRejectedValue(historyWriteRefusal())
+    const { store, findByTestId } = renderSidebar(untitled)
+    await act(async () => { await store.dispatch(deleteSlot('chat-untitled')).catch(() => {}) })
+    expect(store.getState().chat.closeRefused).toMatchObject({ key: 'chat-untitled', title: null })
+    const notice = await findByTestId('close-refused')
+    expect(notice.textContent).toContain('“Untitled session” is still saving its last turn.')
+    expect(notice.textContent).not.toContain('chat-untitled')
+  })
+
+  it("an untitled session's notice re-localizes after a language switch (#23084)", async () => {
+    await initI18n()
+    const untitled = [{ key: 'chat-untitled', title: '', messages: 1, running: false }]
+    mocks.chatSlots.mockResolvedValue(untitled)
+    mocks.deleteChatSlot.mockRejectedValue(historyWriteRefusal())
+    try {
+      const { store, findByTestId } = renderSidebar(untitled)
+      await act(async () => { await store.dispatch(deleteSlot('chat-untitled')).catch(() => {}) })
+      const notice = await findByTestId('close-refused')
+      expect(notice.textContent).toContain('Untitled session')
+      await act(async () => { await i18next.changeLanguage('zh-CN') })
+      expect(notice.textContent).toContain('未命名会话')
+      expect(notice.textContent).not.toContain('Untitled session')
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
   })
 
   it('a close that succeeds says nothing', async () => {

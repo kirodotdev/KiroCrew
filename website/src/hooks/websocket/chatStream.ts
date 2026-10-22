@@ -17,6 +17,7 @@ import { i18nT } from '../../i18n/t'
 import { isReconcileNote } from '../../lib/noteContract'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { deriveToolCallTitle } from '../../utils/toolCallTitle'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { attendArrival } from './attention'
 import { emitToolCall } from './browserEvents'
 import type { StreamBuffers } from './streamBuffers'
@@ -65,7 +66,10 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
         // mute or its creator's): a prompt is the session waiting on the
         // user, as for turn-done, so no `isSlotMuted` gate here.
         if (data.slot && nativeNotificationPermitted() && isWindowAway()) {
-          const slotTitle = store.getState().dashboard.slots.find(s => s.key === data.slot)?.title || data.slot
+          // A session missing from the slot list keeps its key: its title is
+          // unknown, not absent.
+          const approvalSlot = store.getState().dashboard.slots.find(s => s.key === data.slot)
+          const slotTitle = approvalSlot ? sessionDisplayTitle(approvalSlot) : data.slot
           const requestId = String(data.meta?.approval_id ?? data.ts ?? '')
           // Session name as the title, status as the body: the chat-done
           // toast's layout, so both banners from one chat read alike.

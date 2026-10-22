@@ -15,6 +15,7 @@ import { i18nT } from '../i18n/t'
 import { forkFailureNoticeOffsite } from '../utils/forkFailure'
 import type { ForkFailureNotice } from '../utils/forkFailure'
 import { errMessage } from '../utils/thunkError'
+import { sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import type { ChatSlot } from '../types'
 
 interface PinMutationEntry {
@@ -295,7 +296,12 @@ export function useSessionActions(mode?: string, opts?: {
           // Compact and named: the panel is the narrowest surface, and the notice renders at
           // its root rather than beside the pressed row, so the copy must say which session.
           true,
-          store.getState().dashboard.slots.find(s => s.key === slotKey)?.title || slotKey,
+          // A session missing from the slot list has an unknown title, not
+          // none: it keeps its key rather than reading "Untitled session".
+          (() => {
+            const forkSlot = store.getState().dashboard.slots.find(s => s.key === slotKey)
+            return forkSlot ? sessionDisplayTitle(forkSlot) : slotKey
+          })(),
         )
         setForkError({ ...notice, slotKey })
         return

@@ -525,6 +525,15 @@ title in a split-view pane header and in the main chat header
 (`pages/chat/SessionTitleControl.tsx`) shows and announces "Untitled session" for an
 untitled session, and its rename editor opens empty, so neither the key nor the
 label is saved as a name; rename, Auto-title and Undo still act on the key.
+The same holds for the refused-fork notice (`hooks/useSessionActions.ts`,
+`components/SessionGridView.tsx`, which also names the Fork button's tooltip), the
+refused-close notice (`chat-sidebar/SearchDock.tsx`, from the title `store/chatSlice.ts`
+records, or null for an untitled session), the moved-to-folder Undo bar
+(`chat-sidebar/dnd/useSidebarDrag.ts`), the microphone-in-use notice and its jump
+button (`components/chat-input/voice.ts`), and the OS notifications for a finished
+turn and an approval request (`hooks/websocket/turnCompletion.ts`,
+`hooks/websocket/chatStream.ts`); the jump and each notification's tag still use the key,
+and a session missing from the slot list keeps its key, since its title is unknown.
 
 An untitled session (no title, or a title equal to its key) reads "Untitled
 session" in an Older Sessions row's text and hover title, in the session grid's

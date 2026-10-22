@@ -4,6 +4,7 @@ import { useTouchPushToTalk } from '../../hooks/useTouchPushToTalk'
 import { useAppSelector } from '../../store'
 import { safeSetItem } from '../../utils/safeStorage'
 import { isTouchDevice } from '../../utils/isTouchDevice'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { i18nT } from '../../i18n/t'
 import type { ComposerVoiceInputProps } from '../../chat-core/composer/Composer'
 import type { ComposerControl } from '../composerControl'
@@ -271,8 +272,12 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
   // Name the chat that holds the mic when the slot list knows it. In a lone DM
   // thread nothing else on screen shows which chat is capturing, so without a
   // name the user cannot go and end it.
-  const micOwnerTitle = useAppSelector(s =>
-    voiceBusyElsewhereSession ? s.dashboard.slots.find(x => x.key === voiceBusyElsewhereSession)?.title ?? null : null)
+  // An untitled chat (its stored title can be the raw slot key) is named
+  // "Untitled session", so the label and the jump action never show the key.
+  const micOwnerTitle = useAppSelector(s => {
+    const owner = voiceBusyElsewhereSession ? s.dashboard.slots.find(x => x.key === voiceBusyElsewhereSession) : undefined
+    return owner ? sessionDisplayTitle(owner) : null
+  })
   const micHeldElsewhereLabel = micOwnerTitle
     ? i18nT('components.chatInput.mic_in_use_in', { chat: micOwnerTitle })
     : i18nT('components.chatInput.mic_in_use_elsewhere')

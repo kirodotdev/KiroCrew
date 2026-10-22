@@ -146,7 +146,11 @@ export default function SessionGridView({
     focusedLeaf?.kind === 'session' && focusedLeaf.slot
       ? focusedLeaf.slot
       : grid.leaves.find((l) => l.kind === 'session' && l.slot)?.slot
-  const forkSourceTitle = slots.find((s) => s.key === forkSourceSlot)?.title
+  // The name the Fork tooltip and the refused-fork notice show: "Untitled
+  // session" for an untitled source, never its raw slot key. A source missing
+  // from the slot list leaves this unset, so those fall back to the key.
+  const forkSourceRow = forkSourceSlot ? slots.find((s) => s.key === forkSourceSlot) : undefined
+  const forkSourceTitle = forkSourceRow ? sessionDisplayTitle(forkSourceRow) : undefined
 
   const renderLeaf = (leaf: GridLeaf, ownsTopLeft: boolean) => {
     const paneLeading = ownsTopLeft ? leading : undefined

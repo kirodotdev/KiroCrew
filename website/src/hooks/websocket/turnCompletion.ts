@@ -16,6 +16,7 @@ import { postNativeNotification } from '../../lib/nativeNotify'
 import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
 import { dashboardAutomationSlotKey } from '../../monitoring/automation'
 import { i18nT } from '../../i18n/t'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { attendArrival, isSlotOnScreen } from './attention'
 import { takeIdleRowRefresh } from './idleRowRefresh'
 import { refreshPullRequestsAfterTurn, refreshSessionControlStatusesAfterTurn } from './serverState'
@@ -101,8 +102,10 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
         reconnecting: reconnectingRef.current,
       })) {
         const doneSlot = data.slot as string
-        const doneTitle = store.getState().dashboard.slots
-          .find(s => s.key === doneSlot)?.title || doneSlot
+        // A session missing from the slot list keeps its key: its title is
+        // unknown, not absent.
+        const doneRow = store.getState().dashboard.slots.find(s => s.key === doneSlot)
+        const doneTitle = doneRow ? sessionDisplayTitle(doneRow) : doneSlot
         // A toast that reads "Response ready" while the agent is waiting
         // on the user misdescribes the handoff; two literal keys keep the
         // reference statically checkable (see check-i18n-keys.mjs).

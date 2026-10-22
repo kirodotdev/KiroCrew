@@ -100,9 +100,9 @@ const folders: ChatFolder[] = [
   { id: OTHER, name: 'Later', order: 1 },
 ]
 
-function renderSidebar(folderId = '') {
+function renderSidebar(folderId = '', title = 'Session drag lands in the wrong folder') {
   const slot = {
-    key: SLOT_KEY, title: 'Session drag lands in the wrong folder', messages: 0,
+    key: SLOT_KEY, title, messages: 0,
     running: false, tags: [TAG], created: '', last_ts: '', folder_id: folderId,
   } as Slot
   const store = createTestStore({
@@ -177,6 +177,17 @@ describe('drag-to-folder undo', () => {
     await waitFor(() => expect(mocks.setSlotFolder).toHaveBeenCalledWith(SLOT_KEY, ARCHIVE))
     await waitFor(() => expect(barIn(container)).toBeTruthy())
     expect(barIn(container)!.textContent).toContain('Archive')
+  })
+
+  it('names an untitled session "Untitled session", never by its raw key (#23084)', async () => {
+    // The stored title of an untitled session can equal its key.
+    const { container } = renderSidebar('', SLOT_KEY)
+    dropSessionOnArchive(container)
+    await waitFor(() => expect(barIn(container)).toBeTruthy())
+    // The bar's hover sentence names the moved session.
+    const sentence = barIn(container)!.querySelector('[title]')!.getAttribute('title')
+    expect(sentence).toMatch(/Archive — Untitled session$/)
+    expect(sentence).not.toContain(SLOT_KEY)
   })
 
   it('undo posts the ORIGINAL folder back, then retires the offer', async () => {

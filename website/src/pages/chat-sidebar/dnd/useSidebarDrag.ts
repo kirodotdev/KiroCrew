@@ -16,6 +16,7 @@ import useMoveUndo from '../../../hooks/useMoveUndo'
 import type { Slot } from '../types'
 import { sessionRefBlockReason } from '../../../utils/sessionRefs'
 import { boardColumnFromDroppableId } from '../../../utils/boardFolderCollapse'
+import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { CHAT_PANE_DROP_TYPE } from './collision'
 import type { FolderSortModeRead } from '../../../hooks/useFolderSortMode'
 import type { FolderMutations } from '../folders'
@@ -195,7 +196,8 @@ export function useSidebarMoveUndo({ localSlots, folders, moveFolderTo, queryCli
       toFolderId: to,
       toFolderName: dest?.name ?? null,
       toFolderColor: dest?.color,
-      itemTitle: slot?.title || slotKey,
+      // A session missing from the list keeps its key: its title is unknown.
+      itemTitle: slot ? sessionDisplayTitle(slot) : slotKey,
     })
   }, [localSlots, folders, armDragMove, dismissFolderMove])
   const moveFolderByDrag = useCallback((folderId: string, parentId: string | null) => {
