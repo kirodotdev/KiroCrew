@@ -354,6 +354,32 @@ def test_fenced_caller_may_revive_only_what_it_created(tmp_path, monkeypatch):
     assert _revive(state, caller, own_key, caller_fenced=True)["target"] == own_key
 
 
+def test_a_send_revive_keeps_the_fence_the_request_was_admitted_under(tmp_path, monkeypatch):
+    """``session_send``'s own-worker revive carries the request's admission fence.
+    Recomputed from config instead, a conductor whose binding moved mid-request
+    reads as an unfenced owner chat and reopens an archive it did not create."""
+    from kiro_crew import mate_worker
+    from kiro_crew.dashboard.session_control_parts import session_revive
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    foreign = _slot(state, "chat-3")
+    foreign._created_by = "chat-7"
+    foreign_key = _archive(state, caller, foreign)
+    _lineage(monkeypatch, {foreign_key: "chat-7"})
+    conductor = MagicMock(selection_kind="member", template_id=mate_worker.MATE_CONDUCTOR_AGENT)
+    monkeypatch.setattr("kiro_crew.execution_context.read_session_execution", lambda key: conductor)
+
+    got = asyncio.run(
+        session_revive.revive_own_archived_worker(
+            state, _key(caller), foreign_key, caller_fenced=True
+        )
+    )
+
+    assert got == foreign_key
+    assert foreign_key not in state._slots
+
+
 def _lineage(monkeypatch, parents: dict, *, known: bool = True):
     """Stand in for the crew-log session-tree projection: *parents* maps an
     archived slot key to the parent the gateway recorded for it."""

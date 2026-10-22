@@ -12586,6 +12586,7 @@
       "crew_spaces_unavailable": "{{name}} のフォルダーを読み込めませんでした。チャットはフォルダーなしで表示されています。",
       "crew_enable_failed": "{{name}} を有効にできませんでした",
       "muted": "ミュート中: 音・通知・バッジなし",
+      "process_released": "休止中: 次のメッセージで再開",
       "chat_with_folder": "{{folder}} フォルダーとチャット",
       "chat_with_folder_desc": "このフォルダーの他のチャットを開始したチャット",
       "conductor_tag": "コンダクター",

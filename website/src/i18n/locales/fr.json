@@ -13014,6 +13014,7 @@
       "crew_spaces_unavailable": "Impossible de charger les dossiers de {{name}}. Ses discussions sont listées sans eux.",
       "crew_enable_failed": "Impossible d'activer {{name}}",
       "muted": "En sourdine : ni son, ni notification, ni badge",
+      "process_released": "En veille : se réveille au prochain message",
       "chat_with_folder": "Chat avec le dossier {{folder}}",
       "chat_with_folder_desc": "Le chat qui a lancé les autres chats de ce dossier",
       "conductor_tag": "conducteur",

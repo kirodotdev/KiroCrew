@@ -230,6 +230,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _scan_archived_candidates,
         _scan_revivable_history,
         list_archived_sessions,
+        revive_own_archived_worker,
         revive_session,
     )
     from kiro_crew.dashboard.session_control_parts.session_status import (  # noqa: F401
@@ -252,6 +253,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _pending_approval_fields,
         _summary_text,
         created_session_status,
+        process_state,
         read_messages,
         read_summary,
     )

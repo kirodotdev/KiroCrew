@@ -725,10 +725,18 @@ async def api_session_control_send(request: web.Request) -> web.Response:
         handback = await work_ledger_routes.read_send_handback(
             _read_session_key(request), _target(body)
         )
+        # A crewmate's conductor messaging a worker of its own that was archived
+        # (the idle sweep, a closed tab) revives it first, under revive's fence.
+        target = await sc.revive_own_archived_worker(
+            state,
+            _read_session_key(request),
+            _target(body),
+            caller_fenced=_carried_fence(request),
+        )
         result = await sc.send_to_target(
             state,
             caller_session_key=_read_session_key(request),
-            target=_target(body),
+            target=target,
             message=message,
             steer=steer,
             caller_fenced=_carried_fence(request),

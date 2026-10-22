@@ -980,3 +980,47 @@ def _bounded_folder_id(value: object) -> str:
     """A persisted folder id, or ``""`` when it is longer than any real one."""
     text = str(value or "")
     return text if len(text) <= MAX_HISTORY_FOLDER_ID_CHARS else ""
+
+
+async def revive_own_archived_worker(
+    state: "DashboardState",
+    caller_session_key: str,
+    target: str,
+    *,
+    caller_fenced: bool | None = None,
+) -> str:
+    """*target*, or the live key of the archived worker it names, revived for its crewmate.
+
+    Only for a caller whose attested record is a crewmate's conductor
+    (``mate_worker.is_conductor_execution``) naming a session that is not open.
+    The revive is :func:`revive_session`, whose ownership fence
+    admits a fenced caller only for a session it created AND whose gateway-written
+    lineage names it as parent, so transcript metadata alone revives nothing.
+    *caller_fenced* is the fence the request was admitted under, forwarded so the
+    revive cannot recompute a looser one from config that moved since. Any
+    refusal, and every other caller, keeps *target* as given, so the send answers
+    ``target_not_found`` exactly as before.
+    """
+    from kiro_crew.dashboard.session_control_parts.target_authorization import _resolve_slot
+    from kiro_crew.execution_context import read_session_execution
+    from kiro_crew.mate_worker import is_conductor_execution
+
+    try:
+        if _resolve_slot(state, target) is not None:
+            return target
+    except Exception:  # noqa: BLE001 - an unresolvable target keeps its own answer
+        return target
+    try:
+        execution = await asyncio.to_thread(read_session_execution, caller_session_key)
+    except Exception:  # noqa: BLE001 - an unreadable caller record revives nothing
+        return target
+    if not is_conductor_execution(execution):
+        return target
+    try:
+        revived = await revive_session(
+            state, caller_session_key=caller_session_key, target=target, caller_fenced=caller_fenced
+        )
+    except SessionControlError as exc:
+        logger.info("own-worker revive declined for %r: %s", target, exc.code)
+        return target
+    return str(revived.get("target") or target)

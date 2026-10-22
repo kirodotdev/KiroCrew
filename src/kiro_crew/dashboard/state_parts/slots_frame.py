@@ -813,6 +813,12 @@ def serialize_slot(
 ) -> dict[str, Any]:
     """Serialize one slot with state-backed channel-link metadata."""
     payload = slot.to_dict(include_check_status=include_check_status, dashboard_user=dashboard_user)
+    if payload.get("created_by"):
+        # A worker tab says whether its process is held or was released by the
+        # idle sweep (the conversation resumes on the next send either way).
+        from kiro_crew.dashboard.session_control_parts.session_status import process_state
+
+        payload["process"] = process_state(self, slot)
     links, slack_linked, slack_channel, slack_thread_ts = self._slot_links(slot)
     manual = self.manual_session_order
     payload.update(

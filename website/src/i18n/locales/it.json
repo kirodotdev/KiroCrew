@@ -13014,6 +13014,7 @@
       "crew_spaces_unavailable": "Impossibile caricare le cartelle di {{name}}. Le sue chat sono elencate senza di esse.",
       "crew_enable_failed": "Impossibile attivare {{name}}",
       "muted": "Silenziata: niente suono, avviso o badge",
+      "process_released": "In pausa: si riattiva al prossimo messaggio",
       "chat_with_folder": "Chat con la cartella {{folder}}",
       "chat_with_folder_desc": "La chat che ha avviato le altre chat di questa cartella",
       "conductor_tag": "conductor",

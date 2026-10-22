@@ -75,6 +75,15 @@ a new row in `_session_tools()` (`kiro_crew.mcp_dashboard_session_tools`), its b
 (`kiro_crew.mcp_dashboard_session_runs`), and its schema in
 `MCP_DASHBOARD_SCHEMAS`.
 
+**A conductor's own archived worker is revived on send.** `session_send` from a
+crewmate's conductor (`mate_worker.is_conductor_execution` on its attested record)
+to a session that is not open first runs `session_revive` on it, under revive's
+own ownership fence (created by the caller AND named by the gateway-written
+lineage) and with the fence the send was admitted under (`_carried_fence`, as on
+every route), then sends in the revived conversation
+(`session_revive.revive_own_archived_worker`). A refused revive, and every
+other caller, keeps `target_not_found`.
+
 **Two verbs here write into another session's conversation: `session_send` and
 `session_broadcast`.** Reading returns a transcript tail, stopping cancels a turn
 the way the Stop button does, creating opens an empty session, and sending
@@ -168,6 +177,11 @@ turn opens; persisted transcript metadata records `created_by` at birth, before
 that edge can exist, but is a weaker, agent-editable source. The union is the
 answer, and every row names the sources that placed it (`crew_log`, `history`,
 `live`, joined with `+`).
+
+A live row also carries `process`: `live` while the session manager holds its
+process (`SessionManager.has_session` on the slot's effective key), `released`
+once the idle sweep stopped it; the conversation resumes on the next send either
+way (`session_status.process_state`).
 
 The row's `status` separates `working` / `queued` / `idle` / `closed` / `lost` /
 `unknown`. A tree-backed row absent from the dashboard is `closed` or `lost`: the

@@ -13014,6 +13014,7 @@
       "crew_spaces_unavailable": "Não foi possível carregar as pastas de {{name}}. Os chats são listados sem elas.",
       "crew_enable_failed": "Não foi possível ativar {{name}}",
       "muted": "Silenciada: sem som, aviso ou selo",
+      "process_released": "Em repouso: acorda na próxima mensagem",
       "chat_with_folder": "Chat com a pasta {{folder}}",
       "chat_with_folder_desc": "O chat que iniciou os outros chats desta pasta",
       "conductor_tag": "maestro",

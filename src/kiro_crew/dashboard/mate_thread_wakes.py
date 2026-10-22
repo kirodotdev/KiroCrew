@@ -7,7 +7,9 @@ bounded, scrubbed excerpt of the worker's reply as data (:func:`report_prompt`,
 envelope ``[Worker report]``).
 
 * **Only the crewmate's own workers**, linked in this process (``_lineage_minted``
-  or ``_reports_to_creator``); transcript metadata alone wakes nobody. A
+  or ``_reports_to_creator``) or, after a restart or a revive, by the crew log's
+  gateway-written session tree (:func:`_lineage_names`); transcript metadata
+  alone wakes nobody. A
   crewmate's changed cron result reports the same way (:func:`note_cron_result`).
 * **One wake per turn end, deferred while busy**: one pending entry per worker,
   delivered when the thread's own turn task ends, never on a timer, never twice.
@@ -115,12 +117,32 @@ def is_crewmate_thread(slot: Any) -> bool:
     )
 
 
+def _lineage_names(slot_key: str, creator_key: str) -> bool:
+    """Whether the crew log's session tree names *creator_key* as *slot_key*'s parent.
+
+    The gateway writes that edge at the child's first turn from its in-process
+    witness, never from transcript metadata, so it survives a restart and a revive
+    where the in-memory witness does not. An unknown tree (crew log off, projection
+    unseeded) answers False. No I/O (``session_tree._slot_tree_parent``).
+    """
+    from kiro_crew.dashboard.session_control_parts.session_tree import _slot_tree_parent
+
+    try:
+        known, parent, _ = _slot_tree_parent(slot_key)
+    except Exception:  # noqa: BLE001 - an unreadable tree attests nothing
+        return False
+    return bool(known) and parent == creator_key
+
+
 def reporting_creator(state: Any, slot: Any) -> Any:
     """The crewmate thread *slot*'s turn end reports to, else ``None``."""
     creator_key = getattr(slot, "_created_by", "") or ""
     if not isinstance(creator_key, str) or not creator_key:
         return None
-    if not (getattr(slot, "_lineage_minted", False) or getattr(slot, "_reports_to_creator", False)):
+    witnessed = getattr(slot, "_lineage_minted", False) or getattr(
+        slot, "_reports_to_creator", False
+    )
+    if not witnessed and not _lineage_names(slot.key, creator_key):
         return None
     creator = state.get_slot(creator_key)
     if creator is None or creator is slot or not is_crewmate_thread(creator):

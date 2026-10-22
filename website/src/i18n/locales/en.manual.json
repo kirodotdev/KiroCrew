@@ -5980,6 +5980,7 @@
       "unlink_source_link_failed": "Could not hide. Try again.",
       "waiting_for_memory": "Waiting for free RAM",
       "muted": "Muted: no chime, toast or badge",
+      "process_released": "Asleep: wakes on the next message",
       "chat_with_folder": "Chat with {{folder}} folder",
       "chat_with_folder_desc": "The chat that started this folder's other chats",
       "conductor_tag": "conductor"

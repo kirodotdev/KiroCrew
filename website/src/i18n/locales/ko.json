@@ -12586,6 +12586,7 @@
       "crew_spaces_unavailable": "{{name}}의 폴더를 불러올 수 없습니다. 채팅은 폴더 없이 표시됩니다.",
       "crew_enable_failed": "{{name}}을(를) 켤 수 없습니다",
       "muted": "음소거됨: 알림음, 알림, 배지 없음",
+      "process_released": "휴면 중: 다음 메시지에서 다시 시작",
       "chat_with_folder": "{{folder}} 폴더와 채팅",
       "chat_with_folder_desc": "이 폴더의 다른 채팅을 시작한 채팅",
       "conductor_tag": "지휘자",

@@ -249,6 +249,9 @@ export interface ChatSlot extends TurnIdentityFields {
    * before nesting a row that has no session-tree node yet — a child between
    * `session_create` and its first turn, which has no crew log to fold. */
   lineage_minted?: boolean
+  /** A worker tab's process: held (`live`) or stopped by the idle sweep
+   * (`released`); the conversation resumes on the next message either way. */
+  process?: 'live' | 'released'
   /** The user-owned "mute sessions it opens" rule. When true on a creating
    * session, every session it opens -- and anything those open, down the
    * `created_by` chain -- is muted for attention: no turn-done chime,

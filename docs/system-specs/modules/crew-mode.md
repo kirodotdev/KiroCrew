@@ -3699,6 +3699,16 @@ chat, the hand-off (`_dispatching_crewmate`) and `is_conductor_execution` alike
   bare base. The worker's model pin is judged against the same backend
   (`mate_worker.crewmate_worker_backend`).
 
+**A stale worker is released, not capped.** A crewmate opens as many workers as
+its work needs; memory is bounded by the cgroup `max_memory_mb`. A worker idle
+past `session.timeout_secs` is stopped by the idle sweep like any session, its
+conversation kept, and the next `session_send` resumes it through
+`session/load` on the same execution record, so with the same kit. A long-idle
+worker is archived by `dashboard.idle_slot_sweep_days` like any tab, and a
+conductor's `session_send` to it revives it first (session-control.md). The
+conductor reads `process: live | released` on `session_status`, and the worker
+tab shows a released one with a small marker (`session-row-released`).
+
 **A worker reports back on its own** (`dashboard/mate_thread_wakes.py`), so the
 conductor dispatches and ends its turn. Every top-level turn end calls
 `note_turn_end`. When the slot's `_created_by` names a live crewmate thread and
@@ -3718,6 +3728,11 @@ suggestions page gets `dashboard_agentic.SUGGESTIONS_LINE`; no line with
 `agent.crew_panel` off, under the lock while the tab shows suggestions, or for a
 page whose every field is folded. A thread closed (`is_closing`), removed or
 replaced while that read runs gets no wake, and its reports stay pending.
+After a restart or a revive, when the in-memory witness is gone, the crew
+log's session tree (gateway-written at the child's first turn,
+`mate_thread_wakes._lineage_names`) naming the thread as the worker's parent
+stands in for it; with the crew log off or its tree not yet loaded the
+fallback answers no, and that worker's report is not delivered.
 Transcript metadata alone wakes nothing. A busy thread keeps one
 pending report per worker (`_mate_wakes`, counting turns) and its flush waits on
 the thread's own turn task, so a report is delivered once, never twice; pending

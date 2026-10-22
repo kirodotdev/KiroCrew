@@ -1508,7 +1508,9 @@ against sweep completeness, and are torn down at `close_all`.
   60min) of idleness, measured on `session.last_used`, which is refreshed on
   every acquire and on a successful `release(key)`. Never expires the persistent
   keys (`_bg`, `_hb`). Dashboard per-tab sessions
-  (`dashboard:{slot_key}`) idle-expire like any other session.
+  (`dashboard:{slot_key}`) idle-expire like any other session. A crewmate's worker
+  session is one of them: its process is released, its conversation resumes on
+  the next send, and `session_status` reports it as `process: released`.
   A key listed in `session.idle_exempt_keys` never expires on the idle clock,
   for a chat that automation wakes hours apart and that would otherwise pay a
   cold start on every wake. `SessionCleanup._idle_exempt_keys()` reads the list

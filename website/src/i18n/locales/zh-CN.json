@@ -12586,6 +12586,7 @@
       "crew_spaces_unavailable": "无法加载 {{name}} 的文件夹。其聊天将不分文件夹列出。",
       "crew_enable_failed": "无法启用 {{name}}",
       "muted": "已静音：无提示音、通知或徽标",
+      "process_released": "休眠中：收到下一条消息时恢复",
       "chat_with_folder": "与 {{folder}} 文件夹对话",
       "chat_with_folder_desc": "开启本文件夹其他对话的那个对话",
       "conductor_tag": "调度者",
