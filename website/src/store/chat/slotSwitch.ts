@@ -16,7 +16,7 @@ import { recentErrors, recordError, redactSecrets, type ErrorReport } from '../.
 import { chatSlotDetailPath } from '../../api/chatSlotPaths'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
-import { deduplicateByMid, finalizePageStreaming, floorForGen, olderHeadAbovePage, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
+import { deduplicateByMid, finalizePageStreaming, floorForGen, olderHeadAbovePage, pageRegressesSupersededSteer, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
 import { abortActiveOlderFetch, pagingCursorAfterKeptHead, slotCoverageShortfall, slotSwitchFetchLimit } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans, type ThinkingAnchor } from './thinking'
 import {
@@ -520,6 +520,9 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       const { key, messages: fetchedMessages, hasMore, queue, nextBefore } = action.payload
       if (isUnsafeKey(key)) return
       if (state.activeSlot !== key) return  // user switched away during fetch
+      // A page from before a requeued steer drained would undo its retirement;
+      // the view `pending` restored is newer (see `pageRegressesSupersededSteer`).
+      if (pageRegressesSupersededSteer(state.messages, fetchedMessages)) return
       const reportedRunning = action.payload.running
       const running = historyReportsRunning(state, key, reportedRunning, action.payload)
       const endedTurnHistory = reportedRunning && !running

@@ -67,6 +67,53 @@ export const isReasoningBurst = (t: TurnItem): t is Extract<TurnItem, { kind: 's
 export const TURN_OPENER_ROLES = new Set(['user', 'nudge', 'subagent'])
 
 /**
+ * A steer the turn never took, whose own queued turn has since written a fresh
+ * row with the same text (`steerState: 'superseded'`, see `chat_delivery.py`).
+ * The row stays in the transcript for history; drawing it would show the
+ * message twice.
+ */
+export function isSupersededSteerRow(m: ChatMessage): boolean {
+  const meta = m.meta as { steer?: unknown; steerState?: unknown } | undefined
+  return m.role === 'user' && meta?.steer === true && meta.steerState === 'superseded'
+}
+
+/**
+ * The index of the row drawn in place of the superseded steer at `idx`, or -1
+ * when that row is not in `messages`.
+ *
+ * The server names the successor by `meta.supersededBy` (its `mid`,
+ * `queue_drain._retire_superseded_steer_row`). In a live tab the successor is
+ * the row `queue_pop` rebuilt, which has no `mid` until a refresh, so the
+ * fallback is the first later non-steer `user` row with no `mid` and the same
+ * text: the server supersedes a row only when the drained text equals it.
+ */
+export function supersededSuccessorIdx(messages: ChatMessage[], idx: number): number {
+  const row = messages[idx]
+  if (!row || !isSupersededSteerRow(row)) return -1
+  const next = (row.meta as Record<string, unknown> | undefined)?.supersededBy
+  if (typeof next !== 'string' || !next) return -1
+  for (let i = idx + 1; i < messages.length; i++) {
+    if ((messages[i].meta as Record<string, unknown> | undefined)?.mid === next) return i
+  }
+  for (let i = idx + 1; i < messages.length; i++) {
+    const m = messages[i]
+    const meta = m.meta as Record<string, unknown> | undefined
+    if (m.role === 'user' && !meta?.steer && !meta?.mid && m.content === row.content) return i
+  }
+  return -1
+}
+
+/**
+ * Whether the row at `idx` is left undrawn: a superseded steer whose successor
+ * is in the same list. The successor always comes later, so any view that cuts
+ * it off (a fork made above it, a bounded page) still draws the old row, the
+ * only copy of the text in that view.
+ */
+export function isHiddenSupersededSteer(messages: ChatMessage[], idx: number): boolean {
+  return supersededSuccessorIdx(messages, idx) >= 0
+}
+
+/**
  * The synthesis injection that closes a sub-agent fan-out.
  *
  * `_run_pending_synthesis` (chat_runner.py) appends this row before dispatching
@@ -205,6 +252,7 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
     // it, the user does not. One it CAN parse renders as a compact outcome row,
     // which is the only scrollback record that a wave's results arrived.
     if (messages[i].role === 'subagent' && !isSubagentCompletionMessage(messages[i])) continue
+    if (isHiddenSupersededSteer(messages, i)) continue
     if (GROUPABLE.has(messages[i].role)) {
       if (!group.length) groupStart = i
       group.push(messages[i])

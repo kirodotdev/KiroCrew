@@ -679,6 +679,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         KIRO_CLI_MISSING_KIND,
         MCP_APP_MESSAGE_KIND,
         MODEL_UNENTITLED_KIND,
+        REQUEUED_STEER_ROW_MID_META,
         SESSION_START_FAILED_KIND,
         SPEC_HOOKS_NOTICE_KIND,
         STEER_INTENT_META,

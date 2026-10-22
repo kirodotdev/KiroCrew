@@ -188,9 +188,28 @@ def test_a_requeued_steer_is_walked_past_but_not_carried():
     assert "also bump the version" not in out
 
 
+def test_a_superseded_steer_is_walked_past_but_not_carried():
+    # `superseded` is a requeued steer whose own turn has since written its row:
+    # the turn never took it either, so it must not be replayed as a redirect.
+    superseded = _steer("also bump the version")
+    superseded["meta"]["steerState"] = "superseded"
+    rows = _earlier_turn() + [
+        {"role": "user", "content": "tag the release"},
+        {"role": "assistant", "content": "Tagging"},
+        _steer("sign the tag"),
+        superseded,
+    ]
+
+    out = _resume(rows)
+
+    assert "Interrupted request:\ntag the release" in out
+    assert "[Steered mid-turn] sign the tag" in out
+    assert "also bump the version" not in out
+
+
 def test_a_steer_with_an_unsettled_or_missing_state_is_carried():
     # `written` (sent, consumption not yet echoed) and a row with no state may
-    # have redirected the turn; only `requeued` says it did not.
+    # have redirected the turn; only `requeued` and `superseded` say it did not.
     for meta in ({"steer": True, "steerState": "written"}, {"steer": True}):
         rows = [
             {"role": "user", "content": "tag the release"},
@@ -199,11 +218,13 @@ def test_a_steer_with_an_unsettled_or_missing_state_is_carried():
         assert "[Steered mid-turn] sign the tag" in _resume(rows), meta
 
 
-def test_the_requeued_state_matches_the_dashboard_lifecycle():
+def test_the_not_taken_states_match_the_dashboard_lifecycle():
     from kiro_crew.context_assembly import replay
-    from kiro_crew.dashboard.chat_delivery import STEER_STATE_REQUEUED
+    from kiro_crew.dashboard.chat_delivery import STEER_STATE_REQUEUED, STEER_STATE_SUPERSEDED
 
-    assert replay._STEER_STATE_REQUEUED == STEER_STATE_REQUEUED
+    assert replay._STEER_STATES_NOT_TAKEN == frozenset(
+        {STEER_STATE_REQUEUED, STEER_STATE_SUPERSEDED}
+    )
 
 
 def _partial(out: str) -> str:

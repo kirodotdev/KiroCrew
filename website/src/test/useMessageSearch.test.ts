@@ -432,3 +432,34 @@ describe('close() hands focus back to the composer', () => {
     expect(document.activeElement).not.toBe(composer)
   })
 })
+
+describe('useMessageSearch over a superseded steer', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('matches only the drawn successor row', () => {
+    const rows: ChatMessage[] = [
+      { role: 'user', content: 'check the logs', cls: '', meta: { mid: 'm-old', steer: true, steerState: 'superseded', supersededBy: 'm-new' } },
+      { role: 'user', content: 'check the logs', cls: '', meta: { mid: 'm-new' } },
+    ]
+    const { result } = renderHook(() => useMessageSearch(rows, 'slot-1'))
+    act(() => { result.current.open(); result.current.setTerm('logs') })
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(result.current.matches).toEqual([{ msgIdx: 1, occ: 0 }])
+  })
+})
+
+describe('useMessageSearch over a superseded steer whose successor is cut off', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('still matches the old row, the only copy in the view', () => {
+    const rows: ChatMessage[] = [
+      { role: 'user', content: 'check the logs', cls: '', meta: { mid: 'm-old', steer: true, steerState: 'superseded', supersededBy: 'm-new' } },
+    ]
+    const { result } = renderHook(() => useMessageSearch(rows, 'slot-1'))
+    act(() => { result.current.open(); result.current.setTerm('logs') })
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(result.current.matches).toEqual([{ msgIdx: 0, occ: 0 }])
+  })
+})

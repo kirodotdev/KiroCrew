@@ -5,7 +5,7 @@ import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import type { ChatState } from './state'
 import { quoteBlock } from '../../chat-core/composer/messageQuote'
-import { isUnsafeKey, queueEntryAttachments, queueEntryQuote, queueEntrySendId, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
+import { isUnsafeKey, queueEntryAttachments, queueEntryDecisionStrip, queueEntryQuote, queueEntrySendId, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
 
 /** Replace only this send's provisional row; a queue acceptance is not execution.
  *
@@ -130,7 +130,14 @@ export const queueReducers = {
       // (no chat_message echo follows for a user row).
       if (drain_writes_row) return
       if (sendId) {
-        const existing = msgs.find(m => m.role === 'user' && m.meta?.sendId === sendId)
+        // A steer row is never this drain's row: a requeued steer runs as its
+        // own NEW row, and the server marks the old one `superseded` once that
+        // row lands. Matching it here would skip the rebuild and then hide the
+        // only copy, so the text would show zero times.
+        // An optimistic steer bubble IS still this send's placeholder (the
+        // steer raced the turn's end before any row was persisted), so it is
+        // matched and replaced as before.
+        const existing = msgs.find(m => m.role === 'user' && m.meta?.sendId === sendId && !(m.meta?.steer && !m.meta?.optimistic))
         if (existing && !existing.meta?.optimistic) return
         if (existing) {
           const ei = msgs.indexOf(existing)
@@ -142,7 +149,7 @@ export const queueReducers = {
           msgs.splice(ei, 1)
         }
       }
-      const rowMeta: Record<string, unknown> = { ...queueEntryAttachments(queued?.meta), ...queueEntryQuote(queued?.meta), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntrySendId(meta) }
+      const rowMeta: Record<string, unknown> = { ...queueEntryAttachments(queued?.meta), ...queueEntryQuote(queued?.meta), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryDecisionStrip(meta), ...queueEntrySendId(meta) }
       if (queue_id && sendId) rowMeta.queueId = queue_id
       if (at >= 0 && clientTs) rowMeta.clientTs = clientTs
       delete rowMeta.optimistic

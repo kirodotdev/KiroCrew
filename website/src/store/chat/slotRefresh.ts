@@ -7,7 +7,7 @@ import type { ChatMessage } from '../../types'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
-import { deduplicateByMid, finalizeAllStreaming, finalizeTrailingStreaming, floorForGen, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, raiseChunkSeq, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
+import { deduplicateByMid, finalizeAllStreaming, finalizeTrailingStreaming, floorForGen, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, pageRegressesSupersededSteer, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, raiseChunkSeq, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
 import { PANE_HYDRATE_LIMIT, REFRESH_LIMIT_CEILING, SLOT_DETAIL_MAX_LIMIT, countMatchedFetchLimit, pagingCursorAfterKeptHead, slotCoverageShortfall } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans } from './thinking'
 import {
@@ -386,6 +386,11 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       // page carries.
       const endedTurnHistory = reportedRunning && !running
       if (endedTurnHistory) return
+      // A queue hand-off emits no `chat_done` for the turn it ends, so the guard
+      // above cannot see a page captured before a requeued steer's drain. Such a
+      // page still shows the steer's old row un-retired and lacks the drained
+      // turn's own row; it is older than this tab in the same way.
+      if (pageRegressesSupersededSteer(state.messages, messages)) return
       if (!reportedRunning) recordEndedTurn(state, key, action.payload)
       retainServerTotal(state, key, action.payload.total, running, undefined, action.payload.boundedRead)
       // Merge permission messages: prefer state perms (have frontend resolved flags)
@@ -522,6 +527,9 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       // Slot became active between dispatch and fulfilment — switchSlot now
       // owns its messages, so leave the cache for it to manage.
       if (state.activeSlot === key) return
+      // Same stale-page rule as `refreshSlot.fulfilled`, against this pane's
+      // cache: a warm captured before a requeued steer drained is older than it.
+      if (pageRegressesSupersededSteer(state.slotMessages?.[safeKey(key)] ?? [], fetchedMessages)) return
       const reportedRunning = action.payload.running
       const running = historyReportsRunning(state, key, reportedRunning, action.payload)
       const endedTurnHistory = reportedRunning && !running

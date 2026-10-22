@@ -4,6 +4,7 @@ import { searchableTextMemo } from '../utils/searchableText'
 import { hasCommandModifier } from '../utils/commandModifier'
 import { isMac } from '../utils/platform'
 import { focusComposer } from '../pages/chat/composerFocus'
+import { isHiddenSupersededSteer } from '../pages/chat/groupDisplayItems'
 
 export interface SearchMatch {
   /** Index into the messages[] Redux array. */
@@ -44,6 +45,9 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
       for (let i = 0; i < messages.length; i++) {
         const m = messages[i]
         if (m.role !== 'user' && m.role !== 'assistant') continue
+        // A superseded steer is not drawn; its successor row carries the same
+        // text and is the hit the reader can land on.
+        if (isHiddenSupersededSteer(messages, i)) continue
         // Skip assistant reasoning segments collapsed inside turns
         if (m.role === 'assistant') {
           const next = messages[i + 1]

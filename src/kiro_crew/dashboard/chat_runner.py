@@ -144,6 +144,7 @@ from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     COMMANDS_OFF_META_KEY,
     STEER_STATE_CONSUMED,
     STEER_STATE_REQUEUED,
+    STEER_STATE_SUPERSEDED,
 )
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
 from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
@@ -523,6 +524,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
     _KIRO_ONLY_BLOCKED_SLASH_COMMANDS,
     _MAX_TOOL_PURPOSE,
+    REQUEUED_STEER_ROW_MID_META,
     STEER_INTENT_META,
     STEER_POSSIBLY_DELIVERED_META,
     STEER_POSSIBLY_DELIVERED_NOTE,

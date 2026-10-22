@@ -2145,9 +2145,11 @@ A mid-turn steer (a `user` row, or a monitor wake's `nudge` row, whose `meta.ste
 true, `replay._is_steer_row`)
 never opens the turn: the walk passes it on the way to the opener, and each steer
 is carried in the partial output, in the order it was sent, prefixed
-`[Steered mid-turn]`. A steer whose `meta.steerState` is `requeued` is walked
-past but not carried: the turn never took it, and it runs as its own turn from the
-queue. A window that holds steers but no opener restores nothing. The partial
+`[Steered mid-turn]`. A steer whose `meta.steerState` is `requeued` or
+`superseded` is walked past but not carried: the turn never took it, and it runs as
+its own turn from the queue. `superseded` marks a requeued row once that turn has
+written its own row with the same text; the client stops drawing the old row, and
+its `meta.supersededBy` names the new row's `mid` so pins and links land there. A window that holds steers but no opener restores nothing. The partial
 output's length cap bounds the assistant text alone, cut where it always was; a
 carried steer never spends it (each steer is capped like the request), so a
 redirect sent after a long stream is kept.

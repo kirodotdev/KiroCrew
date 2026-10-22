@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { configureStore } from '@reduxjs/toolkit'
-import chatReducer, { switchSlot, refreshSlot, setActiveSlot } from '../store/chatSlice'
+import chatReducer, { switchSlot, refreshSlot, setActiveSlot, warmSlotCache } from '../store/chatSlice'
 
 /** Regression test for GitHub #20833 (remainder after #20818 + #20904): a stale
  * slot-detail snapshot must not revert a newer card or steer row.
@@ -356,5 +356,86 @@ describe('#20833 gate-3: the helper is a no-op without a settled prior', () => {
     // states stand exactly as the page sent them.
     expect((card?.meta?.card as { status?: string } | undefined)?.status).toBe('active')
     expect(steer?.meta?.steerState).toBe('written')
+  })
+})
+
+describe('a refresh captured before a requeued steer drained', () => {
+  const STEER_TS = '2026-08-25T08:31:00Z'
+  const STEER_MID = 'm-steer-sup'
+  const oldSteer = (steerState: string): Row => ({
+    role: 'user',
+    content: 'run this next',
+    cls: 'msg msg-u',
+    ts: STEER_TS,
+    meta: { mid: STEER_MID, steer: true, steerState },
+  })
+  const successor: Row = {
+    role: 'user', content: 'run this next', cls: 'msg msg-u', ts: '2026-08-25T08:40:00Z', meta: { mid: 'm-fresh' },
+  }
+
+  function seedSuperseded() {
+    const store = makeStore()
+    store.dispatch(setActiveSlot(KEY))
+    store.dispatch(refreshSlot.fulfilled(slotPayload(KEY, [
+      ...olderServerRows(6), oldSteer('superseded'), successor,
+    ], false), 'r-seed', KEY))
+    return store
+  }
+
+  for (const stale of ['written', 'requeued']) {
+    it(`drops a page that still shows the steer ${stale}, keeping the successor row`, () => {
+      const store = seedSuperseded()
+      store.dispatch(refreshSlot.fulfilled(slotPayload(KEY, [
+        ...olderServerRows(6), oldSteer(stale),
+      ], false), 'r-stale', KEY))
+
+      const rows = store.getState().chat.messages.filter(m => m.role === 'user')
+      expect(rows.map(m => m.meta?.mid)).toEqual([STEER_MID, 'm-fresh'])
+      expect(rows[0].meta?.steerState).toBe('superseded')
+    })
+  }
+
+  it('applies a page that agrees the steer is superseded', () => {
+    const store = seedSuperseded()
+    store.dispatch(refreshSlot.fulfilled(slotPayload(KEY, [
+      ...olderServerRows(6), oldSteer('superseded'), successor,
+      { role: 'assistant', content: 'newer reply', cls: 'msg msg-a', ts: '2026-08-25T08:41:00Z', meta: { mid: 'm-new-S' } },
+    ], false), 'r-fresh', KEY))
+
+    expect(store.getState().chat.messages.some(m => m.meta?.mid === 'm-new-S')).toBe(true)
+  })
+})
+
+describe('a warm or switch page captured before a requeued steer drained', () => {
+  const STEER_TS = '2026-08-25T08:31:00Z'
+  const STEER_MID = 'm-steer-warm'
+  const oldSteer = (steerState: string): Row => ({
+    role: 'user', content: 'run this next', cls: 'msg msg-u', ts: STEER_TS,
+    meta: steerState === 'superseded'
+      ? { mid: STEER_MID, steer: true, steerState, supersededBy: 'm-fresh' }
+      : { mid: STEER_MID, steer: true, steerState },
+  })
+  const successor: Row = {
+    role: 'user', content: 'run this next', cls: 'msg msg-u', ts: '2026-08-25T08:40:00Z', meta: { mid: 'm-fresh' },
+  }
+  const userMids = (rows: { role: string; meta?: Record<string, unknown> }[] | undefined) =>
+    (rows ?? []).filter(m => m.role === 'user').map(m => [m.meta?.mid, m.meta?.steerState])
+
+  it('a background warm keeps the pane cache that already retired the steer', () => {
+    const BG = 'bg-pane'
+    const store = makeStore()
+    store.dispatch(setActiveSlot(KEY))
+    store.dispatch(warmSlotCache.fulfilled(slotPayload(BG, [...olderServerRows(6), oldSteer('superseded'), successor], false), 'w-seed', BG))
+    store.dispatch(warmSlotCache.fulfilled(slotPayload(BG, [...olderServerRows(6), oldSteer('requeued')], false), 'w-stale', BG))
+    expect(userMids(store.getState().chat.slotMessages?.[BG])).toEqual([[STEER_MID, 'superseded'], ['m-fresh', undefined]])
+  })
+
+  it('a switch keeps the view that already retired the steer', () => {
+    const store = makeStore()
+    store.dispatch(switchSlot.pending('s-seed', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, [...olderServerRows(6), oldSteer('superseded'), successor], false), 's-seed', KEY))
+    store.dispatch(switchSlot.pending('s-stale', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, [...olderServerRows(6), oldSteer('written')], false), 's-stale', KEY))
+    expect(userMids(store.getState().chat.messages)).toEqual([[STEER_MID, 'superseded'], ['m-fresh', undefined]])
   })
 })

@@ -85,11 +85,12 @@ _TURN_OPENER_ROLES = frozenset({"user", "nudge", "subagent"})
 # Prefix that marks a mid-turn steer inside a restored turn's partial output.
 _STEER_LABEL = "[Steered mid-turn]"
 
-# The ``meta.steerState`` of a steer the turn never took: its teardown moved it to
-# the queue, where it runs as its own turn (``STEER_STATE_REQUEUED`` in the
-# dashboard's chat delivery). Spelled here because this layer does not import the
-# dashboard; a test pins the two together.
-_STEER_STATE_REQUEUED = "requeued"
+# The ``meta.steerState`` values of a steer the turn never took: its teardown moved
+# it to the queue, where it runs as its own turn (``requeued``), and once that turn
+# has written its own row the old one is ``superseded``. ``STEER_STATE_REQUEUED``
+# and ``STEER_STATE_SUPERSEDED`` in the dashboard's chat delivery. Spelled here
+# because this layer does not import the dashboard; a test pins the two together.
+_STEER_STATES_NOT_TAKEN = frozenset({"requeued", "superseded"})
 
 
 def _is_steer_row(row: dict) -> bool:
@@ -148,8 +149,8 @@ def build_interrupted_turn_preamble(
     opened the interrupted turn, collecting the assistant text it had streamed.
     A mid-turn steer (:func:`_is_steer_row`) is walked past rather than taken as
     the opener, and is carried in the partial output, in the order it was sent,
-    under ``[Steered mid-turn]`` -- unless its ``steerState`` is ``requeued``,
-    which means the turn never took it and it runs as its own turn.
+    under ``[Steered mid-turn]`` -- unless its ``steerState`` is ``requeued`` or
+    ``superseded``, which means the turn never took it and it runs as its own turn.
     Returns "" when no opener is found. The caller mints the result AFTER the
     prompt's egress scrub (its markers are in ``_STRUCTURAL_MARKER_RES``); the
     payload is scrubbed here instead.
@@ -205,10 +206,10 @@ def build_interrupted_turn_preamble(
                 # The cap fell on the separator itself: the kept text ends with the
                 # previous chunk, so the marker closes that chunk.
                 assistant_parts[last_assist] += "… [truncated]"
-        elif _is_steer_row(m) and m["meta"].get("steerState") != _STEER_STATE_REQUEUED:
-            # A requeued steer did not redirect this turn: it waits in the queue as
-            # its own turn, or the user dismissed it. Carrying it would have the
-            # model act on it here and again when it drains.
+        elif _is_steer_row(m) and m["meta"].get("steerState") not in _STEER_STATES_NOT_TAKEN:
+            # A requeued or superseded steer did not redirect this turn: it waits
+            # in the queue as its own turn, has already run as one, or the user
+            # dismissed it. Carrying it would have the model act on it twice.
             if len(text) > user_cap:
                 text = text[:user_cap] + "… [truncated]"
             assistant_parts.append(f"{_STEER_LABEL} {text}")

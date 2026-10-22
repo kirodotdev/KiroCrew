@@ -11,6 +11,7 @@ import { useChatNavigation } from '../../../hooks/useChatNavigation'
 import { useChatPins } from '../../../hooks/useChatPins'
 import type { ChatMessage } from '../../../types'
 import { i18nT } from '../../../i18n/t'
+import { supersededSuccessorIdx } from '../groupDisplayItems'
 
 /** Map message index → displayItems index, for scroll-to-match and the turn minimap. */
 function buildMessageToDisplayIdx(items: DisplayItem[]): Map<number, number> {
@@ -25,6 +26,21 @@ function buildMessageToDisplayIdx(items: DisplayItem[]): Map<number, number> {
     else if (item.kind === 'group') item.msgs.forEach((_, mi) => map.set(item.startIdx + mi, di))
   })
   return map
+}
+
+/**
+ * The row a jump to `messages[idx]` should land on. A superseded steer is not
+ * drawn; the server names the row that ran in its place (`meta.supersededBy`,
+ * `queue_drain._retire_superseded_steer_row`), so a pin, quote or link saved
+ * before the drain lands there. Returns `idx` when the row is not superseded or
+ * its successor is not in `messages`, which is exactly when the row is still
+ * drawn (`isHiddenSupersededSteer`).
+ */
+export function drawnSuccessorIdx(messages: ChatMessage[], idx: number): number {
+  // The same rule that hides the row, so a jump lands exactly where the row
+  // is no longer drawn and nowhere else.
+  const at = supersededSuccessorIdx(messages, idx)
+  return at >= 0 ? at : idx
 }
 
 /**
@@ -154,16 +170,17 @@ export function useTranscriptPins({
   const jumpToLoadedPinnedMessage = useCallback((messageTs: string, mid?: string): boolean => {
     // Mid-based resolution when a mid is known; ts ONLY for legacy pins that carry none.
     // Falling through to ts with a mid in hand takes a same-tick twin, which is the wrong row.
-    const msgIdx = mid
+    let msgIdx = mid
       ? messages.findIndex(m => (m.meta as Record<string, unknown> | undefined)?.mid === mid)
       : messages.findIndex(m => m.ts === messageTs)
     if (msgIdx < 0) return false
+    msgIdx = drawnSuccessorIdx(messages, msgIdx)
     const di = messageToDisplayIdxRef.current.get(msgIdx)
     if (di === undefined) return false
     setPinNotice(null)
     setPinLoadError(null)
     navToDisplayIndex(di, { behavior: 'smooth', align: 'center' })
-    setHighlightTs(messageTs)
+    setHighlightTs(messages[msgIdx].ts ?? messageTs)
     setTimeout(() => setHighlightTs(null), 3000)
     return true
   }, [messages, navToDisplayIndex, setHighlightTs])

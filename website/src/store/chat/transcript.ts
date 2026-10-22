@@ -240,6 +240,37 @@ export function preserveSettledMcpOauth(existing: ChatMessage[], merged: ChatMes
  *
  *  Deliberately scoped to these two in-place-upsert types; it is the sibling of
  *  the stop/mcp_oauth rules, not a general merge rewrite. */
+/** Whether `page` carries an older copy of a steer row this tab already shows
+ *  as `superseded`.
+ *
+ *  `superseded` is terminal: the queue drain sets it on a requeued steer's old
+ *  row only AFTER it appended that turn's own row (`queue_drain.py`
+ *  `_retire_superseded_steer_row`), and nothing moves it back. So a page holding
+ *  the same `(mid, ts)` steer in any other state was captured before that drain,
+ *  and it also lacks the successor row. Merging it would show the old row again
+ *  with its earlier treatment and drop the successor, so the caller drops the
+ *  whole page, the way an ended-turn page is dropped. Carrying `superseded` over
+ *  instead would hide the old row while the successor is still missing, which
+ *  shows the text zero times. */
+export function pageRegressesSupersededSteer(existing: ChatMessage[], page: ChatMessage[]): boolean {
+  const steerKey = (m: ChatMessage): string | undefined => {
+    const meta = m.meta as { mid?: unknown; steer?: unknown } | undefined
+    if (m.role !== 'user' || !meta?.steer || typeof meta.mid !== 'string' || !meta.mid) return undefined
+    return JSON.stringify([meta.mid, m.ts ?? null])
+  }
+  const superseded = new Set<string>()
+  for (const m of existing) {
+    const key = steerKey(m)
+    if (key && (m.meta as { steerState?: unknown }).steerState === 'superseded') superseded.add(key)
+  }
+  if (!superseded.size) return false
+  return page.some(m => {
+    const key = steerKey(m)
+    return key !== undefined && superseded.has(key)
+      && (m.meta as { steerState?: unknown }).steerState !== 'superseded'
+  })
+}
+
 export function preserveSettledUpsertRows(existing: ChatMessage[], merged: ChatMessage[]): ChatMessage[] {
   // LIVE statuses a card row may hold — the backend's `_CHANGE_LIVE` +
   // `_GUIDE_LIVE` (`chat_cards.py`). A merged row in this set is "earlier" and
