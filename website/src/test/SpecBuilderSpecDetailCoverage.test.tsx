@@ -22,10 +22,10 @@ vi.mock('../apps/spec-builder/components/ChatColumn', () => ({
   default: ({ name, slotKey, onSend }: {
     name: string
     slotKey?: string
-    onSend: (msg: string) => Promise<unknown>
+    onSend: (msg: string, meta?: { sendId?: string }) => Promise<unknown>
   }) => (
     <div data-testid="chat-column" data-name={name} data-slot={slotKey ?? ''}>
-      <button type="button" data-testid="chat-send" onClick={() => { void onSend('typed in the chat') }}>
+      <button type="button" data-testid="chat-send" onClick={() => { void onSend('typed in the chat', { sendId: 'spec-send-1' }) }}>
         send
       </button>
     </div>
@@ -623,7 +623,12 @@ describe('SpecDetail phase actions', () => {
 
     fireEvent.click(await screen.findByTestId('chat-send'))
     await waitFor(() => expect(calls.filter((c) => c.url.includes('/message'))).toHaveLength(1))
-    expect(JSON.parse(calls[0].body).text).toBe('typed in the chat')
+    expect(JSON.parse(calls[0].body)).toEqual({
+      text: 'typed in the chat',
+      spec_dir: BASE.spec_dir,
+      slot_key: BASE.slot_key,
+      meta: { sendId: 'spec-send-1' },
+    })
   })
 
   it('hands the task list off to a build agent', async () => {

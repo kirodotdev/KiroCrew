@@ -15,6 +15,8 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.chat_delivery import normalize_send_id
+
 from ..decisions import (
     _CLAIM_ALIAS_CONFLICT,
     _CLAIM_FULL,
@@ -94,6 +96,8 @@ async def _handle_message(request: web.Request) -> web.Response:
     text = str(body.get("text", "")).strip()
     if not text:
         return web.json_response({"code": "text_required", "error": "text required"}, status=400)
+    meta = body.get("meta")
+    send_id = normalize_send_id(meta.get("sendId")) if isinstance(meta, dict) else None
     state = request.app["state"]
     # Re-reading commit BEFORE dispatch: the body read above awaits, so a
     # concurrent DELETE can land in that window. Stamping through the mutator
@@ -498,6 +502,7 @@ async def _handle_message(request: web.Request) -> web.Response:
                 slot,
                 text,
                 directive_user_origin=True,
+                message_meta={"sendId": send_id} if send_id else None,
             )
             _bind_pending_dispatch_to_turn(dispatch_claim, slot, turn)
         _audit("spec_message", name)
