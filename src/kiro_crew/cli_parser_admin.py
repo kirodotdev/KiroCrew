@@ -188,10 +188,15 @@ def register_telemetry_parser(sub: _Commands) -> None:
     tel_parser = cli_help.add_command(sub, "telemetry")
     tel_sub = tel_parser.add_subparsers(dest="telemetry_action")
     tel_sub.add_parser(
-        "status", help="Show exactly what the anonymous beacon sends (and whether it will)"
+        "status",
+        help="Show whether local metric recording is on and exactly what the anonymous beacon sends",
     )
-    tel_sub.add_parser("disable", help="Turn the anonymous beacon off permanently")
-    tel_sub.add_parser("enable", help="Turn the anonymous beacon back on")
+    tel_sub.add_parser(
+        "disable", help="Turn local metric recording and the anonymous beacon off permanently"
+    )
+    tel_sub.add_parser(
+        "enable", help="Turn local metric recording and the anonymous beacon back on"
+    )
 
 
 def register_policy_parser(sub: _Commands) -> None:

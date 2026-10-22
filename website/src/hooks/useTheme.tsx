@@ -40,6 +40,7 @@ import {
 } from './themeCss'
 
 import { i18nT } from '../i18n/t'
+import { PRIVACY_NOTICE_VERSION } from '../components/privacyNotice'
 import type { ThemeLoaderIconName } from '../themeLoaderIcons'
 
 export type ModePreference = 'dark' | 'light' | 'system'
@@ -561,10 +562,17 @@ export interface ThemeContextValue {
    * chapter while the boot fetch is in flight.
    */
   privacyAcked: boolean
+  /**
+   * The Privacy notice version the user acknowledged, from the server only
+   * (`dashboard.privacy_ack_version`); `null` until theme boot answers. Compared
+   * with `PRIVACY_NOTICE_VERSION` to show a changed notice once to existing users.
+   */
+  privacyAckVersion: number | null
   themeBootReady: boolean
   markOnboarded: () => void
   markImportOnboarded: () => void
-  markPrivacyAcked: () => void
+  /** Persists the ack (and the notice version unless told not to); rejects, marking nothing, when the write fails. */
+  markPrivacyAcked: (ack?: { noticeVersion?: boolean }) => Promise<void>
   addCustomTheme: (data: Omit<CustomThemeData, 'slug'> & { slug?: string }) => Promise<CustomThemeData>
   deleteCustomTheme: (slug: string) => Promise<void>
   /** Refetch the installed-theme catalog once; `true` when it now reflects the
@@ -864,6 +872,11 @@ function useThemeState(): ThemeContextValue {
   const [privacyAcked, setPrivacyAcked] = useState(
     () => !!localStorage.getItem('mc-privacy-acked') || !!localStorage.getItem('mc-onboarded'),
   )
+  // The notice version the user acknowledged, from the SERVER only. `null` until
+  // theme boot answers. Deliberately no localStorage seed: `mc-onboarded` and
+  // `mc-privacy-acked` describe an older notice, and counting them as this one
+  // would skip exactly the existing users the new text is for.
+  const [privacyAckVersion, setPrivacyAckVersion] = useState<number | null>(null)
   const legacyOnboardedRef = useRef(
     !!localStorage.getItem('mc-onboarded') && !localStorage.getItem('mc-import-onboarded'),
   )
@@ -1051,6 +1064,7 @@ function useThemeState(): ThemeContextValue {
       onboarded?: boolean
       import_onboarded?: boolean
       privacy_acked?: boolean
+      privacy_ack_version?: number
     }) => api.updateThemeConfig(body),
   })
 
@@ -1066,6 +1080,9 @@ function useThemeState(): ThemeContextValue {
   useEffect(() => {
     if (!themeBootFetched) return
     if (bootData) {
+      if (typeof bootData.privacy_ack_version === 'number') {
+        setPrivacyAckVersion(bootData.privacy_ack_version)
+      }
       if (bootData.mode && bootData.mode !== mode) {
         safeSetItem('mc-theme', bootData.mode)
         setMode(bootData.mode as ModePreference)
@@ -1462,13 +1479,23 @@ function useThemeState(): ThemeContextValue {
   }, [])
 
   // Persisted server-side as well as locally: the gateway gates the first
-  // heartbeat on `dashboard.privacy_acked`, so a local-only mark would leave the
-  // beacon permanently withheld on an install whose user did pass the chapter.
-  const markPrivacyAcked = useCallback(() => {
+  // heartbeat on `dashboard.privacy_acked`, and the CLI notice and a later notice
+  // change read `dashboard.privacy_ack_version`, so a local-only mark would leave
+  // the server believing the user was never told. Resolves only once
+  // the server stored it, and marks nothing locally before that: the Privacy
+  // chapter stays open on a failed write instead of claiming the user was told.
+  // `noticeVersion: false` records only that the chapter was passed: the text
+  // shown did not say local recording is on, so the version stays where it was.
+  const markPrivacyAcked = useCallback(async ({ noticeVersion = true }: { noticeVersion?: boolean } = {}) => {
+    await api.updateThemeConfig(
+      noticeVersion
+        ? { privacy_acked: true, privacy_ack_version: PRIVACY_NOTICE_VERSION }
+        : { privacy_acked: true },
+    )
     safeSetItem('mc-privacy-acked', '1')
     setPrivacyAcked(true)
-    persistTheme({ privacy_acked: true })
-  }, [persistTheme])
+    if (noticeVersion) setPrivacyAckVersion(PRIVACY_NOTICE_VERSION)
+  }, [])
 
   return {
     theme: resolved,
@@ -1493,6 +1520,7 @@ function useThemeState(): ThemeContextValue {
     onboarded,
     importOnboarded,
     privacyAcked,
+    privacyAckVersion,
     themeBootReady,
     markOnboarded,
     markImportOnboarded,

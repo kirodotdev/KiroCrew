@@ -1706,12 +1706,12 @@ The one thing deliberately *not* swallowed is a stamp-write failure's
 consequence: `_mark_sent()` runs only after a delivered request, so a failed send
 retries later rather than silently losing the day.
 
-### Default-ON with six suppressions
+### Default-ON with seven suppressions
 
 `telemetry.beacon_enabled` defaults **true** and gates the repo's only default-on
 egress family: the heartbeat and official-app install receipts.
-`telemetry_permitted()` suppresses both when `KIROCREW_TELEMETRY_DISABLED` is
-truthy, an enterprise **governance ceiling** pins `capabilities.telemetry` off,
+`telemetry_permitted()` suppresses both when `DO_NOT_TRACK` (reason code
+`do_not_track`) or `KIROCREW_TELEMETRY_DISABLED` is truthy, an enterprise **governance ceiling** pins `capabilities.telemetry` off,
 the config toggle is false, the process looks like **CI**, `KIROCREW_HOME` is
 **non-default** (dev home / pod / worktree preview), or this install has never sent
 and `dashboard.privacy_acked` is still false (the first-egress gate below).
@@ -1871,28 +1871,70 @@ consent flow:
   because it is the only way to override a `config.local.json` overlay and the
   only control on a headless host.
 - The **mandatory first-run Privacy chapter** (`components/PrivacyChapter.tsx`,
-  chapter 2 of 3) shows the same disclosure and the same toggle in the
-  `OnboardingChapterShell` layout, so a new user sees what is sent and can opt out
-  before reaching the product. Every path out of chapter 1 routes through it,
-  including "Skip all", and it offers no skip and no Escape. It is still **not a
-  consent gate**: Continue is always enabled and never requires a choice, because
-  the default is a decision the user can change here, in Settings → Privacy, or
-  from the CLI.
+  chapter 2 of 3) says what is on, lists what is and is never collected and where
+  it goes, then offers **Keep on** and **Turn off**, in the
+  `OnboardingChapterShell` layout, so a new user sees what is recorded and sent
+  and can turn it off before reaching the product. Every path out of chapter 1
+  routes through it, including "Skip all", and it offers no skip and no Escape.
+  The text follows the effective state read from `GET /api/telemetry/beacon` and
+  `GET /api/telemetry/collection`: with local recording on, "Performance metrics
+  are on" and the recording list; with only the heartbeat on, "A daily heartbeat
+  is on" and no recording list; when off (an env var, `DO_NOT_TRACK`, a
+  governance pin, or a written `false`), "Performance metrics and the heartbeat
+  are off on this machine" with the reason and one Continue. The chapter calls
+  local recording "performance metrics" and the beacon "the heartbeat", the same
+  two names the Settings > Privacy switches use. An unreadable status gives the
+  neutral form above, with an `ErrorNotice`. Both buttons wait until the status read has answered.
+- **What the buttons write.** Both write `dashboard.privacy_acked`, plus
+  `dashboard.privacy_ack_version` only when the text shown said recording is on.
+  Turn off first writes `telemetry.enabled = false` and
+  `telemetry.beacon_enabled = false` through the config PATCH route (whose
+  config-watcher applier drops the recorder at once, off the event loop), then
+  re-reads both effective states; only when both are off does it write the ack
+  fields. An env var or a `config.local.json` entry that keeps either on leaves
+  the chapter open, naming that setting. A failed write keeps the chapter open
+  with an `ErrorNotice` and marks nothing as seen.
+- **The notice is versioned.** `dashboard.privacy_ack_version` (int, default 0,
+  never seeded from `privacy_acked`, `onboarded` or localStorage) means "told that
+  local recording is on", and both writers apply that one rule: the chapter writes
+  it on Keep on or Turn off only when the text shown said recording is on, and
+  `kirocrew telemetry enable` writes it only when the command really turns
+  recording on (not on `disable`, and not when it leaves recording off because an
+  export destination is configured); the dashboard's
+  `PRIVACY_NOTICE_VERSION` (`components/privacyNotice.ts`) and
+  `beacon.PRIVACY_NOTICE_VERSION` are both 2 and a backend test pins them
+  together. An existing user whose stored version is lower sees the chapter once
+  at the next dashboard load, decided once per page load, and only while local
+  recording is on; a heartbeat-only or already-off user does not see it. When the
+  status cannot be read, the chapter opens in its neutral form ("What can be
+  collected", no on/off claim, the read error on screen, "Continue without
+  changes" instead of Keep on), and that button records no version, so an
+  existing user whose status read keeps failing sees the neutral chapter again
+  at each dashboard load until a read succeeds. That repeat is deliberate: a
+  screen that could not say what is on has not told the user that recording is
+  on.
 - **The first heartbeat is withheld until that chapter is acknowledged.** The
   gateway starts the beacon thread at boot, before the dashboard has rendered, so
   an ungated fresh install would ping before the user could decline: an opt-out
-  offered only after the fact. Continue persists `dashboard.privacy_acked` (and
-  `kirocrew telemetry enable|disable` sets it too, for headless hosts), which
+  offered only after the fact. Keep on / Turn off persist `dashboard.privacy_acked`
+  (and `kirocrew telemetry enable|disable` sets it too, for headless hosts), which
   `beacon.telemetry_permitted` reads. The gate is **first-egress only**
   (`beacon.is_first_send()`): an install that has already sent is past the
   disclosure, and keying every heartbeat on the flag would silence it permanently
   rather than once. `dashboard.privacy_acked` falls back to `dashboard.onboarded`,
   so a user who finished first run before the chapter existed is never re-gated.
   It gates the install receipt too, via the shared consent ladder.
-- The disclosure copy and the control are single-sourced in
-  `components/PrivacyDisclosure.tsx` (`PrivacyDisclosureSections`,
-  `TelemetryToggle`, `PrivacyCommandList`) and consumed by both surfaces, so the
-  first-run explanation and the durable panel cannot drift.
+- The detail sections are single-sourced in `components/PrivacyDisclosure.tsx`
+  (`PrivacyDisclosureSections`, `PrivacyCommandList`) and consumed by both
+  surfaces, so the first-run explanation and the durable panel cannot drift. The
+  heartbeat switch (`TelemetryToggle`) lives in Settings > Privacy; the chapter's
+  two buttons replace it there.
+- **`DO_NOT_TRACK`.** A truthy value (`1`, `true`, `yes`, `on`) acts like
+  `KIROCREW_TELEMETRY=0` plus `KIROCREW_TELEMETRY_DISABLED=1`: `env_pin()`
+  answers False before reading `KIROCREW_TELEMETRY` (off wins) and
+  `telemetry_permitted` refuses with `do_not_track`. `pin_env_var()` /
+  `beacon.opt_out_env_var()` name it, so both Settings switches show it as the
+  pin to unset.
 - The durable surface distinguishes local usage/context records from optional
   performance metrics. Performance metrics are off by default and remain local
   when enabled, with one explicit exception: they egress only when the operator

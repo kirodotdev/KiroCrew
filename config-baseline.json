@@ -7604,6 +7604,7 @@
         "onboarded": false,
         "import_onboarded": false,
         "privacy_acked": false,
+        "privacy_ack_version": 0,
         "crewmates_onboarded": false,
         "user_role": "",
         "user_role_other": "",
@@ -8679,6 +8680,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.privacy_ack_version",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Privacy Notice Version Acknowledged",
+      "help": "The version of the Privacy chapter text, the one saying local metric recording is on, that the user last acknowledged (0 = none). When the dashboard's notice version is higher, the chapter is shown once more at the next dashboard load, but only while local recording is on. Written by the Privacy chapter and by kirocrew telemetry enable.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
     },
     {
       "path": "dashboard.crewmates_onboarded",

@@ -299,6 +299,7 @@ from kiro_crew.config.sections_limits import (  # noqa: F401
     POOL_SIZE_MAX,
     POOL_TTL_SECS_MAX,
     POOL_TTL_SECS_MIN,
+    PRIVACY_ACK_VERSION_MAX,
     RECENT_TINT_COUNT_MAX,
     RECENT_TINT_COUNT_MIN,
     RECONCILE_MAX_KILLS_MAX,

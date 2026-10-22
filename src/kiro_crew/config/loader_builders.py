@@ -1046,6 +1046,12 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             dashboard_data.get("privacy_acked"),
             section.read("onboarded", _safe_bool),
         ),
+        # No fallback to `onboarded`, unlike `privacy_acked`: the version exists
+        # so an existing user sees a changed notice once, and seeding it from
+        # an older flag would skip exactly those users.
+        privacy_ack_version=section.read(
+            "privacy_ack_version", _safe_int, 0, _sections.PRIVACY_ACK_VERSION_MAX
+        ),
         crewmates_onboarded=section.read("crewmates_onboarded", _safe_bool),
         user_role=str(section.get("user_role")),
         user_role_other=str(section.get("user_role_other")),

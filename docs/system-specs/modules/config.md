@@ -1726,7 +1726,9 @@ reader:
   - `session.pool_size` reads `DEFAULT_POOL_SIZE` at call time, a patched seam.
   - An external registry entry that omits `branch` keeps the legacy `mainline`.
   - `dashboard.import_onboarded` and `dashboard.privacy_acked` fall back to
-    `dashboard.onboarded` when omitted or malformed, and
+    `dashboard.onboarded` when omitted or malformed (`dashboard.privacy_ack_version`
+    deliberately does not: it reads 0 so an existing user sees a changed
+    Privacy notice once), and
     `dashboard.model_picker_configured` is inferred from
     `model_picker_hidden_models`.
 - A built value that is not the bare dataclass's although the default is:

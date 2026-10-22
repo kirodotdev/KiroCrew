@@ -308,12 +308,13 @@ export function useAppShell() {
     onboarded,
     importOnboarded,
     privacyAcked,
+    privacyAckVersion,
     themeBootReady,
     markOnboarded,
     markImportOnboarded,
     markPrivacyAcked,
   } = useTheme()
-  const firstRun = useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, themeBootReady, markOnboarded })
+  const firstRun = useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, privacyAckVersion, themeBootReady, markOnboarded })
   // Decided once per document: the URL does not change under a mounted App.
   const lookPreviewFrame = isLookPreviewFrame()
   const { showAgentImport, showPrivacy, showOnboarding } = firstRun

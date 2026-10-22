@@ -889,6 +889,17 @@ class DashboardConfig:
             "opt-out, and a ping sent before the offer makes the offer meaningless.",
         ),
     )
+    privacy_ack_version: int = field(
+        default=0,
+        metadata=_meta(
+            "Privacy Notice Version Acknowledged",
+            "The version of the Privacy chapter text, the one saying local metric "
+            "recording is on, that the user last acknowledged (0 = none). When the "
+            "dashboard's notice version is higher, the chapter is shown once more "
+            "at the next dashboard load, but only while local recording is on. "
+            "Written by the Privacy chapter and by kirocrew telemetry enable.",
+        ),
+    )
     crewmates_onboarded: bool = field(
         default=False,
         metadata=_meta(

@@ -167,6 +167,9 @@ MCP_PROBE_TIMEOUT_MAX = 120
 # value is at least MIN, so a typo of 1 cannot spend an LLM call on every turn.
 TITLE_REFRESH_EVERY_TURNS_MIN = 4
 TITLE_REFRESH_EVERY_TURNS_MAX = 1000
+# ``dashboard.privacy_ack_version``: the privacy notice version a user last
+# acknowledged. A small integer that only ever moves up by one per notice change.
+PRIVACY_ACK_VERSION_MAX = 1000
 RECENT_TINT_COUNT_MIN = 0
 RECENT_TINT_COUNT_MAX = 10
 # The sidebar's folder sort modes, spelled once for the same reason as the bounds

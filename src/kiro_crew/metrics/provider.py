@@ -632,12 +632,21 @@ def env_pin() -> Optional[bool]:
     re-reading the env var at the call site) keeps the control and the collector
     from disagreeing about what "on" means.
     """
+    # DO_NOT_TRACK first: off wins, so a truthy DO_NOT_TRACK pins recording off
+    # even when KIROCREW_TELEMETRY asks for it.
+    if beacon.do_not_track():
+        return False
     raw = os.environ.get(TELEMETRY_ENV_VAR, "").strip().lower()
     if raw in _ENV_TRUTHY:
         return True
     if raw in _ENV_FALSY:
         return False
     return None
+
+
+def pin_env_var() -> str:
+    """Name the env var behind :func:`env_pin`, for a UI note that says which to unset."""
+    return beacon.DO_NOT_TRACK_ENV if beacon.do_not_track() else TELEMETRY_ENV_VAR
 
 
 def _consent_enabled(cfg: object) -> bool:

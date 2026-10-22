@@ -137,6 +137,21 @@ HTTP_TIMEOUT_SECS = 5.0
 DISABLE_ENV = "KIROCREW_TELEMETRY_DISABLED"
 _ENV_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
+# The cross-tool opt-out convention (https://consoledonottrack.com). A truthy
+# value acts like BOTH of this product's own off switches: no heartbeat (here) and
+# no local metric recording (``metrics.provider.env_pin``). Off wins, so it
+# outranks an on value in either of the product's own variables.
+DO_NOT_TRACK_ENV = "DO_NOT_TRACK"
+
+# Version of the privacy notice text the first-run Privacy chapter shows. Stored
+# in ``dashboard.privacy_ack_version`` when a user is told local recording is on
+# (Keep on over that text, or a ``kirocrew telemetry enable`` that turns recording
+# on), so a later bump re-shows the chapter
+# once to everyone who saw an older text. The dashboard keeps the same number as
+# ``PRIVACY_NOTICE_VERSION`` in ``website/src/components/privacyNotice.ts``; a
+# test pins the two together. Bump both when the notice says something new.
+PRIVACY_NOTICE_VERSION = 2
+
 # Env vars marking an automated environment. CI installs are not humans using
 # the product; counting them would inflate DAU with every pipeline run.
 _CI_ENV_VARS = (
@@ -212,15 +227,30 @@ def _env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in _ENV_TRUTHY
 
 
+def do_not_track() -> bool:
+    """Return whether a truthy ``DO_NOT_TRACK`` turns all telemetry off."""
+    return _env_truthy(DO_NOT_TRACK_ENV)
+
+
 def is_env_opted_out() -> bool:
-    """Return whether ``KIROCREW_TELEMETRY_DISABLED`` pins the beacon off.
+    """Return whether an env var (``KIROCREW_TELEMETRY_DISABLED`` or ``DO_NOT_TRACK``) pins the beacon off.
 
     Public because the dashboard's privacy panel must distinguish "off because
     the stored flag is false" (a toggle can flip it) from "off because the
     environment says so" (a config write would be accepted and then have no
     effect — so the UI disables the control and says why instead).
     """
-    return _env_truthy(DISABLE_ENV)
+    return do_not_track() or _env_truthy(DISABLE_ENV)
+
+
+def opt_out_env_var() -> str:
+    """Name the env var that pins the beacon off, for the panel's note.
+
+    ``DO_NOT_TRACK`` first: it is checked first in :func:`telemetry_permitted`,
+    and telling a user to unset ``KIROCREW_TELEMETRY_DISABLED`` while
+    ``DO_NOT_TRACK`` still holds the switch off would be a dead end.
+    """
+    return DO_NOT_TRACK_ENV if do_not_track() else DISABLE_ENV
 
 
 def is_ci() -> bool:
@@ -643,6 +673,7 @@ class Verdict(NamedTuple):
 # outside this tuple (``install_receipt.should_send`` returns ``"unofficial"``).
 REASONS = (
     "ready",
+    "do_not_track",
     "env_opt_out",
     "governance",
     "disabled",
@@ -695,6 +726,8 @@ def telemetry_permitted(
     signal, so a shared day stamp would silently drop the second app a user
     installs on any given day.
     """
+    if do_not_track():
+        return Verdict(False, f"opted out via {DO_NOT_TRACK_ENV}", "do_not_track")
     if _env_truthy(DISABLE_ENV):
         return Verdict(False, f"opted out via {DISABLE_ENV}", "env_opt_out")
     if is_governance_pinned_off(audit_tool=audit_tool):

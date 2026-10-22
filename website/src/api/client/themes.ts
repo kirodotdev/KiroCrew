@@ -34,6 +34,8 @@ export function createThemesEndpoints({ post, put, del, j, jfetch: fetch }: Clie
       import_onboarded?: boolean
       /** Gates the gateway's first heartbeat; see `beacon.telemetry_permitted`. */
       privacy_acked?: boolean
+      /** Which Privacy chapter notice text the user acknowledged. */
+      privacy_ack_version?: number
     }) =>
       put('/api/config/theme', body).then(j),
   }

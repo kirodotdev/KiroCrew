@@ -21,6 +21,7 @@ def _make_cfg(
     import_onboarded: bool = False,
     language: str = "",
     privacy_acked: bool = False,
+    privacy_ack_version: int = 0,
     crewmates_onboarded: bool = False,
 ):
     """Build a mock KiroCrewConfig with dashboard display fields.
@@ -37,6 +38,7 @@ def _make_cfg(
     cfg.dashboard.import_onboarded = import_onboarded
     cfg.dashboard.language = language
     cfg.dashboard.privacy_acked = privacy_acked
+    cfg.dashboard.privacy_ack_version = privacy_ack_version
     cfg.dashboard.crewmates_onboarded = crewmates_onboarded
     return cfg
 
@@ -70,6 +72,7 @@ async def test_theme_boot_returns_defaults() -> None:
         "onboarded": False,
         "import_onboarded": False,
         "privacy_acked": False,
+        "privacy_ack_version": 0,
         "crewmates_onboarded": False,
     }
 
@@ -95,6 +98,7 @@ async def test_theme_boot_returns_configured_values() -> None:
         "onboarded": True,
         "import_onboarded": True,
         "privacy_acked": False,
+        "privacy_ack_version": 0,
         "crewmates_onboarded": False,
     }
 
@@ -121,6 +125,7 @@ async def test_theme_config_get() -> None:
         "onboarded": True,
         "import_onboarded": True,
         "privacy_acked": False,
+        "privacy_ack_version": 0,
         "crewmates_onboarded": False,
     }
 
@@ -187,6 +192,7 @@ async def test_theme_config_put_updates_and_persists(cfg_file: Path) -> None:
         "onboarded": True,
         "import_onboarded": True,
         "privacy_acked": True,  # falls back to `onboarded` when never written
+        "privacy_ack_version": 0,
         "crewmates_onboarded": False,
     }
     dashboard = _read(cfg_file)["dashboard"]
@@ -256,6 +262,32 @@ async def test_theme_config_put_persists_privacy_acked(cfg_file: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_theme_config_put_persists_privacy_ack_version(cfg_file: Path) -> None:
+    """The Privacy chapter records which notice text the user was shown.
+
+    Written next to ``privacy_acked`` in one PUT, read back as an int, and
+    reported by the boot payload the dashboard seeds the chapter trigger from.
+    """
+    _write(cfg_file, {"dashboard": {"privacy_acked": True}})
+    resp = await _put({"privacy_acked": True, "privacy_ack_version": 2})
+    assert resp.status == 200
+    stored = _read(cfg_file)["dashboard"]
+    assert stored["privacy_ack_version"] == 2
+    assert type(stored["privacy_ack_version"]) is int
+    assert json.loads(resp.body)["privacy_ack_version"] == 2
+
+
+@pytest.mark.asyncio
+async def test_privacy_ack_version_does_not_fall_back_to_onboarded(cfg_file: Path) -> None:
+    """An existing user (onboarded, acked) reads version 0, so the new notice shows once."""
+    _write(cfg_file, {"dashboard": {"onboarded": True, "privacy_acked": True}})
+    resp = await _put({})
+    body = json.loads(resp.body)
+    assert body["privacy_acked"] is True
+    assert body["privacy_ack_version"] == 0
+
+
+@pytest.mark.asyncio
 async def test_theme_config_put_persists_crewmates_onboarded(cfg_file: Path) -> None:
     """The route must persist the Meet CrewMates first-run flag.
 
@@ -281,6 +313,12 @@ async def test_theme_config_put_persists_crewmates_onboarded(cfg_file: Path) -> 
         {"import_onboarded": "false"},
         {"privacy_acked": "true"},
         {"crewmates_onboarded": "true"},
+        # ``True`` is an int in Python; storing it would read back as version 1.
+        {"privacy_ack_version": True},
+        {"privacy_ack_version": "2"},
+        {"privacy_ack_version": 2.0},
+        {"privacy_ack_version": -1},
+        {"privacy_ack_version": 1001},
         # A valid field ahead of an invalid one: the 400 must apply neither.
         {"color": "monokai", "privacy_acked": "true"},
     ],
@@ -291,6 +329,11 @@ async def test_theme_config_put_persists_crewmates_onboarded(cfg_file: Path) -> 
         "import_onboarded",
         "privacy_acked",
         "crewmates_onboarded",
+        "privacy_ack_version_bool",
+        "privacy_ack_version_str",
+        "privacy_ack_version_float",
+        "privacy_ack_version_negative",
+        "privacy_ack_version_too_big",
         "mixed",
     ],
 )
