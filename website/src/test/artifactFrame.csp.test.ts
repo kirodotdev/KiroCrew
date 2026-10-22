@@ -32,7 +32,7 @@ function documentFor(goal_report: boolean, html: string = REPORT): string {
   return buildSrcdoc({
     html,
     themeVars: {}, mode: 'light', enableComments: true, includeHeightReporter: true,
-    offlineScripts: frame.offlineScripts, rewriteBareLinks: frame.rewriteBareLinks,
+    linkBridge: frame.linkBridge, offlineScripts: frame.offlineScripts, rewriteBareLinks: frame.rewriteBareLinks,
     pageScripts: frame.pageScripts,
   })
 }

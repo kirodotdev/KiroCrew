@@ -31,8 +31,10 @@ What the host refuses to let the page do
 :data:`FRAME_CSP` closes egress (``connect-src 'none'``) and grants no dynamic-exec
 primitive, over a frame the dashboard mounts with ``allow-scripts`` and nothing
 else -- an opaque origin with no access to the dashboard's cookies, storage or DOM.
-A fixed two-origin CDN allowlist carries Chart.js and D3 and can be used for
-nothing else, because nothing can be sent to it.
+The page loads no script from anywhere: the browser wrapper builds a Dashboard
+document with ``offlineScripts``, which drops the CDN origins from its own
+``script-src``, and the two policies intersect. A page that draws a chart ships the
+drawing code as inline script.
 
 Egress is closed harder here than a chat card needs it closed, and the reason is
 what this page HOLDS: real numbers out of the operator's own crew log, including a
@@ -78,19 +80,24 @@ logger = logging.getLogger(__name__)
 #: has no bound of its own, so a composed document over 8 MiB is refused at the mint.
 MAX_PAGE_BYTES: Final[int] = 3 * 1024 * 1024
 
-#: Origins a page may load static resources from.
+#: The CDN origins named in this document's own ``script-src`` and ``style-src``.
 #:
 #: FIXED, and not configuration. An operator-editable allowlist would make the
 #: containment story depend on a setting -- and on the reader finding that setting
-#: before they can trust the frame. Both entries carry the libraries a dashboard
-#: actually needs (Chart.js, D3) and neither can be reached for egress:
-#: ``connect-src`` is closed, so these origins serve scripts and nothing sends.
+#: before they can trust the frame.
 #:
-#: PINNED EQUAL to the browser wrapper's own ``script-src`` list in
-#: ``website/src/lib/widgetSrcdoc.ts``. The two policies intersect, so an origin
-#: named only here is still blocked and the page fails to load its chart library
-#: with no clue why -- ``test_the_cdn_allowlist_matches_the_browser_wrapper`` is
-#: what keeps them one list in two files.
+#: Naming them here does NOT let a Dashboard page load a script from them. The
+#: dashboard renders the page through ``buildSrcdoc({offlineScripts: true})``
+#: (``website/src/pages/members/CrewDynamicDashboard.tsx``), whose outer policy
+#: leaves these origins out, and the two policies intersect, so a script from
+#: either origin is refused there. A page draws its chart with inline script.
+#: ``dashboard_verify`` reads the list to recognise a refused library load.
+#:
+#: PINNED EQUAL to the CDN list the browser wrapper adds to ``script-src`` for a
+#: document built WITHOUT ``offlineScripts`` (``cspFor`` in
+#: ``website/src/lib/widgetSrcdoc.ts``) --
+#: ``test_the_cdn_allowlist_matches_the_browser_wrapper`` is what keeps them one
+#: list in two files.
 RESOURCE_ORIGINS: Final[tuple[str, ...]] = (
     "https://cdn.jsdelivr.net",
     "https://cdnjs.cloudflare.com",

@@ -37,7 +37,8 @@ import { WidgetThumb } from '../components/library/ArtifactThumbs'
 import { ARTIFACT_FRAME_SANDBOX, artifactFrame } from '../lib/artifactFrame'
 import { CREW_DASHBOARD_SANDBOX } from '../pages/members/CrewDynamicDashboard'
 
-const TODAY = 'allow-scripts allow-popups allow-popups-to-escape-sandbox'
+/** The library frame: the agent-page grant, links through the host's bridge. */
+const TODAY = 'allow-scripts'
 
 function art(goal_report?: boolean): Artifact {
   return {
@@ -62,7 +63,7 @@ function lastSrcdocOptions(): Record<string, unknown> {
 describe('artifactFrame', () => {
   it('gives a report the crewmate Dashboard page sandbox', () => {
     expect(artifactFrame(art(true))).toEqual({
-      sandbox: CREW_DASHBOARD_SANDBOX, offlineScripts: true, rewriteBareLinks: false, pageScripts: false,
+      sandbox: CREW_DASHBOARD_SANDBOX, offlineScripts: true, linkBridge: false, rewriteBareLinks: false, pageScripts: false,
     })
   })
 
@@ -70,7 +71,7 @@ describe('artifactFrame', () => {
     expect(ARTIFACT_FRAME_SANDBOX).toBe(TODAY)
     for (const a of [art(), art(false), null, undefined]) {
       expect(artifactFrame(a)).toEqual({
-        sandbox: TODAY, offlineScripts: false, rewriteBareLinks: true, pageScripts: true,
+        sandbox: TODAY, offlineScripts: false, linkBridge: true, rewriteBareLinks: false, pageScripts: true,
       })
     }
   })
@@ -90,6 +91,8 @@ describe('the artifact body frame', () => {
     const opts = lastSrcdocOptions()
     expect(opts.offlineScripts).toBe(true)
     expect(opts.rewriteBareLinks).toBe(false)
+    // A report's links stay inert: no link bridge.
+    expect(opts.linkBridge).toBe(false)
     expect(opts.pageScripts).toBe(false)
     // The host's own injected scripts stay on.
     expect(opts.includeHeightReporter).toBe(true)
@@ -101,7 +104,7 @@ describe('the artifact body frame', () => {
     expect((await frame()).getAttribute('sandbox')).toBe(TODAY)
     const opts = lastSrcdocOptions()
     expect(opts.offlineScripts).toBe(false)
-    expect(opts.rewriteBareLinks).toBe(true)
+    expect(opts.linkBridge).toBe(true)
     expect(opts.pageScripts).toBe(true)
   })
 })

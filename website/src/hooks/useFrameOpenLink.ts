@@ -5,7 +5,9 @@ import { useEffect, useRef, type RefObject } from 'react'
  *
  * The crew frames are `sandbox="allow-scripts"` with no `allow-popups`, so a
  * `target="_blank"` link inside them is a dead click -- deliberately: a page an
- * agent wrote must not open windows. This is the one narrow way out. The page
+ * agent wrote must not open windows. This is the one narrow way out for a crew
+ * page (artifact and widget frames use the wider, confirmed
+ * `useFrameLinkBridge` in `useFrameLinkBridge.ts`, on the same message). The page
  * posts `{type: 'kirocrew-dashboard:open', url}` and the host opens the URL only
  * when BOTH hold:
  *
@@ -43,7 +45,7 @@ export function hasGesture(frame: HTMLIFrameElement): boolean {
   return Boolean(navigator.userActivation?.isActive) && document.activeElement === frame
 }
 
-function openExternal(url: string): void {
+export function openExternal(url: string): void {
   window.open(url, '_blank', 'noopener,noreferrer')
 }
 

@@ -6,6 +6,7 @@ import { useFrameSrc } from '../hooks/useFrameSrc'
 import { useSilentLoadWatch } from '../hooks/useSilentLoadWatch'
 import { useScrollMemory } from '../hooks/useScrollMemory'
 import { useCommentBridge, type IframeSelection } from '../hooks/useCommentBridge'
+import { useFrameLinkBridge } from '../hooks/useFrameLinkBridge'
 import { InlineCommentOverlay } from './InlineCommentOverlay'
 import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
@@ -295,12 +296,12 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
     () => artifact.content
       ? buildSrcdoc({
         html: artifact.content, themeVars, mode: theme, enableComments: true,
-        includeHeightReporter: true,
+        includeHeightReporter: true, linkBridge: frame.linkBridge,
         offlineScripts: frame.offlineScripts, rewriteBareLinks: frame.rewriteBareLinks,
         pageScripts: frame.pageScripts,
       })
       : null,
-    [artifact.content, themeVars, theme, frame.offlineScripts, frame.rewriteBareLinks, frame.pageScripts],
+    [artifact.content, themeVars, theme, frame.linkBridge, frame.offlineScripts, frame.rewriteBareLinks, frame.pageScripts],
   )
   // One shared hook rather than this effect in four components: the previous
   // document survives both an in-flight and a failed re-mint, and `failed`
@@ -354,6 +355,9 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
   useEffect(() => {
     if (scrollToCommentId?.id) scrollToAnchor(scrollToCommentId.id)
   }, [scrollToCommentId, scrollToAnchor])
+  // Links in the page open through the host, after a click in this frame and a
+  // confirm that shows the URL (the frame itself grants no popups).
+  const linkConfirm = useFrameLinkBridge([iframeRef])
   return (
     // The side panel's heightStyle still wins outright — that surface fits a
     // fixed pane and scrolls inside it. On the full page the wrapper takes no
@@ -509,6 +513,7 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
           <div className="p-6 text-muted">{i18nT('components.artifactBody.rendering')}</div>
         )
       )}
+      {linkConfirm}
     </div>
   )
 })

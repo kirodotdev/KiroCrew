@@ -1623,13 +1623,18 @@ to this kind would store content no reader can parse.
   short TTL, and the
   response pins `Content-Security-Policy: sandbox` so the document keeps an
   opaque origin even when opened top-level. The sandbox flags match what the
-  embedding frame already grants. The header also sets `connect-src 'none'`,
+  embedding frame grants: `allow-scripts` only (`AGENT_PAGE_SANDBOX`), the same
+  as a crewmate's Dashboard frame. A link in the page opens through the host:
+  `buildSrcdoc({ linkBridge: true })` turns a `_blank` or bare web link click,
+  and `window.open`, into a `kirocrew-dashboard:open` message, and
+  `useFrameLinkBridge` opens an absolute `http(s)` URL only after a click in
+  that frame and a confirm that shows the URL. The header also sets `connect-src 'none'`,
   `object-src 'none'`, `base-uri 'none'` and `form-action 'none'`, so a document
   cannot fetch, open a WebSocket or beacon to another host even without its own
   `<meta>` CSP. Every shipped caller's meta CSP already blocks the same channels,
   so nothing they render changes. `default-src` stays unset, so script, style,
-  image and font sources stay as the document's meta CSP decides; navigation and
-  `window.open` are not governed by CSP. The same response's
+  image and font sources stay as the document's meta CSP decides; in-frame
+  navigation is not governed by CSP. The same response's
   `frame-ancestors` is **`'self'` plus the ancestors `'self'` cannot express**
   (`origin.frame_ancestors_value`), and both halves are load-bearing. `'self'` is
   resolved by the BROWSER against the frame's real URL, so it stays correct behind

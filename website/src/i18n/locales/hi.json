@@ -10160,6 +10160,10 @@
     }
   },
   "hooks": {
+    "frameLinkBridge": {
+      "open": "लिंक खोलें",
+      "title": "यह लिंक खोलें?"
+    },
     "mic": {
       "could_not_start_the_microphone": "माइक्रोफ़ोन शुरू नहीं हो सका।",
       "microphone_is_unavailable_another_app_may_be_usi": "माइक्रोफ़ोन अनुपलब्ध है — कोई दूसरा ऐप इसका उपयोग कर रहा हो सकता है।",

@@ -90,8 +90,10 @@ FRAME_CSP = (
     "form-action 'none'; base-uri 'none';"
 )
 
-#: The chat widget frame's sandbox grants. No ``allow-same-origin``.
-FRAME_SANDBOX = "allow-scripts allow-popups allow-popups-to-escape-sandbox"
+#: The chat widget frame's sandbox grants (``AGENT_PAGE_SANDBOX`` in
+#: ``website/src/lib/widgetSrcdoc.ts``). No ``allow-same-origin``, and no popup
+#: grant: in the dashboard a link opens through the host's link bridge.
+FRAME_SANDBOX = "allow-scripts"
 
 #: The frame's own body style, put ahead of the theme rules.
 BASE_BODY_CSS = (

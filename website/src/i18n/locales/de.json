@@ -10160,6 +10160,10 @@
     }
   },
   "hooks": {
+    "frameLinkBridge": {
+      "open": "Link öffnen",
+      "title": "Diesen Link öffnen?"
+    },
     "mic": {
       "could_not_start_the_microphone": "Das Mikrofon konnte nicht gestartet werden.",
       "microphone_is_unavailable_another_app_may_be_usi": "Mikrofon nicht verfügbar — eine andere App verwendet es möglicherweise.",

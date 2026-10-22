@@ -234,10 +234,13 @@ async def serve_sandbox_doc(request: web.Request) -> web.Response:
     resp = web.Response(body=entry[1], content_type="text/html", charset="utf-8")
     # Serving from a real URL must not raise the trust level. `sandbox` gives the
     # document an opaque origin even opened top-level, and the flags are exactly
-    # those the embedding frames grant — no more. `allow-forms` in particular is
-    # NOT granted: neither ArtifactBody nor WidgetFrame allows it, so including it
-    # here would let a document opened top-level submit forms that the same
-    # document cannot submit inside the frame.
+    # those the embedding frames grant — no more: `allow-scripts`, the
+    # `AGENT_PAGE_SANDBOX` grant in `website/src/lib/widgetSrcdoc.ts`. No
+    # `allow-popups`: links in these documents open through the host's link
+    # bridge (`useFrameLinkBridge`), which asks the person first, so the document
+    # never opens a window of its own. `allow-forms` is not granted either: no
+    # embedding frame allows it, so including it here would let a document opened
+    # top-level submit forms that the same document cannot submit inside the frame.
     #
     # The fetch directives close the CONNECT-class channels a model-authored
     # document could use to send what it holds to another host: `connect-src`
@@ -252,8 +255,7 @@ async def serve_sandbox_doc(request: web.Request) -> web.Response:
     # This is NOT complete exfiltration protection. `default-src` is deliberately
     # unset, so script/style/img/font/frame/media requests to another host stay
     # as the document's own meta CSP decides (widgets load CDN libraries that
-    # way), and CSP does not govern navigation (`location`, `window.open` under
-    # `allow-popups`) or WebRTC.
+    # way), and CSP does not govern in-frame navigation (`location`) or WebRTC.
     #
     # `frame-ancestors` is `'self'` PLUS the ancestors `'self'` cannot express.
     # `'self'` is resolved by the browser against the frame's real URL, so it stays
@@ -268,7 +270,7 @@ async def serve_sandbox_doc(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.server import _extra_frame_ancestors
 
     resp.headers["Content-Security-Policy"] = (
-        "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox; "
+        "sandbox allow-scripts; "
         "connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; "
         f"frame-ancestors {frame_ancestors_value(_extra_frame_ancestors(request, request.app))}"
     )

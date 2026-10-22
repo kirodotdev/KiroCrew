@@ -3,7 +3,7 @@ import { widgetHeightKey, getWidgetHeight, setWidgetHeight, estimateWidgetHeight
 import { Maximize2, Minimize2, ExternalLink, Download, Star, RotateCw, Eye } from 'lucide-react'
 import { Btn, IconButton, IconButtonGroup } from './ui'
 import { useTheme } from '../hooks/useTheme'
-import { buildSrcdoc, readThemeVars } from '../lib/widgetSrcdoc'
+import { AGENT_PAGE_SANDBOX, buildSrcdoc, popoutLinkBridgeScript, readThemeVars } from '../lib/widgetSrcdoc'
 import { effectiveWidgetSlug } from '../lib/widgetSlug'
 import { analyzeWidgetComplexity } from '../lib/widgetComplexity'
 import { api, ApiError } from '../api/client'
@@ -12,6 +12,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { i18nT } from '../i18n/t'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
 import { useFrameSrc } from '../hooks/useFrameSrc'
+import { useFrameLinkBridge } from '../hooks/useFrameLinkBridge'
 import { useSilentLoadWatch } from '../hooks/useSilentLoadWatch'
 import { useNearViewport } from '../hooks/useNearViewport'
 
@@ -201,6 +202,9 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
       themeVars,
       mode: theme,
       includeHeightReporter: true,
+      // Links open through the host (useFrameLinkBridge below, or the popped-out
+      // tab's own bridge); the frame itself grants no popups.
+      linkBridge: true,
       // Heavy widgets get an in-iframe indicator so a perceptible Tailwind
       // compile reads as progress rather than a broken render. The label is
       // passed in because the iframe cannot reach the parent's i18n catalog.
@@ -219,6 +223,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
   )
   // Later documents replace the first in place (hooks/useFrameSrc.ts).
   const frameSrc = useFrameSrc(iframeRef, blobUrl)
+  const linkConfirm = useFrameLinkBridge([iframeRef])
   // Fade the iframe in once its document loads, so the reveal is a soft fade
   // instead of an abrupt blink-then-appear. Reset to false whenever a new blob
   // is built (first reveal, theme change, content rebuild) so each fresh render
@@ -326,12 +331,18 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
     doc.body.style.margin = '0'
     doc.body.style.height = '100vh'
     const iframe = doc.createElement('iframe')
-    iframe.setAttribute('sandbox', 'allow-scripts allow-popups allow-popups-to-escape-sandbox')
+    iframe.setAttribute('sandbox', AGENT_PAGE_SANDBOX)
     iframe.setAttribute('srcdoc', srcdoc)
     iframe.style.width = '100%'
     iframe.style.height = '100%'
     iframe.style.border = 'none'
     doc.body.appendChild(iframe)
+    // The tab's own link bridge: the widget's links post to this wrapper, which
+    // opens them after a click in the frame and a confirm showing the URL. The
+    // script is fixed text plus a JSON-encoded label; no widget content.
+    const linkBridge = doc.createElement('script')
+    linkBridge.textContent = popoutLinkBridgeScript(i18nT('hooks.frameLinkBridge.title'))
+    doc.body.appendChild(linkBridge)
 
     const html = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
@@ -642,7 +653,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
           ref={iframeRef}
           src={frameSrc}
           onLoad={() => { setIframeLoaded(true); onFrameLoaded() }}
-          sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+          sandbox={AGENT_PAGE_SANDBOX}
           // NO clipboard-write delegation here, deliberately. These frames host
           // agent-generated HTML whose scripts run on load, so a delegated
           // permission would let one overwrite the user's clipboard with no Copy
@@ -678,6 +689,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
         <div className="fixed inset-0 bg-black/40 -z-10" onClick={() => setExpanded(false)} />
       )}
       </>)}
+      {linkConfirm}
     </div>
   )
 }

@@ -10304,6 +10304,10 @@
     }
   },
   "hooks": {
+    "frameLinkBridge": {
+      "open": "Ouvrir le lien",
+      "title": "Ouvrir ce lien ?"
+    },
     "mic": {
       "could_not_start_the_microphone": "Impossible de démarrer le microphone.",
       "microphone_is_unavailable_another_app_may_be_usi": "Microphone indisponible — une autre application l’utilise peut-être.",

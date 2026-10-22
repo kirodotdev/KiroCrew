@@ -10016,6 +10016,10 @@
     }
   },
   "hooks": {
+    "frameLinkBridge": {
+      "open": "打开链接",
+      "title": "打开此链接？"
+    },
     "mic": {
       "could_not_start_the_microphone": "无法启动麦克风。",
       "microphone_is_unavailable_another_app_may_be_usi": "麦克风不可用 — 可能有其他应用正在使用。",

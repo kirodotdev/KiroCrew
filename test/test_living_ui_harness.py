@@ -150,9 +150,17 @@ def test_the_page_carries_the_default_palette_in_both_sets(harness: Any) -> None
 
 def test_the_frame_is_sandboxed_like_the_chat_widget_frame(harness: Any) -> None:
     source = WIDGET_FRAME.read_text(encoding="utf-8")
-    grants = set(re.findall(r'sandbox="([^"]*)"', source))
-    grants |= set(re.findall(r"setAttribute\('sandbox', '([^']*)'\)", source))
-    assert grants == {harness.FRAME_SANDBOX}
+    # The widget frame names its grant once, as AGENT_PAGE_SANDBOX, on the inline
+    # frame and on the popped-out one; a literal grant beside it would be a second
+    # policy the harness does not mirror.
+    assert not re.findall(r'sandbox="([^"]*)"', source)
+    assert not re.findall(r"setAttribute\('sandbox', '([^']*)'\)", source)
+    assert source.count("sandbox={AGENT_PAGE_SANDBOX}") == 1
+    assert source.count("setAttribute('sandbox', AGENT_PAGE_SANDBOX)") == 1
+    declared = re.findall(
+        r"export const AGENT_PAGE_SANDBOX = '([^']*)'", WIDGET_SRCDOC.read_text(encoding="utf-8")
+    )
+    assert declared == [harness.FRAME_SANDBOX]
     # Without it the frame has an opaque origin: no storage, no cookies, no page.
     assert "allow-same-origin" not in harness.FRAME_SANDBOX.split()
     page = harness.page("<p>x</p>")
