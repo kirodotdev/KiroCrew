@@ -1507,6 +1507,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.switch-to-new-chat-tabs",
+    "label": "Switch to New Chat Tabs",
+    "labelKey": "pages.settings.chatPanel.new_chat_tab_active",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    }
+  },
+  {
     "id": "chat.tail-only-fork",
     "label": "Tail-only Fork",
     "labelKey": "pages.settings.chatPanel.tail_only_fork",

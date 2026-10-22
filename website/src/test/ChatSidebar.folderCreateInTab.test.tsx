@@ -67,8 +67,10 @@ vi.mock('framer-motion', async () => {
 })
 
 vi.mock('../components/ProjectPicker', () => ({ default: () => null }))
+// The one chat setting these gestures read; a test flips it per case.
+const chatCfg = vi.hoisted(() => ({ newChatTabActive: false }))
 vi.mock('../pages/chat/ChatSettings', () => ({
-  loadChatConfig: () => ({ tagColumnsEnabled: false, confirmCloseSession: false }),
+  loadChatConfig: () => ({ tagColumnsEnabled: false, confirmCloseSession: false, newChatTabActive: chatCfg.newChatTabActive }),
   saveChatConfig: vi.fn(),
 }))
 
@@ -160,6 +162,7 @@ describe('ChatSidebar - list-view folder create open-as-tab gestures', () => {
   beforeEach(() => {
     localStorage.clear()
     platform.mac = false
+    chatCfg.newChatTabActive = false
     mocks.createChatSlot.mockReset().mockResolvedValue({ key: NEW_KEY, folder_id: FOLDER_ID })
   })
 
@@ -216,6 +219,26 @@ describe('ChatSidebar - list-view folder create open-as-tab gestures', () => {
     fireEvent.click(plusButton(), { metaKey: true, shiftKey: true })
     await created()
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    expect(store.getState().chat.activeSlot).toBe(ORIGIN)
+  })
+
+  it('with "Switch to New Chat Tabs" on, Ctrl-click on the folder "+" opens a foreground tab', async () => {
+    chatCfg.newChatTabActive = true
+    const onOpen = vi.fn()
+    const store = renderSidebar(onOpen)
+    fireEvent.click(plusButton(), { ctrlKey: true })
+    await created()
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    expect(store.getState().chat.activeSlot).toBe(ORIGIN)
+  })
+
+  it('with "Switch to New Chat Tabs" on, Ctrl+Shift-click on the empty-folder row opens a background tab', async () => {
+    chatCfg.newChatTabActive = true
+    const onOpen = vi.fn()
+    const store = renderSidebar(onOpen)
+    fireEvent.click(emptyRow(), { ctrlKey: true, shiftKey: true })
+    await created()
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: true }))
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
   })
 

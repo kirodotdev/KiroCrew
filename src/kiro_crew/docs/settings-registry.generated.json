@@ -847,6 +847,12 @@
       "hint": "'Auto' lets the provider pick — it does not inherit your Default Model. Pin a model to run this work on it."
     },
     {
+      "id": "chat.switch-to-new-chat-tabs",
+      "label": "Switch to New Chat Tabs",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.switch-to-new-chat-tabs"
+    },
+    {
       "id": "chat.tail-only-fork",
       "label": "Tail-only Fork",
       "tab": "chat",

@@ -15914,6 +15914,8 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "没有会话的文件夹只占一行而不是两行，新建会话按钮移到文件夹所在的那一行",
         "full_titles_on_scroll": "滚动时显示完整标题",
         "full_titles_on_scroll_description": "滚动会话列表时，完整显示被侧边栏截断的标题",
+        "new_chat_tab_active": "切换到新聊天标签页",
+        "new_chat_tab_active_desc": "{{mod}}+点击“新建”会在活动标签页中打开聊天，{{mod}}+Shift+点击则在后台打开",
         "content_width": "内容宽度",
         "context": "上下文",
         "turns": "轮次",

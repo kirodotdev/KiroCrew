@@ -16448,6 +16448,8 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "Uma pasta sem conversas ocupa uma linha em vez de duas, e o botão de nova conversa passa para a linha da pasta",
         "full_titles_on_scroll": "Mostrar títulos completos ao rolar",
         "full_titles_on_scroll_description": "Ao rolar a lista de sessões, os títulos cortados pela barra lateral aparecem completos",
+        "new_chat_tab_active": "Mudar para novas abas de chat",
+        "new_chat_tab_active_desc": "{{mod}}-clique em Novo abre o chat como aba ativa, e {{mod}}+Shift-clique o abre em segundo plano",
         "content_width": "Largura do conteúdo",
         "context": "Contexto",
         "turns": "Turnos",

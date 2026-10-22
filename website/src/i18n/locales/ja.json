@@ -15914,6 +15914,8 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "チャットのないフォルダーは 2 行ではなく 1 行になり、新しいチャットのボタンはフォルダーの行に移ります",
         "full_titles_on_scroll": "スクロール中にタイトル全体を表示",
         "full_titles_on_scroll_description": "セッションリストをスクロールしている間、サイドバーで切れたタイトルを全文表示します",
+        "new_chat_tab_active": "新しいチャットタブに切り替える",
+        "new_chat_tab_active_desc": "「新規」を{{mod}}+クリックするとチャットがアクティブなタブで開き、{{mod}}+Shift+クリックするとバックグラウンドで開きます",
         "content_width": "コンテンツ幅",
         "context": "コンテキスト",
         "turns": "ターン",

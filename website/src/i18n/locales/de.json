@@ -16181,6 +16181,8 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "Ein Ordner ohne Chats belegt eine Zeile statt zwei, und seine Schaltfläche für einen neuen Chat wandert in die Ordnerzeile",
         "full_titles_on_scroll": "Vollständige Titel beim Scrollen anzeigen",
         "full_titles_on_scroll_description": "Beim Scrollen der Sitzungsliste werden von der Seitenleiste abgeschnittene Titel vollständig angezeigt",
+        "new_chat_tab_active": "Zu neuen Chat-Tabs wechseln",
+        "new_chat_tab_active_desc": "{{mod}}-Klick auf Neu öffnet den Chat als aktiven Tab, {{mod}}+Umschalt-Klick öffnet ihn im Hintergrund",
         "content_width": "Inhaltsbreite",
         "context": "Kontext",
         "turns": "Züge",

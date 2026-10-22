@@ -9173,6 +9173,8 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "A folder with no chats takes one row instead of two, and its New chat button moves onto the folder's own row",
         "full_titles_on_scroll": "Show Full Titles While Scrolling",
         "full_titles_on_scroll_description": "While you scroll the session list, titles the sidebar cuts off show in full",
+        "new_chat_tab_active": "Switch to New Chat Tabs",
+        "new_chat_tab_active_desc": "{{mod}}-click on New opens the chat as the active tab, and {{mod}}+Shift-click opens it in the background",
         "content_width": "Content Width",
         "context": "Context",
         "turns": "Turns",

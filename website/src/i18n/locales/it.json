@@ -16448,6 +16448,8 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "Una cartella senza chat occupa una riga invece di due, e il pulsante per una nuova chat passa sulla riga della cartella",
         "full_titles_on_scroll": "Mostra i titoli completi durante lo scorrimento",
         "full_titles_on_scroll_description": "Mentre scorri l'elenco delle sessioni, i titoli troncati dalla barra laterale vengono mostrati per intero",
+        "new_chat_tab_active": "Passa alle nuove schede di chat",
+        "new_chat_tab_active_desc": "{{mod}}-clic su Nuovo apre la chat come scheda attiva, {{mod}}+Maiusc-clic la apre in background",
         "content_width": "Larghezza del contenuto",
         "context": "Contesto",
         "turns": "Turni",

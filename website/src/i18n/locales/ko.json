@@ -15914,6 +15914,8 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "채팅이 없는 폴더는 두 줄 대신 한 줄을 사용하며, 새 채팅 버튼은 폴더 줄로 옮겨집니다",
         "full_titles_on_scroll": "스크롤할 때 전체 제목 표시",
         "full_titles_on_scroll_description": "세션 목록을 스크롤하는 동안 사이드바에서 잘린 제목을 전체로 보여 줍니다",
+        "new_chat_tab_active": "새 채팅 탭으로 전환",
+        "new_chat_tab_active_desc": "새로 만들기를 {{mod}}-클릭하면 채팅이 활성 탭으로 열리고, {{mod}}+Shift-클릭하면 백그라운드에서 열립니다",
         "content_width": "콘텐츠 너비",
         "context": "컨텍스트",
         "turns": "턴",
