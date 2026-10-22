@@ -95,6 +95,7 @@ from .shell_normalizer_walk import (  # noqa: F401  (also re-exported for import
     _iter_shell_chars,
     _matching_close_paren,
     _opens_comment,
+    _opens_dollar,
     _prev_word,
     _push_option_matches,
     _push_token_redirection,
@@ -883,20 +884,428 @@ def _self_tokens(text_lower: str) -> "list[str]":
     the lone case and leaves the escaped run intact, matching bash.
     """
     try:
-        # shlex treats bare newlines as whitespace, which joins separate
-        # commands into one argv. Preserve those boundaries after folding
-        # continuations; quoted newlines remain part of their operand.
-        command = _fold_line_continuations(text_lower)
-        if "\n" in command:
-            command = "".join(
-                " ; " if step.active and step.char == "\n" else step.text
-                for step in _iter_shell_chars(command)
-            )
         return _resolve_function_aliases(
-            _resolve_local_assignments(normalize_shell_command(command))
+            _resolve_local_assignments(_self_command_tokens(text_lower))
         )
     except Exception:
         return []
+
+
+def _self_command_tokens(text_lower: str) -> "list[str]":
+    """The de-quoted tokens :func:`_self_tokens` resolves, before any expansion."""
+    # shlex treats bare newlines as whitespace, which joins separate
+    # commands into one argv. Preserve those boundaries after folding
+    # continuations; quoted newlines remain part of their operand.
+    command = _fold_line_continuations(text_lower)
+    if "\n" in command:
+        command = "".join(
+            " ; " if step.active and step.char == "\n" else step.text
+            for step in _iter_shell_chars(command)
+        )
+    return normalize_shell_command(command)
+
+
+# An innermost ``$(printf ...)`` / ``$(echo ...)`` (or backtick form) whose
+# arguments hold no ``$``, backtick or paren: its output is a constant.
+_CONST_OUTPUT_SUBST_RE = re.compile(
+    r"\$\(\s*((?:printf|echo)(?:\s[^()$`]*)?)\)|`\s*((?:printf|echo)(?:\s[^()$`]*)?)`"
+)
+# Output that cannot be spliced back as the same text: it would re-open quoting
+# or start an expansion bash never performs on substitution output.
+_FOLD_UNSPLICEABLE_RE = re.compile(r"[\"'`$\\;|&()<>{}]")
+#: Substitution nesting past which a body is failed closed BEFORE any fold pass.
+#: One pass peels one level and rebuilds the quote mask, so bounding the depth up
+#: front keeps the fold's total work linear in the body; real synthesis is a
+#: handful of levels, far under it.
+_FOLD_DEPTH_CAP = 8
+
+
+def _subst_nesting_depth(ends: "dict[int, int]") -> int:
+    """Deepest nesting among the substitution spans ``_quote_mask`` recorded."""
+    depth = 0
+    open_ends: list[int] = []
+    for start in sorted(ends):
+        while open_ends and open_ends[-1] <= start:
+            open_ends.pop()
+        open_ends.append(ends[start])
+        depth = max(depth, len(open_ends))
+    return depth
+
+
+def _fold_const_output_substitutions(body: str, resolve: "Callable[[str], str]") -> "str | None":
+    """*body* with each constant-output ``printf``/``echo`` substitution replaced by its output.
+
+    *resolve* maps a substitution body to its static output, ``"\\x00"`` when it
+    has none.  Innermost-first to a FIXPOINT, so the folded text tokenizes as the
+    word bash builds and the local-assignment resolver carries it on
+    (``x=$(printf a); ${x}b``).  Output that cannot be spliced as the same text
+    leaves its substitution unfolded, and a substitution the shell quoted INERT
+    (inside single quotes, or escaped) is never folded: it is literal text.
+    ``None`` when the nesting is deeper than ``_FOLD_DEPTH_CAP``, or the quote
+    mask cannot prove a span -- a pathologically deep or unparseable body the
+    caller fails closed on rather than searching a partially folded text.
+    """
+    ends: dict[int, int] = {}
+    mask = _quote_mask(body, ends=ends)
+    if _MASK_UNPROVEN in ends or _subst_nesting_depth(ends) > _FOLD_DEPTH_CAP:
+        return None  # a span the mask could not prove, or too deep: fail closed
+
+    def fold(match: "re.Match[str]") -> str:
+        if mask[match.start()] in ("'", "\\"):
+            return match.group(0)
+        out = resolve(match.group(1) or match.group(2))
+        if out == "\x00" or _FOLD_UNSPLICEABLE_RE.search(out):
+            return match.group(0)
+        return out
+
+    def fold_pass(text: str) -> str:
+        # Fold only a real span: a match starts at an opener the quote mask recorded
+        # and ends at that span's end, so a closing backtick never pairs with the next.
+        out: list[str] = []
+        last = 0
+        for start in sorted(ends):
+            match = None if start < last else _CONST_OUTPUT_SUBST_RE.match(text, start)
+            if match is not None and match.end() == ends[start]:
+                out += [text[last:start], fold(match)]
+                last = match.end()
+        return "".join(out) + text[last:]
+
+    # A fold splices no opener back in, so each changing pass peels a level.
+    for _ in range(_FOLD_DEPTH_CAP + 1):
+        folded = fold_pass(body)
+        if folded == body:
+            return body
+        body = folded
+        ends.clear()
+        mask = _quote_mask(body, ends=ends)
+    return None  # not converged within the pass budget: fail closed
+
+
+#: Private-use sentinels standing in for a brace char the shell quoted (so it is
+#: literal, not brace syntax).  Chosen outside any name spelling, so a quoted
+#: brace never joins a name across the sentinel.
+_QUOTED_BRACE_OPEN = "\ue000"
+_QUOTED_BRACE_CLOSE = "\ue001"
+#: A folded output / single literal may hold only these: anything else means the
+#: resolver's quote-stripping could change what the shell actually passes.
+_SAFE_FOLD_LITERAL_RE = re.compile(r"[\w.:/@=+-]+")
+
+
+#: Substitution nesting the quote mask follows; deeper text reads as unquoted.
+_QUOTE_MASK_NEST_CAP = 64
+_MASK_UNPROVEN = -1  # ends key: mask could not prove a span; the fold fails closed
+_ASSIGN_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
+_WORD_START_CHARS = " \t\n;&|()"
+#: The subset of word breaks that start a new SIMPLE COMMAND (so the next word is
+#: again in command position). A plain space/tab only starts the next word of the
+#: same command, where a ``name=`` word is an ARGUMENT, not an assignment.
+_CMD_SEP_CHARS = ";&|()\n"
+
+
+def _subst_span(text: str, i: int) -> "tuple[int, int, int, bool]":
+    """``(body_start, body_stop, end, proven)`` for the substitution opened at *i*,
+    through the shared readers (:func:`_matching_close_paren`, quote-, comment-
+    and ``case``-aware; :func:`_backtick_closer`)."""
+    n = len(text)
+    if text[i] == "`":
+        close = _backtick_closer(text, i + 1)
+        return (i + 1, close, close + 1, True) if close >= 0 else (i + 1, n, n, False)
+    rel, proven = _matching_close_paren(text[i + 2 :], 0)
+    end = i + 2 + rel
+    return (i + 2, end - 1 if proven else end, end, proven)
+
+
+def _quote_mask(
+    text: str, nest: int = 0, ends: "dict[int, int] | None" = None, base: int = 0
+) -> "list[str]":
+    """One class char per position of *text*: ``'`` single-quoted, ``"`` double,
+    ``\\`` the char after a backslash, ``.`` unquoted; a quote/backslash that is
+    SYNTAX is itself ``.``.
+
+    The quote/escape/ANSI reading is NOT a second state machine: every position's
+    class comes from :func:`_iter_shell_chars`, THE module's one quote walker --
+    its ``state`` (0 normal, 1 single, 2 double) gives the class, a quote step
+    that changed the state is the delimiter and is ``.``, a two-character escape
+    step marks the backslash ``.`` and the escaped char ``\\`` (or both ``'`` in
+    an ANSI-C ``$'...'``, where the pair is inert).  This function adds only what
+    that walker does not model: a ``$(``/backtick substitution (not
+    single-quoted) is spanned by the shared reader (:func:`_subst_span`) and its
+    body masked in its OWN neutral scope, so only its real closer ends it;
+    *ends*, when given, records each opener's offset and its span's end; and an
+    unquoted comment (:func:`_opens_comment`) is inert ``'`` text through its
+    newline.  An unproven span, or nesting past ``_QUOTE_MASK_NEST_CAP``, leaves
+    the rest unquoted: the reading under which more braces expand, and records
+    ``_MASK_UNPROVEN`` in *ends* so the fold can fail closed on it."""
+    n = len(text)
+    mask: list[str] = ["."] * n
+    pos, rstate, ransi = 0, 0, False
+    while pos < n:
+        during = rstate
+        advanced = False
+        for step in _iter_shell_chars(text[pos:], rstate, ransi):
+            off = pos + step.offset
+            if step.active and step.char == "#" and _opens_comment(text, off):
+                end = text.find("\n", off)
+                end = n if end == -1 else end
+                for k in range(off, end):
+                    mask[k] = "'"
+                pos, rstate, ransi, advanced = end, 0, False, True
+                break
+            if (
+                during != 1
+                and len(step.text) == 1
+                and (step.char == "`" or (step.char == "$" and _opens_dollar(text, off, "(")))
+            ):
+                start, stop, send, proven = _subst_span(text, off)
+                if not proven or nest >= _QUOTE_MASK_NEST_CAP:
+                    if ends is not None:
+                        ends[_MASK_UNPROVEN] = base + off
+                    for k in range(off, n):
+                        mask[k] = "."
+                    advanced = False
+                    pos = n
+                    break
+                if ends is not None:
+                    ends[base + off] = base + send
+                cls = '"' if during == 2 else "."
+                for k in range(off, start):
+                    mask[k] = cls
+                sub = _quote_mask(text[start:stop], nest + 1, ends, base + start)
+                for k, cell in enumerate(sub):
+                    mask[start + k] = cell
+                for k in range(stop, send):
+                    mask[k] = cls
+                pos, rstate, ransi, advanced = send, during, False, True
+                break
+            if len(step.text) == 2:
+                if during == 1:  # an ANSI-C ``$'...'`` escape pair is inert
+                    mask[off] = mask[off + 1] = "'"
+                else:
+                    mask[off], mask[off + 1] = ".", "\\"
+            elif step.char in "'\"" and step.state != during:
+                mask[off] = "."  # a quote that changed the state is the delimiter
+            else:
+                mask[off] = {0: ".", 1: "'", 2: '"'}[during]
+            during = step.state
+        if not advanced:
+            break
+    return mask
+
+
+def _mask_quoted_braces(text: str) -> str:
+    """*text* with every brace bash would NOT expand replaced by a sentinel, so
+    brace expansion and the segment walk treat it as the literal it is.
+
+    That is a quoted or escaped brace; one inside a parameter word, since bash
+    does not brace-expand ``${x:-{c..c}}`` (its own delimiters, and a nested
+    ``${...}``'s, are kept; an escape or single-quoted run there is data and a
+    double-quoted brace literal); and one in an assignment's value, since
+    ``p=kiro{3,}crew`` stores the braces and a later ``$p`` is never
+    brace-expanded.  A substitution running inside either keeps its own
+    braces: each is a scope of its own, entered and left at the spans the
+    quote mask recorded, so the whole text is read in ONE pass.  Only an
+    unquoted or double-quoted ``${`` opens a parameter word, and an
+    unterminated one is re-read once as plain text from where it opened.
+    """
+    ends: dict[int, int] = {}
+    mask = _quote_mask(text, ends=ends)
+    out: list[str] = []
+    scopes: "list[tuple[int, bool, list[str], bool, tuple[int, int, bool] | None, bool]]" = []
+    assign = pdouble = no_param = False
+    cmd_pos = True  # at command position: a leading ``name=`` word is an assignment
+    kinds: list[str] = []  # open parameter-word delimiters in THIS scope
+    checkpoint: "tuple[int, int, bool] | None" = None  # (index, output length, assign)
+    i, n = 0, len(text)
+    while True:
+        while scopes and i >= scopes[-1][0] and not kinds:
+            _, assign, kinds, pdouble, checkpoint, cmd_pos = scopes.pop()
+        if kinds and checkpoint is not None and (i >= n or (scopes and i >= scopes[-1][0])):
+            i, size, assign = checkpoint
+            del out[size:]
+            kinds, pdouble, checkpoint, no_param = [], False, None, True
+            continue
+        if i >= n:
+            break
+        ch, live = text[i], mask[i] == "."
+        if i in ends:
+            width = 1 if ch == "`" else 2
+            out.append(text[i : i + width])
+            scopes.append((ends[i], assign, kinds, pdouble, checkpoint, cmd_pos))
+            assign, kinds, pdouble, checkpoint, cmd_pos = False, [], False, None, True
+            i += width
+            continue
+        if kinds:
+            if ch == "\\" or (ch == "'" and not pdouble):
+                end = i + 2 if ch == "\\" else text.find("'", i + 1) + 1 or n
+                piece = text[i:end].replace("{", _QUOTED_BRACE_OPEN)
+                out.append(piece.replace("}", _QUOTED_BRACE_CLOSE))
+                i = end
+                continue
+            if text.startswith("${", i) and not pdouble:
+                kinds.append("$")
+                out.append("${")
+                i += 2
+                continue
+            if ch == "}" and not pdouble and kinds.pop() == "$":
+                out.append("}")
+            elif ch == "{" and not pdouble:
+                kinds.append("{")
+                out.append(_QUOTED_BRACE_OPEN)
+            else:
+                pdouble = not pdouble if ch == '"' else pdouble
+                out.append({"{": _QUOTED_BRACE_OPEN, "}": _QUOTED_BRACE_CLOSE}.get(ch, ch))
+            checkpoint = checkpoint if kinds else None
+            i += 1
+            continue
+        if live and (i == 0 or (text[i - 1] in _WORD_START_CHARS and mask[i - 1] == ".")):
+            # ``name=`` is an assignment only in command position: a leading run
+            # before the command word. As an ARGUMENT (`pgrep -f x=…`) bash does
+            # not assign, so its value's braces DO expand and must not be masked.
+            assign = cmd_pos and bool(_ASSIGN_WORD_RE.match(text, i))
+            if not assign:
+                cmd_pos = False  # the command word ends the leading-assignment run
+        elif live and ch in _WORD_START_CHARS:
+            assign = False
+            if ch in _CMD_SEP_CHARS:
+                cmd_pos = True  # a new simple command begins
+        if text.startswith("${", i) and mask[i] in '."' and not no_param:
+            checkpoint = (i, len(out), assign)
+            kinds = ["$"]
+            out.append("${")
+            i += 2
+            continue
+        if ch in "{}" and (not live or assign):
+            out.append(_QUOTED_BRACE_OPEN if ch == "{" else _QUOTED_BRACE_CLOSE)
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+_VAR_REF_RE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _synthesis_words(body: str, resolve: "Callable[[str], str]", limit: int) -> "list[str] | None":
+    """The words of a bare-kill *body* after the constant-output fold, with the
+    braces bash would not expand masked; ``None`` when an assignment chain would
+    build a value past *limit* characters, or the resolver fails.
+
+    The local-assignment resolver behind :func:`_self_tokens` expands eagerly,
+    so ``x1=${x0}${x0}; x2=${x1}${x1}; ...`` doubles per step.  The resolved
+    sizes of ALL the tokens together are bounded first, with lengths only and
+    never the strings, so the caller fails closed before anything is built: words
+    that each fit under *limit* but add up past it are refused like one word past
+    it.  The tokens sized are the resolver's OWN (de-quoted, continuation-folded,
+    operator-split), so a chain hidden in a quoted word or split by a continuation
+    is sized exactly as it would be built; a resolver failure is a deny, never an
+    empty view.
+    """
+    folded = _fold_const_output_substitutions(
+        body, lambda sub: _single_literal_output(sub, resolve)
+    )
+    if folded is None:
+        return None  # nesting deeper than the fold budget: deny
+    masked = _mask_quoted_braces(folded)
+    sizes: dict[str, int] = {}
+    total = 0
+    try:
+        tokens = _self_command_tokens(masked)
+        for word in _split_glued_operators(tokens):
+            size = len(word) + sum(sizes.get(ref, 0) for ref in _VAR_REF_RE.findall(word))
+            # ``${!y}`` builds the variable ``y`` NAMES, which no length here records:
+            # each is sized as the largest tracked value, never under-counted.
+            size += len(_INDIRECT_VAR_USE_RE.findall(word)) * max(sizes.values(), default=0)
+            total += size
+            if total > limit:
+                return None
+            assign = _ASSIGN_WORD_RE.match(word)
+            if assign:
+                name = assign.group(0).rstrip("+=")
+                sizes[name] = size + (sizes.get(name, 0) if "+" in assign.group(0) else 0)
+        return _resolve_function_aliases(_resolve_local_assignments(tokens))
+    except Exception:
+        return None  # an expansion that fails (e.g. MemoryError) is a deny
+
+
+def _restore_quoted_braces(text: str) -> str:
+    """*text* with the quoted-brace sentinels put back as literal ``{``/``}``."""
+    return text.replace(_QUOTED_BRACE_OPEN, "{").replace(_QUOTED_BRACE_CLOSE, "}")
+
+
+def _mask_param_word_braces(word: str) -> str:
+    """*word* with each ``${...}`` parameter word's braces replaced by sentinels.
+
+    Bash performs brace expansion BEFORE parameter expansion, so a parameter
+    word nested in a brace group does not stop the group expanding
+    (``kiro{${x:-},}crew`` yields ``kiro${x:-}crew`` and ``kirocrew``). The
+    brace-group reader keys on literal ``{``/``}`` and would otherwise read the
+    ``${...}`` braces as part of the group and miss the enclosing one, so the
+    parameter word's own braces are masked to the same sentinels quoting uses
+    and restored before the name search. Variable resolution has already run on
+    the word by this point, so masking here changes no resolution. Depth-tracked
+    so a nested ``${x:-${y}}`` is masked whole.
+    """
+    out: list[str] = []
+    i, n, depth = 0, len(word), 0
+    while i < n:
+        # A command substitution / backtick is a fresh scope that bash DOES
+        # brace-expand, so skip it whole with its braces left literal -- but only
+        # when it PROVABLY closes; an unproven span must not swallow the rest of
+        # the word (and its closing brace), so fall through and mask char by char.
+        if word[i] == "`" or (word[i] == "$" and _opens_dollar(word, i, "(")):
+            _, _, end, proven = _subst_span(word, i)
+            if proven:
+                out.append(word[i:end])
+                i = end
+                continue
+        if depth == 0 and word.startswith("${", i):
+            out.append("$" + _QUOTED_BRACE_OPEN)
+            depth, i = 1, i + 2
+            continue
+        ch = word[i]
+        if depth > 0 and ch == "{":
+            depth += 1
+            out.append(_QUOTED_BRACE_OPEN)
+        elif depth > 0 and ch == "}":
+            depth -= 1
+            out.append(_QUOTED_BRACE_CLOSE)
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _single_literal_output(body: str, resolve: "Callable[[str], str]") -> str:
+    """The output of ``$( )`` safe to splice VERBATIM into a word, else ``"\x00"``.
+
+    *resolve* is the shared static-substitution resolver.  Its output is kept
+    ONLY when the body is ``echo``/``printf`` with ONE operand (leading
+    ``-n``/``-e`` dropped) whose quote-removed form is a plain word of safe
+    characters AND equals what the resolver returned -- so a lossy resolver step
+    (``_normalize_operand`` cutting a quoted ``;``) or any ``%``/escape/space
+    makes the fold decline rather than invent a word bash would spell
+    differently.  Everything else is the documented residual.
+    """
+    args = body.split()
+    if not args or _program_basename(args[0]) not in {"echo", "printf"}:
+        return "\x00"
+    operands = args[1:]
+    while operands and re.fullmatch(r"-[neE]+", operands[0]):
+        operands.pop(0)
+    if len(operands) != 1:
+        return "\x00"
+    literal = operands[0]
+    if len(literal) >= 2 and literal[0] == literal[-1] and literal[0] in "\"'":
+        literal = literal[1:-1]  # one outer quote pair is syntax; any other is data
+    if (
+        "'" in literal
+        or '"' in literal
+        or "%" in literal
+        or not _SAFE_FOLD_LITERAL_RE.fullmatch(literal)
+    ):
+        return "\x00"
+    out = resolve(body)
+    return out if out == literal else "\x00"
 
 
 def _protected_name_in_substitution(tokens: "list[str]", start: int) -> str:

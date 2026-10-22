@@ -28,6 +28,7 @@ from typing import NamedTuple
 # the reader module rather than bound here at import: the facade mirrors a patch
 # onto the owning module's namespace, so a name bound into THIS namespace would
 # keep resolving the unpatched object and the instrument would count nothing.
+from . import kill_synthesis as _kill_synthesis
 from . import shell_normalizer as _shell_normalizer
 from .inline_payload import (
     _INLINE_DYNAMIC_EXEC_RE,
@@ -708,6 +709,112 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
     return bodies
 
 
+# A brace group with a comma alternation or a ``..`` range is a brace
+# expansion; ``{single}`` is literal in bash and stays untouched, and the
+# lookbehind keeps ``${…}`` parameter expansions out.
+_BRACE_GROUP_RE = re.compile(r"(?<!\$)\{([^{}]*)\}")
+
+
+_BRACE_RANGE_RE = re.compile(r"\A(-?[0-9]+|[A-Za-z])\.\.(-?[0-9]+|[A-Za-z])(?:\.\.(-?[0-9]+))?\Z")
+
+
+# ponytail: fan-out ceiling.  Expansion stops at 256 generated words and the
+# caller DENIES (fail-closed) — a wider product is pathological to enumerate.
+_BRACE_EXPANSION_CAP = 256
+_BRACE_CHAR_CAP = 262_144
+
+
+def _brace_alternatives(body: str, cap: int = _BRACE_EXPANSION_CAP) -> "list[str] | None":
+    """The words one brace-group *body* expands to, or None when literal.
+
+    A comma body is an alternation (empty alternatives included, as in
+    ``{h,}``); a ``a..b`` / ``a..b..step`` body is a numeric or single-char
+    range.  Anything else — ``{single}``, an empty body — is not a brace
+    expansion in bash and expands to nothing here.
+    """
+    range_match = _BRACE_RANGE_RE.match(body)
+    if range_match is not None:
+        start_s, end_s, step_s = range_match.groups()
+        if start_s.isalpha() != end_s.isalpha():
+            return None
+        try:
+            step = abs(int(step_s)) if step_s else 1
+            if step == 0:
+                step = 1
+            if start_s.isalpha():
+                start, end = ord(start_s), ord(end_s)
+                render = chr
+            else:
+                start, end = int(start_s), int(end_s)
+                render = str  # type: ignore[assignment]
+        except ValueError:
+            # ``int()`` refuses digit strings past the interpreter's
+            # conversion cap (~4300 digits); uncaught, that crashes the
+            # gate.  An endpoint or step that large cannot name a single
+            # legitimate target, so signal overflow exactly like the cap
+            # check below -- the caller converts it to a fail-closed deny.
+            return [""] * (cap + 1)
+        if abs(end - start) // step + 1 > cap:
+            # Signal overflow with an over-long list the caller's cap check
+            # converts to a fail-closed deny.
+            return [""] * (cap + 1)
+        direction = 1 if start <= end else -1
+        return [render(v) for v in range(start, end + direction, direction * step)]
+    if "," in body:
+        parts = body.split(",")
+        return parts if len(parts) <= cap else [""] * (cap + 1)  # cap the alternation
+    return None
+
+
+def _brace_expansions(
+    token: str, cap: int = _BRACE_EXPANSION_CAP, budget: "list[int] | None" = None
+) -> "list[str] | None":
+    """Every word bash brace expansion produces for *token*; None on overflow.
+
+    Identical alternatives and words dedupe (so ``{,}`` x k is one word); past
+    *cap* words, or past *budget* chars over ALL passes, None.
+    """
+    words = [token]
+    changed = True
+    while changed:
+        changed = False
+        next_words: list[str] = []
+        for word in words:
+            expanded = False
+            for group in _BRACE_GROUP_RE.finditer(word):
+                alternatives = _brace_alternatives(group.group(1), cap)
+                if alternatives is None:
+                    continue
+                if len(alternatives) > cap:
+                    return None  # one group past the cap: residual
+                alternatives = list(dict.fromkeys(alternatives))  # identical collapse
+                head, tail = word[: group.start()], word[group.end() :]
+                if len(next_words) + len(alternatives) > cap:
+                    return None
+                next_words.extend(head + alt + tail for alt in alternatives)
+                expanded = True
+                changed = True
+                break
+            if not expanded:
+                next_words.append(word)
+            if len(next_words) > cap:
+                return None
+        next_words = list(dict.fromkeys(next_words))  # identical words collapse
+        if budget is not None:
+            budget[0] -= sum(len(w) for w in next_words)  # cumulative: passes x width
+            if budget[0] < 0:
+                return None
+        words = next_words
+    return words
+
+
+def _kill_body_synthesizes_self(body: str) -> bool:
+    """True if a bare-kill substitution *body* builds the protected name at runtime."""
+    return _kill_synthesis._kill_body_synthesizes_self(
+        body, _static_substitution_output, _brace_expansions, _BRACE_CHAR_CAP
+    )
+
+
 def _is_self_kill(text_lower: str) -> bool:
     """True if *text_lower* terminates a Kiro Crew process.
 
@@ -839,6 +946,9 @@ def _is_self_kill(text_lower: str) -> bool:
                     _shell_normalizer._resolved_word_view(word)
                 ):
                     return True
+            # Runtime synthesis the static views cannot see (folded output, braces).
+            if _kill_body_synthesizes_self(body):
+                return True
     return False
 
 

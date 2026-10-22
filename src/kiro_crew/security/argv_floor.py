@@ -171,6 +171,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         warm_own_host_names,
     )
     from kiro_crew.security.argv_floor_self import (  # noqa: F401
+        _BRACE_CHAR_CAP,
+        _BRACE_EXPANSION_CAP,
+        _BRACE_GROUP_RE,
+        _BRACE_RANGE_RE,
         _DEV_MODE_CONFIRM_FLAG,
         _RAW_ASSIGNMENT_RE,
         _SELF_CLOUD_DESTRUCTIVE_VERBS,
@@ -180,6 +184,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SELF_IMPORT_RE,
         _SELF_MODULE_SPELLINGS,
         _bare_kill_raw_bodies,
+        _brace_alternatives,
+        _brace_expansions,
         _is_credential_mint,
         _is_dev_mode_out_of_root_confirm,
         _is_kill_by_name_program,
@@ -191,6 +197,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _is_self_module_invocation,
         _is_self_restart,
         _is_self_update,
+        _kill_body_synthesizes_self,
         _kill_prefix_keeps_anchor,
         _matches_self_subcommand,
         _operands_lead_with,
@@ -207,9 +214,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.security.argv_floor_ssh import (  # noqa: F401
         _ARITH_INT_LITERAL_RE,
         _BINARY_COPY_VERBS,
-        _BRACE_EXPANSION_CAP,
-        _BRACE_GROUP_RE,
-        _BRACE_RANGE_RE,
         _CALL_ASSIGNMENT_RE,
         _CALL_WRAPPER_WORDS,
         _EMPTY_EXPANSION_RE,
@@ -232,8 +236,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _VERB_FOLD_AMBIGUOUS_OPT_LETTERS,
         _VERB_VALUE_TAKING_OPT_LETTERS,
         _arith_int_literal_repl,
-        _brace_alternatives,
-        _brace_expansions,
         _command_value_names_self_endpoint,
         _function_call_binds_self,
         _glob_can_name_ssh_verb,
@@ -250,6 +252,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     from kiro_crew.atomic_write import on_event_loop as _event_loop_running  # noqa: F401
+    from kiro_crew.security import kill_synthesis as _kill_synthesis  # noqa: F401
     from kiro_crew.security import shell_normalizer as _shell_normalizer  # noqa: F401
     from kiro_crew.security.denied_rules import (  # noqa: F401
         _GIT_PUBLISH_UNGATED,

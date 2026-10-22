@@ -811,7 +811,10 @@ def _arms_case_context(text: str, index: int, in_case_body: bool = False) -> boo
     return True  # chain too deep to decide -- arm, the long direction
 
 
-def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
+_QUOTED_SUBST_NEST_CAP = 64
+
+
+def _matching_close_paren(text: str, open_end: int, nest: int = 0) -> "tuple[int, bool]":
     """``(index just past the matching ``)``, proven)`` for a paren opened before
     *open_end*, walked QUOTE-AWARELY through :func:`_iter_shell_chars`.
 
@@ -850,6 +853,11 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
     caller must fail CLOSED on that: for an extractor the safe reading is the
     whole remainder (scan more, never less). All three call sites are extractors,
     so a span that reaches too far only feeds them text to inspect.
+
+    A ``$(`` inside DOUBLE quotes opens a substitution with its own neutral
+    quoting (``"$( : ")")"`` is one quoted word), so its body is walked by a
+    nested call and skipped whole before the outer walk resumes in the double
+    quote.  Nesting past ``_QUOTED_SUBST_NEST_CAP`` reads as unproven.
     """
     depth = 1
     cases = 0
@@ -862,6 +870,14 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
             off = pos + step.offset
             if off < open_end:
                 continue
+            if step.state == 2 and step.text == "$" and _opens_dollar(text, off, "("):
+                if nest >= _QUOTED_SUBST_NEST_CAP:
+                    return (len(text), False)
+                rel, proven = _matching_close_paren(text[off + 2 :], 0, nest + 1)
+                if not proven:
+                    return (len(text), False)
+                pos, state, ansi, jumped = off + 2 + rel, 2, False, True
+                break
             if not step.active:
                 continue
             ch = step.char
@@ -964,6 +980,25 @@ def _resolved_word_view(word: str) -> str:
     default), so callers search the BARE word too -- this view is additive.
     """
     return _debracket(_EMPTY_SUBST_RE.sub("", _resolve_param_defaults(word)))
+
+
+def _opens_dollar(text: str, i: int, nxt: str) -> bool:
+    """True if the ``$`` at *i* is live and unpaired and is followed by *nxt*.
+
+    The parity rule :func:`_iter_shell_chars` applies to ``$'``: in a run of
+    dollars the shell pairs them off (``$$`` is the PID parameter), and an
+    escaped ``\\$`` is data, so only an odd live run leaves a ``$`` to open.
+    """
+    if text[i + 1 : i + 2] != nxt:
+        return False
+    j = i
+    while j > 0 and text[j - 1] == "$":
+        j -= 1
+    k = j
+    while k > 0 and text[k - 1] == "\\":
+        k -= 1
+    run = i - j + 1 - ((j - k) % 2)
+    return run % 2 == 1
 
 
 def _cut_at_operator(token: str) -> str:

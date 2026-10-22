@@ -27,7 +27,7 @@ import re
 # keep resolving the unpatched object and the instrument would count nothing.
 from . import shell_normalizer as _shell_normalizer
 from .argv_floor_hosts import _GLOB_CHARS, _host_is_self
-from .argv_floor_self import _self_token_frames, _static_substitution_output
+from .argv_floor_self import _brace_expansions, _self_token_frames, _static_substitution_output
 from .shell_normalizer import (
     _argv_programs,
     _cut_at_operator,
@@ -285,21 +285,6 @@ _SSH_FORWARD_OPT_LETTERS: frozenset[str] = frozenset("lrdwb")
 _ARITH_INT_LITERAL_RE = re.compile(r"\$\(\(\s*(-?(?:0[xX][0-9a-fA-F]+|[0-9]+))\s*\)\)")
 
 
-# A brace group with a comma alternation or a ``..`` range is a brace
-# expansion; ``{single}`` is literal in bash and stays untouched, and the
-# lookbehind keeps ``${…}`` parameter expansions out.
-_BRACE_GROUP_RE = re.compile(r"(?<!\$)\{([^{}]*)\}")
-
-
-_BRACE_RANGE_RE = re.compile(r"\A(-?[0-9]+|[A-Za-z])\.\.(-?[0-9]+|[A-Za-z])(?:\.\.(-?[0-9]+))?\Z")
-
-
-# ponytail: fan-out ceiling.  Expansion stops at 256 generated words and the
-# caller DENIES (fail-closed) — a wider product in a connection operand is
-# pathological, and enumerating it here would be its own DoS.
-_BRACE_EXPANSION_CAP = 256
-
-
 def _arith_int_literal_repl(match: "re.Match[str]") -> str:
     """The decimal spelling bash prints for one arithmetic integer literal."""
     lit = match.group(1)
@@ -322,79 +307,6 @@ def _arith_int_literal_repl(match: "re.Match[str]") -> str:
         return str(value)
     except ValueError:
         return match.group(0)
-
-
-def _brace_alternatives(body: str) -> "list[str] | None":
-    """The words one brace-group *body* expands to, or None when literal.
-
-    A comma body is an alternation (empty alternatives included, as in
-    ``{h,}``); a ``a..b`` / ``a..b..step`` body is a numeric or single-char
-    range.  Anything else — ``{single}``, an empty body — is not a brace
-    expansion in bash and expands to nothing here.
-    """
-    range_match = _BRACE_RANGE_RE.match(body)
-    if range_match is not None:
-        start_s, end_s, step_s = range_match.groups()
-        if start_s.isalpha() != end_s.isalpha():
-            return None
-        try:
-            step = abs(int(step_s)) if step_s else 1
-            if step == 0:
-                step = 1
-            if start_s.isalpha():
-                start, end = ord(start_s), ord(end_s)
-                render = chr
-            else:
-                start, end = int(start_s), int(end_s)
-                render = str  # type: ignore[assignment]
-        except ValueError:
-            # ``int()`` refuses digit strings past the interpreter's
-            # conversion cap (~4300 digits); uncaught, that crashes the
-            # gate.  An endpoint or step that large cannot name a single
-            # legitimate target, so signal overflow exactly like the cap
-            # check below -- the caller converts it to a fail-closed deny.
-            return [""] * (_BRACE_EXPANSION_CAP + 1)
-        if abs(end - start) // step + 1 > _BRACE_EXPANSION_CAP:
-            # Signal overflow with an over-long list the caller's cap check
-            # converts to a fail-closed deny.
-            return [""] * (_BRACE_EXPANSION_CAP + 1)
-        direction = 1 if start <= end else -1
-        return [render(v) for v in range(start, end + direction, direction * step)]
-    if "," in body:
-        return body.split(",")
-    return None
-
-
-def _brace_expansions(token: str) -> "list[str] | None":
-    """Every word bash brace expansion produces for *token*; None on overflow.
-
-    Groups are expanded left-to-right to a fixpoint (each rewrite removes one
-    brace pair, so this terminates); the returned words carry no expandable
-    group.  A product beyond ``_BRACE_EXPANSION_CAP`` returns None and the
-    caller fails closed.
-    """
-    words = [token]
-    changed = True
-    while changed:
-        changed = False
-        next_words: list[str] = []
-        for word in words:
-            expanded = False
-            for group in _BRACE_GROUP_RE.finditer(word):
-                alternatives = _brace_alternatives(group.group(1))
-                if alternatives is None:
-                    continue
-                head, tail = word[: group.start()], word[group.end() :]
-                next_words.extend(head + alt + tail for alt in alternatives)
-                expanded = True
-                changed = True
-                break
-            if not expanded:
-                next_words.append(word)
-            if len(next_words) > _BRACE_EXPANSION_CAP:
-                return None
-        words = next_words
-    return words
 
 
 def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:

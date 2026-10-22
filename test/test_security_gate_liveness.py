@@ -452,7 +452,33 @@ def _url_payload_command(n: int) -> str:
 #: cache stores output computed under exactly the set its key names. Fourteen lines:
 #: the keyword on both signatures, a two-branch read and the docstrings saying why.
 #: No rule widened or narrowed; the default path is the live read.
-_PACKAGE_LINE_BUDGET = 32_125
+#:
+#: Raised again, from 32,125, for the bare-kill window's runtime-synthesis search:
+#: a substitution body whose lookup target is assembled from a single-literal
+#: ``printf``/``echo`` substitution or a brace expansion is folded and matched for
+#: the name before the search. The constant-output fold reuses the existing
+#: ``_static_substitution_output`` resolver (guarded to a single plain literal, so
+#: no second printf model); the quote reading that keeps a quoted substitution,
+#: brace, comment or escape inert is taken from ``_iter_shell_chars`` -- the
+#: module's one quote/escape state machine -- not a second copy, so the fold and
+#: the brace mask read quoting through it and the shared paren-span reader
+#: (subshells, case patterns and ``$$`` open or close nothing); all of a body's
+#: expansion work shares one cumulative character budget (the connection-target
+#: check keeps its word cap alone), an assignment value's braces stay literal,
+#: and a same-line assignment chain is bounded by the total length of its words,
+#: on the resolver's own tokens, before it is built; a body nested past a small
+#: depth fails closed before any fold pass; and a backslash run escapes the ``$``
+#: after it only when the run is odd, as the shell reads it.
+#: Neither an unresolvable operand nor a brace product past the fan-out cap is
+#: failed closed -- both are documented residuals; no pass widened, no threshold
+#: moved. The runtime-synthesis search sits in its own module, ``kill_synthesis``,
+#: behind a one-call wrapper in ``argv_floor_self``; the brace expander it is handed
+#: (with this change's cap and budget parameters) moves from ``argv_floor_ssh`` down to
+#: ``argv_floor_self``, so no owner imports one listed after it. A fold pass folds
+#: only a real substitution span the quote mask recorded, so a closing backtick never
+#: pairs with the next opener, and the fold fails closed when the quote mask cannot
+#: prove a span (an unbalanced opener, or nesting past its cap).
+_PACKAGE_LINE_BUDGET = 32_647
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
