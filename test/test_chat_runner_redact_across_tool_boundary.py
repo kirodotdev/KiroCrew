@@ -317,11 +317,14 @@ class TestCredentialSplitAcrossABoundary:
     async def test_the_linked_channel_reply_sees_the_credential_whole(
         self, kind: str, mirrored: list[str]
     ) -> None:
-        await _turn(kind, f"Before {_HEAD}", f"{_TAIL} after.")
+        record = await _turn(kind, f"Before {_HEAD}", f"{_TAIL} after.")
 
+        # The linked channel gets the turn's whole answer, its rows joined as the
+        # transcript shows them, with the credential redacted whole on its row.
         [reply] = mirrored
-        assert "Before" not in reply
-        assert redact(reply) == f"{_TAG} after."
+        assert reply == "\n\n".join(_saved(record))
+        assert redact(reply) == reply
+        assert _HEAD not in reply and _TAIL not in reply, reply
 
     @pytest.mark.asyncio
     async def test_the_stream_readers_get_the_credential_redacted_whole(self, kind: str) -> None:
@@ -425,7 +428,7 @@ class TestHarmlessTextAcrossABoundary:
         assert _layout(record) == ["Let me check the config", "|", "uration file now."]
         # The bubble after the boundary streams only its own text.
         assert _chunks_after_boundary(record) == "uration file now."
-        assert mirrored == ["uration file now."]
+        assert mirrored == ["\n\n".join(_saved(record))]
 
     @pytest.mark.asyncio
     async def test_narration_ending_a_sentence_stays_on_its_row(
@@ -436,7 +439,7 @@ class TestHarmlessTextAcrossABoundary:
         assert _saved(record) == ["Let me check the config.", "The config says hi."]
         assert _shown(record) == _saved(record)
         assert _chunks_after_boundary(record) == "The config says hi."
-        assert mirrored == ["The config says hi."]
+        assert mirrored == ["Let me check the config.\n\nThe config says hi."]
 
     @pytest.mark.asyncio
     async def test_a_turn_ending_at_the_boundary_keeps_its_last_word(self, kind: str) -> None:
@@ -510,7 +513,7 @@ class TestHarmlessTextAcrossABoundary:
         assert _saved(record) == ["Let me look.", "OK.", "Found it."]
         assert _shown(record) == _saved(record)
         assert _layout(record) == ["Let me look.", "|", "OK.", "|", "Found it."]
-        assert mirrored == ["Found it."]
+        assert mirrored == ["\n\n".join(_saved(record))]
 
 
 @pytest.mark.parametrize("kind", _KINDS)
