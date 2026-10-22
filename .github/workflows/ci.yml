@@ -212,6 +212,8 @@ jobs:
               - 'pyproject.toml'
               - 'setup.cfg'
               - '**/conftest.py'
+              # The plain modules both conftests are split into.
+              - 'test/conftest_*.py'
               # The shard and progress plugins every Windows shard loads.
               - 'scripts/ci_*.py'
               - '.github/workflows/ci.yml'
@@ -852,8 +854,8 @@ jobs:
         group: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
       SHARD_COUNT: 8
-      # A temp entry a test leaves behind fails the job instead of warning (conftest.py
-      # `_TMP_RESIDUE_STRICT_ENV`). Each `Backend Tests*` job below sets it too.
+      # A temp entry a test leaves behind fails the job instead of warning
+      # (test/conftest_floor_tmp.py `_TMP_RESIDUE_STRICT_ENV`). Each `Backend Tests*` job below sets it too.
       KIROCREW_TMP_RESIDUE_STRICT: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

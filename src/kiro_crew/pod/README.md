@@ -565,7 +565,8 @@ pod, mints `pod token` against it, and asserts `pod down` leaves no task, home
 or env file behind. The module is opt-in: it skips unless
 `KIROCREW_E2E_POD_WINDOWS=1` is set, because a bare `pytest` on a developer's
 Windows box must not register scheduled tasks. It is also one of the two entries
-on the root `conftest.py` host-service allowlist, whose guard otherwise refuses
+on the root `conftest.py` host-service allowlist (defined in
+`test/conftest_floor_services.py`), whose guard otherwise refuses
 any test that spawns `kirocrew pod up`, `down`, `install`, `prune` or `restart`
 as a child process, or `schtasks` with a `/Create`, `/Delete`, `/Run`, `/End` or
 `/Change` switch.
