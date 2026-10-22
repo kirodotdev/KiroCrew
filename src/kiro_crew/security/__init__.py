@@ -64,6 +64,7 @@ from . import (
     inline_payload,
     paths,
     perm_verb_mention,
+    publish_program_word,
     redaction,
     rm_floor,
     shell_normalizer,

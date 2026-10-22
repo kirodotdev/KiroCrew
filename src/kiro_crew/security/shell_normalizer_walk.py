@@ -1140,13 +1140,37 @@ def _push_token_redirection(token: str) -> "tuple[bool, bool]":
     program runs, so such a token is never an argv word — treating it as a
     positional is how ``git push origin </dev/null`` erases the single-arg
     tag.
+
+    A target ends where an unquoted operator opens the next redirection, so a
+    token whose glued target ends in one (``</dev/null>``) leaves that last
+    redirection's target to the next word, as bash reads it:
+    ``git </dev/null> /dev/null push`` writes to ``/dev/null`` and runs ``push``.
     """
     m = _PUSH_REDIRECTION_RE.match(token)
     if m is None:
         return (False, False)
     if _push_token_shell_read(token)[1]:
         return (False, False)  # fragment: the walk handles it protectively
-    return (True, m.group(3) == "")
+    return (True, m.group(3) == "" or _ends_in_redirection_operator(token))
+
+
+#: A redirection operator closing a token: ``>``, ``>>``, ``<``, ``>|``, ``>&``, ``&>``.
+_TRAILING_REDIRECTION_OPERATOR_RE = re.compile(r"(?:&>>?|[<>]+[&|]?)\Z")
+
+
+def _ends_in_redirection_operator(token: str) -> bool:
+    """True if *token* ends in an unquoted redirection operator with no target after it.
+
+    Every character of the operator must be read active on its own: an escaped
+    ``\\>`` is a literal character of the target.
+    """
+    match = _TRAILING_REDIRECTION_OPERATOR_RE.search(token)
+    if match is None:
+        return False
+    active = {
+        step.offset for step in _iter_shell_chars(token) if step.active and len(step.text) == 1
+    }
+    return all(offset in active for offset in range(match.start(), len(token)))
 
 
 def _push_option_matches(token: str, names: "frozenset[str]") -> bool:
@@ -1231,20 +1255,43 @@ def _split_push_command_segments(text: str) -> list[str]:
     while True:
         buf: list[str] = []
         resume_at: int | None = None
+        # A ``$(...)`` / ``${...}`` / backtick span is ONE shell word, so a
+        # ``;`` / ``&`` / ``|`` / newline inside it is the substitution's, not a
+        # boundary of the outer command; the quote machine does not track these
+        # spans. Keep such a separator in the word. A plain ``(`` subshell or
+        # ``{`` group is not a span (its ``;`` does separate), so only a
+        # ``$``-introduced ``(`` / ``{`` and a backtick open one.
+        closers: list[str] = []
         for step in _iter_shell_chars(rest):
             if step.trailing_escape:
                 buf.append(step.text)
                 break
+            if step.active:
+                before = rest[step.offset - 1] if step.offset else ""
+                if step.char == "`":
+                    if closers and closers[-1] == "`":
+                        closers.pop()
+                    else:
+                        closers.append("`")
+                elif step.char == "(" and before == "$":
+                    closers.append(")")
+                elif step.char == "{" and before == "$":
+                    closers.append("}")
+                elif step.char in (")", "}") and closers and closers[-1] == step.char:
+                    closers.pop()
             if step.char == "\n":
                 # A NEWLINE always separates. When it was ESCAPED the backslash
                 # is kept, because that is the splice signal: bash makes the
                 # backslash-newline vanish, fusing the words on either side into
                 # one that neither segment can reconstruct.
+                if closers:
+                    buf.append(step.text)
+                    continue
                 if step.text.startswith("\\"):
                     buf.append("\\")
                 resume_at = step.offset + len(step.text)
                 break
-            if step.active:
+            if step.active and not closers:
                 separator = next(
                     (s for s in _SHELL_SEGMENT_SEPARATORS if rest.startswith(s, step.offset)),
                     None,

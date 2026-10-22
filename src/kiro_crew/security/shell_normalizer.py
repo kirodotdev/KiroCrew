@@ -1309,6 +1309,15 @@ def _nested_shell_payloads(
                     payloads.append(joined)
                     if joined_out is not None:
                         joined_out.add(joined)
+        elif base == "flock":
+            # ``flock <file> -c '<script>'`` runs the script through ``$SHELL -c``,
+            # so its ``-c``/``--command`` value is a command line like a shell's;
+            # the file operand before the flag is skipped by the flag scan.
+            j = _first_stop_at_or_after(flag_stops, i + 1)
+            if j < limit:
+                k = past_dashes[j + 1]
+                if k < limit:
+                    payloads.append(tokens[k])
     # ``bash<<<'<payload>'`` glues the program, the operator and the payload into ONE
     # token, so the program never appears as a token of its own for the walk above to
     # recognise.  Split on the operator and check the left half.
