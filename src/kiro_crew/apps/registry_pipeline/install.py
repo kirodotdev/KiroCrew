@@ -1210,7 +1210,7 @@ async def install_from_registry(
             # The app will update its own registration on next launch.
             # ``manifest_data`` is the identity-checked read from above — reusing
             # it avoids a second read that could see different bytes.
-            from kiro_crew.apps.manager import register_external_app
+            from kiro_crew.apps.manager import refresh_app_config_keys, register_external_app
 
             display = manifest_data.get("displayName", name)
             version = manifest_data.get("version", "0.0.0")
@@ -1257,6 +1257,10 @@ async def install_from_registry(
                 commit=source_commit,
                 signer=source_signer,
             )
+            # The registration wrote a manifest that can declare config_keys;
+            # republish the snapshot config validation reads, as install_app
+            # does. A directory scan, so off the loop.
+            await asyncio.to_thread(refresh_app_config_keys)
 
             log_lines.append("Pre-registered from cloned manifest (self-managed)")
             log_lines.append("App will update its own registration on next launch")

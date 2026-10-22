@@ -28,7 +28,12 @@ An installed app may declare top-level `config.json` object ownership with
 `config_keys`. Config validation unions those declarations with the core
 compatibility fallback before warning. A manifest on disk without
 `installed.json` owns nothing, so stale or merely downloaded apps cannot silence
-unknown-key warnings. Non-gateway CLI commands and slim MCP startup prime
+unknown-key warnings. Install, update and uninstall republish the declarations as
+they finish, and so do both callers of `register_external_app` (the
+`POST /api/apps/register` route and the registry pipeline's self-managed
+install), off the event loop, so a running gateway sees a newly declared key
+without a restart. Non-gateway CLI commands
+and slim MCP startup prime
 installed app and admissible companion declarations before their first config
 load and before an event loop starts. This priming reads the admission policy
 without side effects: it seeds no policy file and writes no SEL record.
