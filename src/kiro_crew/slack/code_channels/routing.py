@@ -524,27 +524,32 @@ async def _post(orch: Any, channel: str, text: str, thread_ts: str | None) -> st
     return str(ts or "")
 
 
-async def _post_kickoff(orch: Any, channel: str, text: str, agent: str, project_dir: str) -> str:
-    """Post the kickoff with the channel's agent picker; returns its ts.
+async def _post_kickoff(
+    orch: Any, channel: str, text: str, agent: str, project_dir: str, approval_mode: str
+) -> str:
+    """Post the kickoff with the channel's agent picker and Approval mode select;
+    returns its ts.
 
-    *agent* is the resolved default the picker starts on. When the agents
-    cannot be listed, or Slack refuses the Block Kit post, the kickoff goes out
-    as plain text: the channel works, only the picker is missing (``/kirocrew
-    agent`` still switches).
+    *agent* is the resolved default the picker starts on; *approval_mode* the
+    mode the session starts in (``normal``, ``trust_reads`` or ``trust``). When
+    Slack refuses the Block Kit post, the kickoff goes out as plain text: the
+    channel works, only the pickers are missing (``/kirocrew agent`` and
+    ``/kirocrew trust`` still change them).
     """
     from kiro_crew.slack.code_channels import agent_picker
 
     agents = await agent_picker.agent_choices(project_dir or None)
-    if agents:
-        try:
-            ts = await orch.slack.post_blocks(
-                channel, agent_picker.kickoff_blocks(text, agents, agent), text
-            )
-        except Exception:
-            logger.info("code channel kickoff picker not posted; posting text", exc_info=True)
-        else:
-            if ts:
-                return str(ts)
+    try:
+        ts = await orch.slack.post_blocks(
+            channel,
+            agent_picker.kickoff_blocks(text, agents, agent, approval_mode=approval_mode),
+            text,
+        )
+    except Exception:
+        logger.info("code channel kickoff pickers not posted; posting text", exc_info=True)
+    else:
+        if ts:
+            return str(ts)
     return await _post(orch, channel, text, None)
 
 
@@ -617,8 +622,14 @@ async def _bind_channel(
     spec = await plan_session(
         state, spec, channel_id=channel, team_id=team_id, title=title, channel_name=channel_name
     )
+    first_mode = spec.approval_mode if spec.approval_mode in ("trust_reads", "trust") else "normal"
     anchor = await _post_kickoff(
-        orch, channel, _kickoff_text(title, state, spec.folder_id), spec.agent, spec.project_dir
+        orch,
+        channel,
+        _kickoff_text(title, state, spec.folder_id),
+        spec.agent,
+        spec.project_dir,
+        first_mode,
     )
     if not anchor:
         raise BindingUnavailable("kickoff post failed")
@@ -653,9 +664,13 @@ async def _bind_channel(
         anchor_ts=anchor,
         before_publish=record_binding,
     )
-    if str(getattr(slot, "agent", "") or spec.agent) != spec.agent:
-        # No resolved default (the session took the default template): show the
-        # agent it really runs on the picker.
+    from kiro_crew.slack.code_channels.approval_picker import current_mode
+
+    if str(getattr(slot, "agent", "") or spec.agent) != spec.agent or (
+        slot is not None and current_mode(slot) != first_mode
+    ):
+        # No resolved default (the session took the default template), or the
+        # mode did not take: show what the session really runs on the pickers.
         from kiro_crew.slack.code_channels.agent_picker import refresh_kickoff
 
         await refresh_kickoff(stored[0])

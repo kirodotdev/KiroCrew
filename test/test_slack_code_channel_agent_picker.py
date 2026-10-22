@@ -223,10 +223,15 @@ def test_a_folder_default_agent_preselects_when_no_explicit_one(env: Env) -> Non
     assert _initial(asyncio.run(_open(env))) == "builder"
 
 
-def test_agents_that_cannot_be_listed_leave_a_plain_kickoff(env: Env) -> None:
+def test_agents_that_cannot_be_listed_leave_the_kickoff_without_a_picker(env: Env) -> None:
     env.agents = None
-    assert asyncio.run(_open(env)) == []
-    assert env.slack.posts[0][0] == CH  # the channel still opened, text only
+    blocks = asyncio.run(_open(env))
+    assert _select(blocks) is None  # no agent picker ...
+    from kiro_crew.slack.code_channels import approval_picker
+
+    ids = [(b.get("accessory") or {}).get("action_id") for b in blocks]
+    assert approval_picker.APPROVAL_SELECT_ACTION_ID in ids  # ... but the mode select stays
+    assert env.store.get_binding(CH) is not None  # the channel still opened
 
 
 def test_a_refused_block_kit_post_falls_back_to_text(env: Env) -> None:

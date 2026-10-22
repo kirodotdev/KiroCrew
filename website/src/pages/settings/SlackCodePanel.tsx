@@ -1,7 +1,7 @@
 /**
  * Settings → Slack → Slack Code: the registered Slack Code switches (Agent
  * sessions and Code channels; see `slackCodeSwitches`), the code-channel defaults (folder /
- * agent / model / effort), and the "Update your Slack app" panel.
+ * agent / model / effort / approval mode), and the "Update your Slack app" panel.
  *
  * The draft lives in `SlackPanel` (one Save for the whole page); this module
  * owns the shape of the Slack Code slice of it, how it is read from the GET and
@@ -9,7 +9,7 @@
  */
 import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Bot, CheckCircle2, Folder, FolderGit2, Info } from 'lucide-react'
+import { AlertTriangle, Bot, CheckCircle2, Folder, FolderGit2, Info, ShieldCheck } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { Badge } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
@@ -38,6 +38,26 @@ export interface SlackCodeDraft {
   /** INHERIT_MODEL ('auto') = keep the agent's own model. */
   model: string
   effort: string
+  /** One of APPROVAL_MODES; 'ask' (the default) is stored as unset. */
+  approval: string
+}
+
+/** The approval modes a code channel's session can start in, in picker order.
+ *  The labels are the session approval picker's own, so the mode reads the same
+ *  here and on the session where it can be changed later. */
+export const APPROVAL_MODES = ['ask', 'trust_reads', 'trust'] as const
+const APPROVAL_LABEL_KEY: Record<string, string> = {
+  ask: 'components.approvalModePicker.normal_label',
+  trust_reads: 'components.approvalModePicker.reads_label',
+  trust: 'components.approvalModePicker.trust_label',
+}
+
+function approvalLabel(mode: string): string {
+  return i18nT(APPROVAL_LABEL_KEY[mode] ?? APPROVAL_LABEL_KEY.ask)
+}
+
+function approvalFromWire(raw: string | null | undefined): string {
+  return raw === 'trust_reads' || raw === 'trust' ? raw : 'ask'
 }
 
 export function slackCodeDraftFrom(c: SlackConfigData): SlackCodeDraft {
@@ -48,6 +68,7 @@ export function slackCodeDraftFrom(c: SlackConfigData): SlackCodeDraft {
     agent: d?.agent ?? '',
     model: d?.model ?? INHERIT_MODEL,
     effort: d?.reasoning_effort ?? '',
+    approval: approvalFromWire(d?.approval_mode),
   }
 }
 
@@ -65,6 +86,7 @@ export function slackCodePayload(d: SlackCodeDraft, saved: SlackCodeDraft): Part
     agent: x.agent || null,
     model: x.model && x.model !== INHERIT_MODEL ? x.model : null,
     reasoning_effort: x.effort || null,
+    approval_mode: x.approval === 'ask' ? null : x.approval,
   })
   const next = wire(d)
   const prev = wire(saved)
@@ -380,7 +402,23 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
                     aria-label={i18nT('pages.kiroCrewAgentsPage.edit_reasoning_effort')}
                   />
                 </Field>
+                <Field label={i18nT('components.approvalModePicker.approval_mode')} hint={i18nT('pages.settings.slackPanel.slackCode.approval_hint')}>
+                  <SimpleSelect
+                    options={[...APPROVAL_MODES]}
+                    optionLabels={APPROVAL_MODES.map(approvalLabel)}
+                    value={draft.approval}
+                    onChange={v => onChange({ approval: v || 'ask' })}
+                    disabled={readOnly}
+                    aria-label={i18nT('components.approvalModePicker.approval_mode')}
+                  />
+                </Field>
               </div>
+              {draft.approval === 'trust' && (
+                <div className="flex items-start gap-2 rounded-md border border-border bg-bg px-3 py-2" role="note" data-testid="slack-code-approval-warning">
+                  <AlertTriangle size={13} className="text-warn flex-none mt-0.5" />
+                  <span className="text-[12px] text-warn">{i18nT('pages.settings.slackPanel.slackCode.approval_trust_warning')}</span>
+                </div>
+              )}
 
               {/* No hand-off for any of these: they sit beside the unsaved
                   Slack draft (the pickers above, the token fields and owner id
@@ -420,6 +458,9 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
                     draft.model && draft.model !== INHERIT_MODEL ? draft.model : i18nT('pages.settings.slackPanel.slackCode.preview_agent_own'),
                     draft.effort ? effortLabel(draft.effort) : '',
                   ].filter(Boolean).join(' · ')} />
+                <PreviewRow icon={<ShieldCheck size={12} />} label={i18nT('pages.settings.slackPanel.slackCode.preview_approval')}
+                  value={approvalLabel(draft.approval)}
+                  source={draft.approval !== 'ask' ? sourceLabel('default') : undefined} />
               </div>
               <div className="flex items-start gap-2 text-[12px] text-muted">
                 <Info size={12} className="flex-none mt-0.5" />

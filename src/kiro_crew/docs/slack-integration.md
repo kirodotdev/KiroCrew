@@ -283,8 +283,8 @@ exactly as with the switch off, and the page says why under the switch.
   Slack code channels enabled.
 
 **Defaults for new code channels** (`slack.code_channel_defaults`, applied without a
-restart): a folder, an agent, a model and a reasoning effort. Set any of them; anything
-empty falls through:
+restart): a folder, an agent, a model, a reasoning effort and an approval mode. Set any of
+them; anything empty falls through:
 
 - folder: the default folder here, else a top-level **Code channels** folder. That folder is
   created the first time a code channel needs it, with `kirocrew-conductor` as its default
@@ -296,7 +296,11 @@ empty falls through:
   except background-only ones (`kirocrew-lite`, `kirocrew-guest`, `kirocrew-heartbeat`);
 - project: the folder's project directory, then the project of the thread the channel was
   opened from;
-- model and effort: set here, else the agent's own.
+- model and effort: set here, else the agent's own;
+- approval mode (`approval_mode`): `ask` (the default: every tool call waits for
+  approval), `trust_reads` (read-only commands run without asking) or `trust` (every tool
+  runs without asking). The page labels them Normal, Reads and Trust, as the session's own
+  approval picker does.
 
 The page previews what a new code channel will run with. A folder or agent deleted after
 you saved it is flagged on the page and skipped; the other defaults still apply.

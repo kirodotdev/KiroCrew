@@ -780,7 +780,7 @@ slot_approval | _end_trust_scopes | async function | (slots: 'list[Any]', audit_
 slot_approval | _still_owning | function | (state: 'Any', slots: 'list[Any]', key: 'str') -> 'list[Any]'
 slot_approval | _end_trust_scope | async function | (scope: 'str', caller: 'str') -> 'None'
 slot_approval | api_chat_mode | async function | (request: 'web.Request') -> 'web.Response'
-slot_approval | apply_approval_mode | async function | (state: 'DashboardState', *, mode: 'str', slot: '_ChatSlot | None', slot_key: 'str | None', request_app: 'str', cron_creator: 'str', audit_caller: 'Callable[[str], str]') -> 'web.Response'
+slot_approval | apply_approval_mode | async function | (state: 'DashboardState', *, mode: 'str', slot: '_ChatSlot | None', slot_key: 'str | None', request_app: 'str', cron_creator: 'str', audit_caller: 'Callable[[str], str]', still_live: 'Callable[[], bool] | None' = None) -> 'web.Response'
 slot_approval | _get_pattern_from_pending | function | (slot: '_ChatSlot', request_id: 'str', field: 'str') -> 'str'
 slot_approval | _deny_approval_mode | function | (*, caller: 'str', operation: 'str', mode: 'str', resource: 'str' = '') -> 'web.Response'
 slot_approval | _grant_deadline | function | (ttl: 'int | None') -> 'GrantDeadline | None'

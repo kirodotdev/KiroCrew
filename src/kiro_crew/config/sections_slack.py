@@ -18,6 +18,14 @@ logger = logging.getLogger("kiro_crew.config.loader")
 #: config.json from carrying an unbounded string into every code-channel session.
 CODE_CHANNEL_DEFAULT_MAX = 256
 
+#: ``slack.code_channel_defaults.approval_mode`` values. ``ask`` is the default
+#: and today's behaviour (every tool call asks), so it is stored as unset;
+#: ``trust_reads`` and ``trust`` are the dashboard approval picker's Reads and
+#: Trust. ``yolo`` is absent on purpose: it is process-global, never a property
+#: of one session.
+CODE_CHANNEL_APPROVAL_ASK = "ask"
+CODE_CHANNEL_APPROVAL_MODES = (CODE_CHANNEL_APPROVAL_ASK, "trust_reads", "trust")
+
 
 @dataclass
 class CodeChannelDefaultsConfig:
@@ -70,6 +78,20 @@ class CodeChannelDefaultsConfig:
             "Reasoning effort new code-channel sessions start with: low, medium, "
             "high, xhigh or max. Empty keeps the agent's own effort. Ignored on "
             "models that do not support effort.",
+            tags=["slack"],
+        ),
+    )
+    approval_mode: str | None = field(
+        default=None,
+        metadata=_meta(
+            "Default Approval Mode",
+            "Tool approval mode new code-channel sessions start in: ask (every tool "
+            "asks, the default), trust_reads (read-only commands run without asking) "
+            "or trust (every tool runs without asking). Trust lets anyone allowed to "
+            "talk to the bot in the channel drive an agent whose tools run unprompted, "
+            "and sessions it spawns inherit that. The mode can still be changed on "
+            "the session afterwards.",
+            enum=list(CODE_CHANNEL_APPROVAL_MODES),
             tags=["slack"],
         ),
     )
@@ -284,8 +306,9 @@ class SlackConfig:
         default_factory=CodeChannelDefaultsConfig,
         metadata=_meta(
             "Code Channel Defaults",
-            "Folder, agent, model and reasoning effort a new code-channel session "
-            "starts with. Takes effect on the next new code channel; no restart.",
+            "Folder, agent, model, reasoning effort and approval mode a new "
+            "code-channel session starts with. Takes effect on the next new code "
+            "channel; no restart.",
             tags=["slack"],
         ),
     )

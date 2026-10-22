@@ -24,7 +24,11 @@ from aiohttp import web
 
 from kiro_crew import slack_manifest
 from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME
-from kiro_crew.config.sections_slack import CODE_CHANNEL_DEFAULT_MAX
+from kiro_crew.config.sections_slack import (
+    CODE_CHANNEL_APPROVAL_ASK,
+    CODE_CHANNEL_APPROVAL_MODES,
+    CODE_CHANNEL_DEFAULT_MAX,
+)
 from kiro_crew.effort import is_valid_effort
 from kiro_crew.slack import features as slack_features
 from kiro_crew.slack import scope_probe
@@ -34,7 +38,7 @@ from kiro_crew.slack import scope_probe
 # ``slack_manifest.FEATURES``), each under its own ``slack.<name>`` key, so
 # registering one there needs nothing here.
 #: The ``code_channel_defaults`` keys the PUT accepts.
-DEFAULT_KEYS: tuple[str, ...] = ("folder", "agent", "model", "reasoning_effort")
+DEFAULT_KEYS: tuple[str, ...] = ("folder", "agent", "model", "reasoning_effort", "approval_mode")
 #: The model picker's "pin nothing, inherit" spelling; stored as unset.
 _INHERIT_MODEL = "auto"
 
@@ -152,6 +156,7 @@ async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
             "agent": defaults.agent,
             "model": defaults.model,
             "reasoning_effort": defaults.reasoning_effort,
+            "approval_mode": defaults.approval_mode,
         },
         "code_channel_effective": {
             "folder": _folder_view(folders, folder),
@@ -161,6 +166,7 @@ async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
             "reasoning_effort": resolved.reasoning_effort,
             "project_dir": resolved.project_dir,
             "project_source": resolved.project_source,
+            "approval_mode": resolved.approval_mode,
             "slack_agent": _slack_agent(cfg),
             "folder_path": resolved.folder_path,
             "folder_auto_create": resolved.folder_auto_create,
@@ -294,6 +300,17 @@ async def validate_code_settings(
         raise CodeSettingsError(
             "code_channel_defaults.reasoning_effort must be one of low, medium, high, xhigh, max"
         )
+
+    approval = merged["approval_mode"]
+    if approval is not None and "approval_mode" in raw:
+        if approval not in CODE_CHANNEL_APPROVAL_MODES:
+            raise CodeSettingsError(
+                "code_channel_defaults.approval_mode must be one of "
+                + ", ".join(CODE_CHANNEL_APPROVAL_MODES)
+            )
+        if approval == CODE_CHANNEL_APPROVAL_ASK:
+            # The default: stored as unset, the one spelling the builder reads.
+            merged["approval_mode"] = None
 
     # Only the sub-keys this save changes: the write merges them into the object
     # as re-read inside the config lock (``merge_nested``), so a concurrent edit

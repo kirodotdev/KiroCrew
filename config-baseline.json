@@ -5254,7 +5254,8 @@
           "folder": null,
           "agent": null,
           "model": null,
-          "reasoning_effort": null
+          "reasoning_effort": null,
+          "approval_mode": null
         }
       }
     },
@@ -5637,14 +5638,15 @@
         "slack"
       ],
       "label": "Code Channel Defaults",
-      "help": "Folder, agent, model and reasoning effort a new code-channel session starts with. Takes effect on the next new code channel; no restart.",
+      "help": "Folder, agent, model, reasoning effort and approval mode a new code-channel session starts with. Takes effect on the next new code channel; no restart.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
         "folder": null,
         "agent": null,
         "model": null,
-        "reasoning_effort": null
+        "reasoning_effort": null,
+        "approval_mode": null
       }
     },
     {
@@ -5712,6 +5714,27 @@
       "help": "Reasoning effort new code-channel sessions start with: low, medium, high, xhigh or max. Empty keeps the agent's own effort. Ignored on models that do not support effort.",
       "hasChildren": false,
       "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "slack.code_channel_defaults.approval_mode",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Default Approval Mode",
+      "help": "Tool approval mode new code-channel sessions start in: ask (every tool asks, the default), trust_reads (read-only commands run without asking) or trust (every tool runs without asking). Trust lets anyone allowed to talk to the bot in the channel drive an agent whose tools run unprompted, and sessions it spawns inherit that. The mode can still be changed on the session afterwards.",
+      "hasChildren": false,
+      "enumValues": [
+        "ask",
+        "trust_reads",
+        "trust"
+      ],
       "defaultValue": null,
       "nullable": true
     },

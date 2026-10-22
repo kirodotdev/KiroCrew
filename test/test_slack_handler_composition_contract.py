@@ -227,8 +227,9 @@ _SPLIT_HELPERS: dict[str, str] = {
 
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every moved name,
 #: captured from the one-module file before the split, with ``user_meta`` on
-#: ``maybe_route_linked_thread`` (the user row's meta a code channel passes).
-_BASE_SHAPE_DIGEST = "a9265fb39962829a1dd22901814ffa801f237042f712b6657e2e1b62db968b73"
+#: ``maybe_route_linked_thread`` (the user row's meta a code channel passes); re-pinned
+#: when the approval card gained channel_trust.
+_BASE_SHAPE_DIGEST = "76838814d7b24800d9e7d80eea01666cacae299d458ae9501397017cd15475bc"
 
 #: Definitions that stay in the facade file, each because a repository guard, a
 #: contract or the import-time body reads it there. The reason per entry is in

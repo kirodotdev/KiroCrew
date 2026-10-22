@@ -12,7 +12,13 @@ channel TOP-LEVEL (a code channel is one session, never a thread).
 agent from the explicit default, else the default folder's ``default_agent``,
 else Slack's default agent; model and effort explicit or the agent's own; the
 default folder when it exists; project from the folder chain, else the origin
-thread's ``!project``, else the dashboard default.
+thread's ``!project``, else the dashboard default; approval mode explicit, else
+``ask``. A ``trust_reads`` / ``trust`` mode is put on the new slot through
+:func:`kiro_crew.dashboard.slot_approval_seed.seed_slot_approval` -- the same
+per-slot flags and ``mode_change:<mode>`` SEL record the dashboard picker
+writes -- once the session is bound, so the channel's first turn already runs
+in it. The user can change it on the session afterwards; like every slot's
+trust it is in-memory, so a gateway restart returns the session to asking.
 
 **How Slack reaches it.** The session's Slack link is recorded against the ts
 of the kickoff message this gateway posts when it binds the channel (the
@@ -66,6 +72,12 @@ class SessionSpec:
     reasoning_effort: str = ""
     folder_id: str = ""
     project_dir: str = ""
+    #: ``ask`` / ``trust_reads`` / ``trust``.
+    approval_mode: str = features.CODE_CHANNEL_APPROVAL_ASK
+
+
+#: The SEL caller a code channel's approval seed is recorded under.
+APPROVAL_SEED_CALLER = "slack:code_channel"
 
 
 class BindingUnavailable(Exception):
@@ -141,6 +153,7 @@ async def resolve_session_spec(state: Any, cfg: Any, *, origin_thread_ts: str = 
         reasoning_effort=resolved.reasoning_effort or "",
         folder_id=folder_id,
         project_dir=project,
+        approval_mode=resolved.approval_mode,
     )
 
 
@@ -178,6 +191,7 @@ async def create_bound_session(
         effective_session_key,
         slot_history_key,
     )
+    from kiro_crew.dashboard.slot_approval_seed import seed_slot_approval
     from kiro_crew.dashboard.slot_persistence import metadata_codec
     from kiro_crew.effort import is_valid_effort
 
@@ -308,6 +322,12 @@ async def create_bound_session(
         except BaseException:
             _retract(state, slot, anchor_ts, _sync_dashboard_slots)
             raise
+        # Bound and recorded: only now put the slot on its configured posture, so
+        # a retracted newborn never leaves a SEL record for a session that does
+        # not exist, and the published slot is already in it. ``ask`` is the
+        # starting posture and changes nothing.
+        if seed_slot_approval(state, slot, spec.approval_mode, caller=APPROVAL_SEED_CALLER):
+            logger.info("code channel %s: session starts in %s", channel_id, spec.approval_mode)
         state.push_slots_update()
     return slot
 

@@ -76,6 +76,8 @@ export interface SlackCodeChannelDefaults {
   agent: string | null
   model: string | null
   reasoning_effort: string | null
+  /** "trust_reads" | "trust"; null is "ask" (every tool asks). */
+  approval_mode?: string | null
 }
 
 /** The effective start state of a new code-channel session. */
@@ -89,6 +91,8 @@ export interface SlackCodeChannelEffective {
   project_dir: string | null
   /** "folder" | "origin" | "" */
   project_source: string
+  /** "ask" | "trust_reads" | "trust": the approval mode the session is created in. */
+  approval_mode?: string
   /** The agent Slack uses when nothing else names one. */
   slack_agent: string
   /** The folder's path; the auto folder's name when no folder is set. */

@@ -213,17 +213,26 @@ def _grant_linked_trust(linked_entry: _LinkedApproval, sessions: SessionManager 
 async def post_linked_approval(
     slack: SlackClientOps,
     channel: str,
-    thread_ts: str,
+    thread_ts: str | None,
     request_id: str | int,
     session_key: str,
     title: str,
     tool_input: str = "",
+    *,
+    channel_trust: bool = False,
 ) -> str | None:
     """Mirror a dashboard tool-approval prompt into a linked Slack thread.
 
     Posts Approve / Reject buttons threaded under ``thread_ts`` and registers a
     :class:`_LinkedApproval` keyed by ``channel:ts`` so a button click resolves
     the dashboard slot's approval future (see :func:`handle_interaction`).
+    ``thread_ts=None`` posts top-level: a Slack Code channel's own session
+    replies in the channel itself, so its prompts go there too.
+
+    ``channel_trust`` (a Slack Code channel's own session) adds a secondary
+    "Trust this channel" button, answered by
+    :mod:`kiro_crew.slack.code_channels.approval_picker` with that module's
+    owner gates; this function grants nothing for it.
 
     Returns the Slack message ts on success, or ``None`` if the post failed.
     The caller (``_on_permission_prompt`` in chat_turn/permission_prompt.py) treats ``None``
@@ -256,7 +265,11 @@ async def post_linked_approval(
     trust_grantable = channel.startswith("D") and _linked_trust_grantable(session_key, request_id)
     # _build_approval_blocks is typed for AcpEvent but only reads the four
     # attributes the shim provides (request_id/title/tool_input/tool_purpose).
-    blocks = _build_approval_blocks(event, is_dm=trust_grantable)  # type: ignore[arg-type]
+    blocks = _build_approval_blocks(
+        event,  # type: ignore[arg-type]
+        is_dm=trust_grantable,
+        channel_trust=channel_trust and not trust_grantable,
+    )
     try:
         approval_ts = await slack.post_blocks(
             channel, blocks, "Manual approval required", thread_ts
@@ -280,7 +293,9 @@ def resolve_linked_approval(channel: str, approval_ts: str) -> None:
     _linked_approvals.pop(f"{channel}:{approval_ts}", None)
 
 
-def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = "") -> list[dict]:
+def _build_approval_blocks(
+    event: LLMEvent, is_dm: bool = True, source: str = "", *, channel_trust: bool = False
+) -> list[dict]:
     """Build Block Kit blocks for tool approval prompt.
 
     Args:
@@ -289,6 +304,9 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
         source: Optional label for background agents (e.g. "subagent",
             "cron").  Prefixed to the header so users can tell main-agent
             approvals apart from background ones.
+        channel_trust: A Slack Code channel's own session: adds a secondary
+            "Trust this channel" button between Approve and Reject (Approve
+            stays the one primary button).
 
     Shows the full command text (from tool_input) in a code block so users
     can see exactly what will run before approving.  Falls back to the
@@ -296,7 +314,9 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
 
     In DMs: Approve / Trust / Reject
     In group channels: Approve / Reject only (Trust excluded
-    to limit blast radius — it escalates permissions for the session).
+    to limit blast radius — it escalates permissions for the session), except a
+    Slack Code channel's own session (``channel_trust``), whose channel IS the
+    session: it adds the owner-only "Trust this channel".
     YOLO is owner-only via ``!yolo on`` command — no button.
     """
     # Slack Block Kit requires button `value` to be a string. ACP backends
@@ -323,6 +343,20 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
                 "value": req_value,
             },
         )
+    elif channel_trust:
+        from kiro_crew.slack.code_channels.approval_picker import (
+            TRUST_CALL_ACTION_ID,
+            TRUST_CALL_LABEL,
+        )
+
+        buttons.append(
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": TRUST_CALL_LABEL},
+                "action_id": TRUST_CALL_ACTION_ID,
+                "value": req_value,
+            },
+        )
     buttons.append(
         {
             "type": "button",
@@ -338,11 +372,18 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
     tag = f"[{source}] " if source else ""
     title_safe, _ = redact_exfiltration_urls(event.title)
     title_safe, _ = redact_credentials(title_safe)
-    footer = f":lock: {tag}*{title_safe}*"
+    from kiro_crew.slack.format import escape_mrkdwn
+
+    def _esc(text: str) -> str:
+        # A code channel's card lands in a shared channel: agent-authored text
+        # must not carry <!channel>/<@U…> entities into it.
+        return escape_mrkdwn(text) if channel_trust else text
+
+    footer = f":lock: {tag}*{_esc(title_safe)}*"
     if event.tool_purpose:
         purpose, _ = redact_exfiltration_urls(event.tool_purpose)
         purpose, _ = redact_credentials(purpose)
-        footer += f" — {purpose}"
+        footer += f" — {_esc(purpose)}"
 
     # When full tool_input is available, show a simple header and the
     # complete command in a code block below.
@@ -357,23 +398,48 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
         # Security: scan for exfiltration URLs and credentials before posting
         sanitized, _ = redact_exfiltration_urls(event.tool_input)
         sanitized, _ = redact_credentials(sanitized)
-        # Truncate with marker if exceeds Slack limit
-        if len(sanitized) > _SLACK_SECTION_TEXT_LIMIT:
-            detail = (
-                sanitized[: _SLACK_SECTION_TEXT_LIMIT - len(_TRUNCATION_MARKER)]
-                + _TRUNCATION_MARKER
+        # A code channel's card shows the command once: the readable command
+        # line, then the other arguments as JSON only when there are any.
+        command, extra = None, None
+        if channel_trust:
+            from kiro_crew.slack.format import command_and_rest
+
+            command, extra = command_and_rest(sanitized)
+        parts = [command, extra] if command is not None else [sanitized]
+        for part in parts:
+            if part is None:
+                continue
+            if command is not None:
+                # Decoding the JSON can turn escapes back into the plain text the
+                # redactors ran on above, so each rebuilt part is redacted again.
+                part, _ = redact_exfiltration_urls(part)
+                part, _ = redact_credentials(part)
+            # The input can close the code fence itself, so on a code channel's
+            # card its entities are escaped too, not only the footer's.
+            part = _esc(part)
+            # Truncate with marker if exceeds Slack limit
+            if len(part) > _SLACK_SECTION_TEXT_LIMIT:
+                part = (
+                    part[: _SLACK_SECTION_TEXT_LIMIT - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
+                )
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"```{part}```"},
+                },
             )
-        else:
-            detail = sanitized
-        blocks.append(
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": f"```{detail}```"},
-            },
-        )
+        if command is not None:
+            from kiro_crew.slack.format import title_restates_command
+
+            if title_restates_command(title_safe, command):
+                # The command is on the card already: the lock line keeps only
+                # the purpose, and goes when there is none. Any other title (an
+                # UNVERIFIED warning above all) stays.
+                footer = f":lock: {tag}{_esc(purpose)}" if event.tool_purpose else ""
 
     blocks.append({"type": "actions", "elements": buttons})
-    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": footer}]})
+    if footer:
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": footer}]})
     return blocks
 
 
