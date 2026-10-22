@@ -12,6 +12,17 @@ import { sessionTitleRoster } from '../utils/sessionRoster'
 const slot = (key: string, extra: Record<string, string> = {}) => ({ key, ...extra })
 
 describe('sessionTitleRoster', () => {
+  it('maps an untitled slot to "Untitled session", never its key; a titled one keeps its title (#23059)', () => {
+    const roster = sessionTitleRoster([
+      slot('chat-1-1700000000'),
+      slot('chat-2-1700000001', { title: 'chat-2-1700000001' }),
+      slot('chat-3-1700000002', { title: 'Named work' }),
+    ])
+    expect(roster.get('chat-1-1700000000')).toBe('Untitled session')
+    expect(roster.get('chat-2-1700000001')).toBe('Untitled session')
+    expect(roster.get('chat-3-1700000002')).toBe('Named work')
+  })
+
   it('keeps the surfaces the chat page renders: the default one and orchestrator', () => {
     const roster = sessionTitleRoster([
       slot('chat-1-1700000000', { title: 'Fix the pagination bug' }),
@@ -40,10 +51,10 @@ describe('sessionTitleRoster', () => {
     expect([...sessionTitleRoster([slot('c', { surface: 'orchestrator', mode: 'member' })]).keys()]).toEqual(['c'])
   })
 
-  it('titles an untitled slot with its own key, so the tooltip is never blank', () => {
+  it('titles an untitled slot "Untitled session", so the tooltip is never blank and never the key (#23059)', () => {
     const roster = sessionTitleRoster([slot('chat-9-1700000009'), slot('chat-8-1700000008', { title: '' })])
-    expect(roster.get('chat-9-1700000009')).toBe('chat-9-1700000009')
-    expect(roster.get('chat-8-1700000008')).toBe('chat-8-1700000008')
+    expect(roster.get('chat-9-1700000009')).toBe('Untitled session')
+    expect(roster.get('chat-8-1700000008')).toBe('Untitled session')
   })
 
   it('answers an empty roster for no slots -- a caller that KNOWS there is nothing open', () => {

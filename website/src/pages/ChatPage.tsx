@@ -78,6 +78,7 @@ import { TOGGLE_RECT } from './chat/SessionFlyout'
 import type { ParsedSubagentCompletion } from './chat/subagentCompletion'
 import { useLabelTip } from '../components/InstantTip'
 import { sessionTitleRoster } from '../utils/sessionRoster'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 
 import { i18nT } from '../i18n/t'
@@ -460,10 +461,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // its chips navigate here, so the two must agree on which slots may chip.
   // Signature because heartbeats remint slot objects.
   const sessionTitleSig = JSON.stringify(filteredSlots.map(s => [s.key, s.title || s.key]))
+  // The roster's "Untitled session" label is localized, so a language switch
+  // must rebuild it even when no slot changed (#23059).
+  const languageGeneration = useLanguageGeneration()
   const sessionTitles = useMemo(
     () => sessionTitleRoster(filteredSlots),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the value-equal pair signature, not the slot objects (see above)
-    [sessionTitleSig],
+    [sessionTitleSig, languageGeneration],
   )
   const {
     handleFork, forkDirectionChoice,

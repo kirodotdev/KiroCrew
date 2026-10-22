@@ -20,6 +20,8 @@ import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
+import i18next from 'i18next'
+import { initI18n } from '../i18n/all'
 
 // Stub AssistantMessage: expose onOpenDiff as clickable buttons.
 // Button fires with original === modified (the no-op case).
@@ -287,6 +289,30 @@ describe('chip roster carries only surfaces ChatPage can show', () => {
     await screen.findByTestId('chip')
 
     expect(lastAssistantProps.sessions?.has(SLOT_LEGACY_AUTOPILOT.key)).toBe(true)
+  })
+})
+
+describe('chip roster names an untitled session in the active language (#23059)', () => {
+  const SLOT_UNTITLED = { key: 'chat-9-1785440411', title: '', messages: 1, running: false, mode: '', created: '', last_ts: '' }
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    await initI18n()
+    await i18next.changeLanguage('en')
+  })
+
+  it('rebuilds the "Untitled session" label after a language switch, with no slot change', async () => {
+    const { store } = renderChatPage(true, [SLOT_UNTITLED])
+    seedMessage(store)
+    await screen.findByTestId('chip')
+    expect(lastAssistantProps.sessions?.get(SLOT_UNTITLED.key)).toBe('Untitled session')
+
+    await act(async () => { await i18next.changeLanguage('ja') })
+    const ja = i18next.t('pages.artifactDetailPage.untitled_session')
+    expect(ja).not.toBe('Untitled session')
+    expect(lastAssistantProps.sessions?.get(SLOT_UNTITLED.key)).toBe(ja)
+
+    await act(async () => { await i18next.changeLanguage('en') })
   })
 })
 

@@ -46,6 +46,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
+import { sseSlotTitle } from '../store/dashboardSlice'
 
 const SLOT = 'pane-1'
 const TITLE = 'Alpha session'
@@ -97,6 +98,21 @@ describe('ChatPane header — rename and regenerate controls (#9727)', () => {
     expect(screen.getByRole('button', { name: REGEN })).toBeTruthy()
     // The bar itself is the hover target that reveals the Pen and Sparkles.
     expect(screen.getByRole('button', { name: RENAME }).closest('.group\\/header')).not.toBeNull()
+  })
+
+  it('names an untitled pane "Untitled session", never its key, and opens the editor empty (#20871)', async () => {
+    const { store } = renderPane()
+    // The slot has no title of its own: its title is its key.
+    act(() => { store.dispatch(sseSlotTitle({ key: SLOT, title: SLOT })) })
+    const trigger = await screen.findByRole('button', { name: 'Untitled session (rename session)' })
+    expect(trigger.textContent).toContain('Untitled session')
+    expect(trigger.textContent).not.toContain(SLOT)
+    // Rename still targets the key, and starts from an empty draft, so neither
+    // the key nor the label is saved as a name.
+    fireEvent.click(trigger)
+    const input = document.querySelector('[data-pane-title-row] input') as HTMLInputElement | null
+    expect(input).not.toBeNull()
+    expect(input!.value).toBe('')
   })
 
   it('click -> inline editor; Enter renames the pane slot through renameSlot and the store', async () => {

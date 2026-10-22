@@ -5,11 +5,12 @@
  * answer into the store; a refusal is surfaced in the sidebar's error cluster.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
+import { sseSlotTitle } from '../store/dashboardSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 import { useAppSelector, type RootState } from '../store'
 import { initI18n } from '../i18n/all'
@@ -105,6 +106,19 @@ describe('session row menu: Regenerate title', () => {
     // The notice sits away from the row, so it names the session that failed.
     expect(notice.textContent).toContain(`${OLD_TITLE}: model unavailable`)
     expect(titleInStore(store)).toBe(OLD_TITLE)
+  })
+
+  it('names an untitled session "Untitled session", never its key, when regeneration is refused (#23059)', async () => {
+    generateTitleMock.mockRejectedValue(new Error('model unavailable'))
+    const { store } = renderSidebar()
+    // The slot has no title of its own: its title is its key.
+    act(() => { store.dispatch(sseSlotTitle({ key: SLOT_KEY, title: SLOT_KEY })) })
+
+    await pickRegenerate()
+
+    const notice = await screen.findByTestId('auto-title-error')
+    expect(notice.textContent).toContain('Untitled session: model unavailable')
+    expect(notice.textContent).not.toContain(SLOT_KEY)
   })
 
   it('does not start a second generation while one is in flight', async () => {

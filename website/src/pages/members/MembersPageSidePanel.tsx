@@ -35,6 +35,7 @@ import { claimDashboardOnLoad } from './dashboardOnLoad'
 import { suggestPaneDraft } from '../../utils/chatPaneDrafts'
 import { revealComposer } from '../chat/composerFocus'
 import { sessionTitleRoster } from '../../utils/sessionRoster'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { AnimatePresence, motion } from 'framer-motion'
 import { isSidePanelHidden, shouldMountSidePanel, sidePanelDockMotion } from '../chat/sidePanelMount'
 import SidePanel, { SIDE_PANEL_MIN_W, type SidePanelLeadingTab, type SidePanelWithholdable } from '../chat/SidePanel'
@@ -253,7 +254,10 @@ export function useMembersPageSidePanel({
   // snapshot has arrived and the socket is up: absent means "this surface does
   // not know which sessions exist", which is the honest answer then, and it
   // leaves the link plain rather than live-looking and dead.
-  const sessionRoster = useMemo(() => sessionTitleRoster(liveSlots), [liveSlots])
+  // Rebuilt on a language switch too: the roster's "Untitled session" label is localized (#23059).
+  const languageGeneration = useLanguageGeneration()
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- languageGeneration is the trigger, not an input
+  const sessionRoster = useMemo(() => sessionTitleRoster(liveSlots), [liveSlots, languageGeneration])
   // A foreign slot is NOT hosted in this page's own pane -- it belongs to the
   // chat page, with its sidebar, its history paging and its composer. Same
   // primitive the Driving-sessions rows use.

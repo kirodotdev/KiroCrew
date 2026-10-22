@@ -20,6 +20,7 @@
  * the same as when it was deleted on its own.
  */
 import { i18nT } from '../i18n/t'
+import { isUntitledSession, sessionDisplayTitle } from './sessionDisplayTitle'
 import type { ErrorReport } from './errorReport'
 
 /** One row a delete left on disk: its key, its title, and the gateway's code. */
@@ -89,13 +90,19 @@ function bulkDeleteRefusalMessage(
   // get the retry line.
   return [
     head,
-    ...named.map(rowDeleteRefusalMessage),
+    ...named.map(r => rowDeleteRefusalMessage(r, true)),
     ...(left > named.length ? [i18nT('pages.chatPage.retry_delete_all')] : []),
   ].join(BULK_LINE_BREAK)
 }
 
-function rowDeleteRefusalMessage(r: HistoryDeleteRow): string {
-  const title = r.title || r.key
+/**
+ * An untitled row reads "Untitled session", never its key (#23059). In a bulk
+ * list several rows can share that label, so there (`inList`) an untitled row
+ * keeps its key beside it, the way the System → Sessions table does.
+ */
+function rowDeleteRefusalMessage(r: HistoryDeleteRow, inList = false): string {
+  const label = sessionDisplayTitle(r)
+  const title = inList && isUntitledSession(r) ? `${label} ${r.key}` : label
   switch (r.code) {
     case CRON_OWNERSHIP_UNKNOWN_CODE:
       return i18nT('pages.chatPage.could_not_delete_cron_ownership_unknown', { title })

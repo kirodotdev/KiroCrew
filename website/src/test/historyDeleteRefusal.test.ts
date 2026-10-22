@@ -47,10 +47,13 @@ describe('historyDeleteRefusalMessage', () => {
     expect(historyDeleteRefusalMessage(refusal(''))).toBe(generic)
   })
 
-  it('names the row by its key when the title is empty', () => {
-    const sentence = historyDeleteRefusalMessage(refusal(CRON_STORE_BUSY_CODE, ''))
-    expect(sentence).toContain('"dashboard:slot-7"')
-    expect(sentence).not.toContain('""')
+  it('names an untitled row "Untitled session", never its key (#23059)', () => {
+    for (const title of ['', 'dashboard:slot-7']) {
+      const sentence = historyDeleteRefusalMessage(refusal(CRON_STORE_BUSY_CODE, title))
+      expect(sentence).toContain('"Untitled session"')
+      expect(sentence).not.toContain('dashboard:slot-7')
+      expect(sentence).not.toContain('""')
+    }
   })
 })
 
@@ -137,6 +140,18 @@ describe('historyDeleteRefusalMessage for Delete all', () => {
       '1 older session was not deleted. 2 were deleted.',
       historyDeleteRefusalMessage(row),
     ].join('\n'))
+  })
+
+  it('keeps each untitled row\'s key beside the label in a list, so two rows stay distinct (#23059)', () => {
+    const rows = [
+      { key: 'dashboard:slot-1', title: '', code: '' },
+      { key: 'dashboard:slot-2', title: 'dashboard:slot-2', code: '' },
+      { key: 'dashboard:slot-3', title: 'Named work', code: '' },
+    ]
+    const lines = historyDeleteRefusalMessage(bulk(3, rows)).split('\n')
+    expect(lines[1]).toContain('"Untitled session dashboard:slot-1"')
+    expect(lines[2]).toContain('"Untitled session dashboard:slot-2"')
+    expect(lines[3]).toContain('"Named work"')
   })
 
   it('puts the count, each named row and the retry on their own lines', () => {

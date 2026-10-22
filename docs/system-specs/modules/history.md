@@ -513,6 +513,19 @@ temporary session is listed, searched and filtered like any other (see
 The row reads memory mode only to draw its incognito or temporary glyph, and a
 restricted session cannot be dropped into the composer as a reference.
 
+Messages that name one session name an untitled one "Untitled session", never its
+key: the could-not-delete sentence (`utils/historyDeleteRefusal.ts`) and the
+auto-title error notice (`chat-sidebar/rename.ts`). A bulk "Delete all" refusal can
+name several untitled sessions, so each named line keeps the key beside the label.
+A session chip's tooltip (`utils/sessionRoster.ts`) names an untitled session
+"Untitled session"; the chip's own text already shows the key. The chat page and a
+crewmate DM rebuild that roster on a language switch, so the label follows the
+active language. The editable session
+title in a split-view pane header and in the main chat header
+(`pages/chat/SessionTitleControl.tsx`) shows and announces "Untitled session" for an
+untitled session, and its rename editor opens empty, so neither the key nor the
+label is saved as a name; rename, Auto-title and Undo still act on the key.
+
 An untitled session (no title, or a title equal to its key) reads "Untitled
 session" in an Older Sessions row's text and hover title, in the session grid's
 picker rows (`components/SessionGridView.tsx`) and in the Sessions page rows
