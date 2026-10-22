@@ -150,6 +150,8 @@ def _save_held_run_records_locked(self: CronService) -> None:
     self._save(jobs)
     for record in held:
         self._release_held_run_record(record)
+        # The save above landed each record, so its pause decision is audited now.
+        record.emit_pending_pause_audit()
 
 
 def _flush_held_run_records(self: CronService) -> None:
@@ -314,6 +316,9 @@ def _merge_job_result(self: CronService, job: CronJob) -> None:
             # no-op after the disk refused the write.
             raise
         self._release_held_run_record(job)
+    # AFTER the lock and only after a save landed the record: the pause
+    # decision a reload or this merge made from the store's current limit.
+    job.emit_pending_pause_audit()
     if removed_one_shot:
         # The delete_after_run consume is an automated removal with no
         # handler-level caller, so the emit lives with the removal.

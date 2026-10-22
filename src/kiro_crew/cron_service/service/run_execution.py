@@ -372,6 +372,8 @@ async def _execute_with_timeout(
     # this to avoid double-counting a run that already recorded its
     # failure and then overran the deadline during cleanup.
     job.failure_recorded = False
+    job.paused_by_limit = False
+    job.pending_pause_audit = ""
     try:
         await asyncio.wait_for(self._execute(job, claim), timeout=deadline)
     except asyncio.TimeoutError:
