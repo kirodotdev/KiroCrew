@@ -26,6 +26,21 @@ EXTERNAL_TERMINAL_APPS: tuple[str, ...] = (
     "xfce4-terminal",
 )
 
+# The dashboard's feature-preview switches (Settings > Developer > Feature
+# previews) stored under ``dashboard.feature_previews``, by name. Each name is a
+# ``mc-preview-<name>`` key in ``website/src/utils/previewFlags.ts`` with its
+# hyphens written as underscores (config paths are snake_case); that file keeps
+# the browser's copy as a cache of this section, and
+# test_feature_previews_config.py pins the two lists equal.
+FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
+    "artifact_deploy",
+    "crew",
+    "folder_conductor",
+    "layout_harness",
+    "remote_crew_chat",
+    "webhooks",
+)
+
 
 @dataclass
 class JiraAuthEntry:
@@ -205,6 +220,28 @@ class DashboardConfig:
             "template already covers; the default agent stays even when covered, "
             "unless a template shares its name. Takes effect when the dashboard is "
             "reloaded; no gateway restart.",
+        ),
+    )
+    feature_previews: dict = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Feature previews",
+            "Which unreleased dashboard features are turned on under Settings > "
+            "Developer > Feature previews, by name, each true or false. Kept here "
+            "so a switch stays as set on every browser, device and dashboard "
+            "address of this gateway. A name that is absent reads as off. Takes "
+            "effect on the next dashboard read; no restart.",
+            properties={
+                name: {
+                    "type": "boolean",
+                    "default": False,
+                    "x-meta": {
+                        "label": f"Feature preview: {name}",
+                        "help": f"Turn on the '{name}' feature preview.",
+                    },
+                }
+                for name in FEATURE_PREVIEW_FLAGS
+            },
         ),
     )
     qr_session_until_restart: bool = field(

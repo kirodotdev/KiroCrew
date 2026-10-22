@@ -316,6 +316,27 @@ class TestServerAppliers:
         assert sub.prefixes == ("agent.log_level",)
         assert sub.callback() is apply_log_level_from_config
 
+    def test_a_feature_preview_change_tells_every_dashboard_to_refresh(self) -> None:
+        """A switch saved from one dashboard reaches the other open ones.
+
+        They read the switches from a config query that never goes stale on its
+        own, so only a refresh frame makes them re-read it. An unrelated write
+        pushes nothing.
+        """
+        state = SimpleNamespace(
+            workflow_service=None, channel_manager=None, push_refresh=MagicMock()
+        )
+        sub = self._register(state)["dashboard.feature_previews"]
+        assert sub.prefixes == ("dashboard.feature_previews",)
+        apply = sub.callback()
+        cfg = KiroCrewConfig()
+        apply(ConfigChange(old=cfg, new=cfg, changed=frozenset({"agent.log_level"})))
+        state.push_refresh.assert_not_called()
+        apply(
+            ConfigChange(old=cfg, new=cfg, changed=frozenset({"dashboard.feature_previews.crew"}))
+        )
+        state.push_refresh.assert_called_once_with("config")
+
     @pytest.mark.asyncio
     async def test_the_provider_switch_runs_off_the_watcher_cycle_exactly_once(self) -> None:
         """``reload_provider_factory`` clears the session registry and then shuts
@@ -418,6 +439,7 @@ class TestServerAppliers:
             "agent.model",
             "agent.role_models.background",
             "agent.log_level",
+            "dashboard.feature_previews",
         }
         # None of them is a catch-all: an unrelated write must dispatch nothing.
         for sub in subs.values():

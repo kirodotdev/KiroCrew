@@ -58,6 +58,7 @@ import { usePreviewFlag, usePreviewFlagRevision } from '../hooks/usePreviewFlag'
 import { createPagesProvider } from '../components/commandPalette/providers/pagesProvider'
 import { api } from '../api/client'
 import { FeaturePreviewsSection, FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR } from '../pages/settings/FeaturePreviewsSection'
+import { __resetPreviewFlagServerSyncForTests, usePreviewFlagServerSync } from '../hooks/usePreviewFlagServerSync'
 import DeveloperPage from '../pages/DeveloperPage'
 
 const TEST_ICON: ReactElement = <span />
@@ -395,6 +396,27 @@ describe('Settings > Developer > Feature Previews', () => {
     localStorage.setItem(PREVIEW_WEBHOOKS, '1')
     renderTab()
     expect(toggleState()).toBe('true')
+  })
+
+  it('says why a switch went back when the gateway refuses the write', async () => {
+    __resetPreviewFlagServerSyncForTests()
+    vi.spyOn(api, 'patchConfig').mockRejectedValue(Object.assign(new Error('owner only'), { status: 403 }))
+    function WithSync() {
+      usePreviewFlagServerSync()
+      return <FeaturePreviewsSection />
+    }
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter><WithSync /></MemoryRouter>
+      </QueryClientProvider>,
+    )
+    expect(screen.queryByTestId('feature-previews-save-error')).toBeNull()
+    await act(async () => {
+      screen.getByRole('switch', { name: /webhooks/i }).click()
+    })
+    await waitFor(() => expect(screen.getByTestId('feature-previews-save-error').textContent)
+      .toMatch(/only the owner of this Kiro Crew can change feature previews, so “Webhooks” was switched back/i))
+    act(() => { __resetPreviewFlagServerSyncForTests() })
   })
 
   it('carries a crew card that starts off', () => {

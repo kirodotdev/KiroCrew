@@ -215,6 +215,14 @@ def _register_config_watch(
                     logger.debug("default-model failure notification failed", exc_info=True)
             raise
 
+    def _push_feature_previews(change: ConfigChange) -> None:
+        # The Feature previews switches are read from the shared config query,
+        # which never goes stale on its own; a refresh frame is what makes every
+        # other open dashboard re-read it, so a switch flipped on one surface
+        # reaches the others without a reload.
+        if change.touched("dashboard.feature_previews"):
+            state.push_refresh("config")
+
     # The workflow-run ceiling and the channel caps are not registered here:
     # WorkflowService and ChannelManager bind their own setters in their
     # constructors (``live.bind``), the rule for an applier a long-lived object owns.
@@ -228,6 +236,11 @@ def _register_config_watch(
         live.subscribe("agent.model", callback=_apply_default_model, name="agent.model"),
         live.subscribe(
             "agent.log_level", callback=apply_log_level_from_config, name="agent.log_level"
+        ),
+        live.subscribe(
+            "dashboard.feature_previews",
+            callback=_push_feature_previews,
+            name="dashboard.feature_previews",
         ),
     ]
     # Closures are held strongly by the registry; keep the handles on the app so

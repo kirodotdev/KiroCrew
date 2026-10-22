@@ -4,7 +4,9 @@ import { ArrowRight } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../components/FeaturePreviewIntroDialog'
 import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { clearPreviewFlagWriteError, usePreviewFlagWriteError } from '../../hooks/usePreviewFlagServerSync'
+import ErrorNotice from '../../components/ErrorNotice'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -56,11 +58,14 @@ import { i18nT } from '../../i18n/t'
  * page it holds. The PAGE stays un-advertised: `getAdvertisedSurfaces()` and
  * the Search Everywhere Pages provider still filter it until the flag is on.
  *
- * No `configKey` on the four `previewFlags.ts` toggles, deliberately: that prop
- * is what makes a `<SettingRef>` chip deep-link here and what feeds
- * `settingsRegistry.gen.ts`, and a per-device localStorage flag has no config
- * path to name at all. Search deep-links still reach every toggle through its
- * registry id + `data-setting-label`, which need no configKey.
+ * No `configKey` on the `previewFlags.ts` toggles. That prop only feeds
+ * `settingsRegistry.gen.ts` and the `<SettingRef>` deep link; it does not pick
+ * how a toggle saves (these write through `setPreviewFlag`: the browser cache,
+ * then `dashboard.feature_previews.<name>`). Without it the
+ * `dashboard.feature_previews.*` paths are not in the registry, so a
+ * `<SettingRef>` naming one falls back to its file/CLI hint. Search deep-links
+ * still reach every toggle through its registry id + `data-setting-label`,
+ * which need no configKey.
  *
  * The Decisions toggle (now in `DecisionsCard.tsx`) carries no `configKey` either,
  * for a different reason: it writes no config path. Its value is the KEYSTONE
@@ -120,6 +125,23 @@ function crewIntro(): FeaturePreviewIntro {
 }
 
 /**
+ * The card label of *flag*, for the notice that names a switch the gateway
+ * refused. A `switch` of literal `i18nT` calls rather than a table, for the
+ * same `check-i18n-keys.mjs` reason the cards are not a loop.
+ */
+function previewFlagLabel(flag: string): string {
+  switch (flag) {
+    case PREVIEW_ARTIFACT_DEPLOY: return i18nT('pages.developer.featurePreviewsTab.artifact_deploy')
+    case PREVIEW_WEBHOOKS: return i18nT('pages.developer.featurePreviewsTab.webhooks')
+    case PREVIEW_CREW: return i18nT('pages.developer.featurePreviewsTab.crew_members')
+    case PREVIEW_REMOTE_CREW_CHAT: return i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew')
+    case PREVIEW_LAYOUT_HARNESS: return i18nT('pages.developer.featurePreviewsTab.layout_harness')
+    case PREVIEW_FOLDER_CONDUCTOR: return i18nT('pages.developer.featurePreviewsTab.folder_conductor')
+    default: return i18nT('pages.settings.developerPanel.feature_previews')
+  }
+}
+
+/**
  * `data-setting-key` anchor on the section wrapper, for
  * `?highlight=key:<this>` — the redirect target of the old Developer-page tab
  * (`DeveloperPage.tsx`). Not a config path and not a registry entry: it only
@@ -138,6 +160,7 @@ export function FeaturePreviewsSection() {
   const remoteCrewChat = useRemoteCrewChat()
   const layoutHarness = usePreviewFlag(PREVIEW_LAYOUT_HARNESS)
   const folderConductor = usePreviewFlag(PREVIEW_FOLDER_CONDUCTOR)
+  const writeError = usePreviewFlagWriteError()
   // The KAS engine card is for a deployment that can select KAS at all: the same
   // gate its old mount used, read from the schema's `agent.acp_backend` enum. An
   // unanswered schema hides nothing, as on the harness tab.
@@ -161,6 +184,29 @@ export function FeaturePreviewsSection() {
       <p className="text-[13px] text-muted mb-2">
         {i18nT('pages.settings.developerPanel.feature_previews_desc')}
       </p>
+      {/* The gateway refused a toggle and the switch went back to its stored
+          value. Said once for the section, under the intro, and naming the
+          switch, so a refused click on a card further down still says which
+          switch moved back and why. */}
+      {writeError && (
+        <ErrorNotice
+          testId="feature-previews-save-error"
+          // A carry refused as owner-only names the owner rather than a reload:
+          // a reload sends the same carry and gets the same 403.
+          message={writeError.carry
+            ? writeError.denied
+              ? i18nT('pages.settings.developerPanel.feature_previews_carry_denied', { name: previewFlagLabel(writeError.flag) })
+              : i18nT('pages.settings.developerPanel.feature_previews_carry_failed', { name: previewFlagLabel(writeError.flag) })
+            : writeError.denied
+              ? i18nT('pages.settings.developerPanel.feature_previews_save_denied', { name: previewFlagLabel(writeError.flag) })
+              : i18nT('pages.settings.developerPanel.feature_previews_save_failed', { name: previewFlagLabel(writeError.flag) })}
+          onDismiss={clearPreviewFlagWriteError}
+          // The hand-off is safe here: this section holds no draft input, and the
+          // refused switch already shows its stored value, so leaving loses nothing.
+          askAgent
+          className="mb-2"
+        />
+      )}
       {/* Artifact Deploy ships without a "See what it looks like" intro: the
           capture pipeline shoots a running pod, and the deploy surface's own
           screens need a registered AWS profile to show anything real. A card with
@@ -283,7 +329,7 @@ export function FeaturePreviewsSection() {
       {/* Dev-only MECHANISM preview, not a shippable surface: the composable-layout
           mechanism (placement-driven renderer + scope + editor) being built beside
           the Members page. This card is the FLAG PLUMBING only — the switch exists so
-          the mechanism can be built and tested behind a per-device gate.
+          the mechanism can be built and tested behind a preview gate.
 
           NO ingress button, on purpose: unlike the webhooks card, this preview has no
           routable door in the bundle yet, so a link here would point at a route that
@@ -324,9 +370,9 @@ export function FeaturePreviewsSection() {
           and the Install button for the pinned engine. It lives here, not on the
           KAS harness row, while the route is in shadow testing, so the one click
           that moves every new session onto an engine still being tested is not in
-          plain view of every KAS user. Unlike the cards above, the switch is a
-          server config value, not a per-device flag; the card writes it through
-          the same config PATCH it always did. Isolated so a throwing card cannot
+          plain view of every KAS user. Unlike the cards above, the switch is not
+          a preview flag but its own config value; the card writes it through the
+          same config PATCH it always did. Isolated so a throwing card cannot
           take the section down. */}
       {kasOffered && (
         <SettingsCard>
@@ -335,7 +381,7 @@ export function FeaturePreviewsSection() {
           </ErrorBoundary>
         </SettingsCard>
       )}
-      {/* LAST, and the only card here whose switch is not a per-device flag: it
+      {/* LAST, and the only card here whose switch is not in gateway config: it
           writes the KEYSTONE `decisions_consent.json`, not a config path. It lives in
           `DecisionsCard.tsx` because it is a list and a detail rather than one row,
           and that file's own doc comment carries why. */}
