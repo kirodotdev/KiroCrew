@@ -554,6 +554,19 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         new_default="auto",
         changed_in="#17055",
     ),
+    # The remote-call stall window defaults to 900 seconds. An install materialized
+    # while the default was 0 keeps the window off, so an MCP tool blocked on its
+    # own remote call holds the turn until the build-scale tool-stall window.
+    #
+    # REPORT-ONLY: 0 is the documented off switch, so an operator who turned the
+    # window off stores exactly the old default, and holding it is survivable -- the
+    # full tool-stall window still recovers the turn, only later.
+    SupersededDefault(
+        dotted_key="watchdog.remote_flat_probe_secs",
+        old_default=0.0,
+        new_default=900.0,
+        changed_in="#19102",
+    ),
 )
 
 

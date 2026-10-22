@@ -297,7 +297,7 @@ class WatchdogConfig:
         ),
     )
     remote_flat_probe_secs: float = field(
-        default=0.0,
+        default=900.0,
         metadata=_meta(
             "Remote-call stall window (s)",
             "Idle seconds before an MCP tool that looks blocked on its own remote "
@@ -314,9 +314,11 @@ class WatchdogConfig:
             "tree move, whichever is later, so a slow stream that moves bytes now "
             "and then keeps the full tool_stall_suspect_secs window. Linux and "
             "macOS only; Windows has no socket view and keeps the full window. "
-            "Off (0) by default; 900 is the suggested value when opting in. "
-            "Clamped against the transport's per-prompt timeout like the other "
-            "windows.",
+            "On by default at 900 (15 min); 0 turns it off, and a tool whose "
+            "remote calls legitimately block longer than the window (a long-poll "
+            "API) needs a larger value. Recovery on expiry is the non-lethal "
+            "continue-nudge, not a lost turn. Clamped against the transport's "
+            "per-prompt timeout like the other windows.",
         ),
     )
     wellness_sample_secs: float = field(
