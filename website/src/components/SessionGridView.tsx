@@ -15,6 +15,7 @@ import { i18nT } from '../i18n/t'
 import { forkFailureNoticeOffsite } from '../utils/forkFailure'
 import type { ForkFailureNotice } from '../utils/forkFailure'
 import { errMessage } from '../utils/thunkError'
+import { sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 type Slot = {
   key: string
   title?: string
@@ -387,7 +388,7 @@ function PlaceholderPane({
                 size={10}
                 className={`shrink-0 ${s.pending_approval ? 'fill-warn text-warn' : s.needs_input ? 'fill-info text-info' : s.running ? 'fill-ok text-ok' : 'fill-muted text-muted'}`}
               />
-              <span className="truncate flex-1">{s.title || s.key}</span>
+              <span className="truncate flex-1">{sessionDisplayTitle(s)}</span>
               <span className="text-[11px] text-muted shrink-0">{s.messages ?? 0} {i18nT('components.sessionGridView.msgs')}</span>
             </button>
           ))

@@ -513,6 +513,14 @@ temporary session is listed, searched and filtered like any other (see
 The row reads memory mode only to draw its incognito or temporary glyph, and a
 restricted session cannot be dropped into the composer as a reference.
 
+An untitled session (no title, or a title equal to its key) reads "Untitled
+session" in an Older Sessions row's text and hover title, in the session grid's
+picker rows (`components/SessionGridView.tsx`) and in the Sessions page rows
+(`pages/SessionsPage.tsx`), never its slot key. All three read
+`utils/sessionDisplayTitle.ts`. Only the shown label changes. Each surface's
+search reads the same fields as before, a pick or click opens the key, and
+resume sends the key with the same payload title as before.
+
 `ChatSidebar.tsx` is a facade over owners that each hold one responsibility. It
 calls each owner hook where that block used to sit, so React runs the effects in
 the same order as before. `ChatSidebar.ownerComposition.test.ts` pins that call

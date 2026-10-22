@@ -18,6 +18,7 @@ import { compareBySort, fmtRelativeTime } from '../chat/sessionOrder'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { agentOrDefaultLabel } from '../../utils/agentLabel'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { historyRowIdentity } from './rowIdentity'
 import { DisclosureChevron, dateSegment } from './chrome'
 import type { SidebarScope } from './scope'
@@ -238,7 +239,7 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
                     dispatch(resumeFromHistory({ key: s.key, title: s.title || s.key }))
                   }
                   return (
-                    <div className={`group relative flex items-start gap-2.5 pr-4 py-2 rounded-md text-sm transition-all select-none ${remoteInstanceId ? '' : '[@media(hover:none)]:pr-10 '}${!connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'}`} style={{ paddingLeft: '10px' }} title={s.title || s.key} {...offlineProps(connected, i18nT('utils.offline.resume_sessions'))} role="button" tabIndex={0} aria-disabled={!connected} onKeyDown={e => {
+                    <div className={`group relative flex items-start gap-2.5 pr-4 py-2 rounded-md text-sm transition-all select-none ${remoteInstanceId ? '' : '[@media(hover:none)]:pr-10 '}${!connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'}`} style={{ paddingLeft: '10px' }} title={sessionDisplayTitle(s)} {...offlineProps(connected, i18nT('utils.offline.resume_sessions'))} role="button" tabIndex={0} aria-disabled={!connected} onKeyDown={e => {
                       // WCAG 2.1.1: history rows must be resumable via keyboard.
                       if (e.key !== 'Enter' && e.key !== ' ') return
                       if ((e.target as HTMLElement) !== e.currentTarget) return
@@ -297,7 +298,7 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
                           {s.memory_mode === 'temporary' && <span className="text-aim" title={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')}><VenetianMask size={10} /></span>}
                           {displayDate && <span className="ml-auto text-[11px] text-muted font-normal shrink-0">{displayDate}</span>}
                         </div>
-                        <div className="text-[13px] leading-snug line-clamp-2 break-words">{s.title || s.key}</div>
+                        <div className="text-[13px] leading-snug line-clamp-2 break-words">{sessionDisplayTitle(s)}</div>
                       </div>
                       {/* Floating hover button group — matches session-row pattern.
                           Hidden for remote rows: deleteHistorySession targets the

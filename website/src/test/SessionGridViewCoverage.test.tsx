@@ -600,12 +600,28 @@ describe('SessionGridView — picker list', () => {
     expect(rows[2].textContent).toContain('0 msgs')
   })
 
-  it('falls back to the slot key when a session has no title', async () => {
-    seedApi([{ key: 'untitled-slot' }])
-    renderGrid(null)
+  it('labels an untitled session "Untitled session", never its slot key (#20873)', async () => {
+    // No title, a title equal to the key, and a named control.
+    seedApi([
+      { key: 'chat-9-1785440411', last_activity_ts: '2026-01-03T00:00:00Z' },
+      { key: 'chat-8-1785440400', title: 'chat-8-1785440400', last_activity_ts: '2026-01-02T00:00:00Z' },
+      { key: 'named-slot', title: 'Named work', last_activity_ts: '2026-01-01T00:00:00Z' },
+    ])
+    renderGrid('a')
 
-    await waitFor(() => expect(rowsOf(onlyPicker())).toHaveLength(1))
-    expect(rowsOf(onlyPicker())[0].textContent).toContain('untitled-slot')
+    await waitFor(() => expect(rowsOf(onlyPicker())).toHaveLength(3))
+    const rows = rowsOf(onlyPicker())
+    expect(rows[0].textContent).toContain('Untitled session')
+    expect(rows[0].textContent).not.toContain('chat-9-1785440411')
+    expect(rows[1].textContent).toContain('Untitled session')
+    expect(rows[1].textContent).not.toContain('chat-8-1785440400')
+    expect(rows[2].textContent).toContain('Named work')
+
+    // The key still finds the untitled row, and picking it opens that key.
+    fireEvent.change(screen.getByPlaceholderText('Search sessions…'), { target: { value: '1785440411' } })
+    expect(rowsOf(onlyPicker())).toHaveLength(1)
+    fireEvent.click(rowsOf(onlyPicker())[0])
+    expect(await screen.findByTestId('pane-chat-9-1785440411')).toBeTruthy()
   })
 
   it('filters by title, key and agent', async () => {
