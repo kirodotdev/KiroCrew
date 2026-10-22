@@ -9,10 +9,16 @@ from kiro_crew.dashboard.chat_utils import (
     AUTOMATION_NOTICE_KIND,
     CRON_NOTIFICATION_KIND,
     MCP_APP_MESSAGE_KIND,
+    PEER_TURN_COMPLETION_KIND,
     STEER_INTENT_META,
     SUBAGENT_COMPLETION_KIND,
 )
 from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
+from kiro_crew.dashboard.peer_completion import (
+    PEER_TURN_COMPLETION_ATTESTED_KEY,
+    PEER_TURN_COMPLETION_HELD_KEY,
+    PEER_TURN_COMPLETION_PREPARING_KEY,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -467,6 +473,7 @@ _QUEUE_KIND_ACTORS: dict[str, str] = {
     # A re-routed automation refusal is the monitor subsystem talking, so the
     # turn it rides is attributed to the autonudge actor, never the person.
     AUTOMATION_NOTICE_KIND: "autonudge",
+    PEER_TURN_COMPLETION_KIND: "crew",
 }
 
 
@@ -571,6 +578,15 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
         # at requeue (`_queue_recovery`, the manual continue), so a recovery in
         # a channel-born session still drains: its stamp records linked=True.
         if q.get("kind") in (CRON_NOTIFICATION_KIND, SUBAGENT_COMPLETION_KIND):
+            continue
+        if q.get("kind") == PEER_TURN_COMPLETION_KIND:
+            if q.get(PEER_TURN_COMPLETION_ATTESTED_KEY) is True:
+                continue
+            if q.get(PEER_TURN_COMPLETION_PREPARING_KEY) is True:
+                continue
+            if q.get(PEER_TURN_COMPLETION_HELD_KEY) is True:
+                continue
+            doomed.append((q, ["the peer completion could not be attested"]))
             continue
         changed = _sc.newly_held_constraints(
             now,

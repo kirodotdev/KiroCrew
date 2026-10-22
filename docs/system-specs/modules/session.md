@@ -70,6 +70,18 @@ nothing but the terminal `chat_done` follow the idle push. `_finish_queue_cycle`
 in `chat_turn/queue_cycle.py` is the ordinary terminal step (content, `done`, clear, push,
 one `chat_done`), pinned by `test_finish_queue_cycle_terminal_order.py`.
 
+For a creator-owned visible child, that terminal step also prepares one
+`peer_session_turn_completed` pointer before exposing the child as idle. The
+pointer is durably committed to the attested creator's queue first. The child
+then appends `done`, clears `slot.task`, publishes the idle slots frame, and
+sends `chat_done`; only after those steps may the prepared queue entry wake the
+creator. The event id is the SHA-256 identity of protected child session ID plus child turn. Its
+payload contains the child key, protected child session ID, child turn, transcript cursor, end time,
+`child_state: idle`, and `pending_approval: false`, never the child report body.
+An approval-parked child emits no completion pointer. This path neither assigns
+a result verdict nor restarts the child, and it is separate from `spawn_run`'s
+sub-agent completion and delivery-debt path.
+
 ## Dashboard app launch intents
 
 The App SDK's `slotKey` selects an existing dashboard slot through ordinary

@@ -10,6 +10,14 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.peer_completion import (
+    PEER_TURN_COMPLETION_HELD_KEY,
+    PEER_TURN_COMPLETION_KIND,
+    PEER_TURN_COMPLETION_META_KEY,
+)
+from kiro_crew.dashboard.peer_completion import normalize_event as normalize_peer_completion_event
+from kiro_crew.dashboard.peer_completion import prompt_for_event as peer_completion_prompt
+
 if TYPE_CHECKING:
     from kiro_crew.subagent import SubagentDelivery
 
@@ -117,8 +125,17 @@ def _is_durable_queue_entry(item: Any) -> bool:
         return False
     if item.get("payload"):
         return False
-    if item.get("kind"):
-        return False
+    kind = item.get("kind")
+    if kind:
+        if kind != PEER_TURN_COMPLETION_KIND:
+            return False
+        meta = item.get("meta")
+        event = (
+            normalize_peer_completion_event(meta.get(PEER_TURN_COMPLETION_META_KEY))
+            if isinstance(meta, dict)
+            else None
+        )
+        return event is not None and content == peer_completion_prompt(event)
     return True
 
 
@@ -162,6 +179,8 @@ def durable_queue_entries(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 if not isinstance(value, dict):
                     continue
             entry[key] = value
+        if item.get("kind") == PEER_TURN_COMPLETION_KIND:
+            entry["kind"] = PEER_TURN_COMPLETION_KIND
         entry_id = entry.get("id")
         if not isinstance(entry_id, str) or not entry_id:
             continue
@@ -353,6 +372,22 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
         content = item.get("content")
         if not isinstance(content, str) or not content:
             continue
+        persisted_kind = item.get("kind", "")
+        raw_meta = item.get("meta")
+        peer_event = None
+        if persisted_kind == PEER_TURN_COMPLETION_KIND:
+            if not isinstance(raw_meta, dict):
+                continue
+            peer_event = normalize_peer_completion_event(
+                raw_meta.get(PEER_TURN_COMPLETION_META_KEY)
+            )
+            if peer_event is None:
+                continue
+            # The metadata line is editable. Rebuild the machine prompt from the
+            # bounded event instead of trusting persisted text, then leave it
+            # unattested until the delivery coordinator verifies the protected
+            # child crew log.
+            content = peer_completion_prompt(peer_event)
         entry_id = item.get("id")
         entry: dict[str, Any] = {
             # A missing or invalid id gets a fresh one so the entry stays
@@ -360,19 +395,17 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # edit, delete) is keyed by id.
             "id": entry_id if isinstance(entry_id, str) and entry_id else uuid.uuid4().hex[:12],
             "content": content,
-            # Restored entries are plain user prompts by construction; the
-            # empty kind is what keeps them out of the system-injection paths.
-            "kind": "",
-            # PROCESS-LOCAL, and never round-trips: the writer admits only
-            # ``_DURABLE_QUEUE_KEYS`` (id, content, meta), so this key cannot be
-            # set by editing the line -- which is the whole point of having it.
-            # It records that this entry's provenance was established by a
-            # previous process and cannot be vouched for by this one, which is
-            # what :data:`RESTORED_QUEUE_KEY` is read for.
+            "kind": PEER_TURN_COMPLETION_KIND if peer_event is not None else "",
+            # PROCESS-LOCAL, and never round-trips. It records that provenance
+            # was established by a previous process and must be re-attested
+            # before a peer completion may open a turn.
             RESTORED_QUEUE_KEY: True,
+            **({PEER_TURN_COMPLETION_HELD_KEY: True} if peer_event is not None else {}),
         }
-        meta = item.get("meta")
-        if isinstance(meta, dict):
+        meta = raw_meta
+        if peer_event is not None:
+            entry["meta"] = {PEER_TURN_COMPLETION_META_KEY: peer_event}
+        elif isinstance(meta, dict):
             # The admission-time containment snapshot is stripped for the same
             # reason the provenance flags are, and the asymmetry it would
             # otherwise leave is sharper: the drain's re-check treats a
@@ -428,14 +461,15 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
                 )
             }
         try:
-            # Costed against the same key projection the WRITER admits
-            # (:data:`_DURABLE_QUEUE_KEYS`, which has no ``kind``), not against
-            # the entry handed back. Charging the reader for a key the writer
-            # never emitted makes the reader's budget the smaller of the two, and
-            # a queue persisted just under the ceiling would then drop its tail
-            # on the way back in — losing a prompt that WAS durably written,
-            # which is the one outcome this whole value exists to prevent.
-            cost = len(json.dumps({k: v for k, v in entry.items() if k in _DURABLE_QUEUE_KEYS}))
+            # Costed against exactly what the writer emits. Plain prompts keep
+            # the established id/content/meta shape; peer events additionally
+            # persist their kind. The process-local restore marker never counts.
+            persisted = (
+                {k: v for k, v in entry.items() if k != RESTORED_QUEUE_KEY}
+                if peer_event is not None
+                else {k: v for k, v in entry.items() if k in _DURABLE_QUEUE_KEYS}
+            )
+            cost = len(json.dumps(persisted))
         except (TypeError, ValueError):
             # ``meta`` came off an untrusted line: a value json cannot re-emit
             # would also break every later save of this slot.

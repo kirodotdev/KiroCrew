@@ -456,6 +456,17 @@ async def _start_next_queued_turn(
     if slot._queue and _memory_preparation_pending(state):
         _arm_parked_queue_drain(state, slot, notice=True)
         return False
+    # A peer callback enters the queue before its off-loop metadata save so the
+    # persisted snapshot can include it. Keep the queue parked until the save
+    # returns and the delivery coordinator marks the event attested; the
+    # coordinator then performs the guarded wake itself.
+    if any(
+        entry.get("kind") == PEER_TURN_COMPLETION_KIND
+        and entry.get(PEER_TURN_COMPLETION_PREPARING_KEY) is True
+        for entry in slot._queue
+    ):
+        return False
+
 
     # FIRST, before anything reads the queue: re-assert each entry's
     # admission-time containment and drop every entry that has stopped
@@ -570,11 +581,28 @@ async def _start_next_queued_turn(
         not allow_user_during_subagents
         and subagents_hold_user_messages(state, effective_session_key(slot))
     )
+    if required_queue_id:
+        requested = next(
+            (entry for entry in slot._queue if entry.get("id") == required_queue_id),
+            None,
+        )
+        if (
+            requested is not None
+            and requested.get("kind") == PEER_TURN_COMPLETION_KIND
+            and requested.get(PEER_TURN_COMPLETION_ATTESTED_KEY) is not True
+        ):
+            return False
     if required_queue_id and hold_users:
         # The hold dequeues only system entries, so it could start a different
         # entry than the one card asked for. That card stays queued instead.
         return False
     if required_queue_id and not slot.queue_promote_by_id(required_queue_id):
+        return False
+    if (
+        slot._queue
+        and slot._queue[0].get("kind") == PEER_TURN_COMPLETION_KIND
+        and slot._queue[0].get(PEER_TURN_COMPLETION_ATTESTED_KEY) is not True
+    ):
         return False
     if hold_users:
         # Sub-agent completions / recovery still flow while user messages wait.
@@ -704,6 +732,11 @@ async def _start_next_queued_turn(
         None,
     )
     is_automation_steer = automation_nudge is not None
+    is_peer_completion = any(
+        item.get("kind") == PEER_TURN_COMPLETION_KIND
+        and item.get(PEER_TURN_COMPLETION_ATTESTED_KEY) is True
+        for item in consumed
+    )
     if not (
         is_cron
         or is_subagent
@@ -711,6 +744,7 @@ async def _start_next_queued_turn(
         or is_app_message
         or is_automation_notice
         or is_automation_steer
+        or is_peer_completion
     ):
         # A user message after the last completion takes over from the armed
         # synthesis and ends its batch, so its count starts over. Only the
@@ -758,6 +792,7 @@ async def _start_next_queued_turn(
             or is_app_message
             or is_automation_notice
             or is_automation_steer
+            or is_peer_completion
             or responsive_chat.reusable_row(slot, consumed, next_msg) is not None,
         }
         # The client rebuilds the drained entry as a user row from this frame
@@ -799,7 +834,7 @@ async def _start_next_queued_turn(
         row_role = "nudge"
     elif is_subagent:
         row_role = "subagent"
-    elif is_cron or is_recovery or is_app_message or is_automation_notice:
+    elif is_cron or is_recovery or is_app_message or is_automation_notice or is_peer_completion:
         row_role = "inject"
     else:
         row_role = "user"
@@ -815,7 +850,7 @@ async def _start_next_queued_turn(
         # `_prepare_messages` replace the stored meta on HTTP rebuild,
         # dropping `injectKind` and the row's collapse/fold exemptions.
         row_cls = app_inject_row(app_label or "app")[1]
-    elif is_recovery or is_automation_notice:
+    elif is_recovery or is_automation_notice or is_peer_completion:
         row_cls = "msg msg-inject"
     else:
         row_cls = "msg msg-u"
@@ -856,7 +891,12 @@ async def _start_next_queued_turn(
     _revalidated_ids = [
         item["id"]
         for item in consumed
-        if item.get("kind") not in (CRON_NOTIFICATION_KIND, SUBAGENT_COMPLETION_KIND)
+        if item.get("kind")
+        not in (
+            CRON_NOTIFICATION_KIND,
+            SUBAGENT_COMPLETION_KIND,
+            PEER_TURN_COMPLETION_KIND,
+        )
     ]
     if _revalidated_ids:
         audit_queued_allow(slot, _revalidated_ids)
@@ -954,6 +994,8 @@ async def _start_next_queued_turn(
             _inject_kind = "mcp_app"
         elif is_automation_notice:
             _inject_kind = "automation_notice"
+        elif is_peer_completion:
+            _inject_kind = PEER_TURN_COMPLETION_INJECT_KIND
         elif synthetic_payload:
             _inject_kind = "recovery"
         else:
@@ -1067,6 +1109,8 @@ async def _start_next_queued_turn(
     # whoever could write the session file.
     if any(item.get(RESTORED_QUEUE_KEY) for item in consumed):
         _run_kwargs["_turn_provenance_restored"] = True
+    if is_peer_completion:
+        _run_kwargs["_peer_completion_turn"] = True
     if _settleable or _delivery_callbacks:
         _run_kwargs["_on_consumed"] = _note_consumed
     if _irreversible_delivery_callbacks:

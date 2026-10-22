@@ -76,6 +76,42 @@ identity metadata; messaging surfaces receive the same content. It is
 automation, not user speech. A raw provider completion event is the only signal
 that the resulting agent action finished.
 
+## Peer session turn completion
+
+A creator-owned visible dashboard child completed one turn and became idle. The
+gateway queues a distinct structured event, never a sub-agent completion:
+
+```
+[Peer session turn completed]
+Child session: `<child slot>`
+Child turn: <turn>
+Transcript cursor: <cursor>
+Ended at: <timestamp>
+State: idle; pending approval: false
+```
+
+- Queue kind `peer_session_turn_completed` is a machine-authored system injection.
+  It opens its own creator turn and is never mirrored or attributed as the
+  creator's speech.
+- The event id is deterministic over protected child session ID plus child turn. The queue entry
+  is persisted before wake, so replay after a gateway restart is idempotent.
+- The envelope contains lifecycle facts and a transcript cursor only. It never
+  contains the child report. The creator calls `session_read_message` from that
+  cursor to inspect the result.
+- The creator comes only from protected crew-log lineage. A restored entry is
+  blocked until restart recovery re-attests that lineage and the exact
+  `turn/completed` marker. Malformed, forged, or unattested entries never execute.
+- The event proves only that the turn ended. It does not mean PASS, DONE, or
+  BLOCKED, and it does not authorize or trigger a child restart.
+- A child waiting on tool approval is still running and emits no completion event.
+- This kind is intentionally outside `SUBAGENT_COMPLETION_KIND` and
+  `SUBAGENT_DELIVERY_KINDS`; `spawn_run` report delivery and debt behavior are
+  unchanged.
+
+**How to treat it:** wake, read the child transcript at the supplied cursor, and
+verify the reported evidence. Classify the result or decide on a restart only
+after that read.
+
 ## Sub-agent completion
 
 A background sub-agent finished. `slack/gateway_runtime/subagent_report.py` builds the envelope on the

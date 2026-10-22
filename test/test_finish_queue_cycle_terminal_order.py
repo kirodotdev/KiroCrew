@@ -187,6 +187,183 @@ async def test_ordinary_cycle_emits_done_then_idle_slots_then_one_chat_done(tmp_
     ), f"no content frame may follow the idle slots push; {_FRONTEND}: {content_after_push}"
 
 
+# ── Creator callback persistence and terminal ordering ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_peer_callback_persists_before_idle_and_wakes_after_chat_done(tmp_path, monkeypatch):
+    from kiro_crew.dashboard import peer_completion_delivery as delivery
+
+    state, slot, events = _recorded_cycle(tmp_path, monkeypatch)
+    slot._cycle_reached_provider = True
+
+    async def _persist(_state, child, **coordinates):
+        events.append(
+            (
+                "persist_peer",
+                child.task is None,
+                coordinates["child_session_id"],
+                coordinates["child_turn_id"],
+            )
+        )
+        return ("chat-creator", "queue-event")
+
+    async def _wake(_state, prepared):
+        events.append(("wake_peer", slot.task is None, prepared))
+        return True
+
+    monkeypatch.setattr(delivery, "enqueue_turn_completed", _persist)
+    monkeypatch.setattr(delivery, "wake_prepared", _wake)
+
+    await cr._finish_queue_cycle(
+        state,
+        slot,
+        child_session_id="sid-child",
+        child_turn_id=4,
+    )
+    await _drain_background(state)
+
+    persist_at = next(i for i, event in enumerate(events) if event[0] == "persist_peer")
+    done_at = events.index(("append", "done"))
+    push_at = next(i for i, event in enumerate(events) if event[0] == "push_slots_update")
+    chat_done_at = next(
+        i
+        for i, event in enumerate(events)
+        if event[0] == "broadcast_ws" and event[1] == "chat_done"
+    )
+    wake_at = next(i for i, event in enumerate(events) if event[0] == "wake_peer")
+    assert persist_at < done_at < push_at < chat_done_at < wake_at
+    assert events[persist_at][1:] == (False, "sid-child", 4)
+    assert events[wake_at][1:] == (True, ("chat-creator", "queue-event"))
+
+
+@pytest.mark.asyncio
+async def test_work_arriving_during_callback_persistence_keeps_the_child_running(
+    tmp_path, monkeypatch
+):
+    from kiro_crew.dashboard import peer_completion_delivery as delivery
+
+    state, slot, events = _recorded_cycle(tmp_path, monkeypatch)
+    slot._cycle_reached_provider = True
+
+    async def _persist(_state, child, **_coordinates):
+        child.queue_append("arrived during persistence")
+        return ("chat-creator", "queue-event")
+
+    start = AsyncMock(return_value=True)
+    wake = AsyncMock(return_value=True)
+    monkeypatch.setattr(delivery, "enqueue_turn_completed", _persist)
+    monkeypatch.setattr(delivery, "wake_prepared", wake)
+    monkeypatch.setattr(cr, "_start_next_queued_turn", start)
+
+    await cr._finish_queue_cycle(
+        state,
+        slot,
+        child_session_id="sid-child",
+        child_turn_id=4,
+    )
+
+    start.assert_awaited_once_with(state, slot)
+    wake.assert_not_awaited()
+    assert slot.task is not None
+    assert ("append", "done") not in events
+    assert not any(event[0] == "broadcast_ws" and event[1] == "chat_done" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_callback_attestation_during_persistence_keeps_the_creator_running(
+    tmp_path, monkeypatch
+):
+    from kiro_crew.dashboard import peer_completion_delivery as delivery
+    from kiro_crew.dashboard.peer_completion import (
+        PEER_TURN_COMPLETION_ATTESTED_KEY,
+        PEER_TURN_COMPLETION_KIND,
+        PEER_TURN_COMPLETION_PREPARING_KEY,
+    )
+
+    state, slot, events = _recorded_cycle(tmp_path, monkeypatch)
+    slot._cycle_reached_provider = True
+    peer_id = slot.queue_append("callback B", kind=PEER_TURN_COMPLETION_KIND)
+    slot._queue[0][PEER_TURN_COMPLETION_PREPARING_KEY] = True
+
+    async def _persist(_state, _child, **_coordinates):
+        slot._queue[0].pop(PEER_TURN_COMPLETION_PREPARING_KEY)
+        slot._queue[0][PEER_TURN_COMPLETION_ATTESTED_KEY] = True
+        return ("chat-parent", "own-callback")
+
+    start = AsyncMock(return_value=True)
+    monkeypatch.setattr(delivery, "enqueue_turn_completed", _persist)
+    monkeypatch.setattr(cr, "_start_next_queued_turn", start)
+
+    await cr._finish_queue_cycle(
+        state,
+        slot,
+        child_session_id="sid-creator-child",
+        child_turn_id=4,
+    )
+
+    start.assert_awaited_once_with(state, slot)
+    assert slot._queue[0]["id"] == peer_id
+    assert slot.task is not None
+    assert ("append", "done") not in events
+
+
+# ── Peer callback turns hold only restored user prompts ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_peer_callback_turn_does_not_auto_drain_restored_user_prompts(tmp_path, monkeypatch):
+    from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-creator")
+    slot.queue_append("restored user prompt")
+    slot._queue[0][RESTORED_QUEUE_KEY] = True
+    turn_exit = cr._TurnExit()
+    turn_exit.peer_completion = True
+    handoff = AsyncMock()
+    monkeypatch.setattr(cr, "_hand_off_queue", handoff)
+    monkeypatch.setattr(cr, "_memory_preparation_settled", lambda _state: True)
+    monkeypatch.setattr(cr, "_notify_autonudge_turn_end", lambda *_args, **_kwargs: None)
+
+    await cr._end_turn_tail(state, slot, turn_exit)
+
+    assert handoff.await_count == 1
+    assert handoff.await_args.kwargs["drain"] is False
+    assert [entry["content"] for entry in slot._queue] == ["restored user prompt"]
+
+
+@pytest.mark.asyncio
+async def test_peer_callback_turn_selects_next_attested_callback_before_restored_user(
+    tmp_path, monkeypatch
+):
+    from kiro_crew.dashboard.peer_completion import (
+        PEER_TURN_COMPLETION_ATTESTED_KEY,
+        PEER_TURN_COMPLETION_KIND,
+    )
+    from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-creator")
+    restored_id = slot.queue_append("restored user prompt")
+    slot._queue[0][RESTORED_QUEUE_KEY] = True
+    peer_id = slot.queue_append("callback B", kind=PEER_TURN_COMPLETION_KIND)
+    slot._queue[1][PEER_TURN_COMPLETION_ATTESTED_KEY] = True
+    live_id = slot.queue_append("live user prompt")
+    turn_exit = cr._TurnExit()
+    turn_exit.peer_completion = True
+    handoff = AsyncMock()
+    monkeypatch.setattr(cr, "_hand_off_queue", handoff)
+    monkeypatch.setattr(cr, "_memory_preparation_settled", lambda _state: True)
+    monkeypatch.setattr(cr, "_notify_autonudge_turn_end", lambda *_args, **_kwargs: None)
+
+    await cr._end_turn_tail(state, slot, turn_exit)
+
+    assert handoff.await_args.kwargs["drain"] is True
+    assert handoff.await_args.kwargs["successor_queue_id"] == peer_id
+    assert [entry["id"] for entry in slot._queue] == [restored_id, peer_id, live_id]
+
+
 # ── The synthesis branch never shows the frontend an idle slot ──────────────
 
 

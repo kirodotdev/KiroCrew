@@ -579,6 +579,11 @@ from kiro_crew.dashboard.handlers.usage import (
     read_turn_model,
 )
 from kiro_crew.dashboard.member_message_notes import post_turn_reply
+from kiro_crew.dashboard.peer_completion import (
+    PEER_TURN_COMPLETION_ATTESTED_KEY,
+    PEER_TURN_COMPLETION_INJECT_KIND,
+    PEER_TURN_COMPLETION_PREPARING_KEY,
+)
 from kiro_crew.dashboard.poisoned_escalation import POISONED_SESSION_CYCLES  # noqa: F401
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
 from kiro_crew.dashboard.recovery_replays import SESSION_NOT_FOUND_CANCELLED_TEXT  # noqa: F401
@@ -941,6 +946,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     KIRO_CLI_MISSING_KIND,
     MCP_APP_MESSAGE_KIND,
     MODEL_UNENTITLED_KIND,
+    PEER_TURN_COMPLETION_KIND,
     SESSION_START_FAILED_KIND,
     SPEC_HOOKS_NOTICE_KIND,
     SUBAGENT_COMPLETION_KIND,
@@ -1194,6 +1200,7 @@ async def _embed_startup_query_off_loop(
 # drain callback is armed. Weak so a finished task (and the state its callback
 # closes over) is not kept alive by this table.
 _PARKED_FOR_MEMORY: "weakref.WeakKeyDictionary[Any, dict[str, bool]]" = weakref.WeakKeyDictionary()
+
 
 
 _P = ParamSpec("_P")
@@ -1532,6 +1539,9 @@ async def _run_chat(
     # observed, and a restored entry carries no actor at all -- which reads as
     # `user`. Only the queue drain sets it, and it is never persisted.
     _turn_provenance_restored: bool = False,
+    # A protected peer-completion pointer opened this turn. Its terminal handoff
+    # must not auto-run user prompts restored ahead of the gateway restart.
+    _peer_completion_turn: bool = False,
     # This turn is the delivered wake of a nudge/monitor loop bound to THIS slot
     # (set only by ``GatewayOrchestrator._fire_dashboard_nudge``). It is the
     # second producer the session-directive consumer admits as "the session's
@@ -1599,6 +1609,7 @@ async def _run_chat(
         _responsive_protected=_responsive_protected,
         _directive_user_origin=_directive_user_origin,
         _turn_provenance_restored=_turn_provenance_restored,
+        _peer_completion_turn=_peer_completion_turn,
         _directive_self_wake=_directive_self_wake,
         _directive_loop_id=_directive_loop_id,
         _directive_loop_gen=_directive_loop_gen,

@@ -200,6 +200,8 @@ async def _finish_queue_cycle(
     *,
     allow_automatic_successor: bool = True,
     drain: bool = True,
+    child_session_id: str = "",
+    child_turn_id: int = 0,
 ) -> None:
     """Start synthesis when eligible, otherwise mark a queue cycle idle.
 
@@ -285,10 +287,21 @@ async def _finish_queue_cycle(
     # queues during the read below is the user's next send, the one a hold
     # resumes on, so it gets the floor either way.
     held = {entry.get("id") for entry in slot._queue}
+
+    def _queue_handoff_state() -> tuple[tuple[object, bool, bool], ...]:
+        return tuple(
+            (
+                entry.get("id"),
+                entry.get(PEER_TURN_COMPLETION_ATTESTED_KEY) is True,
+                entry.get(PEER_TURN_COMPLETION_PREPARING_KEY) is True,
+            )
+            for entry in slot._queue
+        )
+
     while True:
-        queued = [entry.get("id") for entry in slot._queue]
+        queued = _queue_handoff_state()
         payload = await chat_done_payload(state, slot, queue_held=not drain)
-        if [entry.get("id") for entry in slot._queue] == queued:
+        if _queue_handoff_state() == queued:
             break
         # The queue moved during the read: a send that arrived queued behind the
         # still-running turn. Hand it the floor, then read again.
@@ -324,6 +337,57 @@ async def _finish_queue_cycle(
             and await _start_next_queued_turn(state, slot)
         ):
             return
+    peer_reached_provider = slot._cycle_reached_provider
+    prepared_peer_completion = None
+    if peer_reached_provider and child_session_id and child_turn_id > 0:
+        from kiro_crew.dashboard.peer_completion_delivery import enqueue_turn_completed
+
+        queued_before_peer = _queue_handoff_state()
+        prepared_peer_completion = await enqueue_turn_completed(
+            state,
+            slot,
+            child_session_id=child_session_id,
+            child_turn_id=child_turn_id,
+            wake=False,
+        )
+        if slot.task is not owner:
+            return
+        queued_after_peer = _queue_handoff_state()
+        if queued_after_peer != queued_before_peer:
+            if drain and slot._queue and await _start_next_queued_turn(state, slot):
+                return
+            arrived = next(
+                (entry.get("id") for entry in slot._queue if entry.get("id") not in held),
+                None,
+            )
+            if (
+                not drain
+                and arrived
+                and await _start_next_queued_turn(state, slot, required_queue_id=arrived)
+            ):
+                return
+        # The durable creator save and crew-log attestation suspend. A send may
+        # queue behind this still-running child during either await, so repeat
+        # the same stable-payload handoff gate used above before exposing idle.
+        while True:
+            queued = _queue_handoff_state()
+            payload = await chat_done_payload(state, slot, queue_held=not drain)
+            if _queue_handoff_state() == queued:
+                break
+            if drain and slot._queue and await _start_next_queued_turn(state, slot):
+                return
+            arrived = next(
+                (entry.get("id") for entry in slot._queue if entry.get("id") not in held),
+                None,
+            )
+            if (
+                not drain
+                and arrived
+                and await _start_next_queued_turn(state, slot, required_queue_id=arrived)
+            ):
+                return
+        if slot.task is not owner:
+            return
     slot.append("done", "", "done")
     # Frontend contract: the dashboard treats the first `slots` frame reporting
     # `running: false` as the turn's end (runState settleEndedActiveTurn), so all
@@ -332,6 +396,10 @@ async def _finish_queue_cycle(
     slot.task = None
     state.push_slots_update()
     await _send_chat_done(state, slot, payload=payload)
+    if prepared_peer_completion is not None:
+        from kiro_crew.dashboard.peer_completion_delivery import wake_prepared
+
+        await wake_prepared(state, prepared_peer_completion)
     reached_provider = slot._cycle_reached_provider
     slot._cycle_reached_provider = False
     if not reached_provider:
@@ -392,6 +460,9 @@ async def _hand_off_queue(
     allow_automatic_successor: bool,
     predecessor_actor: str = "",
     predecessor_turn_id: str = "",
+    child_session_id: str = "",
+    child_turn_id: int = 0,
+    successor_queue_id: str = "",
 ) -> None:
     """Requeue unconsumed steers, then start the next queued turn or end the cycle.
 
@@ -420,16 +491,21 @@ async def _hand_off_queue(
         if await _start_next_queued_turn(
             state,
             slot,
+            required_queue_id=successor_queue_id or None,
             predecessor_actor=predecessor_actor,
             predecessor_turn_id=predecessor_turn_id,
             end_batch=end_batch,
         ):
             return
+        if successor_queue_id:
+            drain = False
     await _finish_queue_cycle(
         state,
         slot,
         allow_automatic_successor=allow_automatic_successor,
         drain=drain,
+        child_session_id=child_session_id,
+        child_turn_id=child_turn_id,
     )
 
 
@@ -506,10 +582,13 @@ class _TurnExit:
 
     __slots__ = (
         "actor",
+        "child_session_id",
+        "child_turn_id",
         "depth",
         "handed_off",
         "local_command",
         "outcome",
+        "peer_completion",
         "reached_provider",
         "responsive_owner",
         "turn_id",
@@ -519,11 +598,14 @@ class _TurnExit:
         # The turn's crew-log actor and its recovery id, so the hand-off can tell
         # this turn's own recovery from a new turn (``_start_next_queued_turn``).
         self.actor = ""
+        self.child_session_id = ""
+        self.child_turn_id = 0
         self.turn_id = ""
         self.depth = 0
         self.handed_off = False
         self.local_command = ""
         self.outcome: _TurnOutcome | None = None
+        self.peer_completion = False
         self.reached_provider = False
         self.responsive_owner: Any = None
 
@@ -635,13 +717,33 @@ async def _end_turn_tail(
     if slot._responsive is not None and slot._responsive.owner is turn_exit.responsive_owner:
         slot._responsive.owner = None
         slot._responsive.cancel_grace()
+    drain = memory_admitted and not slot._last_turn_auth_required and not setup_failed
+    successor_queue_id = ""
+    if turn_exit.peer_completion:
+        successor = next(
+            (
+                entry
+                for entry in slot._queue
+                if not entry.get(RESTORED_QUEUE_KEY)
+                or (
+                    entry.get("kind") == PEER_TURN_COMPLETION_KIND
+                    and entry.get(PEER_TURN_COMPLETION_ATTESTED_KEY) is True
+                )
+            ),
+            None,
+        )
+        successor_queue_id = str((successor or {}).get("id") or "")
+        drain = drain and bool(successor_queue_id)
     await _hand_off_queue(
         state,
         slot,
-        drain=memory_admitted and not slot._last_turn_auth_required and not setup_failed,
+        drain=drain,
         allow_automatic_successor=memory_admitted and not setup_failed,
         predecessor_actor=turn_exit.actor,
         predecessor_turn_id=turn_exit.turn_id,
+        child_session_id=turn_exit.child_session_id,
+        child_turn_id=turn_exit.child_turn_id,
+        successor_queue_id=successor_queue_id,
     )
 
 

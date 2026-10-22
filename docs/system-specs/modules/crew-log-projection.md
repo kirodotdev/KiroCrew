@@ -244,9 +244,9 @@ lets one pass serve folds sitting at different seqs.
 
 ### The panel folds, and `class` beside them
 
-Each reads ONE session unit, and these SIX are what the growth push sends. ``class``
-is registered alongside them but is not advertised and is not pushed: no panel draws it
-and its one caller asks the registry for it by name.
+Each reads ONE session unit, and these SIX are what the growth push sends. `class`
+and `outline` are registered alongside them but are not advertised or pushed: no
+panel draws them and their callers ask the registry for them by name.
 
 | projection | what it answers |
 |---|---|
@@ -257,6 +257,7 @@ and its one caller asks the registry for it by name.
 | `approvals` | Requests matched to decisions by `approval_id`: pending, decided, the decision tally, the last decision. The native permission path writes both types (`on_approval_requested` / `on_approval_decided` in the chat runner); coordinator approvals and question cards are not recorded. |
 | `subagents` | The children this session dispatched, matched to their closers by `agent_id`: per child its agent, model, the task it was asked to do, outcome, duration, credits and a failure reason; plus whole-session totals, how many are still running, and how many dispatches were not retained. See below for the rules a reader has to know. |
 | `class` (INTERNAL -- not advertised, not pushed) | What KIND of session this log belongs to, over the log's WHOLE LIFE: the memory mode, the owning app, and whether the conversation was ever published to a channel. Each of those three is held at the most RESTRICTIVE value the log ever recorded, from the `class` object on the log's first `session/opened` plus every later `session/class` move, so a session published to a channel for one turn keeps reading as channel-published after the link is dropped -- that turn's content is still in this log. It also carries `workspace`, which folds differently because it is an IDENTITY rather than a restriction: there is no more-restrictive workspace to keep, so the FIRST one stated is held and a later different one sets `workspace_moved`, which is itself the restrictive fact -- a log whose content spans two workspaces is owned by neither. `recorded` says a class was stated at all and `complete` says the history has a beginning, and a reader deciding an authorization question refuses on either being false. The only fold whose consumer is a READER of another unit rather than a panel, which is why it is held restrictive rather than current: a fold that reported the present value would answer a question nobody asks of a log. |
+| `outline` (INTERNAL -- not advertised, not pushed) | A bounded window of turn rows with prompt and settled-reply previews. A row gains `completed: true` only from its exact `turn/completed` entry. A rerun start or refusal at the same ordinal removes that marker along with the prior terminal answer, so a later turn cannot make an earlier refused turn look completed. The creator callback recovery path uses this bounded fact for exact turn attestation. |
 
 #### `subagents` -- the two rules a reader has to know
 

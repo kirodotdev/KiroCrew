@@ -1408,6 +1408,8 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         slot.messages
     )
     turn._crew_log_turn_no = _crew_log_turn_no
+    turn.turn_exit.child_session_id = _crew_log_sid
+    turn.turn_exit.child_turn_id = _crew_log_turn_no
     # A quick prompt is a REPLACING expansion, the same class as @prompt: the
     # instruction the model receives is injected content, not the user's typing,
     # so none of it is attributable to them. This flag drives the FALLBACK

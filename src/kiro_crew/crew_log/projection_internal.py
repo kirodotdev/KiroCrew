@@ -458,6 +458,7 @@ def _outline_step(state: dict[str, Any], entry: Entry) -> None:
         # again at attempt 1 with the field omitted -- and a row would then show one
         # try's refusal beside the next try's answer.
         row.pop("refused", None)
+        row.pop("completed", None)
         row["reply"] = ""
         state["draft"] = ""
         state["draft_turn"] = 0
@@ -475,6 +476,7 @@ def _outline_step(state: dict[str, Any], entry: Entry) -> None:
         # only because rows are anchored on the ordinal; see the section note.
         row["actor"] = _as_str(data.get("actor"))
         row["refused"] = _as_str(data.get("reason"))
+        row.pop("completed", None)
         # RETRACTED HERE TOO, and not only at ``turn/started``. A refusal is written
         # WITHOUT a start -- the gates run between the two, which is the same ordering
         # the ordinal anchor exists for -- so a rerun that is refused never reaches the
@@ -488,7 +490,11 @@ def _outline_step(state: dict[str, Any], entry: Entry) -> None:
         state["draft_turn"] = 0
         return
 
+    if entry.type != "turn/completed":
+        return
+
     # turn/completed -- rule 3: the draft commits here and nowhere earlier.
+    row["completed"] = True
     if state["draft"] and state["draft_turn"] == turn:
         row["reply"] = state["draft"]
     state["draft"] = ""
