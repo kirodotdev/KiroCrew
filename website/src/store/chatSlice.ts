@@ -29,6 +29,8 @@ import { filterMessages, isUnsafeKey, safeKey } from './chat/wire'
 import { ensureMsgId, finalizeTrailingStreaming, floorForGen, isRedeliveredMessage, mintMsgId, reconcileOptimisticEcho } from './chat/transcript'
 import { OLDER_PAGE_LIMIT, OLDER_WALK_PAGE_LIMIT, claimOlderFetchAbort, isSupersededPagingRejection, releaseOlderFetchAbort } from './chat/paging'
 import { reinsertThinkingOrphans } from './chat/thinking'
+import { pruneDeliveredAttempts } from './chat/sendAttempts'
+import { rowSendIds } from '../utils/rowSendIds'
 import {
   bumpRunEpoch,
   finalizeActiveTurn,
@@ -346,6 +348,8 @@ function applyNonActiveFrame(
     // Uses shared helper that scans past non-matching pipelined sends (#3898).
     const echoSendId = meta?.sendId as string | undefined
     if (echoSendId && meta?.mid) {
+      // A correlated echo proves delivery (see `pruneDeliveredAttempts`).
+      pruneDeliveredAttempts(state, slot, rowSendIds(meta))
       if (reconcileOptimisticEcho(msgs, echoSendId, meta as Record<string, unknown>, ts)) return
     } else if (meta?.mid) {
       // Fallback: no sendId on the echo — use tail content match for paths
@@ -568,6 +572,8 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
     // scans past non-matching pipelined sends (#3898).
     const echoSendId = meta?.sendId as string | undefined
     if (echoSendId && meta?.mid) {
+      // A correlated echo proves delivery (see `pruneDeliveredAttempts`).
+      pruneDeliveredAttempts(state, slot, rowSendIds(meta))
       if (reconcileOptimisticEcho(state.messages, echoSendId, meta as Record<string, unknown>, ts)) return
     } else if (meta?.mid) {
       // Fallback: no sendId on the echo — use tail content match for paths
@@ -989,7 +995,7 @@ const chatSlice = createSlice({
 export const {
   setCloseRefused,
   setActiveSlot, dropActiveSlot, clearSlotState, setPendingInput, stageToMainComposer, setAgentSwitchNotice, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, clearQuestionCard, setQuestionDraft, setQuestionNotice, setQuestionRequestInFlight, markQuestionSettled, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
-  removeThinking, confirmOptimisticSend, markSendUnconfirmed, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, startServerTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
+  removeThinking, confirmOptimisticSend, markSendUnconfirmed, recordSendAttempt, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, startServerTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoicePreparing, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, requestSlotFolderOpen, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, markSubagentApprovalGone, reconcileSubagentApprovalGone, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued, reconcileSubagentQueuedFromSlots,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
@@ -1039,7 +1045,7 @@ export { WORKFLOW_TERMINAL_STATUSES, isTerminalWorkflowStatus, selectSidebarWork
 export { selectAutomationForSlot, selectSidebarAutomationRunningKeys } from './chat/automations'
 export { queueEditBroadcastAt } from './chat/side'
 export {
-  selectActiveSlotProject, selectComposerBusy, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendConfirmed, selectSlotMessages,
+  selectActiveSlotProject, selectComposerBusy, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendAttempts, selectSendConfirmed, selectSlotMessages,
   selectSlotPendingApproval, selectSlotRunEpoch, selectSlotStreamState, selectSlotToolLog, selectTrailingSendUnconfirmed,
   selectSlotTurnFromWake, selectTurnInterrupted,
   QUIET_END_SERVER, QUIET_END_TOOL,

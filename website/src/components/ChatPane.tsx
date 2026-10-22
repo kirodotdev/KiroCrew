@@ -58,6 +58,7 @@ import { answerRejectedMessage } from '../utils/questionAnswers'
 import { fetchDashboardConfig } from '../api/dashboardConfigQuery'
 import type { ChatPaneProps } from './ChatPaneProps'
 import { useChatPaneDraft } from './useChatPaneDraft'
+import { useSentPromptHistory } from './useSentPromptHistory'
 import { useChatPaneUploads } from './useChatPaneUploads'
 import { useChatPanePickerModels, useChatPanePickerActions } from './useChatPanePickers'
 import { ChatPaneAgentMenu, ChatPaneModelMenu } from './ChatPanePickerMenus'
@@ -150,6 +151,8 @@ export default function ChatPane({
   useEffect(() => { setPinned(null); setPinExpanded(false) }, [slotKey, setPinned, setPinExpanded])
 
   const allMessages = useAppSelector((s) => selectSlotMessages(s, slotKey))
+  // ↑/↓ prompt history for this pane's composer, on the same terms as ChatPage.
+  const sentMessages = useSentPromptHistory(allMessages, slotKey)
   const activeSlot = useAppSelector((s) => s.chat.activeSlot)
   // Consume a Side Chat → composer hand-off staged for THIS pane's slot. Keyed
   // by slot so a member's hand-off merges into that member's own composer and
@@ -988,6 +991,7 @@ export default function ChatPane({
           value={input}
           onChange={handleUserInput}
           onSend={doSend}
+          sentMessages={sentMessages}
           terminalCommands={!paneSlot ? 'pending' : paneSlot.executor === 'remote' ? 'remote' : 'local'}
           hiddenCommands={paneHiddenCommands}
           isRunning={composerBusy}
