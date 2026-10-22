@@ -4667,6 +4667,7 @@
       "enumValues": null,
       "defaultValue": {
         "enabled": false,
+        "crew_reads_enabled": false,
         "warm_set_cap": 0,
         "tunnel_base_port": 7778,
         "ssh_compression": true,
@@ -4691,6 +4692,20 @@
       "enumValues": null,
       "defaultValue": false,
       "requiresRestart": true
+    },
+    {
+      "path": "instances.crew_reads_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Agent Crew Reads",
+      "help": "Let the agent read another crew's sessions with the crew= scope of search_chat_history, list_sessions and get_chat_session. Default off: a peer's transcripts enter the agent's context as untrusted text, so this is a separate opt-in on top of Enabled. Read per call; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "instances.warm_set_cap",

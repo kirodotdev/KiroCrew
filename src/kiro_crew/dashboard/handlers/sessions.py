@@ -64,8 +64,10 @@ if TYPE_CHECKING:
         _is_machine_only_session,
         _is_user_listed_row,
         _open_slot_transcript_keys,
+        _search_excluding_incognito,
         _session_meta_row,
         _sessions_named,
+        _wants_incognito_excluded,
         api_session_archive_list,
         api_session_archive_read,
         api_session_detail,
@@ -194,11 +196,14 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.interaction_coordinator import _slot_decision  # noqa: F401
     from kiro_crew.dashboard.state import _normalize_slot_key  # noqa: F401
     from kiro_crew.history import ConversationLog  # noqa: F401
+    from kiro_crew.history import _SEARCH_SCAN_WINDOW  # noqa: F401
+    from kiro_crew.history import INCOGNITO_EXCLUDED_HEADER  # noqa: F401
     from kiro_crew.history import HistoryLockTimeout  # noqa: F401
     from kiro_crew.history import SEARCH_MIN_CHARS  # noqa: F401
     from kiro_crew.history import TranscriptBusy  # noqa: F401
     from kiro_crew.history import TranscriptWithheld  # noqa: F401
     from kiro_crew.history import _archive_dir  # noqa: F401
+    from kiro_crew.history import is_incognito_transcript  # noqa: F401
     from kiro_crew.history import transcript_lock_stems  # noqa: F401
     from kiro_crew.history import transcript_stem  # noqa: F401
     from kiro_crew.history import transcript_stems  # noqa: F401

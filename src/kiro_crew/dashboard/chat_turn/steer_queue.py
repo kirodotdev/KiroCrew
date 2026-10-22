@@ -345,6 +345,10 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         # narrower channel authority a queued channel message carries. Absent means
         # not through a channel.
         _channel = bool(getattr(slot, "_steer_channel_origin", {}).pop(steer_msg, False))
+        # The owner mark rides the same way, from its own lockstep map: the
+        # requeued steer's turn may read a peer crew's sessions only if the
+        # owner sent it. Absent means not the owner.
+        _owner = bool(getattr(slot, "_steer_owner_origin", {}).pop(steer_msg, False))
         if _channel:
             # A channel steer that re-enters the queue runs as its own turn, so it
             # takes the mark the hand-off's queued entry carries: the text is the
@@ -368,6 +372,7 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             meta=_meta,
             directive_user_origin=_requeue_user_origin,
             directive_channel_origin=_channel,
+            directive_owner_origin=_owner and _requeue_user_origin,
         )
         if responsive_chat.forget_steer(slot, steer_msg):
             entry = next(item for item in slot._queue if item["id"] == qid)

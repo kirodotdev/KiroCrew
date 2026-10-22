@@ -276,13 +276,19 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # tab id and a shipped-catalog tag, only in memory.
     _guide_tab = request.headers.get("X-Guide-Tab")
     _ui_lang = request.headers.get("X-UI-Lang")
-    if _requested_key and (_guide_tab or _ui_lang) and not request.get("app", ""):
-        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    # Whether the sender is the OWNER, not merely a person: ``not request_app``
+    # is true of every dashboard token, including one minted for a channel user
+    # (``/kirocrew dashboard``), and the turn this send opens, steers or queues
+    # inherits it as ``_turn_owner_pending`` / ``_directive_owner_origin`` -- the
+    # one mark a crew-scoped session read accepts. Decided once, here, so the
+    # three delivery paths below cannot disagree about it.
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 
-        if is_owner_dashboard_request(request):
-            from kiro_crew.dashboard.guide_observe import note_chat_sender
+    _owner_sent = is_owner_dashboard_request(request)
+    if _requested_key and (_guide_tab or _ui_lang) and _owner_sent:
+        from kiro_crew.dashboard.guide_observe import note_chat_sender
 
-            note_chat_sender(state, _requested_key, _guide_tab, _ui_lang)
+        note_chat_sender(state, _requested_key, _guide_tab, _ui_lang)
     # Ownership BEFORE get_or_create_slot below, whose memory-mode and
     # under-construction 409s would otherwise answer an app about a session it
     # may not see. Member, cron and workflow keys are refused here too. The
@@ -781,6 +787,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 # earns a requeued entry the exemption from the drain's LINKED drop.
                 # Stated rather than defaulted, because the default fails closed.
                 user_origin=not bool(request_app),
+                owner_origin=_owner_sent,
                 # Captured HERE, before the RPC suspends, for the same reason the peer
                 # path captures it: the requeue runs in the turn's teardown and a slot
                 # read there folds a mirror linked during the suspension into the
@@ -828,6 +835,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             slot,
             message,
             directive_user_origin=not bool(request_app),
+            directive_owner_origin=_owner_sent,
             # A queued turn reaches the runner through the DRAIN, so the dispatch
             # keyword this handler passes for an IMMEDIATE send cannot carry the
             # actor here. It rides the entry's meta instead, which is what
@@ -895,6 +903,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             message,
             meta=_hold_meta,
             directive_user_origin=not bool(request_app),
+            directive_owner_origin=_owner_sent,
         )
         _redacted = queued_text_for_display(message, user_origin=not bool(request_app))
         warn_if_not_durable(slot._queue, qid, slot.key)
@@ -964,9 +973,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # session, message count) proves no other request rebound the slot while
     # the store was being resolved.
     if created_in_send:
-        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
-
-        if is_owner_dashboard_request(request):
+        if _owner_sent:
             async with slot._lock:
                 assignment = (
                     slot.agent,
@@ -1161,11 +1168,22 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             _turn_kwargs["_attachments"] = _accepted_attachments
             # Typed form for the refusal replay: keeps ``dirs`` entries as folders.
             _turn_kwargs["_attachment_meta"] = _accepted_attachment_meta
-        task = spawn_guarded_turn(
-            state,
-            slot,
-            state.run_background_turn(slot, _run_chat(state, slot, message, **_turn_kwargs)),
-        )
+        # Declared on the slot, not passed: the turn's entry CONSUMES it (adopted
+        # only for a user-sent opener, then reset), so the declaration lives
+        # exactly as long as the dispatch it belongs to. Written after every
+        # refusal above and immediately before the dispatch; a dispatch that
+        # fails takes its declaration back, so no turn another path starts can
+        # pick it up.
+        slot._turn_owner_pending = _owner_sent
+        try:
+            task = spawn_guarded_turn(
+                state,
+                slot,
+                state.run_background_turn(slot, _run_chat(state, slot, message, **_turn_kwargs)),
+            )
+        except BaseException:
+            slot._turn_owner_pending = False
+            raise
         slot.task = task
     finally:
         if _reserve_turn_admission:

@@ -227,6 +227,18 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
         slot._turn_channel_narrowed = False
         slot._turn_channel_origin = bool(_directive_channel_origin)
         slot._turn_user_sent = bool(_directive_user_origin) and not _directive_channel_origin
+        # The owner mark is CONSUMED from the dispatcher's one-shot declaration
+        # (`_turn_owner_pending`, written by a dashboard handler or the queue
+        # drain just before this turn was spawned, because it is a fact about the
+        # request that dispatched the turn and nothing on this call carries it).
+        # Read, then reset: a dispatch that declares nothing (`openai_compat`,
+        # the spec-builder runtime, a loop wake, a cron) starts from False, and
+        # whatever the previous turn left in `_turn_owner_sent` is never read.
+        # Adopted only for a turn the person sent.
+        slot._turn_owner_sent = (
+            getattr(slot, "_turn_owner_pending", False) is True and slot._turn_user_sent
+        )
+        slot._turn_owner_pending = False
     # Dispatch appends the triggering row before entering this runner. Freeze
     # that row now, before await points, prompt expansion or new deliveries.
     _current_replay_message = _current_message

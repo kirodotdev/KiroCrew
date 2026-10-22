@@ -443,6 +443,17 @@ def notify_user_input(request: web.Request, slot: Any) -> None:
         logger.warning("autonudge.notify_user_input failed", exc_info=True)
 
 
+def _owner_sent(request: web.Request) -> bool:
+    """Whether this send is the OWNER's, the mark its turn needs for a crew read.
+
+    :func:`eligible` already requires it, so this is True on every path that
+    reaches here today; it is re-read rather than assumed so the mark the turn
+    inherits is always the request's own and never a consequence of the gate's
+    ordering.
+    """
+    return is_owner_dashboard_request(request)
+
+
 def observe_user_message(request: web.Request, message: str) -> None:
     """Notify the optional edition observer without blocking message delivery."""
     try:
@@ -484,6 +495,7 @@ async def accept(
         slot,
         message,
         directive_user_origin=True,
+        directive_owner_origin=_owner_sent(request),
         send_id=normalize_send_id((meta or {}).get("sendId")),
         attachments=attachment_meta(meta),
         quote=quote_meta(meta).get("quote"),
@@ -673,6 +685,7 @@ async def _steer_first(
         message,
         send_id=(meta or {}).get("sendId"),
         user_origin=True,
+        owner_origin=_owner_sent(request),
         admission=containment_meta(state, slot),
         attachments=meta,
         delivery_id=delivery_id,
