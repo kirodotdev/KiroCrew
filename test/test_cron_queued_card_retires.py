@@ -24,6 +24,7 @@ from chat_test_helpers import _make_state
 from kiro_crew.cron import CronJob
 from kiro_crew.dashboard import chat_runner as cr
 from kiro_crew.dashboard.handlers import api_send_message
+from kiro_crew.dashboard.slot_queue_repository import MAX_LIVE_QUEUE_ENTRIES
 from kiro_crew.slack import gateway as gw
 
 SLOT_KEY = "chat-7-origin"
@@ -131,3 +132,34 @@ async def test_script_cron_card_is_the_entry_the_drain_pops(tmp_path) -> None:
     assert [entry["kind"] for entry in slot._queue] == ["cron_notification"]
     assert await _drain(state, slot) == 1
     assert wire.popped_queue_ids() == [wire.card_queue_id()]
+
+
+@pytest.mark.asyncio
+async def test_script_cron_on_a_full_live_queue_drops_the_oldest_entry_and_card(
+    tmp_path,
+) -> None:
+    # A script that fires faster than its notification turns run must not grow
+    # the live queue past its cap: like a cron's send_message, the newest
+    # report waits and the oldest one gives way, card included.
+    state = _make_state(tmp_path)
+    slot = _live_slot(state)
+    wire = _Wire(state)
+    orchestrator = MagicMock()
+    orchestrator.dashboard_state = state
+    job = _job("SS captain watch")
+
+    for n in range(MAX_LIVE_QUEUE_ENTRIES):
+        await gw.GatewayOrchestrator._deliver_script_result(orchestrator, job, f"report {n}")
+    oldest_id = slot._queue[0]["id"]
+    await gw.GatewayOrchestrator._deliver_script_result(
+        orchestrator, job, f"report {MAX_LIVE_QUEUE_ENTRIES}"
+    )
+
+    reports = [entry["content"].splitlines()[1] for entry in slot._queue]
+    assert reports == [f"report {n}" for n in range(1, MAX_LIVE_QUEUE_ENTRIES + 1)]
+    cards = [m["content"].splitlines()[1] for m in slot.messages if m.get("role") == "queued"]
+    assert cards == reports
+    # An open dashboard draws cards from frames, so the evicted card is retracted
+    # there too rather than lingering as a report that will never run.
+    cancelled = [payload for kind, payload in wire.frames if kind == "queue_cancel"]
+    assert cancelled == [{"slot": SLOT_KEY, "queue_id": oldest_id}]

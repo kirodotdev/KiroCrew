@@ -213,6 +213,9 @@ async def _deliver_running(
                 evicted = slot.queue_pop(0)
                 logger.warning("Queue full for slot %s: evicting oldest message", slot.key)
                 _remove_queued_by_id(slot.messages, evicted["id"])
+                # Open dashboards render queue cards from WebSocket frames, not
+                # from this slot's message list.
+                state.broadcast_ws("queue_cancel", {"slot": slot.key, "queue_id": evicted["id"]})
         queue_cron_notification(slot, text, origin.label)
         return DELIVERED_QUEUED
     if origin.kind == ORIGIN_APP:
