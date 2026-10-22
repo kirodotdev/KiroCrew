@@ -181,6 +181,54 @@ class TestBrandingEndpoint:
         body = json.loads(resp.body)
         assert body["bot_name"] == "Jarvis"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("present", [True, False])
+    async def test_branding_reports_whether_the_host_has_a_desktop_launcher(self, present):
+        # The dashboard offers "Show in file manager" and "Open with default app"
+        # only when this is true: on a host that cannot open a file manager (a
+        # headless Linux box, which an `ssh -L` browser still reaches as
+        # direct-local) /api/reveal can only answer a clipboard copy.
+        from kiro_crew import platform_compat
+        from kiro_crew.dashboard.handlers import api_branding
+
+        req = MagicMock()
+        with patch(
+            "kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=KiroCrewConfig()
+        ), patch.object(platform_compat, "desktop_launcher_available", return_value=present):
+            resp = await api_branding(req)
+        assert json.loads(resp.body)["desktop_launcher"] is present
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("display", "expected"),
+        [(None, False), (":0", True)],
+        ids=["headless", "desktop-session"],
+    )
+    async def test_branding_says_a_linux_host_needs_a_desktop_session(
+        self, monkeypatch, display, expected
+    ):
+        # The whole chain the dashboard reads, on a Linux host that HAS xdg-open:
+        # without a display server named in the gateway's environment there is
+        # nothing to open a file manager into, so the rows must not be offered.
+        from kiro_crew import platform_compat
+        from kiro_crew.dashboard.handlers import api_branding
+
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        if display is None:
+            monkeypatch.delenv("DISPLAY", raising=False)
+        else:
+            monkeypatch.setenv("DISPLAY", display)
+        req = MagicMock()
+        with patch(
+            "kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=KiroCrewConfig()
+        ), patch("sys.platform", "linux"), patch.object(
+            platform_compat, "IS_WINDOWS", False
+        ), patch(
+            "os.path.isfile", return_value=True
+        ):
+            resp = await api_branding(req)
+        assert json.loads(resp.body)["desktop_launcher"] is expected
+
 
 class TestLogoAssetInvariant:
     """The dashboard-served logo and the PWA 512 icon are the same image.

@@ -13,13 +13,14 @@ import { __resetPathKindCache } from '../hooks/usePathKind'
 import { kindsRequestCount, kindsRequestPaths, kindsResponse, probedPaths, stubPathKinds } from './pathKindStub'
 import { api } from '../api/client'
 
-// The chip's reveal hint is now gated on branding.directLocal: a remote session
-// degrades shift+click to a clipboard copy, so revealHintFor only promises
-// Finder/Explorer/file-manager on a direct-local gateway. The platform-aware
-// hint assertions below therefore mount against a local session; the remote
-// (directLocal:false) copy wording is pinned in MarkdownRenderer.contextmenu.test.tsx.
+// The chip's reveal hint is gated on the shared reveal gate (branding.directLocal
+// AND branding.desktopLauncher): where no reveal can land, shift+click copies the
+// path, so revealHintFor only promises Finder/Explorer/file-manager on a
+// direct-local gateway that has a launcher. The platform-aware hint assertions
+// below therefore mount against such a session; the copy wording is pinned in
+// MarkdownRenderer.contextmenu.test.tsx.
 vi.mock('../hooks/useBranding', () => ({
-  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: true }),
+  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: true, desktopLauncher: true }),
 }))
 
 type LightboxDetail = { images: { src: string; alt: string }[]; index: number }

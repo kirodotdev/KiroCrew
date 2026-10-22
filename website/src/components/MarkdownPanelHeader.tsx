@@ -6,12 +6,11 @@ import { useFileMenuItems, visibleFileMenuItems, invokeFileMenuItem, FileMenuIte
 import { FILE_EXPLORER_APP, FILE_EXPLORER_ROUTE, fileExplorerDeepLink } from '../apps/file-explorer/deepLink'
 import { useInstalledApps } from '../hooks/panelTabRegistry'
 import { appNavTarget } from '../appNav'
-import { useBranding } from '../hooks/useBranding'
 import { downloadFileToDisk, isAbsolutePath } from '../utils/fileReadUrl'
 import { copyToClipboard } from '../utils/clipboard'
 import { WINDOWS_ABS_PATH_RE } from '../utils/urlTransform'
 import { i18nT } from '../i18n/t'
-import FilePathMenu, { revealOrOpen, useRevealLabel, useCanOpenFile } from './FilePathMenu'
+import FilePathMenu, { revealOrOpen, useRevealLabel, useCanOpenFile, useCanReveal } from './FilePathMenu'
 import { useFileArtifactState, useFileKnowledgeState, type ReportError } from './useMarkdownPanelFileState'
 
 /**
@@ -351,15 +350,15 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
   useEffect(() => () => { clearTimeout(closeTimerRef.current) }, [])
   const navigate = useNavigate()
   // Open/Reveal shell out on the gateway, so they only make sense when the
-  // browser is on that same machine. Remote/tunneled sessions (directLocal
-  // false) see the clipboard/download fallbacks only — matching the shared
-  // FilePathMenu, which self-gates on the same flag.
-  const { directLocal } = useBranding()
-  // Open uses the shared gate (FilePathMenu.useCanOpenFile): directLocal AND a
-  // non-Windows gateway — a local Windows user must not get an Open row here
+  // browser is on that same machine and the machine can open a file manager.
+  // Everyone else sees the clipboard/download fallbacks only — the same gates
+  // the shared FilePathMenu applies (FilePathMenu.useCanReveal).
+  const canReveal = useCanReveal()
+  // Open uses the shared gate (FilePathMenu.useCanOpenFile): the reveal gate AND
+  // a non-Windows gateway — a local Windows user must not get an Open row here
   // that the shared menu hides. This panel only renders file content, so no
-  // kind is passed (dir suppression is moot). Reveal keeps the laxer
-  // directLocal-only gate because reveal works on Windows.
+  // kind is passed (dir suppression is moot). Reveal does not take the Windows
+  // condition because reveal works on Windows.
   const canOpen = useCanOpenFile()
   // Platform-aware reveal label from the shared owner (FilePathMenu) so this
   // overflow and FileViewer's overflow name the identical action identically.
@@ -497,9 +496,10 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
               destinations, and two glyphs among six would look arbitrary.
               Open in Files needs the app enabled at its native route plus an
               absolute path (openInFiles); Open uses the shared canOpen gate
-              (directLocal + non-Windows); Reveal uses directLocal alone — a
-              remote session cannot usefully drive Finder on the gateway, so it
-              sees the fallbacks only. Same gates the shared FilePathMenu applies. */}
+              (canReveal + non-Windows); Reveal uses canReveal alone — a remote
+              session, or a gateway host that cannot open one, cannot drive a file
+              manager the user sees, so it gets the fallbacks only. Same gates
+              the shared FilePathMenu applies. */}
           {openInFiles && (
             <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { navigate(fileExplorerDeepLink(filePath)); setOpen(false) }}>
               {i18nT('components.markdownPanel.open_in_app', { app: openInFiles.label })}
@@ -510,7 +510,7 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
               {i18nT('components.markdownPanel.open_with_default_app')}
             </button>
           )}
-          {directLocal && (
+          {canReveal && (
             <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { void revealOrOpen(filePath, 'reveal', { onError }); setOpen(false) }}>
               {revealLabel}
             </button>

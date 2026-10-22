@@ -3,9 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Folder, RotateCw, ExternalLink, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
 import DetailPanel from '../../components/DetailPanel'
-import { revealOrOpen, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
+import { revealOrOpen, useCanReveal, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
 import ErrorNotice from '../../components/ErrorNotice'
-import { useBranding } from '../../hooks/useBranding'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { api } from '../../api/client'
 import { fileIcon, colorForExt } from '../../utils/fileIcons'
@@ -371,10 +370,10 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   // editable field is a transient search string, not a durable draft.
   const reveal = useRevealFailure(cwd)
   // `/api/reveal` shells out on the gateway, so revealing `cwd` only makes sense
-  // when the browser is on that same machine. A remote/tunneled session would
-  // otherwise get a mis-worded "Path copied" alert; hide the button there, the
-  // same directLocal gate every other file-location surface applies.
-  const { directLocal } = useBranding()
+  // when the browser is on that same machine and the machine can open a file
+  // manager. Anywhere else the click could only copy the path, so the button is
+  // hidden by the same gate every other file-location surface applies.
+  const canReveal = useCanReveal()
 
   return (
     <DetailPanel
@@ -413,7 +412,7 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
               </span>
             )}
           </button>
-          {directLocal && (
+          {canReveal && (
             <button
               onClick={() => { void revealOrOpen(cwd, 'reveal', reveal) }}
               className="flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none"

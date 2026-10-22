@@ -11,10 +11,14 @@
  * beyond this file and is deliberately NOT exported (a zero-consumer export is
  * dead surface area).
  *
- * Open/Reveal items render only when `directLocal` is true (the backend reports
- * the request comes from a browser on the same machine). Remote and tunneled
- * sessions do not get them, because opening Finder on a host the user is not
- * looking at is useless.
+ * Open/Reveal items render only when the browser is on the gateway host
+ * (`directLocal`) AND that host can open a file manager right now
+ * (`desktopLauncher`: the launcher `/api/reveal` starts, and on Linux a desktop
+ * session for it); `useCanReveal` and `useCanOpenFile` own that gate. Remote and
+ * tunneled sessions do not get them, because opening Finder on a host the user
+ * is not looking at is useless. Neither does a host that cannot open one (a
+ * headless Linux box, which a browser behind an `ssh -L` tunnel still reaches as
+ * direct-local): there every click could only copy the path.
  *
  * The in-app items ("Open in side panel", "Show folder in side panel") render
  * whenever the host passes the matching handler, in every deployment, as their
@@ -61,7 +65,8 @@ import { i18nT } from '../i18n/t'
 type FilePathKind = 'file' | 'dir'
 
 /**
- * Perform a reveal/open and, on failure, show the SHARED i18n failure message.
+ * Perform a reveal/open and report, in the SHARED i18n wording, any outcome
+ * other than the action itself happening.
  *
  * Exported so every file-location surface (this menu, MarkdownPanel's overflow,
  * FileViewer's overflow) funnels its reveal through one failure path instead of
@@ -76,44 +81,37 @@ type FilePathKind = 'file' | 'dir'
  * string instead. The branch keys off the status code carried on `ApiError`, not
  * the server's prose — the raw denial text never reaches the UI.
  *
- * Returns `{ copied, copyFailed }` so a caller that promised a reveal/open through a
- * "Show in file manager" affordance can acknowledge the silent degrade. On a
- * headless direct-local session the backend still degrades an open/reveal to a
- * clipboard copy, and without a signal the click looks like a dead no-op. The
- * copy itself is still performed HERE (so callers that ignore the return — the
- * chip's Shift+click, the overflow buttons — keep working unchanged and
- * `api.revealPath` stays side-effect-free); the flag only lets the menu flip its
- * existing "Path copied" swap. A failed reveal/open is non-routine and IS
- * surfaced regardless (below).
+ * When the host could not open the path, the backend answers the clipboard
+ * fallback (`{ copy }`): it had no file manager to open, or the launcher did not
+ * start. The copy is performed HERE, so `api.revealPath` stays side-effect-free,
+ * and it is REPORTED here too, through `onError`: every caller named an open or
+ * a reveal, so a copy in its place must never pass for that action. The callers'
+ * gates (`useCanReveal`, `useCanOpenFile`) keep a host that cannot open one from
+ * offering these actions at all, so this is the rare case of a launcher that
+ * failed to start. If the write then fails as well, nothing was copied and the plain
+ * failure wording is reported instead. `copyToClipboard` signals that by
+ * RETURNING false rather than throwing (its `execCommand` fallback path — see
+ * utils/clipboard.ts), so the boolean is the only evidence the clipboard changed.
  *
- * `copyFailed` is separate from `!copied` because the two mean different things
- * to the caller: `copied: false, copyFailed: false` is the ordinary case where
- * the backend drove a real file manager and there was nothing to acknowledge,
- * while `copyFailed` is a degrade that then FAILED and must not be acknowledged
- * as a copy. `copyToClipboard` signals that by RETURNING false rather than
- * throwing (its `execCommand` fallback path — see utils/clipboard.ts), so the
- * boolean is the only evidence the clipboard actually changed; claiming a write
- * that did not happen is worse than saying nothing, because the user then pastes
- * whatever was there before.
- *
- * A failed reveal/open is reported through `onError` with the (already
- * localized) message, and the caller renders it in place through the shared
- * `ErrorNotice` (the `errors-use-error-notice` rule) — there is no blocking
- * `alert()` path any more. `useRevealFailure` below is the ready-made state for
- * a caller that has nothing else to hang it on.
+ * Every outcome is reported through `onError` with the (already localized)
+ * message, and the caller renders it in place through the shared `ErrorNotice`
+ * (the `errors-use-error-notice` rule) — there is no blocking `alert()` path any
+ * more. `useRevealFailure` below is the ready-made state for a caller that has
+ * nothing else to hang it on.
  */
 export async function revealOrOpen(
   filePath: string,
   action: 'open' | 'reveal',
   { onError }: { onError: (message: string) => void },
-): Promise<{ copied: boolean; copyFailed: boolean }> {
+): Promise<void> {
   try {
     const r = await api.revealPath(filePath, action)
     if (r.copy) {
       const copied = await copyToClipboard(r.copy)
-      return { copied, copyFailed: !copied }
+      onError(i18nT(copied
+        ? 'components.filePathMenu.reveal_copied_instead'
+        : 'components.filePathMenu.reveal_failed'))
     }
-    return { copied: false, copyFailed: false }
   } catch (err) {
     // eslint-disable-next-line no-console -- surface reveal failures for diagnostics
     console.error('revealPath failed', err)
@@ -121,7 +119,6 @@ export async function revealOrOpen(
     onError(i18nT(blockedByPolicy
       ? 'components.filePathMenu.reveal_blocked'
       : 'components.filePathMenu.reveal_failed'))
-    return { copied: false, copyFailed: false }
   }
 }
 
@@ -162,21 +159,40 @@ export function useRevealLabel(): string {
 }
 
 /**
+ * The ONE gate that decides whether a "Show in file manager" control is shown.
+ *
+ * Reveal needs two things: the browser is on the gateway host (`directLocal`),
+ * and that host can open a file manager right now (`desktopLauncher`, which the
+ * gateway decides from its own launcher and desktop session). `directLocal`
+ * alone cannot tell: a browser behind an `ssh -L` tunnel to a headless Linux host
+ * counts as direct-local, and there every reveal can only be answered with a
+ * clipboard copy. Every reveal surface (this menu, both
+ * overflows, the folder and project panels, the deck viewer, the path chip's
+ * Shift+click hint) reads it from here, so none of them offers a file manager
+ * that another one knows is not there.
+ */
+export function useCanReveal(): boolean {
+  const { directLocal, desktopLauncher } = useBranding()
+  return !!directLocal && !!desktopLauncher
+}
+
+/**
  * The ONE gate that decides whether the "Open with default app" row is shown.
  *
  * Every file-location surface (this menu, MarkdownPanel's overflow, FileViewer's
  * overflow) reads it from here rather than re-deriving `directLocal && …`, so a
  * local Windows user does not get an Open row in one menu that another menu
- * deliberately hides. Open needs all three: the browser is on the gateway host
- * (`directLocal`), the target is a file not a directory (`/api/reveal` rejects an
- * `open` on a dir), and the gateway is not Windows (files.py degrades an `open`
- * to a clipboard copy there). Reveal has a laxer gate — `directLocal` alone — so
- * it is intentionally NOT folded in here.
+ * deliberately hides. Open needs everything reveal does (`useCanReveal`: the
+ * browser on the gateway host, and a host that can open its desktop's
+ * handlers right now), plus a file rather than a
+ * directory (`/api/reveal` rejects an `open` on a dir) and a gateway that is not
+ * Windows (files.py degrades an `open` to a clipboard copy there). Reveal works
+ * on a Windows gateway, so that last condition is NOT folded into its gate.
  */
 export function useCanOpenFile(kind?: FilePathKind): boolean {
-  const { directLocal } = useBranding()
+  const canReveal = useCanReveal()
   const gatewayPlatform = useGatewayPlatform()
-  return !!directLocal && kind !== 'dir' && gatewayPlatform !== 'windows'
+  return canReveal && kind !== 'dir' && gatewayPlatform !== 'windows'
 }
 
 /**
@@ -232,15 +248,17 @@ interface FilePathMenuItemsProps extends InAppPathHandlers {
 }
 
 /**
- * The ONE owner of the inline "Path copied" acknowledgment for a path action.
+ * The ONE owner of what a path action says about itself afterwards.
  *
- * The app has no toast, so a copy — or an open/reveal the backend silently
- * DEGRADED to a copy on a headless session — is acknowledged by flipping a
- * label to `Path copied` / `Couldn't copy the path` for 1.5s and back. Both
- * consumers read it from here rather than re-deriving the timer, the attempt
- * guard and the wording: the file-path menu (whose Copy row and Open/Reveal
- * rows share one status) and the Office card's primary Open button, which
- * would otherwise read as a dead click on a headless direct-local host.
+ * Two outcomes, kept apart on purpose. "Copy path" flips its own label to
+ * `Path copied` / `Couldn't copy the path` for 1.5s and back (the app has no
+ * toast). An open or reveal never borrows that flip: what it reports — a
+ * failure, or a host that could only copy the path (see `revealOrOpen`) — is
+ * held as `revealError` and rendered through the shared `ErrorNotice`. When an
+ * open/reveal flipped the Copy row instead, the menu read as if "Copy path" had
+ * been chosen. Both consumers read it from here rather than re-deriving the
+ * timer and the attempt guard: the file-path menu and the Office card's primary
+ * Open button.
  *
  * `attemptRef` is what makes a late-settling write safe: it is bumped on
  * unmount and on every `filePath` change, so a resolution that arrives after
@@ -279,30 +297,20 @@ export function useCopyAck(filePath: string) {
     }
     flashCopyStatus(attempt, next)
   }
-  // Open/Reveal degrade to a clipboard copy on a remote or headless session
-  // (files.py cannot drive a file manager there), so acknowledge that instead of
-  // leaving a click that silently copied looking like a no-op — no blocking
-  // alert, no new toast surface.
-  //
-  // A reveal/open that FAILED (policy-blocked path, backend error) is held here
-  // too, so the consumer renders it in place through the shared `ErrorNotice`
-  // rather than the legacy blocking `alert()`. Cleared when the path changes,
-  // on the next attempt, and by the consumer's dismiss.
+  // What an open/reveal reports (a failure, or a copy made in its place) is held
+  // here, so the consumer renders it in place through the shared `ErrorNotice`
+  // rather than a blocking `alert()`. Cleared when the path changes, on the next
+  // attempt, and by the consumer's dismiss.
   const [revealError, setRevealError] = useState<string | null>(null)
   useEffect(() => { setRevealError(null) }, [filePath])
   const revealOrOpenWithAck = async (action: 'open' | 'reveal') => {
     const attempt = ++copyAttemptRef.current
     setRevealError(null)
-    const { copied, copyFailed } = await revealOrOpen(filePath, action, {
-      // Guarded like the copy ack: a stale failure must not land on a path
+    await revealOrOpen(filePath, action, {
+      // Guarded like the copy ack: a stale outcome must not land on a path
       // this component has already moved on from.
       onError: (message) => { if (attempt === copyAttemptRef.current) setRevealError(message) },
     })
-    if (copied) flashCopyStatus(attempt, 'copied')
-    // A degrade that could not reach the clipboard flips to the same
-    // `copy_failed` wording, rather than leaving a click that did nothing
-    // looking like one that worked.
-    else if (copyFailed) flashCopyStatus(attempt, 'failed')
   }
   const clearRevealError = () => setRevealError(null)
   return { copyStatus, copyPath, revealOrOpenWithAck, revealError, clearRevealError }
@@ -315,7 +323,10 @@ export function useCopyAck(filePath: string) {
 function FilePathMenuItems({ filePath, kind, onFileOpen, onFolderOpen }: FilePathMenuItemsProps) {
   const revealErrorId = useId()
   const editorErrorId = useId()
-  const isLocal = useBranding().directLocal
+  // The one shared Reveal gate (see useCanReveal): the browser on the gateway
+  // host AND a host that can open a file manager, so no row offers one that is
+  // not there.
+  const canReveal = useCanReveal()
   // Shared owner of the platform-aware reveal label (see useRevealLabel) — the
   // same wording MarkdownPanel's overflow and FileViewer's overflow use.
   const revealLabel = useRevealLabel()
@@ -356,10 +367,11 @@ function FilePathMenuItems({ filePath, kind, onFileOpen, onFolderOpen }: FilePat
 
   return (
     <>
-      {/* A failed reveal/open renders IN the menu (which the rows keep open on
-          select) instead of the old blocking alert(). askAgent on: a context
-          menu holds no draft, and a policy-blocked or failed reveal is a
-          gateway-side condition the agent can explain. */}
+      {/* A failed reveal/open, or one the host could only answer with a copy,
+          renders IN the menu (which the rows keep open on select) instead of
+          the old blocking alert(). askAgent on: a context menu holds no draft,
+          and a policy-blocked or failed reveal is a gateway-side condition the
+          agent can explain. */}
       {revealError && (
         <div className="px-2 py-1.5 max-w-[260px]">
           <ErrorNotice
@@ -425,10 +437,10 @@ function FilePathMenuItems({ filePath, kind, onFileOpen, onFolderOpen }: FilePat
       )}
       {canOpen && (
         <ContextMenuItem
-          // preventDefault keeps the menu open, matching the Copy row: on a
-          // headless direct-local session an open degrades to a clipboard copy
-          // and the row must stay on screen long enough to show the "Path
-          // copied" acknowledgment revealOrOpenWithAck flips on.
+          // preventDefault keeps the menu open, matching the Copy row, so what
+          // the open reports (a failure, or a launcher that did not start and
+          // left only a copy) lands in the notice above while the row that was
+          // chosen is still on screen.
           onSelect={(e) => { e.preventDefault(); void revealOrOpenWithAck('open') }}
           aria-label={openLabel}
         >
@@ -436,7 +448,7 @@ function FilePathMenuItems({ filePath, kind, onFileOpen, onFolderOpen }: FilePat
           {openLabel}
         </ContextMenuItem>
       )}
-      {isLocal && (
+      {canReveal && (
         <ContextMenuItem
           onSelect={(e) => { e.preventDefault(); void revealOrOpenWithAck('reveal') }}
           aria-label={revealLabel}

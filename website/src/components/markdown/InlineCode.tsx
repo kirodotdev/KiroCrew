@@ -3,10 +3,9 @@ import { Check, ExternalLink, Folder, MessageSquare } from 'lucide-react'
 import { fileIcon } from '../../utils/fileIcons'
 import { wholeMatchAutolinkHref } from '../../utils/autolinkRules'
 import { useGatewayPlatform, type GatewayPlatform } from '../../hooks/useGatewayPlatform'
-import { useBranding } from '../../hooks/useBranding'
 import { InstantTip, useInstantTip } from '../InstantTip'
 import ErrorNotice from '../ErrorNotice'
-import FilePathMenu, { useRevealFailure } from '../FilePathMenu'
+import FilePathMenu, { useCanReveal, useRevealFailure } from '../FilePathMenu'
 import { i18nT } from '../../i18n/t'
 import { InsideLinkCtx, PathActionCtx, PathProbeCtx, SessionActionCtx, SidebarFolderCtx } from './contexts'
 import { activatePath, basenameOf, usePathResolution } from './pathReferences'
@@ -155,14 +154,14 @@ function FolderGlyphReserve() {
  * Dateimanager", "dans le gestionnaire de fichiers", "ファイルマネージャーに表示"),
  * which a placeholder cannot carry.
  */
-function revealHintFor(isDir: boolean, platform: GatewayPlatform, directLocal: boolean): string {
-  // On a remote or tunneled session /api/reveal cannot drive the gateway host's
-  // file manager, so shift+click degrades to a clipboard copy (files.py answers
-  // the copy-degrade branch). Naming Finder/Explorer here would promise an action
-  // the backend no longer performs, so the hint tells the truth: shift+click
-  // copies the path. The click (open/browse) arm is unchanged — it drives the
+function revealHintFor(isDir: boolean, platform: GatewayPlatform, canReveal: boolean): string {
+  // Where no reveal can land (a remote or tunneled session, or a gateway host
+  // that cannot open a file manager: the shared useCanReveal gate) shift+click
+  // copies the path instead (see `InlineCode`'s handler), and naming
+  // Finder/Explorer here would promise an action nothing performs. So the hint
+  // tells the truth: shift+click copies the path. The click (open/browse) arm is unchanged — it drives the
   // in-app viewer, which works remotely — so only the shift+click clause differs.
-  if (!directLocal) {
+  if (!canReveal) {
     return isDir
       ? i18nT('components.markdownRenderer.click_to_browse_shift_click_to_copy_path')
       : i18nT('components.markdownRenderer.click_to_open_shift_click_to_copy_path')
@@ -478,7 +477,10 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
   const folderActions = useContext(SidebarFolderCtx)
   const insideLink = useContext(InsideLinkCtx)
   const gatewayPlatform = useGatewayPlatform()
-  const { directLocal } = useBranding()
+  // Whether shift+click can reveal at all (FilePathMenu.useCanReveal): the
+  // browser on the gateway host AND a host that can open a file manager. Shared
+  // with the menu's reveal row, so the hint and the row never disagree about it.
+  const canReveal = useCanReveal()
   const raw = codeStr.trim()
   // Inside a link to a web page the span never becomes a chip (see the early
   // return below), so it never asks the backend whether its text names a path.
@@ -493,6 +495,12 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
   // other copy affordance in the renderer uses, and the same failure surface (the
   // bubble). Declared before the early returns below (rules of hooks).
   const pathCopy = useTitleCuedCopy(raw, i18nT('components.markdownRenderer.couldnt_copy_the_path_label', { label: basenameOf(raw.replace(/[\\/]+$/, '')) || raw }))
+  // Shift+click's copy where no reveal can land (see `act`): the resolved path
+  // without its `:line` suffix, which is what the hint's "copy path" names and
+  // what the gateway's clipboard fallback copied. Ctrl/Cmd+click above copies
+  // the chip's text as shown.
+  const resolvedPath = pathResolution.path
+  const shiftCopy = useTitleCuedCopy(resolvedPath, i18nT('components.markdownRenderer.couldnt_copy_the_path_label', { label: basenameOf(resolvedPath.replace(/[\\/]+$/, '')) || resolvedPath }))
 
   // `data-path*` / `data-session-key` / `data-chip-action` describe a chip THIS
   // component rendered, so only it may set them. rehypeSanitize allowlists every
@@ -631,7 +639,7 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
   }
   const isDir = pathResolution.kind === 'dir'
   const { path, splitPath, kind, line: targetLine, endLine: targetEndLine } = pathResolution
-  const revealHint = revealHintFor(isDir, gatewayPlatform, directLocal)
+  const revealHint = revealHintFor(isDir, gatewayPlatform, canReveal)
   // A leading glyph is what makes "this is actionable" legible at rest. Without
   // one, a confirmed chip and an inert one differ only on hover, so a reader
   // cannot tell which paths the backend actually resolved. Files use the same
@@ -652,13 +660,17 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
     e.stopPropagation()
     // Ctrl/Cmd+Click copies the path text rather than opening/revealing.
     if (e.ctrlKey || e.metaKey) { pathCopy.press(e.currentTarget); return }
+    // Where no reveal can land, Shift+click copies the path, as the hint says,
+    // rather than asking the gateway for a file manager it cannot show.
+    if (e.shiftKey && !canReveal) { shiftCopy.press(e.currentTarget); return }
     activatePath(path, kind, e.shiftKey, actions, reveal.onError, targetLine, targetEndLine)
   }
   // Right-click opens the shared file-path menu (Open in default app / reveal /
   // copy path), additive to the existing click/shift-click activation. The
-  // native items self-gate on directLocal; the in-app items ("Open in side
-  // panel", "Show folder in side panel") come from this host's own handlers,
-  // so a remote session still gets an entry that works on the viewer's screen.
+  // native items self-gate on the shared reveal gate; the in-app items ("Open in
+  // side panel", "Show folder in side panel") come from this host's own
+  // handlers, so a remote session still gets an entry that works on the
+  // viewer's screen.
   // `kind` is threaded through so a directory chip hides "Open with default
   // app" — the reveal endpoint 400s an `open` on a directory, which would land
   // the user on an error for a click they cannot fix.
@@ -699,9 +711,10 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
         // to. That keeps the disclosure honest without a second catalog string:
         // the location is already in the text the user is hovering.
         //
-        // While a Ctrl/Cmd+click copy is confirmed the title says so, the same
-        // acknowledgment the session chip gives the same gesture.
-        title={pathCopy.copied
+        // While a Ctrl/Cmd+click (or a copying Shift+click) copy is confirmed the
+        // title says so, the same acknowledgment the session chip gives the same
+        // gesture.
+        title={pathCopy.copied || shiftCopy.copied
           ? i18nT('components.markdownRenderer.copied')
           : `${raw}\n${revealHint}\n${i18nT('components.markdownRenderer.ctrl_click_to_copy')}`}
       >
@@ -721,6 +734,7 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
       <ErrorNotice variant="inline" className="ml-1.5 align-baseline" message={reveal.error} askAgent onDismiss={reveal.clear} testId="md-chip-reveal-error" />
     )}
     {pathCopy.failureBubble}
+    {shiftCopy.failureBubble}
     </>
   )
 }

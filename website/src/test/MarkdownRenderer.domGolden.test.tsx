@@ -23,7 +23,7 @@ import { stubPathKinds } from './pathKindStub'
  */
 
 vi.mock('../hooks/useBranding', () => ({
-  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: true }),
+  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: true, desktopLauncher: true }),
 }))
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn(), copyCode: vi.fn() }))
 vi.mock('mermaid', () => ({

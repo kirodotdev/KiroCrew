@@ -36,12 +36,17 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-// The overflow's Open/Reveal entries gate on directLocal (a remote session
-// cannot usefully drive Finder on the gateway). Default to a local session so
-// the inventory/label assertions see them; the remote case is its own test.
-const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
+// The overflow's Open/Reveal entries gate on the shared reveal gate (directLocal
+// AND a launcher on the gateway host: a remote or headless session cannot
+// usefully drive Finder there). Default to a local desktop session so the
+// inventory/label assertions see them; the hidden cases are their own tests.
+const brandingEnv = vi.hoisted(() => ({ directLocal: true, desktopLauncher: true }))
 vi.mock('../hooks/useBranding', () => ({
-  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
+  useBranding: () => ({
+    botName: 'Test', avatar: '',
+    directLocal: brandingEnv.directLocal,
+    desktopLauncher: brandingEnv.desktopLauncher,
+  }),
 }))
 
 const writeText = vi.fn()
@@ -61,6 +66,7 @@ const wrapper = ({ children }: { children: React.ReactNode }) => (
 beforeEach(() => {
   writeText.mockReset()
   brandingEnv.directLocal = true
+  brandingEnv.desktopLauncher = true
   queryClient.clear()
   // happy-dom's navigator.clipboard is getter-only; defineProperty replaces it.
   Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
@@ -157,6 +163,16 @@ describe('MarkdownPanel OverflowMenu', () => {
     expect(screen.getByText('Copy content')).toBeInTheDocument()
   })
 
+  // Direct-local (an `ssh -L` browser reads as one) on a gateway host with no
+  // desktop launcher: both hand-offs could only copy the path, so neither shows.
+  it('hides both desktop hand-off entries when the gateway host has no desktop launcher', () => {
+    brandingEnv.desktopLauncher = false
+    openMenu()
+    expect(screen.queryByText('Open with default app')).not.toBeInTheDocument()
+    expect(screen.queryByText('Show in file manager')).not.toBeInTheDocument()
+    expect(screen.getByText('Copy path')).toBeInTheDocument()
+  })
+
   /**
    * The reveal entry names the GATEWAY's file manager: `/api/reveal` shells out
    * there, so a dashboard opened from a Mac against a Linux gateway must not say
@@ -184,15 +200,15 @@ describe('MarkdownPanel OverflowMenu', () => {
   })
 
   // The copy fallback is centralized in revealOrOpen (FilePathMenu.tsx),
-  // which calls api.revealPath and then copyToClipboard itself without an
-  // alert, so every call site — including this panel — is covered without a
-  // local alert. Asserting no local alert here keeps the panel from adding
-  // one once it resolves through the (mocked) real client.
-  it('does not alert locally when the mocked backend resolves with a copy fallback', async () => {
+  // which calls api.revealPath, then copyToClipboard, and reports the copy
+  // through the caller's error channel, so every call site — including this
+  // panel — says what happened without a local alert of its own.
+  it('reports a copy fallback through the panel, without alerting', async () => {
     vi.mocked(api).revealPath = vi.fn().mockResolvedValue({ ok: true, copy: '/tmp/hello.txt' })
     openMenu()
     fireEvent.click(screen.getByText('Show in file manager'))
-    await waitFor(() => expect(api.revealPath).toHaveBeenCalled())
+    await waitFor(() => expect(overflowError).toHaveBeenCalledWith(i18nT('components.filePathMenu.reveal_copied_instead')))
+    expect(writeText).toHaveBeenCalledWith('/tmp/hello.txt')
     expect(window.alert).not.toHaveBeenCalled()
   })
 

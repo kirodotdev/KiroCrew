@@ -410,20 +410,17 @@ function OfficeCard({ filePath, showBigDownload, hideHint, compact }: {
   const iconSize = showBigDownload ? 16 : 14
   // The ONE gate for an Open-with-default-app surface, shared with the file
   // panel's ⋯ entry and MarkdownPanel's overflow: the browser must sit on the
-  // gateway host, or `/api/reveal` has no desktop to open on and the click looks
-  // broken. When it is false the card falls back to Download-as-primary, which
-  // is what a remote session actually needs — the bytes.
+  // gateway host and that host must be able to open the file, or `/api/reveal`
+  // has no desktop to open on and the click looks broken. When it is false the card
+  // falls back to Download-as-primary, which is what a remote session actually
+  // needs — the bytes.
   const canOpen = useCanOpenFile('file')
-  // A headless direct-local host has no desktop, so the backend degrades the
-  // `open` to a clipboard copy. Shared with the file-path menu (see useCopyAck)
-  // so the primary button acknowledges that degrade with the same inline swap
-  // instead of reading as a dead click.
-  const { copyStatus, revealOrOpenWithAck, revealError, clearRevealError } = useCopyAck(filePath)
-  const openLabel = copyStatus === 'copied'
-    ? i18nT('components.filePathMenu.path_copied')
-    : copyStatus === 'failed'
-      ? i18nT('components.filePathMenu.copy_failed')
-      : i18nT('components.markdownPanel.open_with_default_app')
+  // What the open reports — a failure, or a launcher that did not start and left
+  // only a copy of the path — is held by the same owner the file-path menu uses
+  // (see useCopyAck) and shown in the notice above the buttons, never as a
+  // relabelled Open button.
+  const { revealOrOpenWithAck, revealError, clearRevealError } = useCopyAck(filePath)
+  const openLabel = i18nT('components.markdownPanel.open_with_default_app')
   const actions = (
     <>
       {canOpen && (

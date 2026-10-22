@@ -18,10 +18,21 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
+import pytest
+
 from kiro_crew import platform_compat
 
 
 class TestRevealInFileManager:
+    @pytest.fixture(autouse=True)
+    def _a_desktop_session(self, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
+        # The Linux arms spawn only into a desktop session (see
+        # `desktop_launcher_available`) and a CI runner has none, so every test
+        # starts with an X11 display named; a test about its absence removes it
+        # through its own `monkeypatch`, which unwinds before this one does.
+        _floor_monkeypatch.setenv("DISPLAY", ":0")
+        _floor_monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+
     def test_macos_selects_the_file_with_an_absolute_open(self) -> None:
         with patch("sys.platform", "darwin"), \
              patch("os.path.isfile", return_value=True), \
@@ -120,6 +131,84 @@ class TestRevealInFileManager:
                  patch("subprocess.Popen") as popen:
                 assert platform_compat.reveal_in_file_manager("/w/x.md") is False
             popen.assert_not_called()
+
+    @pytest.mark.parametrize("present", [True, False])
+    @pytest.mark.parametrize(
+        ("platform", "windows", "expected_bin"),
+        [
+            ("darwin", False, "/usr/bin/open"),
+            ("linux", False, "/usr/bin/xdg-open"),
+            ("win32", True, r"C:\Windows\explorer.exe"),
+        ],
+    )
+    def test_desktop_launcher_available_checks_the_launcher_each_platform_spawns(
+        self, platform: str, windows: bool, expected_bin: str, present: bool
+    ) -> None:
+        # The dashboard reads this to decide whether to offer the two hand-offs at
+        # all, so it must name the same absolute launcher the spawn uses (with a
+        # desktop session named, from the fixture, for the Linux arm).
+        with patch("sys.platform", platform), \
+             patch.object(platform_compat, "IS_WINDOWS", windows), \
+             patch("os.path.isfile", return_value=present) as isfile:
+            assert platform_compat.desktop_launcher_available() is present
+        isfile.assert_called_once_with(expected_bin)
+
+    @pytest.mark.parametrize(
+        ("display", "wayland", "ready"),
+        [
+            (None, None, False),
+            ("", "", False),
+            (":0", None, True),
+            (None, "wayland-0", True),
+        ],
+    )
+    def test_linux_needs_a_desktop_session_as_well_as_xdg_open(
+        self, monkeypatch: pytest.MonkeyPatch, display: str | None, wayland: str | None, ready: bool
+    ) -> None:
+        # A headless box with xdg-utils installed has the launcher and nothing
+        # for it to open into, so it cannot open a file manager right now.
+        for name, value in (("DISPLAY", display), ("WAYLAND_DISPLAY", wayland)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+        with patch("sys.platform", "linux"), \
+             patch.object(platform_compat, "IS_WINDOWS", False), \
+             patch("os.path.isfile", return_value=True):
+            assert platform_compat.desktop_launcher_available() is ready
+
+    def test_macos_needs_no_display_variable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # `open` reaches the logged-in session through LaunchServices, not
+        # through DISPLAY, so its absence there says nothing.
+        monkeypatch.delenv("DISPLAY", raising=False)
+        with patch("sys.platform", "darwin"), \
+             patch("os.path.isfile", return_value=True):
+            assert platform_compat.desktop_launcher_available() is True
+
+    def test_no_desktop_session_means_neither_hand_off_spawns(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The launch asks the same question the dashboard does, so a click that
+        # reaches /api/reveal on a headless host degrades instead of starting an
+        # xdg-open that has nowhere to show a window.
+        monkeypatch.delenv("DISPLAY", raising=False)
+        with patch("sys.platform", "linux"), \
+             patch.object(platform_compat, "IS_WINDOWS", False), \
+             patch("os.path.isfile", return_value=True), \
+             patch("subprocess.Popen") as popen:
+            assert platform_compat.reveal_in_file_manager("/w/x.md") is False
+            assert platform_compat.open_with_default_app("/w/x.md") is False
+        popen.assert_not_called()
+
+    def test_no_desktop_launcher_means_neither_hand_off_spawns(self) -> None:
+        # One readiness answer for the dashboard and the launch: when it says no,
+        # a click cannot start a launcher.
+        with patch("sys.platform", "linux"), \
+             patch.object(platform_compat, "IS_WINDOWS", False), \
+             patch.object(platform_compat, "desktop_launcher_available", return_value=False), \
+             patch("os.path.isfile", return_value=True), \
+             patch("subprocess.Popen") as popen:
+            assert platform_compat.reveal_in_file_manager("/w/x.md") is False
+            assert platform_compat.open_with_default_app("/w/x.md") is False
+        popen.assert_not_called()
 
     def test_a_launcher_that_refuses_to_run_answers_false(self) -> None:
         # Installed but unrunnable: AppLocker, a revoked exec bit, an exhausted
