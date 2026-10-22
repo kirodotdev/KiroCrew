@@ -66,6 +66,7 @@ def payload(**overrides: Any) -> dict[str, Any]:
         "private_dirs": [],
         "private_dir_ids": {},
         "readonly_dirs": [],
+        "parent_pins": [],
         "writable_dirs": [],
         "sensitive_files": [],
         "fail_closed_file_masks": [],
