@@ -888,13 +888,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         _hold_attachments = attachment_meta(user_meta)
         _hold_meta.update(_hold_attachments)
         _hold_meta.update(quote_meta(user_meta))
-        if request_app:
+        if request_app or cron_creator:
             # Same reason as the busy-slot queue above: this entry is drained
-            # later, so only its meta can name the actor.
-            _hold_meta[TURN_ACTOR_META_KEY] = "app"
-        elif cron_creator:
-            # A script cron's send, as on the other two arms.
-            _hold_meta[TURN_ACTOR_META_KEY] = "cron"
+            # later, so only its meta can name the actor. One stamp for both,
+            # the app winning as on the other two arms: a script cron's send is
+            # `cron`, an app's is `app` whatever else the request carries.
+            _hold_meta[TURN_ACTOR_META_KEY] = "app" if request_app else "cron"
         qid = slot.queue_append(
             message,
             meta=_hold_meta,
