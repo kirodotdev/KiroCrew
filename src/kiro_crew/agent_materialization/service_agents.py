@@ -4,13 +4,18 @@
 agent a non-operator channel sender talks to, a trust boundary that mounts nothing;
 ``kirocrew-knowledge`` runs the Knowledge Library's extraction; ``kirocrew-research``
 is the Research Lab's per-cycle worker, derived from the default template so it
-inherits the governance ceiling. Each is rewritten on every rebuild.
+inherits the governance ceiling. Each is rewritten on every rebuild, and the
+knowledge spec also before each knowledge worker spawn when the file on disk is not
+its template (:func:`repair_knowledge_agent_spec`).
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 from kiro_crew import agent as agent_mod
-from kiro_crew import agent_state
+from kiro_crew import agent_discovery, agent_state
 from kiro_crew.agent_files import (
     DASHBOARD_MANAGER_AGENT_FILENAME as _DASHBOARD_MANAGER_AGENT_FILENAME,
 )
@@ -20,6 +25,7 @@ from kiro_crew.agent_files import LITE_AGENT_FILENAME as _LITE_AGENT_FILENAME
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
 from kiro_crew.agent_files import TEAM_LEAD_AGENT_FILENAME as _TEAM_LEAD_AGENT_FILENAME
 from kiro_crew.agent_materialization import auto_approve, managed_mcp, skill_resources
+from kiro_crew.user_json import strict_json_equal
 
 
 def _install_guest_agent() -> None:
@@ -98,21 +104,16 @@ def knowledge_agent_model() -> str:
     return model
 
 
-def _install_knowledge_agent() -> None:
-    """Generate and install the kirocrew-knowledge agent config.
+def _knowledge_agent_config() -> dict[str, Any]:
+    """The ``kirocrew-knowledge`` spec as both of its writers build it, before the tail.
 
-    This agent is used by the Knowledge Library's LLMPool for document
-    extraction. By default it uses the user's configured agent.model (so
-    extraction runs on the same model as chat). If the user sets
-    knowledge.extraction_model explicitly, that model is used instead —
-    allowing a cheaper model for extraction without changing the chat default.
+    Its model follows :func:`knowledge_agent_model`, so the installer and the
+    pre-spawn repair write the same document.
     """
-    path = agent_mod.kiro_agents_dir_path() / _KNOWLEDGE_AGENT_FILENAME
-
     # Resolve model: knowledge.extraction_model > agent.model > "auto"
     model = knowledge_agent_model()
 
-    config: dict[str, object] = {
+    return {
         "name": "kirocrew-knowledge",
         "description": (
             "Dedicated agent for knowledge extraction, categorization, " "and summarization."
@@ -124,10 +125,119 @@ def _install_knowledge_agent() -> None:
         "tools": [],
     }
 
+
+def _install_knowledge_agent() -> None:
+    """Generate and install the kirocrew-knowledge agent config.
+
+    This agent is used by the Knowledge Library's LLMPool for document
+    extraction. By default it uses the user's configured agent.model (so
+    extraction runs on the same model as chat). If the user sets
+    knowledge.extraction_model explicitly, that model is used instead —
+    allowing a cheaper model for extraction without changing the chat default.
+    """
+    path = agent_mod.kiro_agents_dir_path() / _KNOWLEDGE_AGENT_FILENAME
+    config = _knowledge_agent_config()
     auto_approve.write_governed_spec(
         path, config, source="_install_knowledge_agent", kas_policy="none"
     )
-    agent_mod.logger.info("Installed knowledge agent config: %s (model=%s)", path, model)
+    agent_mod.logger.info("Installed knowledge agent config: %s (model=%s)", path, config["model"])
+
+
+#: How many differing top-level keys a repair warning names. Enough for any real
+#: rewrite; the bound keeps a file stuffed with keys from flooding the log line.
+_REPAIR_DRIFT_KEYS_SHOWN = 8
+
+
+def repair_knowledge_agent_spec() -> bool:
+    """Rewrite ``kirocrew-knowledge.json`` from its template unless the file already is it.
+
+    The Knowledge Library's pool feeds untrusted document text to this agent, and
+    ``knowledge.llm_pool.AcpWorker.start`` refuses to start a worker until the spec
+    the harness runs under is confirmed to declare ``"tools": []``. The spec is Crew's
+    own and is re-derived, never preserved (``rfc-team-lead-default-agent.md``), but
+    only the rebuild re-derives it: a tool that rewrites every file in the agents
+    directory (a launcher adding its own MCP server, say) leaves the pool refusing
+    every batch until the next rebuild. The pool calls this before each worker spawn,
+    so the confirmation reads the template.
+
+    The file is compared parsed against the governed template, so a re-serialized
+    copy of the same spec is left alone and a clean file costs one read. Any other
+    file -- a key added, a value changed, a file that is missing or cannot be read as
+    a spec -- is rewritten through the same governed tail the installer uses, with a
+    WARNING naming the top-level keys that differed and never their values: an
+    injected server's ``env`` may hold a credential.
+
+    Returns True when it rewrote the file. Never raises: a write this data home may
+    not make (another home owns the agents directory) or one that fails leaves the
+    file as it is, and the caller's confirmation still decides whether a worker
+    starts. Blocking; async callers run it with ``asyncio.to_thread``.
+    """
+    path = agent_mod.kiro_agents_dir_path() / _KNOWLEDGE_AGENT_FILENAME
+    try:
+        config = _knowledge_agent_config()
+        auto_approve.govern_spec(
+            config,
+            agent_filename=path.name,
+            source="repair_knowledge_agent_spec",
+            kas_policy="none",
+        )
+        drift = _spec_drift(path, config)
+        if drift is None:
+            return False
+        auto_approve.write_governed_spec(
+            path, config, source="repair_knowledge_agent_spec", kas_policy="none"
+        )
+    except agent_mod.SharedAgentHomeRefused:
+        # The write guard already warned, once per process, that this home does not
+        # own the directory; repeating it on every spawn adds nothing.
+        agent_mod.logger.debug("knowledge agent spec repair declined: %s", path, exc_info=True)
+        return False
+    except Exception:
+        agent_mod.logger.warning(
+            "Could not rewrite the knowledge agent spec %s from its template", path, exc_info=True
+        )
+        return False
+    agent_mod.logger.warning(
+        "Knowledge agent spec %s was not the spec Kiro Crew writes (%s); rewrote it from "
+        "the template so the knowledge pool's zero-tool check can pass",
+        path,
+        drift,
+    )
+    return True
+
+
+def _spec_drift(path: Path, expected: dict[str, Any]) -> str | None:
+    """How the spec at *path* differs from *expected*, or ``None`` when it does not.
+
+    Read through the hardened reader, so a link planted at the name is screened
+    before anything follows it. Every failure to read a spec counts as drift: the
+    file is Crew's own, and the governed write replaces the directory entry rather
+    than writing through it.
+    """
+    try:
+        on_disk = agent_discovery.read_agent_spec_strict(
+            path, operation="knowledge_spec_repair", source="unknown"
+        )
+    except FileNotFoundError:
+        return "missing"
+    except (OSError, ValueError) as exc:
+        return f"unreadable: {type(exc).__name__}"
+    if not isinstance(on_disk, dict):
+        return "not a JSON object"
+    # Type-strict: a ``0`` where the template has ``false`` is a different file to
+    # kiro-cli's schema, though Python's ``==`` calls them equal.
+    if strict_json_equal(on_disk, expected):
+        return None
+    keys = sorted(
+        str(key)
+        for key in on_disk.keys() | expected.keys()
+        if key not in on_disk
+        or key not in expected
+        or not strict_json_equal(on_disk[key], expected[key])
+    )
+    shown = [repr(key)[:64] for key in keys[:_REPAIR_DRIFT_KEYS_SHOWN]]
+    more = len(keys) - len(shown)
+    return "differs in " + ", ".join(shown) + (f" and {more} more" if more else "")
 
 
 def _without_guide_server(config: dict) -> dict:

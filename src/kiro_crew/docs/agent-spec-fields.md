@@ -690,7 +690,7 @@ not resurrected on the next boot.
 | `kirocrew-ledger-conductor.json` | generated; your `allowedTools` entries are carried forward | every gateway start |
 | `kirocrew-pipeline-conductor.json` | generated; your `allowedTools` entries are carried forward | every gateway start |
 | `kirocrew-security-conductor.json` | generated; your `allowedTools` entries are carried forward | every gateway start |
-| `kirocrew-knowledge.json` | generated | every gateway start |
+| `kirocrew-knowledge.json` | generated | every gateway start, and before every knowledge worker spawn when the file is not the template (any other content is rewritten) |
 | `kirocrew-research.json` | generated from the template and `agent.json`; NOT derived from `kirocrew.json`, so servers, app registrations and the model added there stay off it | every gateway start |
 | `kirocrew-dashboard-manager.json` | generated | every gateway start (the subagent a mate hands page work to) |
 | `kirocrew-heartbeat.json` | DERIVED from `kirocrew.json` (its `kirocrew-core` entry, `autoApprove` included) | every gateway start, and re-checked before every heartbeat session |
