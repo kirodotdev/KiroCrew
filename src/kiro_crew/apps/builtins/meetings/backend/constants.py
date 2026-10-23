@@ -155,6 +155,38 @@ VALID_TRANSCRIPT_SOURCES = (
     TRANSCRIPT_SOURCE_SYSTEM,
 )
 
+#: App-owned root holding the user's own per-meeting notes, OUTSIDE every
+#: meeting's agent-writable directory.
+#:
+#: The complete path is ``<data>/notes/<safe_meeting_id>/note.md``, with pasted
+#: images beside it under :data:`NOTE_IMAGES_DIR`. The note is private free text the
+#: user cannot regenerate, and every meeting agent ships ``fs_read``/``fs_write``
+#: and is handed the meeting directory's absolute path — so a note stored INSIDE
+#: that directory (the first version of this feature used ``<meeting>/_note.md``)
+#: was one ``fs_write`` away from being overwritten. The underscore only proved no
+#: agent's DERIVED output filename could collide with it, which is a different
+#: claim from "no agent can open it".
+#:
+#: ``apps/meetings/data/notes`` is on the shared WRITE-ONLY tier
+#: (``security.paths._WRITE_PROTECTED_HOME_PATHS``), the read-allowed /
+#: write-denied shape ``app-sources`` and ``~/.kiro/agents`` use — NOT on the
+#: read+write floor ``edits/`` sits on, and the asymmetry is load-bearing: the
+#: dashboard renders pasted images through ``/api/file-raw``, which applies the
+#: read floor, so a note tree on that floor answers 403 for every image. Reads
+#: stay open (the note is the user's own text in the user's own meeting); what the
+#: fence refuses is an agent file tool REWRITING it. The app backend opens the
+#: files directly and is unaffected.
+NOTES_DIR = "notes"
+
+#: The note file inside a meeting's :data:`NOTES_DIR` entry. No agent output ever
+#: lands in this tree, so the name needs no collision-avoidance property.
+NOTE_FILE = "note.md"
+
+#: Subdirectory holding images pasted into a note. Referenced from the note as a
+#: RELATIVE path (``![10:23](images/xxx.png)``), which is what lets the dashboard's
+#: markdown renderer resolve it through the existing hardened file route.
+NOTE_IMAGES_DIR = "images"
+
 # The always-on system agent that maintains ``tasks.json``. Not a configurable
 # entry in ``meeting_agents`` — it is a core feature of the app.
 TASK_EXTRACTOR_ID = "task-extractor"
@@ -342,3 +374,32 @@ MAX_IMPORT_AUDIO_BYTES = 512 * 1024 * 1024
 #: with room to spare while keeping a pathological file (a transcript of silence
 #: split into thousands of fragments) from filling every agent queue.
 MAX_IMPORT_LINES = 2000
+
+
+# ── notes ───────────────────────────────────────────────────────────────────
+
+#: Ceiling on a meeting note. Generous — this is a human typing for at most the
+#: four hours ``MAX_SESSION_DURATION`` allows — but bounded, because the note is
+#: written by a request body and read back into a poll response.
+MAX_NOTE_CHARS = 100_000
+
+#: Body cap for the note PUT specifically, replacing ``_common.MAX_BODY_BYTES``.
+#:
+#: The same pairing :data:`MAX_MINUTES_BODY_BYTES` spells out for the minutes route,
+#: and it matters here for the same arithmetic: ``json_body``'s default cap is 256
+#: KiB, which a 100k-character note crosses at roughly 87,400 characters of CJK
+#: (three UTF-8 bytes each), 65,500 of emoji, or 43,000 from a client that
+#: ``\\u``-escapes non-ASCII — every one of them under the character cap the route
+#: advertises. Without this the autosave answered 413 from that point on and every
+#: later keystroke went unsaved. Sized for the valid worst case (an astral character
+#: as two surrogate escapes is twelve wire bytes): ``100_000 * 12`` plus the JSON
+#: envelope fits in 2 MiB, well below the gateway's 60 MiB ``client_max_size``.
+MAX_NOTE_BODY_BYTES = 2 * 1024 * 1024
+
+#: Ceiling on one pasted note image. A full-screen PNG screenshot on a retina
+#: display is comfortably under this; anything larger is not a screenshot.
+MAX_NOTE_IMAGE_BYTES = 8 * 1024 * 1024
+
+#: Images one meeting's note may accumulate. Bounds the directory a single meeting
+#: can create, since each paste writes a new file and nothing deletes them.
+MAX_NOTE_IMAGES = 200
