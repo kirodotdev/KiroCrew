@@ -1930,6 +1930,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.terminal.completion.enabled"
   },
   {
+    "id": "display.copy-on-select",
+    "label": "Copy on select",
+    "labelKey": "pages.settings.displayPanel.terminal_copy_on_select",
+    "hint": "Copy text to the clipboard as soon as you select it with the mouse. The selection toolbar still opens, so Send to chat stays one click away.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "terminal"
+    }
+  },
+  {
     "id": "display.cursor-style",
     "label": "Cursor style",
     "labelKey": "pages.settings.displayPanel.terminal_cursor_style",

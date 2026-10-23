@@ -16362,6 +16362,8 @@
         "terminal_cursor_style_block": "ブロック",
         "terminal_cursor_style_bar": "バー",
         "terminal_cursor_style_underline": "下線",
+        "terminal_copy_on_select": "選択時にコピー",
+        "terminal_copy_on_select_desc": "マウスでテキストを選択するとすぐにクリップボードへコピーします。選択ツールバーは引き続き開くので、「チャットに送信」もワンクリックで使えます。",
         "terminal_shell": "デフォルトシェル",
         "terminal_shell_hint": "内蔵ターミナルが起動するシェル。",
         "terminal_shell_desc": "絶対パスまたは PATH 上のコマンドを指定します。空欄の場合はシステムのデフォルト（$SHELL）を使用します。",

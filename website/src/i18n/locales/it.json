@@ -16904,6 +16904,8 @@
         "terminal_cursor_style_block": "Blocco",
         "terminal_cursor_style_bar": "Barra",
         "terminal_cursor_style_underline": "Sottolineatura",
+        "terminal_copy_on_select": "Copia alla selezione",
+        "terminal_copy_on_select_desc": "Copia il testo negli appunti non appena lo selezioni con il mouse. La barra di selezione si apre comunque, quindi Invia alla chat resta a un clic.",
         "terminal_shell": "Shell predefinita",
         "terminal_shell_hint": "Shell avviata dal terminale integrato.",
         "terminal_shell_desc": "Un percorso assoluto o un comando nel PATH. Lascia vuoto per usare il valore predefinito di sistema ($SHELL).",

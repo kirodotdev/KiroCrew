@@ -7840,6 +7840,8 @@
         "terminal_cursor_style_block": "Block",
         "terminal_cursor_style_bar": "Bar",
         "terminal_cursor_style_underline": "Underline",
+        "terminal_copy_on_select": "Copy on select",
+        "terminal_copy_on_select_desc": "Copy text to the clipboard as soon as you select it with the mouse. The selection toolbar still opens, so Send to chat stays one click away.",
         "terminal_shell": "Default shell",
         "terminal_shell_hint": "The shell the built-in terminal launches.",
         "terminal_shell_desc": "An absolute path or a command on PATH. Leave empty to use the system default ($SHELL).",
