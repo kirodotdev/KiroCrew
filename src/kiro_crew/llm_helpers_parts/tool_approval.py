@@ -457,8 +457,9 @@ async def _resolve_permission(
         )
         else None
     )
-    # A Kiro Crew core MCP tool listed in ``platform.tool_paths.
-    # MCP_DOCUMENT_BODY_FIELDS`` (``knowledge_add_document``'s ``content``)
+    # A Kiro Crew MCP tool listed in ``platform.tool_paths.
+    # MCP_DOCUMENT_BODY_FIELDS`` (``knowledge_add_document``'s ``content``, a
+    # spawn brief, a cron prompt, a message for a person, ...)
     # stores that field as document text, so the field skips the command-text
     # rules -- the deny list and the argv floor -- that read a page mentioning a
     # product subcommand as an attempt to run it. The body keeps the size
@@ -475,7 +476,9 @@ async def _resolve_permission(
     # kind still sets ``is_shell`` and is refused the exemption.
     _mcp_body_keys = (
         mcp_document_body_keys(
-            getattr(event, "tool_name", ""), getattr(event, "mcp_server_name", "")
+            getattr(event, "tool_name", ""),
+            getattr(event, "mcp_server_name", ""),
+            event.raw_tool_params,
         )
         if (
             _edit_params is None
