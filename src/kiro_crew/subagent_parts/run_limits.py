@@ -32,6 +32,10 @@ _MAX_SPAWN_DEPTH = 4
 # outlives the process that wrote it, so remembering means reading the store.
 _RUN_ID_HEX_CHARS = 16
 
+#: How many queued members' spawning attempts the manager keeps in memory
+#: (``SubagentManager.carry_spawn_attempt``); the oldest is dropped first.
+_QUEUED_SPAWN_ATTEMPT_LIMIT = 1024
+
 
 # Wall-clock deadline for one subagent run: the fallback when config is
 # unavailable or ``agent.subagent_timeout_secs`` is 0. One owner in

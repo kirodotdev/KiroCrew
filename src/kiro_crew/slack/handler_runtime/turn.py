@@ -95,6 +95,7 @@ if TYPE_CHECKING:
         is_thread_temporary,
         logger,
         note_turn,
+        note_turn_landed,
         publish_turn_identity,
         rearm_reinjection,
         record_interaction_event,
@@ -106,6 +107,7 @@ if TYPE_CHECKING:
         runtime_death,
         session_stop_generation,
         session_store_for_turn,
+        settle_turn,
         stop_reason_landed,
         turn_ceiling,
         window_for_provider_client,
@@ -970,6 +972,8 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             _turn_landed = stop_reason_landed(
                 (_stop_reason or "") if _completion_observed else None
             )
+            if _turn_landed:
+                note_turn_landed(sessions, session_key)
 
         if _stop_reason == STOP_REASON_COMPACTION_FAILED:
             # The completion was synthetic — the backend abandoned the turn
@@ -989,6 +993,9 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             # ``finally`` around the nested call), or right below when no
             # replay is attempted.
             sessions.open_replay_gap(session_key)
+            # The abandoned turn did not land: end its attempt now, so what it
+            # received inline is revoked and a replay runs as a new attempt.
+            settle_turn(sessions, session_key)
             _reset_ok = True
             try:
                 await sessions.reset(session_key)
@@ -1169,6 +1176,9 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             # session/loads the SAME id. The gap is opened first for the same
             # reason as the compaction replay above.
             sessions.open_replay_gap(session_key)
+            # The abandoned turn did not land: end its attempt now, so what it
+            # received inline is revoked and a replay runs as a new attempt.
+            settle_turn(sessions, session_key)
             _reset_ok = True
             try:
                 await sessions.reset(session_key)

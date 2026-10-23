@@ -586,11 +586,13 @@ class TestApiSpawnMarkCollected:
 
     def test_records_ids_bounded_and_skips_non_strings(self) -> None:
         slot = SimpleNamespace(_subagents_inline_collected=set(), _queue=[])
-        state = _state()
+        child = SimpleNamespace(parent_session_key="dashboard:chat-1")
+        state = _state(subagents=_mgr())
+        state.subagents.get.return_value = child
         state.get_slot.return_value = slot
         ids: list[Any] = [f"a{i}" for i in range(250)] + ["", 7]
-        req = _Req(state, {"ids": ids, "parent_session": "dashboard:chat-1"})
-        resp = _run(mod.api_spawn_mark_collected, req)
+        body = {"ids": ids, "parent_session": "dashboard:chat-1", "written": True}
+        resp = _run(mod.api_spawn_mark_collected, _Req(state, body))
         assert _payload(resp) == {"status": "ok", "marked": len(ids)}
         assert len(slot._subagents_inline_collected) == 200
 

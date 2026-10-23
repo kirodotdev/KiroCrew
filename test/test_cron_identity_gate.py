@@ -121,6 +121,7 @@ def _make_gw(prerequisites: _Prerequisites, order: list[str]):
     gw._owner_id = "U000"
     gw.subagent_mgr = None
     gw._cron_injecting = {}
+    gw._cron_runs_holding = set()
     gw._running_script_ids = set()
     gw._no_crons = False
     gw.cron_svc = MagicMock()
@@ -286,6 +287,7 @@ async def test_a_sequence_step_runs_the_gate_before_its_acquire(monkeypatch) -> 
     gw.dashboard_state = _dashboard_state(gw.sessions, prerequisites)
     gw._owner_id = "owner"
     gw._cron_injecting = {}
+    gw._cron_runs_holding = set()
     gw._no_crons = False
     gw._cfg = cfg
     gw.cron_svc = None

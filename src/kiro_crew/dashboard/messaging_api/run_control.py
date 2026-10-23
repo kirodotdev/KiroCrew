@@ -43,9 +43,11 @@ if TYPE_CHECKING:
         dashboard_slot_key,
         effective_session_key,
         internal_memory_scope,
+        ledger_of,
         logger,
         read_state,
         record_panel_dismissal_outcome,
+        settles_at_release,
         spawn_parent_claim,
         subagent_event_slot,
         warm_project_agents_for_spawn,
@@ -414,12 +416,21 @@ async def api_spawn_lost(request: web.Request) -> web.Response:
 async def api_spawn_mark_collected(request: web.Request) -> web.Response:
     """POST /api/spawn/mark-collected — suppress injection for blocking tool.
 
-    Called by the spawn_sub_agents MCP tool after it has polled and collected
-    results inline.  Records the agent IDs on the parent slot so that the
-    subsequent _subagent_done callback skips the _run_chat injection (the model
-    already processed these results as a tool-call return value).  Without this,
-    each completion event triggers a redundant LLM turn whose response shadows
-    any [OPTIONS:] buttons the synthesis message rendered.
+    Called by the spawn_sub_agents MCP tool once the reply frame carrying these
+    results was written to its parent's pipe (``on_answered``, never before the
+    write and never from a pooled backend), with ``written: true``. Only such a
+    mark flags each named child of the claimed parent ``_collected_inline``, the
+    mark every completion route reads, so the subsequent _subagent_done callback
+    skips the _run_chat injection (the model already processed these results as
+    a tool-call return value). Without this, each completion event triggers a
+    redundant LLM turn whose response shadows any [OPTIONS:] buttons the
+    synthesis message rendered.
+
+    Only a dashboard-born parent's flagged children reach its slot here
+    (:func:`_settle_collected_on_slot`). Every other parent's mark is pending until
+    the turn that received it releases (``kiro_crew.parent_turns``), and only a
+    landed release settles its children on a tab that shows the parent
+    (``_settle_inline``).
     """
     state: DashboardState = request.app["state"]
     try:
@@ -440,25 +451,47 @@ async def api_spawn_mark_collected(request: web.Request) -> web.Response:
     )
     if refusal is not None:
         return refusal
+    # Only a mark sent after its reply frame was written changes anything: a
+    # caller that does not say so (a kirocrew-core from before this mark moved
+    # behind the write) may have marked a reply the parent never received.
+    written = body.get("written") is True
+    flagged = _flag_collected_inline(state, ids, parent_session) if written else set()
     slot_name = dashboard_slot_key(parent_session)
     if not slot_name:
         return web.json_response({"status": "no_slot"})
     slot = state.get_slot(slot_name)
     if not slot:
         return web.json_response({"status": "no_slot"})
-    # Record the IDs (bounded to 200 to prevent unbounded growth). A member whose
-    # completion is already QUEUED on the slot (its delivery timed out waiting on
-    # this tool's turn) is settled here instead: the queued announce is removed
-    # so it never plays as a redundant turn, and its owed delivery marks are
-    # written now, since the tool's return value IS the consumption. Its id is
-    # kept out of the set, where nothing would ever discard it again.
-    wanted = {
-        aid
-        for aid in ids[:200]
-        if isinstance(aid, str) and 0 < len(aid) <= _COLLECTED_ID_MAX_LEN
-        # Only ids this gateway knows: nothing else will ever discard them.
-        and (state.subagents is None or state.subagents.get(aid) is not None)
-    }
+    if not written or settles_at_release(parent_session):
+        # A pending mark changes nothing on the slot: a completion queued there
+        # must still play if the turn that received the reply never lands.
+        return web.json_response({"status": "ok", "marked": len(ids)})
+    owed = _settle_collected_on_slot(slot, flagged, state.subagents)
+    if owed and state.subagents is not None:
+        try:
+            await state.subagents.settle_queued_delivery(owed)
+        except Exception:
+            logger.debug("Could not settle inline-collected deliveries", exc_info=True)
+    state.push_slots_update()
+    return web.json_response({"status": "ok", "marked": len(ids)})
+
+
+def _settle_collected_on_slot(slot: Any, ids: set[str], subagents: Any = None) -> list[Any]:
+    """Settle on *slot* the children in *ids* its parent holds inline, and return
+    the delivery marks the caller owes for them.
+
+    A child whose completion is already QUEUED on the slot (its delivery timed out
+    waiting on the turn that returned it) is settled here: the queued announce is
+    removed so it never plays as a redundant turn, and its owed delivery marks are
+    returned to be written now, since the tool's return value IS the consumption.
+    Its id is kept out of ``_subagents_inline_collected``, where nothing would ever
+    discard it again; the rest go on it (bounded to ``_COLLECTED_IDS_CAP``) for the
+    tab route to discard as each completion is skipped. Only *ids* count -- the
+    tab's own children, marked after the reply carrying them was written -- so any
+    other queued completion still plays as a turn: a duplicate at worst, never a
+    loss.
+    """
+    wanted = set(ids)
     owed: list[Any] = []
     for item in list(slot._queue):
         meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
@@ -473,7 +506,7 @@ async def api_spawn_mark_collected(request: web.Request) -> web.Response:
             owed.extend(slot.take_pending_subagent_deliveries([str(item.get("content") or "")]))
         except Exception:
             logger.debug("Could not claim delivery marks for %s", aid, exc_info=True)
-    if state.subagents is not None:
+    if subagents is not None:
         # A completion still queued was settled above. One already handed to
         # the parent and not queued (injected, or settled by an earlier
         # mark whose reply the tool never saw) has passed every check that
@@ -482,17 +515,76 @@ async def api_spawn_mark_collected(request: web.Request) -> web.Response:
         wanted = {
             aid
             for aid in wanted
-            if getattr(state.subagents.get(aid), "_reported_to_parent", False) is not True
+            if getattr(subagents.get(aid), "_reported_to_parent", False) is not True
         }
     room = max(0, _COLLECTED_IDS_CAP - len(slot._subagents_inline_collected))
     slot._subagents_inline_collected.update(sorted(wanted)[:room])
-    if owed and state.subagents is not None:
-        try:
-            await state.subagents.settle_queued_delivery(owed)
-        except Exception:
-            logger.debug("Could not settle inline-collected deliveries", exc_info=True)
-    state.push_slots_update()
-    return web.json_response({"status": "ok", "marked": len(ids)})
+    return owed
+
+
+def _flag_collected_inline(state: DashboardState, ids: list[Any], parent_session: str) -> set[str]:
+    """Flag the claimed parent's OWN named children as delivered inline, and
+    return the ids flagged.
+
+    Only a child whose ``parent_session_key`` is the authorised claim is flagged:
+    an unknown id, another parent's child and a parentless claim mark nothing,
+    so no caller can suppress a completion owed to a parent it is not. Bounded
+    like the slot set: the first 200 ids, each at most ``_COLLECTED_ID_MAX_LEN``.
+
+    Every parent but a dashboard-born one (``settles_at_release``), a tab open on
+    it or not, gets only a pending mark (``kiro_crew.parent_turns``): it is held
+    under the attempt now holding the parent's permit, and the end of that
+    attempt confirms it if the turn landed and revokes it otherwise. It is held
+    only when that attempt is the one that spawned the child (``_spawned_under``,
+    recorded by ``POST /api/spawn``) and the one that read it done
+    (``_seen_done_under``, stamped by ``GET /api/spawn/{id}``): a mark processed
+    after its attempt ended, while no turn or a later attempt holds the permit (an
+    in-claim retry, the same task's next turn, another turn, an injection or a
+    compaction), flags nothing, so the completion is delivered. A dashboard-born
+    parent's tab route acknowledges on the mark.
+    """
+    flagged: set[str] = set()
+    mgr = state.subagents
+    if mgr is None or not parent_session:
+        return flagged
+    held = settles_at_release(parent_session)
+    ledger = ledger_of(state.sessions)
+    token = None
+    if held and ledger is not None:
+        token = state.sessions.turn_token(parent_session, open_attempt=False)
+    if held and token is None:
+        return flagged
+    foreign = 0
+    for aid in ids[:200]:
+        if not isinstance(aid, str) or not 0 < len(aid) <= _COLLECTED_ID_MAX_LEN:
+            continue
+        record = mgr.get(aid)
+        if record is None:
+            continue
+        if getattr(record, "parent_session_key", None) != parent_session:
+            foreign += 1
+            continue
+        if token is not None and (
+            getattr(record, "_seen_done_under", None) != token
+            or getattr(record, "_spawned_under", None) != token
+        ):
+            # The attempt that spawned this child, or the one that read it done,
+            # is not the one holding the permit now: that attempt ended and the
+            # reply reached no live turn.
+            continue
+        if token is not None:
+            record._inline_state = "pending"
+            record._inline_token = token
+        record._collected_inline = True
+        flagged.add(aid)
+    if token is not None and ledger is not None:
+        ledger.hold_marks(token, sorted(flagged))
+    if foreign:
+        logger.warning(
+            "mark-collected: ignored %d id(s) that are not children of the calling parent",
+            foreign,
+        )
+    return flagged
 
 
 async def api_spawn_retry(request: web.Request) -> web.Response:

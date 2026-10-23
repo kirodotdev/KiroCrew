@@ -209,27 +209,8 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
         # bump would invent an agent that never ran.
         _flush_only = getattr(info, "_digest_flush_only", False) is True
         parent_key = info.parent_session_key
-        _parent_slot_name = dashboard_slot_key(parent_key)
-
-        _injection_slot = None
-        if self.dashboard_state and _parent_slot_name:
-            from kiro_crew.dashboard.handlers.messaging import _slot_for_parent
-
-            _injection_slot = _slot_for_parent(self.dashboard_state, parent_key)
-            if _injection_slot is None:
-                _injection_slot = self.dashboard_state.get_slot(_parent_slot_name)
-            if getattr(_injection_slot, "window_pending", False) is True:
-                # A parent tab restored as a sidebar row loads its window
-                # before the completion is delivered into it, off the loop.
-                await load_window_off_loop(_injection_slot)
-                _injection_slot = _slot_for_parent(
-                    self.dashboard_state, parent_key
-                ) or self.dashboard_state.get_slot(_parent_slot_name)
-        _completion_key = getattr(_injection_slot, "key", "")
-        _injection_slot_name = (
-            _completion_key
-            if isinstance(_completion_key, str) and _completion_key
-            else _event_slot(parent_key)
+        _parent_slot_name, _injection_slot, _injection_slot_name = await self._parent_tab(
+            parent_key
         )
 
         if not _flush_only:
@@ -290,40 +271,18 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
             return
 
         # ── Route completion back to the originating session ──
-        # Tab open        → that tab (a channel-born tab mirrors on to its channel)
-        # Channel, no tab → channel thread + dashboard notification
-        # Cron/no parent  → dashboard notification only
-
-        if _parent_slot_name and self.dashboard_state:
-            await self._route_subagent_to_tab(
-                info,
-                announce=wave.announce,
-                body=report.body,
-                title=report.title,
-                sub_meta=wave.sub_meta,
-                _flush_only=_flush_only,
-                _injection_slot=_injection_slot,
-                _injection_slot_name=_injection_slot_name,
-                parent_key=parent_key,
-            )
-            return
-
-        if parent_key and not parent_key.startswith(("cron:", "subagent:")):
-            await self._inject_subagent_into_channel_parent(
-                info,
-                announce=wave.announce,
-                body=report.body,
-                title=report.title,
-                parent_key=parent_key,
-            )
-            return
-
-        await self._finish_subagent_cron_or_notify(
+        await self._route_completion(
             info,
             announce=wave.announce,
             body=report.body,
             title=report.title,
+            sub_meta=wave.sub_meta,
+            carried=wave.carried,
+            flush_only=_flush_only,
             parent_key=parent_key,
+            slot_name=_parent_slot_name,
+            slot=_injection_slot,
+            event_slot=_injection_slot_name,
         )
 
     assert self.sessions is not None

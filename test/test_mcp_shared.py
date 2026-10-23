@@ -716,8 +716,10 @@ class TestRespondStdoutFdSnapshot:
         try:
             with patch.object(mcp_shared.os, "write", _partial_then_fail):
                 with patch("sys.stdout", out):
-                    respond(9, {"ok": True})
+                    written = respond(9, {"ok": True})
             assert out.getvalue() == "", "torn frame was duplicated onto sys.stdout"
+            # The client holds no complete answer, and the caller is told so.
+            assert written is False
         finally:
             mcp_shared.release_stdout_fd()
 
@@ -738,8 +740,11 @@ class TestRespondStdoutFdSnapshot:
         try:
             with patch.object(mcp_shared.os, "write", _fail_immediately):
                 with patch("sys.stdout", out):
-                    respond(10, {"ok": True})
+                    written = respond(10, {"ok": True})
             assert json.loads(out.getvalue().strip())["id"] == 10
+            # The client's pipe refused it, and sys.stdout may be a devnull: the
+            # fallback write is no evidence the client holds the answer.
+            assert written is False
         finally:
             mcp_shared.release_stdout_fd()
 
