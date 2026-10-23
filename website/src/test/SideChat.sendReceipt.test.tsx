@@ -399,6 +399,19 @@ describe('SideChat send receipt policy', () => {
     await waitFor(() => expect(box().value).toContain('not sent yet'))
   })
 
+  it('records the accepted run on an optimistic idle question', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.sideTurn).mockResolvedValueOnce({ ok: true, run_id: 'r3', messages: 3 })
+    const store = sideState(false)
+    renderWithProviders(<SideChat slot={SLOT} />, { store })
+    await user.type(box(), 'accepted question')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+
+    await waitFor(() => expect(
+      sideMessages(store).find(m => m.optimistic && m.content === 'accepted question')?.acceptedRunId,
+    ).toBe('r3'))
+  })
+
   it('a late response on an IDLE send rolls the bubble back and hands the text back under the unconfirmed notice (the panel is never left pending for a turn the server may not have)', async () => {
     vi.useFakeTimers()
     vi.mocked(api.sideTurn).mockImplementationOnce(() => new Promise(() => {}) as ReturnType<typeof api.sideTurn>)

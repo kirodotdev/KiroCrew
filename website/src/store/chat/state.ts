@@ -89,6 +89,9 @@ export interface SideMessage {
    *  Position is not usable: an in-flight turn's frames interleave, and both the
    *  reconcile and the rollback used to guess this row was simply the last one. */
   optimistic?: boolean
+  /** The run the gateway started for this optimistic question, from its send
+   *  receipt. The row stays optimistic until its user frame or a read settles it. */
+  acceptedRunId?: string
 }
 
 /** One side question held behind an in-flight side turn. */

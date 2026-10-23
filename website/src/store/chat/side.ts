@@ -62,6 +62,46 @@ function insertAfterRun(messages: SideMessage[], row: SideMessage): void {
   messages.push(row)
 }
 
+/** The runs a panel shows a row of, holds a question accepted into, or last saw begin. */
+function runsShownIn(side: SideState): Set<string> {
+  const runs = new Set(side.messages.map(row => row.run_id ?? row.acceptedRunId).filter((runId): runId is string => !!runId))
+  if (side.lastRunId) runs.add(side.lastRunId)
+  return runs
+}
+
+/** Whether `snapshot` holds a different side conversation from the one `readFor`
+ *  shows: the gateway knows none of the runs this tab saw in it, so this one was
+ *  closed while the tab could not hear it. A panel that saw no run cannot tell. */
+function isAnotherConversation(readFor: SideState, snapshot: SideSnapshot): boolean {
+  const runsAtRead = runsShownIn(readFor)
+  if (runsAtRead.size === 0) return false
+
+  const snapshotRuns = new Set((snapshot.messages ?? []).map(row => row.run_id).filter((runId): runId is string => !!runId))
+  if (snapshot.last_run_id) snapshotRuns.add(snapshot.last_run_id)
+  return [...runsAtRead].every(runId => !snapshotRuns.has(runId))
+}
+
+/** Remove optimistic questions whose accepted runs the gateway already stores,
+ *  so the stored rows replace them when a socket-open resync merges the same
+ *  conversation. Matching is one-to-one in row order; questions without a
+ *  receipt-provided run stay optimistic even when the read holds the same text. */
+function settleStoredOptimisticRows(local: SideState, snapshot: SideSnapshot): SideState {
+  const localIds = new Set(local.messages.map(row => row.id).filter((id): id is string => !!id))
+  const storedQuestions = (snapshot.messages ?? []).filter(
+    row => row.role === 'user' && !row.steer && !localIds.has(row.id),
+  )
+  const settled = new Set<SideMessage>()
+  for (const row of local.messages) {
+    if (!row.optimistic || row.role !== 'user' || !row.acceptedRunId) continue
+    const storedIndex = storedQuestions.findIndex(stored => stored.run_id === row.acceptedRunId)
+    if (storedIndex < 0) continue
+    storedQuestions.splice(storedIndex, 1)
+    settled.add(row)
+  }
+  if (!settled.size) return local
+  return { ...local, messages: local.messages.filter(row => !settled.has(row)) }
+}
+
 /** The side state a panel restored from `GET .../side` shows, merged with what
  *  frames already drew in this tab (`local`).
  *
@@ -249,7 +289,8 @@ export const sideReducers = {
       // often no longer the tail — and a positional check then pushes a second
       // bubble for the same question.
       const pendingIdx = side.messages.findIndex(
-        m => m.optimistic && m.role === 'user' && m.content === content,
+        m => m.optimistic && m.role === 'user'
+          && (m.acceptedRunId === run_id || (!m.acceptedRunId && m.content === content)),
       )
       if (pendingIdx >= 0) {
         const row = side.messages[pendingIdx]
@@ -257,6 +298,7 @@ export const sideReducers = {
         row.ts = tsIso
         if (message_id) row.id = message_id
         delete row.optimistic
+        delete row.acceptedRunId
       } else {
         side.messages.push({ role: 'user', content, ts: tsIso, run_id, ...(message_id ? { id: message_id } : {}) })
       }
@@ -478,6 +520,55 @@ export const sideReducers = {
     const local = draft && isDraft(draft) ? current(draft) : draft
     state.slotSide[safeKey(slot)] = restoredSide(local, snapshot)
   },
+  /** Correct a restored panel still waiting on a turn from a socket-open read of
+   *  the gateway's copy (`resyncWaitingSideConversations`). The read speaks only
+   *  for the panel as it was when the read was sent (`readFor`). A read that finds
+   *  no open conversation, or another conversation (it shares none of the runs
+   *  `readFor` shows), stops the wait for the turns the read covers, settles the
+   *  questions accepted into them, and otherwise leaves the rows alone. A read
+   *  that shares one of those runs settles optimistic questions already stored by
+   *  the gateway, then is merged as a restore merges it. A read
+   *  whose conversation this tab closed and replaced while the read was
+   *  out (the panel carries another `createdAt`) changes nothing. */
+  sideResync(state: ChatState, action: PayloadAction<{ slot: string; snapshot: SideSnapshot; readFor: SideState }>) {
+    const { slot, snapshot, readFor } = action.payload
+    if (isUnsafeKey(slot) || state.slotSideClosed?.[slot]) return
+    const side = state.slotSide[slot]
+    if (!side || side.createdAt !== readFor.createdAt) return
+    if (!snapshot.open || isAnotherConversation(readFor, snapshot)) {
+      // The conversation the read was made for is gone, so no turn the read covers
+      // can still run, and a question accepted into one of them is no longer being
+      // sent. A turn begun after the read was sent is newer than the read, and so is
+      // a question still unaccepted when it was sent: either keeps the panel busy.
+      const runsAtRead = runsShownIn(readFor)
+      for (const row of side.messages) {
+        if (!row.optimistic || !row.acceptedRunId || !runsAtRead.has(row.acceptedRunId)) continue
+        row.run_id = row.acceptedRunId
+        delete row.optimistic
+        delete row.acceptedRunId
+      }
+      delete side.awaitingFinalRunId
+      if (side.lastRunId && !runsAtRead.has(side.lastRunId)) return
+      side.pending = side.messages.some(row => row.optimistic)
+      side.streaming = false
+      return
+    }
+    const local = isDraft(side) ? current(side) : side
+    const merged = restoredSide(settleStoredOptimisticRows(local, snapshot), snapshot)
+    side.messages = merged.messages
+    side.pending = merged.pending
+    side.streaming = merged.streaming
+    if (merged.lastRunId) side.lastRunId = merged.lastRunId
+    // A restored turn's rows read as one this tab saw begin, so the merge alone
+    // would stop holding its deltas back. It keeps waiting while the gateway
+    // still runs it and has stored no answer for it.
+    const awaited = local.awaitingFinalRunId
+    const stillAwaited = !!awaited && snapshot.running === true && snapshot.last_run_id === awaited
+      && !merged.messages.some(m => m.run_id === awaited && m.role === 'assistant' && (!!m.id || !!m.is_error))
+    const awaiting = merged.awaitingFinalRunId ?? (stillAwaited ? awaited : undefined)
+    if (awaiting) side.awaitingFinalRunId = awaiting
+    else delete side.awaitingFinalRunId
+  },
   sideOptimisticAppend(state: ChatState, action: PayloadAction<{ slot: string; message: SideMessage }>) {
     const { slot, message } = action.payload
     if (isUnsafeKey(slot)) return
@@ -493,6 +584,33 @@ export const sideReducers = {
     if (madeEarlier) startConversationIfEmpty(side, message.ts)
     side.messages.push({ ...message, optimistic: true })
     side.pending = true
+  },
+  sideOptimisticAccepted(state: ChatState, action: PayloadAction<{ slot: string; content: string; runId: string }>) {
+    const { slot, content, runId } = action.payload
+    if (isUnsafeKey(slot)) return
+    const side = state.slotSide[slot]
+    if (!side) return
+    const storedFrameArrived = side.messages.some(
+      row => !row.optimistic && row.role === 'user' && !row.steer && row.run_id === runId,
+    )
+    for (let i = side.messages.length - 1; i >= 0; i--) {
+      const row = side.messages[i]
+      if (!row.optimistic || row.role !== 'user' || row.content !== content) continue
+      if (storedFrameArrived) {
+        side.messages.splice(i, 1)
+        // The duplicate may be all that still keeps the panel busy: a resync that
+        // found this turn over keeps an unsettled question busy. Removing a row
+        // never starts a turn, so this only ever ends the busy state, and only when
+        // no turn streams and no final frame is still awaited.
+        const stillUnsettled = side.messages.some(message => message.optimistic && message.role === 'user')
+        if (!stillUnsettled && !side.streaming && side.awaitingFinalRunId !== side.lastRunId) side.pending = false
+        return
+      }
+      if (!row.acceptedRunId) {
+        row.acceptedRunId = runId
+        return
+      }
+    }
   },
   sideOptimisticRollback(state: ChatState, action: PayloadAction<string>) {
     const side = state.slotSide[action.payload]

@@ -261,6 +261,34 @@ live one did. The other error notices a turn can end with are not stored, so aft
 a reload such a turn shows its question without the notice, which is also what
 the model holds.
 
+**After the socket connects.** Side frames reach owner sockets only, so a turn
+that ends while this tab cannot hear it (after the restore read was answered but
+before the socket connected, or while the socket is down) sends its final frame
+to no socket of this tab. So each time the socket opens, a restored panel still
+waiting on a turn reads `GET .../side` again, once any restore read still in
+flight has landed (`resyncWaitingSideConversations` in `store/chatSlice.ts`,
+`sideResync` in `store/chat/side.ts`). The read is judged against the panel as it
+was when the read was sent. When the socket opens again while a read is out, only
+the newer read is applied: the older one can answer last and would undo what the
+newer one learned. A read that shares one of its runs is merged the way a
+restore merges it: the stored rows and the busy state. The send receipt records
+the started run on its optimistic question. A stored row settles that question
+only when its run matches the receipt; without a receipt, the optimistic copy
+stays pending even when the read already holds its stored and answered row. A
+receipt that lands after its question's frame drops the copy still shown as
+unsent, and ends the wait when that copy was all that kept a finished turn busy.
+The queue keeps to its own frames. A read with no open conversation, or one that
+shares none of those runs and so describes another conversation (this one was
+closed while the tab could not hear it), stops the wait and leaves the panel's
+rows as they are, except that a question accepted into one of those runs is no
+longer shown as unsent. Runs decide which conversation a read describes, not
+`created_at`: a conversation this tab started carries this tab's own time, and a
+question whose receipt named its run counts as that run. Either
+way a turn begun after the read was sent stays busy, and so does a question still
+unaccepted when it was sent, since the read is older than both. A read that lands
+after its conversation was closed and replaced in this tab changes nothing
+(`sideResync` checks the conversation's `createdAt`).
+
 ## Wire Protocol
 
 Event name: `chat.side_result`  

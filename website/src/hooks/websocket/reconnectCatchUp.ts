@@ -7,7 +7,7 @@ import { store, type AppDispatch } from '../../store'
 import { fetchSlots } from '../../store/dashboardSlice'
 import { markGatewayConnected } from './gatewayConnectivity'
 import { fetchNotifications, markBootNotificationsFetched } from '../../store/notificationsSlice'
-import { refreshSlot, warmSlotCache, clearSubagentsForSnapshot } from '../../store/chatSlice'
+import { refreshSlot, warmSlotCache, clearSubagentsForSnapshot, resyncWaitingSideConversations } from '../../store/chatSlice'
 import { anchorForSlot, loadLayout, sessionSlots } from '../splitLayoutStore'
 import { observedPaneSlots } from '../../api/slotMessagesQuery'
 import { consumeUpdateRestartLatch } from './bundleReload'
@@ -63,6 +63,10 @@ export function runFirstConnect(ws: WebSocket, ctx: CatchUpContext): void {
   // carries events from here on, so without this such a run is invisible
   // until its next phase event — and one that ends first never appears.
   ctx.syncWorkflowRuns()
+  // The same gap for Side Chat: a side turn that ended between a panel's
+  // restore read and this socket's registration sent its final frame to no
+  // socket of this tab, so a panel still waiting on it reads it again.
+  void dispatch(resyncWaitingSideConversations())
   // Eagerly subscribe to subagent events on first connect too.
   dispatch(clearSubagentsForSnapshot())
   ws.send(JSON.stringify({ type: 'subscribe_subagents' }))
@@ -117,6 +121,9 @@ export function runReconnectCatchUp(ws: WebSocket, ctx: CatchUpContext): void {
   // socket was down pushed a terminal `workflow_run_event` nobody received,
   // and a run that STARTED while it was down has no row at all.
   ctx.syncWorkflowRuns()
+  // A side turn that ended while the socket was down sent its final frame to
+  // nobody here, so a Side Chat panel still waiting on it reads it again.
+  void dispatch(resyncWaitingSideConversations())
   // Re-fetch active slot messages to recover from missed chunks
   const active = store.getState().chat.activeSlot
   if (active) dispatch(refreshSlot(active))
