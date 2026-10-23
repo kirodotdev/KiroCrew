@@ -107,6 +107,12 @@ export interface ChatPaneProps {
    *  so it costs no model call and the model never reads it back. Only
    *  meaningful with `crewmate`. */
   crewmateGreeting?: React.ReactNode
+  /** Whether a person can see this crewmate's thread right now: the window is
+   *  visible AND focused and nothing covers the chat. The unread landing marks
+   *  a message read only while this is true; a reply landing in a parked or
+   *  covered window stays unseen, so the next visit still lands on it. Default
+   *  `true`. Only meaningful with `crewmate`. */
+  crewmateShown?: boolean
   /** Focus the crewmate's Work log tab (the side-panel tab that holds what
    *  the filter hid). When given, the quiet hint's "where the work went" line
    *  is a link that opens it, so the words that read as a destination are one;

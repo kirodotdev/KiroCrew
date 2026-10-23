@@ -13,6 +13,7 @@ import { filterCrewmateChat, withQueuedAsBubbles } from './chat/crewmateBubbles'
 import { AWAITING_REPLY_ACTIVITY, useCrewmateAwaitingReply } from './chat/useCrewmateAwaitingReply'
 import CrewmateLiveActivity from './chat/CrewmateLiveActivity'
 import { useCrewmateGreetingShown } from './chat/useCrewmateGreetingShown'
+import { useUnreadLanding } from './chat/useUnreadLanding'
 import ErrorNotice from './ErrorNotice'
 import StatusNotice from './StatusNotice'
 import { Btn } from './ui'
@@ -103,6 +104,7 @@ export default function ChatPane({
   busyMode = 'split',
   crewmate,
   crewmateGreeting,
+  crewmateShown = true,
   onOpenCrewWorkLog,
   threads,
   onSessionOpen,
@@ -148,6 +150,13 @@ export default function ChatPane({
   }, [pinItemsRef, updatePinnedPrompt])
   // A different session starts collapsed with nothing pinned.
   useEffect(() => { setPinned(null); setPinExpanded(false) }, [slotKey, setPinned, setPinExpanded])
+  const getDisplayItems = useCallback(() => pinItemsRef.current, [pinItemsRef])
+  // Which slot's authoritative page has landed in the store. A live frame can
+  // put a partial transcript in `slotMessages` before this fetch resolves; the
+  // unread landing waits for this rather than reading that partial list.
+  const [hydratedSlot, setHydratedSlot] = useState<string | null>(null)
+  const mountRowIndex = useCallback((index: number) => { listRef.current?.mountIndex(index) }, [])
+  const transcriptRestoreOwned = useCallback(() => listRef.current?.restoreGate ?? false, [])
 
   const allMessages = useAppSelector((s) => selectSlotMessages(s, slotKey))
   const activeSlot = useAppSelector((s) => s.chat.activeSlot)
@@ -292,6 +301,32 @@ export default function ChatPane({
   // The host's greeting is drawn while it is still the newest word: a reply
   // landing after it (a patrol / wake turn keeps it up) takes it down.
   const greetingShown = useCrewmateGreetingShown(!!crewmate && !!crewmateGreeting, messages)
+  // A crewmate's thread re-opens on the last message the reader saw, with the
+  // unseen run below a divider; the pill carries the count. Only the crewmate
+  // thread: a split pane keeps the transcript's default entry placement.
+  const unreadOlder = useMemo(() => ({
+    hasMore: pagesActiveSlot ? activeHasMore : warmHasMore === true,
+    loading: pagesActiveSlot ? loadingOlder : paneLoadingOlder,
+    load: pagesActiveSlot ? loadOlder : pagesPane ? loadOlderPane : null,
+  }), [pagesActiveSlot, activeHasMore, warmHasMore, loadingOlder, paneLoadingOlder, loadOlder, pagesPane, loadOlderPane])
+  const { unreadRun, unreadCount } = useUnreadLanding({
+    enabled: !!crewmate,
+    slotKey,
+    // The transcript mount's own `sessionId` below, under which the reader's
+    // saved position lives.
+    anchorSessionId: `pane:${slotKey}`,
+    hydrated: hydratedSlot === slotKey,
+    // The same older-history walk the quiet hint uses, so a marker beyond the
+    // hydrated page is paged back to rather than written off.
+    older: unreadOlder,
+    shown: crewmateShown,
+    messages,
+    isAtBottom,
+    scrollerRef,
+    getDisplayItems,
+    mountIndex: mountRowIndex,
+    restoreOwned: transcriptRestoreOwned,
+  })
   // What the crewmate is doing right now, for the status line above the
   // working indicator: read through the SAME seam the DM header's identity
   // pill reads (`useSlotActivity` over the slot's live status record), so the
@@ -480,7 +515,10 @@ export default function ChatPane({
     staleTime: Infinity,
   })
   useEffect(() => {
-    if (slotDetail?.messages) dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, queue: slotDetail.queue, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running, nextBefore: slotDetail.next_before }))
+    if (slotDetail?.messages) {
+      dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, queue: slotDetail.queue, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running, nextBefore: slotDetail.next_before }))
+      setHydratedSlot(slotKey)
+    }
   }, [slotDetail, slotKey, dispatch, hydrateLimit])
 
   // Scroll follow (auto-pin, release, jump pill) is owned by the virtualizer
@@ -747,6 +785,7 @@ export default function ChatPane({
           handOff={false}
           onDisplayItems={onDisplayItems}
           hiddenRow={pinHiddenRow}
+          unreadRun={unreadRun}
           onQuote={onQuote}
           onQuoteMessage={messageQuote.quoteMessage}
           onAsk={onAsk}
@@ -850,7 +889,7 @@ export default function ChatPane({
             it follows it in DOM order. `right: dockGutter` keeps the
             scrollbar column clear. */}
         <div ref={dockRef} className="absolute left-0 bottom-0 pointer-events-none" style={{ right: dockGutter }} data-testid="composer-dock-root">
-        <JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={scrollToBottom} />
+        <JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={scrollToBottom} unreadCount={unreadCount} />
 
         <div className="dock-inert" data-testid="composer-status-stack">
         {!crewmate && <SubagentProgressBar slot={slotKey} />}

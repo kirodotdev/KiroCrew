@@ -300,6 +300,9 @@
       "open_path": "{{path}} 열기",
       "show_less": "간략히 보기",
       "show_more": "더 보기"
+    },
+    "newMessagesDivider": {
+      "new_messages_other": "새 메시지 {{count}}개"
     }
   },
   "apps": {
@@ -12223,7 +12226,8 @@
       "comments_refused": "{{name}}이(가) 이 댓글들을 받지 못했습니다 — 문서에서 다시 보내세요. 댓글은 그대로 있습니다.",
       "comments_refused_overlay": "{{name}}이(가) 이 댓글들을 받지 못했습니다 — 사이드 패널을 다시 열고 다시 보내세요. 댓글은 문서에 그대로 있습니다.",
       "comments_sent_other": "{{count}}개의 댓글이 전송되었습니다",
-      "your_crewmate": "크루메이트"
+      "your_crewmate": "크루메이트",
+      "jump_to_new_other": "새 메시지 {{count}}개 · 최신으로"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1개 건너뜀 — 현재 선택됨)",

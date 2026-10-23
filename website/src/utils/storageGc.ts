@@ -20,6 +20,9 @@
 const SESSION_PREFIXES = [
   'vc_heights_',
   'vc_anchor3_',
+  // The caught-up marker (`chat-core/transcript/caughtUpMarker.ts`): keyed by
+  // the raw slot key, so it is swept with the slot's heights and anchors.
+  'vc_seen_',
   // The pre-version-bump anchor prefixes. `ScrollAnchorCache` reaps these
   // outright when it loads, but that only happens once the chat virtualizer is
   // on screen — so the boot sweep keeps owning them for a user who never opens a

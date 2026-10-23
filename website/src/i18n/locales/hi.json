@@ -314,6 +314,10 @@
       "open_path": "{{path}} खोलो",
       "show_less": "कम दिखाएँ",
       "show_more": "और दिखाएँ"
+    },
+    "newMessagesDivider": {
+      "new_messages_one": "{{count}} नया संदेश",
+      "new_messages_other": "{{count}} नए संदेश"
     }
   },
   "apps": {
@@ -12411,7 +12415,9 @@
       "comments_refused": "{{name}} ने ये टिप्पणियां नहीं पाईं — उन्हें दस्तावेज़ से फिर से भेजो। वे अब भी वहीं हैं।",
       "comments_refused_overlay": "{{name}} ने ये टिप्पणियां नहीं पाईं — साइड पैनल फिर से खोलो और उन्हें फिर से भेजो। वे अब भी दस्तावेज़ में हैं।",
       "comments_sent_other": "{{count}} टिप्पणियां भेजी गईं",
-      "your_crewmate": "तुम्हारा क्रूमेट"
+      "your_crewmate": "तुम्हारा क्रूमेट",
+      "jump_to_new_one": "{{count}} नया · नवीनतम पर जाओ",
+      "jump_to_new_other": "{{count}} नए · नवीनतम पर जाओ"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 छोड़ा गया — अभी चुना हुआ)",
