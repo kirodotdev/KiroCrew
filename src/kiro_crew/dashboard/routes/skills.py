@@ -50,6 +50,8 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/skills/-/pending/{slug}/dismiss", handlers.api_skill_pending_dismiss)
     app.router.add_post("/api/skills/-/pin", handlers.api_skill_pin)
     app.router.add_post("/api/skills/-/inject-on-trigger", handlers.api_skill_inject_on_trigger)
+    app.router.add_get("/api/skills/-/uninstalled", handlers.api_skills_uninstalled)
+    app.router.add_post("/api/skills/-/restore-builtin", handlers.api_skill_restore_builtin)
     # Skill context budget (read-only cost analysis with alias folding).
     app.router.add_get("/api/skills/-/budget", handlers.api_skills_budget)
     # Project-skills trust grants (per-directory consent). Registered before the

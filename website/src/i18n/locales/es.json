@@ -11588,6 +11588,14 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (en pausa) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (en pausa)"
+    },
+    "uninstalledBuiltinSkillsList": {
+      "title": "Habilidades integradas desinstaladas",
+      "hint": "Habilidades integradas que eliminaste. Siguen eliminadas tras reinicios y actualizaciones hasta que las restaures.",
+      "load_failed": "No se pudieron cargar las habilidades integradas desinstaladas.",
+      "restore": "Restaurar",
+      "restoring": "Restaurando…",
+      "restore_failed": "No se pudo restaurar esta habilidad. Inténtalo de nuevo."
     }
   },
   "hooks": {

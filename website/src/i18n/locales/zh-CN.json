@@ -11082,6 +11082,14 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}}（已暂停）— {{time}} {{tz}}",
       "job_name_paused": "{{name}}（已暂停）"
+    },
+    "uninstalledBuiltinSkillsList": {
+      "title": "已卸载的内置技能",
+      "hint": "你删除过的内置技能。在你恢复之前，重启或更新后它们都不会重新出现。",
+      "load_failed": "无法加载已卸载的内置技能。",
+      "restore": "恢复",
+      "restoring": "正在恢复…",
+      "restore_failed": "无法恢复此技能，请重试。"
     }
   },
   "hooks": {

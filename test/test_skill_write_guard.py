@@ -264,6 +264,7 @@ class TestSkillLifecycleEndpointsAreGated:
         ("skill_pending_dismiss_all", lambda r: prompts.api_skills_pending_dismiss_all(r)),
         ("skill_pin", lambda r: prompts.api_skill_pin(r)),
         ("skill_inject_on_trigger", lambda r: prompts.api_skill_inject_on_trigger(r)),
+        ("skill_restore_builtin", lambda r: prompts.api_skill_restore_builtin(r)),
     )
 
     @pytest.mark.asyncio
@@ -443,6 +444,7 @@ class TestUpdateRefusesAStaleBase:
                 "set_inject_on_trigger",
                 {"name": "demo", "inject": False},
             ),
+            ("api_skill_restore_builtin", "restore_builtin", {"name": "demo"}),
         ),
     )
     async def test_toggles_write_under_the_save_lock(self, audit, handler, loader_method, body):
@@ -456,6 +458,25 @@ class TestUpdateRefusesAStaleBase:
 
         state, _ = _state_with_loader(**{loader_method: write})
         response = await getattr(prompts, handler)(_Request({"user": "owner"}, state, body=body))
+
+        assert response.status == 200
+        assert held == [True]
+
+    @pytest.mark.asyncio
+    async def test_delete_runs_under_the_save_lock(self, audit):
+        # Deleting a built-in records it as uninstalled, and restore re-runs the
+        # builtin sync under this lock; a delete outside it could land between
+        # that sync's record read and its reinstall, and be undone.
+        held: list[bool] = []
+
+        def delete(*_args):
+            held.append(prompts._SKILL_WRITE_LOCK.locked())
+            return True
+
+        state, _ = _state_with_loader(delete_skill=delete)
+        response = await prompts.api_skill_detail(
+            _Request({"user": "owner"}, state, method="DELETE")
+        )
 
         assert response.status == 200
         assert held == [True]

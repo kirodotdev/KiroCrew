@@ -5003,6 +5003,14 @@
         "generic": "Allow for this session: stop blocking any command this rule blocks, until you close this chat (Session options → Close session) or {{productName}} restarts"
       },
       "pill_blocked": "Waiting for approval: {{command}}"
+    },
+    "uninstalledBuiltinSkillsList": {
+      "title": "Uninstalled built-in skills",
+      "hint": "Built-in skills you deleted. They stay removed across restarts and updates until you restore them.",
+      "load_failed": "Could not load the uninstalled built-in skills.",
+      "restore": "Restore",
+      "restoring": "Restoring…",
+      "restore_failed": "Could not restore this skill. Try again."
     }
   },
   "hooks": {
