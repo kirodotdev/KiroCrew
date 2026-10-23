@@ -3490,7 +3490,12 @@ agent-SDK boundary gate holds none of them), which adds it to that
 set in the same call (`loader.publish_mate_agents`): the create route and the
 `agent create` command share the copy-and-repoint `mate_config.adopt_own_file`,
 and the startup migration (which also gives the first crewmate its file) writes
-through it too. So a crewmate's first chat, the goal-setup turn included, is
+through it too. Instances with separate data homes can share one Kiro home, so
+the writer records which data home wrote each file (`~/.kiro/mates/owners.json`)
+and never replaces one another instance wrote. The owner check and both writes
+run under one cross-process lock (`mates/owners.lock`), so two instances
+writing one name at once cannot both pass the check
+(`test/test_mate_owned_config.py`). So a crewmate's first chat, the goal-setup turn included, is
 already on the conductor. A name the set does not know at all (a file another
 process wrote) is rescanned before the answer off the loop, and on the loop a
 rescan is scheduled. A `member` record whose `template_id` names the crewmate's

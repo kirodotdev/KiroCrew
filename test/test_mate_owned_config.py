@@ -259,6 +259,52 @@ def test_another_instances_crewmate_file_is_never_overwritten(layout, monkeypatc
     assert json.loads(write_mate_config("ada", "builder").read_text())["prompt"] == "second"
 
 
+def test_two_instances_writing_one_name_at_once_never_replace_each_other(
+    layout, monkeypatch, tmp_path
+):
+    """The owner check and both writes run under one lock across instances."""
+    import threading
+
+    from kiro_crew import mate_config
+    from kiro_crew.mate_config import MateConfigError
+    from kiro_crew.testing.wait import wait_until
+
+    user, _mates, _checkout = layout
+    _write(user, "builder", {"name": "builder", "prompt": "second", "tools": ["*"]})
+    home = threading.local()
+    monkeypatch.setattr(
+        mate_config, "_this_home", lambda: getattr(home, "value", str(tmp_path / "a"))
+    )
+    outcome: list[BaseException | None] = []
+    started = threading.Event()
+
+    def instance_b() -> None:
+        home.value = str(tmp_path / "b")
+        started.set()
+        try:
+            write_mate_config("ada", "builder")
+            outcome.append(None)
+        except BaseException as exc:
+            outcome.append(exc)
+
+    with mate_config._owners_lock():
+        racer = threading.Thread(target=instance_b)
+        racer.start()
+        wait_until(started.is_set, timeout=30)
+        # B waits for the lock instead of writing past A's unrecorded file.
+        assert not mate_config.mate_config_path("ada").exists()
+        # Instance A's write, as write_mate_spec makes it under the lock.
+        path = mate_config.mate_config_path("ada")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"name": "ada", "prompt": "first"}), encoding="utf-8")
+        mate_config._owners_path().write_text(json.dumps({"ada": str(tmp_path / "a")}))
+    racer.join(10)
+
+    assert isinstance(outcome[0], MateConfigError)
+    assert "another Kiro Crew instance" in str(outcome[0])
+    assert json.loads(path.read_text(encoding="utf-8"))["prompt"] == "first"
+
+
 # ── the mate-tools grant never forks and never writes the owned file ─────────
 
 

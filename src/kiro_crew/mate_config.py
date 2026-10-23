@@ -11,11 +11,14 @@ Crewmate data (``member_id``, workspace, store, avatar, model) stays on the
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from kiro_crew import platform_compat
 from kiro_crew.agent_sdk import agent_specs
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import paths as paths_mod
@@ -136,6 +139,15 @@ def _owners_path() -> Path:
     return paths_mod.mate_agents_dir().parent / _OWNERS_FILE
 
 
+@contextlib.contextmanager
+def _owners_lock() -> Iterator[None]:
+    """Hold the cross-process lock over the owner record. Raises ``OSError`` past its ceiling."""
+    lock_path = _owners_path().with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with platform_compat.open_lock_file(lock_path) as fd, platform_compat.flock_exclusive(fd):
+        yield
+
+
 def _this_home() -> str:
     return str(paths_mod.data_home().resolve())
 
@@ -181,20 +193,24 @@ def write_mate_spec(mate_id: str, spec: dict[str, Any]) -> Path:
     from kiro_crew.mate_worker import drop_partial_platform_servers
 
     _refuse_service_name(mate_id)
-    owners = _read_owners()
-    _refuse_foreign_file(mate_id, owners)
     # A platform server comes from the gateway; an entry that only switches one
     # on or off would be a server with no transport in this file.
     drop_partial_platform_servers(spec)
     path = mate_config_path(mate_id)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(path, json.dumps(spec, indent=2), fsync=True, mode=0o600)
-        if owners.get(mate_id) != _this_home():
-            owners[mate_id] = _this_home()
-            atomic_write(
-                _owners_path(), json.dumps(owners, indent=2, sort_keys=True) + "\n", mode=0o600
-            )
+        # Two instances sharing this Kiro home can write the same name at once
+        # (both migrating after an upgrade). The owner check and both writes run
+        # under one cross-process lock, so the second sees the first's owner.
+        with _owners_lock():
+            owners = _read_owners()
+            _refuse_foreign_file(mate_id, owners)
+            atomic_write(path, json.dumps(spec, indent=2), fsync=True, mode=0o600)
+            if owners.get(mate_id) != _this_home():
+                owners[mate_id] = _this_home()
+                atomic_write(
+                    _owners_path(), json.dumps(owners, indent=2, sort_keys=True) + "\n", mode=0o600
+                )
     except OSError as exc:
         raise MateConfigError(
             f"could not write crewmate config for {mate_id!r} at {path}: {exc}"
