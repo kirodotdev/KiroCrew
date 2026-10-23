@@ -339,13 +339,21 @@ async def test_a_stalled_reader_holds_the_guest_back_instead_of_buffering():
             describe=lambda: (w.ep.unacked_bytes, len(link.stdout._buffer)),
         )
         assert not link._consumer.open.is_set()
-        assert len(link.stdout._buffer) <= 2 * limit + 65536
+        # ep.feed combines ep._buf (at most MAX_LINE_BYTES, a partial wire frame
+        # from the prior read) with one reader.read (at most MAX_LINE_BYTES), giving
+        # at most 2*MAX_LINE_BYTES of wire bytes per call.  Every decoded byte
+        # comes from base64, so decoded < wire (each payload byte costs strictly
+        # more than 1 wire byte due to base64 4:3 expansion plus per-frame header).
+        # asyncio raises the high-water alarm after buffer > 2*limit, then
+        # _connect_once waits on open before the next read, so at most one more
+        # decode lands: buffer < 2*limit + 2*MAX_LINE_BYTES.
+        assert len(link.stdout._buffer) < 2 * limit + 2 * wire.MAX_LINE_BYTES
         # Far past the stall window, reader still stuck: two more ticks.
         skew[0] += 10 * link.stall_seconds
         pings = link._ping_n
         await async_wait_until(lambda: link._ping_n >= pings + 2, describe=lambda: link._ping_n)
         assert link.connections == 1 and link.state == link_mod.CONNECTED
-        assert len(link.stdout._buffer) <= 2 * limit + 65536
+        assert len(link.stdout._buffer) < 2 * limit + 2 * wire.MAX_LINE_BYTES
         lines = 0
         while (line := await link.stdout.readline()) != b"DONE\n":
             assert line == b"x" * width + b"\n"
