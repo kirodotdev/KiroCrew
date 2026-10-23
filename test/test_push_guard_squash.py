@@ -459,9 +459,16 @@ class TestPushGuardSquash:
         # `sleep` that misses it holds the stderr pipe past the wait below.
         waiter = (
             "import os, signal, sys, time; "
-            # Die on Ctrl-C as `sleep` would, but keep an inherited ignore.
-            "signal.getsignal(signal.SIGINT) is signal.default_int_handler "
-            "and signal.signal(signal.SIGINT, signal.SIG_DFL); "
+            # Always install SIG_DFL for SIGINT unconditionally: git sets SIGINT to
+            # SIG_IGN before running hooks so that git itself is not interrupted while
+            # waiting for them.  The hook inherits that SIG_IGN, and Python keeps an
+            # inherited SIG_IGN rather than overriding it with default_int_handler.
+            # A conditional getsignal check therefore never restores SIG_DFL, leaving
+            # SIGINT ignored; the hook survives the killpg and holds the stderr pipe
+            # open past the communicate() timeout.  Installing SIG_DFL here is always
+            # correct for a test hook: the process should die on SIGINT so the group
+            # signal terminates every member deterministically.
+            "signal.signal(signal.SIGINT, signal.SIG_DFL); "
             "open(sys.argv[1] + '.tmp', 'w').close(); "
             "os.replace(sys.argv[1] + '.tmp', sys.argv[1]); "
             # flake-ok: the hook's own 60 s wait keeps it running until the test interrupts it
