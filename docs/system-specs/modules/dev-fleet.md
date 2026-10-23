@@ -46,7 +46,16 @@ behind that facade is split by state and lifecycle ownership:
   - `live_plan.py`: a cutover's dry-run plan, operator-facing text, and the Switch-back
     undo-binding check (`_undo_binding_holds`).
 - `fleet_state.py` owns PR/context/resource caches, fleet projections and tombstones, and
-  provision reattachment state.
+  provision reattachment state. PR status is cached for `_PR_TTL` (300 s); the context
+  `git log` is reused while the row's git facts key holds (`_CTX_LOG_CACHE`), and a log
+  over `_CTX_LOG_MAX_CHARS` (64 Ki chars) is used once and never kept.
+- `git_facts.py` owns the fleet view's per-worktree git facts cache (`_GIT_FACTS_CACHE`),
+  the shared base snapshot (`_BASE_SNAPSHOT`, one `for-each-ref` per base move) and
+  `_DIRTY_TTL`. The key is plain reads and stats of HEAD, the branch ref, the index and
+  `<remote>/<base>`: bounded `O_NOFOLLOW|O_NONBLOCK` regular-file reads, inside the
+  managed repo's `.git` layout only. Any refusal skips the cache and runs sandboxed git.
+  Display only: a row's `dirty` may lag an unstaged edit or untracked file by up to
+  300 s; removal and discard read git fresh.
 - `worktree_ops.py` owns rebase and prune orchestration and the background task handles.
   Its owners hold the rest:
   - `worktree_ops_pods.py`: pod actions and the per-worktree lock `_wt_lock`;
@@ -1938,7 +1947,8 @@ Two different jobs live in that one dict, and they are worth keeping apart:
 - **What git writes on a read.** `GIT_OPTIONAL_LOCKS=0` is also not a config key.
   `git status` refreshes the index's stat cache and saves it back under
   `index.lock`, so a command that is a read to its caller is a **write** to the
-  repository. Every fleet render runs one per row, so without this the fleet
+  repository. The fleet render runs one per row whose cached `dirty` is older than
+  `_DIRTY_TTL` (300 s), and one per row whose git facts key moved, so without this the fleet
   contends with the operator's own git for the lock on the ordinary path. Pinned on
   the env chokepoint rather than as `--no-optional-locks` per call site, so the argv
   this module builds keeps naming just its subcommand and a read added later

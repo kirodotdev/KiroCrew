@@ -202,7 +202,7 @@ async def test_context_cached_skips_main_and_base():
 async def test_context_cached_serves_from_cache(monkeypatch):
     calls = []
 
-    async def fake_build(branch, path, pr):
+    async def fake_build(branch, path, pr, facts_key=None):
         calls.append(branch)
         return {"issues": [{"number": 1, "url": None}], "tickets": [], "summary": "s"}
 
