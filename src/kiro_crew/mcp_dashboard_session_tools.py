@@ -22,6 +22,7 @@ from kiro_crew.mcp_dashboard_session_runs import (
     _run_session_end_wait,
     _run_session_fork,
     _run_session_generate_title,
+    _run_session_handoff,
     _run_session_history_list,
     _run_session_read_message,
     _run_session_release,
@@ -779,6 +780,36 @@ def _session_tools() -> tuple[Tool, ...]:
             run=_run_session_adopt,
             identity="strict",
             routes=("POST /api/session-control/adopt",),
+        ),
+        Tool(
+            name="session_handoff",
+            description=(
+                "Hand a session you manage to ANOTHER session, which manages it from "
+                "then on. Use it when the session that should run a worker is not the "
+                "one that opened it: open a conductor, then hand each worker to it, and "
+                "the conductor can send to, read, stop and close them. You cannot, "
+                "unless they are handed back. Only the session that manages the target "
+                "now may hand it over, and the recipient must be a session you also "
+                "manage. Who CREATED the session stays on the record, so the new "
+                "manager cannot fork it or open sessions against your memory."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                    "to": {
+                        "type": "string",
+                        "description": "The session that will manage the target: its key or exact title.",
+                    },
+                },
+                "required": ["target", "to"],
+            },
+            run=_run_session_handoff,
+            identity="strict",
+            routes=("POST /api/session-control/handoff",),
         ),
         Tool(
             name="session_release",

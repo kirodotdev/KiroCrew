@@ -822,6 +822,24 @@ def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
     return redact("\n".join(status_lines))
 
 
+def _run_session_handoff(args: dict[str, Any], ctx: ToolContext) -> str:
+    try:
+        resp = ctx.client.post(
+            "/api/session-control/handoff",
+            {"target": args["target"], "to": args["to"]},
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        return f"Error: could not hand that session over: {refused.error}"
+    target = resp.get("target", args["target"])
+    manager = resp.get("manager", args["to"])
+    return (
+        f"\U0001f91d Handed `{target}` to `{manager}`. That session manages it now: it "
+        "can send to, read, stop and close it, and you cannot unless it is handed back. "
+        "Who created it is unchanged."
+    )
+
+
 def _run_session_adopt(args: dict[str, Any], ctx: ToolContext) -> str:
     try:
         resp = ctx.client.post(

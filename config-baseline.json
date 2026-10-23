@@ -90,6 +90,7 @@
         "session_start_timeout_secs": 90,
         "tool_approval_timeout_secs": 600,
         "session_control": true,
+        "session_manager_chain": false,
         "member_dispatch": true,
         "crew_panel": true,
         "subagent_cost_gb": 0.5,
@@ -1378,6 +1379,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "agent.session_manager_chain",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Session Manager Chain",
+      "help": "Let a session reach the whole line of sessions under it, not only the ones it manages directly. With it on, a lead that handed a worker to a conductor can still send to, read, stop and close that worker, and closing the conductor hands its workers to the lead. Off by default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "agent.member_dispatch",

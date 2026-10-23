@@ -519,13 +519,23 @@ async def close_slot(
     name: str,
     *,
     pre_pop_check: Callable[[], None] | None = None,
+    hand_back: bool = True,
 ) -> None:
-    """Close a slot while releasing its admission fence on every aborted path."""
+    """Close a slot while releasing its admission fence on every aborted path.
+
+    A close that returns has committed, so the sessions the closed one managed are
+    handed up the manager line here (a no-op unless ``agent.session_manager_chain``).
+    The idle sweep passes ``hand_back=False``: an idle archive keeps them on it.
+    """
     try:
         await _close_slot(state, slot, name, pre_pop_check=pre_pop_check)
     finally:
         if state.get_slot(name) is slot:
             slot.cancel_close()
+    if hand_back and state.get_slot(name) is not slot:
+        from kiro_crew.dashboard.session_control import hand_back_on_close
+
+        await hand_back_on_close(state, slot)
 
 
 async def _close_slot(

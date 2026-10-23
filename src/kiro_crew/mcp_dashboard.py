@@ -807,6 +807,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _run_session_end_wait,
     _run_session_fork,
     _run_session_generate_title,
+    _run_session_handoff,
     _run_session_history_list,
     _run_session_read_message,
     _run_session_release,

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.context_assembly.markers import _apply_marker_spans, _marker_spans
+from kiro_crew.dashboard import session_managers
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
 from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_CODE,
@@ -25,7 +26,6 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     SessionControlError,
     _audit,
     _caller_is_ownership_fenced,
-    _created_by_other,
     caller_slot_key,
     prewarm_enabled_check,
 )
@@ -783,11 +783,12 @@ def _timeout_delivery_observation(
 
 
 def broadcast_audience(state: "DashboardState", caller_key: str) -> list[str]:
-    """The slot keys *caller_key* created and can still address, sorted.
+    """The slot keys *caller_key* manages and can still address, sorted.
 
-    The DEFAULT audience of a broadcast: a conductor's own workers. Read from the
-    live slots' ``_created_by`` — the same field the ownership fence
-    (:func:`_created_by_other`) reads — so the default audience is by construction
+    The DEFAULT audience of a broadcast: a conductor's own workers, the ones it
+    created and the ones handed to it. Read from :func:`session_managers.holder`
+    (the creator until a ``session_handoff`` names another) -- the manager the
+    fence reads for ``send`` -- so the default audience is by construction
     a subset of what the fence would admit, and an audience this returns can still
     be refused per target (a worker that went incognito, gained a channel mirror,
     or is an app's) by the gate each delivery runs. Nothing here authorizes.
@@ -803,7 +804,7 @@ def broadcast_audience(state: "DashboardState", caller_key: str) -> list[str]:
     out = [
         key
         for key, slot in list(state._slots.items())
-        if key != caller_key and not _created_by_other(slot, caller_key)
+        if key != caller_key and session_managers.holder(slot) == caller_key
     ]
     return sorted(out)
 

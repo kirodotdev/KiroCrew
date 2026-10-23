@@ -75,6 +75,7 @@ _OWNERS = (
     "kiro_crew.dashboard.session_control_parts.session_messaging",
     "kiro_crew.dashboard.session_control_parts.session_create",
     "kiro_crew.dashboard.session_control_parts.session_tree",
+    "kiro_crew.dashboard.session_control_parts.session_handoff",
     "kiro_crew.dashboard.session_control_parts.session_status",
     "kiro_crew.dashboard.session_control_parts.session_revive",
 )
@@ -97,6 +98,8 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         APP_CRON_OWNER_PREFIX,
         CRON_LINK_PREFIX,
         CRON_SLOT_PREFIX,
+        HANDOFF_WIDENED_OPERATIONS,
+        MAX_MANAGER_CHAIN,
         UNATTENDED_SLOT_PREFIXES,
         WORKFLOW_SLOT_PREFIX,
         SessionControlError,
@@ -108,15 +111,20 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _created_by_other,
         _cron_caller,
         _delegation_lineage_fenced,
+        _manager_chain_on,
         _member_bypass,
         _member_caller,
+        _outside_reach,
         _sel_off_loop,
         _store_is_member_owned,
         caller_slot_key,
+        manager_chain_enabled,
+        manager_chain_snapshot,
         member_admitted_to_scoped_surface,
         member_dispatch_enabled,
         member_owns_slot,
         prewarm_enabled_check,
+        refresh_manager_chain,
         session_control_enabled,
     )
     from kiro_crew.dashboard.session_control_parts.delivery_containment import (  # noqa: F401
@@ -193,6 +201,14 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _store_s_crewmate,
         create_session,
     )
+    from kiro_crew.dashboard.session_control_parts.session_handoff import (  # noqa: F401
+        _HANDOFF_LOCK,
+        _manages_up_the_line,
+        _move_tree_edge,
+        _note_in_transcript,
+        hand_back_on_close,
+        handoff_target,
+    )
     from kiro_crew.dashboard.session_control_parts.session_messaging import (  # noqa: F401
         _FORGED_PROVENANCE_RE,
         _ORPHANED_STEER_DELIVERIES,
@@ -217,16 +233,20 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         send_to_target,
     )
     from kiro_crew.dashboard.session_control_parts.session_revive import (  # noqa: F401
+        _PENDING_REBINDS,
         DEFAULT_HISTORY_LIST_ROWS,
         MAX_HISTORY_FOLDER_ID_CHARS,
         MAX_HISTORY_LIST_ROWS,
         MAX_HISTORY_SCAN_ENTRIES,
+        UNVERIFIED_CREATOR,
         _archived_link_and_mirror,
         _archived_session_is_channel_linked,
         _archived_session_is_mirrored,
         _archived_target_refusal,
         _bounded_folder_id,
+        _creation_parent,
         _fold_slot_key,
+        _rebind_in_background,
         _resolve_archived_target,
         _revived_slot_refusal,
         _scan_archived_candidates,
@@ -361,6 +381,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.context_assembly.markers import _marker_spans  # noqa: F401
     from kiro_crew.crew_log import emit as crew_log_emit  # noqa: F401
     from kiro_crew.crew_log.session_tree_projection import projection  # noqa: F401
+    from kiro_crew.dashboard import session_managers  # noqa: F401
     from kiro_crew.dashboard.chat_delivery import sanitize_outbound  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _folder_declared_project  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _resolve_folder_project_dir  # noqa: F401
@@ -399,6 +420,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.dashboard.state import SlotOrigin  # noqa: F401
     from kiro_crew.dashboard.state import _normalize_slot_key  # noqa: F401
     from kiro_crew.dashboard.state import _safe_folder_tree  # noqa: F401
+    from kiro_crew.dashboard.state import append_and_surface  # noqa: F401
     from kiro_crew.dashboard.state import load_window_off_loop  # noqa: F401
     from kiro_crew.dashboard.stop_retry import allow_escalation  # noqa: F401
     from kiro_crew.effort import EFFORT_LEVELS  # noqa: F401

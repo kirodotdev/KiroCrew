@@ -763,6 +763,7 @@ async def resume_slot_from_history(
     request_title: str = "",
     containment: "Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None" = None,
     final_check: "Callable[[_ChatSlot], ResumeRefusal | None] | None" = None,
+    rebind_manager: bool = True,
 ) -> ResumeOutcome:
     """Load an archived (history) session back into a live slot.
 
@@ -804,6 +805,11 @@ async def resume_slot_from_history(
     immediately before the publish, for the hook's store-free answers (slot
     fields, caps); a refusal there restores the marker the deferred clear just
     dropped. Nothing is published on any refusal. A human click passes neither.
+
+    After the publish, a ``session_handoff`` record for the session is moved to the
+    new tab id (:func:`session_managers.rebind_resumed`), or its manager would lose
+    it. ``rebind_manager=False`` leaves that to the caller, which session control's
+    revive uses to write its allowed audit row first.
 
     Refusals come back as :class:`ResumeOutcome.refusal` rather than being
     raised, because the wire wrapper reproduces each one's historical body and
@@ -887,6 +893,8 @@ async def resume_slot_from_history(
     # app token, otherwise leaves it untagged, which is invisible to cross-slot
     # scopes) rather than claiming USER on a conversation we cannot attribute.
     meta = state.conversation_log.get_metadata(history_key)
+    # The archived tab id, read before anything rebuilds the slot under a new one.
+    archived_tab = str(meta.get("tab_id") or "")
 
     # An app may open only a transcript it owns, and only under a name it may
     # hold. A persisted conversation has no live slot for the per-slot checkpoint
@@ -1725,8 +1733,12 @@ async def resume_slot_from_history(
     # resume resolved it and hit the idempotency guard) but hidden from the
     # payload while under construction. End construction and push once: this is
     # the first frame any client sees, and it shows a fully hydrated session.
-    # Nothing awaits between here and the return.
     state.end_slot_construction(slot.key)
     _sync_dashboard_slots(state)
     state.push_slots_update()
+    if rebind_manager:
+        from kiro_crew.dashboard import session_managers
+
+        # Shielded: a request cancelled here must not leave the record on the old tab.
+        await asyncio.shield(session_managers.rebind_resumed(slot, archived_tab))
     return ResumeOutcome(slot=slot, total=total)

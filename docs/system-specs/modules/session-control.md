@@ -35,6 +35,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_broadcast` | `POST /api/session-control/broadcast` | Deliver ONE message to several sessions — by default every session the caller created — in a required `queue` or `steer` mode, reporting the outcome per target |
 | `session_status` | `GET /api/session-control/status` | List the sessions the caller stood up and what each is doing, with the roster taken from the crew log's session tree so a session that is gone still appears |
 | `session_adopt` | `POST /api/session-control/adopt` | Take another session under the caller in the session tree, keeping the parent it had on record; refused when the target is already above the caller |
+| `session_handoff` | `POST /api/session-control/handoff` | Make another session the manager of a target the caller manages, so the verbs that run the target answer to the new manager; `_created_by` does not move |
 | `session_release` | `POST /api/session-control/release` | Let a session the caller holds, or the caller itself, out from under its parent; the released session keeps its own subtree |
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
 | `session_summary` | `GET /api/session-control/summary` | Read another session's cached intent summary + liveness, authorized as `session_read_message` is; never generates one |
@@ -921,6 +922,66 @@ that is out of bounds is visible after the fact even though nothing happened.
 | Target is in another workspace | 403 | Workspaces are the memory boundary |
 | Target names no open session | 404 | A mistake, not an authorization failure |
 | Title matches more than one session | 409 | Guessing means acting on the wrong conversation |
+
+### Handoff: the manager a fenced caller is checked against
+
+The ownership fence below admits a fenced caller to the sessions it CREATED. A lead
+that opens a conductor and its workers cannot put the workers under the conductor that
+way, because the conductor created none of them. `session_handoff` names a MANAGER for
+a session, and for the verbs that run a session (`HANDOFF_WIDENED_OPERATIONS`: `send`,
+`read`, `summary`, `stop`, `close`, `adopt`, `release`, `handoff`) the fence checks the
+manager instead of the creator (`_outside_reach`). Every other verb, `fork`, `rename`
+and `set_model` among them, and `session_create`'s delegation lineage, still read
+`_created_by`, which a handoff never rewrites. So a manager runs the sessions it was
+handed and cannot fork them or open sessions against the creator's memory.
+
+The reach moves: once a session is handed on, the giver is refused the widened verbs
+on it. Both sides of a handoff go through `authorize_target` with the `handoff`
+operation, so only the current manager can hand a session on, and the recipient must
+be a session the caller manages too. The verb then holds EVERY caller, fenced or not, to
+that manager rule (403 `not_manager`), so an unfenced agent in one of the person's own
+tabs cannot hand another of the person's tabs, which has no manager, to a fenced
+session. Refusals of its own, all 409: `self_manager` (the
+recipient is the target), `already_manager`, and `would_cycle` (the target manages the
+recipient, directly or up the line). A write that fails is 500 `handoff_write_failed`
+with nothing changed.
+
+The manager lives in `session_managers.json` under the data home's `crew-log` root
+(`src/kiro_crew/dashboard/session_managers.py`), keyed by slot key, holding the manager
+key and the tab identity of the session the record was written for. The `crew-log`
+root is hidden from sandboxed processes and fenced from the file tools, so a giver
+cannot delete or rewrite the record. The file is read once per process and cached;
+every write replaces it atomically and then publishes a new snapshot, so the
+synchronous fence never reads the disk after the first read, never waits on a writer,
+and a handoff survives a restart. `session_managers.holder(slot)` answers:
+
+- the creator, when no record names the slot, or when the file is missing or cannot be
+  read or parsed;
+- the recorded manager, when the record's tab is the slot's `_tab_id`;
+- `""` when a record names the slot but is malformed or its tab is another session's.
+  `""` matches no caller, so only the person reaches that session. This is the case a
+  giver reaches by editing the tab id on its transcript line to win a session back:
+  the record stops matching, and a record that does not match withholds reach rather
+  than falling back to the creator.
+
+After the record is saved, the handoff moves the target under the recipient in the
+session tree with the same `session/adopted` entry `session_adopt` appends (skipped,
+with the handoff standing, when the tree is not recorded or not readable or the move
+would loop), and writes one display-only `notice` row in the target's transcript naming
+the new manager and the one it replaced. Neither can undo the handoff.
+
+With `agent.session_manager_chain` on (off by default), `_outside_reach` also walks up
+the manager line from the target's manager, so a lead reaches the workers it handed to
+its conductor. The switch is read off the loop by `prewarm_enabled_check` and published as an
+in-memory value (`manager_chain_snapshot`), so the synchronous gate, including
+`close_target`'s no-suspension re-check, never loads config for it. The walk is live
+and bounded by `MAX_MANAGER_CHAIN`; a manager that is
+not open, an undecided record, or a loop withholds reach. When a manager closes,
+`close_slot` calls `hand_back_on_close`, which gives each session the closed one
+managed (handed to it, or created by it and never handed elsewhere) to the closed one's
+own manager, or back to its creator when it had none. With
+the switch off a closed manager's sessions keep naming it, and only the person reaches
+them.
 
 ### Member callers: switch bypass, bounded by creator ownership
 
@@ -2178,6 +2239,10 @@ however large the archive is.
 
 ## Configuration
 
+`agent.session_manager_chain` (bool, default **false**) lets a fenced caller reach
+the whole manager line under it and hands a closed manager's sessions up; see
+"Handoff" under Authorization. A missing, malformed or unreadable value leaves it off.
+
 `agent.session_control` (bool, default **true**). The grant that decides who may
 reach a peer session is the **agent config**, not this switch: the five tools come
 from the `kirocrew-dashboard` MCP server, so an agent whose spec does not mount it
@@ -2309,6 +2374,8 @@ goes to its owner, and the owners import each other lowest layer first, in this 
   the spawn record a created or forked child gets.
 - `src/kiro_crew/dashboard/session_control_parts/session_tree.py`: `session_fork`,
   `session_adopt` and `session_release`, and the tree-mutation lock and append fence.
+- `src/kiro_crew/dashboard/session_control_parts/session_handoff.py`: `session_handoff`
+  and the hand-back when a manager closes.
 - `src/kiro_crew/dashboard/session_control_parts/session_messaging.py`: `session_send` and
   `session_broadcast`, the provenance envelope, and the steer deliveries a cancelled
   sender leaves behind.

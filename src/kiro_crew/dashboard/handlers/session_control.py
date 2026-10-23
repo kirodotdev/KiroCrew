@@ -894,6 +894,30 @@ async def api_session_control_adopt(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+@_counted("handoff")
+async def api_session_control_handoff(request: web.Request) -> web.Response:
+    """POST /api/session-control/handoff — give a session to another session to manage."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        recipient = body.get("to")
+        if not isinstance(recipient, str) or not recipient.strip():
+            raise sc.SessionControlError("to is required", code="recipient_required")
+        result = await sc.handoff_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            to=recipient.strip(),
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
 @_counted("release")
 async def api_session_control_release(request: web.Request) -> web.Response:
     """POST /api/session-control/release — let a session out from under its parent."""

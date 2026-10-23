@@ -470,6 +470,10 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/session-control/adopt", _deferred("session_control", "api_session_control_adopt")
     )
     app.router.add_post(
+        "/api/session-control/handoff",
+        _deferred("session_control", "api_session_control_handoff"),
+    )
+    app.router.add_post(
         "/api/session-control/release",
         _deferred("session_control", "api_session_control_release"),
     )

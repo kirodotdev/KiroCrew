@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard import session_managers
 from kiro_crew.dashboard.chat_folders import _slot_meta_txn_lock, _unhide_folder, note_folder_filed
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import _history_key_for, slot_history_key
@@ -267,6 +268,38 @@ def _revived_slot_refusal(slot: "_ChatSlot", caller_slot: "_ChatSlot") -> tuple[
     return None
 
 
+#: The creator a revived slot carries when its transcript names one that the creation
+#: records do not confirm. Non-empty, so the slot stays FENCED (an agent made it), and it
+#: contains ``:``, so no slot key and no caller key can ever equal it.
+UNVERIFIED_CREATOR = "unverified:creator"
+
+#: Rebinds started on a cancelled revive, held so the loop does not drop them.
+_PENDING_REBINDS: "set[asyncio.Task[None]]" = set()
+
+
+def _rebind_in_background(slot: Any, meta: "Mapping[str, Any]") -> None:
+    """Finish the manager rebind of a revive whose request was cancelled after commit."""
+    task = asyncio.get_running_loop().create_task(
+        session_managers.rebind_resumed(slot, str(meta.get("tab_id") or ""))
+    )
+    _PENDING_REBINDS.add(task)
+    task.add_done_callback(_PENDING_REBINDS.discard)
+
+
+def _creation_parent(slot_key: str) -> str:
+    """*slot_key*'s creator from the crew log's CREATION records, or ``""``. No I/O.
+
+    Never the sidebar parent: an adoption or a handoff moves that, and it says nothing
+    about who made the session.
+    """
+    from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.crew_log.session_tree_projection import creator_of
+
+    if not crew_log_emit.enabled():
+        return ""
+    return creator_of(slot_key)
+
+
 def _archived_target_refusal(
     slot_key: str,
     meta: "Mapping[str, Any]",
@@ -309,6 +342,13 @@ def _archived_target_refusal(
     if str(meta.get("workspace") or "default") != caller_workspace:
         return "target session belongs to a different workspace", "workspace_mismatch"
     if ownership_fenced:
+        if session_managers.recorded_manager(slot_key, str(meta.get("tab_id") or "")) == (
+            caller_key
+        ):
+            # The session was handed to the caller. The managers record is gateway-
+            # written under the fenced crew-log root, so it needs no corroboration,
+            # and it is the record the send fence reads for the live session.
+            return None
         if str(meta.get("created_by") or "") != caller_key:
             return "target session was created by another session", "not_creator"
         # The metadata line is a file an agent's file tools can edit
@@ -324,8 +364,7 @@ def _archived_target_refusal(
         # unverifiable ownership is refused, not assumed. A caller that is NOT
         # fenced (the person's own tab) is not gated on ownership at all, so the
         # human recovery this tool exists for is unaffected.
-        tree_known, lineage_parent, _ = _slot_tree_parent(slot_key)
-        if not tree_known or lineage_parent != caller_key:
+        if _creation_parent(slot_key) != caller_key:
             return (
                 "archived session ownership could not be verified from gateway records "
                 "(a fenced caller needs the crew log's session-tree lineage, which is "
@@ -550,9 +589,13 @@ async def revive_session(
             # matches no caller. Attribution ONLY -- ``_lineage_minted`` stays
             # False, and the reviver is never written here: reviving is not
             # creating.
-            tree_known, lineage_parent, _ = _slot_tree_parent(slot_key)
-            if tree_known and lineage_parent == claimed_creator:
+            # From the CREATION records, never the sidebar parent a handoff moves. A
+            # claim they do not confirm keeps the slot fenced under a creator no
+            # caller matches, rather than blank, which would read as a person's tab.
+            if _creation_parent(slot_key) == claimed_creator:
                 built._created_by = claimed_creator
+            else:
+                built._created_by = UNVERIFIED_CREATOR
         # Charge the reviver for this slot under the per-caller cap (see
         # ``creator_slot_count``) without touching its ownership. Set before the
         # ceilings are read so the count includes this slot once published.
@@ -603,6 +646,7 @@ async def revive_session(
         caller_label=f"session:{caller_key}",
         containment=_containment,
         final_check=_final_check,
+        rebind_manager=False,
     )
     if outcome.refusal is not None:
         raise deny(outcome.refusal.error, outcome.refusal.code, status=outcome.refusal.status)
@@ -713,10 +757,13 @@ async def revive_session(
                         raise
         except BaseException:
             _audit_allowed(False)
+            _rebind_in_background(slot, meta)
             raise
         state.push_slots_update()
 
     _audit_allowed(filed)
+    # After the audit: the revive is committed, and its allowed row is owed first.
+    await asyncio.shield(session_managers.rebind_resumed(slot, str(meta.get("tab_id") or "")))
     return {
         "ok": True,
         "target": slot.key,
