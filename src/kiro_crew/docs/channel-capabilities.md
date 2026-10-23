@@ -36,6 +36,11 @@ figure is the byte budget divided by four — the worst case for non-ASCII text.
 An ASCII-only reply on those channels fits far more than the character figure
 suggests.
 
+**Streams** and **Edits** show each channel's default. Feishu streams the reply
+into a live card, editing it in place, only when `feishu.streaming` is on, and
+only in a direct message; a group chat and the default setup keep one buffered
+reply, which is why its cells stay ❌.
+
 **Sends a file back to you** is what you receive from `file_send`. On WeCom the
 file arrives as a document (`send_document`), but an inline image reference in a
 reply is not uploaded: it keeps printing its path, so WeCom's `files_outbound`

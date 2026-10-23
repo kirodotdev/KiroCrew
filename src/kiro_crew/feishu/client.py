@@ -57,6 +57,49 @@ def _graded_chunks(text: str) -> list[str]:
 # suspended forever while preserving enough time on a loaded host.
 _WS_CLIENT_READY_TIMEOUT_SECS = 5.0
 
+#: Card calls are short; a hung one must not pin an executor thread for long.
+_CARD_HTTP_TIMEOUT_S = 15.0
+
+
+class CardApiError(RuntimeError):
+    """A Feishu Open Platform call answered with a non-zero business code.
+
+    Carries ``code`` because the streaming-card failure policy is entirely
+    code-driven: 230020 means drop this frame, 230011/231003 mean the anchor is
+    gone, and anything unrecognised means fall back to a plain-text reply.
+    """
+
+    def __init__(self, code: int, msg: str, path: str = "") -> None:
+        super().__init__(f"Feishu API error: code={code} msg={msg} path={path}")
+        self.code = code
+        self.msg = msg
+        self.path = path
+
+
+def _card_data(resp: Any, path: str) -> dict[str, Any]:
+    """Read a CardKit response envelope; raise ``CardApiError`` on any failure.
+
+    The envelope comes from the raw body rather than ``resp.code`` so a non-JSON
+    error page (a gateway 5xx) still raises with its HTTP status.
+    """
+    raw = getattr(resp, "raw", None)
+    status = int(getattr(raw, "status_code", 0) or 0)
+    content = getattr(raw, "content", None)
+    try:
+        envelope = json.loads(content or b"{}")
+    except ValueError:
+        envelope = None
+    if not isinstance(envelope, dict):
+        raise CardApiError(status or -1, "unreadable response body", path)
+    if "code" not in envelope and status >= 400:
+        raise CardApiError(status, str(envelope.get("msg", "")), path)
+    code = int(envelope.get("code", 0) or 0)
+    if code != 0:
+        raise CardApiError(code, str(envelope.get("msg", "")), path)
+    data = envelope.get("data")
+    return data if isinstance(data, dict) else {}
+
+
 # The only two chat types this channel serves. The transport gate names them
 # explicitly so an absent or future value is denied rather than falling
 # through the ungated direct-message path.
@@ -280,6 +323,13 @@ class LarkClient:
         # ``run_in_executor`` caller in the gateway, so a burst of Feishu
         # replies would steal its threads.
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="feishu-rest")
+
+        # -- CardKit (streaming card) plumbing -----------------------------
+        # The card calls go through the SDK's generic ``BaseRequest`` path, the
+        # same one the bot-info probe uses: the SDK owns the tenant token, the
+        # domain and the timeout. Built on first use with its own timeout so a
+        # hung card call cannot pin a ``feishu-rest`` worker for long.
+        self._card_sdk: Any = None
         # Forward ref to the WS client so ``close()`` can stop it.
         self._ws_client: Any = None
 
@@ -415,6 +465,57 @@ class LarkClient:
             else:
                 logger.info("Feishu bot open_id resolved")
             return
+
+    # -- Card (CardKit) verbs ----------------------------------------------
+
+    def _sync_card_api(self, method: str, path: str, body: dict[str, Any] | None) -> dict[str, Any]:
+        """One Open Platform call through the SDK. Worker thread only.
+
+        Feishu answers **HTTP 200 with a non-zero ``code`` in the body** on a
+        business error, so the body code is read explicitly: an exception-only
+        reading would report success for a call that did nothing. Returns the
+        envelope's ``data`` object.
+        """
+        lark = self._lark_mod
+        if self._card_sdk is None:
+            self._card_sdk = (
+                lark.Client.builder()
+                .app_id(self._app_id)
+                .app_secret(self._app_secret)
+                .timeout(_CARD_HTTP_TIMEOUT_S)
+                .log_level(lark.LogLevel.WARNING)
+                .build()
+            )
+        builder = (
+            lark.BaseRequest.builder()
+            .http_method(getattr(lark.HttpMethod, method))
+            .uri(path)
+            .token_types({lark.AccessTokenType.TENANT})
+        )
+        if body is not None:
+            builder = builder.body(body)
+        resp = self._card_sdk.request(builder.build())
+        return _card_data(resp, path)
+
+    async def card_api(
+        self, method: str, path: str, body: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Await a CardKit call on the REST executor. Raises ``CardApiError``."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, self._sync_card_api, method, path, body)
+
+    async def send_card_reply(self, message_id: str, card_id: str) -> None:
+        """Reply to *message_id* with a message that references *card_id*.
+
+        The message body carries no content of its own -- the card entity holds
+        the text, which is what makes subsequent updates possible.
+        """
+        content = json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False)
+        await self.card_api(
+            "POST",
+            f"/open-apis/im/v1/messages/{message_id}/reply",
+            {"content": content, "msg_type": "interactive"},
+        )
 
     # -- Inbound WS handler (called from daemon thread) --------------------
 
