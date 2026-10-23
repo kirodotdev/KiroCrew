@@ -1023,7 +1023,7 @@ export const {
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
   sseMcpAppRender,
   sseWorkflowEvent, clearWorkflowRun, reconcileWorkflowRuns,
-  sseSideResult, sseSideQueue, sideSendStatus, sideReleaseConsumed, sideClose, sideRestore, sideResync, sideOptimisticAccepted, sideOptimisticAppend, sideOptimisticRollback,
+  sseSideResult, sseSideQueue, sideSendStatus, sideReleaseConsumed, sideClose, sideRestore, sideRestoreReading, sideResync, sideOptimisticAccepted, sideOptimisticAppend, sideOptimisticRollback,
 } = chatSlice.actions
 
 /** The `GET /api/spawn` read in flight, shared by every gone card that asks
@@ -1091,7 +1091,23 @@ export const restoreSideConversation = createAsyncThunk<void, string, { state: R
   'chat/restoreSideConversation',
   async (slot, { dispatch, getState }) => {
     if (getState().chat.slotSideRestored?.[slot]) return
-    dispatch(sideRestore({ slot, snapshot: await sharedSideRead(slot) }))
+    const read = sharedSideRead(slot)
+    // From here an edit to a queued question this tab has no card for is kept,
+    // because the read may be answered before it.
+    dispatch(sideRestoreReading({ slot, reading: true }))
+    let snapshot: SideSnapshot
+    try {
+      snapshot = await read
+    } catch (e: unknown) {
+      // Another read can still answer for this slot: a newer one after this read was
+      // retired at a question's deadline, or a retired one when this is the newer.
+      // The window stays open for it.
+      const stillAnswering = [sideRestoreReads.get(slot), ...(retiredSideRestoreReads.get(slot) ?? [])]
+        .some(other => other !== undefined && other !== read)
+      if (!stillAnswering) dispatch(sideRestoreReading({ slot, reading: false }))
+      throw e
+    }
+    dispatch(sideRestore({ slot, snapshot }))
   },
 )
 
