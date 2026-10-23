@@ -499,7 +499,32 @@ def _url_payload_command(n: int) -> str:
 #: target) the way it steps over a ``VAR=val`` assignment, using the shared
 #: ``shell_normalizer._push_token_redirection`` recognizer. A redirect before
 #: ``rm`` cannot hide the program word.
-_PACKAGE_LINE_BUDGET = 32_518
+#: Raised again, from 32,518, for a real new rule in ``redaction_patterns.py``: the
+#: Telegram-bot-token branch (``_CREDENTIAL_PATTERNS``) false-positives on a long
+#: CDK-generated ARN, whose account-id/resource boundary shares that branch's bare
+#: ``<digits>:<30+ run>`` shape. Two new compiled patterns (an alternation with the
+#: branch dropped, and an ARN-account-id look-behind) plus the ``_credential_matches``
+#: rejection arm that retries past a hit on that shape sitting in an ARN, mirroring the
+#: existing JWT rejection arm beside it. The ARN-prefix check is left-bounded by
+#: ``_ARN_PREFIX_MAX_LOOKBACK`` so it stays constant-time per hit -- an unbounded
+#: ``search(text, 0, hit)`` would be quadratic over the multi-ARN output this rule
+#: targets, which is the loop-stall shape this very file guards. The exemption also
+#: requires the hit's own digit run to be exactly 12 digits (``_ARN_ACCOUNT_ID_12_DIGITS_RE``),
+#: the invariant length of an AWS account id, so a genuine Telegram token (6-10 digit
+#: bot id) placed right after a real ARN prefix is NOT exempted and still redacts.
+#: This raise and the raises above it are independent additions to the same ratchet,
+#: so the number below is re-MEASURED off the tree, not the sum of the deltas. The
+#: count also carries the five new owner names this rule adds to the ``redaction``
+#: facade's ``TYPE_CHECKING`` mirror manifest (the two ARN-prefix regexes, the lookback
+#: constant, the 12-digit account-id regex and the sans-Telegram alternation), which
+#: ``test_facade_mirror_guards`` requires name everything the facade forwards.
+#: Then by 40 more for ``_arn_exemption_withheld``: twelve digits alone do not prove an
+#: account id, so the exemption is withheld when the account is a zero-padded 6-10
+#: digit bot id (``_BOT_ID_LENGTHS``) or an ``AA`` anywhere in the tail starts a
+#: branch-length run (``_TELEGRAM_SECRET_PREFIX``, ``_TELEGRAM_SECRET_MIN_RUN``).
+#: Three constants, one string-only predicate, its call in the rejection arm, their
+#: comments and four manifest lines; the exemption only narrows.
+_PACKAGE_LINE_BUDGET = 32_611
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
