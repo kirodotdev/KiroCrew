@@ -149,7 +149,8 @@ budget or cap ran out, the `_stopped_row_is_replaceable` allowlist -- counts as
 no loop, whoever armed it, and is replaced by a fresh default: a new bind is new
 work. An inactive record a PERSON stopped is kept and the arm is refused with
 reason `user-stopped`. A refusal is logged at WARNING and the bind still
-succeeds; the bind reply carries `patrol: armed | existing | refused |
+succeeds; the shutdown refusal a dispatch racing the gateway's teardown meets is
+logged at DEBUG instead. the bind reply carries `patrol: armed | existing | refused |
 unsupported` and `patrol_reason` (`no-loop`, `replaced-system-stopped`,
 `active-work-ledger`, `active-other-watch`, `user-stopped`,
 `outside-arm-refused`, `session-cannot-host-loop`, `arm-failed`,

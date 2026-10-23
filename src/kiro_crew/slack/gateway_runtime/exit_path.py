@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
     from kiro_crew.slack.gateway import (
         GRACEFUL_SHUTDOWN_SECS,
+        PERSISTENCE_DRAIN_GRACE_SECS,
         UPDATE_INSTALLER_STOP_SECS,
         Any,
         GatewayOrchestrator,
@@ -49,6 +50,9 @@ if TYPE_CHECKING:
 
 async def _shutdown(self: GatewayOrchestrator) -> None:
     """Graceful cleanup of all services."""
+    # ``_shutdown_and_exit`` runs this whole method under
+    # ``wait_for(..., GRACEFUL_SHUTDOWN_SECS)``, so this is that bound's deadline.
+    graceful_deadline = asyncio.get_running_loop().time() + GRACEFUL_SHUTDOWN_SECS
     # First: a stop owns any apply in flight (cancelled here), and its build
     # child dies now rather than after the teardown below.
     platform_compat.cancel_wheel_applies_in_flight("shutdown")
@@ -188,10 +192,118 @@ async def _shutdown(self: GatewayOrchestrator) -> None:
     # Cancel in-flight handler tasks
     for t in list(self._handler_tasks):
         t.cancel()
+
+    # Close AutoNudge admission before awaiting cancelled handlers. AutoNudge
+    # deliberately re-raises cancellation only
+    # AFTER its shielded persistence drain has reached durability, or after
+    # the drain's post-cancellation window closes on a write that cannot
+    # finish (gateway_shutdown_budget.PERSISTENCE_DRAIN_GRACE_SECS). Record
+    # that outer cancellation here and propagate it at the end, so the
+    # gateway's bounded wait keeps its cancellation/timeout contract.
+    #
+    # The drain runs as its own task on a budget of its own. Its
+    # post-cancellation window opens only on a cancellation, so an uncut drain
+    # on a wedged write would hold this method until the graceful bound itself
+    # cut it, leaving the teardown below none of GRACEFUL_SHUTDOWN_SECS. It is
+    # cut after one PERSISTENCE_DRAIN_GRACE_SECS window, or sooner when less than
+    # one window would remain for the teardown once the drain's own window after
+    # the cut closes. A cut made here is not the graceful bound, so the teardown
+    # then runs inline under it.
+    autonudge_shutdown_interrupted = False
+    if self.autonudge_svc:
+        drain_task = asyncio.create_task(
+            self.autonudge_svc.shutdown(), name="gateway-shutdown-autonudge-drain"
+        )
+        drain_budget = min(
+            PERSISTENCE_DRAIN_GRACE_SECS,
+            max(
+                0.0,
+                graceful_deadline
+                - asyncio.get_running_loop().time()
+                - 2 * PERSISTENCE_DRAIN_GRACE_SECS,
+            ),
+        )
+        drain_cut = False
+        try:
+            await asyncio.wait({drain_task}, timeout=drain_budget)
+            if not drain_task.done():
+                drain_cut = True
+                drain_task.cancel()
+                logger.warning(
+                    "AutoNudge drain still pending after %.1fs; cancelled it so the "
+                    "gateway teardown can start",
+                    drain_budget,
+                )
+                await asyncio.wait({drain_task})
+        except asyncio.CancelledError:
+            # The graceful bound (or an earlier cancellation): hand it to the
+            # drain, which still waits only its post-cancellation window.
+            autonudge_shutdown_interrupted = True
+            drain_task.cancel()
+            await asyncio.wait({drain_task})
+        if drain_task.cancelled():
+            if not drain_cut:
+                autonudge_shutdown_interrupted = True
+        elif autonudge_shutdown_interrupted:
+            # Retrieved so it is not reported unretrieved; the remembered
+            # cancellation is what this method propagates.
+            drain_task.exception()
+        else:
+            drain_task.result()
+    if not autonudge_shutdown_interrupted:
+        autonudge_svc = self.autonudge_svc
+        await self._stop_services_and_sessions(eager_spawns=eager_spawns)
+        if autonudge_svc:
+            # A cut made above frees the teardown; it does not make the drained
+            # work durable. Whatever it left in flight gets the rest of the
+            # graceful budget before the hard exit that follows this method.
+            await autonudge_svc.settle_admitted_writes(graceful_deadline)
+        return
+    # The absorbed cancellation was the graceful bound itself, or arrived
+    # before it. Run the rest of teardown in its own task and wait only for
+    # what remains of GRACEFUL_SHUTDOWN_SECS. The deadline is independent of
+    # any one step accepting cancellation: at expiry the waiter cancels the
+    # owned task and does not await it, so a step that swallows that cut cannot
+    # turn the bound into an unbounded wait. The exit path's orphan sweep still
+    # reaps the kiro-cli children.
+    teardown_task = asyncio.create_task(
+        self._stop_services_and_sessions(eager_spawns=eager_spawns),
+        name="gateway-shutdown-teardown",
+    )
+    remaining = max(0.0, graceful_deadline - asyncio.get_running_loop().time())
+    done, _pending = await asyncio.wait({teardown_task}, timeout=remaining)
+    if teardown_task in done:
+        await teardown_task
+    else:
+        teardown_task.cancel()
+        logger.warning(
+            "Gateway teardown after the AutoNudge drain reached the graceful "
+            "shutdown deadline; the remaining steps were cut"
+        )
+    raise asyncio.CancelledError()
+
+
+async def _stop_services_and_sessions(
+    self: GatewayOrchestrator, *, eager_spawns: list[asyncio.Task[None]] | None = None
+) -> None:
+    """The teardown ``_shutdown`` runs once AutoNudge has drained.
+
+    Cancelled handlers first, then cron and heartbeat, the MCP broker, the
+    session, channel and dashboard closes, and last the subagent store and
+    memory startup those closes release. Only then is the closed AutoNudge
+    service withdrawn from its process-wide singleton. ``eager_spawns`` are the
+    speculative session starts ``_shutdown`` stopped before its first await;
+    they are awaited here with the session closes.
+    """
+    # Keep the old handler-drain semantics, but only after AutoNudge has closed
+    # admission and drained every mutation that entered before closure. A handler
+    # still running after cancellation may now reach a closed mutation entry; the
+    # shared mutation authorizer maps that expected shutdown refusal to 503. This
+    # await is the first bounded teardown step so a removal that keeps absorbing
+    # cancellation cannot prevent AutoNudge's drain from running.
     if self._handler_tasks:
         await asyncio.gather(*self._handler_tasks, return_exceptions=True)
 
-    # Stop services
     if self.cron_svc:
         await self.cron_svc.stop()
     if self.heartbeat_svc:
@@ -268,6 +380,14 @@ async def _shutdown(self: GatewayOrchestrator) -> None:
     # before it ends; the hard exit after this method would beat the save. Last,
     # so the steps above keep their share of the shutdown deadline.
     await wait_for_unwinding_turns(self.dashboard_state)
+    # Keep the closed service reachable until every dashboard handler and
+    # connection is gone. A slot close admitted during teardown must reach
+    # the service's closed-admission refusal instead of silently treating a
+    # missing singleton as "no loop" and persisting a resumable closed tab.
+    # This method is shared by the normal and owned interrupted paths, so
+    # both withdraw the singleton only after the same teardown boundary.
+    if self.autonudge_svc:
+        self.autonudge_svc._unpublish()
 
 
 def _write_marker_worker(self: GatewayOrchestrator, run_marker: Any, port: int) -> None:
