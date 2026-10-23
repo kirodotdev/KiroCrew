@@ -441,6 +441,9 @@ export function useMeetingTranscription({
     try {
       await ctx.audioWorklet.addModule(withBase('/pcm-worklet.js'))
     } catch {
+      // cleanup() already ran (the socket closed and reported why), and closing
+      // this context is what rejected the load: not a worklet failure to report.
+      if (ctxRef.current !== ctx) return
       onErrorRef.current?.('worklet')
       cleanup()
       return

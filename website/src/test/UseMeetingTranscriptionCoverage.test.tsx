@@ -508,6 +508,24 @@ describe('useMeetingTranscription — server frames', () => {
     expect(h.errors()).toContain('worklet')
   })
 
+  it('reports only the disconnect when the socket closes during the worklet load', async () => {
+    // The close tears the session down and closes the context, which is what
+    // rejects the pending load: that is not a worklet failure.
+    const h = await mount()
+    let rejectLoad: (e: Error) => void = () => {}
+    nextWorkletLoad = new Promise<void>((_, reject) => { rejectLoad = reject })
+    await act(async () => { void h.hook.result.current.start() })
+    await flush()
+    const ws = lastSocket()
+
+    await act(async () => { ws.close() })
+    await act(async () => { rejectLoad(new Error('context closed')) })
+    await flush()
+
+    expect(h.errors()).toEqual(['disconnected'])
+    expect(h.hook.result.current.active).toBe(false)
+  })
+
   it('reports active once the worklet is set up even if ready came first', async () => {
     const h = await mount()
     let resolveLoad: () => void = () => {}

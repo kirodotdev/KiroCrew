@@ -464,7 +464,11 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
     try {
       await ctx.audioWorklet.addModule(withBase('/pcm-worklet.js'))
     } catch {
-      if (sessionRef.current === session && !session.cancelled) {
+      // `ctxRef.current !== ctx` means cleanup() already closed this context: the
+      // socket ended first (its own handler reported why), and closing the
+      // context is what rejected the pending load. Reporting a download failure
+      // then would replace the real cause with "check your connection".
+      if (sessionRef.current === session && !session.cancelled && ctxRef.current === ctx) {
         onErrorRef.current?.(i18nT('hooks.useStreamingStt.audio_module_load_failed'))
         cleanup()
       }

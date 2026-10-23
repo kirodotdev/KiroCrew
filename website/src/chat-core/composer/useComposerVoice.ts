@@ -34,6 +34,7 @@ import { i18nT } from '../../i18n/t'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { providerLabel } from '../../lib/sttProviders'
+import { parseSpeechProviders, speechProviderNotice } from '../../lib/speechProviders'
 import { dictationSeparator, spliceDictationText } from '../../lib/dictationText'
 import { useVoiceInput, voiceInputSupported, type TranscriptOrigin } from '../../hooks/useVoiceInput'
 import { usePushToTalk } from '../../hooks/usePushToTalk'
@@ -94,7 +95,7 @@ export interface ComposerVoiceHost {
   pendingCaretRef?: React.MutableRefObject<number | null>
 }
 
-export type SttConfig = { streaming?: boolean; streaming_providers?: string[]; enabled?: boolean; dictation_panel?: boolean; available?: boolean; provider?: string; polish?: boolean; submit_on_release?: boolean; code?: string; prereqs?: string[] }
+export type SttConfig = { streaming?: boolean; streaming_providers?: string[]; enabled?: boolean; dictation_panel?: boolean; available?: boolean; provider?: string; polish?: boolean; submit_on_release?: boolean; code?: string; prereqs?: string[]; providers?: unknown[] }
 
 /**
  * A deliberate finish (`StopIntent` 'finish') waiting for its transcript to
@@ -1213,6 +1214,10 @@ export function useComposerVoice(host: ComposerVoiceHost) {
       /** Backend availability code, so the modal shows the same per-code reason
        *  Settings → Voice does instead of the generic provider-named sentence. */
       code: sttCfg?.code || '',
+      /** The selected edition provider's own row when it cannot run, picked the
+       *  way Settings → Voice picks it, so the modal shows that provider's reason
+       *  instead of calling an installed provider "not installed". */
+      providerNotice: speechProviderNotice(parseSpeechProviders(sttCfg?.providers), sttCfg?.provider || ''),
       /** The pip command the backend computed for a missing voice extra, shown
        *  verbatim so the user can self-serve the fix. ONLY the actionable pip
        *  entry qualifies: `prereqs` can also carry an ffmpeg install command,

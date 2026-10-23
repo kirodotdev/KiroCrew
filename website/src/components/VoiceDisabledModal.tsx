@@ -1,5 +1,7 @@
 import { Mic } from 'lucide-react'
 import Modal from './Modal'
+import SpeechProviderNotice from './SpeechProviderNotice'
+import type { SpeechProviderEntry } from '../lib/speechProviders'
 import { Btn } from './ui'
 import { CopyCommand } from './agentHarness/CopyCommand'
 import { modalUnavailableMessage } from '../lib/sttProviders'
@@ -32,6 +34,12 @@ interface Props {
    */
   code?: string
   /**
+   * The selected edition provider's row when it cannot run (`speechProviderNotice`).
+   * Rendered through `SpeechProviderNotice`, the surface Settings → Voice uses, in
+   * place of the sentence: that provider is installed, so "not installed" is wrong.
+   */
+  providerNotice?: SpeechProviderEntry | null
+  /**
    * The pip command the backend computed for fixing a missing voice extra
    * (`prereqs`), when it computed one. Shown verbatim in a copyable block so the
    * user can self-serve the fix.
@@ -49,7 +57,7 @@ interface Props {
  * transcribed, so instead of silently failing we explain why and link to the
  * setting that fixes it.
  */
-export default function VoiceDisabledModal({ open, reason = 'disabled', provider = '', code = '', installCommand = '', onClose, onOpenSettings }: Props) {
+export default function VoiceDisabledModal({ open, reason = 'disabled', provider = '', code = '', providerNotice = null, installCommand = '', onClose, onOpenSettings }: Props) {
   const unavailable = reason === 'unavailable'
   // The per-code reason, but only for a code whose sentence does not point at a
   // control this modal lacks (`modalUnavailableMessage` returns '' for the
@@ -77,11 +85,17 @@ export default function VoiceDisabledModal({ open, reason = 'disabled', provider
           <Mic size={20} />
         </div>
         <div className="text-[13px] text-text leading-relaxed">
-          <p className="mb-2">
-            {unavailable
-              ? (codeReason || i18nT('components.voiceDisabledModal.provider_is_not_installed_on_this_machine', { provider }))
-              : i18nT('components.voiceDisabledModal.speech_to_text_is_not_enabled_yet_so_the_microph')}
-          </p>
+          {unavailable && providerNotice ? (
+            // No hand-off: this modal sits over the composer, which may hold an
+            // unsaved draft that opening an agent chat would leave behind.
+            <SpeechProviderNotice entry={providerNotice} testId="voice-modal-provider-notice" askAgent={false} />
+          ) : (
+            <p className="mb-2">
+              {unavailable
+                ? (codeReason || i18nT('components.voiceDisabledModal.provider_is_not_installed_on_this_machine', { provider }))
+                : i18nT('components.voiceDisabledModal.speech_to_text_is_not_enabled_yet_so_the_microph')}
+            </p>
+          )}
           {unavailable && installCommand ? (
             <div className="mb-2">
               <p className="text-muted mb-1.5">{i18nT('components.voiceDisabledModal.run_the_command_below_in_a_terminal_to_install_v')}</p>
