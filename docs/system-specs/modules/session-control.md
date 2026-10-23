@@ -812,7 +812,8 @@ behaves the same whether or not it gets a sidebar tab. A crewmate's own
 worker (the conductor's hand-off, `_hands_off_to_own_worker`) takes its
 posture from the crewmate's record instead: the Profile Permissions
 `approval_mode`, seeded through `crewmate_approval.seed_for_turn`, whatever the
-thread itself holds at that moment.
+thread itself holds at that moment. It is read once the child's record is on
+disk (`seed_new_worker`), so a Profile change made during the create reaches it.
 No session-store write happens at creation: the child has no ACP session yet
 (`set_approval_policy` no-ops on a missing session), and `chat_runner` already
 derives the persistable policy from `_trust` on every session create/resume, so

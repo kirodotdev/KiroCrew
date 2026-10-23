@@ -1087,10 +1087,14 @@ async def create_session(
         # Profile Permissions from the crew record (`crewmate_approval`), the
         # same mode it is given again at every restore, so the worker runs the
         # same way whether it was just opened or brought back after a restart.
-        from kiro_crew.dashboard.crewmate_approval import seed_for_turn
+        # It starts untrusted and is seeded once its record is on disk (below),
+        # from the Profile as it is then: `cfg` was read before the suspensions
+        # above, and a Profile change then skips a worker with no record yet.
+        from kiro_crew.dashboard.crewmate_approval import crewmate_name_for
 
         slot._trust = slot._trust_reads = False
-        if not (own_worker and seed_for_turn(state, slot, cfg, child_execution)):
+        profile_worker = own_worker and bool(crewmate_name_for(cfg, child_execution))
+        if not profile_worker:
             slot._trust = bool(getattr(live_caller, "_trust", False))
             slot._trust_reads = bool(getattr(live_caller, "_trust_reads", False))
         inherited_trust = bool(slot._trust)
@@ -1307,6 +1311,12 @@ async def create_session(
                 raise
             if pct_override is not None:
                 _seed_live_pct()
+        if profile_worker:
+            from kiro_crew.dashboard.crewmate_approval import seed_new_worker
+
+            await seed_new_worker(state, slot, child_execution)
+            inherited_trust = bool(slot._trust)
+            inherited_trust_reads = bool(slot._trust_reads)
         if slot.folder_id:
             # Model-B un-hide, applied only NOW that the filing has actually
             # landed -- running it any earlier persists `hidden = False` for a

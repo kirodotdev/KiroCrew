@@ -62,6 +62,26 @@ def seed_for_turn(state: Any, slot: Any, config: Any, execution: Any) -> bool:
     return True
 
 
+async def seed_new_worker(state: Any, slot: Any, execution: Any) -> bool:
+    """Seed a just-born worker from the crewmate's Profile as it stands now.
+
+    Called once the worker's record is on disk, so a Profile change from here on
+    reaches it through :func:`apply_to_live_sessions`; one that landed while the
+    worker was being created is read here. Returns whether it was seeded.
+    """
+    import asyncio
+
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    config = await asyncio.to_thread(KiroCrewConfig.load)
+    # A Profile save whose apply runs while this read is in its thread leaves
+    # `config` stale. The once-per-slot `_member_approval_seeded` flag covers it:
+    # that apply sets the flag, so the seed below skips and the saved mode stands.
+    if state._slots.get(slot.key) is not slot:
+        return False
+    return seed_for_turn(state, slot, config, execution)
+
+
 async def apply_to_live_sessions(state: Any, name: str, mode: str) -> int:
     """Put every live worker session of crewmate *name* on *mode*. Returns how many.
 

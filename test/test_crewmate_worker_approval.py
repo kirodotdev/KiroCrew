@@ -49,6 +49,69 @@ def test_a_new_worker_takes_the_crewmates_profile_mode_not_its_threads(home):
     assert (worker._trust, worker._trust_reads) == (False, True)
 
 
+@pytest.mark.parametrize(
+    "before, after, trusted", [("trust", "normal", False), ("normal", "trust", True)]
+)
+def test_a_profile_change_during_the_workers_creation_reaches_it(
+    home, monkeypatch, before, after, trusted
+):
+    """The Profile is saved after the create read its config but before the worker
+    has a record, so the save's own apply cannot see the worker."""
+    from kiro_crew.dashboard.session_control_parts import session_create
+
+    state, caller, _execution, tmp_path = home
+    _set_mode(tmp_path, before)
+    bind = session_create.bind_session_execution
+
+    def _bind_after_the_profile_save(key, execution, **kwargs):
+        if execution.template_id == MATE_WORKER_AGENT:
+            _set_mode(tmp_path, after)
+        return bind(key, execution, **kwargs)
+
+    monkeypatch.setattr(session_create, "bind_session_execution", _bind_after_the_profile_save)
+    worker = state.get_slot(_create(state, caller)["target"])
+    assert worker._trust is trusted
+    assert not worker._trust_reads
+
+
+@pytest.mark.parametrize(
+    "before, after, trusted", [("trust", "normal", False), ("normal", "trust", True)]
+)
+@pytest.mark.asyncio
+async def test_a_profile_save_applied_during_the_seeds_read_wins(
+    home, monkeypatch, before, after, trusted
+):
+    """The seed's config read is stale: the save and its live apply land between that
+    read and the seed. The apply marks the slot seeded, so the stale mode is not used."""
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.dashboard import crewmate_approval
+    from kiro_crew.execution_context import read_session_execution
+
+    state, caller, _execution, tmp_path = home
+    await asyncio.to_thread(_set_mode, tmp_path, before)
+    seed = crewmate_approval.seed_new_worker
+
+    async def _not_yet(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(crewmate_approval, "seed_new_worker", _not_yet)
+    worker = state.get_slot((await asyncio.to_thread(_create, state, caller))["target"])
+    assert not (worker._trust or worker._trust_reads or worker._member_approval_seeded)
+
+    stale = await asyncio.to_thread(KiroCrewConfig.load)  # the seed's read
+    assert stale.agents["pixel"].approval_mode == before
+    await asyncio.to_thread(_set_mode, tmp_path, after)
+    assert await apply_to_live_sessions(state, "pixel", after) == 1
+    monkeypatch.setattr(KiroCrewConfig, "load", lambda: stale)
+    record = await asyncio.to_thread(
+        read_session_execution, slot_history_key(worker), required=True
+    )
+    await seed(state, worker, record)
+
+    assert worker._trust is trusted
+    assert not worker._trust_reads
+
+
 @pytest.mark.asyncio
 async def test_a_worker_restored_after_a_restart_keeps_the_crewmates_mode(home, monkeypatch):
     state, caller, _execution, tmp_path = home

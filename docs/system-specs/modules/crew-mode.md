@@ -1978,7 +1978,9 @@ the conductor) and each worker (a `template` record on `kirocrew-mate-worker`
 carrying the crewmate's `member_id`), so a session restored, revived or resumed
 after a restart runs under the crewmate's Permissions instead of asking for
 every tool. A worker opened by the conductor takes the record's mode at birth,
-not the thread's live grant. The governance ceiling still decides each call
+not the thread's live grant, read once its own record is on disk
+(`crewmate_approval.seed_new_worker`), so a Profile change saved while the
+worker was being created still reaches it. The governance ceiling still decides each call
 (`test/test_crewmate_worker_approval.py`). The profile locks its pickers while the
 thread is opening or refused.
 
