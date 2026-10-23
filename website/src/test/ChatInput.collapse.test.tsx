@@ -31,7 +31,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { useState } from 'react'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 
-// `directFilePicker = isMobile || isTouchDevice()` decides WHICH host the collapse
+// `directFilePicker = (isMobile || isTouchDevice()) && collapsible` decides WHICH host the collapse
 // row hangs off: the "+" drop-up on a pointer device, the overflow drop-up on
 // touch. Both are exercised here, so the pointer class is a per-test flag rather
 // than a fixed mock -- the touch layout having no host at all is the defect review
@@ -263,6 +263,9 @@ describe('composer collapse', () => {
     expect(composer()).toBeInTheDocument()
     expect(screen.queryByTestId('composer-collapsed-bar')).not.toBeInTheDocument()
     expect(screen.queryByTestId('composer-more-trigger')).not.toBeInTheDocument()
+    // No overflow to host Sketch, so "+" keeps its menu on touch and Sketch
+    // is a row in it.
+    openPlusMenu()
     expect(screen.getByTitle('Sketch')).toBeInTheDocument()
   })
 
@@ -338,10 +341,13 @@ describe('composer collapse', () => {
       const props = { ...base, collapsible }
 
       it('replaces the attach control on touch rather than growing the row', () => {
+        // Touch keeps the bare file label only on a collapsible host; every
+        // other host keeps the "+" menu on touch as well.
+        const attach = collapsible ? 'Attach files' : 'Add files & options'
         flags.touch = true
         const { container, unmount } = renderWithProviders(<ChatInput {...props} />)
         const idle = rowControls(container)
-        expect(idle).toContain('Attach files')
+        expect(idle).toContain(attach)
         expect(idle).not.toContain('Cancel upload')
         unmount()
 
@@ -351,7 +357,7 @@ describe('composer collapse', () => {
         // The cap is the assertion: same number of controls, one of them swapped.
         expect(busy).toHaveLength(idle.length)
         expect(busy).toContain('Cancel upload')
-        expect(busy).not.toContain('Attach files')
+        expect(busy).not.toContain(attach)
       })
 
       it('replaces the plus control on a pointer device rather than growing the row', () => {
@@ -400,15 +406,20 @@ describe('composer collapse', () => {
     expect(screen.getByTestId('composer-more-trigger')).not.toBeDisabled()
   })
 
-  it('leaves a surface that did not opt in exactly as it was', () => {
-    // A split pane and the side chat mount the same component without the flag.
-    // They keep their dedicated Sketch pencil and gain no overflow, so this
-    // feature costs them no change at all.
+  it('puts Sketch in the "+" menu on touch for a surface that did not opt in', async () => {
+    // The Crewmates DM, a split pane and the side chat mount the same component
+    // without the flag. They gain no overflow, and on touch "+" opens its menu
+    // rather than the bare file label, so Sketch is a row in it instead of a
+    // second pencil button on the row.
     flags.touch = true
     renderWithProviders(<ChatInput {...base} collapsible={false} />)
-    expect(screen.getByTitle('Sketch')).toBeInTheDocument()
+    expect(screen.queryByTitle('Sketch')).not.toBeInTheDocument()
     expect(screen.queryByTestId('composer-more-trigger')).not.toBeInTheDocument()
+    openPlusMenu()
+    expect(screen.getByText('Upload file')).toBeInTheDocument()
     expect(screen.queryByTestId('composer-collapse-row')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTitle('Sketch'))
+    await waitFor(() => expect(screen.getByTestId('sketch-dialog')).toBeInTheDocument())
   })
 
   it('never mounts a non-opted composer collapsed, whatever the shared key says', () => {

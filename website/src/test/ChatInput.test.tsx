@@ -77,7 +77,9 @@ describe('ChatInput', () => {
 
     it('makes the touch-device + control open the native file picker directly in a wide viewport', () => {
       touchEnv.touch = true
-      renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} />)
+      // The collapsible host (the main chat): its overflow hosts Sketch, so "+"
+      // can open the picker directly.
+      renderWithProviders(<ChatInput {...defaultProps} collapsible onUploadFiles={vi.fn()} />)
 
       const input = screen.getAllByLabelText('Attach files').find((element) => element.tagName === 'INPUT')
       const mobilePlus = screen.getByTitle('Attach files').closest('label')
@@ -85,6 +87,16 @@ describe('ChatInput', () => {
       expect(mobilePlus).toHaveAttribute('for', input?.id)
       expect(screen.queryByRole('button', { name: 'Add files & options' })).not.toBeInTheDocument()
       expect(screen.queryByText('Upload file')).not.toBeInTheDocument()
+    })
+
+    it('keeps the touch-device + menu on a host without the collapse, with Sketch inside it', () => {
+      touchEnv.touch = true
+      renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} />)
+      // One "+" and no second pencil button on the row.
+      expect(screen.queryByTitle('Sketch')).not.toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Add files & options' }))
+      expect(screen.getByText('Upload file')).toBeInTheDocument()
+      expect(screen.getByTitle('Sketch')).toBeInTheDocument()
     })
   })
 

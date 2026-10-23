@@ -127,8 +127,8 @@ export const LOCATIONS = {
       requires: [{ kind: 'condition', id: 'screen_capture_available' }],
     }],
   },
-  // The "+" menu's Sketch row. The phone pencil and the tablet "More actions"
-  // item are other hosts (ChatInput), not marked here.
+  // The "+" menu's Sketch row. The touch "More actions" item on the main
+  // chat is another host (ChatInput), not marked here.
   'composer.add-menu.sketch': {
     kind: 'menu-item',
     label: { from: 'text', key: 'components.chatInput.sketch' },

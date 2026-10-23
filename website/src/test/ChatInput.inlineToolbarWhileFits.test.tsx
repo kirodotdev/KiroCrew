@@ -25,7 +25,11 @@ describe('ChatInput inlineToolbarWhileFits: the one-row shape', () => {
     renderWithProviders(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits onUploadFiles={vi.fn()} />)
     expect(inline()).toBe(true)
     expect(wrapper().className).toContain('flex items-center')
-    expect(wrapper().className).toContain('rounded-full')
+    // A finite pill radius (half the 46px box), not `rounded-full`: the
+    // corner then eases to the two-row 16px instead of holding a 9999px
+    // radius until the last frame of the transition.
+    expect(wrapper().className).toContain('rounded-[23px]')
+    expect(wrapper().className).not.toContain('rounded-full')
     // The bottom row dissolves (`contents`) so its two clusters sit on the
     // text's line, the attach cluster first and the send cluster last.
     const row = screen.getByTestId('composer-bottom-row')
@@ -106,6 +110,25 @@ describe('ChatInput inlineToolbarWhileFits: the one-row shape', () => {
     expect(probe.getAttribute('aria-hidden')).toBe('true')
     expect(probe.className).toContain('invisible')
     expect(probe.className).toContain('pointer-events-none')
+    // The touch font floor (16px, keyed on this attribute) must reach the
+    // probe too, or it measures at 14px while the textarea wraps at 16px.
+    expect(probe.hasAttribute('data-composer-typo')).toBe(true)
+  })
+
+  // One row centres the text line on the buttons: equal padding above and
+  // below, set on the text column so the textarea, its paste mirror and the
+  // Lexical editor all read it. Two rows keep INPUT_TYPO's 12px over 4px.
+  it('centres the text line on the single row, and only there', () => {
+    renderWithProviders(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits />)
+    const column = () => screen.getByRole('textbox').parentElement!
+    expect(column().className).toContain('[--composer-pt:max(0px,calc((44px_-_1.5em)_/_2))]')
+    expect(column().className).toContain('[--composer-pb:max(0px,calc((44px_-_1.5em)_/_2))]')
+    expect(screen.getByRole('textbox').className).toContain('pt-[var(--composer-pt,0.75rem)]')
+  })
+
+  it('keeps the two-row text padding once the box opens', () => {
+    renderWithProviders(<ChatInput value={'first\nsecond'} onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits />)
+    expect(screen.getByRole('textbox').parentElement!.className).not.toContain('--composer-pt')
   })
 
   // The ordinary composer draws session chrome in its toolbar and keeps two
@@ -130,7 +153,7 @@ describe('ChatInput inlineToolbarWhileFits: the one-row shape', () => {
     const sizer = screen.getByTestId('composer-sizer')
     expect(sizer.contains(wrapper())).toBe(true)
     expect(sizer.className).toContain('justify-end')
-    expect(sizer.className).toContain('rounded-full')
+    expect(sizer.className).toContain('rounded-[23px]')
     expect(sizer.className).toContain('overflow-hidden')
     // The inner box must not shrink to a pinned sizer, or its measure never moves.
     expect(wrapper().className).toContain('shrink-0')

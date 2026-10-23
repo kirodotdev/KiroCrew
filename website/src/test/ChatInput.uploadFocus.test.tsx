@@ -38,13 +38,14 @@ beforeEach(() => {
 
 let finishUpload: () => void = () => {}
 
-function Host({ initial = '' }: { initial?: string }) {
+function Host({ initial = '', collapsible = false }: { initial?: string; collapsible?: boolean }) {
   const [val, setVal] = useState(initial)
   const [uploading, setUploading] = useState(false)
   finishUpload = () => setUploading(false)
   return (
     <SlotProvider slotId="chat-1">
       <ChatInput
+        collapsible={collapsible}
         value={val}
         onChange={setVal}
         onSend={vi.fn()}
@@ -149,11 +150,26 @@ describe('ChatInput focus after the upload file picker', () => {
 
   it('does not focus the composer on touch, where it would raise the soft keyboard', () => {
     touchEnv.touch = true
-    renderWithProviders(<Host />)
+    // The collapsible host: the one where touch opens the picker from "+" directly.
+    renderWithProviders(<Host collapsible />)
     expect(screen.queryByRole('button', { name: 'Add files & options' })).not.toBeInTheDocument()
     chooseFile()
     expect(document.activeElement).not.toBe(composer())
     fireEvent(fileInput(), new Event('cancel'))
     expect(document.activeElement).not.toBe(composer())
+  })
+
+  it('does not focus the composer or the "+" trigger on touch when "+" still opens its menu', async () => {
+    touchEnv.touch = true
+    // A non-collapsible host (Crewmates DM, split pane, side chat): touch keeps the menu.
+    renderWithProviders(<Host />)
+    // Cancelled pick first, so the cancel half is checked with focus still parked.
+    await openPicker()
+    expect(document.activeElement).toBe(document.body)
+    fireEvent(fileInput(), new Event('cancel'))
+    expect(document.activeElement).toBe(document.body)
+    await openPicker()
+    chooseFile()
+    expect(document.activeElement).toBe(document.body)
   })
 })
