@@ -216,6 +216,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.code-channels-slack",
+    "label": "Code channels (Slack)",
+    "labelKey": "pages.settings.slackPanel.slackCode.code_channels",
+    "labelSuffix": "Slack",
+    "description": "Let the agent open a Slack code channel for coding work: one channel per task, with a context bar, a diff tab and channel commands. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.code_channels"
+  },
+  {
     "id": "channels.connect-new-sessions-to-slack-automatically-slack",
     "label": "Connect new sessions to Slack automatically (Slack)",
     "labelKey": "pages.settings.slackPanel.auto_link_sessions",
@@ -574,7 +588,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Owner Slack member ID (Slack)",
     "labelKey": "pages.settings.slackPanel.owner_slack_member_id",
     "labelSuffix": "Slack",
-    "description": "The one member who can always interact with the bot (KIROCREW_OWNER_ID). Starts with U or W.",
+    "description": "Your Slack member ID (KIROCREW_OWNER_ID): in Slack, open your profile, select ⋮, then Copy member ID. Starts with U or W.",
     "tab": "channels",
     "type": "input",
     "occurrence": 1,

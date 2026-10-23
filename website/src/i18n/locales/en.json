@@ -9600,7 +9600,7 @@
         "slack_settings_are_managed_on_the_machine_runnin": "Slack settings are managed on the machine running {{productName}} and are read-only from remote sessions.",
         "slash_command": "Slash command",
         "talk_to_your_agents_from_slack_over_socket_mode": "Talk to your agents from Slack over Socket Mode. Add allowed member IDs so connected bots can respond.",
-        "the_one_member_who_can_always_interact_with_the": "The one member who can always interact with the bot (KIROCREW_OWNER_ID). Starts with U or W.",
+        "the_one_member_who_can_always_interact_with_the": "Your Slack member ID (KIROCREW_OWNER_ID): in Slack, open your profile, select ⋮, then Copy member ID. Starts with U or W.",
         "trigger_word_for_the_slack_slash_command_without": "Trigger word for the Slack slash command (without the leading /).",
         "u0123abc456": "U0123ABC456"
       },

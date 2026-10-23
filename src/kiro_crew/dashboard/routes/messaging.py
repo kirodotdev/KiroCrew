@@ -23,6 +23,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/slack/config", handlers.api_slack_config_get)
     app.router.add_put("/api/slack/config", handlers.api_slack_config_save)
     app.router.add_get("/api/slack/manifest", handlers.api_slack_manifest)
+    app.router.add_get("/api/slack/manifest/status", handlers.api_slack_manifest_status)
     app.router.add_get("/api/discord/config", handlers.api_discord_config_get)
     app.router.add_put("/api/discord/config", handlers.api_discord_config_save)
     app.router.add_get("/api/telegram/config", handlers.api_telegram_config_get)

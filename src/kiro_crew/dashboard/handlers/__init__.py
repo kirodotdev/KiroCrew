@@ -364,6 +364,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_slack_config_get,
     api_slack_config_save,
     api_slack_manifest,
+    api_slack_manifest_status,
     api_slack_pins,
     api_slack_profile,
     api_slack_reactions,
