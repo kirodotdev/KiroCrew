@@ -214,6 +214,8 @@ interface RegenerateOptions {
   dispatch: AppDispatch
   activeSlot: string | null
   messages: ChatMessage[]
+  /** The page's latest-value ref of `messages`, read by the press handlers so they keep one identity across frames. */
+  messagesRef: MutableRefObject<ChatMessage[]>
   slotRunning: boolean
   activeSlotRemoteBound: boolean
   isStreaming: boolean
@@ -229,7 +231,7 @@ interface RegenerateOptions {
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
 export function useRegenerate({
-  dispatch, activeSlot, messages, slotRunning, activeSlotRemoteBound, isStreaming, setRefusedPress, showRefusedPress,
+  dispatch, activeSlot, messages, messagesRef, slotRunning, activeSlotRemoteBound, isStreaming, setRefusedPress, showRefusedPress,
 }: RegenerateOptions) {
   const lastTextIdx = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -259,8 +261,12 @@ export function useRegenerate({
   // A turn that actually starts retires the refusal: whatever the slot was busy
   // with is over, so the old reason would now describe a state that passed.
   useEffect(() => { if (slotRunning) setRefusedPress(null) }, [slotRunning, setRefusedPress])
+  // Reads `messagesRef`, not `messages`: the array is new on every streamed
+  // frame, and this callback feeds the transcript renderers memo, so a
+  // `messages` dep re-rendered every mounted row on every frame.
   const handleRegenerate = useCallback(() => {
     if (!activeSlot || regenerating || slotRunning || activeSlotRemoteBound) return
+    const messages = messagesRef.current
     // Mirror the server's scan exactly (chat_regenerate.py): the turn being
     // regenerated ends at the last assistant row BY ROLE — hidden
     // invisible-only rows included — so this optimistic truncation cannot
@@ -292,7 +298,7 @@ export function useRegenerate({
       dispatch(replaceMessages(snapshot))
       setRegenerating(false)
     })
-  }, [activeSlot, regenerating, slotRunning, activeSlotRemoteBound, messages, dispatch, showRefusedPress])
+  }, [activeSlot, regenerating, slotRunning, activeSlotRemoteBound, messagesRef, dispatch, showRefusedPress])
   return {
     lastTextIdx, regenerating, setRegenerating, handleRegenerate,
   }
