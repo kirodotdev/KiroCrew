@@ -812,6 +812,27 @@ class TestPartialDeadline:
         state.push_slots_update()
         assert state.slot_list_rebuilding is False
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("hold,expected_held", _CAUSES)
+    async def test_the_deadline_timer_clears_even_when_it_fires_early(
+        self, state, _floor_monkeypatch, hold, expected_held
+    ) -> None:
+        # asyncio runs a timer up to its clock resolution early (about 16 ms on
+        # Windows), so the timer must not re-measure a deadline it already marks.
+        broadcast = MagicMock()
+        _floor_monkeypatch.setattr(state, "_broadcast", broadcast)
+        _floor_monkeypatch.setattr(state, "_slots_broadcast_lock", None)
+        state.begin_slot_list_rebuild()
+        hold(state)
+        assert state.slot_list_rebuilding is True
+
+        state._expire_slot_list_rebuild()
+
+        assert state.slot_list_rebuilding is False
+        assert state.slot_list_held_keys() == expected_held
+        assert state._slot_list_rebuild_deadline is None
+        assert [frame["slotsPartial"] for frame in _slots_broadcasts(broadcast)] == [False]
+
     def test_a_suspended_push_holds_past_the_deadline(self, state, _floor_monkeypatch) -> None:
         broadcast = MagicMock()
         _floor_monkeypatch.setattr(state, "_broadcast", broadcast)

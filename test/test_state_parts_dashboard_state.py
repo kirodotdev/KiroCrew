@@ -74,7 +74,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "bool]]', *, reason: 'str | None' = None) -> 'None'",
     ),
     "_channel_link_is_live": ("function", False, False, "(self, link: 'ChannelLink') -> 'bool'"),
-    "_complete_slot_list_rebuild_if_ready": ("function", False, False, "(self) -> 'bool'"),
+    "_complete_slot_list_rebuild_if_ready": (
+        "function",
+        False,
+        False,
+        "(self, *, deadline_reached: 'bool' = False) -> 'bool'",
+    ),
     "_count_lessons": ("function", False, False, "(self) -> 'int | None'"),
     "_deferred_slots_flush": (
         "function",
