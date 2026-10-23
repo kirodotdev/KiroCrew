@@ -186,7 +186,7 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
 ]
 
 /** Names the facade itself defines rather than re-exports. */
-const FACADE_OWN = ['batchedTextAboveFloor', 'default', 'deleteSlot', 'loadOlderMessages', 'loadOlderSlotMessages', 'missedChunkMarker', 'reconcileGoneSubagent', 'requestStop', 'restoreSideConversation']
+const FACADE_OWN = ['awaitSideRestore', 'batchedTextAboveFloor', 'default', 'deleteSlot', 'loadOlderMessages', 'loadOlderSlotMessages', 'missedChunkMarker', 'reconcileGoneSubagent', 'requestStop', 'restoreSideConversation']
 
 describe('facade re-exports', () => {
   const surface = facade as unknown as Record<string, unknown>

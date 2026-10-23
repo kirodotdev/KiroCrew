@@ -6,7 +6,7 @@ import { sendTurn, SEND_ABORT_MS, type SendReceipt } from '../../chat-core/trans
 import { sendFailureCopy, deliveryUnconfirmedCopy } from '../../chat-core/transport/receiptCopy'
 import { sideTurnWire } from './sideTurnWire'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { sideClose, sideOptimisticAppend, sideOptimisticRollback, restoreSideConversation, sseSideQueue, sideReleaseConsumed, sideSendStatus, queueEditBroadcastAt, stageToMainComposer, transcriptTsMs, type SideStandingNotice } from '../../store/chatSlice'
+import { sideClose, sideOptimisticAppend, sideOptimisticRollback, restoreSideConversation, awaitSideRestore, sseSideQueue, sideReleaseConsumed, sideSendStatus, queueEditBroadcastAt, stageToMainComposer, transcriptTsMs, type SideStandingNotice } from '../../store/chatSlice'
 import QueueStack from '../../components/QueueStack'
 import ChatMessageList from '../../app-sdk/ChatMessageList'
 import FollowUpBar from '../../components/FollowUpBar'
@@ -404,20 +404,16 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
     // it: a question sent ahead of it would join the gateway's conversation before
     // this panel shows it. A read in flight is shared, so this usually waits
     // milliseconds, and never longer than the send's own deadline. A read that
-    // fails or overruns sends nothing. Its receipt is `refused`, the status for a
-    // send that definitely did not go out, so the text is handed back. Its
-    // `reason` says the conversation has not loaded, which is true in both cases:
-    // after a failed read, the restore notice and its Retry sit beside it; while
-    // the read is still in flight past the deadline, nothing else says why the
-    // text came back.
+    // fails or overruns sends nothing, and one that overruns stops being shared,
+    // so the next send asks the gateway again (`awaitSideRestore`). Its receipt is
+    // `refused`, the status for a send that definitely did not go out, so the text
+    // is handed back. Its `reason` says the conversation has not loaded, which is
+    // true in both cases: after a failed read, the restore notice and its Retry sit
+    // beside it; while the read is still in flight past the deadline, nothing else
+    // says why the text came back.
     mutationFn: async ({ q, steer, slot: target }: SideSubmit): Promise<SendReceipt> => {
-      let timer: ReturnType<typeof setTimeout> | undefined
-      const restored = await Promise.race([
-        dispatch(restoreSideConversation(target)).unwrap().then(() => true, () => false),
-        new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), SEND_ABORT_MS) }),
-      ])
-      clearTimeout(timer)
-      if (!restored) return { status: 'refused', body: {}, reason: i18nT('pages.chat.sideChat.send_blocked_not_loaded') }
+      const restored = await dispatch(awaitSideRestore({ slot: target, ms: SEND_ABORT_MS })).unwrap()
+      if (restored !== 'restored') return { status: 'refused', body: {}, reason: i18nT('pages.chat.sideChat.send_blocked_not_loaded') }
       return sendTurn({ message: q, slot: target, wire: sideTurnWire(target, steer) })
     },
     onMutate: ({ q, optimistic, slot: target, override }: SideSubmit) => {

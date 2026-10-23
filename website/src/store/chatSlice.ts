@@ -1050,28 +1050,85 @@ export const reconcileGoneSubagent = createAsyncThunk<void, { slot: string; id: 
  *  `/side` command so one reload costs one read. */
 const sideRestoreReads = new Map<string, Promise<SideSnapshot>>()
 
+/** Reads a question stopped waiting on at its deadline, per slot, until each
+ *  lands. A later question waits on them as well as on its own read. */
+const retiredSideRestoreReads = new Map<string, Set<Promise<SideSnapshot>>>()
+
+function retireSideRead(slot: string, read: Promise<SideSnapshot>): void {
+  const retired = retiredSideRestoreReads.get(slot) ?? new Set<Promise<SideSnapshot>>()
+  retiredSideRestoreReads.set(slot, retired)
+  retired.add(read)
+  const forget = () => {
+    retired.delete(read)
+    if (!retired.size && retiredSideRestoreReads.get(slot) === retired) retiredSideRestoreReads.delete(slot)
+  }
+  read.then(forget, forget)
+}
+
+/** The slot's side read in flight, started when there is none. A 404 is nothing
+ *  to restore: the slot is gone, or the gateway predates the read. A read leaves
+ *  the map when it settles, unless a newer read has taken its place. */
+function sharedSideRead(slot: string): Promise<SideSnapshot> {
+  const inFlight = sideRestoreReads.get(slot)
+  if (inFlight) return inFlight
+  const read: Promise<SideSnapshot> = api.sideState(slot)
+    .catch((e: unknown): SideSnapshot => {
+      if (isNotFoundError(e)) return { open: false }
+      throw e
+    })
+    .finally(() => { if (sideRestoreReads.get(slot) === read) sideRestoreReads.delete(slot) })
+  sideRestoreReads.set(slot, read)
+  return read
+}
+
 /**
  * Settle a slot's Side Chat against the gateway's copy of its side conversation,
- * once per page (`sideRestore`). A 404 is nothing to restore: the slot is gone, or
- * the gateway predates the read. Any other failure rejects and settles nothing, so
- * the caller can hold a question back instead of sending it into a conversation
- * the panel cannot show.
+ * once per page (`sideRestore`). Any failure other than a 404 rejects and settles
+ * nothing, so the caller can hold a question back instead of sending it into a
+ * conversation the panel cannot show.
  */
 export const restoreSideConversation = createAsyncThunk<void, string, { state: RootState }>(
   'chat/restoreSideConversation',
   async (slot, { dispatch, getState }) => {
     if (getState().chat.slotSideRestored?.[slot]) return
-    let read = sideRestoreReads.get(slot)
-    if (!read) {
-      read = api.sideState(slot)
-        .catch((e: unknown): SideSnapshot => {
-          if (isNotFoundError(e)) return { open: false }
-          throw e
-        })
-        .finally(() => { sideRestoreReads.delete(slot) })
-      sideRestoreReads.set(slot, read)
+    dispatch(sideRestore({ slot, snapshot: await sharedSideRead(slot) }))
+  },
+)
+
+/**
+ * `restoreSideConversation` for a question about to be sent, which waits at most
+ * `ms`: 'restored' once the conversation is settled, 'failed' when the read fails,
+ * 'timeout' when it is still outstanding then. That read then stops being shared,
+ * so the next question asks the gateway again instead of waiting on the same
+ * request. It still lands, and the once-per-page `sideRestore` takes whichever
+ * read lands first, so the next question waits on it too: whichever lands first
+ * settles that question as well.
+ */
+export const awaitSideRestore = createAsyncThunk<'restored' | 'failed' | 'timeout', { slot: string; ms: number }, { state: RootState }>(
+  'chat/awaitSideRestore',
+  async ({ slot, ms }, { dispatch, getState }) => {
+    if (getState().chat.slotSideRestored?.[slot]) return 'restored'
+    const read = sharedSideRead(slot)
+    const landedEarlier = [...(retiredSideRestoreReads.get(slot) ?? [])].map(retired => retired.then(
+      snapshot => {
+        dispatch(sideRestore({ slot, snapshot }))
+        return 'restored' as const
+      },
+      // Only this question's own read can fail it.
+      () => new Promise<never>(() => {}),
+    ))
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const outcome = await Promise.race([
+      dispatch(restoreSideConversation(slot)).unwrap().then(() => 'restored' as const, () => 'failed' as const),
+      ...landedEarlier,
+      new Promise<'timeout'>(resolve => { timer = setTimeout(() => resolve('timeout'), ms) }),
+    ])
+    clearTimeout(timer)
+    if (outcome === 'timeout' && sideRestoreReads.get(slot) === read) {
+      sideRestoreReads.delete(slot)
+      retireSideRead(slot, read)
     }
-    dispatch(sideRestore({ slot, snapshot: await read }))
+    return outcome
   },
 )
 

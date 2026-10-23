@@ -206,15 +206,19 @@ until it is closed or the gateway restarts, and the next question joins it. So
 the panel reads `GET .../side` once per page per slot, on mount, and merges the
 result in (`restoreSideConversation` in `store/chatSlice.ts`, which dispatches
 `sideRestore` from `store/chat/side.ts`). Every way of asking waits for that read
-before the turn is sent: the panel's send, within the send's own deadline
-(`SEND_ABORT_MS`), and the `/side` command; one read in flight serves them all. A
+before the turn is sent, the panel's send and the `/side` command alike, within
+the send's own deadline (`SEND_ABORT_MS`, `awaitSideRestore`); one read in flight
+serves them all. A read still outstanding at the deadline stops being shared, so
+the next question asks the gateway again; it still lands, and the first read to
+land is the one restored, which settles a question still waiting on its own read. A
 404 is nothing to restore (the slot is gone, or the gateway predates the route).
 Any other failure, or a read that outruns the deadline, sends nothing, because the
 question would join a conversation the panel cannot show: the panel hands the text
 back with a line saying the conversation has not loaded (not a connection error),
 and a failed read also shows a notice with **Retry**. `/side` is refused with
 composer wording that names no Retry button, since none is on screen there, and
-the command stays in the composer.
+the command stays in the composer. `/side` gives up on its `/side/open` at the same
+deadline, with the composer's plain refusal.
 The draft stays in memory only (`sideChatDrafts`).
 The read and the frames travel separately, so either can be ahead:
 

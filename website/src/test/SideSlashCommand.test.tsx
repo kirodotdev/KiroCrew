@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { createTestStore } from './helpers'
 
 const { mockSideOpen, mockSideTurn, mockSendChat, mockSideState } = vi.hoisted(() => ({
@@ -20,6 +20,7 @@ vi.mock('../api/client', () => ({
 
 import { interceptSlashCommand } from '../pages/chat/ChatInput'
 import { ApiError, AcceptedBodyUnreadable } from '../api/apiError'
+import { SEND_ABORT_MS } from '../chat-core/transport/sendTurn'
 
 const SLOT = 'test-slot-1'
 
@@ -131,6 +132,70 @@ describe('/side slash command interception', () => {
     expect(result.intercepted && result.error).not.toMatch(/Retry before asking/)
     expect(mockSideTurn).not.toHaveBeenCalled()
     expect(store.getState().chat.slotSideRestored[SLOT]).toBeUndefined()
+  })
+
+  it('gives up on a read still unanswered at the send deadline and reports it, instead of never answering', async () => {
+    vi.useFakeTimers()
+    let rejectRead: (e: Error) => void = () => {}
+    mockSideState.mockImplementationOnce(() => new Promise((_, reject) => { rejectRead = reject }))
+    onTestFinished(async () => {
+      // Settle the read: one still in flight is shared per slot, so a later test would wait on it.
+      rejectRead(new Error('test over'))
+      await vi.runAllTimersAsync()
+      vi.useRealTimers()
+    })
+    let settled = false
+    const pending = interceptSlashCommand('/side what word?', SLOT, store.dispatch).then(r => { settled = true; return r })
+    await vi.advanceTimersByTimeAsync(SEND_ABORT_MS - 1)
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(settled).toBe(true)
+    const result = await pending
+    expect(result).toMatchObject({ intercepted: true, failed: true, stage: 'open' })
+    expect(result.intercepted && result.error).toMatch(/the command was not run\. Your message is still in the composer\./)
+    expect(mockSideTurn).not.toHaveBeenCalled()
+    expect(store.getState().chat.activityTab).not.toBe('side')
+  })
+
+  it('gives up on an open still unanswered at the send deadline, and neither reads nor asks', async () => {
+    vi.useFakeTimers()
+    let failOpen: (e: Error) => void = () => {}
+    mockSideOpen.mockImplementationOnce(() => new Promise((_, reject) => { failOpen = reject }))
+    onTestFinished(async () => {
+      failOpen(new Error('test over'))
+      await vi.runAllTimersAsync()
+      vi.useRealTimers()
+    })
+    let settled = false
+    const pending = interceptSlashCommand('/side what word?', SLOT, store.dispatch).then(r => { settled = true; return r })
+    await vi.advanceTimersByTimeAsync(SEND_ABORT_MS - 1)
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(await pending).toEqual({ intercepted: true, failed: true, stage: 'open' })
+    expect(mockSideState).not.toHaveBeenCalled()
+    expect(mockSideTurn).not.toHaveBeenCalled()
+  })
+
+  it('asks the gateway again on the /side after a read timed out, and asks the question once that read lands', async () => {
+    vi.useFakeTimers()
+    let failStalled: (e: Error) => void = () => {}
+    mockSideState.mockImplementationOnce(() => new Promise((_, reject) => { failStalled = reject }))
+    onTestFinished(async () => {
+      failStalled(new Error('test over'))
+      await vi.runAllTimersAsync()
+      vi.useRealTimers()
+    })
+    const first = interceptSlashCommand('/side what word?', SLOT, store.dispatch)
+    await vi.advanceTimersByTimeAsync(SEND_ABORT_MS)
+    expect(await first).toMatchObject({ intercepted: true, failed: true, stage: 'open' })
+
+    // The default mock answers the fresh read at once, so this settles well before
+    // a second deadline; waiting on the stalled read instead would time out here.
+    const second = interceptSlashCommand('/side what word?', SLOT, store.dispatch)
+    await vi.advanceTimersByTimeAsync(SEND_ABORT_MS)
+    expect(await second).toEqual({ intercepted: true })
+    expect(mockSideState).toHaveBeenCalledTimes(2)
+    expect(mockSideTurn).toHaveBeenCalledWith(SLOT, 'what word?', undefined)
   })
 
   it('reports failed when there is no active slot', async () => {

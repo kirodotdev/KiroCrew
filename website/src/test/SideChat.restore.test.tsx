@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
-import chatReducer, { replaceMessages, restoreSideConversation, sideClose, sideOptimisticAppend, sideOptimisticRollback, sideRestore, sseSideQueue, sseSideResult } from '../store/chatSlice'
+import chatReducer, { awaitSideRestore, replaceMessages, restoreSideConversation, sideClose, sideOptimisticAppend, sideOptimisticRollback, sideRestore, sseSideQueue, sseSideResult } from '../store/chatSlice'
 import type { SideSnapshot } from '../types'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
@@ -614,6 +614,67 @@ describe('restoreSideConversation', () => {
 
     await store.dispatch(restoreSideConversation(SLOT)).unwrap()
     expect(api.sideState).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops sharing a read that outran a send deadline, and its late end leaves the next read shared', async () => {
+    vi.useFakeTimers()
+    let failStalled: (e: unknown) => void = () => {}
+    let answerFresh: (s: SideSnapshot) => void = () => {}
+    onTestFinished(async () => {
+      // Settle both reads, so a read in flight never outlives this test.
+      failStalled(new Error('test over'))
+      answerFresh({ open: false })
+      await vi.runAllTimersAsync()
+      vi.useRealTimers()
+    })
+    vi.mocked(api.sideState)
+      .mockImplementationOnce(() => new Promise<SideSnapshot>((_resolve, reject) => { failStalled = reject }))
+      .mockImplementationOnce(() => new Promise<SideSnapshot>(resolve => { answerFresh = resolve }))
+    const store = createTestStore()
+    const timedOut = store.dispatch(awaitSideRestore({ slot: SLOT, ms: 1000 }))
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(await timedOut.unwrap()).toBe('timeout')
+
+    const fresh = store.dispatch(restoreSideConversation(SLOT))
+    expect(api.sideState).toHaveBeenCalledTimes(2)
+    // The stalled read ends late. The fresh one is still the read in flight.
+    failStalled(new Error('offline'))
+    await vi.advanceTimersByTimeAsync(0)
+    const alsoFresh = store.dispatch(restoreSideConversation(SLOT))
+    expect(api.sideState).toHaveBeenCalledTimes(2)
+
+    answerFresh(snapshot({ running: false }))
+    await Promise.all([fresh.unwrap(), alsoFresh.unwrap()])
+    expect(store.getState().chat.slotSide[SLOT].messages).toHaveLength(4)
+  })
+
+  it('settles a waiting send when a read an earlier send gave up on lands first', async () => {
+    vi.useFakeTimers()
+    let answerStalled: (s: SideSnapshot) => void = () => {}
+    let failFresh: (e: unknown) => void = () => {}
+    onTestFinished(async () => {
+      // Settle both reads, so a read in flight never outlives this test.
+      answerStalled({ open: false })
+      failFresh(new Error('test over'))
+      await vi.runAllTimersAsync()
+      vi.useRealTimers()
+    })
+    vi.mocked(api.sideState)
+      .mockImplementationOnce(() => new Promise<SideSnapshot>(resolve => { answerStalled = resolve }))
+      .mockImplementationOnce(() => new Promise<SideSnapshot>((_resolve, reject) => { failFresh = reject }))
+    const store = createTestStore()
+    const first = store.dispatch(awaitSideRestore({ slot: SLOT, ms: 1000 }))
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(await first.unwrap()).toBe('timeout')
+
+    let outcome: string | undefined
+    void store.dispatch(awaitSideRestore({ slot: SLOT, ms: 1000 })).unwrap().then(o => { outcome = o })
+    expect(api.sideState).toHaveBeenCalledTimes(2)
+    // The read the first send gave up on lands while the second send's own read is still out.
+    answerStalled(snapshot({ running: false }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(outcome).toBe('restored')
+    expect(store.getState().chat.slotSide[SLOT].messages).toHaveLength(4)
   })
 
   it('rejects on a failed read and settles nothing, so the caller can hold its question', async () => {
