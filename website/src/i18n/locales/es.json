@@ -17407,6 +17407,8 @@
         "your_role": "Tu rol",
         "session_card_source_links": "Chips de PR e incidencias en las tarjetas de sesión",
         "session_card_source_links_desc": "Muestra en la tarjeta de cada sesión de la barra lateral un chip por cada pull request, merge request o incidencia mencionada en esa sesión. Al desactivarlo también se detienen las llamadas periódicas al proveedor que mantienen esos chips al día.",
+        "compact_session_cards": "Tarjetas de sesión solo con título",
+        "compact_session_cards_desc": "Muestra solo el título de cada sesión en la barra lateral. Oculta la vista previa de actividad y los chips de fuentes vinculadas.",
         "failed_to_load_tips_preference": "No se pudo cargar la preferencia de consejos.",
         "feature_videos": "Vídeos de funciones",
         "feature_videos_cached": "Guardados en este dispositivo: {{cached}} de {{total}} · versión {{release}}",

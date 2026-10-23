@@ -913,6 +913,13 @@
       "hint": "Immediate mode shows raw chunks as they arrive. Smooth mode buffers and fades text in at a steady pace."
     },
     {
+      "id": "chat.title-only-session-cards",
+      "label": "Title-only session cards",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.title-only-session-cards",
+      "description": "Show only each session title in the sidebar. This hides metadata, activity previews, and linked source chips."
+    },
+    {
       "id": "chat.tool-calls-start-expanded",
       "label": "Tool calls start expanded",
       "tab": "chat",

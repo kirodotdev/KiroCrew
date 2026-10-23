@@ -67,6 +67,20 @@ describe('loadChatConfig', () => {
     expect(cfg.showTimestamps).toBe(false)
   })
 
+  it('keeps session cards detailed by default', () => {
+    expect(loadChatConfig().compactSessionCards).toBe(false)
+  })
+
+  it('respects a stored compactSessionCards opt-in', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ compactSessionCards: true }))
+    expect(loadChatConfig().compactSessionCards).toBe(true)
+  })
+
+  it('repairs a non-boolean compactSessionCards value to the detailed default', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ compactSessionCards: 'yes' }))
+    expect(loadChatConfig().compactSessionCards).toBe(false)
+  })
+
   it('respects stored pinLastPrompt=false', () => {
     localStorage.setItem('mc-chat-config', JSON.stringify({ pinLastPrompt: false }))
     expect(loadChatConfig().pinLastPrompt).toBe(false)

@@ -57,11 +57,13 @@ export function useBoardColumns() {
   // a control. Read through the same `mc-config-changed` listener as the flag
   // above so toggling it in Settings reshapes the open sidebar immediately.
   const [hideEmptyFolderBody, setHideEmptyFolderBody] = useState(() => loadChatConfig().hideEmptyFolderBody)
+  const [compactSessionCards, setCompactSessionCards] = useState(() => loadChatConfig().compactSessionCards)
   useEffect(() => {
     const onChange = () => {
       const cfg = loadChatConfig()
       setTagColumnsEnabled(cfg.tagColumnsEnabled)
       setHideEmptyFolderBody(cfg.hideEmptyFolderBody)
+      setCompactSessionCards(cfg.compactSessionCards)
     }
     window.addEventListener('mc-config-changed', onChange)
     return () => window.removeEventListener('mc-config-changed', onChange)
@@ -75,7 +77,7 @@ export function useBoardColumns() {
   }, [rawColumns, tagColumnsEnabled])
   return {
     rawColumns, tagColumnsSettled, columnsFailed, columnsError, refetchColumns, tagColumnsEnabled,
-    hideEmptyFolderBody, orderedColumns,
+    hideEmptyFolderBody, compactSessionCards, orderedColumns,
   }
 }
 
