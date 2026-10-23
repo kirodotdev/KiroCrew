@@ -380,6 +380,7 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
                 body=report.body,
                 title=report.title,
                 sub_meta=wave.sub_meta,
+                carried=wave.carried,
                 _flush_only=_flush_only,
                 _injection_slot=_injection_slot,
                 _injection_slot_name=_injection_slot_name,
@@ -393,6 +394,7 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
                 announce=wave.announce,
                 body=report.body,
                 title=report.title,
+                carried=wave.carried,
                 parent_key=parent_key,
             )
             return
@@ -402,6 +404,7 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
             announce=wave.announce,
             body=report.body,
             title=report.title,
+            carried=wave.carried,
             parent_key=parent_key,
         )
 

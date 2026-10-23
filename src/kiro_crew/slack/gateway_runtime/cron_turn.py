@@ -55,6 +55,7 @@ if TYPE_CHECKING:
         dataclass,
         declared_mcp_not_ready_note,
         logger,
+        note_turn_landed,
         persist_token_record_async,
         provider_fallback_active,
         provider_last_turn_usage,
@@ -277,6 +278,9 @@ async def _cron_run_sequence(
                 # the finally must NOT restore the re-injection flag --
                 # only for a succeeded stop reason.
                 _seq_landed = stop_reason_landed(_seq_stop["reason"])
+                if _seq_landed:
+                    # This step's release confirms what it received inline.
+                    note_turn_landed(self.sessions, agent_session_key)
                 if not result_text:
                     result_text = _gate.empty_reply_placeholder()
                 result_text = _annotate_model_fallback(result_text, client)
@@ -650,6 +654,10 @@ async def _cron_run_single(
         # finally must NOT restore the re-injection flag -- only for a
         # succeeded stop reason.
         _turn_landed = stop_reason_landed(_turn_stop["reason"])
+        if _turn_landed:
+            # This turn's release confirms what it received inline; a turn the
+            # deadline, a stop or a reap ends first never gets here.
+            note_turn_landed(self.sessions, session_key)
 
         # Recorded, not inferred from the text: the dedup hash below
         # swaps the placeholder for its count-free twin only when the

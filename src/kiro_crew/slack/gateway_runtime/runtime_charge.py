@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         acp_error_after_tool_activity,
         acp_error_is_session_not_found,
         logger,
+        note_turn_landed,
         runtime_death,
         stream_and_collect,
     )
@@ -228,6 +229,9 @@ async def _inject_with_retry(
             # The parent's turn consumed the report: the positive
             # acknowledgement an owed expiry report is cleared on.
             info._report_delivered = True
+            # This injected turn landed, so its release confirms whatever it
+            # received inline from a spawn_sub_agents call of its own.
+            note_turn_landed(self.sessions, parent_key)
             return response
         except PromptBusyExhaustedError:
             # Provider is dead after exhausting prompt-busy retries.

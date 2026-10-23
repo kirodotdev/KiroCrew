@@ -1077,14 +1077,37 @@ class TestDeferredCollectionCommit:
         audit.log_tool_invocation.assert_not_called()
         step.on_settled(text)
         step.on_settled(text)
-        # The tool's own row (tallies + outcome) is written once, at settle.
+        # The tool's own row (tallies + outcome) is written once, at settle, and
+        # nothing is marked until the frame carrying the text is written.
         audit.log_tool_invocation.assert_called_once()
         assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "completed"
         assert audit.log_tool_invocation.call_args.kwargs["metadata"]["completed"] == 1
+        post.assert_not_called()
+        step.on_answered(True)
+        step.on_answered(True)
         post.assert_called_once_with(
             "/api/spawn/mark-collected",
-            {"ids": ["a1"], "parent_session": "dashboard:owner"}, timeout=5,
+            {"ids": ["a1"], "parent_session": "dashboard:owner", "written": True}, timeout=5,
         )
+
+    def test_an_unwritten_answer_marks_nothing(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from kiro_crew import mcp_core
+        from kiro_crew.mcp_tools.spawn import _SubAgentsStep
+
+        post = MagicMock()
+        monkeypatch.setattr(mcp_core, "_post", post)
+        monkeypatch.setattr(mcp_core, "sel", lambda: MagicMock())
+        monkeypatch.setattr(mcp_core, "_get", lambda path: {"done": True, "result": "ok"})
+        step = _SubAgentsStep(
+            sa_ids=["a1"], sa_deferred=set(), sa_errors=[], parent_session="dashboard:owner",
+            max_wait=60, inline_result=lambda aid, text: text,
+        )
+        step.on_settled(step._collect())
+        step.on_answered(False)
+        step.on_answered(True)  # the ids went with the one answer they belonged to
+        post.assert_not_called()
 
     def test_abandon_never_commits_a_collect_result(self, monkeypatch):
         from unittest.mock import MagicMock
@@ -1102,6 +1125,7 @@ class TestDeferredCollectionCommit:
         text = step.abandon()
         step._collect()  # A stuck collect can finish after the abandonment decision.
         step.on_settled(text)
+        step.on_answered(True)
         post.assert_not_called()
 
     @pytest.mark.parametrize("member", [

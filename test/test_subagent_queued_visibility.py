@@ -705,6 +705,8 @@ async def test_collecting_a_member_whose_announce_already_queued_settles_it(tmp_
     removed (no duplicate completion turn), its delivery mark is written, and
     its id stays out of the inline-collected set, where nothing would discard
     it and the 'set empty, disarm' path would never fire again."""
+    import types
+
     from chat_test_helpers import _make_state
 
     from kiro_crew.constants import SUBAGENT_COMPLETION_META_KEY
@@ -724,9 +726,17 @@ async def test_collecting_a_member_whose_announce_already_queued_settles_it(tmp_
     owed = [SubagentDelivery("a1", 1.0, 0.0)]
     slot.note_pending_subagent_delivery(announce, owed)
     state.subagents = MagicMock(settle_queued_delivery=AsyncMock())
+    # The tab's own children: only those does a written mark settle.
+    own = {
+        aid: types.SimpleNamespace(parent_session_key="dashboard:chat-1") for aid in ("a1", "b1")
+    }
+    state.subagents.get = MagicMock(side_effect=own.get)
 
     await api_spawn_mark_collected(
-        _Req(state, body={"ids": ["a1", "b1"], "parent_session": "dashboard:chat-1"})
+        _Req(
+            state,
+            body={"ids": ["a1", "b1"], "parent_session": "dashboard:chat-1", "written": True},
+        )
     )
 
     assert not [q for q in slot._queue if q.get("kind") == SUBAGENT_COMPLETION_KIND]
@@ -856,6 +866,8 @@ async def test_an_unreadable_queue_answers_503_not_404() -> None:
 async def test_collected_ids_are_bounded_and_known(tmp_path) -> None:
     """Only ids the gateway knows, each of bounded length, and never more than
     the cap in total: an id no completion will match is never evicted."""
+    import types
+
     from chat_test_helpers import _make_state
 
     from kiro_crew.dashboard.handlers import messaging
@@ -863,12 +875,12 @@ async def test_collected_ids_are_bounded_and_known(tmp_path) -> None:
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot("chat-1")
     known = {f"k{i:04d}" for i in range(1500)}
+    child = types.SimpleNamespace(parent_session_key="dashboard:chat-1")
     state.subagents = MagicMock()
-    state.subagents.get = MagicMock(side_effect=lambda aid: object() if aid in known else None)
+    state.subagents.get = MagicMock(side_effect=lambda aid: child if aid in known else None)
     for start in range(0, 1500, 200):
         ids = [f"k{i:04d}" for i in range(start, start + 200)] + ["x" * 500, "unknown1"]
-        await messaging.api_spawn_mark_collected(
-            _Req(state, body={"ids": ids, "parent_session": "dashboard:chat-1"})
-        )
+        body = {"ids": ids, "parent_session": "dashboard:chat-1", "written": True}
+        await messaging.api_spawn_mark_collected(_Req(state, body=body))
     assert len(slot._subagents_inline_collected) == messaging._COLLECTED_IDS_CAP
     assert slot._subagents_inline_collected <= known

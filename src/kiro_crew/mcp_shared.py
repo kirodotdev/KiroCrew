@@ -318,3 +318,5 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         notify,
         respond,
     )
+if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still served here
+    from kiro_crew.install_liveness import is_pooled_backend  # noqa: F401

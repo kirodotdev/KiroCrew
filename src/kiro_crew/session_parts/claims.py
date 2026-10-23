@@ -11,17 +11,19 @@ on an instance reaches every caller.
 
 Instance fields written: ``_allocation``.
 
-Instance fields read: none.
+Instance fields read: ``parent_turns``.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew import shutdown_event
+from kiro_crew.messaging.link import canonical_key
 from kiro_crew.session_allocation import SessionAllocationService, _collect_parent_runtime_kwargs
 from kiro_crew.session_allocation import parent_work_scratch_dir as _parent_work_scratch_dir
 from kiro_crew.session_parts.policy import BACKGROUND_AGENT, BACKGROUND_KEY
@@ -526,8 +528,59 @@ def conversation_provider(self: SessionManager, key: str) -> str:
 
 
 def release(self: SessionManager, key: str, *, cleanup: bool = False) -> None:
-    """Release the key-based session lease."""
+    """Release the key-based session lease.
+
+    First the holding this release ends is settled in the parent-turn ledger
+    (``kiro_crew.parent_turns``): its inline marks are confirmed if its engine
+    noted that the turn landed, revoked otherwise. That runs before the
+    allocation release, ahead of its orphaned-release early return, because a
+    turn whose session a reaper or a reset already popped ends exactly there.
+    """
+    ledger = getattr(self, "parent_turns", None)
+    if ledger is not None:
+        ledger.settle((canonical_key(key), _holding_task(self, key)))
     self._allocation_boundary().release(key, cleanup=cleanup)
+
+
+def _holding_task(sessions: SessionManager, key: str) -> Any:
+    """The task whose holding of ``key``'s permit a note or release names.
+
+    The calling task: engines claim, note and release a session in one task. Off
+    the loop, where no task runs, the live session's ``turn_owner`` stands in.
+    """
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        task = None
+    if task is not None:
+        return task
+    session = sessions._sessions.get(sessions._fold_key(key))
+    return getattr(session, "turn_owner", None)
+
+
+def turn_token(self: SessionManager, key: str) -> tuple[str, Any] | None:
+    """The holding of ``key``'s turn permit right now, or None when no turn holds it.
+
+    The token a mark-collected registers its marks under, so that this holding's
+    release settles them (``kiro_crew.parent_turns``).
+    """
+    session = self._sessions.get(self._fold_key(key))
+    if session is None or not session.semaphore.locked():
+        return None
+    owner = getattr(session, "turn_owner", None)
+    return (canonical_key(key), owner) if owner is not None else None
+
+
+def note_turn_landed(self: SessionManager, key: str) -> None:
+    """The engine holding ``key``'s permit decided that its turn landed.
+
+    Called where each engine already decides it (its stop reason succeeded), so
+    the release of this holding confirms the inline marks it received. A holding
+    released with no note revokes them.
+    """
+    ledger = getattr(self, "parent_turns", None)
+    if ledger is not None:
+        ledger.note_landed((canonical_key(key), _holding_task(self, key)))
 
 
 async def _safe_cleanup(self: SessionManager, provider: LLMProvider, session_id: str) -> None:

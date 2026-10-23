@@ -546,7 +546,7 @@ class TestCronSubagentInjection:
 
         gw.sessions.get_or_create.assert_awaited_once_with("cron:daily-prep")
         gw.sessions.release.assert_called_once_with("cron:daily-prep")
-        gw.sessions.reset.assert_awaited_once_with("cron:daily-prep")
+        gw.sessions.reset.assert_awaited_once_with("cron:daily-prep", skip_if_busy=True)
         assert gw._cron_injecting == {}
 
     def test_cron_injection_defers_reset_when_others_running(self) -> None:

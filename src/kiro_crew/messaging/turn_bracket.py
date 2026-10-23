@@ -34,6 +34,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from kiro_crew.agent_sdk.drivers.acp_vocab import classify_stop_reason
+from kiro_crew.parent_turns import note_turn_landed
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +194,7 @@ class TurnBracket:
       for "no completion observed") through :func:`stop_reason_landed`, or a
       finished ``TurnDriver`` through :func:`driver_turn_landed`. Not called
       means not landed, which is the fail-safe reading for an exit by exception.
+      A landed verdict is also noted on the session (:func:`note_turn_landed`).
     * :meth:`compacted` -- record whether the backend compacted the session
       during the turn, from the ``TurnDriver`` that ran the latest attempt,
       whose ``compaction_completed`` it reads. The driver keeps that field
@@ -223,6 +225,8 @@ class TurnBracket:
             self._landed = stop_reason_landed(evidence)
         else:
             self._landed = driver_turn_landed(evidence)
+        if self._landed:
+            note_turn_landed(self._sessions, self._session_key)
         return self._landed
 
     def compacted(self, evidence: Any) -> bool:

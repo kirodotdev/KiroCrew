@@ -307,6 +307,18 @@ class SubagentInfo:
     # or gives up on it leaves this unset, and so does any route added later that
     # does not say so; a memory-wait expiry's owed mark is cleared only on it.
     _report_delivered: bool = False
+    # True once the parent's own blocking ``spawn_sub_agents`` call answered with
+    # a reply frame carrying this result and that frame was written to the
+    # parent's pipe (``POST /api/spawn/mark-collected``, sent only after the
+    # write). A completion route skips the injection for an announce whose every
+    # member is marked: the parent already holds the result.
+    _collected_inline: bool = False
+    # A cron or channel parent's mark: "pending" until the turn holding the
+    # parent's permit when it arrived (``_inline_token``) releases, then
+    # "confirmed" if that turn landed. A revoked mark clears all three, so the
+    # completion is delivered (``kiro_crew.parent_turns``).
+    _inline_state: str = ""
+    _inline_token: tuple[str, Any] | None = None
     # True once an injection of this report was given up on: every attempt the
     # gateway made failed, so at most a failure notice was queued for the
     # parent's next turn (``notify_injection_failed``). ``_on_done`` still

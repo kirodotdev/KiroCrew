@@ -669,17 +669,32 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_route_subagent_to_tab",
             "async method",
-            "(self, info: 'SubagentInfo', *, announce: 'str', body: 'str', title: 'str', sub_meta: 'dict[str, Any]', _flush_only: 'bool', _injection_slot: 'Any', _injection_slot_name: 'str', parent_key: 'str') -> 'None'",
+            "(self, info: 'SubagentInfo', *, announce: 'str', body: 'str', title: 'str', sub_meta: 'dict[str, Any]', carried: 'tuple[str, ...]', _flush_only: 'bool', _injection_slot: 'Any', _injection_slot_name: 'str', parent_key: 'str') -> 'None'",
         ),
         (
             "_inject_subagent_into_channel_parent",
             "async method",
-            "(self, info: 'SubagentInfo', *, announce: 'str', body: 'str', title: 'str', parent_key: 'str') -> 'None'",
+            "(self, info: 'SubagentInfo', *, announce: 'str', body: 'str', title: 'str', carried: 'tuple[str, ...]', parent_key: 'str') -> 'None'",
         ),
         (
             "_finish_subagent_cron_or_notify",
             "async method",
-            "(self, info: 'SubagentInfo', *, announce: 'str', body: 'str', title: 'str', parent_key: 'str') -> 'None'",
+            "(self, info: 'SubagentInfo', *, announce: 'str', body: 'str', title: 'str', carried: 'tuple[str, ...]', parent_key: 'str', injection_counted: 'bool' = False) -> 'None'",
+        ),
+        (
+            "_park_inline",
+            "method",
+            "(self, token: 'Any', info: 'SubagentInfo', *, route: 'str', announce: 'str', body: 'str', title: 'str', carried: 'tuple[str, ...]', parent_key: 'str') -> 'None'",
+        ),
+        (
+            "_settle_inline",
+            "method",
+            "(self, token: 'Any', landed: 'bool', child_ids: 'list[str]') -> 'None'",
+        ),
+        (
+            "_finish_parked",
+            "async method",
+            "(self, completion: '_ParkedCompletion', *, counted: 'bool') -> 'None'",
         ),
     ),
     "runtime_charge": (

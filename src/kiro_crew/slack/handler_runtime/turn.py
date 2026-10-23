@@ -91,6 +91,7 @@ if TYPE_CHECKING:
         is_thread_temporary,
         logger,
         note_turn,
+        note_turn_landed,
         publish_turn_identity,
         rearm_reinjection,
         record_interaction_event,
@@ -907,6 +908,8 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             _turn_landed = stop_reason_landed(
                 (_stop_reason or "") if _completion_observed else None
             )
+            if _turn_landed:
+                note_turn_landed(sessions, session_key)
 
         if _stop_reason == STOP_REASON_COMPACTION_FAILED:
             # The completion was synthetic — the backend abandoned the turn

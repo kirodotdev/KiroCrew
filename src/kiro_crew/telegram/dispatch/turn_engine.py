@@ -59,6 +59,7 @@ from kiro_crew.messaging.renderer import SilentRenderer
 from kiro_crew.messaging.session_resume import persisted_session_agent
 from kiro_crew.messaging.session_trust import is_session_trusted
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
+from kiro_crew.parent_turns import note_turn_landed
 from kiro_crew.safety_override import safety_override
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.start_priority import person_priority
@@ -412,6 +413,8 @@ async def _run_turn(
         # the turn completed, so the finally must NOT restore the flag --
         # unless the user cancelled it, which discards that prompt.
         _turn_landed = driver_turn_landed(driver)
+        if _turn_landed:
+            note_turn_landed(self.sessions, session_key)
         if _unfinished:
             facade.Stats().inc_message_failed()
         else:

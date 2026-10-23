@@ -156,6 +156,10 @@ def __init__(
     # Wave accounting for the completion digest (batch_id -> progress).
     self._batch_progress = {}
     self._cron_injecting = {}  # parent_key → pending injection count
+    # Completions whose inline-returned members' turn still held the parent's
+    # permit, keyed by that holding; settled at its release (_settle_inline).
+    self._inline_parked = {}
+    self._inline_tasks = set()  # settled parked completions still routing
     self._running_script_ids = set()  # job IDs with in-flight script/command execution
     self.task_runner = None
     # Runner admission over the task queue, attached by _wire_runner_admission

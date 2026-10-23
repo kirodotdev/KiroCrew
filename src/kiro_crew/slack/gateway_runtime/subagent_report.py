@@ -83,10 +83,16 @@ class _SubagentReport(NamedTuple):
 
 
 class _WaveDigest(NamedTuple):
-    """The announce and card facts a completion routes; see ``_subagent_wave_digest``."""
+    """The announce and card facts a completion routes; see ``_subagent_wave_digest``.
+
+    ``carried`` names every member whose result the announce delivers: the
+    completion itself, or each member of a digest chunk. A route may skip the
+    announce only when every one of them already reached the parent inline.
+    """
 
     announce: str
     sub_meta: dict[str, Any]
+    carried: tuple[str, ...]
 
 
 def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _SubagentReport:
@@ -235,6 +241,8 @@ def _subagent_wave_digest(
     task_text, usage, result_path = report.task_text, report.usage, report.result_path
     no_tools_note = report.no_tools_note
     announce, sub_meta = report.announce, report.sub_meta
+    # A single completion carries itself; a digest chunk replaces this below.
+    carried = [info.id]
     if _batch_id:
         if _flush_only:
             # Nothing to release (wave already closed / already flushed
@@ -467,6 +475,9 @@ def _subagent_wave_digest(
             # These members are released: stop the hold clock so
             # the reaper's deadline sweep does not force a second flush
             # for results this chunk already carries.
+            carried = [_held.id for _held in bp.get("held_infos", [])]
+            if not _flush_only:
+                carried.append(info.id)
             for _held in bp.get("held_infos", []):
                 _held._digest_held_at = 0.0
             bp["held_infos"] = []
@@ -618,4 +629,4 @@ def _subagent_wave_digest(
                 bp["fail_lines"] = []
                 bp["ok_lines"] = []
                 bp["held_ok_deliveries"] = []
-    return _WaveDigest(announce, sub_meta)
+    return _WaveDigest(announce, sub_meta, tuple(carried))

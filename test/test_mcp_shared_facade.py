@@ -404,8 +404,8 @@ def _home_manifest() -> dict[str, tuple[str, str]]:
 
 def test_every_name_served_from_outside_the_family_is_visible_to_type_checkers() -> None:
     """A name an owner imports from a project module and the facade serves without
-    binding is named from its home under ``TYPE_CHECKING`` (none today: the facade
-    keeps binding every project import it had)."""
+    binding is named from its home under ``TYPE_CHECKING``; every project import the
+    facade had stays bound at run time."""
     assert _home_imports(), "the owners import nothing from the project -- the scan went blind"
     served = set(_index().exports)
     assert _home_manifest() == {n: h for n, h in _home_imports().items() if n in served}
