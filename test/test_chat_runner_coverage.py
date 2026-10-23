@@ -940,6 +940,80 @@ class TestBlockedLinkCardRecords:
         redacted, links, _ = chat_runner._redact_segment(slot, text)
         return redacted, links
 
+    @staticmethod
+    def _flush_ordered(deltas: list[str]) -> tuple[str, list[dict], list[bool]]:
+        slot = _slot()
+        text = ""
+        for delta in deltas:
+            safe, removed = chat_runner._redact_delta(delta)
+            chat_runner._accumulate_segment_raw(slot, delta, safe, removed)
+            text += safe
+        ordered: list[bool] = []
+        redacted, links, _ = chat_runner._redact_segment(slot, text, _ordered_out=ordered)
+        return redacted, links, ordered
+
+    def test_two_links_on_one_host_cut_across_deltas_are_vouched_in_order(self):
+        """The whole-text pass writes the records in reply order, so the row
+        vouches it and both addresses come back in place once the host is allowed."""
+        from kiro_crew.security.exfil import restore_allowed_links
+
+        first = f"https://{self.H}/first?q=" + "a" * 250
+        second = f"https://{self.H}/second?q=" + "b" * 250
+        content, links, ordered = self._flush_ordered(
+            ["one ", first[:40], first[40:], " two ", second[:30], second[30:], " end"]
+        )
+        assert [r["url"] for r in links] == [first, second]
+        assert ordered == [True]
+        meta = chat_runner._segment_row_meta(_slot(), links, links_ordered=True)
+        assert meta is not None and meta[chat_runner.BLOCKED_LINKS_ORDERED_KEY] is True
+        out, left = restore_allowed_links(content, links, frozenset({self.H}), ordered=True)
+        assert out == f"one {first} two {second} end"
+        assert left == []
+
+    def test_a_link_carrying_another_blocked_link_never_lands_in_its_place(self):
+        """``S B C C`` from review: B on the allowed host carries S (another host)
+        in its query. The allowed host must keep its placeholders: B, a redirect
+        carrying the sink address, must never be put back where a C stood."""
+        from kiro_crew.security.exfil import restore_allowed_links
+
+        allowed = "allowed.example"
+        sink = f"https://{self.H}/x?d=" + "s" * 260
+        redirect = f"https://{allowed}/r?next={sink}"
+        dash = f"https://{allowed}/c?q=" + "c" * 250
+        content, links, ordered = self._flush_ordered([f"{sink} {redirect} {dash} {dash}"])
+        assert [r["url"] for r in links if r["domain"] == allowed] == [redirect, dash]
+        out, _ = restore_allowed_links(
+            content, links, frozenset({allowed}), ordered=ordered == [True]
+        )
+        assert out == content
+        assert redirect not in out and sink not in out
+
+    def test_a_link_swallowed_by_a_credential_span_is_not_vouched_in_order(self):
+        """``A B B`` with A inside a PEM block: the link pass records A, then the
+        credential pass removes the block and A's placeholder with it. The host
+        holds records [A, B] and two placeholders, both B's, so pairing by order
+        would put A where the first B stood: the row must not vouch its order and
+        the host keeps its placeholders."""
+        from kiro_crew.security.exfil import restore_allowed_links
+
+        allowed = "allowed.example"
+        inner = f"https://{allowed}/a?q=" + "a" * 250
+        dash = f"https://{allowed}/b?q=" + "b" * 250
+        # The PEM markers are assembled so no literal key header sits in source.
+        label = "RSA " + "PRIVATE KEY"
+        pem = f"-----BEGIN {label}-----\nMIIE {inner} xyz\n-----END {label}-----"
+        redacted, links, ordered = self._flush_ordered([f"key:\n{pem}\nthen {dash} and {dash} end"])
+        assert [r["url"] for r in links] == [inner, dash]
+        assert redacted.count(f"[REDACTED: suspicious URL to {allowed}]") == 2
+        assert ordered == [False]
+        assert chat_runner.BLOCKED_LINKS_ORDERED_KEY not in (
+            chat_runner._segment_row_meta(_slot(), links) or {}
+        )
+        out, _ = restore_allowed_links(
+            redacted, links, frozenset({allowed}), ordered=ordered == [True]
+        )
+        assert out == redacted
+
     def test_one_address_on_its_host_is_its_one_record(self):
         url = f"https://{self.H}/only?q=" + "a" * 250
         content, links = self._flush(["See ", url[:40], url[40:], " now."])
