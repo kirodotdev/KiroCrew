@@ -422,6 +422,28 @@ def _run_session_set_model(args: dict[str, Any], ctx: ToolContext) -> str:
     return redact(f"\U0001f501 `{target}` will switch to {change} when its next turn starts.")
 
 
+def _run_session_set_backend(args: dict[str, Any], ctx: ToolContext) -> str:
+    target = str(args["target"]).strip()
+    if "backend" not in args:
+        return "Error: pass backend, a backend id such as 'claude', or '' for the gateway default."
+    try:
+        resp = ctx.client.post(
+            "/api/session-control/set-backend",
+            {"target": target, "backend": args["backend"]},
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        return redact(f"Error: could not change that session's backend: {refused.error}")
+    backend = resp.get("backend") or "the gateway default"
+    shown = resp.get("target") or target
+    if resp.get("changed") is False:
+        return redact(f"`{shown}` already runs on {backend}; nothing changed.")
+    return redact(
+        f"\U0001f501 `{shown}` will run on {backend} from its next turn; "
+        "its transcript is replayed to that backend."
+    )
+
+
 def _run_session_rename(args: dict[str, Any], ctx: ToolContext) -> str:
     try:
         resp = ctx.client.post(

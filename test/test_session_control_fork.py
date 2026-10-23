@@ -276,6 +276,29 @@ def test_the_frozen_fork_identity_refuses_a_self_source_that_moved_workspace(tmp
     assert set(state._slots) == before
 
 
+def test_a_backend_switch_during_the_fork_bind_keeps_the_childs_model_and_backend_paired(
+    tmp_path, monkeypatch
+):
+    """The child takes the model and the backend from the same moment, so a
+    switch landing in the bind await cannot pair the old model with the new
+    backend."""
+    state = _make_state(tmp_path)
+    caller = _seed(state, "chat-1")
+    caller.backend = "claude"
+    caller.model = "a-claude-model"
+    real_bind = chat_fork._bind_fork_execution
+
+    def _switch_then_bind(*a, **kw):
+        caller.backend = "codex"
+        caller.model = ""
+        return real_bind(*a, **kw)
+
+    monkeypatch.setattr(chat_fork, "_bind_fork_execution", _switch_then_bind)
+    result = _fork(state, caller)
+    child = state.get_slot(result["target"])
+    assert (child.model, child.backend) == ("a-claude-model", "claude")
+
+
 def test_without_a_folder_the_child_inherits_the_sources_folder(tmp_path):
     """The human fork files the child next to its parent; this path keeps that."""
     state = _make_state(tmp_path)

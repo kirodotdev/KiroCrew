@@ -601,6 +601,7 @@ class SessionManager:
     get_or_create = _claims.get_or_create
     ending_key = _claims.ending_key
     allocation_requested_model = _claims.allocation_requested_model
+    allocation_backend_override = _claims.allocation_backend_override
     record_effort_override = _claims.record_effort_override
     record_success = _claims.record_success
     record_failure = _claims.record_failure

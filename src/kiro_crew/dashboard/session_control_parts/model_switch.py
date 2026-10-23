@@ -32,7 +32,7 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
 from kiro_crew.dashboard.session_control_parts.target_authorization import authorize_target
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.llm_helpers import slot_switch_session_lock
-from kiro_crew.members import select_provider_backend
+from kiro_crew.members import select_provider_backend  # noqa: F401 - offered by session_control
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
 
@@ -93,7 +93,7 @@ async def set_model_target(
         _subagents_attached_response,
         _switch_target_busy,
     )
-    from kiro_crew.dashboard.chat_runner import _JEV_ROUTE_AUTO_MODELS
+    from kiro_crew.dashboard.chat_runner import _JEV_ROUTE_AUTO_MODELS, slot_backend
 
     # Validated before any gate: a malformed pick needs no target lookup, and
     # refusing it first keeps a bad argument from reading as an access decision.
@@ -182,22 +182,32 @@ async def set_model_target(
     # resolved through the same member-aware gate the provider factory uses: a
     # member DM routes to agent.member_acp_backend, which can differ from the
     # configured default, and a Claude backend takes canonical keys as wire ids.
-    backend = select_provider_backend(effective_session_key(slot), member_backend, default_backend)
-    target_provider = (
-        provider if is_claude_code(provider) else capabilities_for(backend).provider_seam
-    )
-    rejected = _model_rejected_reason(model_name, backend) if model_name is not None else ""
-    if rejected:
-        raise SessionControlError(rejected, code="model_rejected", status=400)
-    if (
-        model_name is not None
-        and not is_claude_code(target_provider)
-        and capabilities_for(backend).model_id_namespace == MODEL_NAMESPACE_ACP
-    ):
-        # On a kiro-cli backend an alias such as "sonnet" is not a wire id: stored
-        # as-is it would be withheld at session start and the target would stay
-        # on the default. Other backends keep their own id namespace untouched.
-        model_name = model_registry.acp_id_correction(model_name) or model_name
+    # A chat's own backend pick takes precedence, as it does at allocation.
+    requested_model = model_name
+
+    def _judged_on(backend: str) -> str | None:
+        target_provider = (
+            provider if is_claude_code(provider) else capabilities_for(backend).provider_seam
+        )
+        rejected = (
+            _model_rejected_reason(requested_model, backend) if requested_model is not None else ""
+        )
+        if rejected:
+            raise SessionControlError(rejected, code="model_rejected", status=400)
+        if (
+            requested_model is not None
+            and not is_claude_code(target_provider)
+            and capabilities_for(backend).model_id_namespace == MODEL_NAMESPACE_ACP
+        ):
+            # On a kiro-cli backend an alias such as "sonnet" is not a wire id:
+            # stored as-is it would be withheld at session start and the target
+            # would stay on the default. Other backends keep their own id
+            # namespace untouched.
+            return model_registry.acp_id_correction(requested_model) or requested_model
+        return requested_model
+
+    backend = slot_backend(slot, member_backend, default_backend)
+    model_name = _judged_on(backend)
 
     with _audit_denials(
         caller_session_key=caller_session_key, operation="set_model", slot_key=slot_key
@@ -219,6 +229,11 @@ async def set_model_target(
         session_key = effective_session_key(slot)
         if _switch_target_busy(state, slot, session_key, state.sessions.get_provider(session_key)):
             raise _target_busy_error()
+        # A backend switch can also land in that await: judge the model again on
+        # the backend the target runs on now, so a pick checked against the old
+        # backend is never stored for the new one.
+        backend = slot_backend(slot, member_backend, default_backend)
+        model_name = _judged_on(backend)
         # A model-picker switch in flight holds _model_pick_lock across its
         # provisional pick-generation bump and a possible rollback. Capturing
         # the generation inside that window would store a value the rollback

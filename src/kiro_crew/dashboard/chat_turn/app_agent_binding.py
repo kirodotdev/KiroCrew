@@ -24,7 +24,8 @@ if TYPE_CHECKING:
         resolve_agent_bindings,
         resolve_session_agent_bindings,
         routing_for,
-        select_provider_backend,
+        slot_backend,
+        subagents_attached_async,
         subprocess_executor,
     )
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
@@ -175,23 +176,35 @@ def _runs_app_agent_launch(provider: Any, launch_name: str) -> bool:
 
 
 async def _app_agent_turn_backend(
-    state: "DashboardState", session_key: str, cfg: "KiroCrewConfig | None"
+    state: "DashboardState", session_key: str, cfg: "KiroCrewConfig | None", slot: Any = None
 ) -> str | None:
     """The backend the turn about to be claimed for *session_key* would run on.
 
     A live provider registered under the key is the one the claim reuses, so its
     own identity answers (None when it names none). Otherwise the claim allocates
-    through the same member-aware selector this reads. The claimed provider is
+    through the same member-aware selector this reads, with *slot*'s own backend
+    pick. A live provider with a reset already queued (a backend switch) is
+    retiring, so the pick answers instead, unless attached sub-agents defer
+    that reset and the claim reuses the live session. The claimed provider is
     checked again after the claim; this read only spares a refused turn its cold
     start and decides whether the turn launches the app's copy.
     """
     sessions = state.sessions
     provider = sessions.get_provider(session_key)
-    if provider is not None and await sessions.is_provider_alive(session_key) is True:
+    retiring = (
+        slot is not None
+        and bool(getattr(slot, "_pending_reset_history_key", None))
+        and not await subagents_attached_async(state, slot, session_key, "app_agent_turn_backend")
+    )
+    if (
+        provider is not None
+        and not retiring
+        and await sessions.is_provider_alive(session_key) is True
+    ):
         return _provider_backend(provider)
     if cfg is None:
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    return select_provider_backend(session_key, cfg.agent.member_acp_backend, cfg.agent.acp_backend)
+    return slot_backend(slot, cfg.agent.member_acp_backend, cfg.agent.acp_backend, session_key)
 
 
 async def _on_app_agent_not_loaded(turn: _ChatTurn, exc) -> None:

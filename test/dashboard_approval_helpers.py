@@ -67,6 +67,8 @@ def _make_state(
     """Return (state, client) with all async methods properly mocked."""
     sessions = MagicMock(count=0)
     sessions.get_pid = MagicMock(return_value=None)
+    # No session started on a backend pick, as for a real SessionManager.
+    sessions.allocation_backend_override = MagicMock(return_value=None)
     client = AsyncMock()
     sessions.get_or_create = AsyncMock(return_value=(client, True, False))
     sessions.record_failure = AsyncMock()

@@ -34,8 +34,9 @@ if TYPE_CHECKING:
         refresh_materialized_agents,
         resolve_agent_bindings,
         resolve_session_agent_bindings,
-        select_provider_backend,
         shutdown_event,
+        slot_backend,
+        slot_backend_override,
         subprocess_executor,
     )
     from kiro_crew.dashboard.chat_turn.app_agent_binding import (
@@ -491,7 +492,7 @@ def schedule_eager_spawn(
     return task
 
 
-def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str, str]:
+def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str, str, str]:
     """The slot bindings an eager handshake bakes into the session it registers.
 
     ONE definition, because two exist to be compared: ``_eager_spawn`` snapshots
@@ -509,6 +510,7 @@ def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str, str]:
         slot.memory_store,
         # The namespace the name is read in: a kind change is a binding change.
         slot.agent_kind,
+        slot.backend,
     )
 
 
@@ -744,8 +746,8 @@ async def _eager_spawn(
             # with no channel identity.
             if allow_resume and resume_takes_tool_search_replay(
                 tool_search=cfg.agent.tool_search,
-                backend=select_provider_backend(
-                    session_key, cfg.agent.member_acp_backend, cfg.agent.acp_backend
+                backend=slot_backend(
+                    slot, cfg.agent.member_acp_backend, cfg.agent.acp_backend, session_key
                 ),
                 channel_id=None,
                 session_key=session_key,
@@ -895,6 +897,12 @@ async def _spawn_admitted_prefetch(
         # allocation resolves the default-model ladder itself, exactly as it
         # will for the first real turn.
         _requested_model = slot.model or agent_model or ""
+        _picked = slot_backend_override(slot)
+        _pick = _picked.get("backend_override")
+        if _pick is not None and slot_backend(slot, "", "", session_key, _picked) != _pick:
+            # As in turn admission: a pick the gate degrades to its fallback
+            # does not send the model chosen for the pick.
+            _requested_model = ""
         try:
             _, is_new, resumed = await sessions.get_or_create(
                 session_key,
@@ -912,6 +920,7 @@ async def _spawn_admitted_prefetch(
                 reasoning_effort_override=slot.reasoning_effort or None,
                 start_priority=start_priority,
                 **_app_allocation_kwargs(slot),
+                **_picked,
             )
         except (SpeculativeResumeRefused, SessionClosingError, SessionEndingError):
             # A refusal, a gateway shutdown, or a key being ended: no agent

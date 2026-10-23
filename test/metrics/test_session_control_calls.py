@@ -430,7 +430,7 @@ class TestRouteOps:
                 assert len(emitted) == 1, f"{path} emitted {len(emitted)} counts, want 1"
                 found[path] = emitted[0]["attrs"]["op"]
 
-        # ``revive`` and ``history`` appear here as ``other``: that IS what the
+        # ``revive``, ``history`` and ``set_backend`` appear here as ``other``: that IS what the
         # counter records for them, which is the fact worth pinning.
         assert found == {
             "/api/session-control/create": "create",
@@ -440,6 +440,7 @@ class TestRouteOps:
             "/api/session-control/retry": "retry",
             "/api/session-control/continue": "continue",
             "/api/session-control/set-model": "set_model",
+            "/api/session-control/set-backend": "other",
             "/api/session-control/reload": "reload",
             "/api/session-control/rename": "rename",
             "/api/session-control/generate-title": "generate_title",
