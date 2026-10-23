@@ -343,7 +343,7 @@ saying. Two mechanisms cover that, both reading the persisted transcript rather 
 the backend's state.
 
 **`context.build_cancelled_turn_preamble`** scans backwards for a `stop_event`
-marker, takes the user message immediately before it plus any assistant text in
+marker, takes the user message that opened the turn plus any assistant text in
 between, caps each at 2000 characters, and renders:
 
 ```
@@ -368,6 +368,22 @@ the NEW user message to the conversation log only **after** the preamble is buil
 so at that moment `recent()` holds only prior turns and the latest user entry is the
 cancelled one. It is consumed one-shot on the first prompt after a cancel, so
 subsequent prompts see only the normal ACP-held conversation.
+
+A mid-turn steer is a `user` row marked `meta.steer`: it was injected into the
+running turn and did not open it. When the newest user row before the marker is a
+steer, the request is the plain `user` row before it, and each steer the turn took
+is carried in the partial assistant response, in order, as
+`[Steered mid-turn] <text>`, outside the cap on the assistant text. A steer whose
+`meta.steerState` is `requeued` is left out: the Stop teardown moved it to the
+queue, where it runs as the next prompt, or the user dismissed it. The Resume
+restore reads its partial output through the same rule
+(`replay._partial_turn_output`). When a nudge, a sub-agent completion or an
+`inject` row sits between them, or the window holds no opener, the steer stays the
+request, because any of those may have opened the turn. The last 20 rows come from `ConversationLog.read_messages_chained_tail`,
+which keeps `meta`; `recent()` projects rows to role and content only. When the
+chain's newest file holds fewer than 20 rows, that read falls back to the chained
+page read, which can read every file in the chain, so both callers (dashboard
+`_run_chat`, Slack `handle_message`) build the preamble through `asyncio.to_thread`.
 
 **`context._build_stop_event_notes`** separately injects up to
 `_STOP_EVENT_CAP` (3) short system notes for recent **resolved** `stop_event`

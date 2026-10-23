@@ -1138,9 +1138,19 @@ def build_cancelled_turn_preamble(
     is observed on the session.
     """
     try:
-        recent = conversation_log.recent(session_key, max_messages=20)
+        # Not ``recent()``: it projects every row to role and content, and the
+        # builder needs ``meta`` to tell a mid-turn steer from the turn's opener.
+        # The tail read keeps it. When the chain's newest file holds fewer rows
+        # than the limit, it answers from the chained page read, which can read
+        # every file in the chain to index it, so both callers run this builder
+        # off the event loop.
+        recent = conversation_log.read_messages_chained_tail(session_key, 20)
     except Exception:
         return ""
+    # A warm task brief is posted while no turn runs, so none of its rows belongs
+    # to the cancelled turn. With no stop_event in the window that turn runs to
+    # the window's end, where a brief would read as its partial reply.
+    recent = _without_warm_task_brief_messages(recent)
     return _replay.cancelled_turn_preamble(recent, user_cap=user_cap, assist_cap=assist_cap)
 
 

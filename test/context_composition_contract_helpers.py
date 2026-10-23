@@ -49,6 +49,9 @@ class _TranscriptLog:
     def recent(self, session_key: str, max_messages: int = 20, **_kwargs: object) -> list[dict]:
         return list(self.rows[-max_messages:])
 
+    def read_messages_chained_tail(self, session_key: str, limit: int) -> list[dict]:
+        return list(self.rows[-limit:])
+
     def recent_with_provenance(self, session_key: str, exclude_last_n: int = 0) -> list[dict]:
         return [
             {"source_thread": "dashboard:older", "ts": "2026-03-01T10:00:00Z", "snippet": "cited"}
