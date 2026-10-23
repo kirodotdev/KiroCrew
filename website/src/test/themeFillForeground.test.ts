@@ -21,6 +21,10 @@
 import { relativeLuminance, contrastRatio, parseCssColor } from '../lib/iconContrast'
 import { THEMES, resolveVar } from './themePalette'
 
+/** Sentinel that matches no [data-theme=...] selector, so resolution walks the
+ *  pure `:root` cascade -- the palette a theme-less <html> actually gets. */
+const ROOT_ONLY = '\u0000none'
+
 function lum(css: string | undefined): number | null {
   if (!css) return null
   const c = parseCssColor(css)
@@ -72,6 +76,21 @@ describe('theme fill/foreground pairs', () => {
     expect(THEMES.length).toBeGreaterThanOrEqual(30)
     expect(THEMES).toContain('dracula-light')
     expect(THEMES).toContain('kiro-light')
+
+    // Both resolver traps that silently substitute the :root dark palette get an
+    // anchor, because either one would make the per-theme cases below measure a
+    // theme that is not the theme they name (see themePalette.ts).
+    // Compound selector list: `[data-theme="light"],[data-theme="amber-light"]{...}`.
+    for (const light of ['light', 'amber-light']) {
+      expect(THEMES).toContain(light)
+      expect(resolveVar(light, '--bg-elevated'), `${light} lost its compound-block palette`)
+        .not.toBe(resolveVar(ROOT_ONLY, '--bg-elevated'))
+    }
+    // Section banner comment on the line above the block. monokai-dark declares
+    // its own --bg-elevated; resolving it to the :root dark default means the
+    // banner was swept into the selector list again.
+    expect(resolveVar('monokai-dark', '--bg-elevated'), 'monokai-dark lost its banner-prefixed palette')
+      .not.toBe(resolveVar(ROOT_ONLY, '--bg-elevated'))
   })
 
   for (const theme of THEMES) {

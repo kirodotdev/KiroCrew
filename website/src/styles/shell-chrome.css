@@ -542,9 +542,11 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    browsers (no native window). */
 .host-drag-strip{position:absolute;top:0;height:42px;-webkit-app-region:drag;pointer-events:none;z-index:2}
 
-/* Scrollbar-free scroll container (used by the side panel tab strip — the
-   strip scrolls horizontally but a visible scrollbar under the chips reads
-   as clutter). Referenced before Tailwind ever defined it; real rules here. */
-.scrollbar-none{scrollbar-width:none;-ms-overflow-style:none}
+/* Scrollbar-free scroll container. The global rule in index.css hides every
+   scrollbar, so on an ordinary box this adds nothing: it is the explicit form
+   for a box a third-party sheet also styles, because it is unlayered and so
+   wins where that sheet re-declares `scrollbar-width`. The sites that carry it
+   for no such reason are redundant, not wrong. */
+.scrollbar-none{scrollbar-width:none}
 .scrollbar-none::-webkit-scrollbar{display:none}
 

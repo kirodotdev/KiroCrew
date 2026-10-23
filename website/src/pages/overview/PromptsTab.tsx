@@ -523,7 +523,7 @@ export default function PromptsTab() {
         /* List-detail: prompt list on the left, the selected prompt's content
          *  (or its editor) on the right — the shape SkillsTab uses. */
         <div className={PANE_SHELL_CLASS}>
-          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md p-2`} role="listbox" aria-label={i18nT('pages.overview.promptsTab.prompts')}>
+          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 overflow-y-auto border border-border rounded-md p-2`} role="listbox" aria-label={i18nT('pages.overview.promptsTab.prompts')}>
             {filteredUser.length > 0 && (
               <div className="text-[11px] text-muted font-semibold tracking-wider px-2 py-1.5 mb-1">
                 {i18nT('pages.overview.promptsTab.user_prompts_count', { count: filteredUser.length })}

@@ -122,18 +122,29 @@
   @media(prefers-reduced-motion:reduce){.animate-rise,.animate-chip-hop,.skeleton::after{animation-delay:0s !important}}
   ::selection{background:var(--accent-subtle);color:var(--text-strong)}
   .bg-accent::selection{background:rgba(255,255,255,.25);color:white}
+  /* No scrollbar is visible at rest. A scroll box shows a thin thumb only while
+     it is being scrolled (`data-scrolling`, set and cleared by
+     lib/scrollReveal.ts), and it shows it in the 6px column the box reserves
+     anyway, so revealing it never moves content. One rule, not a per-surface
+     choice (docs/decisions/2026-10-23-scrollbars-are-never-always-visible.md);
+     a surface that wants NO thumb at all wears `.scrollbar-none`.
+     Two engine halves. WebKit/Blink take the pseudo-elements: the track is the
+     reserved column and the thumb is transparent until the attribute paints it.
+     Firefox has no pseudo-elements and Blink ignores them the moment the
+     standard properties are set, so the standard half is fenced to Firefox by
+     the `-moz-appearance` probe; `scrollbar-width` does not inherit, hence `*`.
+     --muted, not a --border rung: the revealed thumb must clear the WCAG 1.4.11
+     3:1 non-text floor against the surface it scrolls over, and no border rung
+     does in any theme but highcontrast. scrollbarRevealOnly.test.ts measures it
+     per theme and refuses a rule that paints a thumb outside `[data-scrolling]`. */
   ::-webkit-scrollbar{width:6px;height:6px}
   ::-webkit-scrollbar-track{background:transparent}
-  /* --muted, not a --border rung: this thumb is the global scroll affordance for
-     every scroll box that carries neither .scroll-fade nor .scrollbar-overlay,
-     including on touch, where there is no hover to fall back on. It must clear
-     the WCAG 1.4.11 3:1 non-text floor against the surface it scrolls over, and
-     no border rung does in any theme but highcontrast. The grab rung is --text
-     because it has to stay legible AND read as stronger: --muted-strong is below
-     the floor in 9 themes and is not even lighter than --muted in 22 of them.
-     scrollbarThumbContrast.test.ts measures both rungs per theme. */
-  ::-webkit-scrollbar-thumb{background:var(--muted);border-radius:9999px}
-  ::-webkit-scrollbar-thumb:hover{background:var(--text)}
+  ::-webkit-scrollbar-thumb{background:transparent;border-radius:9999px}
+  [data-scrolling]::-webkit-scrollbar-thumb{background:var(--muted)}
+  @supports (-moz-appearance:none){
+    *{scrollbar-width:thin;scrollbar-color:transparent transparent}
+    [data-scrolling]{scrollbar-color:var(--muted) transparent}
+  }
 }
 
 /* ── Ambient background ──

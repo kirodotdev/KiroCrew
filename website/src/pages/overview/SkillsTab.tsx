@@ -567,10 +567,8 @@ export default function SkillsTab() {
         /* List-detail: skill list (pane 1) on the left, then the directory
          *  browser (panes 2+3: file tree + file content) on the right. */
         <div className={PANE_SHELL_CLASS}>
-          {/* Pane 1 — skill list.  ``scrollbar-overlay`` keeps the scrollbar
-           *  hidden until hover and overlays it so the row width never shifts
-           *  between scrollable and non-scrollable states. */}
-          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md p-2`} role="listbox" aria-label={i18nT('pages.overview.skillsTab.skills')}>
+          {/* Pane 1 — skill list. */}
+          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 overflow-y-auto border border-border rounded-md p-2`} role="listbox" aria-label={i18nT('pages.overview.skillsTab.skills')}>
             {localSkills.map(renderRow)}
             {packageSkills.length > 0 && (
               <div className="mt-2">

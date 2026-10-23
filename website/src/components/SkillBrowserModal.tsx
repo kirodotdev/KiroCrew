@@ -248,7 +248,7 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
               id="skill-results-list"
               role="listbox"
               aria-label={i18nT('components.skillBrowserModal.skill_search_results')}
-              className={`${selectedSkill && mobileDetail ? 'hidden md:block' : 'block'} w-full md:w-[40%] md:shrink-0 overflow-y-auto scrollbar-overlay space-y-1.5 pr-1`}
+              className={`${selectedSkill && mobileDetail ? 'hidden md:block' : 'block'} w-full md:w-[40%] md:shrink-0 overflow-y-auto space-y-1.5 pr-1`}
             >
               {results.map(skill => {
                 const key = skillKey(skill)
@@ -323,7 +323,7 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
                       <ArrowLeft size={14} aria-hidden="true" /> {i18nT('components.skillBrowserModal.back_to_results')}
                     </Btn>
                   </div>
-                  <div className="flex-1 min-h-0 overflow-y-auto scrollbar-overlay">
+                  <div className="flex-1 min-h-0 overflow-y-auto">
                     <SkillDetailPanel
                       skill={selectedSkill}
                       installed={isInstalled(selectedSkill)}
@@ -516,7 +516,7 @@ function SkillDetailPanel({
           <summary className="text-xs text-muted cursor-pointer hover:text-text">
             {i18nT('components.skillBrowserModal.bundle_contents_count', { count: preview!.file_count })}
           </summary>
-          <ul className="mt-1.5 text-xs text-muted font-mono space-y-0.5 max-h-40 overflow-y-auto scrollbar-overlay">
+          <ul className="mt-1.5 text-xs text-muted font-mono space-y-0.5 max-h-40 overflow-y-auto">
             {preview!.files!.map(f => <li key={f}>{f}</li>)}
           </ul>
         </details>

@@ -316,12 +316,8 @@ export default function ComposerDockView({
                   exactly on the padding box, and the equal negative margin keeps
                   the wrapper's contribution to the column unchanged, so the seam
                   still fuses. Layout-neutral when the queue is empty: the pair
-                  cancels. `scrollbar-overlay` is what every other internal
-                  scroller here uses (SkillDirectoryBrowser pairs it with the same
-                  `overflow-y-auto overscroll-contain`): it replaces the global
-                  always-visible `var(--border)` thumb with a hover-revealed
-                  overlay one, so the capped box does not carry a permanent bar. */}
-              <div ref={composerBandRef} className="max-h-[50svh] overflow-y-auto overscroll-contain scrollbar-overlay pb-[11px] mb-[-11px] dock-inert" data-testid="composer-status-stack">
+                  cancels. */}
+              <div ref={composerBandRef} className="max-h-[50svh] overflow-y-auto overscroll-contain pb-[11px] mb-[-11px] dock-inert" data-testid="composer-status-stack">
               {/* Not gated on activityOpen (unlike the two bars below): the
                   activity sidebar has no TODO view, so hiding it there would
                   lose the information rather than de-duplicate it. */}

@@ -1,57 +1,11 @@
-/* ── Auto-hiding scrollbar for code/diff blocks ── */
-.scroll-fade::-webkit-scrollbar{height:6px}
-/* Horizontal edge fade by MASK, not by a painted gradient, so it works on glass
-   as on solid surfaces. A clipped side fades its own content over 24px. */
+/* ── Horizontal edge fade ──
+   A clipped side fades its own content over 24px, by MASK rather than a painted
+   gradient so it works on glass as on solid surfaces. The cue a sideways-
+   scrolling strip carries (the composer control row wears it): the dashboard
+   paints no scrollbar (the global rule in index.css). */
 .edge-fade-x[data-fade-left]{-webkit-mask-image:linear-gradient(to right,transparent,#000 24px);mask-image:linear-gradient(to right,transparent,#000 24px)}
 .edge-fade-x[data-fade-right]{-webkit-mask-image:linear-gradient(to left,transparent,#000 24px);mask-image:linear-gradient(to left,transparent,#000 24px)}
 .edge-fade-x[data-fade-left][data-fade-right]{-webkit-mask-image:linear-gradient(to right,transparent,#000 24px,#000 calc(100% - 24px),transparent);mask-image:linear-gradient(to right,transparent,#000 24px,#000 calc(100% - 24px),transparent)}
-.scroll-fade::-webkit-scrollbar-thumb{background:transparent;border-radius:3px;transition:background .2s}
-.scroll-fade:hover::-webkit-scrollbar-thumb{background:var(--muted)}
-.scroll-fade{scrollbar-width:thin;scrollbar-color:transparent transparent}
-.scroll-fade:hover{scrollbar-color:var(--muted) transparent}
-/* Same defect, same remedy as the overlay utility below: a finger never produces
-   the :hover that reveals the thumb, so a code block wide enough to scroll shows
-   no cue that it does. Predicate and token deliberately match that block rather
-   than making a second decision — one rung, so the two cannot drift. Separate
-   block because it sits with the utility it covers, and because it must follow
-   this utility's own transparent base rules: a media query adds no specificity,
-   so it ties them and wins on source order alone. */
-@media (pointer: coarse) {
-  .scroll-fade{scrollbar-color:var(--muted) transparent}
-  .scroll-fade::-webkit-scrollbar-thumb{background:var(--muted)}
-}
-
-/* ── Overlay auto-hiding vertical scrollbar ──
- * Reveals the thumb only on hover and overlays the content so it never
- * consumes horizontal layout width (no reflow when scrollable vs not).
- * On WebKit the scrollbar is laid over the padding box (overlay); on
- * Firefox ``scrollbar-width:thin`` + transparent track approximates it. */
-.scrollbar-overlay{scrollbar-width:thin;scrollbar-color:transparent transparent}
-.scrollbar-overlay:hover{scrollbar-color:var(--muted) transparent}
-.scrollbar-overlay::-webkit-scrollbar{width:6px}
-.scrollbar-overlay::-webkit-scrollbar-track{background:transparent}
-.scrollbar-overlay::-webkit-scrollbar-thumb{background:transparent;border-radius:9999px;transition:background .2s}
-.scrollbar-overlay:hover::-webkit-scrollbar-thumb{background:var(--muted)}
-.scrollbar-overlay:hover::-webkit-scrollbar-thumb:hover{background:var(--text)}
-/* Thinner reveal for the side-panel nav rail: 5px rather than the overlay utility's 6px, so the hover/touch hint reads as a hint, not a bar. Colour is unchanged (--muted, the accessibility-floor token), only the width narrows. */
-.scrollbar-overlay-thin::-webkit-scrollbar{width:5px}
-/* On touch the overlay utility would stay perpetually transparent: a finger never
-   produces the :hover that restores the thumb. A coarse pointer shows a persistent
-   thin thumb instead, so a capped scroll surface keeps a real affordance. Fine
-   pointers keep the hidden-until-hover behaviour so a scrollable box does not
-   always carry the global always-visible thumb.
-   One token, --muted, across this branch and the hover reveal above it. It was
-   chosen here first, as the sole scroll affordance on touch, for clearing the
-   WCAG 1.4.11 3:1 non-text-contrast floor against --bg-elevated in every theme
-   where no border rung does. The hover reveal then kept --border for one release
-   on the argument that hover implies a pointer already engaged with the box; that
-   argument was a product judgement, not a conformance one, and 1.4.11 grants
-   hover no exemption, so both rungs now name the same measured token.
-   scrollbarThumbContrast.test.ts pins the floor per theme. */
-@media (pointer: coarse) {
-  .scrollbar-overlay{scrollbar-color:var(--muted) transparent}
-  .scrollbar-overlay::-webkit-scrollbar-thumb{background:var(--muted)}
-}
 
 /* ── 44px touch hit area for small icon controls ──
    A finger needs a target of about 44x44 CSS px (Apple HIG; WCAG 2.5.5).
