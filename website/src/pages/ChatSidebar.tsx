@@ -44,7 +44,7 @@ import { useSessionFilterState, useSessionStatusFilters } from './chat-sidebar/f
 import { useDebouncedSessionSearch, useSearchMatches } from './chat-sidebar/search'
 import { openCrewWindow, useCrewWindow } from './chat/crew-window/crewWindowStore'
 import { useStableCallbackProps } from './chat/useStableCallbackProps'
-import { sessionRowIdentity } from './chat-sidebar/rowIdentity'
+import { isPeerRow, sessionRowIdentity } from './chat-sidebar/rowIdentity'
 import { buildSidebarRows, guideStepOnRowControl, type RowScene, type RowShell, type SidebarRows } from './chat-sidebar/rows'
 import { useSessionSources } from './chat-sidebar/sessionSources'
 import { crewSpaceChain, useCollapsedCrews, useCollapsedCrewSpaces, useCrewEnable } from './chat-sidebar/CrewGroups'
@@ -552,7 +552,7 @@ function ChatSidebar({
   } = useFolderFilterReveal({ folderFilterActive, filterHiddenFolders, folders, isFolderHidden, folderCompare, boardLaneActive })
   const {
     citedCreatorExists, conductorRows, conductorMatching, lineage, conductorExpanded, toggleConductorExpanded,
-    expandConductorAncestors,
+    expandConductorAncestors, openConductor,
   } = useConductorLane({ conductorLaneActive, allRows, allLiveSlots, isRowFolderHidden, isRowStatusHidden, laneOrder, flatSlots })
   // Reveal opens the crew group holding the target, then the lane's own ancestors.
   // Looked up in `allRows`: the reveal may be clearing the filter that hides it.
@@ -566,7 +566,15 @@ function ChatSidebar({
       expandSpaces(...crewSpaceChain(crew, folders, row?.peer_folder_id))
     }
     expandConductorAncestors(identity)
-  }, [allRows, shownCrewRows, shownCrewGroups, expandCrew, expandSpaces, expandConductorAncestors])
+    // The folder view folds a Slack code channel conductor's workers under its
+    // row: a reveal aimed at one of them opens that fold (codeChannelCrew.ts).
+    const cited = row && !isPeerRow(row) ? row.parent?.key : undefined
+    const creator = cited ? allRows.find(s => !isPeerRow(s) && s.key === cited && s.code_channel
+      // The fold only holds workers filed beside their conductor, as the fold
+      // itself resolves folders.
+      && (slotFolders[s.key] ?? '') === (slotFolders[row!.key] ?? '')) : undefined
+    if (creator) openConductor(sessionRowIdentity(creator))
+  }, [allRows, shownCrewRows, shownCrewGroups, expandCrew, expandSpaces, expandConductorAncestors, openConductor, slotFolders])
 
   const {
     availableLanes, nextLane, laneSwitchLabel, cycleLane,

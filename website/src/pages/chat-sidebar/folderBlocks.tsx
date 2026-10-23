@@ -25,6 +25,8 @@ import { PrivateChatRow } from './PrivateChatRow'
 import { ParentFolderDropTarget, SortableSubfolderBlock } from './dnd/targets'
 import type { Slot } from './types'
 import { detectFolderConductor } from './folderConductor'
+import { crewSignalsFrom, foldCodeChannelCrews } from './codeChannelCrew'
+import { CodeChannelCrewWorkers } from './CodeChannelCrewWorkers'
 import { sessionRowIdentity } from './rowIdentity'
 import { DisclosureChevron, FOLDER_BODY_CLS, FOLDER_BODY_OPEN_PADDING, FOLDER_ROW_STICKY_Z, PinnedSessionDivider, createTabModeForClick } from './chrome'
 import type { LaneRows } from './laneRows'
@@ -43,7 +45,11 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     pinned, renameCommit, renderSessionRow, renderStaleSection, revealFlash, revealedContainers,
     searchRanked, setEditName, setEditScope, setEditingId, setFolderCreateError, setFolderModal, setFolderOfflineNotice, sidebarRows,
     slotFilter, slotFolders, splitStale, staleExpanded, startsAutomaticSection, suppressMenuRestoreRef,
-    toggleCollapse, toggleFolderFilter, toggleReveal, unreadSet, updateFolderMutation } = shell
+    toggleCollapse, toggleFolderFilter, toggleReveal, unreadSet, updateFolderMutation,
+    conductorExpanded, subagentApprovalCounts } = shell
+  /** The signals a folded crew's line reads: the same ones each worker's own row
+   *  renders from, so the line and the rows it stands for agree. */
+  const crewSignals = crewSignalsFrom({ isRunning: sidebarRows.isRunning, subagentApprovalCounts, unreadSet })
   /**
    * The session CONDUCTING a folder, derived from the folder's own rows.
    *
@@ -834,7 +840,34 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     // new-subfolder input, so it reads as part of the folder list.
     const hiddenHere = hiddenByContainer.get(folder.id)
     if (hiddenHere?.length) childNodes.push(renderHiddenReveal(folder.id, hiddenHere, depth + 1))
-    const { fresh: freshChildSlotsRaw, stale: staleChildSlots } = splitStale(childSlots)
+    const { fresh: freshAll, stale: staleAll } = splitStale(childSlots)
+    /**
+     * Slack code channel crews: each code-channel conductor's direct workers in
+     * this folder fold under its row (`codeChannelCrew.ts`). Display only: the
+     * workers are still this folder's rows everywhere else (counts, unread
+     * roll-up, reveal), and a typed search shows every row as before.
+     */
+    const crewFold = foldCodeChannelCrews(allChildSlots, freshAll, staleAll, {
+      narrowed: listNarrowed || slotFilter.trim() !== '', alsoShown: folderConductorSlot, expanded: conductorExpanded, signals: crewSignals,
+      keepShown: w => isActiveRow(w) || pinned.has(w.key),
+    })
+    const freshChildSlotsRaw = crewFold.fresh
+    const staleChildSlots = crewFold.stale
+    const crewViewOf = crewFold.viewOf
+    /** An open crew's workers, right under their conductor and stepped in. Their
+     *  own hold container, so a hovered worker's row is held in place like any
+     *  other and the folder's own hold never counts them. */
+    const crewWorkerNodes = (conductor: Slot, scopeName: string, container: string): React.ReactNode => {
+      const open = crewFold.openWorkersOf(conductor)
+      if (!open) return null
+      const id = sessionRowIdentity(conductor)
+      const { rows: workers, container: crewContainer } = heldLane(open, scopeName, `${container}:crew:${id}`)
+      return (
+        <CodeChannelCrewWorkers key={`code-channel-crew-${id}`} conductorId={id}>
+          {workers.map((w, i) => renderSessionRow(w, depth + 2, i < workers.length - 1 && !isActiveRow(w) && !isActiveRow(workers[i + 1]), scopeName, scopeName, crewContainer))}
+        </CodeChannelCrewWorkers>
+      )
+    }
     // Stale rows are collapsed into their own section and are stale precisely
     // because nothing is bumping them, so only the live list needs the hold.
     const { rows: freshChildSlots, navScope: treeChildScope, container: treeChildContainer } = heldLane(freshChildSlotsRaw, 'list', `tree:folder:${folder.id}`)
@@ -873,7 +906,8 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     const folderConductorNode = folderConductorSlot && (
       <div key={`folder-conductor-${folder.id}`} data-folder-conductor={folder.id} className="relative">
         <span aria-hidden="true" className="absolute left-0 inset-y-1 w-0.5 rounded-full bg-accent" />
-        {renderSessionRow(folderConductorSlot, depth + 1, false, treeChildScope, treeChildScope, treeChildContainer, undefined, true)}
+        {renderSessionRow(folderConductorSlot, depth + 1, false, treeChildScope, treeChildScope, treeChildContainer, undefined, true, crewViewOf(folderConductorSlot))}
+        {crewWorkerNodes(folderConductorSlot, treeChildScope, treeChildContainer)}
       </div>
     )
     freshChildSlots.forEach((s, i) => {
@@ -887,7 +921,10 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
         // its own key, and React removes the one that goes away.
         childNodes.push(<PinnedSessionDivider key={`pinned-divider-${sessionRowIdentity(s)}`} />)
       }
-      childNodes.push(renderSessionRow(s, depth + 1, showDivider, treeChildScope, treeChildScope, treeChildContainer))
+      const crew = crewViewOf(s)
+      childNodes.push(renderSessionRow(s, depth + 1, showDivider && !crew?.expanded, treeChildScope, treeChildScope, treeChildContainer, undefined, undefined, crew))
+      const workerNodes = crew ? crewWorkerNodes(s, treeChildScope, treeChildContainer) : null
+      if (workerNodes) childNodes.push(workerNodes)
     })
     if (!searchRanked && staleExpanded.has(folder.id)
       && staleChildSlots.length > 0 && freshChildSlots.length > 0

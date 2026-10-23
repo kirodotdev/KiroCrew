@@ -5,6 +5,7 @@ import { Columns2, ExternalLink, EyeOff, MoreHorizontal, Pin, VenetianMask } fro
 import { generateSlotTitle } from '../../../hooks/slotTitleGeneration'
 import { ConcurrencyCutDot, ConcurrencyCutLiveRegion, ConcurrencyCutMenuItem } from '../../../components/ConcurrencyCutChip'
 import ErrorBoundary from '../../../components/ErrorBoundary'
+import { CodeChannelMark } from '../../../components/CodeChannelBadge'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../../../components/ErrorNotice'
 import { PanelRightSolid } from '../../../components/icons/panels'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../../components/ui/dropdown-menu'
@@ -158,6 +159,10 @@ export default function MobileTopBar({
                     {currentSlot?.pinned && <Pin size={12} className="lucide-inline mr-1 shrink-0 text-accent" aria-label={i18nT('pages.chatSidebar.pinned')} data-testid="session-pinned-glyph" />}
                     {currentSlot?.memory_mode === 'incognito' && <EyeOff size={13} className="lucide-inline shrink-0 text-warn" aria-label={i18nT('pages.chatPage.incognito_memory_writes_disabled')} />}
                     {currentSlot?.memory_mode === 'temporary' && <VenetianMask size={13} className="lucide-inline shrink-0 text-aim" aria-label={i18nT('pages.chatPage.temporary_no_memory_reads_or_writes')} />}
+                    {/* A code channel's session is marked here too, as a glyph
+                        rather than a link: the bar holds two controls and this
+                        label is one of them. The sidebar row carries the link. */}
+                    {currentSlot?.code_channel && <span className="mr-1 inline-flex"><CodeChannelMark size={12} /></span>}
                     {title}
                   </>
                 }

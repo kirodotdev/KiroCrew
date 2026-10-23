@@ -476,3 +476,88 @@ def test_slack_session_mirroring_elsewhere_keeps_its_link():
     links, slack_linked, _, _ = _links_for(canonical_key("1785861252.833429"), _THREAD_TS)
     assert len(_slack_out(links)) == 1
     assert slack_linked is True
+
+
+def _serialized(session_key, thread_ts, channel=_CHANNEL):
+    """serialize_slot for a slot whose session carries *thread_ts* in *channel*."""
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard.state import DashboardState
+
+    class _Sessions:
+        def get_mirror_link(self, key):
+            return ChannelLink("slack", channel, thread_ts)
+
+        def get_slack_link(self, key):
+            return (thread_ts, channel)
+
+        def mirror_accepts_inbound(self, key):
+            return False
+
+    class _Slot:
+        key = session_key
+        linked_session_key = session_key
+        _slack_thread_ts = thread_ts
+        _slack_channel = channel
+
+        def to_dict(self, **_kw):
+            return {"key": session_key}
+
+    class _State(DashboardState):
+        # The ordering stores are not what these tests are about.
+        manual_session_order = SimpleNamespace(rank=lambda _key: None, rev=0)
+
+        def pin_rank(self, _slot):
+            return None
+
+        def _channel_link_is_live(self, _link):
+            return False
+
+    state = _State.__new__(_State)
+    state.sessions = _Sessions()
+    state._pinned_order_rev = 0
+    with patch(
+        "kiro_crew.dashboard.chat_utils.effective_session_key",
+        return_value=session_key,
+    ):
+        return state.serialize_slot(_Slot())
+
+
+def test_slack_born_session_ships_its_own_thread_as_origin_ids():
+    """The header can link a Slack-born session's thread without calling it a mirror."""
+    row = _serialized(canonical_key(_THREAD_TS), _THREAD_TS)
+    assert row["slack_linked"] is False
+    assert (row["slack_channel"], row["slack_thread_ts"]) == ("", "")
+    assert (row["slack_origin_channel"], row["slack_origin_thread_ts"]) == (_CHANNEL, _THREAD_TS)
+
+
+def test_slack_born_origin_channel_drops_the_namespace_prefix():
+    row = _serialized(canonical_key(_THREAD_TS), _THREAD_TS, channel=f"slack:{_CHANNEL}")
+    assert row["slack_origin_channel"] == _CHANNEL
+
+
+def test_a_dashboard_mirror_carries_no_origin_ids():
+    row = _serialized(_DASHBOARD_KEY, _THREAD_TS)
+    assert row["slack_linked"] is True
+    assert (row["slack_channel"], row["slack_thread_ts"]) == (_CHANNEL, _THREAD_TS)
+    assert (row["slack_origin_channel"], row["slack_origin_thread_ts"]) == ("", "")
+
+
+def test_a_slack_born_session_mirroring_elsewhere_carries_no_origin_ids():
+    """A different thread is a real mirror: slack_linked, and no origin ids."""
+    row = _serialized(canonical_key("1785861252.833429"), _THREAD_TS)
+    assert row["slack_linked"] is True
+    assert (row["slack_channel"], row["slack_thread_ts"]) == (_CHANNEL, _THREAD_TS)
+    assert (row["slack_origin_channel"], row["slack_origin_thread_ts"]) == ("", "")
+
+
+def test_a_self_link_with_no_channel_carries_no_origin_ids():
+    row = _serialized(canonical_key(_THREAD_TS), _THREAD_TS, channel="")
+    assert row["slack_linked"] is False
+    assert (row["slack_origin_channel"], row["slack_origin_thread_ts"]) == ("", "")
+
+
+def test_a_non_slack_origin_carries_no_slack_origin_ids():
+    """Another transport's legacy id in the Slack fields is not a Slack thread."""
+    row = _serialized(canonical_key(_THREAD_TS), _THREAD_TS, channel="discord:123")
+    assert (row["slack_origin_channel"], row["slack_origin_thread_ts"]) == ("", "")

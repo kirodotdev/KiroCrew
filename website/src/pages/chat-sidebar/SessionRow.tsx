@@ -4,7 +4,7 @@
  *  (./rows) and its one `actions` object; the row's memo compares both. */
 import { useRef, useEffect, memo, useMemo, useContext } from 'react'
 import { motion } from 'framer-motion'
-import { X, Pin, VolumeX, EyeOff, VenetianMask, MoreVertical, CornerDownRight, GitFork, Loader, Loader2, Bot, ExternalLink, Workflow, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Hourglass, GripVertical } from 'lucide-react'
+import { X, Pin, VolumeX, EyeOff, VenetianMask, MoreVertical, CornerDownRight, GitFork, Loader, Loader2, Bot, ExternalLink, Workflow, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, CircleCheck, Hourglass, GripVertical } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { shallowEqual } from 'react-redux'
 import { useAppDispatch, useAppSelector } from '../../store'
@@ -47,6 +47,7 @@ import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
+import { CodeChannelBadge, CODE_CHANNEL_AGENT_FIT } from '../../components/CodeChannelBadge'
 
 /**
  * Session-row type scale, quantized to a 4px baseline grid.
@@ -236,6 +237,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     rowMotionHeld, opensElsewhere, peerId, peerName,
   } = view
   const conductor = view.conductor
+  /** A Slack code channel conductor's folded crew, in the folder view only. */
+  const crew = view.crew
   // An ADOPTED remote-crew row (a local slot that mirrors a peer session) has a ✕
   // that removes only this machine's copy — the session stays live on its peer,
   // and this hub cannot close it across the link. Relabel the ✕ "Remove from this
@@ -653,6 +656,58 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     //
     // The tail is `last_message`, and the `unread` dot rides on it (below).
     const rowStateEntry = ([
+      {
+        // A folded Slack code channel crew (`codeChannelCrew.ts`): the
+        // conductor's line speaks for its hidden workers whenever one of them is
+        // at least as urgent as the conductor itself. First in the chain, because
+        // a worker waiting on an approval behind the fold must never read as
+        // anything calmer than "Waiting on you".
+        key: 'code_channel_crew',
+        when: !!crew?.state,
+        build: () => {
+          const st = crew!.state!
+          const withDetail = (text: string) => (st.detail ? `${text} · ${st.detail}` : text)
+          if (st.key === 'needs_you') {
+            const title = withDetail(i18nT('pages.chatSidebar.code_channel_crew_waiting_title', { count: st.count }))
+            return (
+              <div className={ROW_STATUS_LINE_CLS} title={title} data-testid="code-channel-crew-state" data-crew-state={st.key}>
+                <ShieldCheck size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden />
+                <span className="truncate"><span className="font-medium" style={{ color: 'var(--warn)' }}>{i18nT('pages.chatSidebar.code_channel_crew_waiting')}</span>{st.detail ? <span className="text-muted"> · {st.detail}</span> : null}</span>
+              </div>
+            )
+          }
+          // The other states: a glyph, the state in words, and the trailing
+          // detail (the aggregate's label) in muted ink, like the lines above.
+          const detail = st.detail ? <span className="text-muted"> · {st.detail}</span> : null
+          if (st.key === 'interrupted' || st.key === 'stuck') {
+            const label = i18nT(st.key === 'stuck' ? 'pages.chatSidebar.code_channel_crew_stuck' : 'pages.chatSidebar.code_channel_crew_interrupted', { count: st.count })
+            return (
+              <div className={ROW_STATUS_LINE_CLS} title={withDetail(label)} data-testid="code-channel-crew-state" data-crew-state={st.key}>
+                <TriangleAlert size={ROW_ICON_PX} className="shrink-0 text-danger" aria-hidden />
+                <span className="truncate"><span className="font-medium text-danger">{label}</span>{detail}</span>
+              </div>
+            )
+          }
+          if (st.key === 'done') {
+            const label = st.total != null && st.total > 0
+              ? i18nT('pages.chatSidebar.code_channel_crew_done', { count: st.count, total: st.total })
+              : i18nT('pages.chatSidebar.code_channel_crew_done_plain')
+            return (
+              <div className={ROW_STATUS_LINE_CLS} title={withDetail(label)} data-testid="code-channel-crew-state" data-crew-state={st.key}>
+                <CircleCheck size={ROW_ICON_PX} className="shrink-0 text-ok" aria-hidden />
+                <span className="truncate"><span className="font-medium text-ok">{label}</span>{detail}</span>
+              </div>
+            )
+          }
+          const label = i18nT('pages.chatSidebar.crew_attention_working', { count: st.count })
+          return (
+            <div className={ROW_STATUS_LINE_CLS} title={withDetail(label)} data-testid="code-channel-crew-state" data-crew-state={st.key}>
+              <Loader2 size={ROW_ICON_PX} className="shrink-0 text-accent animate-spin motion-reduce:animate-none" aria-hidden />
+              <span className="truncate"><span className="font-medium text-accent">{label}</span>{detail}</span>
+            </div>
+          )
+        },
+      },
       {
         // Pending approval outranks running (mirrors the Board's inferLane,
         // which returns its approval lane before the running check), so an owed
@@ -1369,8 +1424,12 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  framer-only (no new CSS @keyframes). */}
               {/* A crewmate's own thread has no agent chip (its title is the name), so the
                 *  line starts at the Members-page chip with no placeholder gap before it. */}
+              {/* On a code-channel row the agent name is the first thing to give
+                *  way (by a weight no other item comes near), so the channel's
+                *  Slack mark and the time keep their room. Every other row keeps
+                *  `shrink-0`, exactly as before. */}
               {memberTitle === null && (
-                <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
+                <span key={agentName || 'empty'} title={agentDisplay || undefined} data-testid="session-row-agent" className={`truncate ${s.code_channel ? CODE_CHANNEL_AGENT_FIT : 'shrink-0'} ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
               )}
               {/* WHY this card is sitting above its folder's other rows, in a
                 *  word, beside the agent name that is the card's own first line.
@@ -1528,7 +1587,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                *  It replaces a `linked_to_slack` Link glyph that fired for ANY
                *  channel, because every non-Slack transport writes its id into
                *  slack_channel_id. */}
-              {connectedChannelLinks(s.links).map(link => (
+              {/* A code channel's own badge (below) carries the Slack mark for
+               *  that link, so the row shows one Slack mark, not two. */}
+              {connectedChannelLinks(s.links).filter(link => !(s.code_channel && link.channel === 'slack')).map(link => (
                 <span
                   key={link.channel}
                   className="inline-flex text-[10px]"
@@ -1544,6 +1605,49 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                *  so a user scanning the list should meet it before the per-session
                *  flags that only make sense once you know where the session is. */}
               {s.executor === 'remote' && !inCrewGroup && <ExecutorCrewChip instanceId={s.instance_id || ''} />}
+              {/* The Slack code channel this session IS: the Slack mark alone, a
+               *  link to the channel (its name is in the link's accessible name
+               *  and tooltip; the session header shows it in full). A fixed box
+               *  that never shrinks. */}
+              {s.code_channel && <CodeChannelBadge info={s.code_channel} variant="row" />}
+              {/* The fold for this code channel's workers (folder view only): a
+               *  chevron and their count, beside the channel's mark. */}
+              {crew && crew.workers > 0 && (
+                <button
+                  type="button"
+                  className="inline-flex shrink-0 items-center gap-0.5 rounded-sm px-0.5 text-muted hover:text-text bg-transparent border-none cursor-pointer tabular-nums focus-ring"
+                  onMouseDown={e => e.stopPropagation()}
+                  onPointerDown={e => e.stopPropagation()}
+                  onClick={e => { e.stopPropagation(); toggleConductor(rowIdentity) }}
+                  onAuxClick={e => e.stopPropagation()}
+                  aria-expanded={crew.expanded}
+                  aria-label={i18nT(crew.expanded ? 'pages.chatSidebar.code_channel_crew_hide' : 'pages.chatSidebar.code_channel_crew_show', { count: crew.workers })}
+                  title={i18nT(crew.expanded ? 'pages.chatSidebar.code_channel_crew_hide' : 'pages.chatSidebar.code_channel_crew_show', { count: crew.workers })}
+                  data-testid="code-channel-crew-toggle"
+                >
+                  <DisclosureChevron open={crew.expanded} size={10} />
+                  <span aria-hidden="true">{crew.workers}</span>
+                </button>
+              )}
+              {/* The most pressing thing a folded worker wants, beside the fold and
+               *  whatever state line the conductor row shows itself (a conductor is
+               *  rarely idle), so folding never hides it: an owed decision (warn),
+               *  an interrupted turn (danger), an unread result (the same dot and
+               *  name an unread row carries; skipped while the conductor row has
+               *  its own unread dot, so the row never shows two). */}
+              {crew?.attention && !(crew.attention === 'unread' && isUnread) && (() => {
+                const label = crew.attention === 'needs_you'
+                  ? i18nT('pages.chatSidebar.code_channel_crew_waiting')
+                  : crew.attention === 'interrupted'
+                    ? i18nT('pages.chatSidebar.code_channel_crew_interrupted', { count: 1 })
+                    : i18nT('pages.chatSidebar.agent_finished_your_turn')
+                const color = crew.attention === 'needs_you' ? 'var(--warn)' : crew.attention === 'interrupted' ? 'var(--danger)' : 'var(--ok)'
+                return (
+                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: color }}
+                    role="img" aria-label={label} title={label}
+                    data-testid="code-channel-crew-attention" data-crew-attention={crew.attention} />
+                )
+              })()}
               {s.memory_mode === 'incognito' && <span className="text-muted" title={i18nT('pages.chatSidebar.incognito_no_memory_writes')}><EyeOff size={10} /></span>}
               {s.memory_mode === 'temporary' && <span className="text-aim" title={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')}><VenetianMask size={10} /></span>}
               {/* Trailing meta grouped under ONE ml-auto: two sibling auto

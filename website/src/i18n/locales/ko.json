@@ -9903,6 +9903,22 @@
       "session_queued_hint": "동시에 실행되는 수가 줄어든 동안 이 세션이 시작한 에이전트가 빈 자리를 기다리고 있습니다.",
       "load_failed": "대기 중인 에이전트를 확인할 수 없습니다"
     },
+    "codeChannelBadge": {
+      "label": "Slack 코드 채널",
+      "label_short": "코드 채널",
+      "archived": "채널 보관됨",
+      "wrapped_up": "작업 완료",
+      "open_named": "Slack에서 {{channel}} 열기",
+      "open_unnamed": "Slack에서 이 코드 채널 열기",
+      "opens_in_slack": "(Slack에서 열림)",
+      "about": "이 세션은 Slack 코드 채널에서 실행됩니다. 그곳과 이곳의 메시지는 하나의 대화입니다.",
+      "archived_hint": "Slack에서 보관되었습니다. 채널은 읽기 전용입니다.",
+      "wrapped_up_hint": "완료되었습니다. 작업이 끝났고 후속 대화를 위해 채널은 열려 있습니다.",
+      "thread_label": "Slack 스레드",
+      "thread_open": "이 Slack 스레드 열기",
+      "thread_paused": "답장 일시 중지됨",
+      "thread_paused_hint": "스레드로 가는 이 세션의 답장이 일시 중지되었어요. 스레드에서 보낸 메시지는 계속 도착해요."
+    },
     "crew": {
       "crewEditorNextDialog": {
         "no_tools_match": "‘{{filter}}’와(과) 일치하는 도구가 없습니다.",
@@ -12502,6 +12518,14 @@
       "crew_attention_go_question": "답변이 필요한 채팅 열기",
       "crew_attention_go_working": "작업 중인 채팅 열기",
       "crew_attention_name": "{{target}}. {{counts}}",
+      "code_channel_crew_waiting": "내 응답 대기 중",
+      "code_channel_crew_waiting_title_other": "이 채널의 세션 {{count}}개가 내 응답을 기다리는 중",
+      "code_channel_crew_interrupted_other": "중단됨 {{count}}개",
+      "code_channel_crew_show_other": "작업자 세션 {{count}}개 보기",
+      "code_channel_crew_hide_other": "작업자 세션 {{count}}개 숨기기",
+      "code_channel_crew_stuck_other": "멈춤 {{count}}개",
+      "code_channel_crew_done_other": "{{total}}개 중 {{count}}개 완료",
+      "code_channel_crew_done_plain": "완료",
       "not_open_here_yet": "{{name}}에 있음 — 클릭하면 여기서 엽니다",
       "on_instance": "{{name}}에 있음",
       "only_show_sessions_that_have_no_tags": "태그가 없는 세션만 표시",

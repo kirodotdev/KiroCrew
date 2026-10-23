@@ -600,6 +600,30 @@ def _slot_links(
     self: DashboardState, slot: _ChatSlot
 ) -> tuple[list[dict[str, Any]], bool, str, str]:
     """Build the redacted channel-neutral link projection for one slot."""
+    links, slack_linked, slack_channel, slack_thread_ts, _origin = _slot_link_projection(
+        self, slot
+    )
+    return links, slack_linked, slack_channel, slack_thread_ts
+
+
+def _visible_slack_channel(slack_channel: str | None) -> str:
+    """The bare Slack channel id, without a ``slack:`` namespace prefix."""
+    namespaced = split_namespaced_channel_id(slack_channel)
+    return namespaced[1] if namespaced else (slack_channel or "")
+
+
+def _slot_link_projection(
+    self: DashboardState, slot: _ChatSlot
+) -> tuple[list[dict[str, Any]], bool, str, str, tuple[str, str]]:
+    """:func:`_slot_links` plus the Slack thread a Slack-BORN session lives in.
+
+    The fifth element is ``(channel_id, thread_ts)`` of that origin thread, or
+    ``("", "")``. It is reported apart from ``slack_linked``/``slack_channel``
+    on purpose: those mean "mirrored OUT to a thread", and the sidebar, the
+    channel menu and the releasable-mirror controls all read them that way. The
+    origin thread is only where the session's own conversation already is, so
+    the dashboard can link to it without treating it as a mirror.
+    """
     # circular import: chat imports state at module scope.
     from kiro_crew.dashboard.chat_utils import (
         effective_session_key,
@@ -781,8 +805,7 @@ def _slot_links(
         )
 
     if genuine_slack and not slack_origin_self_link:
-        slack_namespace = split_namespaced_channel_id(slack_channel)
-        visible_slack_channel = slack_namespace[1] if slack_namespace else (slack_channel or "")
+        visible_slack_channel = _visible_slack_channel(slack_channel)
         # A Slack ROW accompanies `slack_linked=True` unconditionally. The
         # dashboard's channel control is built from `links` alone — it no
         # longer synthesizes a Slack row from this boolean, because a
@@ -800,8 +823,10 @@ def _slot_links(
                 slack_nonce,
                 drives_session=True,
             )
-        return links, True, visible_slack_channel, slack_ts or ""
-    return links, False, "", ""
+        return links, True, visible_slack_channel, slack_ts or "", ("", "")
+    if genuine_slack and slack_origin_self_link:
+        return links, False, "", "", (_visible_slack_channel(slack_channel), slack_ts or "")
+    return links, False, "", "", ("", "")
 
 
 def serialize_slot(
@@ -813,7 +838,8 @@ def serialize_slot(
 ) -> dict[str, Any]:
     """Serialize one slot with state-backed channel-link metadata."""
     payload = slot.to_dict(include_check_status=include_check_status, dashboard_user=dashboard_user)
-    links, slack_linked, slack_channel, slack_thread_ts = self._slot_links(slot)
+    links, slack_linked, slack_channel, slack_thread_ts, origin = _slot_link_projection(self, slot)
+    slack_origin_channel, slack_origin_thread_ts = origin
     manual = self.manual_session_order
     payload.update(
         {
@@ -825,6 +851,11 @@ def serialize_slot(
             "slack_linked": slack_linked,
             "slack_channel": slack_channel,
             "slack_thread_ts": slack_thread_ts,
+            # The thread a Slack-born session lives in (empty otherwise). Not
+            # a mirror: `slack_linked` stays False for it. See
+            # _slot_link_projection.
+            "slack_origin_channel": slack_origin_channel,
+            "slack_origin_thread_ts": slack_origin_thread_ts,
         }
     )
     return payload
@@ -880,6 +911,12 @@ def serialize_slots(
     # the nesting and must cost the nesting rather than the whole sidebar.
     # ``getattr`` because a stub state in the suite may not carry the method at all.
     _attach_slot_parents(out, getattr(self, "spend_slot_by_session", None))
+    if dashboard_user or include_check_status:
+        # Slack code channel badge: a person's dashboard only, never the bare
+        # list (SSE, app tokens). See slack/code_channels/dashboard_view.py.
+        from kiro_crew.slack.code_channels.dashboard_view import with_code_channels
+
+        out = with_code_channels(out)
     return out
 
 
@@ -911,10 +948,20 @@ def serialize_slot_views(
     tests, or a slot closed between the two loops) is carried over unchanged.
     """
     bare = self.serialize_slots()
+    from kiro_crew.slack.code_channels.dashboard_view import (
+        code_channel_views,
+        with_code_channels,
+    )
+
+    views = code_channel_views()
     return (
         bare,
-        self._reproject_slots(bare, dashboard_user=True),
-        self._reproject_slots(bare, include_check_status=True) if owner else None,
+        with_code_channels(self._reproject_slots(bare, dashboard_user=True), views),
+        (
+            with_code_channels(self._reproject_slots(bare, include_check_status=True), views)
+            if owner
+            else None
+        ),
     )
 
 

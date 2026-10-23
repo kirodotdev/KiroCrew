@@ -95,6 +95,13 @@ settings:
       # processing), and a user's rename of a thread session.  #@agent_sessions|code_channels
       - agent_session_stopped  #@agent_sessions|code_channels
       - agent_session_title_changed  #@agent_sessions
+      # A code channel's archive state and name, shown on its dashboard badge.  #@code_channels
+      - channel_archive  #@code_channels
+      - channel_rename  #@code_channels
+      - channel_unarchive  #@code_channels
+      - group_archive  #@code_channels
+      - group_rename  #@code_channels
+      - group_unarchive  #@code_channels
       - file_change
       - member_joined_channel
   interactivity:

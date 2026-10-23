@@ -109,7 +109,15 @@ class TestRendering:
             "code_channels:manage",
             "groups:write.invites",
         )
-        assert change.added_events == ("agent_session_stopped",)
+        assert change.added_events == (
+            "agent_session_stopped",
+            "channel_archive",
+            "channel_rename",
+            "channel_unarchive",
+            "group_archive",
+            "group_rename",
+            "group_unarchive",
+        )
         assert change.removed_scopes == () and not change.empty
         back = slack_manifest.diff_requirements(
             slack_manifest.requirements(_CC), slack_manifest.requirements(frozenset())

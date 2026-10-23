@@ -181,6 +181,11 @@ class CodeChannelStore:
     def path(self) -> Path:
         return self._path or _default_path()
 
+    @property
+    def loaded(self) -> bool:
+        """Whether the file has been read, so a read here touches no disk."""
+        return self._loaded
+
     def load(self) -> None:
         """Read the file now (blocking; call it off the event loop)."""
         with self._lock:
