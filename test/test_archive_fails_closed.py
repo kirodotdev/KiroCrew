@@ -502,10 +502,12 @@ class TestEveryWholeTranscriptReplaceIsSynced:
             "path",
             "content",
         ]
-        # The staged half the hot metadata writes use has no switch either.
+        # The staged half the hot metadata writes use has no sync switch either;
+        # its one option is the file mode, which keeps a transcript owner-only.
         assert list(inspect.signature(history_rewrite.stage_replacement).parameters) == [
             "path",
             "content",
+            "mode",
         ]
 
     @pytest.mark.parametrize(
