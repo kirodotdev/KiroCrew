@@ -177,6 +177,54 @@ def test_default_agent_is_unchanged(kiro_tree):
     assert _globs("kirocrew", agents, inherit_defaults=True) == []
 
 
+@pytest.mark.parametrize(
+    ("resources", "scope"),
+    [([], None), (["skill:///mirrored/SKILL.md"], ["/mirrored/SKILL.md"])],
+)
+def test_the_worker_sees_what_the_default_agent_sees(kiro_tree, monkeypatch, resources, scope):
+    """The worker maps exactly the default's ``skill://`` entries, so mapping none means
+    its dispatcher sees the whole catalog: so does the worker, not the inherited trees."""
+    _home, agents, project = kiro_tree
+    _write_agent(agents, {"name": "kirocrew-worker", "tools": ["read"], "resources": resources})
+    assert _globs("kirocrew-worker", agents, inherit_defaults=True) == (scope or [])
+    monkeypatch.setattr(agent_discovery, "_kiro_agents_dir", lambda: agents)
+    monkeypatch.setattr(
+        agent_discovery,
+        "list_agents",
+        lambda **kw: [
+            SimpleNamespace(name="kirocrew-worker", filename="kirocrew-worker.json", scope="global")
+        ],
+    )
+    acp = context.PROVIDER_ACP
+    search_scope = agent_discovery.session_skill_globs(
+        "", "kirocrew-worker", project_dir=project, provider_type=acp
+    )
+    assert search_scope == scope
+    assert context._skills_injection_plan(
+        "kirocrew-worker", is_cc=False, project_dir=project, provider_type=acp
+    ) == (True, scope or [])
+
+
+def test_a_worker_without_its_spec_reads_as_the_default_does(kiro_tree, monkeypatch):
+    """Boot rewrites the worker spec, so a missing one is a recovery path. The worker
+    then gets what the default gets with no spec, the whole catalog, in skill search
+    as in the injected list. A custom agent with no spec still refuses."""
+    _home, agents, project = kiro_tree
+    monkeypatch.setattr(agent_discovery, "list_agents", lambda **kw: [])
+    acp = context.PROVIDER_ACP
+    for agent in ("kirocrew", "kirocrew-worker"):
+        assert _globs(agent, agents, strict=True, inherit_defaults=True) == []
+        assert (
+            agent_discovery.session_skill_globs("", agent, project_dir=project, provider_type=acp)
+            is None
+        )
+        assert context._skills_injection_plan(
+            agent, is_cc=False, project_dir=project, provider_type=acp
+        ) == (True, [])
+    with pytest.raises(agent_discovery.SkillScopeResolutionError):
+        agent_discovery.session_skill_globs("", "custom", project_dir=project, provider_type=acp)
+
+
 def test_injection_plan_gives_the_inherited_trees_to_an_unmapped_custom_agent(
     kiro_tree, monkeypatch
 ):
@@ -275,6 +323,22 @@ def test_inheriting_agent_is_not_a_search_agent(native_custom):
     _write_agent(agents, {"name": "custom", "tools": ["read"]})
     prepared = projection.prepare_native_skill_projection(project)
     assert "custom" not in prepared.search_agents
+
+
+def test_an_unmapped_worker_is_a_search_agent_like_the_default(native_custom, monkeypatch):
+    """Its directory lists the whole catalog, so its view needs the search the default's
+    view requires and is refused by name, not started without it."""
+    agents, project = native_custom
+    monkeypatch.setattr(
+        projection,
+        "list_agents",
+        lambda **kw: [
+            SimpleNamespace(name="kirocrew-worker", filename="kirocrew-worker.json", scope="global")
+        ],
+    )
+    _write_agent(agents, {"name": "kirocrew-worker", "tools": ["read"]})
+    prepared = projection.prepare_native_skill_projection(project)
+    assert "kirocrew-worker" in prepared.search_agents
 
 
 def test_inheriting_agent_keeps_its_view_when_search_cannot_be_wired(native_custom, monkeypatch):

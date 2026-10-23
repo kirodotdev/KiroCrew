@@ -582,6 +582,10 @@ mapping, and only an unmapped custom agent's row also depends on the harness:
 | custom | none | inherited skill trees, injected by Crew | nothing |
 | custom | mapped | mapped set only, injected by Crew | mapped set only, injected by Crew |
 
+`kirocrew-worker` takes the `kirocrew` rows (`WHOLE_CATALOG_TEMPLATES`): its
+`skill://` entries are the default's own, so it maps nothing exactly when the
+default maps nothing.
+
 The inherited trees are what kiro-cli gives a custom agent by default:
 `~/.kiro/skills` and the workspace's `.kiro/skills`
 (`agent_discovery.inherited_skill_globs`). Crew turns kiro-cli's own inheritance
@@ -599,7 +603,8 @@ On kiro-cli, a workspace that
 sets `chat.disableInheritingDefaultResources` gets none, and so does an agent that
 excludes or disables `skill_search`.
 
-Every spec Kiro Crew generates for itself is a `custom` row, so a generated agent
+Every other spec Kiro Crew generates for itself, except a crewmate's conductor and worker
+(`is_kirocrew_default_agent`), is a `custom` row, so a generated agent
 whose prompt names a skill must MAP that skill — the row above is why, and
 `agent_materialization/skill_resources.py` is how. `map_prompt_skills` renders one
 `skill://` entry per catalog key through `skills_dir()` at install time, never as a
@@ -705,7 +710,7 @@ not resurrected on the next boot.
 | `kirocrew.json` | generated | every gateway start, and on `kirocrew setup --agent-only` |
 | `kirocrew-lite.json` | generated | every gateway start |
 | `kirocrew-guest.json` | generated | every gateway start (the tool-less agent a non-operator channel sender talks to) |
-| `kirocrew-worker.json` | DERIVED from `kirocrew.json`; the `skill://` entries of `resources` are mirrored from the default spec, so a worker reaches the app skills its operator mapped | every gateway start, and re-checked before every worker session |
+| `kirocrew-worker.json` | DERIVED from `kirocrew.json`; the `skill://` entries of `resources` are mirrored from the default spec, so a worker's skill catalog is its dispatcher's: the mapped set, or the whole catalog when the default maps none | every gateway start, and re-checked before every worker session |
 | `kirocrew-dashboard-author.json` | generated; on a refresh of a spec this installer confirms as its own, an authorized `model` pin and your `resources` skill selection are carried forward (an explicit empty `resources` is preserved) | every gateway start (if a file of this name already exists that is NOT this installer's own — its bytes do not reproduce the ownership digest the installer recorded in the `agent_model_state.json` sidecar for its last managed write, or its read fails — it is left **untouched** and the install is **skipped** — no backup is written and the agent stays unselectable under this name until you remove or rename the file; a user `kirocrew-dashboard-author.md` beside it also blocks the first install, because the `.json` would shadow that markdown spec, while once the `.json` is this installer's own a sibling `.md` no longer stops its refresh) |
 | `kirocrew-conductor.json` | generated; your `allowedTools` entries are carried forward | every gateway start |
 | `kirocrew-ledger-conductor.json` | generated; your `allowedTools` entries are carried forward | every gateway start |

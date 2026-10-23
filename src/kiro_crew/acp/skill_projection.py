@@ -17,6 +17,7 @@ from kiro_crew import _facade_mirror, pinned_fs, platform_compat  # noqa: F401
 from kiro_crew.acp import session_mcp  # noqa: F401
 from kiro_crew.agent_discovery import (  # noqa: F401
     SCOPE_PROJECT,
+    WHOLE_CATALOG_TEMPLATES,
     _read_agent_spec,
     can_inherit_skills,
     inherited_skill_globs,

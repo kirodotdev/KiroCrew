@@ -72,6 +72,7 @@ from kiro_crew.acp.skill_projection_parts.view_sources import (
 )
 from kiro_crew.agent_discovery import (
     SCOPE_PROJECT,
+    WHOLE_CATALOG_TEMPLATES,
     _read_agent_spec,
     can_inherit_skills,
     inherited_skill_globs,
@@ -216,9 +217,12 @@ def project_agent_view(
     # one keeps the view it had and gets no search: it never relied on it, and
     # it is not a search agent, so no session of it is refused either.
     inherited_only = (
-        agent_name != "kirocrew" and not mapped and inherits_skills and can_inherit_skills(spec)
+        agent_name not in WHOLE_CATALOG_TEMPLATES
+        and not mapped
+        and inherits_skills
+        and can_inherit_skills(spec)
     )
-    if agent_name == "kirocrew" or mapped or inherited_only:
+    if agent_name in WHOLE_CATALOG_TEMPLATES or mapped or inherited_only:
         refusal = skill_search_refusal(view)
         if refusal is not None:
             return None, False, refusal
