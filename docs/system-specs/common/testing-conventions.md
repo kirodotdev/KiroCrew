@@ -3350,7 +3350,7 @@ went red, or the fix lands in the wrong file and the leak stays.
   the number unreachable.
 - **`network`: rank the address before you file the finding.** The UDP `connect` to
   `198.51.100.1:53` / `2001:db8::1:53` in `argv_floor_hosts._own_interface_addresses` is the
-  packet-less local-IP trick over TEST-NET, a hardening item: `test_security.py` now routes
+  packet-less local-IP trick over TEST-NET, a hardening item: `test_security_denied_commands.py` now routes
   it through an inert `_InertDatagramSocket` at the module's `socket` binding (datagram
   construction only; every other socket kind passes through) that records the peer and
   answers a documentation address from `getsockname`, and asserts the peers it WOULD have

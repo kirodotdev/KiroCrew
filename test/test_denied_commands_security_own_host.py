@@ -895,7 +895,7 @@ class TestSandboxEscapeSshSelfOwnHost:
 
     def test_dotless_hostname_first_contact_is_not_refused(self, monkeypatch, tmp_path):
         # round-21 CI regression: ``ssh dev-dsk '<cmd>'`` -- the allow pin in
-        # test_security.py -- was refused at first contact once round-18 sent
+        # test_security_denied_commands.py -- was refused at first contact once round-18 sent
         # dotless names to the fail-closed DNS layer.  A dotless name ABSENT
         # from the hosts file answers OPEN while one async worker revalidates
         # through DNS; only DOTTED names keep the fail-closed first contact.
