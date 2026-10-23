@@ -375,6 +375,73 @@ describe('CliPanel mount', () => {
     }
   })
 
+  it('prefers the dedicated --term-* surface variables over the general ones', () => {
+    // A theme pack that sets --term-* colours the terminal surface independently
+    // of the agent chat background (--bg) and text (--text).
+    document.documentElement.style.setProperty('--bg', '#101010')
+    document.documentElement.style.setProperty('--text', '#f0f0f0')
+    document.documentElement.style.setProperty('--accent', '#111111')
+    document.documentElement.style.setProperty('--accent-subtle', '#222222')
+    document.documentElement.style.setProperty('--term-bg', '#001122')
+    document.documentElement.style.setProperty('--term-fg', '#aabbcc')
+    document.documentElement.style.setProperty('--term-cursor', '#ddeeff')
+    document.documentElement.style.setProperty('--term-selection', '#334455')
+    try {
+      const { term } = mount()
+      expect(term.options.theme?.background).toBe('#001122')
+      expect(term.options.theme?.foreground).toBe('#aabbcc')
+      expect(term.options.theme?.cursor).toBe('#ddeeff')
+      expect(term.options.theme?.selectionBackground).toBe('#334455')
+    } finally {
+      for (const v of ['--bg', '--text', '--accent', '--accent-subtle',
+        '--term-bg', '--term-fg', '--term-cursor', '--term-selection']) {
+        document.documentElement.style.removeProperty(v)
+      }
+    }
+  })
+
+  it('falls back to --bg/--text/--accent/--accent-subtle when no --term-* is set', () => {
+    // A pack written before the --term-* variables existed, or one that omits
+    // them, keeps today's terminal colours.
+    document.documentElement.style.setProperty('--bg', '#101010')
+    document.documentElement.style.setProperty('--text', '#f0f0f0')
+    document.documentElement.style.setProperty('--accent', '#111111')
+    document.documentElement.style.setProperty('--accent-subtle', '#222222')
+    try {
+      const { term } = mount()
+      expect(term.options.theme?.background).toBe('#101010')
+      expect(term.options.theme?.foreground).toBe('#f0f0f0')
+      expect(term.options.theme?.cursor).toBe('#111111')
+      expect(term.options.theme?.selectionBackground).toBe('#222222')
+    } finally {
+      for (const v of ['--bg', '--text', '--accent', '--accent-subtle']) {
+        document.documentElement.style.removeProperty(v)
+      }
+    }
+  })
+
+  it('orders the ANSI extremes by the terminal polarity, not the app polarity', () => {
+    // A dark app with a light terminal is the case --term-bg/--term-fg exist
+    // for. The ANSI black/white ends and the bright ramp must follow the
+    // TERMINAL's own colours; keying them off the app's --bg/--text would put
+    // ANSI white near #eee on a light terminal and render it invisible.
+    document.documentElement.style.setProperty('--bg', '#111111')
+    document.documentElement.style.setProperty('--text', '#eeeeee')
+    document.documentElement.style.setProperty('--term-bg', '#fafafa')
+    document.documentElement.style.setProperty('--term-fg', '#222222')
+    try {
+      const { term } = mount()
+      const theme = term.options.theme as Record<string, string>
+      // white is the light end: the terminal's own light background, not --text.
+      expect(theme.white).toBe('#fafafa')
+      expect(theme.black).toBe('#222222')
+    } finally {
+      for (const v of ['--bg', '--text', '--term-bg', '--term-fg']) {
+        document.documentElement.style.removeProperty(v)
+      }
+    }
+  })
+
   it('hides the pane and skips focus when not visible', () => {
     const { term, container } = mount({ visible: false })
     const wrap = container.firstElementChild!.firstElementChild as HTMLElement

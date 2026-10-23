@@ -7,7 +7,7 @@ import { useMutation } from '@tanstack/react-query'
 import { MessageSquarePlus, Copy, Check, PlugZap, AppWindow } from 'lucide-react'
 import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, retryTerminalConnection } from '../utils/terminalRegistry'
 import { getTerminalFont, resolveTerminalFontFamily, subscribeTerminalFont } from '../hooks/useTerminalFont'
-import { ansiPaletteFromVars } from '../utils/terminalPalette'
+import { ansiPaletteFromVars, toHexColor } from '../utils/terminalPalette'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
 import { useTerminalTouchSelection, type TouchSelectStatus } from '../hooks/useTerminalTouchSelection'
 import TerminalCompletion from './TerminalCompletion'
@@ -27,12 +27,34 @@ const termCache = new Map<string, { term: Terminal; fit: FitAddon }>()
 /* ── Terminal theme from CSS custom properties ── */
 function getTermTheme() {
   const style = getComputedStyle(document.documentElement)
-  const read = (name: string) => style.getPropertyValue(name)
+  const bg = style.getPropertyValue('--term-bg').trim() || style.getPropertyValue('--bg').trim()
+  const fg = style.getPropertyValue('--term-fg').trim() || style.getPropertyValue('--text').trim()
+  // The ANSI palette orders its black/white extremes and the bright ramp by the
+  // luminance of --bg / --text, so it must read the TERMINAL's own background
+  // and foreground: a pack that gives the terminal the opposite light/dark
+  // polarity from the app (the case these variables exist for) would otherwise
+  // pick the ends from the app theme and render ANSI white invisible on a light
+  // terminal. The palette parses hex only, so the two extremes are normalised to
+  // hex first — a pack may legitimately give --term-bg / --term-fg as rgb() (the
+  // value sanitizer allows it), and an unparsed rgb() would make luminance() null
+  // and collapse ANSI black onto the background. Every other entry the palette
+  // reads (the semantic ANSI hues, --term-magenta / --term-cyan) is an app-theme
+  // colour and passes through unchanged.
+  const bgHex = toHexColor(bg)
+  const fgHex = toHexColor(fg)
+  const read = (name: string) =>
+    name === '--bg' ? bgHex
+      : name === '--text' ? fgHex
+        : style.getPropertyValue(name)
+  // Each terminal surface reads its own --term-* variable first and falls back
+  // to the general app variable it used before the dedicated one existed, so a
+  // theme pack can colour the terminal independently of the agent chat without
+  // breaking a pack that sets neither.
   return {
-    background:          style.getPropertyValue('--bg').trim()            || '#1e1e2e',
-    foreground:          style.getPropertyValue('--text').trim()          || '#cdd6f4',
-    cursor:              style.getPropertyValue('--accent').trim()        || '#89b4fa',
-    selectionBackground: style.getPropertyValue('--accent-subtle').trim() || '#313244',
+    background:          bg || '#1e1e2e',
+    foreground:          fg || '#cdd6f4',
+    cursor:              style.getPropertyValue('--term-cursor').trim()    || style.getPropertyValue('--accent').trim()        || '#89b4fa',
+    selectionBackground: style.getPropertyValue('--term-selection').trim() || style.getPropertyValue('--accent-subtle').trim() || '#313244',
     // The 16 ANSI entries: without them xterm renders ANSI-coloured output with
     // its own palette, which ignores the theme entirely.
     ...ansiPaletteFromVars(read),
@@ -715,7 +737,13 @@ export default function CliPanel({ sessionId, cwd, visible = true, onSendToChat 
 }) {
   useEffect(() => { ensureThemeObserver(); ensureTerminalFontSync() }, [])
   return (
-    <div className="flex flex-col w-full h-full overflow-hidden bg-bg px-3 pt-2">
+    // The wrapper's padding is painted with --term-bg (falling back to --bg) so
+    // it matches the xterm canvas: a pack that gives the terminal its own
+    // background no longer gets a frame of the app --bg around the terminal.
+    <div
+      className="flex flex-col w-full h-full overflow-hidden px-3 pt-2"
+      style={{ background: 'var(--term-bg, var(--bg))' }}
+    >
       <TerminalView sessionId={sessionId} cwd={cwd} visible={visible} onSendToChat={onSendToChat} />
     </div>
   )

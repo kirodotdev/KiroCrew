@@ -45,9 +45,13 @@ export const ALLOWED_CSS_VARS = new Set([
   '--shadow-sm', '--shadow-md', '--shadow-lg',
   // Terminal ANSI hues a theme may override; the other fourteen entries the
   // built-in terminal needs are derived from --bg / --text / --danger / --ok /
-  // --warn / --info above. Kept in sync with _THEME_CSS_VARS on the backend
+  // --warn / --info above. --term-bg / --term-fg / --term-cursor /
+  // --term-selection let a pack colour the terminal surface independently of the
+  // agent chat; each falls back to --bg / --text / --accent / --accent-subtle
+  // when a pack omits it. Kept in sync with _THEME_CSS_VARS on the backend
   // (TestAllowlistParity asserts the two sets are equal).
   '--term-magenta', '--term-cyan',
+  '--term-bg', '--term-fg', '--term-cursor', '--term-selection',
 ])
 
 /**
@@ -143,7 +147,7 @@ function mixHex(a: string, b: string, pct: number): string | null {
 
 /**
  * `variables.json` requires only `--bg`, `--text` and `--accent` per block, so a
- * pack may legitimately declare three of the 56 allowlisted tokens. Every token
+ * pack may legitimately declare three of the 60 allowlisted tokens. Every token
  * it leaves out inherits from `index.css`'s bare `:root`, and that selector
  * carries the DARK palette (`:root,[data-theme="dark"],[data-theme="amber-dark"]`)
  * — there is no light counterpart. A pack with a light `--bg` therefore renders

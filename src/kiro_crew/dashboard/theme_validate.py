@@ -90,9 +90,16 @@ _THEME_CSS_VARS = (
     # Terminal ANSI hues. The other fourteen entries the built-in terminal needs
     # are derived from --bg / --text / --danger / --ok / --warn / --info above;
     # magenta and cyan carry no semantic meaning elsewhere in the UI, so a pack
-    # that wants its own terminal palette sets these two.
+    # that wants its own terminal palette sets these two. --term-bg / --term-fg /
+    # --term-cursor / --term-selection colour the terminal surface independently
+    # of the agent chat; each falls back to --bg / --text / --accent /
+    # --accent-subtle when a pack omits it.
     "--term-magenta",
     "--term-cyan",
+    "--term-bg",
+    "--term-fg",
+    "--term-cursor",
+    "--term-selection",
 )
 
 
