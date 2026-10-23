@@ -97,6 +97,12 @@ export interface ChatConfig {
    *  than something a client with no stored config inherits. The pencil button
    *  is the edit path either way. */
   doubleClickToEdit: boolean
+  /** Opt in to copying a mouse selection in the transcript to the clipboard as
+   *  soon as the drag ends. The Quote / Ask / Copy row still opens.
+   *  Default false: it overwrites the clipboard on every drag, so it is the
+   *  user's call rather than something a client with no stored config
+   *  inherits. */
+  copyOnSelect: boolean
   /** Fade split-view panes that do not hold keyboard focus. Default true. When
    *  false every pane stays at full brightness; the focused pane's accent
    *  border still marks where keyboard input goes. */
@@ -128,7 +134,7 @@ const LS_KEY = 'mc-chat-config'
  *  it. The sidebar's view toggle persists this flag BEFORE creating its first
  *  column, so a deliberate board user always has an explicit `true` stored and
  *  is unaffected by the default. */
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, sidebarClickOpensTab: false, spellcheck: true, inlineMarkdown: false, showFullPastes: false, toolCallsStartExpanded: false, doubleClickToEdit: false, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, sidebarClickOpensTab: false, spellcheck: true, inlineMarkdown: false, showFullPastes: false, toolCallsStartExpanded: false, doubleClickToEdit: false, copyOnSelect: false, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false }
 
 const clampMessageFontSize = (n: number): number =>
   Math.max(MIN_MESSAGE_FONT_SIZE, Math.min(MAX_MESSAGE_FONT_SIZE, Math.round(n)))
@@ -184,6 +190,9 @@ export function loadChatConfig(): ChatConfig {
     // Coerced, not trusted: a stored non-boolean must not attach the
     // double-click gesture that replaces word selection on the bubble.
     if (typeof cfg.doubleClickToEdit !== 'boolean') cfg.doubleClickToEdit = false
+    // Coerced, not trusted: a stored non-boolean must not start overwriting
+    // the clipboard on every drag.
+    if (typeof cfg.copyOnSelect !== 'boolean') cfg.copyOnSelect = false
     if (typeof cfg.dimInactivePanes !== 'boolean') cfg.dimInactivePanes = true
     if (cfg.minimapSide !== 'left' && cfg.minimapSide !== 'right') cfg.minimapSide = 'left'
     cfg.messageFontSize = typeof cfg.messageFontSize === 'number' ? clampMessageFontSize(cfg.messageFontSize) : DEFAULT_MESSAGE_FONT_SIZE

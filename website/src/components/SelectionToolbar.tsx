@@ -418,6 +418,16 @@ interface SelectionToolbarProps {
    * until it opts in.
    */
   codeSelection?: boolean
+  /**
+   * Copy on select: when a MOUSE drag opens the row, run its own Copy action
+   * at once, so the selection is on the clipboard without a second click (the
+   * checkmark and a refused write show exactly as they do for a click). The
+   * row still opens, so the other actions stay one click away. Keyboard and
+   * touch selections are left alone: a Shift+Arrow walk would copy every
+   * intermediate step, and the touch platform has its own Copy callout. A row
+   * with no `copy` action copies nothing.
+   */
+  copyOnSelect?: boolean
 }
 
 /** Gap between the docked row and whatever it sits on (composer or screen edge). */
@@ -456,7 +466,7 @@ function safeAreaBottomPx(): number {
 
 /** Generic floating toolbar that appears when user selects text within a container.
  *  Extensible — pass any actions (quote, copy, etc.) via the `actions` prop. */
-export default function SelectionToolbar({ containerRef, actions, externalSelection, composer, suspended: suspendedProp = false, externalOnly = false, dock: dockProp = false, codeSelection = false }: SelectionToolbarProps) {
+export default function SelectionToolbar({ containerRef, actions, externalSelection, composer, suspended: suspendedProp = false, externalOnly = false, dock: dockProp = false, codeSelection = false, copyOnSelect = false }: SelectionToolbarProps) {
   // Behind a remote Crew the toolbar is hidden with its Crew (components/overlayRoot)
   // and suspends like a hidden tab, so a key aimed at the Crew in front cannot
   // reach it. The draft survives and returns with the Crew.
@@ -481,6 +491,10 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
   const externalOpenSeqRef = useRef(0)
   const codeSelectionRef = useRef(codeSelection)
   codeSelectionRef.current = codeSelection
+  const copyOnSelectRef = useRef(copyOnSelect)
+  copyOnSelectRef.current = copyOnSelect
+  // Runs the row's Copy action; set below once `handleAction` exists.
+  const autoCopyRef = useRef<() => void>(() => {})
   // The composer's draft text lives HERE, not in `ComposerBox`, so it survives
   // a suspension (the box unmounts while its tab is hidden) and comes back
   // with the tab. Reset on submit and on every close.
@@ -719,6 +733,8 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       restoreDraft(text)
     }
     setVisible(true)
+    // Tells the mouseup path a selection was actually taken (copy on select).
+    return true
   }, [containerRef, restoreDraft])
 
   // After the toolbar mounts/repositions, measure it and clamp its position so
@@ -829,13 +845,37 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       pending.add(id)
     }
 
+    // The document selection as the last press began. Copy on select copies
+    // only when the press itself changed it: a click on a control that keeps
+    // the selection (a `preventDefault` mousedown, such as a Copy button)
+    // leaves it as it was and must not overwrite the clipboard with it again.
+    type SelectionSnapshot = { anchor: Node | null; anchorOffset: number; focus: Node | null; focusOffset: number }
+    const readSelection = (): SelectionSnapshot | null => {
+      const sel = window.getSelection()
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null
+      return { anchor: sel.anchorNode, anchorOffset: sel.anchorOffset, focus: sel.focusNode, focusOffset: sel.focusOffset }
+    }
+    let selectionAtPress: SelectionSnapshot | null = null
+    const selectionChangedSincePress = () => {
+      const now = readSelection()
+      const before = selectionAtPress
+      if (!now || !before) return !!now
+      return now.anchor !== before.anchor || now.anchorOffset !== before.anchorOffset
+        || now.focus !== before.focus || now.focusOffset !== before.focusOffset
+    }
+
     const onMouseUp = (e: MouseEvent) => {
       if (suspendedRef.current) return
       if (toolbarRef.current && toolbarRef.current.contains(e.target as Node)) return
       triggeredByMouseRef.current = true
       lastMouseRef.current = { x: e.clientX, y: e.clientY }
-      // Small delay to let selection finalize
-      defer(checkSelection, 50)
+      // Small delay to let selection finalize. Only a selection the check took
+      // is copied: a collapsed click, a whitespace-only drag, one outside the
+      // container, or one under a typed draft returns without it. So is one
+      // this press left untouched (see `selectionAtPress`).
+      defer(() => {
+        if (checkSelection() && copyOnSelectRef.current && selectionChangedSincePress()) autoCopyRef.current()
+      }, 50)
     }
 
     const onKeyUp = (e: KeyboardEvent) => {
@@ -863,6 +903,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     }
 
     const onMouseDown = (e: MouseEvent) => {
+      selectionAtPress = readSelection()
       if (suspendedRef.current) return
       // Don't dismiss if clicking inside the toolbar
       if (toolbarRef.current && toolbarRef.current.contains(e.target as Node)) return
@@ -993,6 +1034,13 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       window.getSelection()?.removeAllRanges()
     }
   }, [flashCopied])
+
+  useEffect(() => {
+    autoCopyRef.current = () => {
+      const copy = actions.find(a => a.id === 'copy')
+      if (copy) handleAction(copy)
+    }
+  }, [actions, handleAction])
 
   // Cancel a pending "copied!" reset timer on unmount so it can never fire
   // after the component (or a test's jsdom environment) is torn down.

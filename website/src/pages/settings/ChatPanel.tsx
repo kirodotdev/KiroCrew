@@ -899,6 +899,9 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
               Default off: the gesture takes the double-click that otherwise
               selects a word in the bubble (#7908). */}
           <SettingsToggle label={i18nT('pages.settings.chatPanel.double_click_to_edit')} hint={i18nT('pages.settings.chatPanel.double_click_to_edit_desc')} checked={chatCfg.doubleClickToEdit} onChange={v => setChat('doubleClickToEdit', v)} />
+          {/* Browser-local: it acts on this browser's clipboard. Default off,
+              since it overwrites the clipboard on every drag. */}
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.copy_on_select')} hint={i18nT('pages.settings.chatPanel.copy_on_select_desc')} checked={chatCfg.copyOnSelect} onChange={v => setChat('copyOnSelect', v)} />
           <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.content_width')} hint={i18nT('pages.settings.chatPanel.compact_is_the_original_view_comfortable_and_ful')} value={chatCfg.contentWidth} options={[{ value: "compact", label: i18nT('pages.settings.chatPanel.compact') }, { value: "comfortable", label: i18nT('pages.settings.chatPanel.comfortable') }, { value: "full", label: i18nT('pages.settings.chatPanel.full') }]} onChange={v => setChat('contentWidth', v as ContentWidth)} />
           <SettingsStepper
             label={i18nT('pages.settings.chatPanel.message_font_size')}
