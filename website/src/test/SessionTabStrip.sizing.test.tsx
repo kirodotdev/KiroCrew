@@ -53,6 +53,7 @@ function Harness({ initial, onClose }: { initial: string[]; onClose?: (k: string
         activeKey={tabs[0] ?? null}
         onSelect={vi.fn()}
         onClose={k => { onClose?.(k); setTabs(t => t.filter(x => x !== k)) }}
+        onReorder={vi.fn()}
       />
     </>
   )
