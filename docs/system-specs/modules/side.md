@@ -241,6 +241,14 @@ The read and the frames travel separately, so either can be ahead:
 - The context banner of a restored conversation counts the parent turns newer
   than its `created_at` (`SideState.countsTurnsSinceCreated`), at render, since the
   parent transcript can load after the restore.
+- A queue frame or a send status can make an empty side state before any row, and
+  a read that finds nothing open leaves it so. The first row starts the
+  conversation there: its age begins at that row, and its banner counts the main
+  chat's turns newer than that row (`countsTurnsSinceCreated`), as for a restored
+  conversation, because the turns this tab holds then can be another slot's or
+  still loading. A question this tab sent dates it until the question's frame
+  lands, then the gateway's copy does, so its start and the main chat's turns
+  share a clock.
 
 An interrupted turn (`PromptBusyExhaustedError`) stores what streamed and then
 its notice, broadcasts the partial answer as its own final frame before the notice's

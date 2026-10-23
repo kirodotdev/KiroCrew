@@ -142,10 +142,12 @@ export interface SideState {
   removedQueueIds?: string[]
   openedAtTurnCount: number
   createdAt: string
-  /** This tab did not see the side conversation open (it was restored), so the
-   *  banner counts the parent turns newer than `createdAt` instead of comparing
-   *  with `openedAtTurnCount`. Counted at render: the parent transcript can load
-   *  after the restore. */
+  /** The banner counts the parent turns newer than `createdAt` instead of
+   *  comparing with `openedAtTurnCount`, because the count this tab held when the
+   *  conversation began is no baseline: the conversation was restored, or its
+   *  first row landed in an empty state made earlier, while this tab could be
+   *  showing another slot or still loading this one. Counted at render: the
+   *  parent transcript can load later. */
   countsTurnsSinceCreated?: boolean
   /** The answer of this run streamed before this tab joined it, so its deltas
    *  begin part-way through. They are held back until the run's final frame,

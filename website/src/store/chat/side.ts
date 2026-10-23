@@ -34,6 +34,19 @@ export function queueEditBroadcastAt(slot: string, queueId: string): number {
   return queueEditBroadcasts.get(slot)?.get(queueId) ?? 0
 }
 
+/** A side state with no rows and no queue holds no conversation yet, even when a
+ *  queue frame, a send status or a read with no rows made it earlier. Its first row
+ *  starts one: its age starts at that row, and the banner counts the main chat's
+ *  turns newer than the row, as for a restored conversation. The turns this tab
+ *  holds when the row lands cannot be the baseline, because the tab can be showing
+ *  another slot or still loading this one. A state its first row makes is not one
+ *  of these: it is stamped when it is made, as before. */
+function startConversationIfEmpty(side: SideState, ts: string): void {
+  if (side.messages.length || side.queue?.length) return
+  side.createdAt = ts
+  side.countsTurnsSinceCreated = true
+}
+
 /** Place `row` after the last row of its run, so a frame or a kept row that lands
  *  late sits with the turn it belongs to rather than under a later one. A row of a
  *  run with no rows yet goes at the end. */
@@ -167,6 +180,7 @@ export const sideReducers = {
     }
     // Block late assistant chunks after sideClose
     if (!state.slotSide[slot] && state.slotSideClosed[slot]) return
+    const madeEarlier = !!state.slotSide[slot]
     if (!state.slotSide[slot]) {
       const parentTurnCount = slot === state.activeSlot
         ? state.messages.filter(m => m.role === 'user' || m.role === 'assistant').length
@@ -178,6 +192,9 @@ export const sideReducers = {
     // the gateway. Nothing to draw, and the busy state now belongs to whatever
     // came after it.
     if (message_id && side.messages.some(m => m.id === message_id)) return
+    // Every path below adds a row, except a delta held back or dropped, and only
+    // a side that already has rows does that.
+    if (madeEarlier) startConversationIfEmpty(side, tsIso)
     // A frame for a turn that has already given way to a later one, which only a
     // restore can make arrive (it raced the read). It still adds its row, but it
     // must not clear the later turn's busy state.
@@ -217,6 +234,15 @@ export const sideReducers = {
         // already ended. A steer never STARTS a turn, so it owns neither.
         return
       }
+      // An empty conversation is dated from a question this tab sent until that
+      // question's frame lands, and the frame's clock then takes over. It is found as
+      // "no confirmed question yet", not by content (the gateway's copy can be
+      // redacted) nor by the start stamp (a read of the empty conversation can land
+      // first and rewrite it).
+      const unconfirmedStart = side.countsTurnsSinceCreated
+        && side.messages.some(m => m.optimistic && m.role === 'user')
+        && !side.messages.some(m => m.role === 'user' && !m.steer && !m.optimistic)
+      if (unconfirmedStart) side.createdAt = tsIso
       // Reconcile with the optimistic bubble appended in sideOptimisticAppend,
       // found by its MARKER rather than by position. This frame can arrive after
       // the in-flight turn has already streamed assistant text, so the bubble is
@@ -456,6 +482,7 @@ export const sideReducers = {
     const { slot, message } = action.payload
     if (isUnsafeKey(slot)) return
     if (state.slotSideClosed[slot]) delete state.slotSideClosed[slot]
+    const madeEarlier = !!state.slotSide[slot]
     if (!state.slotSide[slot]) {
       const parentTurnCount = slot === state.activeSlot
         ? state.messages.filter(m => m.role === 'user' || m.role === 'assistant').length
@@ -463,6 +490,7 @@ export const sideReducers = {
       state.slotSide[safeKey(slot)] = { messages: [], openedAtTurnCount: parentTurnCount, createdAt: message.ts }
     }
     const side = state.slotSide[slot]
+    if (madeEarlier) startConversationIfEmpty(side, message.ts)
     side.messages.push({ ...message, optimistic: true })
     side.pending = true
   },

@@ -379,6 +379,115 @@ describe('sideRestore', () => {
   })
 })
 
+describe('a side conversation starts at its first row', () => {
+  const turn = (role: 'user' | 'assistant', ts: string) => ({ role, content: 'm', cls: '', ts })
+  /** The main chat on screen holds `turns` turns. */
+  const mainWith = (s: ChatState, turns: number): ChatState => chatReducer(
+    { ...s, activeSlot: SLOT },
+    replaceMessages(Array.from({ length: turns }, (_, i) => turn(i % 2 ? 'assistant' : 'user', '2026-10-21T05:00:00.000Z'))),
+  )
+  /** A queue frame made an empty side state, then the read said nothing is open. */
+  const emptyStateFromAFrame = (): ChatState => {
+    let s = mainWith(fresh(), 2)
+    s = chatReducer(s, sseSideQueue({ slot: SLOT, action: 'cancel', queue_id: 'q-old', content: 'gone', raw: true }))
+    s = chatReducer(s, sideRestore({ slot: SLOT, snapshot: { open: false } }))
+    expect(s.slotSide[SLOT].openedAtTurnCount).toBe(2)
+    return mainWith(s, 12)
+  }
+  const QUESTION_AT = 1_800_000_000
+
+  it('dates a conversation from its first question, not from the queue frame that made the empty state', () => {
+    const s = chatReducer(emptyStateFromAFrame(), frame({ run_id: 'r1', role: 'user', content: 'Q', ts: QUESTION_AT }))
+    expect(s.slotSide[SLOT].createdAt).toBe(new Date(QUESTION_AT * 1000).toISOString())
+    expect(s.slotSide[SLOT].countsTurnsSinceCreated).toBe(true)
+  })
+
+  it('dates it from a question this tab sends, before its frame', () => {
+    const s = chatReducer(emptyStateFromAFrame(), sideOptimisticAppend({
+      slot: SLOT, message: { role: 'user', content: 'Q', ts: '2027-01-15T08:00:00.000Z' },
+    }))
+    expect(s.slotSide[SLOT].createdAt).toBe('2027-01-15T08:00:00.000Z')
+    expect(s.slotSide[SLOT].countsTurnsSinceCreated).toBe(true)
+  })
+
+  it('takes that date from the gateway copy of the question once its frame lands', () => {
+    // This browser's clock runs two minutes behind the gateway's.
+    let s = chatReducer(emptyStateFromAFrame(), sideOptimisticAppend({
+      slot: SLOT, message: { role: 'user', content: 'Q', ts: '2027-01-15T07:58:00.000Z' },
+    }))
+    expect(s.slotSide[SLOT].createdAt).toBe('2027-01-15T07:58:00.000Z')
+    s = chatReducer(s, frame({ run_id: 'r1', role: 'user', content: 'Q', ts: QUESTION_AT }))
+    expect(s.slotSide[SLOT].messages).toHaveLength(1)
+    expect(s.slotSide[SLOT].createdAt).toBe(new Date(QUESTION_AT * 1000).toISOString())
+    // A later question's frame leaves the start alone.
+    s = chatReducer(s, sideOptimisticAppend({ slot: SLOT, message: { role: 'user', content: 'Q2', ts: '2027-01-15T09:00:00.000Z' } }))
+    s = chatReducer(s, frame({ run_id: 'r2', role: 'user', content: 'Q2', ts: QUESTION_AT + 600 }))
+    expect(s.slotSide[SLOT].createdAt).toBe(new Date(QUESTION_AT * 1000).toISOString())
+  })
+
+  it('takes that date from a redacted gateway copy of the starting question', () => {
+    const raw = `key ${['-----BEGIN', 'KEY-----'].join(' PRIVATE ')}`
+    let s = chatReducer(emptyStateFromAFrame(), sideOptimisticAppend({
+      slot: SLOT, message: { role: 'user', content: raw, ts: '2027-01-15T07:58:00.000Z' },
+    }))
+    s = chatReducer(s, frame({
+      run_id: 'r1', message_id: 'u1', role: 'user', content: '[REDACTED]', ts: QUESTION_AT,
+    }))
+    expect(s.slotSide[SLOT].createdAt).toBe(new Date(QUESTION_AT * 1000).toISOString())
+    expect(s.slotSide[SLOT].countsTurnsSinceCreated).toBe(true)
+  })
+
+  it('takes the gateway clock even when a read of an empty open conversation lands before the frame', () => {
+    // After a reload: the question is sent while the page's only restore read is out.
+    let s = chatReducer(mainWith(fresh(), 2), sideOptimisticAppend({
+      slot: SLOT, message: { role: 'user', content: 'Q1', ts: '2027-01-15T07:58:00.000Z' },
+    }))
+    s = chatReducer(s, sideRestore({ slot: SLOT, snapshot: snapshot({ running: false, last_run_id: '', messages: [], queue: [] }) }))
+    expect(s.slotSide[SLOT].createdAt).toBe(CREATED)
+    expect(s.slotSide[SLOT].countsTurnsSinceCreated).toBe(true)
+    s = chatReducer(s, frame({ run_id: 'r1', message_id: 'u1', role: 'user', content: 'Q1', ts: QUESTION_AT }))
+    expect(s.slotSide[SLOT].createdAt).toBe(new Date(QUESTION_AT * 1000).toISOString())
+  })
+
+  it('does not redate the conversation for a later redacted question', () => {
+    const raw = `key ${['-----BEGIN', 'KEY-----'].join(' PRIVATE ')}`
+    let s = chatReducer(emptyStateFromAFrame(), sideOptimisticAppend({
+      slot: SLOT, message: { role: 'user', content: 'Q1', ts: '2027-01-15T07:58:00.000Z' },
+    }))
+    s = chatReducer(s, frame({ run_id: 'r1', message_id: 'u1', role: 'user', content: 'Q1', ts: QUESTION_AT }))
+    s = chatReducer(s, sideOptimisticAppend({
+      slot: SLOT, message: { role: 'user', content: raw, ts: '2027-01-15T08:00:00.000Z' },
+    }))
+    s = chatReducer(s, frame({
+      run_id: 'r2', message_id: 'u2', role: 'user', content: '[REDACTED]', ts: QUESTION_AT + 600,
+    }))
+    expect(s.slotSide[SLOT].createdAt).toBe(new Date(QUESTION_AT * 1000).toISOString())
+  })
+
+  it('counts by time a first row that lands while another slot is shown, instead of a zero baseline', () => {
+    let s = emptyStateFromAFrame()
+    s = chatReducer({ ...s, activeSlot: 'another-slot' }, replaceMessages([]))
+    s = chatReducer(s, frame({ run_id: 'r1', role: 'user', content: 'Q', ts: QUESTION_AT }))
+    expect(s.slotSide[SLOT].countsTurnsSinceCreated).toBe(true)
+    expect(s.slotSide[SLOT].createdAt).toBe(new Date(QUESTION_AT * 1000).toISOString())
+  })
+
+  it('stamps a conversation its first row makes the way it always has', () => {
+    const s = chatReducer(mainWith(fresh(), 4), frame({ run_id: 'r1', role: 'user', content: 'Q', ts: QUESTION_AT }))
+    expect(s.slotSide[SLOT].createdAt).toBe(new Date(QUESTION_AT * 1000).toISOString())
+    expect(s.slotSide[SLOT].openedAtTurnCount).toBe(4)
+    expect(s.slotSide[SLOT].countsTurnsSinceCreated).toBeUndefined()
+  })
+
+  it('leaves the start of a conversation that already has rows alone', () => {
+    let s = chatReducer(mainWith(fresh(), 2), frame({ run_id: 'r1', role: 'user', content: 'Q1', ts: QUESTION_AT }))
+    s = chatReducer(mainWith(s, 12), frame({ run_id: 'r2', role: 'user', content: 'Q2', ts: QUESTION_AT + 600 }))
+    expect(s.slotSide[SLOT].createdAt).toBe(new Date(QUESTION_AT * 1000).toISOString())
+    expect(s.slotSide[SLOT].openedAtTurnCount).toBe(2)
+    expect(s.slotSide[SLOT].countsTurnsSinceCreated).toBeUndefined()
+  })
+})
+
 describe('SideChat restore on mount', () => {
   beforeEach(() => {
     vi.mocked(api.sideState).mockReset()
