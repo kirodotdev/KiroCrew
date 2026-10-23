@@ -188,12 +188,13 @@ class TestProviderBindsTheLevel:
     @pytest.mark.asyncio
     async def test_kiro_family_pushes_over_a_different_level_the_overlay_left(self, tmp_path):
         # A reused workspace whose overlay holds another level for the served
-        # model seeds the map at construction; the requested level still wins,
-        # live and in the overlay the next spawn reads.
+        # model seeds the map when the provider starts; the requested level still
+        # wins, live and in the overlay the next spawn reads.
         _write_cli_overlay(tmp_path, "claude-opus-4.7", "high")
         provider = _provider(
             ACP_BACKEND_KIRO, unbound="low", served="claude-opus-4.7", work_dir=tmp_path
         )
+        await provider._recover_effort_overlay()
         assert provider._effort_per_model == {"claude-opus-4.7": "high"}
         provider._client._resolved_model_id = "claude-opus-4.7"
         await provider._bind_unbound_effort()

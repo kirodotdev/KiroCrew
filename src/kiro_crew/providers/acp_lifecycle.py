@@ -61,11 +61,14 @@ async def start(self: AcpProvider) -> None:
         # dead predecessor of this data home (session_work_dir); the shutdown
         # reclaim below keys on the flag and on the mark naming this process.
         await asyncio.to_thread(mark_run_dir, Path(self._client._work_dir))
+    # The workspace cli.json is read and written here and nowhere on the event
+    # loop: construction touches no file. Off the loop: the cli.json lock is
+    # shared with sibling threads and processes, and an acquire on the loop
+    # thread makes one attempt and never waits, so a brief overlap would refuse
+    # the write.
+    await self._recover_effort_overlay()
     # Re-apply the overlay on every (re)start to cover resume / model swap.
     # (no-op for claude backend — that path applies effort live below.)
-    # Off the loop: the cli.json lock is shared with sibling threads and
-    # processes, and an acquire on the loop thread makes one attempt and
-    # never waits, so a brief overlap would refuse the write.
     await asyncio.to_thread(self._apply_effort_overlay)
     await asyncio.to_thread(self._apply_tool_search_overlay)
 
