@@ -8,20 +8,12 @@
 # `... --move OLD NEW` carries a line to a renamed file's path.
  2 chat_test_helpers.py
  2 cron_reaper_helpers.py
- 4 e2e/test_gateway_boot_matrix.py
  2 e2e/test_memory_ui_evidence.py
  2 e2e/test_private_workflow_memory.py
- 4 e2e/test_process_chaos.py
  2 e2e/test_real_kiro_smoke.py
  2 integration/test_memory_bindings.py
  2 spawn_test_helpers.py
- 4 test_acp_refactor_facade.py
- 4 test_acp_runtime_failed_start_reap.py
  7 test_active_turn_session_key.py
- 5 test_adaptive_startup_memory.py
- 5 test_auto_research_campaign_contract.py
- 4 test_aws_control_backup_run_state.py
- 5 test_browser_command_bus.py
  2 test_channel_subscribe_timeout.py
  5 test_chat_close_interrupts_turn.py
  2 test_chat_nav.py
@@ -30,7 +22,6 @@
  2 test_cloud_ssm.py
  2 test_config_save_locking.py
  2 test_connections_premint.py
- 4 test_cron_chat_folder.py
  2 test_cron_jitter.py
  2 test_cron_reaper_ending_fence.py
  2 test_cron_reaper_failed_kill.py
@@ -42,13 +33,11 @@
  2 test_dashboard_member_assignment.py
  2 test_dashboard_status_snapshot.py
  2 test_decisions_local_provider.py
- 5 test_decisions_local_runtime_real_spawn.py
  2 test_denied_commands_security_own_host.py
  2 test_dev_fleet_app_teardown.py
  2 test_discord_dispatcher.py
  2 test_discord_sessions_binding_state.py
  2 test_e2e_ci_scheduling.py
- 5 test_executors.py
  2 test_fargate_closed_forward_remedy.py
  2 test_feishu_client.py
  1 test_handlers_memory_coverage.py
@@ -56,15 +45,7 @@
  2 test_headless_memory_recognition.py
  2 test_issue_radar_list_probe.py
  9 test_resume_publishes_hydrated_slot.py
- 5 test_runloop_integration.py
 16 test_session_capabilities.py
  5 test_session_core_audit.py
  6 test_session_drain.py
- 7 test_session_pool_refill.py
- 4 test_session_sharing.py
 10 test_session_start_gate.py
- 5 test_sign_in_refresher.py
- 5 test_slot_patch_frames.py
- 4 test_workflow_memory_backend_reset.py
- 4 test_workflows_nudge_wiring.py
- 4 test_workflows_runner.py

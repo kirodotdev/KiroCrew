@@ -17,6 +17,7 @@ import types
 
 import pytest
 
+from kiro_crew.testing.wait import async_wait_until, await_until
 from kiro_crew.workflows.runner import RunResult, WorkflowRunner
 
 pytestmark = pytest.mark.asyncio
@@ -221,7 +222,7 @@ async def _run_within(coro, guard: float = 5.0):
         return task.result()
     task.cancel()
     with contextlib.suppress(BaseException):
-        await asyncio.wait_for(task, timeout=5)
+        await await_until(task, what="the cancelled run drains")
     return None
 
 
@@ -295,10 +296,10 @@ async def test_cancel_during_in_run_authoring_returns_a_result() -> None:
             "", run_id="wf_ac3", now=NOW, intent="x", author_fn=_hung_author
         )
     )
-    await asyncio.wait_for(author_started.wait(), timeout=5)
+    await await_until(author_started, what="the hung author starts")
     run_task.cancel()
     try:
-        res = await asyncio.wait_for(run_task, timeout=5)
+        res = await await_until(run_task, what="run() returns after the cancel")
     except asyncio.CancelledError:
         pytest.fail("CancelledError escaped run() during authoring")
     assert res.ok is False
@@ -431,9 +432,7 @@ async def test_author_in_run_failure_becomes_run_failed() -> None:
     async def _bad_author(intent: str, *, on_progress=None):
         return {"ok": False, "errors": ["no META", "no workflow()"]}
 
-    res = await _runner().run(
-        "", run_id="wf_a2", now=NOW, intent="nonsense", author_fn=_bad_author
-    )
+    res = await _runner().run("", run_id="wf_a2", now=NOW, intent="nonsense", author_fn=_bad_author)
     assert not res.ok
     failed = [e for e in res.events if e.type == "run_failed"]
     assert failed and failed[-1].data["where"] == "author"
@@ -445,9 +444,7 @@ async def test_author_in_run_exception_is_captured() -> None:
     async def _explode(intent: str, *, on_progress=None):
         raise RuntimeError("model down")
 
-    res = await _runner().run(
-        "", run_id="wf_a3", now=NOW, intent="x", author_fn=_explode
-    )
+    res = await _runner().run("", run_id="wf_a3", now=NOW, intent="x", author_fn=_explode)
     assert not res.ok
     assert "model down" in (res.error or "")
     assert any(e.type == "run_failed" for e in res.events)
@@ -479,15 +476,18 @@ async def test_author_in_run_publishes_source_before_execution() -> None:
     runner = WorkflowRunner(agent_fn=_blocking_agent)
     task = asyncio.ensure_future(
         runner.run(
-            "", run_id="wf_src", now=NOW, intent="x", author_fn=_author_fn,
+            "",
+            run_id="wf_src",
+            now=NOW,
+            intent="x",
+            author_fn=_author_fn,
             on_source=published.append,
         )
     )
-    # Yield until the blocked agent step is reached; source must already be set.
-    for _ in range(50):
-        if published:
-            break
-        await asyncio.sleep(0.01)
+    # Wait until the blocked agent step is reached; source must already be set.
+    await async_wait_until(
+        lambda: published, describe=lambda: "source not published before execution blocked"
+    )
     assert published == [authored], "source not published before execution blocked"
     gate.set()
     res = await task

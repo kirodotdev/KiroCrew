@@ -27,6 +27,7 @@ from session_pool_helpers import (  # noqa: F401 -- the autouse fixture register
 )
 
 from kiro_crew.start_priority import PrioritySemaphore
+from kiro_crew.testing.wait import await_until, finished
 
 # ---------------------------------------------------------------------------
 # reload_provider_factory resets pool
@@ -438,18 +439,18 @@ class TestFillLockReleasedAcrossStart:
             # The first fill is parked inside a start() with the fill lock
             # released and a free start permit -- a second fill could run were
             # it not for the guard.
-            await asyncio.wait_for(in_start.wait(), timeout=2.0)
+            await await_until(in_start, what="the refill enters start()")
             # The ``fill_active`` guard makes a second refill a no-op while the
             # first is live, so this returns at once without starting a
             # provider of its own. Delete the guard and this second fill
             # instead runs a real refill that blocks inside its own start() on
-            # ``release_start`` -- the ``wait_for`` then fails with a timeout
-            # (the hang the guard prevents), not a passing no-op.
-            await asyncio.wait_for(mgr._fill_warm_pool(), timeout=2.0)
+            # ``release_start`` -- the bounded wait then fails by name (the hang
+            # the guard prevents), not as a passing no-op.
+            await finished(mgr._fill_warm_pool(), "the second fill returns as a no-op")
             assert started == 1
         finally:
             release_start.set()
-            await asyncio.wait_for(first, timeout=2.0)
+            await await_until(first, what="the first fill finishes")
 
         assert mgr._warm_pool.qsize() == 2
         assert started == 2
@@ -492,7 +493,7 @@ class TestFillLockReleasedAcrossStart:
 
         fill = asyncio.create_task(mgr._fill_warm_pool())
         try:
-            await asyncio.wait_for(in_start.wait(), timeout=2.0)
+            await await_until(in_start, what="the refill enters start()")
             # Swap the factory while the refill is parked inside start();
             # pool_size is left at 1 so there is still room for a provider -- the
             # stale one must be dropped purely because its factory is retired.
@@ -500,7 +501,7 @@ class TestFillLockReleasedAcrossStart:
             mgr._provider_factory = new_factory
         finally:
             release_start.set()
-            await asyncio.wait_for(fill, timeout=2.0)
+            await await_until(fill, what="the refill finishes")
 
         # The stale provider was discarded; the one queued slot holds a provider
         # built from the new factory.
@@ -548,7 +549,7 @@ class TestFillLockReleasedAcrossStart:
         try:
             # The provider is building/starting before any epoch is marked, so
             # its spawn_time predates the epoch set below.
-            await asyncio.wait_for(in_start.wait(), timeout=2.0)
+            await await_until(in_start, what="the refill enters start()")
             # The identity sweep only marks the epoch -- pool_size stays 1, so
             # the size check still has room for a provider. The ONLY reason the
             # pre-epoch provider is refused is the identity-epoch check; delete
@@ -556,7 +557,7 @@ class TestFillLockReleasedAcrossStart:
             mgr._pool.mark_identity_epoch()
         finally:
             release_start.set()
-            await asyncio.wait_for(fill, timeout=2.0)
+            await await_until(fill, what="the refill finishes")
 
         # Pool still has room (size 1) yet nothing is enqueued: the pre-epoch
         # provider was discarded, not seeded behind the drain.

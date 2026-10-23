@@ -21,6 +21,7 @@ from kiro_crew.dashboard import revocation_gen, token_auth
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin
 from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_WS_FLAG
+from kiro_crew.testing.wait import finished
 
 
 @pytest.fixture(autouse=True)
@@ -290,7 +291,7 @@ async def _settle_and_fence(st) -> None:
 async def _frames_until_fence(socket) -> list[dict]:
     frames = []
     while True:
-        frame = await asyncio.wait_for(socket.receive_json(), timeout=5)
+        frame = await finished(socket.receive_json(), "the next frame arrives")
         if frame.get("type") == "refresh" and _FENCE in frame.get("data", {}).get("kinds", []):
             return [f for f in frames if f.get("type") != "dashboard"]
         frames.append(frame)
@@ -326,7 +327,7 @@ async def test_pin_reaches_a_capable_tab_as_a_patch_and_an_old_tab_as_a_list(
             "/api/ws", params={"token": app_token, "caps": "slot_patch"}
         )
         for tab in (new_tab, old_tab, app_tab):
-            first = await asyncio.wait_for(tab.receive_json(), timeout=5)
+            first = await finished(tab.receive_json(), "the first frame arrives")
             assert first["type"] == "slots"
 
         response = await client.patch(
@@ -334,9 +335,9 @@ async def test_pin_reaches_a_capable_tab_as_a_patch_and_an_old_tab_as_a_list(
         )
         assert response.status == 200
         assert await response.json() == {"ok": True, "pinned": True, "changed": True}
-        app_frame = await asyncio.wait_for(app_tab.receive_json(), timeout=5)
+        app_frame = await finished(app_tab.receive_json(), "the app tab's next frame arrives")
         while app_frame["type"] not in ("slots", "slot_patch"):
-            app_frame = await asyncio.wait_for(app_tab.receive_json(), timeout=5)
+            app_frame = await finished(app_tab.receive_json(), "the app tab's next frame arrives")
         assert app_frame["type"] == "slots"
         await _settle_and_fence(e2e_state)
 
@@ -422,7 +423,7 @@ async def test_folder_move_uses_a_full_list_only_when_it_unhides_the_folder(e2e_
         client.session.headers["Origin"] = origin
         token = token_auth.generate_token("local-app")
         tab = await client.ws_connect("/api/ws", params={"token": token, "caps": "slot_patch"})
-        first = await asyncio.wait_for(tab.receive_json(), timeout=5)
+        first = await finished(tab.receive_json(), "the first frame arrives")
         assert first["type"] == "slots"
 
         response = await client.patch(

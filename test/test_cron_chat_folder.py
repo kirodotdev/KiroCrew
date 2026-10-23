@@ -53,6 +53,7 @@ from kiro_crew.dashboard.cron_inject import (
 )
 from kiro_crew.dashboard.handlers.cron import api_cron_update, api_crons, api_crons_create
 from kiro_crew.session_surface import set_dashboard_surfaced
+from kiro_crew.testing.wait import await_until
 
 FOLDER = "f00dcafe"
 OTHER_FOLDER = "beadfeed"
@@ -1021,7 +1022,7 @@ class TestMovingTheTabAtTheSave:
 
         async def _save(state, slot, *a, **kw):
             started.set()
-            await asyncio.wait_for(release.wait(), timeout=5)
+            await await_until(release, what="the test releases the held save")
             raise OSError("disk full")
 
         monkeypatch.setattr(persistence, "save_slot_off_loop", _save)
@@ -1030,13 +1031,13 @@ class TestMovingTheTabAtTheSave:
         state.push_slots_update.reset_mock()
         move = asyncio.create_task(move_cron_job_tab(state, _job(), FOLDER, ""))
         try:
-            await asyncio.wait_for(started.wait(), timeout=5)
+            await await_until(started, what="the held save starts")
             assert slot.folder_id == ""
             state.push_slots_update.assert_not_called()
             slot.folder_id = OTHER_FOLDER
         finally:
             release.set()
-            await asyncio.wait_for(move, timeout=5)
+            await await_until(move, what="the move finishes")
         assert slot.folder_id == OTHER_FOLDER
         state.push_slots_update.assert_called_once_with()
 
@@ -1094,7 +1095,7 @@ class TestMovingTheTabAtTheSave:
                 await asyncio.sleep(0)
             save.assert_not_awaited()
             assert slot.folder_id == FOLDER
-        await asyncio.wait_for(move, timeout=5)
+        await await_until(move, what="the move finishes once the lock is released")
         save.assert_awaited_once()
         assert slot.folder_id == OTHER_FOLDER
 

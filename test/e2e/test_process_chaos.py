@@ -59,10 +59,9 @@ import contextlib
 import os
 import re
 import signal
-import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import pytest
 from e2e.process_inventory import (
@@ -86,6 +85,8 @@ from e2e.test_process_leak_invariant import (
     _workspace_src,
     measured_gateway,
 )
+
+from kiro_crew.testing.wait import wait_until
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("KIROCREW_E2E"),
@@ -205,26 +206,33 @@ def _kill_verified(entry: RegistryEntry, what: str) -> None:
             pass
 
 
-def _await_registry_forgets(home: Path, pid: int) -> list[int]:
-    """Poll until *pid* is in no registry entry. Returns what is still tracked."""
-    deadline = time.monotonic() + RECOVER_TIMEOUT
-    tracked = [entry.pid for entry in read_registry(home)]
-    while time.monotonic() < deadline:
-        if pid not in tracked:
-            return tracked
-        time.sleep(POLL_SECS)
+def _await_registry_forgets(home: Path, pid: int, *, describe: Callable[[], str]) -> None:
+    """Poll until *pid* is in no registry entry; fail by name, with *describe*, otherwise."""
+    tracked: list[int] = []
+
+    def forgotten() -> bool:
+        nonlocal tracked
         tracked = [entry.pid for entry in read_registry(home)]
-    return tracked
+        return pid not in tracked
+
+    wait_until(
+        forgotten,
+        timeout=RECOVER_TIMEOUT,
+        interval=POLL_SECS,
+        describe=lambda: f"{describe()}\nstill tracked: {tracked}",
+    )
 
 
-def _await_descendants_gone(kin: set[int]) -> set[int]:
-    """Poll until no member of *kin* is alive. Returns the survivors."""
-    deadline = time.monotonic() + RECOVER_TIMEOUT
-    left = survivors(kin)
-    while time.monotonic() < deadline and left:
-        time.sleep(POLL_SECS)
+def _await_descendants_gone(kin: set[int], *, describe: Callable[[set[int]], str]) -> None:
+    """Poll until no member of *kin* is alive; fail by name, with *describe*, otherwise."""
+    left: set[int] = set()
+
+    def gone() -> bool:
+        nonlocal left
         left = survivors(kin)
-    return left
+        return not left
+
+    wait_until(gone, timeout=RECOVER_TIMEOUT, interval=POLL_SECS, describe=lambda: describe(left))
 
 
 def _log_baseline(home: Path, captured: str) -> tuple[int, frozenset[str]]:
@@ -305,17 +313,21 @@ def _await_additional_reply(client: _Client, slot: str, baseline: int) -> None:
     recovery assertion passes even when the gateway never served the new turn.
     The count is what makes the second turn's completion observable.
     """
-    deadline = time.monotonic() + REPLY_TIMEOUT
     latest = baseline
-    while time.monotonic() < deadline:
+
+    def served() -> bool:
+        nonlocal latest
         latest = _assistant_count(client, slot)
-        if latest > baseline:
-            return
-        time.sleep(POLL_SECS)
-    raise AssertionError(
-        f"slot {slot} still holds {latest} assistant repl(ies) after "
-        f"{REPLY_TIMEOUT:.0f}s, the same as before the recovery turn was posted: "
-        "the session did not serve a turn after the kill"
+        return latest > baseline
+
+    wait_until(
+        served,
+        timeout=REPLY_TIMEOUT,
+        interval=POLL_SECS,
+        describe=lambda: (
+            f"slot {slot} still holds {latest} assistant repl(ies), the same as before "
+            "the recovery turn was posted: the session did not serve a turn after the kill"
+        ),
     )
 
 
@@ -368,27 +380,32 @@ def test_killing_a_runtime_root_recovers(real_user_session: Any) -> None:
 
         # The victim must actually go. Everything below is about what the gateway
         # did in response, so a surviving victim would make the rest meaningless.
-        deadline = time.monotonic() + RECOVER_TIMEOUT
-        while pid_alive(victim.pid) and time.monotonic() < deadline:
-            time.sleep(POLL_SECS)
-        assert not pid_alive(
-            victim.pid
-        ), f"runtime root {victim.pid} survived SIGKILL: {victim_argv[:160]}"
-
-        left = _await_descendants_gone(kin)
-        assert not left, (
-            f"killing the runtime root (pid {victim.pid}) left {len(left)} of its "
-            f"{len(kin)} descendant(s) running with no owner: "
-            + ", ".join(f"{pid} :: {read_argv(pid)[:100]}" for pid in sorted(left))
-            + "\n"
-            + inventory(env.home, ignore_pids=ignore).render()
+        wait_until(
+            lambda: not pid_alive(victim.pid),
+            timeout=RECOVER_TIMEOUT,
+            interval=POLL_SECS,
+            describe=lambda: f"runtime root {victim.pid} survived SIGKILL: {victim_argv[:160]}",
         )
 
-        tracked = _await_registry_forgets(env.home, victim.pid)
-        assert victim.pid not in tracked, (
-            f"the registry still tracks the killed runtime root {victim.pid} after "
-            f"{RECOVER_TIMEOUT:.0f}s; anything that later signals by pid can reach a "
-            f"recycled number.\n{inventory(env.home, ignore_pids=ignore).render()}"
+        _await_descendants_gone(
+            kin,
+            describe=lambda left: (
+                f"killing the runtime root (pid {victim.pid}) left {len(left)} of its "
+                f"{len(kin)} descendant(s) running with no owner: "
+                + ", ".join(f"{pid} :: {read_argv(pid)[:100]}" for pid in sorted(left))
+                + "\n"
+                + inventory(env.home, ignore_pids=ignore).render()
+            ),
+        )
+
+        _await_registry_forgets(
+            env.home,
+            victim.pid,
+            describe=lambda: (
+                f"the registry still tracks the killed runtime root {victim.pid}; anything "
+                "that later signals by pid can reach a recycled number.\n"
+                f"{inventory(env.home, ignore_pids=ignore).render()}"
+            ),
         )
 
         recorded = _logs_naming(env.home, victim.pid, env.handle.diagnostics(), baseline)

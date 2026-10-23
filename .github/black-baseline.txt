@@ -717,7 +717,6 @@ test/test_session_map_migration.py
 test/test_session_mtime_ordering.py
 test/test_session_pid_sig.py
 test/test_session_rss.py
-test/test_session_sharing.py
 test/test_session_spend_identity.py
 test/test_session_start_timeout_diagnostics.py
 test/test_session_summary_api.py
@@ -829,7 +828,6 @@ test/test_workflows_dsl.py
 test/test_workflows_invariants.py
 test/test_workflows_resilience.py
 test/test_workflows_run_bounds.py
-test/test_workflows_runner.py
 test/test_workflows_store.py
 test/test_workspace_absolute_paths.py
 test/test_write_secret_file.py

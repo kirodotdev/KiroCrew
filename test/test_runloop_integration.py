@@ -62,6 +62,7 @@ from kiro_crew.subagent_manager.monitoring import OrphanStallMonitor
 from kiro_crew.taskq import RUNNING, STARTING, WAITING_DEPENDENCY, WAITING_INPUT
 from kiro_crew.taskq import dependency as dep_mod
 from kiro_crew.taskq.dependency import DependencyCoordinator
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -187,7 +188,7 @@ async def _spawn_and_wait(mgr: SubagentManager, task: str = "do work") -> Subage
     with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
         info = mgr.spawn(task)
         assert info is not None
-        await asyncio.wait_for(mgr._tasks[info.id], timeout=20.0)
+        await await_until(mgr._tasks[info.id], what=f"subagent {info.id} finishes")
     return info
 
 
@@ -347,21 +348,24 @@ async def _await_parked(
     failure then reads as whichever later assertion happens to touch it first.
     """
     ids = tuple(agent_ids)
-    deadline = time.monotonic() + _PARKED_CEILING_SECS
-    while time.monotonic() < deadline:
+
+    def parked() -> bool:
         waiters, running, _ = _park_snapshot(mgr, coordinator, scope, ids, rows=False)
         if len(waiters) == len(ids) and running == 0:
             _, _, states = _park_snapshot(mgr, coordinator, scope, ids)
-            if all(state == WAITING_DEPENDENCY for state in states.values()):
-                return
-        await asyncio.sleep(0.01)
-    waiters, running, states = _park_snapshot(mgr, coordinator, scope, ids)
-    raise AssertionError(
-        f"no park of {len(ids)} run(s) on {scope!r} within {_PARKED_CEILING_SECS}s: "
-        f"waiters={waiters} (want {list(ids)}), running_count={running} (want 0), "
-        f"rows={states} (want every state {WAITING_DEPENDENCY!r}), "
-        f"scopes={coordinator.scopes()}"
-    )
+            return all(state == WAITING_DEPENDENCY for state in states.values())
+        return False
+
+    def last_reading() -> str:
+        waiters, running, states = _park_snapshot(mgr, coordinator, scope, ids)
+        return (
+            f"no park of {len(ids)} run(s) on {scope!r}: "
+            f"waiters={waiters} (want {list(ids)}), running_count={running} (want 0), "
+            f"rows={states} (want every state {WAITING_DEPENDENCY!r}), "
+            f"scopes={coordinator.scopes()}"
+        )
+
+    await async_wait_until(parked, timeout=_PARKED_CEILING_SECS, describe=last_reading)
 
 
 def _transitions(mgr: SubagentManager, agent_id: str) -> list[tuple[str, str, str]]:
@@ -637,7 +641,9 @@ async def test_throttle_parks_two_runs_on_one_scope_and_wakes_by_capacity(monkey
         # backoff would have produced them.
         assert coordinator.recovered("provider:acp")
         mgr._taskq_pump()
-        await asyncio.wait_for(asyncio.gather(mgr._tasks[a.id], mgr._tasks[b.id]), timeout=20.0)
+        await await_until(
+            asyncio.gather(mgr._tasks[a.id], mgr._tasks[b.id]), what="both runs finish"
+        )
 
     assert a.outcome == "completed" and b.outcome == "completed"
     assert a.result == "A ok" and b.result == "B ok"
@@ -789,7 +795,7 @@ async def test_the_throttle_park_and_wake_cycle_never_touches_the_store_on_the_l
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             info = await mgr.spawn_async("throttled")
             assert info is not None
-            await asyncio.wait_for(mgr._tasks[info.id], timeout=20.0)
+            await await_until(mgr._tasks[info.id], what="the throttled run finishes")
         await _drain_posted(mgr)
     finally:
         monkeypatch.delenv(store_mod.STRICT_ON_LOOP_ENV)
@@ -1260,9 +1266,15 @@ async def test_the_ramp_is_woken_when_the_pump_timer_fires_inside_the_clock_reso
         # The loop leaves on the wakes, so the ceiling is a LOST-RUN guard rather
         # than a statement about how long two wakes may take: a host slow enough
         # to need more of it would otherwise red on the assertions below instead.
-        deadline = time.monotonic() + _LOST_RUN_CEILING_SECS
-        while len(woken) < 2 and time.monotonic() < deadline:
-            await asyncio.sleep(_EARLY_FIRE_POLL_SECS)
+        await async_wait_until(
+            lambda: len(woken) >= 2,
+            timeout=_LOST_RUN_CEILING_SECS,
+            interval=_EARLY_FIRE_POLL_SECS,
+            describe=lambda: (
+                f"woke {woken}; {len(armed)} armed timer(s); early fire(s) "
+                f"{[round(margin, 4) for margin in early]}s before their own when"
+            ),
+        )
     assert early, (
         "the early fire never happened, so this pin exercised nothing: no pump pass read a "
         f"spent one-shot as future-dated across {len(armed)} armed timer(s), with "

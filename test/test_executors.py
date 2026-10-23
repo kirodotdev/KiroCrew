@@ -16,6 +16,7 @@ from unittest import mock
 import pytest
 
 import kiro_crew.executors as ex
+from kiro_crew.testing.wait import async_wait_until, default_timeout
 
 
 def setup_function() -> None:
@@ -31,24 +32,23 @@ def teardown_function() -> None:
     ex.shutdown_maintenance_executor()
 
 
-#: Lost-run ceiling on a pool this test owns running a trivial callable. ``submit``
-#: starts the worker thread itself, so all this bounds is one hand-off to that
-#: thread: milliseconds, about 0.2 s with every executor job started late. Three
-#: waits share one test, and 3 x 20 s is half the suite's 120 s ``--timeout``, so
-#: a dead pool fails here by name rather than as a lost run.
-_LOST_RUN_CEILING_SECS = 20.0
-
-
 def _ran_on(pool, fn):
-    """``fn()`` as run by *pool*, or a failure naming the pool and what it waited."""
+    """``fn()`` as run by *pool*, or a failure naming the pool and what it waited.
+
+    ``submit`` starts the worker thread itself, so all the bound covers is one
+    hand-off to that thread: milliseconds. The lost-run ceiling is the shared
+    default (half the test's timeout), so a dead pool fails here by name rather
+    than as a lost run.
+    """
     started = time.monotonic()
+    ceiling = default_timeout()
     future = pool.submit(fn)
     try:
-        return future.result(timeout=_LOST_RUN_CEILING_SECS)
+        return future.result(timeout=ceiling)
     except TimeoutError:
         pytest.fail(
             f"{pool._thread_name_prefix} ran nothing within the "
-            f"{_LOST_RUN_CEILING_SECS:.0f}s lost-run ceiling: waited "
+            f"{ceiling:.0f}s lost-run ceiling: waited "
             f"{time.monotonic() - started:.2f}s, {pool._work_queue.qsize()} item(s) still queued"
         )
 
@@ -156,7 +156,7 @@ def test_path_resolve_pool_is_isolated_bounded_named_and_reset() -> None:
         assert pool is not other
     assert len(pool._children) == ex._MAX_PATH_RESOLVE_WORKERS
     assert pool._fallback._thread_name_prefix == "mc-pathres-inline"
-    assert pool.submit(lambda: 6 * 7).result(timeout=5) == 42
+    assert pool.submit(lambda: 6 * 7).result(timeout=default_timeout()) == 42
     ex.shutdown_maintenance_executor()
     assert ex.path_resolve_executor() is not pool
 
@@ -178,7 +178,7 @@ def test_governance_pool_is_isolated_bounded_and_reset() -> None:
     assert gov._thread_name_prefix == "mc-gov"
     assert gov._max_workers == ex._MAX_GOVERNANCE_WORKERS
     # Executes work.
-    assert gov.submit(lambda: 7 * 6).result(timeout=5) == 42
+    assert gov.submit(lambda: 7 * 6).result(timeout=default_timeout()) == 42
     # Shutdown resets it (fresh pool next use).
     ex.shutdown_maintenance_executor()
     assert ex.governance_executor() is not gov
@@ -435,11 +435,9 @@ async def test_cancelling_the_caller_does_not_kill_a_job_already_running():
 
     try:
         task = asyncio.create_task(ex.run_in_cron_pool(slow, timeout=30, queue_timeout=30))
-        for _ in range(300):
-            if entered.is_set():
-                break
-            await asyncio.sleep(0.01)
-        assert entered.is_set(), "precondition: the job must have started"
+        await async_wait_until(
+            entered.is_set, describe=lambda: "precondition: the job must have started"
+        )
 
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -505,7 +503,7 @@ def test_cron_gate_pool_is_isolated_from_the_externally_paced_governance_pool() 
     # Memoized, named, bounded.
     assert ex.cron_gate_executor() is gate
     assert gate._max_workers == ex._MAX_CRON_GATE_WORKERS
-    worker = gate.submit(threading.current_thread).result(timeout=5)
+    worker = gate.submit(threading.current_thread).result(timeout=default_timeout())
     assert worker.name.startswith("mc-crongate"), f"gate ran on {worker.name!r}"
     # Reset by the shared shutdown, or a later test inherits a saturated pool.
     ex.shutdown_maintenance_executor()

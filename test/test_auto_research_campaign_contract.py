@@ -28,7 +28,6 @@ import json
 import logging
 import sqlite3
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -39,6 +38,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.apps.builtins.auto_research import handlers as h
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 BASE = "/api/apps/auto-research"
 _HANDLERS_LOGGER = "kiro_crew.apps.builtins.auto_research.handlers"
@@ -293,15 +293,6 @@ def _write_finding(cid: str, cycle: int, **fields: Any) -> Path:
     path = d / "findings" / ("cycle_%03d.json" % cycle)
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
-
-
-async def _await_until(predicate, timeout: float = 10.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        await asyncio.sleep(0.01)
-    return False
 
 
 def _investigation_snapshot(*labels: str, status: str = "running") -> dict:
@@ -571,7 +562,7 @@ class TestPatchReach:
     async def test_emit_patch_reaches_thread_and_loop_emitters(self, sse: _Sink):
         loop = asyncio.get_running_loop()
         await asyncio.to_thread(h._sse_from_thread, loop, {"type": "t1", "campaign_id": "c"})
-        assert await _await_until(lambda: sse.types() == ["t1"])
+        await async_wait_until(lambda: sse.types() == ["t1"])
         cid = await asyncio.to_thread(_campaign)
         response = await h._handle_add_question(
             _req("POST", f"campaigns/{cid}/questions", match={"id": cid}, body={"text": "Why?"})
@@ -705,7 +696,7 @@ class TestPatchReach:
         await h._poll_workflow_campaign(cid, state, started)
         report = (h._campaign_dir(cid) / "FINDINGS.md").read_text(encoding="utf-8")
         assert report == "[REDACTED]"
-        assert await _await_until(lambda: sse.types() == ["complete"])
+        await async_wait_until(lambda: sse.types() == ["complete"])
 
     @pytest.mark.asyncio
     async def test_artifact_patches_reach_report_status(self, monkeypatch: pytest.MonkeyPatch):
@@ -804,9 +795,9 @@ class TestPatchReach:
         await asyncio.to_thread(_running, cid)
         task = asyncio.ensure_future(h._watchdog_loop({"state": None}))
         try:
-            assert await _await_until(lambda: suspend.await_count > 0)
+            await async_wait_until(lambda: suspend.await_count > 0)
             enabled["value"] = True
-            assert await _await_until(lambda: poll.await_count > 0)
+            await async_wait_until(lambda: poll.await_count > 0)
         finally:
             task.cancel()
             try:
@@ -826,7 +817,7 @@ class TestPatchReach:
         await asyncio.to_thread(_running, cid)
         task = asyncio.ensure_future(h._watchdog_loop({"state": None}))
         try:
-            assert await _await_until(lambda: "failed" in sse.types())
+            await async_wait_until(lambda: "failed" in sse.types())
         finally:
             task.cancel()
             try:
@@ -866,14 +857,14 @@ class TestTransitionSerialization:
             return _req("PATCH", f"campaigns/{cid}", match={"id": cid}, body={"action": "start"})
 
         first = asyncio.ensure_future(h._handle_action(_start()))
-        await asyncio.wait_for(entered.wait(), timeout=5)
+        await await_until(entered, what="the first start enters the transition")
         second = asyncio.ensure_future(h._handle_action(_start()))
         for _ in range(5):
             await asyncio.sleep(0)
         assert not second.done(), "the second start must wait for the first transition"
         release.set()
-        first_response = await asyncio.wait_for(first, timeout=5)
-        second_response = await asyncio.wait_for(second, timeout=5)
+        first_response = await await_until(first, what="the first start responds")
+        second_response = await await_until(second, what="the second start responds")
         assert first_response.status == 200
         assert second_response.status == 409
         assert _body(second_response) == {"error": "Cannot start a campaign in 'running' state"}
@@ -889,7 +880,7 @@ class TestTransitionSerialization:
         await h._expire_trust(cid, started)
         assert (await asyncio.to_thread(_row, cid) or {})["status"] == "needs_input"
         assert (h._campaign_dir(cid) / "questions.json").exists()
-        assert await _await_until(lambda: sse.types() == ["needs_input"])
+        await async_wait_until(lambda: sse.types() == ["needs_input"])
 
     @pytest.mark.asyncio
     async def test_settlement_for_a_replaced_run_touches_nothing(
@@ -980,7 +971,7 @@ class TestDeleteIsFinal:
         )
         assert _body(response)["deleted"] is True
         release.set()
-        await asyncio.wait_for(poll, timeout=5)
+        await await_until(poll, what="the workflow poll ends after the delete")
         assert not (h.research_dir() / cid).exists()
         assert await asyncio.to_thread(_row, cid) is None
         assert sse.events == []
@@ -1087,7 +1078,7 @@ class TestEffectOrdering:
         snap = _investigation_snapshot("investigate: q", status="finished")
         state = SimpleNamespace(workflow_service=SimpleNamespace(result=lambda _rid: snap))
         await h._poll_workflow_campaign(cid, state, started)
-        assert await _await_until(lambda: len(sse.events) == 2)
+        await async_wait_until(lambda: len(sse.events) == 2)
         assert sse.types() == ["new_finding", "complete"]
         report = (h._campaign_dir(cid) / "FINDINGS.md").read_text(encoding="utf-8")
         assert report == "final report"

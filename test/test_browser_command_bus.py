@@ -18,6 +18,7 @@ from kiro_crew.browser.command_bus import (
     NoPanelError,
     QueueFullError,
 )
+from kiro_crew.testing.wait import await_until, finished
 
 
 class Clock:
@@ -39,7 +40,9 @@ async def test_submit_fails_fast_when_no_host_is_polling() -> None:
     # (does NOT burn the panel_wait window), so the tool falls back at once.
     bus = BrowserCommandBus(now=Clock(), panel_wait_ms=5000)
     with pytest.raises(NoPanelError):
-        await asyncio.wait_for(bus.submit("s1", "snapshot"), 1.0)
+        # The bound IS the assertion: a submit that sat out the 5 s panel window
+        # would fail here by name instead of raising NoPanelError.
+        await finished(bus.submit("s1", "snapshot"), "submit refuses at once", timeout=1.0)
 
 
 @pytest.mark.asyncio
@@ -49,12 +52,12 @@ async def test_submit_drain_complete_roundtrip() -> None:
     await asyncio.sleep(0.02)  # let drain register the panel and block
     submit_task = asyncio.create_task(bus.submit("s1", "snapshot", {"a": 1}))
 
-    cmd = await asyncio.wait_for(drain_task, 2.0)
+    cmd = await await_until(drain_task, what="drain hands over the submitted command")
     assert cmd is not None
     assert cmd["op"] == "snapshot" and cmd["session_key"] == "s1" and cmd["args"] == {"a": 1}
 
     assert await bus.complete(cmd["id"], True, result={"ok": 1}) is True
-    res = await asyncio.wait_for(submit_task, 2.0)
+    res = await await_until(submit_task, what="submit resolves with the completion")
     assert res["ok"] is True and res["result"] == {"ok": 1}
 
 
@@ -65,7 +68,7 @@ async def test_cold_start_host_present_but_panel_unregistered_times_out() -> Non
     bus = BrowserCommandBus(now=Clock(), panel_wait_ms=30)
     assert await bus.drain([], wait_ms=0) is None
     with pytest.raises(NoPanelError):
-        await asyncio.wait_for(bus.submit("s1", "snapshot"), 1.0)
+        await finished(bus.submit("s1", "snapshot"), "submit gives up on the cold-start window")
 
 
 @pytest.mark.asyncio
@@ -75,7 +78,7 @@ async def test_queue_full_rejects_when_panel_present_but_undrained() -> None:
     pending = asyncio.create_task(bus.submit("s1", "snapshot"))  # fills the 1-slot queue
     await asyncio.sleep(0.02)
     with pytest.raises(QueueFullError):
-        await asyncio.wait_for(bus.submit("s1", "snapshot"), 1.0)
+        await finished(bus.submit("s1", "snapshot"), "submit refuses the full queue")
     pending.cancel()
     await asyncio.gather(pending, return_exceptions=True)  # drain before loop close
 
