@@ -144,6 +144,33 @@ history-cache owners are listed in
 sub-agent and MCP App state in [side](side.md), [subagent](subagent.md) and
 [mcp-apps](mcp-apps.md).
 
+### Hold-to-pick session switcher
+
+The recent-session chord (`chat-mru` / `chat-mru-back`: `⌃⌥\`` on macOS, `Alt+\``
+on Windows/Linux) has a visual layer. On the first qualifying keydown the
+dashboard opens an overlay — a grid of the five most recent open sessions, each
+card showing the title, its folder/project breadcrumb (or "Unfiled"), the agent,
+and a live status dot via the shared `statusOf` precedence
+(`website/src/pages/chat/sessionStatus.ts`, read by both this overlay and the
+hover `SessionFlyout`). Holding the modifier and pressing the chord again (or
+Tab / arrows) steps the selection; the Shift variant steps backward; releasing
+the modifier commits the selected session, Escape cancels. A quick tap commits
+before the overlay paints (`SWITCHER_SHOW_DELAY_MS`), so it still instant-toggles
+to the last-visited session exactly as before — the overlay is additive, it
+removes nothing.
+
+The ordered card list is a pure derivation over the same `chat.slotHistory` MRU
+the walk already reads — active slot first, history newest-first, then the
+remaining open slots in sidebar order, capped at five
+(`sessionSwitcherOrder` in `website/src/lib/sessionSwitcher.ts`). No new store
+field and no new chord: the overlay reuses `chat-mru`, and the keydown branch in
+`website/src/hooks/useKeyboardShortcuts.ts` opens it instead of jumping blind,
+routing the commit through the same `kbSwitch` (`switchSlot`) every keyboard
+switch uses. The gesture state machine is a standalone module driven by
+capture-phase document listeners (so the hold gesture owns the keyboard without
+stealing DOM focus); the overlay view is `website/src/components/SessionSwitcher.tsx`,
+mounted once from the app shell.
+
 ## Return-triggered warm task brief
 
 The owner-only `slot_focused` WebSocket frame also drives the warm task brief.

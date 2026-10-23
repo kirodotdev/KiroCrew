@@ -4434,7 +4434,10 @@
       "toggle_left_sidebar": "Toggle left sidebar",
       "toggle_session_panel": "Toggle session panel",
       "toggle_side_panel": "Toggle side panel",
-      "toggle_terminal": "Toggle terminal"
+      "toggle_terminal": "Toggle terminal",
+      "switcher_dialog_label": "Switch recent session",
+      "switcher_recent_count": "{{count}} most recent",
+      "switcher_hint": "Hold to step · release to switch · Esc to cancel"
     },
     "useNativeNotification": {
       "new_notifications_one": "{{count}} new notification",

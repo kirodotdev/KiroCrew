@@ -7,6 +7,7 @@ import { compareBySort, comparePinnedThenSort } from './sessionOrder'
 import { i18nT } from '../../i18n/t'
 import { rankedPinnedKeys, reconcilePinnedSessionOrder } from '../../utils/pinnedSessionOrder'
 import { LIST_TITLE_CLS } from '../../components/listShell'
+import { statusOf, statusDotClass } from './sessionStatus'
 
 /** Rows shown before the list defers to "show all". Sized so the flyout stays
  *  a glance rather than a panel: past ~8 rows the eye has to scan, at which
@@ -72,20 +73,6 @@ interface Props {
   /** Focus leaving the flyout for good. Bubbles from the rows, so it fires when
    *  the user tabs out of the surface entirely. */
   onBlur?: (e: React.FocusEvent) => void
-}
-
-/** Which status marker a row gets, in the sidebar's own precedence order: an
- *  approval request outranks an owed answer, an owed answer outranks activity,
- *  and activity outranks unread (a running slot is self-evidently unread).
- *  Returns null when the row is quiet — the slot still reserves the column so
- *  titles stay aligned. */
-function statusOf(slot: ChatSlot): 'approval' | 'question' | 'running' | 'unread' | null {
-  if (slot.pending_approval) return 'approval'
-  // Above running deliberately: a blocking question card parks the turn, so the
-  // slot reports running while nothing can advance without the user.
-  if (slot.needs_input) return 'question'
-  if (slot.running) return 'running'
-  return null
 }
 
 /**
@@ -316,13 +303,7 @@ const SessionFlyout = forwardRef<HTMLDivElement, Props>(function SessionFlyout({
                   never shift horizontally as slots start and stop running. */}
               <span
                 aria-hidden
-                className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                  status === 'approval' ? 'bg-warn'
-                    : status === 'question' ? 'bg-info'
-                      : status === 'running' ? 'bg-accent animate-pulse'
-                        : isUnread ? 'bg-ok'
-                          : 'bg-transparent'
-                }`}
+                className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDotClass(status, isUnread, 'bg-transparent')}`}
               />
               <span className={`min-w-0 flex-1 truncate ${isActive ? 'font-semibold' : ''}`}>{label}</span>
             </button>

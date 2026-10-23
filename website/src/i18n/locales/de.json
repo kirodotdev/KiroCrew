@@ -10220,7 +10220,10 @@
       "toggle_left_sidebar": "Linke Seitenleiste umschalten",
       "toggle_session_panel": "Sitzungsbereich umschalten",
       "toggle_side_panel": "Seitenpanel umschalten",
-      "toggle_terminal": "Terminal umschalten"
+      "toggle_terminal": "Terminal umschalten",
+      "switcher_dialog_label": "Switch recent session",
+      "switcher_recent_count": "{{count}} most recent",
+      "switcher_hint": "Hold to step · release to switch · Esc to cancel"
     },
     "useNativeNotification": {
       "new_notifications_one": "{{count}} neue Benachrichtigung",
