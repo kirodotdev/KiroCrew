@@ -11340,7 +11340,7 @@
         "queue_cancel_failed": "无法取消排队中的这个问题",
         "queue_edit_failed": "无法更新排队中的这个问题",
         "refresh_context": "刷新上下文",
-        "refresh_blocked_queued": "Finish or cancel the queued questions first — refreshing would discard them",
+        "refresh_blocked_queued": "请先完成或取消排队中的问题 — 刷新会丢弃它们",
         "restore_failed": "无法加载此侧边对话。提问前请先重试。现在发送的问题不会被提问，而会回到输入框。",
         "restore_failed_command": "无法加载此侧边对话，因此命令未执行。你的消息仍在输入框中。请再发送一次。",
         "restore_retry": "重试",
