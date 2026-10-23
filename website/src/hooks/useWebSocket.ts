@@ -91,8 +91,6 @@ export { identityOf, askIdsOf, reconcileQuestions, staleAskIds } from './websock
 export { resolvedSince } from './websocket/retiredIds'
 export { UPDATE_RESTART_LATCH_KEY, UPDATE_RESTART_LATCH_TTL_MS, consumeUpdateRestartLatch } from './websocket/bundleReload'
 export { emitSlotFocused, endSplitPaneFocus } from './websocket/attention'
-// The window event a bulk Resume run's outcome frame is re-broadcast as.
-export { RESUME_ALL_DONE_EVENT } from './websocket/browserEvents'
 // The revision ledger is module state, so it has one home and is reached through
 // this facade like every other owner binding.
 // The crew-log panel's cache key and frame applier, reached through this facade

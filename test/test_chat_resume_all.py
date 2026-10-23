@@ -1,17 +1,20 @@
 """``POST /api/chat/slots/resume-all`` -- the bulk form of the Continue button.
 
 Pins the candidate set (idle + interrupted; relay archives, running slots and
-slots with live sub-agents out), the wave bounds and stagger, the per-slot
-refusal and failure isolation, a candidate that finished before its wave, the
-background run (202 at once, one run at a time, cancellation of the run only
-between waves, one outcome frame however the run ends), the owner gate (app tokens and non-owner dashboard
-sessions refused before any dispatch), and the empty install.
+slots with live sub-agents out), one dispatch of every candidate whose cold
+starts queue at ``SessionManager._start_sem``, the per-slot refusal and failure
+isolation, a candidate that finished before its dispatch, the background run
+(202 at once, one run at a time, one outcome frame however the run ends), the
+owner gate (app tokens and non-owner dashboard sessions refused before any
+dispatch), and the empty install.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,7 +23,9 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 from dashboard_owner_helpers import as_owner
+from session_helpers import _mock_provider_factory
 
+from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard import chat_handlers as ch
 from kiro_crew.dashboard import chat_resume_all as mod
 from kiro_crew.dashboard.chat_utils import (
@@ -29,24 +34,21 @@ from kiro_crew.dashboard.chat_utils import (
     SESSION_START_FAILED_KIND,
     SYNTHETIC_RECOVERY_KIND,
 )
+from kiro_crew.session import SessionManager
+from kiro_crew.session_allocation import MAX_CONCURRENT_COLD_STARTS, new_cold_start_semaphore
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 _START_TIMEOUT = "Request initialize timed out after 90s"
-
-#: Ceiling on every await of a run or wave this file releases itself, so a run
-#: that never finishes fails here by name instead of hanging the worker.
-_RUN_CEILING_SECS = 10.0
 
 
 @pytest.fixture
 def dispatched(monkeypatch):
-    """Stub the real turn dispatcher and the audit sink; make the stagger observable."""
+    """Stub the real turn dispatcher and the audit sink."""
     started = AsyncMock(return_value=True)
     mock_sel = MagicMock()
-    pause = AsyncMock()
     monkeypatch.setattr(ch, "_start_next_queued_turn", started)
     monkeypatch.setattr(ch, "sel", lambda: mock_sel)
-    monkeypatch.setattr(mod, "_pause", pause)
-    return SimpleNamespace(started=started, sel=mock_sel, pause=pause)
+    return SimpleNamespace(started=started, sel=mock_sel)
 
 
 def _interrupted(slot) -> None:
@@ -71,8 +73,39 @@ def _mark_running(slot) -> None:
     slot.task = task
 
 
-def _run(state, request=None) -> dict:
-    return asyncio.run(mod.resume_all_interrupted(state, request))
+def _frames(state) -> MagicMock:
+    sink = MagicMock()
+    state.broadcast_ws_owners = sink
+    return sink
+
+
+async def _drain(state) -> None:
+    while state._background_tasks:
+        await await_until(
+            asyncio.gather(*list(state._background_tasks), return_exceptions=True),
+            what="the resume-all background tasks",
+        )
+
+
+async def _press(state) -> dict:
+    """One press through ``start_resume_all``, run to its one outcome frame.
+
+    Returns that frame without its ``run_id``, once the id is checked against the
+    202's, so a test reads the per-slot record alone.
+    """
+    frames = _frames(state)
+    status, body = mod.start_resume_all(state, {"app": ""})
+    assert status == 202, (status, body)
+    await _drain(state)
+    ((event, outcome),) = [c.args for c in frames.call_args_list]
+    assert event == mod.RESUME_ALL_DONE_FRAME
+    assert outcome.pop("run_id") == body["run_id"]
+    assert outcome["total"] == body["total"]
+    return outcome
+
+
+def _run(state) -> dict:
+    return asyncio.run(_press(state))
 
 
 # ── the candidate set ────────────────────────────────────────────────────────
@@ -136,72 +169,86 @@ def test_resumes_every_candidate_with_the_pick_up_body(tmp_path, dispatched):
     assert vias == {mod.RESUME_ALL_VIA}
 
 
-def test_an_empty_install_answers_at_once(tmp_path, dispatched):
+# ── one dispatch, paced by the cold-start queue ──────────────────────────────
+
+
+def test_a_burst_dispatches_every_candidate_and_its_starts_queue_at_start_sem(
+    tmp_path, dispatched, monkeypatch, healthy_host_memory
+):
+    """Forty candidates, one gather, and the cold-start queue sets the pace.
+
+    Every dispatch is in flight before any returns (the barrier below hangs a
+    run that paces itself), and the cold starts they lead to go through a real
+    ``SessionManager._start_sem``: four inside a start, the other thirty-six
+    waiting for a permit, none refused.
+    """
+    burst = 40
+    width = MAX_CONCURRENT_COLD_STARTS
     state = _make_state(tmp_path)
-    _finished(state.get_or_create_slot("done"))
-
-    out = _run(state)
-
-    assert out == {"ok": True, "total": 0, "resumed": [], "skipped": [], "failed": []}
-    dispatched.started.assert_not_awaited()
-    dispatched.pause.assert_not_awaited()
-
-
-# ── waves ────────────────────────────────────────────────────────────────────
-
-
-def test_launches_go_out_in_waves_with_a_pause_between(tmp_path, dispatched, monkeypatch):
-    """Nine candidates, waves of four: three waves, two pauses, none before the first."""
-    monkeypatch.setattr(mod, "RESUME_ALL_WAVE_SIZE", 4)
-    state = _make_state(tmp_path)
-    for i in range(9):
+    for i in range(burst):
         _interrupted(state.get_or_create_slot(f"s{i}"))
-
-    out = _run(state)
-
-    assert out["resumed"] == [f"s{i}" for i in range(9)]
-    assert dispatched.pause.await_count == 2
-    assert all(c.args == (mod.RESUME_ALL_STAGGER_SECS,) for c in dispatched.pause.call_args_list)
-
-
-def test_a_wave_dispatches_at_most_the_wave_size_at_once(tmp_path, dispatched, monkeypatch):
-    """The dispatcher is held open: the fifth launch waits for the first wave."""
-    monkeypatch.setattr(mod, "RESUME_ALL_WAVE_SIZE", 4)
-    state = _make_state(tmp_path)
-    for i in range(6):
-        _interrupted(state.get_or_create_slot(f"s{i}"))
-    in_flight = 0
-    peak = 0
-    release = asyncio.Event()
-
-    async def slow_start(_state, _slot):
-        nonlocal in_flight, peak
-        in_flight += 1
-        peak = max(peak, in_flight)
-        await release.wait()
-        in_flight -= 1
-        return True
-
-    monkeypatch.setattr(ch, "_start_next_queued_turn", slow_start)
+    base = _mock_provider_factory()
 
     async def drive():
-        task = asyncio.ensure_future(mod.resume_all_interrupted(state))
-        # Let the first wave reach the dispatcher; the lock and the sub-agent
-        # probe inside continue_slot_turn take a few loop turns each.
-        for _ in range(500):
-            if in_flight == 4:
-                break
-            await asyncio.sleep(0)
-        for _ in range(50):
-            await asyncio.sleep(0)
-        assert in_flight == 4, "the second wave must wait for the first"
-        release.set()
-        return await asyncio.wait_for(task, _RUN_CEILING_SECS)
+        all_in = asyncio.Event()
+        release = asyncio.Event()
+        entered = 0
+        inside = 0
+        peak = 0
+        started_keys: list[str] = []
+        starts: list[asyncio.Future] = []
 
-    out = asyncio.run(drive())
+        def factory(session_key=None, **kwargs):
+            provider = base(session_key=session_key, **kwargs)
 
-    assert peak == 4
-    assert len(out["resumed"]) == 6
+            async def start(*_args, **_kwargs):
+                nonlocal inside, peak
+                inside += 1
+                peak = max(peak, inside)
+                try:
+                    await release.wait()
+                finally:
+                    inside -= 1
+                started_keys.append(session_key)
+
+            provider.start = start
+            return provider
+
+        mgr = SessionManager(KiroCrewConfig(), provider_factory=factory)
+        mgr._start_sem = new_cold_start_semaphore(width)
+
+        async def dispatch(_state, slot):
+            nonlocal entered
+            entered += 1
+            if entered == burst:
+                all_in.set()
+            await all_in.wait()
+            # As the queue drain does: the turn runs in its own task, so the
+            # dispatch returns before its cold start.
+            slot._queue.clear()
+            starts.append(asyncio.ensure_future(mgr.get_or_create(f"dashboard:{slot.key}")))
+            return True
+
+        monkeypatch.setattr(ch, "_start_next_queued_turn", dispatch)
+        try:
+            out = await _press(state)
+            await async_wait_until(
+                lambda: inside == width and mgr._start_sem.queued == burst - width,
+                describe=lambda: f"inside={inside} queued={mgr._start_sem.queued}",
+            )
+            release.set()
+            await await_until(asyncio.gather(*starts), what="every cold start")
+            return out, peak, started_keys
+        finally:
+            release.set()
+            await finished(mgr.close_all(), "close_all")
+
+    out, peak, started_keys = asyncio.run(drive())
+
+    assert sorted(out["resumed"]) == sorted(f"s{i}" for i in range(burst))
+    assert out["skipped"] == [] and out["failed"] == []
+    assert peak == width, "never more starts inside the semaphore than its width"
+    assert sorted(started_keys) == sorted(f"dashboard:s{i}" for i in range(burst))
 
 
 # ── isolation ────────────────────────────────────────────────────────────────
@@ -223,7 +270,7 @@ def test_a_refused_slot_is_reported_by_code_and_the_rest_resume(tmp_path, dispat
     dispatched.started.assert_awaited_once()
 
 
-def test_a_slot_that_fails_to_dispatch_does_not_stop_the_wave(tmp_path, dispatched, monkeypatch):
+def test_a_slot_that_fails_to_dispatch_does_not_stop_the_others(tmp_path, dispatched, monkeypatch):
     state = _make_state(tmp_path)
     _interrupted(state.get_or_create_slot("ok1"))
     _interrupted(state.get_or_create_slot("boom"))
@@ -254,8 +301,8 @@ def test_a_slot_replaced_while_queued_is_skipped_not_resumed(tmp_path, dispatche
     # re-registered to a fresh object (a reconnect landing mid-request).
     real_collect = mod.collect_interrupted_idle
 
-    def collect_then_swap(st):
-        picked = real_collect(st)
+    def collect_then_swap(st, **kw):
+        picked = real_collect(st, **kw)
         st._slots["swap"] = replacement
         return picked
 
@@ -269,12 +316,11 @@ def test_a_slot_replaced_while_queued_is_skipped_not_resumed(tmp_path, dispatche
     assert list(replacement._queue) == []
 
 
-# ── a candidate that finished before its wave ────────────────────────────────
+# ── a candidate that finished before its dispatch ────────────────────────────
 
 
-def test_slot_finished_between_waves_is_not_continued(tmp_path, dispatched, monkeypatch):
-    """s4 is in wave 2; its turn finishes on its own during wave 1's pause."""
-    monkeypatch.setattr(mod, "RESUME_ALL_WAVE_SIZE", 4)
+def test_slot_finished_before_its_dispatch_is_not_continued(tmp_path, dispatched, monkeypatch):
+    """s4's turn finishes on its own between the collect and its Continue."""
     state = _make_state(tmp_path)
     for i in range(5):
         _interrupted(state.get_or_create_slot(f"s{i}"))
@@ -286,11 +332,14 @@ def test_slot_finished_between_waves_is_not_continued(tmp_path, dispatched, monk
         return True
 
     monkeypatch.setattr(ch, "_start_next_queued_turn", start)
+    real_load = mod.load_window_off_loop
 
-    async def pause(_secs):
-        state._slots["s4"].append("assistant", "finished on its own", "msg msg-a")
+    async def load_then_finish(slot):
+        await real_load(slot)
+        if slot.key == "s4":
+            slot.append("assistant", "finished on its own", "msg msg-a")
 
-    monkeypatch.setattr(mod, "_pause", pause)
+    monkeypatch.setattr(mod, "load_window_off_loop", load_then_finish)
     out = _run(state)
 
     assert "s4" not in out["resumed"], f"s4 got {bodies.get('s4')!r}"
@@ -314,7 +363,7 @@ def test_second_press_after_turns_finished_fast_does_not_carry_on(
     monkeypatch.setattr(ch, "_start_next_queued_turn", start_and_finish)
     stale = mod.collect_interrupted_idle(state)  # the second press's snapshot
     _run(state)  # the first press runs to completion
-    monkeypatch.setattr(mod, "collect_interrupted_idle", lambda _s: stale)
+    monkeypatch.setattr(mod, "collect_interrupted_idle", lambda _s, **_k: stale)
     seen: list[str] = []
 
     async def record(_state, slot):
@@ -396,6 +445,107 @@ def test_a_slot_whose_channel_turn_is_in_flight_is_not_a_candidate(
     assert out["skipped"] == []
 
 
+#: The fixture the sidebar's count is checked against too (see its ``$comment``).
+_COUNT_FIXTURE = Path(__file__).parent / "fixtures" / "resume_all_candidates.json"
+#: The slots-payload fields the browser's count reads (``interruptedIdleSlots``
+#: plus the chat page's ``isChatPageSurface`` filter).
+_COUNT_ROW_FIELDS = frozenset(
+    {"mode", "surface", "running", "interrupted", "subagents_running", "executor"}
+)
+_TRANSCRIPTS = {
+    "interrupted": _interrupted,
+    "start_failed": _start_failed,
+    "finished": _finished,
+    "empty": lambda _slot: None,
+}
+
+
+def _count_cases() -> list[dict]:
+    return json.loads(_COUNT_FIXTURE.read_text(encoding="utf-8"))["cases"]
+
+
+def _build_from_facts(state, entries: list[dict], monkeypatch) -> None:
+    linked: set[str] = set()
+    children: set[str] = set()
+    building: set[str] = set()
+    for entry in entries:
+        facts = entry["facts"]
+        slot = state.get_or_create_slot(entry["key"])
+        _TRANSCRIPTS[facts.get("transcript", "empty")](slot)
+        if facts.get("running"):
+            _mark_running(slot)
+        if facts.get("reserved"):
+            slot._turn_admission_reserved = True
+        if facts.get("linked_turn_running"):
+            linked.add(slot.key)
+        if facts.get("subagents_running"):
+            children.add(ch.effective_session_key(slot))
+        if facts.get("under_construction"):
+            building.add(slot.key)
+        if "executor" in facts:
+            slot.executor = facts["executor"]
+        if "mode" in facts:
+            slot.mode = facts["mode"]
+        if "agent" in facts:
+            slot.agent = facts["agent"]
+        if "created_by" in facts:
+            slot._created_by = facts["created_by"]
+    slot_type = type(next(iter(state._slots.values())))
+    monkeypatch.setattr(slot_type, "linked_turn_running", property(lambda s: s.key in linked))
+    state.subagents = SimpleNamespace(
+        running_agents_for=lambda key: ["child"] if key in children else [],
+        published_queued_depths=lambda: {},
+    )
+    state._slots_under_construction = building
+
+
+@pytest.mark.parametrize("case", _count_cases(), ids=lambda case: case["name"])
+def test_the_server_total_is_the_count_the_sidebar_reads_from_the_shared_fixture(
+    case, tmp_path, dispatched, monkeypatch
+):
+    """The fixture's rows are what ``serialize_slots`` sends for its facts, and
+    the server picks exactly its ``expected`` keys, as ``total`` too. The vitest
+    suite checks the sidebar's count against the same rows and keys."""
+    from kiro_crew import crew_mode
+
+    # The Crew Mode lineage from these slots alone: no remembered root, no
+    # persisted edge, the shipped conductor list.
+    monkeypatch.setattr(crew_mode, "_known_roots", set())
+    monkeypatch.setattr(crew_mode, "persisted_parents", dict)
+    monkeypatch.setattr(crew_mode, "_live_cfg", lambda: None)
+    state = _make_state(tmp_path)
+    _build_from_facts(state, case["slots"], monkeypatch)
+
+    payload = {row["key"]: row for row in state.serialize_slots()}
+    for entry in case["slots"]:
+        want = entry["row"]
+        if want is None:
+            assert entry["key"] not in payload, f"{entry['key']} is in the slots payload"
+            continue
+        assert (
+            _COUNT_ROW_FIELDS <= set(want) <= _COUNT_ROW_FIELDS | {"crew_root"}
+        ), f"{entry['key']}: name every field the count reads"
+        # ``crew_root`` is on a worker's row only; a row the fixture gives none
+        # must carry none, or the sidebar would drop a row this case counts.
+        got = {field: payload[entry["key"]].get(field) for field in _COUNT_ROW_FIELDS}
+        got["crew_root"] = payload[entry["key"]].get("crew_root") or None
+        assert got == {"crew_root": None, **want}, entry["key"]
+
+    crew = case.get("crew_mode", False)
+    picked = mod.collect_interrupted_idle(state, crew_mode=crew)
+    assert [name for name, _ in picked] == case["expected"]
+
+    async def press():
+        status, body = mod.start_resume_all(state, {"app": ""}, crew_mode=crew)
+        await _drain(state)
+        return status, body
+
+    _frames(state)
+    status, body = asyncio.run(press())
+    assert status == (202 if case["expected"] else 200)
+    assert body["total"] == len(case["expected"])
+
+
 class _PendingWindow:
     """A restored row's lazy window loader: ``read`` is the disk read, the call
     is the replay. Records which thread each read ran on."""
@@ -446,7 +596,7 @@ def test_a_restored_candidate_loads_its_window_off_the_loop(tmp_path, dispatched
     loader = _restore_pending(slot)
 
     async def drive():
-        return threading.get_ident(), await mod.resume_all_interrupted(state)
+        return threading.get_ident(), await _press(state)
 
     loop_thread, out = asyncio.run(drive())
 
@@ -474,36 +624,26 @@ def test_a_failed_window_read_fails_that_slot_only(tmp_path, dispatched):
     assert out["failed"] == [{"slot": "broken", "error": "OSError"}]
 
 
-def test_a_failed_slots_push_after_dispatch_still_counts_as_resumed(
-    tmp_path, dispatched, monkeypatch
-):
+def test_a_failed_slots_push_fails_only_its_own_slot(tmp_path, dispatched, monkeypatch):
+    """``continue_slot_turn`` raises when the slots push after its dispatch fails;
+    ``_one`` records that slot as failed and the other slot still resumes."""
     state = _make_state(tmp_path)
     _interrupted(state.get_or_create_slot("a"))
     _interrupted(state.get_or_create_slot("b"))
-    monkeypatch.setattr(state, "push_slots_update", MagicMock(side_effect=RuntimeError("ws")))
+    monkeypatch.setattr(
+        state, "push_slots_update", MagicMock(side_effect=[RuntimeError("ws"), None])
+    )
 
     out = _run(state)
 
-    assert out["resumed"] == ["a", "b"]
-    assert out["failed"] == []
+    (failed,) = out["failed"]
+    assert failed["error"] == "RuntimeError"
+    assert sorted([*out["resumed"], failed["slot"]]) == ["a", "b"]
+    assert len(out["resumed"]) == 1
     assert dispatched.started.await_count == 2
 
 
 # ── the background run ───────────────────────────────────────────────────────
-
-
-def _frames(state) -> MagicMock:
-    sink = MagicMock()
-    state.broadcast_ws_owners = sink
-    return sink
-
-
-async def _drain(state) -> None:
-    while state._background_tasks:
-        await asyncio.wait_for(
-            asyncio.gather(*list(state._background_tasks), return_exceptions=True),
-            _RUN_CEILING_SECS,
-        )
 
 
 def test_a_run_answers_at_once_and_pushes_its_outcome(tmp_path, dispatched):
@@ -602,31 +742,24 @@ def test_a_second_press_during_a_run_is_refused_and_dispatches_nothing(
     assert third[0] == 202
 
 
-def test_cancelling_the_run_mid_wave_leaves_no_slot_half_queued(tmp_path, dispatched, monkeypatch):
-    """Cancelling the run task stops it BETWEEN waves only.
-
-    This is a cancellation of the run task itself, not gateway shutdown: loop
-    teardown cancels every task, the wave included, and the shield does not
-    apply there. Wave 2's starts are held open when the run is cancelled. The shielded wave
-    still runs to its end, so every slot whose recovery entry was queued gets
-    its dispatch; waves 3+ are never touched; the outcome frame says cancelled.
-    """
-    monkeypatch.setattr(mod, "RESUME_ALL_WAVE_SIZE", 4)
+def test_a_cancelled_run_sends_one_outcome_frame_and_frees_the_button(
+    tmp_path, dispatched, monkeypatch
+):
+    """Loop teardown is what cancels a run: one frame marked ``cancelled`` still
+    goes out, with the slots recorded so far, and the button is free again."""
     state = _make_state(tmp_path)
     frames = _frames(state)
-    for i in range(12):
+    for i in range(3):
         _interrupted(state.get_or_create_slot(f"s{i}"))
+    all_in = asyncio.Event()
     hold = asyncio.Event()
-    in_wave2 = 0
-    dispatched_keys: list[str] = []
+    entered: list[str] = []
 
     async def start(_state, slot):
-        nonlocal in_wave2
-        if int(slot.key[1:]) >= 4:
-            in_wave2 += 1
-            await hold.wait()
-        slot._queue.clear()
-        dispatched_keys.append(slot.key)
+        entered.append(slot.key)
+        if len(entered) == 3:
+            all_in.set()
+        await hold.wait()
         return True
 
     monkeypatch.setattr(ch, "_start_next_queued_turn", start)
@@ -635,44 +768,41 @@ def test_cancelling_the_run_mid_wave_leaves_no_slot_half_queued(tmp_path, dispat
         status, _body = mod.start_resume_all(state, {"app": ""})
         assert status == 202
         run, _run_id, _total = getattr(state, mod._RUN_ATTR)
-        for _ in range(2000):
-            if in_wave2 == 4:
-                break
-            await asyncio.sleep(0)
-        assert in_wave2 == 4
+        await await_until(all_in, what="every dispatch in flight")
         run.cancel()
         with pytest.raises(asyncio.CancelledError):
-            # shield: a ceiling hit must not cancel the run a second time.
-            await asyncio.wait_for(asyncio.shield(run), _RUN_CEILING_SECS)
-        hold.set()
+            await await_until(run, what="the cancelled run finishing")
         await _drain(state)
 
     asyncio.run(drive())
 
-    depth = {k: state._slots[k].queue_depth for k in state._slots}
-    assert all(d == 0 for d in depth.values()), f"a slot was left half-queued: {depth}"
-    assert sorted(dispatched_keys, key=lambda k: int(k[1:])) == [f"s{i}" for i in range(8)]
     (call,) = frames.call_args_list
     outcome = call.args[1]
     assert outcome["cancelled"] is True
-    # Sent once the in-flight wave finished, so it reports that wave too.
-    assert sorted(outcome["resumed"], key=lambda k: int(k[1:])) == [f"s{i}" for i in range(8)]
+    assert outcome["resumed"] == [] and outcome["failed"] == []
     assert getattr(state, mod._RUN_ATTR) is None
-
-    async def press_again():
-        return await ch.continue_slot_turn(state, state._slots["s9"], directive_user_origin=True)
-
-    assert asyncio.run(press_again()) == "resumed", "an untouched slot still takes Resume"
+    # Only loop teardown cancels a run, so each slot whose dispatch was in flight
+    # keeps its queued recovery entry for the restart to reload.
+    assert {k: state._slots[k].queue_depth for k in ("s0", "s1", "s2")} == {
+        "s0": 1,
+        "s1": 1,
+        "s2": 1,
+    }
 
 
 def test_an_exception_outside_the_slot_work_still_sends_the_outcome(
     tmp_path, dispatched, monkeypatch, caplog
 ):
-    """An exception escaping the waves outside ``_one`` (here the inter-wave
-    pause) frees the button, sends one ``ok: false`` frame naming every slot it
-    never reached, and is logged through ``_log_task_exception``."""
-    monkeypatch.setattr(mod, "RESUME_ALL_WAVE_SIZE", 1)
-    monkeypatch.setattr(mod, "_pause", AsyncMock(side_effect=OSError("boom")))
+    """An exception escaping the per-slot work (here raised by the candidate
+    loop itself after one slot) frees the button, sends one ``ok: false`` frame
+    naming every slot it never recorded, and is logged through
+    ``_log_task_exception``."""
+
+    async def resume_one_then_fail(_state, candidates, _claims, outcome):
+        outcome["resumed"].append(candidates[0][0])
+        raise OSError("boom")
+
+    monkeypatch.setattr(mod, "_resume_candidates", resume_one_then_fail)
     state = _make_state(tmp_path)
     frames = _frames(state)
     for i in range(2):
@@ -725,6 +855,49 @@ async def test_the_owner_resumes_over_http(tmp_path, dispatched):
     assert data == {"ok": True, "total": 1, "run_id": data["run_id"]}
     dispatched.started.assert_awaited_once()
     assert frames.call_args.args[1]["resumed"] == ["a"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "want"),
+    [
+        ({"crew_mode": True}, ["conductor"]),
+        (None, ["conductor", "worker"]),
+        ({"crew_mode": "yes"}, ["conductor", "worker"]),
+        ("not json", ["conductor", "worker"]),
+    ],
+)
+async def test_the_press_says_whether_crew_mode_left_workers_out(
+    body, want, tmp_path, dispatched, monkeypatch
+):
+    """Only ``{"crew_mode": true}`` leaves a listed root's worker out of the run;
+    no body, another value or a body that is no JSON counts it, as the sidebar
+    does with the preview off."""
+    from kiro_crew import crew_mode
+
+    monkeypatch.setattr(crew_mode, "_known_roots", set())
+    monkeypatch.setattr(crew_mode, "persisted_parents", dict)
+    monkeypatch.setattr(crew_mode, "_live_cfg", lambda: None)
+    state = _make_state(tmp_path)
+    frames = _frames(state)
+    root = state.get_or_create_slot("conductor")
+    root.agent = "kirocrew-conductor"
+    _interrupted(root)
+    worker = state.get_or_create_slot("worker")
+    worker._created_by = "conductor"
+    _interrupted(worker)
+
+    async with TestClient(TestServer(_app(state))) as client:
+        if isinstance(body, str):
+            resp = await client.post("/api/chat/slots/resume-all", data=body)
+        else:
+            resp = await client.post("/api/chat/slots/resume-all", json=body)
+        data = await resp.json()
+        await _drain(state)
+
+    assert resp.status == 202
+    assert data["total"] == len(want)
+    assert sorted(frames.call_args.args[1]["resumed"]) == sorted(want)
 
 
 @pytest.mark.asyncio

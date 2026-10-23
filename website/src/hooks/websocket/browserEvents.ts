@@ -20,9 +20,6 @@ export function emitArtifactDeleted(slug: string): void {
 
 import { RESUME_ALL_DONE_EVENT } from '../../lib/resumeAllEvent'
 
-/** The event name the sidebar's Resume-all row listens on. */
-export { RESUME_ALL_DONE_EVENT }
-
 /** A bulk Resume run finished (owner sockets only). The sidebar row that
  *  started the run, matched by its `run_id`, shows the outcome. */
 export function emitResumeAllDone(detail: unknown): void {

@@ -9,7 +9,7 @@ const resumeAll = vi.fn()
 vi.mock('../api/client', () => ({ api: { chatSlotsResumeAll: (...a: unknown[]) => resumeAll(...a) } }))
 
 import { useResumeAll, resumeAllPendingCeilingMs } from '../pages/chat-sidebar/resumeAll'
-import { RESUME_ALL_DONE_EVENT } from '../hooks/useWebSocket'
+import { RESUME_ALL_DONE_EVENT } from '../lib/resumeAllEvent'
 import type { Slot } from '../pages/chat-sidebar/types'
 
 const slots = [{ key: 'a', title: 'a', running: false, messages: 1, interrupted: true }] as unknown as Slot[]
@@ -43,6 +43,60 @@ describe('useResumeAll — the outcome frame and the 202 in either order', () =>
     expect(result.current.pending).toBe(false)
     expect(result.current.result?.run_id).toBe('r1')
     expect(result.current.result?.resumed).toEqual(['a'])
+  })
+
+  it('settles from its own run\u2019s frame when another run\u2019s frame came first', async () => {
+    const answer = deferred<unknown>()
+    resumeAll.mockReturnValue(answer.promise)
+    const { result } = renderHook(() => useResumeAll({ localSlots: slots, connected: true }), { wrapper: wrap })
+    act(() => result.current.run())
+    act(() => frame('older'))
+    act(() => frame('r1'))
+    await act(async () => { answer.resolve({ ok: true, total: 1, run_id: 'r1' }); await Promise.resolve() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+    expect(result.current.pending).toBe(false)
+    expect(result.current.result?.run_id).toBe('r1')
+  })
+
+  it('a 202 read after a second run finished settles from its own run\u2019s frame', async () => {
+    // The server's one-run guard ends when a run's dispatch is done, not when
+    // its 202 reaches the tab, so another tab's run can start and finish before
+    // this tab reads its answer. Both frames arrive first; the 202 names r1.
+    const answer = deferred<unknown>()
+    resumeAll.mockReturnValue(answer.promise)
+    const { result } = renderHook(() => useResumeAll({ localSlots: slots, connected: true }), { wrapper: wrap })
+    act(() => result.current.run())
+    act(() => frame('r1'))
+    act(() => frame('r2'))
+    await act(async () => { answer.resolve({ ok: true, total: 1, run_id: 'r1' }); await Promise.resolve() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+    expect(result.current.pending).toBe(false)
+    expect(result.current.result?.run_id).toBe('r1')
+  })
+
+  it('keeps nothing once the answer is read: a later press does not settle from a frame heard before it', async () => {
+    // The map lives only while a request is open. After the 202 is read, a
+    // frame for another run is not kept, so the next press's 202 that names
+    // that run waits for a frame of its own.
+    const first = deferred<unknown>()
+    resumeAll.mockReturnValueOnce(first.promise)
+    const { result } = renderHook(() => useResumeAll({ localSlots: slots, connected: true }), { wrapper: wrap })
+    act(() => result.current.run())
+    await act(async () => { first.resolve({ ok: true, total: 1, run_id: 'r1' }); await Promise.resolve() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+    act(() => frame('r2'))
+    act(() => frame('r1'))
+    expect(result.current.result?.run_id).toBe('r1')
+    const second = deferred<unknown>()
+    resumeAll.mockReturnValueOnce(second.promise)
+    act(() => result.current.run())
+    await act(async () => { second.resolve({ ok: true, total: 1, run_id: 'r2' }); await Promise.resolve() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+    expect(result.current.pending).toBe(true)
+    expect(result.current.result).toBeNull()
+    act(() => frame('r2'))
+    expect(result.current.pending).toBe(false)
+    expect(result.current.result?.run_id).toBe('r2')
   })
 
   it('an early frame for another run does not settle this one', async () => {
