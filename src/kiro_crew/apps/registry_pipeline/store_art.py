@@ -1113,7 +1113,26 @@ async def _fetch_owner_tier_store_assets(entry: dict[str, Any], registry_name: s
 
     tmp_root: str | None = None
     try:
-        tmp_root = await asyncio.to_thread(tempfile.mkdtemp, prefix="kirocrew-store-art-")
+        # The scratch dir is made off the loop, so a cancel can land while that
+        # thread is still creating it -- before ``tmp_root`` is bound, which would
+        # leave the ``finally`` nothing to remove. Shield the hop and, on a cancel,
+        # wait for the thread's path -- through any further cancel too -- so the
+        # ``finally`` still removes the dir.
+        mkdtemp_task = asyncio.ensure_future(
+            asyncio.to_thread(tempfile.mkdtemp, prefix="kirocrew-store-art-")
+        )
+        try:
+            tmp_root = await asyncio.shield(mkdtemp_task)
+        except asyncio.CancelledError:
+            while not mkdtemp_task.done():
+                try:
+                    await asyncio.wait({mkdtemp_task})
+                except asyncio.CancelledError:
+                    pass
+            # A failed mkdtemp made no dir; the cancel is what propagates either way.
+            if not mkdtemp_task.cancelled() and mkdtemp_task.exception() is None:
+                tmp_root = mkdtemp_task.result()
+            raise
         # Owner posture: the same pair the install path grants after
         # ``_owner_tier_confirmed`` -- owner credentials plus the context sandbox
         # mode -- and the same audit record, under this path's own operation name
