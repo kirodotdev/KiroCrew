@@ -578,6 +578,82 @@ def test_two_takeovers_of_one_session_serialize(tmp_path, monkeypatch):
     assert {r["previous_parent"] or "none" for r in results} == set(applied)
 
 
+def test_a_spawn_edge_in_flight_is_seen_by_an_overlapping_adoptions_loop_guard(
+    tmp_path, monkeypatch
+):
+    """A spawn queues ``child -> creator``; an overlapping adoption of the creator under
+    the child must be refused.
+
+    Spawn-time parenting records its edge through the creator's log the same way a
+    takeover does, and the two can race: the spawn queues ``child -> creator`` and, while
+    that append is still in flight, an adoption of the creator under the child would add
+    ``creator -> child``. Neither edge is in the settled fold yet, so a loop guard reading
+    only the settled tree would wave the adoption through and the pair would close
+    ``child -> creator -> child`` -- a cycle the fold cannot present, flattening the
+    branch. The spawn registers its queued edge for exactly the in-flight window, so the
+    adoption's guard sees it and refuses.
+    """
+    from kiro_crew.dashboard.session_control_parts import session_create as scc
+
+    state = _make_state(tmp_path)
+    creator = _live(state, _slot(state, "chat-creator"), "sid-creator")
+    child = _live(state, _slot(state, "chat-child"), "sid-child")
+
+    # Hold the spawn append unsettled: capture its on_settled, do not call it, so the
+    # queued edge is still in flight when the adoption runs.
+    held: dict = {}
+
+    def _hold_spawn(sid, **kw):
+        held["on_settled"] = kw.get("on_settled")
+
+    monkeypatch.setattr(emit, "on_session_spawned", _hold_spawn)
+
+    # The adoption, if it were wrongly allowed, would settle into the tree -- stubbed the
+    # same way the two-takeover test stubs it, so the folded result is realistic.
+    def _settle_adopt(sid, **kw):
+        settle = kw.pop("on_settled", None)
+        stp.projection().apply_edge(
+            EdgeRecord(slot=kw["slot"], parent_slot=kw["parent_slot"], at=200, sid=sid, seq=9)
+        )
+        if settle is not None:
+            settle(True)
+
+    monkeypatch.setattr(emit, "on_session_adopted", _settle_adopt)
+
+    # A minimal child carrying what _record_spawn reads: a minted lineage whose creator is
+    # the creator slot. _created_by is a SLOT key (session_create sets it to caller_key),
+    # the same namespace the loop guard and the edge store use.
+    child_obj = type(
+        "_Child",
+        (),
+        {
+            "_lineage_minted": True,
+            "_created_by": creator.key,
+            "_created_by_sid": "sid-creator",
+            "key": child.key,
+        },
+    )()
+
+    async def _race():
+        spawn = asyncio.create_task(scc._record_spawn(creator.key, child_obj))
+        await asyncio.sleep(0)  # let the spawn hand its append over and register the edge
+        try:
+            await sc.adopt_target(state, caller_session_key=_key(child), target=creator.key)
+            refused = None
+        except sc.SessionControlError as exc:
+            refused = exc.code
+        # Settle the held spawn so its task completes and the edge is dropped.
+        if held.get("on_settled") is not None:
+            held["on_settled"](True)
+        await spawn
+        return refused
+
+    refused = _run(_race())
+    assert refused == "would_cycle"
+    # The edge is dropped once the spawn settles, so it leaves nothing behind.
+    assert sc._tree_pending_edges == {}
+
+
 # ── the tool surface ─────────────────────────────────────────────────────────
 
 
