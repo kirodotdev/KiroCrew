@@ -124,6 +124,67 @@ operation you cannot express as a shell command line belongs in the
 string is genuinely platform-neutral. A row carrying a path, a separator, or an
 executable name is `posix` or `windows`, never `any`.
 
+NO CREDENTIAL-SHAPED LITERALS IN `kind`, `command_or_flow` OR `platform`.
+The candidate set is a public artifact, so before it travels the lane runs
+`scripts/scope_redact.py --drop-changed-fields` over it. That scrub cannot
+rewrite a field the classifier reads (a rewritten command is a command nobody
+proposed), and it cannot drop the row (that would remove a boundary silently).
+So ONE such literal in ONE classified field refuses the whole run, and every
+other row you wrote goes unmeasured. A shape in `reason` costs only that
+row's `reason`, but keep it out of there too.
+
+These are the shapes it refuses:
+- anything starting `arn:aws`, which is every ARN in every partition
+  (`arn:aws`, `arn:aws-cn`, `arn:aws-us-gov`), with or without an account id;
+- any standalone run of exactly 12 digits, which is how an account id reads,
+  even when the digits mean something else;
+- an AWS access-key id: `AKIA` or `ASIA` followed by 16 base32 characters;
+- a GitHub token: `ghp_`, `gho_`, `ghu_`, `ghs_` or `ghr_` followed by 20 or
+  more characters, or a `github_pat_` token;
+- `aws_secret_access_key`, `aws_session_token` or `x-amz-security-token`, in
+  any letter case, followed by `=` or `:` and a value.
+
+Write the operation the way a script or a person runs it without pasting the
+literal. The account id and the ARN come from a variable, a lookup, or a name:
+- `aws sns get-topic-attributes --topic-arn "$TOPIC_ARN"` (posix), or
+  `%TOPIC_ARN%` in the windows row;
+- `aws sns get-topic-attributes --topic-arn "arn:${AWS_PARTITION}:sns:us-west-2:${AWS_ACCOUNT_ID}:MyStack-Topic"`,
+  which keeps the ARN's structure and puts no partition or account literal in it;
+- `aws cloudformation describe-stacks --stack-name MyStack`, which reaches the
+  same resource by name.
+
+Never write a placeholder where the literal was. A `[REDACTED...]` marker is
+refused by the harness, and `<account-id>` is not a command anyone runs.
+
+Sometimes the boundary the diff moves IS the literal: a credential pattern, a
+redaction rule, or an exfiltration scanner that keys on the digits or the
+`arn:aws` prefix themselves. A row cannot carry that boundary. Probe what the
+tier sees around it with the spellings above, and name the literal-value
+boundary under `UNADJUDICATED`, describing its shape in words (for example
+"an SNS ARN whose account id is followed by a long CDK-generated topic name").
+Do not quote the literal there either.
+
+The rows below are the spellings above as the harness reads them. They pass
+the scrub as written, and `test/test_scope_prompt_credential_literals.py`
+keeps it that way:
+
+    CLEAN-ROW-EXAMPLES-BEGIN
+    {"golden_paths": [
+      {"kind": "shell", "platform": "posix",
+       "command_or_flow": "aws sns get-topic-attributes --topic-arn \"$TOPIC_ARN\"",
+       "reason": "an operator checks a CDK-deployed topic after a deploy"},
+      {"kind": "shell", "platform": "windows",
+       "command_or_flow": "aws sns get-topic-attributes --topic-arn %TOPIC_ARN%",
+       "reason": "the same check from a Windows shell"},
+      {"kind": "shell", "platform": "posix",
+       "command_or_flow": "aws sns get-topic-attributes --topic-arn \"arn:${AWS_PARTITION}:sns:us-west-2:${AWS_ACCOUNT_ID}:MyStack-Topic\"",
+       "reason": "a deploy script builds the ARN from its own environment"},
+      {"kind": "shell", "platform": "any",
+       "command_or_flow": "aws cloudformation describe-stacks --stack-name MyStack",
+       "reason": "an operator reads the stack outputs to find the topic"}
+    ]}
+    CLEAN-ROW-EXAMPLES-END
+
 Rows are capped (the harness reports the cap and rejects the file if you exceed
 it). Aim well under it: fifteen boundary-probing rows beat sixty restatements.
 
