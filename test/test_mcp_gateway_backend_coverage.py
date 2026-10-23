@@ -1024,7 +1024,10 @@ class TestStubDelivery:
     @pytest.mark.asyncio
     async def test_deliver_to_detached_stub_is_dropped(self) -> None:
         backend = _make_backend()
-        await backend._deliver_to_stub("ghost", {"id": 1})  # must not raise
+        live = await backend.attach_stub("live")
+        await backend._deliver_to_stub("ghost", {"id": 1})
+        assert live.empty()
+        assert set(backend._stub_inboxes) == {"live"}
 
     @pytest.mark.asyncio
     async def test_broadcast_reaches_every_stub(self) -> None:

@@ -114,7 +114,6 @@ async def test_old_request_fresh_ping_not_recycled() -> None:
     assert state == "alive", f"Expected alive but got {state}"
     assert backend.is_alive
     assert backend._dead_reason is None
-    # Should have warned about the slow request
     assert "gw-9999-1" in backend._warned_slow_ids
 
 
@@ -135,14 +134,12 @@ async def test_old_request_fresh_ping_warns_once() -> None:
         pending=pending,
         last_ping_response_mono=now - 10,
     )
-    # First heartbeat: should warn
     await backend._heartbeat_once(now=now)
     assert "gw-9999-1" in backend._warned_slow_ids
 
     # Second heartbeat: same id already warned, no duplicate
     with patch("kiro_crew.mcp_gateway.backend.logger") as mock_logger:
         await backend._heartbeat_once(now=now + 60)
-        # Should NOT have called warning with "slow in-flight" again
         for call in mock_logger.warning.call_args_list:
             assert "slow in-flight" not in str(call)
 
@@ -577,7 +574,6 @@ def test_ping_answered_while_tool_in_flight() -> None:
         tool_release.set()
         loop_thread.join(timeout=5)
 
-    # Verify: ping (id=99) got an empty-object response
     ping_responses = [(rid, res) for rid, res, err in respond_calls if rid == 99]
     assert (
         len(ping_responses) == 1

@@ -101,13 +101,15 @@ async def test_remove_rejects_a_non_string_name(bad, _sealed_mutation_seams) -> 
 
 @pytest.mark.asyncio
 async def test_a_bad_type_never_enters_the_config_lock(_sealed_mutation_seams) -> None:
-    await h.api_mcp_toggle(_req({"name": ["x"]}))
+    resp = await h.api_mcp_toggle(_req({"name": ["x"]}))
+    assert (resp.status, _payload(resp)["code"]) == (400, "mcp.name_not_string")
     _sealed_mutation_seams["lock"].return_value.__aenter__.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_a_bad_type_never_writes_mcp_json(_sealed_mutation_seams) -> None:
-    await h.api_mcp_remove(_req({"name": {"deep": 1}}))
+    resp = await h.api_mcp_remove(_req({"name": {"deep": 1}}))
+    assert (resp.status, _payload(resp)["code"]) == (400, "mcp.name_not_string")
     _sealed_mutation_seams["write"].assert_not_called()
 
 

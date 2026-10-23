@@ -51,9 +51,28 @@ class TestProbeServerProcessCleanup:
         return proc
 
     @pytest.mark.asyncio
-    async def test_graceful_stdin_close(self) -> None:
-        """Closing stdin causes process to exit within timeout."""
-        proc = self._make_mock_proc()
+    @pytest.mark.parametrize(
+        "wait_side_effect,stdin_open,expect_kill",
+        [
+            pytest.param(None, True, False, id="graceful-stdin-close"),
+            pytest.param([asyncio.TimeoutError(), 0], True, True, id="fallback-kill-on-timeout"),
+            # Both the graceful wait and the forceful one fail: the error is swallowed.
+            pytest.param(
+                [asyncio.TimeoutError(), OSError("kill failed")],
+                True,
+                True,
+                id="fallback-kill-also-fails",
+            ),
+            pytest.param(None, False, False, id="stdin-none-skips-close"),
+        ],
+    )
+    async def test_teardown_escalates_only_past_the_graceful_wait(
+        self, wait_side_effect, stdin_open, expect_kill
+    ) -> None:
+        proc = self._make_mock_proc(wait_side_effect=wait_side_effect)
+        stdin = proc.stdin
+        if not stdin_open:
+            proc.stdin = None
         server = McpServerInfo(name="test", command="echo")
 
         with (
@@ -62,65 +81,12 @@ class TestProbeServerProcessCleanup:
         ):
             proc.stdout = AsyncMock()
             proc.stdout.readline = AsyncMock(return_value=b"")
-            await probe_server(server)
+            result = await probe_server(server)
 
-        proc.stdin.close.assert_called_once()
-        proc.kill.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_fallback_kill_on_timeout(self) -> None:
-        """When graceful shutdown times out, falls back to proc.kill()."""
-        proc = self._make_mock_proc(wait_side_effect=[asyncio.TimeoutError(), 0])
-        server = McpServerInfo(name="test", command="echo")
-
-        with (
-            patch("kiro_crew.mcp_discovery.asyncio.create_subprocess_exec", return_value=proc),
-            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
-        ):
-            proc.stdout = AsyncMock()
-            proc.stdout.readline = AsyncMock(return_value=b"")
-            await probe_server(server)
-
-        proc.stdin.close.assert_called_once()
-        proc.kill.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_fallback_kill_also_fails(self) -> None:
-        """When both graceful and forceful shutdown fail, exception is swallowed."""
-        proc = self._make_mock_proc(
-            wait_side_effect=[asyncio.TimeoutError(), OSError("kill failed")]
-        )
-        server = McpServerInfo(name="test", command="echo")
-
-        with (
-            patch("kiro_crew.mcp_discovery.asyncio.create_subprocess_exec", return_value=proc),
-            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
-        ):
-            proc.stdout = AsyncMock()
-            proc.stdout.readline = AsyncMock(return_value=b"")
-            await probe_server(server)
-
-        # Should not raise — the exception is caught and swallowed
-        proc.stdin.close.assert_called_once()
-        proc.kill.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_stdin_none_skips_close(self) -> None:
-        """When proc.stdin is None, close is skipped without error."""
-        proc = self._make_mock_proc()
-        proc.stdin = None
-        server = McpServerInfo(name="test", command="echo")
-
-        with (
-            patch("kiro_crew.mcp_discovery.asyncio.create_subprocess_exec", return_value=proc),
-            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
-        ):
-            proc.stdout = AsyncMock()
-            proc.stdout.readline = AsyncMock(return_value=b"")
-            await probe_server(server)
-
-        # Should not raise — stdin None is handled gracefully
-        proc.kill.assert_not_called()
+        # The teardown hands back the probe's own error verdict, never its own exception.
+        assert (result.name, result.status) == ("test", "error")
+        assert stdin.close.call_count == (1 if stdin_open else 0)
+        assert proc.kill.call_count == (1 if expect_kill else 0)
 
     @pytest.mark.asyncio
     async def test_probe_spawns_with_the_expanded_path(self, monkeypatch) -> None:
@@ -570,15 +536,23 @@ class TestReadStdioJsonrpcResponse:
         assert resp is None
 
     @pytest.mark.asyncio
-    async def test_banner_flood_capped(self) -> None:
-        """More than _MAX_BANNER_LINES junk lines → give up (None), don't hang."""
+    @pytest.mark.parametrize(
+        "over_cap,expected_id",
+        [
+            pytest.param(0, 7, id="exactly-the-cap-still-answers"),
+            pytest.param(1, None, id="one-over-drops-the-response"),
+            pytest.param(5, None, id="flood-gives-up-without-hanging"),
+        ],
+    )
+    async def test_banner_cap_boundary(self, over_cap, expected_id) -> None:
+        """Up to _MAX_BANNER_LINES junk lines are tolerated; one more gives up (None)."""
         from kiro_crew.mcp_discovery import _MAX_BANNER_LINES
 
-        lines = [b"noise\n"] * (_MAX_BANNER_LINES + 5)
-        lines.append(b'{"jsonrpc":"2.0","id":1,"result":{}}\n')
+        lines = [b"noise\n"] * (_MAX_BANNER_LINES + over_cap)
+        lines.append(b'{"jsonrpc":"2.0","id":7,"result":{}}\n')
         stream = _make_stream(lines)
         resp = await _read_stdio_jsonrpc_response(stream, timeout=5)
-        assert resp is None
+        assert (resp["id"] if resp is not None else None) == expected_id
 
     @pytest.mark.asyncio
     async def test_skips_non_object_json_payloads(self) -> None:
@@ -643,29 +617,6 @@ class TestReadStdioJsonrpcResponse:
         resp = await _read_stdio_jsonrpc_response(stream, timeout=5)
         assert resp is not None
         assert resp["id"] == 3
-
-    @pytest.mark.asyncio
-    async def test_cap_boundary_exact(self) -> None:
-        """Exactly _MAX_BANNER_LINES junk lines still lets the response through."""
-        from kiro_crew.mcp_discovery import _MAX_BANNER_LINES
-
-        lines = [b"noise\n"] * _MAX_BANNER_LINES
-        lines.append(b'{"jsonrpc":"2.0","id":7,"result":{}}\n')
-        stream = _make_stream(lines)
-        resp = await _read_stdio_jsonrpc_response(stream, timeout=5)
-        assert resp is not None
-        assert resp["id"] == 7
-
-    @pytest.mark.asyncio
-    async def test_cap_boundary_one_over(self) -> None:
-        """One junk line past the cap drops the response (returns None)."""
-        from kiro_crew.mcp_discovery import _MAX_BANNER_LINES
-
-        lines = [b"noise\n"] * (_MAX_BANNER_LINES + 1)
-        lines.append(b'{"jsonrpc":"2.0","id":7,"result":{}}\n')
-        stream = _make_stream(lines)
-        resp = await _read_stdio_jsonrpc_response(stream, timeout=5)
-        assert resp is None
 
     @pytest.mark.asyncio
     async def test_timeout_raises(self) -> None:

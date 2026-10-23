@@ -411,8 +411,12 @@ def test_teardown_unlinks_on_posix_and_not_on_windows(
     assert not sock.exists()
 
 
-def test_teardown_tolerates_a_missing_endpoint(tmp_path: Path) -> None:
-    transport.teardown(tmp_path / "never-existed.sock")
+def test_teardown_tolerates_a_missing_endpoint(tmp_path: Path, caplog) -> None:
+    with caplog.at_level("WARNING"):
+        transport.teardown(tmp_path / "never-existed.sock")
+    # A missing file is the clean case, not the "could not unlink" warning.
+    assert "could not unlink" not in caplog.text
+    assert list(tmp_path.iterdir()) == []
 
 
 # --- TransportServer wrapper -------------------------------------------------

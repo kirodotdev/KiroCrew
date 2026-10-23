@@ -105,15 +105,27 @@ class TestCronAddModel:
         assert len(matching) == 1
         assert matching[0].model != ""
 
-    def test_cron_add_with_empty_model(self, monkeypatch, tmp_path):
-        """Empty model string means inherit (no override stored)."""
+    @pytest.mark.parametrize(
+        "model",
+        [
+            # Empty means inherit: no override is stored.
+            pytest.param("", id="empty-model-inherits"),
+            # Any well-formed id is persisted verbatim. There is no membership gate
+            # against the claude_code registry: the model list comes from the live
+            # kiro-cli --list-models, so any id the CLI advertises is valid, as on
+            # the chat model path. Malformed ids are rejected by the schema-level
+            # _MODEL_NAME_RE format gate in validation.py.
+            pytest.param("glm-4.7", id="arbitrary-model-accepted"),
+        ],
+    )
+    def test_cron_add_persists_the_model_verbatim(self, monkeypatch, tmp_path, model):
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
 
-        job_name = f"model-empty-{uuid.uuid4().hex[:8]}"
+        job_name = f"model-{uuid.uuid4().hex[:8]}"
         result = _call_tool_inner(
             "cron_add",
-            {"name": job_name, "message": "go", "every": 120, "model": ""},
+            {"name": job_name, "message": "go", "every": 120, "model": model},
         )
         assert "Added job" in result
 
@@ -122,33 +134,7 @@ class TestCronAddModel:
         svc = CronService(base_dir=tmp_path)
         matching = [j for j in svc.list_jobs() if j.name == job_name]
         assert len(matching) == 1
-        assert matching[0].model == ""
-
-    def test_cron_add_with_arbitrary_model_accepted(self, monkeypatch, tmp_path):
-        """An arbitrary well-formed kiro id is accepted and persisted verbatim.
-
-        There is no membership gate against the claude_code registry: the
-        model list is sourced from the live kiro-cli --list-models, so any id
-        the CLI advertises (not just the claude_code family) is valid. Matches
-        the chat model path. (Malformed ids are rejected by the schema-level
-        _MODEL_NAME_RE format gate in validation.py, which is retained.)
-        """
-        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
-
-        job_name = f"model-arb-{uuid.uuid4().hex[:8]}"
-        result = _call_tool_inner(
-            "cron_add",
-            {"name": job_name, "message": "go", "every": 120, "model": "glm-4.7"},
-        )
-        assert "Added job" in result
-
-        from kiro_crew.cron import CronService
-
-        svc = CronService(base_dir=tmp_path)
-        matching = [j for j in svc.list_jobs() if j.name == job_name]
-        assert len(matching) == 1
-        assert matching[0].model == "glm-4.7"
+        assert matching[0].model == model
 
     def test_cron_update_model(self, monkeypatch, tmp_path):
         """cron_update with a valid model stores it on the job."""

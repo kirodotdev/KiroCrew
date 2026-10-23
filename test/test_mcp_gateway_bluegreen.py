@@ -166,13 +166,15 @@ async def test_deadline_expiry_force_kills_draining() -> None:
     # Give time for deadline to pass
     await asyncio.sleep(0.01)
 
-    # Patch _broadcast_backend_gone to verify it's called
     backend._broadcast_backend_gone = AsyncMock()
 
     reaped = await pool.reap_draining()
     assert len(reaped) == 1
     assert reaped[0] is backend
     assert pool.draining_count == 0
+    backend._broadcast_backend_gone.assert_awaited_once_with(
+        "draining deadline expired (credential-rotation cutover)"
+    )
     # With refcount > 0, broadcast_backend_gone should have been called
     backend._broadcast_backend_gone.assert_called_once_with(
         "draining deadline expired (credential-rotation cutover)"

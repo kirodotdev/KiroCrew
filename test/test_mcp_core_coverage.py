@@ -553,10 +553,18 @@ class TestSpawnLifecycleTools:
         assert body["max_turns"] == 3
         assert "run9" in out and "END YOUR TURN" in out
 
-    def test_continue_propagates_backend_error(self):
-        with patch.object(mcp_core, "_post", return_value={"error": "conversation_gone"}):
-            out = _call_tool("spawn_continue", {"conversation": "c", "task": "t"})
-        assert out == "Error: conversation_gone"
+    @pytest.mark.parametrize(
+        "tool,args,error",
+        [
+            ("spawn_continue", {"conversation": "c", "task": "t"}, "conversation_gone"),
+            ("spawn_steer", {"agent_id": "a1", "message": "m"}, "session_starting"),
+        ],
+        ids=["continue", "steer"],
+    )
+    def test_propagates_backend_error(self, tool, args, error):
+        with patch.object(mcp_core, "_post", return_value={"error": error}):
+            out = _call_tool(tool, args)
+        assert out == f"Error: {error}"
 
     def test_steer_posts_the_message_and_confirms(self):
         with patch.object(mcp_core, "_post", return_value={"ok": True}) as m:
@@ -566,11 +574,6 @@ class TestSpawnLifecycleTools:
         # "follow_up" queues for delivery after the run's turn completes.
         assert m.call_args[0][1] == {"message": "stop that", "mode": "interrupt"}
         assert "Steered run a1" in out
-
-    def test_steer_propagates_backend_error(self):
-        with patch.object(mcp_core, "_post", return_value={"error": "session_starting"}):
-            out = _call_tool("spawn_steer", {"agent_id": "a1", "message": "m"})
-        assert out == "Error: session_starting"
 
     def test_release_confirms_and_propagates_error(self):
         with patch.object(mcp_core, "_post", return_value={"ok": True}) as m:
@@ -698,10 +701,15 @@ class TestWorkflowRun:
         assert "Started workflow run `r1`" in out
         assert "authoring the workflow" in out
 
-    def test_intent_path_propagates_error(self):
-        with patch.object(mcp_core, "_post", return_value={"error": "no model"}):
-            out = _call_tool("workflow_run", {"intent": "ship it"})
-        assert out == "workflow_run failed: no model"
+    @pytest.mark.parametrize(
+        "args,error",
+        [({"intent": "ship it"}, "no model"), ({"source": "ctx.agent('x')"}, "sandbox denied")],
+        ids=["intent-path", "source-path"],
+    )
+    def test_propagates_error(self, args, error):
+        with patch.object(mcp_core, "_post", return_value={"error": error}):
+            out = _call_tool("workflow_run", args)
+        assert out == f"workflow_run failed: {error}"
 
     def test_source_path_posts_to_run_and_reports_name(self):
         resp = {"run_id": "r2", "name": "nightly"}
@@ -715,11 +723,6 @@ class TestWorkflowRun:
         with patch.object(mcp_core, "_post", return_value={"run_id": "r3"}):
             out = _call_tool("workflow_run", {"source": "ctx.agent('x')"})
         assert "(name: —)" in out
-
-    def test_source_path_propagates_error(self):
-        with patch.object(mcp_core, "_post", return_value={"error": "sandbox denied"}):
-            out = _call_tool("workflow_run", {"source": "ctx.agent('x')"})
-        assert out == "workflow_run failed: sandbox denied"
 
     def test_source_wins_over_intent(self):
         with patch.object(mcp_core, "_post", return_value={"run_id": "r4"}) as m:

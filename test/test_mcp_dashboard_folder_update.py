@@ -112,34 +112,50 @@ class TestRefusals:
         with pytest.raises(ValidationError):
             mcp_dashboard._validate_args("chat_folder_update", {"folder": "Travel", field: "x"})
 
-    def test_the_endpoints_sibling_refusal_is_explained(self) -> None:
-        out, _ = _run(
-            {"folder": "kirocrew", "name": "Travel"},
-            patch_result={
-                "error": "a sibling folder already has that name",
-                "code": "folder_name_exists",
-            },
-        )
-        assert out.startswith("Error:") and "cannot be told apart by path" in out
+    @pytest.mark.parametrize(
+        "args,code,error,why",
+        [
+            pytest.param(
+                {"folder": "kirocrew", "name": "Travel"},
+                "folder_name_exists",
+                "a sibling folder already has that name",
+                "cannot be told apart by path",
+                id="sibling",
+            ),
+            pytest.param(
+                {"folder": "Travel", "name": "X"},
+                "folder_not_owned",
+                "this app does not own that folder",
+                "only a folder it created",
+                id="ownership",
+            ),
+            pytest.param(
+                {"folder": "Travel", "color": "#123456"},
+                "color_invalid",
+                "color must be one of the folder palette values",
+                "palette",
+                id="validation",
+            ),
+        ],
+    )
+    def test_the_endpoints_refusal_is_explained(self, args, code, error, why) -> None:
+        out, _ = _run(args, patch_result={"error": error, "code": code})
+        assert out.startswith("Error:") and why in out
 
-    def test_slash_in_name_is_refused(self) -> None:
-        out, writes = _run({"folder": "Travel", "name": "A/B"})
-        assert out.startswith("Error:") and "'/'" in out
-        assert writes == []
-
-    def test_nothing_to_change_is_refused(self) -> None:
-        out, writes = _run({"folder": "Travel"})
-        assert out.startswith("Error:") and "at least one" in out
-        assert writes == []
-
-    def test_root_is_not_a_folder(self) -> None:
-        out, writes = _run({"folder": "root", "name": "X"})
-        assert out.startswith("Error:")
-        assert writes == []
-
-    def test_unknown_folder_is_refused_not_created(self) -> None:
-        out, writes = _run({"folder": "Nope", "name": "X"})
-        assert out.startswith("Error:") and "folder not found" in out
+    @pytest.mark.parametrize(
+        "args,why",
+        [
+            pytest.param({"folder": "Travel", "name": "A/B"}, "'/'", id="slash-in-name"),
+            pytest.param({"folder": "Travel"}, "at least one", id="nothing-to-change"),
+            pytest.param({"folder": "root", "name": "X"}, "", id="root-is-not-a-folder"),
+            pytest.param(
+                {"folder": "Nope", "name": "X"}, "folder not found", id="unknown-folder-not-created"
+            ),
+        ],
+    )
+    def test_a_bad_request_is_refused_before_any_write(self, args, why) -> None:
+        out, writes = _run(args)
+        assert out.startswith("Error:") and why in out
         assert writes == []
 
     def test_name_too_long_after_redaction_is_refused(self) -> None:
@@ -154,26 +170,6 @@ class TestRefusals:
         )
         assert out.startswith("Error:") and "cannot verify" in out
         assert writes == []
-
-    def test_endpoint_ownership_refusal_is_explained(self) -> None:
-        out, _ = _run(
-            {"folder": "Travel", "name": "X"},
-            patch_result={
-                "error": "this app does not own that folder",
-                "code": "folder_not_owned",
-            },
-        )
-        assert out.startswith("Error:") and "only a folder it created" in out
-
-    def test_endpoint_validation_error_surfaces(self) -> None:
-        out, _ = _run(
-            {"folder": "Travel", "color": "#123456"},
-            patch_result={
-                "error": "color must be one of the folder palette values",
-                "code": "color_invalid",
-            },
-        )
-        assert out.startswith("Error:") and "palette" in out
 
 
 def test_the_tool_is_blocked_for_channel_agents() -> None:

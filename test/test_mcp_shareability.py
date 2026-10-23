@@ -1583,8 +1583,9 @@ class TestRecordsDirIsNotGatedOnABroker:
     ],
 )
 def test_to_dict_is_json_serialisable(evidence: ShareEvidence) -> None:
-    """The verdict crosses an HTTP boundary; it must survive json.dumps."""
-    json.dumps(assess(evidence).to_dict())
+    """The verdict crosses an HTTP boundary; it must survive a JSON round trip."""
+    payload = assess(evidence).to_dict()
+    assert json.loads(json.dumps(payload)) == payload
 
 
 class TestBackendRecordsHazards:

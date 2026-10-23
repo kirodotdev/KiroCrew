@@ -604,18 +604,20 @@ class TestAutonudgeBindingKey:
 class TestCasefoldMatchSpanExpandingFolds:
     """``ß`` casefolds to ``ss``, so a match offset can land mid-expansion."""
 
-    def test_start_offset_inside_an_expansion_snaps_to_the_enclosing_char(self) -> None:
-        # "aßb".casefold() == "assb"; needle "sb" starts at cf offset 2, which is
-        # no source-char boundary (bounds are 0,1,3,4) -> snap back to the 'ß'.
-        span = _casefold_match_span("aßb", "sb")
-        assert span == (1, 3)
-        assert "aßb"[span[0] : span[1]] == "ßb"
-
-    def test_end_offset_inside_an_expansion_snaps_outward(self) -> None:
-        # needle "as" ends at cf offset 2, mid-'ß' -> snap out to include it.
-        span = _casefold_match_span("aßb", "as")
-        assert span == (0, 2)
-        assert "aßb"[span[0] : span[1]] == "aß"
+    # "aßb".casefold() == "assb", whose source-char bounds are 0,1,3,4.
+    @pytest.mark.parametrize(
+        "needle,span,text",
+        [
+            # "sb" starts at cf offset 2, mid-'ß' -> snap back to the enclosing 'ß'.
+            pytest.param("sb", (1, 3), "ßb", id="start-snaps-to-the-enclosing-char"),
+            # "as" ends at cf offset 2, mid-'ß' -> snap out to include it.
+            pytest.param("as", (0, 2), "aß", id="end-snaps-outward"),
+        ],
+    )
+    def test_an_offset_inside_an_expansion_snaps_to_whole_chars(self, needle, span, text) -> None:
+        got = _casefold_match_span("aßb", needle)
+        assert got == span
+        assert "aßb"[got[0] : got[1]] == text
 
     def test_no_match_and_empty_needle_return_none(self) -> None:
         assert _casefold_match_span("abc", "zz") is None
@@ -1316,21 +1318,21 @@ class TestOpsMissionControlApiTool:
         assert g.call_args.args == ("/api/apps/ops-mission-control/incidents?status=open",)
         assert out == '{"incidents": []}'
 
-    def test_a_malformed_body_is_refused(self) -> None:
+    @pytest.mark.parametrize(
+        "body_json,error",
+        [
+            ("{not json", "Error: body_json is not valid JSON."),
+            ("[1, 2]", "Error: body_json must encode a JSON object."),
+        ],
+        ids=["malformed", "non-object"],
+    )
+    def test_a_bad_body_is_refused_before_any_request(self, body_json, error) -> None:
         with patch.object(mcp_core, "_post", side_effect=AssertionError("no request")):
             out = _call_tool_inner(
                 "ops_mission_control_api",
-                {"method": "POST", "path": "/ledger", "body_json": "{not json"},
+                {"method": "POST", "path": "/ledger", "body_json": body_json},
             )
-        assert out == "Error: body_json is not valid JSON."
-
-    def test_a_non_object_body_is_refused(self) -> None:
-        with patch.object(mcp_core, "_post", side_effect=AssertionError("no request")):
-            out = _call_tool_inner(
-                "ops_mission_control_api",
-                {"method": "POST", "path": "/ledger", "body_json": "[1, 2]"},
-            )
-        assert out == "Error: body_json must encode a JSON object."
+        assert out == error
 
     def test_a_post_body_is_sanitized_and_redacted_on_the_way_in(self) -> None:
         body_json = '{"note": "key AKIAIOSFODNN7EXAMPLE", "zw": "a\\u200bb"}'

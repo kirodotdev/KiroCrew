@@ -16,6 +16,8 @@ import os
 import time
 from unittest.mock import patch
 
+import pytest
+
 from conftest import make_dir_link
 from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway.spill import (
@@ -254,33 +256,25 @@ class TestConfigOverrides:
             val = pool._resolve_read_buffer_limit()
         assert val == 8388608
 
-    def test_read_limit_env_invalid_uses_default(self):
-        """Invalid KIROCREW_MCP_READ_LIMIT falls back to default."""
+    @pytest.mark.parametrize(
+        "raw", ["not_a_number", "100"], ids=["invalid", "below-1024"]
+    )
+    def test_read_limit_env_unusable_uses_default(self, raw):
+        """An unparseable or below-1024 KIROCREW_MCP_READ_LIMIT falls back to default."""
         from kiro_crew.mcp_gateway import pool
-        with patch.dict(os.environ, {"KIROCREW_MCP_READ_LIMIT": "not_a_number"}):
+        with patch.dict(os.environ, {"KIROCREW_MCP_READ_LIMIT": raw}):
             val = pool._resolve_read_buffer_limit()
         assert val == pool._DEFAULT_READ_BUFFER_LIMIT
 
-    def test_read_limit_env_too_small_uses_default(self):
-        """KIROCREW_MCP_READ_LIMIT below 1024 falls back to default."""
+    @pytest.mark.parametrize(
+        "raw,expected", [("1048576", 1048576), ("0", 0)], ids=["override", "zero-disables"]
+    )
+    def test_spill_threshold_env_is_honoured(self, raw, expected):
+        """KIROCREW_MCP_SPILL_THRESHOLD overrides the default; 0 disables spilling."""
         from kiro_crew.mcp_gateway import pool
-        with patch.dict(os.environ, {"KIROCREW_MCP_READ_LIMIT": "100"}):
-            val = pool._resolve_read_buffer_limit()
-        assert val == pool._DEFAULT_READ_BUFFER_LIMIT
-
-    def test_spill_threshold_env_override(self):
-        """KIROCREW_MCP_SPILL_THRESHOLD env var overrides the default."""
-        from kiro_crew.mcp_gateway import pool
-        with patch.dict(os.environ, {"KIROCREW_MCP_SPILL_THRESHOLD": "1048576"}):
+        with patch.dict(os.environ, {"KIROCREW_MCP_SPILL_THRESHOLD": raw}):
             val = pool._resolve_spill_threshold()
-        assert val == 1048576
-
-    def test_spill_threshold_zero_disables(self):
-        """KIROCREW_MCP_SPILL_THRESHOLD=0 disables spilling."""
-        from kiro_crew.mcp_gateway import pool
-        with patch.dict(os.environ, {"KIROCREW_MCP_SPILL_THRESHOLD": "0"}):
-            val = pool._resolve_spill_threshold()
-        assert val == 0
+        assert val == expected
 
     # The read-buffer/spill config keys are parsed into McpGatewayConfig and
     # documented as settable in config.json, but the runtime globals in

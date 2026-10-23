@@ -68,6 +68,9 @@ def _defer_tools(*rows: tuple[str, str]) -> dict[str, Any]:
 
 class TestServersExposingNoTools:
     def test_the_server_that_lost_the_clash_is_named(self):
+        # CLASH_TOOLS has no tool_search loader row, so nothing is deferred:
+        # absence from /tools is the clash signal and a positive toolCount does
+        # not suppress it.
         assert servers_exposing_no_tools(CLASH_MCP, CLASH_TOOLS, SPEC_ALL) == ("dup-beta",)
 
     def test_both_servers_exposing_tools_is_clean(self):
@@ -147,11 +150,6 @@ class TestServersExposingNoTools:
         tools = _defer_tools(("read", "built-in"))
         spec = {"tools": ["*"], "mcpServers": {"nocount": {}, "other": {}}}
         assert servers_exposing_no_tools(mcp, tools, spec) == ()
-
-    def test_the_clash_is_still_reported_with_tool_search_off(self):
-        # No loader in /tools => nothing is deferred, so absence from /tools is
-        # the clash signal and a positive toolCount does not suppress it.
-        assert servers_exposing_no_tools(CLASH_MCP, CLASH_TOOLS, SPEC_ALL) == ("dup-beta",)
 
     def test_a_deferred_clash_shape_without_the_loader_is_reported(self):
         # Same server shapes as the deferral test, but no loader row in /tools:

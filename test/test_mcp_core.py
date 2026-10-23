@@ -350,25 +350,16 @@ class TestDeployArtifactMCPTool:
             assert "WARNING: Anyone with the published link can view this content." in result
             assert "no authentication" in result
 
-    def test_deploy_artifact_rejects_confirm_param(self):
-        """confirm param is rejected via schema — returns controlled error string."""
+    @pytest.mark.parametrize("field", ["confirm", "override_scan"])
+    def test_deploy_artifact_rejects_bypass_param(self, field):
+        """A bypass param is rejected via schema — returns controlled error string."""
         result = _call_tool("deploy_artifact", {
             "site_id": "my-app",
             "artifact_slug": "x",
-            "confirm": True,
+            field: True,
         })
         assert result.startswith("Error:")
-        assert "unknown field" in result or "confirm" in result
-
-    def test_deploy_artifact_rejects_override_scan_param(self):
-        """override_scan param is rejected via schema — returns controlled error string."""
-        result = _call_tool("deploy_artifact", {
-            "site_id": "my-app",
-            "artifact_slug": "x",
-            "override_scan": True,
-        })
-        assert result.startswith("Error:")
-        assert "unknown field" in result or "override_scan" in result
+        assert "unknown field" in result or field in result
 
     def test_deploy_artifact_restricted_denial(self):
         """deploy_artifact returns error when restricted-session denies."""

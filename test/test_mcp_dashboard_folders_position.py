@@ -644,19 +644,17 @@ class TestFolderPosition:
         assert out.startswith("Error:") and "not in the destination" in out
         assert _writes(dash) == []
 
-    def test_a_folder_cannot_anchor_on_itself(self) -> None:
-        out, dash = _call("chat_folder_move", {"folder": "Delta", "after": "Delta"}, _positioning())
-        assert out.startswith("Error:") and "relative to itself" in out
-        assert _writes(dash) == []
-
-    def test_root_is_not_an_anchor(self) -> None:
-        out, dash = _call("chat_folder_move", {"folder": "Delta", "after": "root"}, _positioning())
-        assert out.startswith("Error:") and "SIBLING" in out
-        assert _writes(dash) == []
-
-    def test_a_missing_anchor_is_refused_before_any_write(self) -> None:
-        out, dash = _call("chat_folder_move", {"folder": "Delta", "after": "Echo"}, _positioning())
-        assert out.startswith("Error:") and "folder not found" in out
+    @pytest.mark.parametrize(
+        "anchor,why",
+        [
+            pytest.param("Delta", "relative to itself", id="a-folder-cannot-anchor-on-itself"),
+            pytest.param("root", "SIBLING", id="root-is-not-an-anchor"),
+            pytest.param("Echo", "folder not found", id="a-missing-anchor-is-refused"),
+        ],
+    )
+    def test_a_bad_anchor_is_refused_before_any_write(self, anchor, why) -> None:
+        out, dash = _call("chat_folder_move", {"folder": "Delta", "after": anchor}, _positioning())
+        assert out.startswith("Error:") and why in out
         assert _writes(dash) == []
 
     def test_a_failed_order_write_says_the_position_itself_landed(self) -> None:

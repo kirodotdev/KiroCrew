@@ -44,9 +44,10 @@ class TestEnableRebuildsFactory:
             with patch("kiro_crew.slack.gateway.KiroCrewConfig") as mock_cfg:
                 mock_cfg.load.return_value = MagicMock(mcp_gateway=MagicMock(enabled=True))
                 orch._cfg = mock_cfg.load.return_value
-                result = await orch._apply_mcp_gateway_enabled(True)  # noqa: F841
+                result = await orch._apply_mcp_gateway_enabled(True)
 
         orch.sessions.refresh_defaults.assert_awaited_once()
+        assert result == {"enabled": True, "running": False, "ping_ok": False}
 
     @pytest.mark.asyncio
     async def test_disable_also_calls_refresh_defaults(self) -> None:
@@ -65,9 +66,10 @@ class TestEnableRebuildsFactory:
             with patch("kiro_crew.slack.gateway.KiroCrewConfig") as mock_cfg:
                 mock_cfg.load.return_value = MagicMock(mcp_gateway=MagicMock(enabled=False))
                 orch._cfg = mock_cfg.load.return_value
-                await orch._apply_mcp_gateway_enabled(False)
+                result = await orch._apply_mcp_gateway_enabled(False)
 
         orch.sessions.refresh_defaults.assert_awaited_once()
+        assert result == {"enabled": False, "running": False, "ping_ok": False}
 
     @pytest.mark.asyncio
     async def test_no_crash_when_sessions_is_none(self) -> None:
@@ -83,8 +85,9 @@ class TestEnableRebuildsFactory:
             with patch("kiro_crew.slack.gateway.KiroCrewConfig") as mock_cfg:
                 mock_cfg.load.return_value = MagicMock(mcp_gateway=MagicMock(enabled=True))
                 orch._cfg = mock_cfg.load.return_value
-                # Must not raise
-                await orch._apply_mcp_gateway_enabled(True)
+                result = await orch._apply_mcp_gateway_enabled(True)
+
+        assert result == {"enabled": True, "running": False, "ping_ok": False}
 
 
 # ── #927: injection precedence is robustly tested ───────────────────────────
@@ -284,11 +287,9 @@ class TestNamingMigration:
             work_dir=work_dir,
             stub_servers=frozenset({"pooled"}),
         )
-        # Should have at least one KIROCREW_MCP_TARGET_ key
         assert any(k.startswith("KIROCREW_MCP_TARGET_") for k in target_env), (
             f"Expected KIROCREW_MCP_TARGET_ prefix in target_env keys: {list(target_env.keys())}"
         )
-        # Should NOT have any MC_MCP_TARGET_ keys (new installations)
         assert not any(k.startswith("MC_MCP_TARGET_") for k in target_env)
 
     def test_idempotent_rewrite_upgrades_legacy_marker(self, tmp_path: Path) -> None:

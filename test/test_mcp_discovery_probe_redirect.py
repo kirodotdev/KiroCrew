@@ -24,17 +24,31 @@ _BASE = "https://mcp.example.com/mcp"
 
 
 class TestRedirectError:
-    def test_a_relative_trailing_slash_redirect_names_the_url_to_configure(self) -> None:
-        assert (
-            _redirect_error(307, {"Location": "/mcp/"}, _BASE)
-            == "HTTP 307, redirects to https://mcp.example.com/mcp/"
-        )
-
-    def test_an_absolute_target_keeps_its_host_and_port(self) -> None:
-        assert (
-            _redirect_error(308, {"Location": "http://other.example:8000/v1/mcp"}, _BASE)
-            == "HTTP 308, redirects to http://other.example:8000/v1/mcp"
-        )
+    @pytest.mark.parametrize(
+        "status,location,expected",
+        [
+            pytest.param(
+                307,
+                "/mcp/",
+                "HTTP 307, redirects to https://mcp.example.com/mcp/",
+                id="a-relative-trailing-slash-redirect-names-the-url-to-configure",
+            ),
+            pytest.param(
+                308,
+                "http://other.example:8000/v1/mcp",
+                "HTTP 308, redirects to http://other.example:8000/v1/mcp",
+                id="an-absolute-target-keeps-its-host-and-port",
+            ),
+            pytest.param(
+                301,
+                "http://[::1]:3000/mcp/",
+                "HTTP 301, redirects to http://[::1]:3000/mcp/",
+                id="an-ipv6-host-keeps-its-brackets",
+            ),
+        ],
+    )
+    def test_the_redirect_names_the_url_to_configure(self, status, location, expected) -> None:
+        assert _redirect_error(status, {"Location": location}, _BASE) == expected
 
     def test_userinfo_query_and_fragment_never_reach_the_row(self) -> None:
         """The target is resolved against the configured url, so a credential in its
@@ -46,12 +60,6 @@ class TestRedirectError:
         )
         assert error == "HTTP 307, redirects to https://mcp.example.com/mcp/"
         assert "s3cret" not in error
-
-    def test_an_ipv6_host_keeps_its_brackets(self) -> None:
-        assert (
-            _redirect_error(301, {"Location": "http://[::1]:3000/mcp/"}, _BASE)
-            == "HTTP 301, redirects to http://[::1]:3000/mcp/"
-        )
 
     @pytest.mark.parametrize(
         ("status", "headers"),

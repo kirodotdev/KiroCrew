@@ -433,6 +433,8 @@ class TestPumpStderr:
         reader = MagicMock()
         reader.readline = AsyncMock(side_effect=RuntimeError("closed"))
         await _pump_stderr(cast(Any, reader), "label")
+        # One read, then return: a pump that retried a closed reader would spin.
+        assert reader.readline.await_count == 1
 
 
 # --- One stray stdout line costs that line, never the shared pump ------------

@@ -765,7 +765,6 @@ class TestProbeRemoteTimeout:
 
         assert result.status == "error"
         assert result.error == "timeout"
-        # Verify the configured timeout was actually used
         timeout_used = mock_session_cls.call_args.kwargs.get("timeout")
         assert timeout_used is not None
         assert timeout_used.total == 60

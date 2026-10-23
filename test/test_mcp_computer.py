@@ -279,21 +279,19 @@ def test_unknown_tool_is_rejected_with_no_raw_passthrough():
 # ── argument validation ──
 
 
-def test_element_index_as_bool_is_rejected():
-    """``True`` must not become the integer 1 for an element index.
-
-    ``isinstance(True, int)`` is True in Python, so a bool would otherwise pass an
-    int field AND its range check — and address element 1, some other widget
-    entirely.
-    """
+@pytest.mark.parametrize(
+    "index",
+    [
+        # ``isinstance(True, int)`` is True in Python, so a bool would otherwise pass
+        # an int field AND its range check, and address element 1, some other widget.
+        pytest.param(True, id="bool"),
+        # A float index is not an index; refuse rather than truncate.
+        pytest.param(3.7, id="float"),
+    ],
+)
+def test_element_index_of_a_non_int_type_is_rejected(index):
     with pytest.raises(ValidationError):
-        mcp_computer._validate_args(TOOL_CLICK, {"app": "Finder", "element_index": True})
-
-
-def test_element_index_as_float_is_rejected():
-    """A float index is not an index; refuse rather than truncate."""
-    with pytest.raises(ValidationError):
-        mcp_computer._validate_args(TOOL_CLICK, {"app": "Finder", "element_index": 3.7})
+        mcp_computer._validate_args(TOOL_CLICK, {"app": "Finder", "element_index": index})
 
 
 def test_element_index_out_of_range_is_rejected():
