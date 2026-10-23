@@ -103,6 +103,8 @@ export interface ChatConfig {
   /** How many lines a session card's latest-message preview may wrap onto
    *  before it is cut off. 1 (the default) keeps the single-line ellipsis. */
   sessionPreviewLines: CardLineCount
+  /** Render sidebar session cards as title-only rows. */
+  compactSessionCards: boolean
   /** Opt in to a plain click on a sidebar session giving it its own session
    *  tab, as the row menu's "Open in a session tab" does, instead of replacing
    *  the session in the active tab. Default false: the replace is what keeps
@@ -173,7 +175,7 @@ const LS_KEY = 'mc-chat-config'
  *  it. The sidebar's view toggle persists this flag BEFORE creating its first
  *  column, so a deliberate board user always has an explicit `true` stored and
  *  is unaffected by the default. */
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', widenTables: false, tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, countSubfolderContents: false, sidebarClickOpensTab: false, spellcheck: true, arrowKeyPromptHistory: true, inlineMarkdown: false, optimizeBeforeSend: false, showOptimizePrompt: true, showFullPastes: false, toolCallsStartExpanded: false, reasoningStartsExpanded: false, doubleClickToEdit: false, doubleEscapeToStop: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, needsMeHoverCard: true, sessionTitleLines: 1, sessionPreviewLines: 1 }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', widenTables: false, tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, countSubfolderContents: false, sidebarClickOpensTab: false, spellcheck: true, arrowKeyPromptHistory: true, inlineMarkdown: false, optimizeBeforeSend: false, showOptimizePrompt: true, showFullPastes: false, toolCallsStartExpanded: false, reasoningStartsExpanded: false, doubleClickToEdit: false, doubleEscapeToStop: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, needsMeHoverCard: true, sessionTitleLines: 1, sessionPreviewLines: 1, compactSessionCards: false }
 
 const clampMessageFontSize = (n: number): number =>
   Math.max(MIN_MESSAGE_FONT_SIZE, Math.min(MAX_MESSAGE_FONT_SIZE, Math.round(n)))
@@ -228,6 +230,7 @@ export function loadChatConfig(): ChatConfig {
     // and leave the card's text unbounded.
     if (!isCardLineCount(cfg.sessionTitleLines)) cfg.sessionTitleLines = 1
     if (!isCardLineCount(cfg.sessionPreviewLines)) cfg.sessionPreviewLines = 1
+    if (typeof cfg.compactSessionCards !== 'boolean') cfg.compactSessionCards = false
     // Coerced, not trusted: a stored non-boolean must not decide whether a
     // sidebar click opens a tab.
     if (typeof cfg.sidebarClickOpensTab !== 'boolean') cfg.sidebarClickOpensTab = false

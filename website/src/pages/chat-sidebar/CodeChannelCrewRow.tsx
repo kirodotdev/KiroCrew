@@ -9,6 +9,7 @@ import { DisclosureChevron } from './chrome'
 import type { CodeChannelCrewView, CrewAttention, CrewState } from './codeChannelCrew'
 import { CodeChannelBadge } from '../../components/CodeChannelBadge'
 import type { CodeChannelInfo } from '../../types'
+import type { ReactNode } from 'react'
 
 /** The conductor's status line for its folded crew. `lineCls` and `iconPx` are
  *  the row's own status-line class and glyph size, so this line matches the
@@ -56,6 +57,24 @@ export function CodeChannelCrewLine({ state: st, lineCls, iconPx }: { state: Cre
       <span className="truncate"><span className="font-medium text-accent">{label}</span>{detail}</span>
     </div>
   )
+}
+
+/** The same state as one title-line mark, for a title-only card, which hides
+ *  the status line: the lines glyph and its words as the marks label. */
+export function codeChannelCrewMark(st: CrewState, iconPx: number): { label: string; glyph: ReactNode } {
+  if (st.key === 'needs_you') {
+    return { label: i18nT(st.approval ? 'pages.chatSidebar.needs_approval' : 'pages.chatSidebar.code_channel_crew_waiting'), glyph: <ShieldCheck size={iconPx} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden /> }
+  }
+  if (st.key === 'interrupted' || st.key === 'stuck') {
+    return { label: i18nT(st.key === 'stuck' ? 'pages.chatSidebar.code_channel_crew_stuck' : 'pages.chatSidebar.code_channel_crew_interrupted', { count: st.count }), glyph: <TriangleAlert size={iconPx} className="shrink-0 text-danger" aria-hidden /> }
+  }
+  if (st.key === 'done') {
+    const label = st.total != null && st.total > 0
+      ? i18nT('pages.chatSidebar.code_channel_crew_done', { count: st.count, total: st.total })
+      : i18nT('pages.chatSidebar.code_channel_crew_done_plain')
+    return { label, glyph: <CircleCheck size={iconPx} className="shrink-0 text-ok" aria-hidden /> }
+  }
+  return { label: i18nT('pages.chatSidebar.crew_attention_working', { count: st.count }), glyph: <Loader2 size={iconPx} className="shrink-0 text-accent animate-spin motion-reduce:animate-none" aria-hidden /> }
 }
 
 /** The fold for a code channel's workers (folder view only): a chevron and
