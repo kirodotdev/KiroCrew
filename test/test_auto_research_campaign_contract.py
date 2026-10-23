@@ -39,6 +39,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.apps.builtins.auto_research import handlers as h
+from kiro_crew.testing.wait import await_until
 
 BASE = "/api/apps/auto-research"
 _HANDLERS_LOGGER = "kiro_crew.apps.builtins.auto_research.handlers"
@@ -866,14 +867,14 @@ class TestTransitionSerialization:
             return _req("PATCH", f"campaigns/{cid}", match={"id": cid}, body={"action": "start"})
 
         first = asyncio.ensure_future(h._handle_action(_start()))
-        await asyncio.wait_for(entered.wait(), timeout=5)
+        await await_until(entered, what="the first start entering its launch preparation")
         second = asyncio.ensure_future(h._handle_action(_start()))
         for _ in range(5):
             await asyncio.sleep(0)
         assert not second.done(), "the second start must wait for the first transition"
         release.set()
-        first_response = await asyncio.wait_for(first, timeout=5)
-        second_response = await asyncio.wait_for(second, timeout=5)
+        first_response = await await_until(first, what="the first start")
+        second_response = await await_until(second, what="the second start")
         assert first_response.status == 200
         assert second_response.status == 409
         assert _body(second_response) == {"error": "Cannot start a campaign in 'running' state"}
@@ -980,7 +981,7 @@ class TestDeleteIsFinal:
         )
         assert _body(response)["deleted"] is True
         release.set()
-        await asyncio.wait_for(poll, timeout=5)
+        await await_until(poll, what="the in-flight workflow poll")
         assert not (h.research_dir() / cid).exists()
         assert await asyncio.to_thread(_row, cid) is None
         assert sse.events == []
