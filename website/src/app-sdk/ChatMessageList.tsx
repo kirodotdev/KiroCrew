@@ -36,6 +36,8 @@ import {
 } from './messageRenderers'
 import type { ChatMessage } from '../types'
 import type { TurnItem, DisplayItem } from '../pages/chat/types'
+import { durableMessageId, type UnreadRun } from '../chat-core/transcript/caughtUpMarker'
+import NewMessagesDivider from './NewMessagesDivider'
 
 // ── Types ──
 
@@ -134,6 +136,12 @@ export interface ChatMessageListProps {
    *  marker otherwise — once the strip has slid under the card or behind the
    *  header it must not be visible (nor focusable) there. */
   hiddenRow?: { ts?: string | null; index: number; stripUncovered?: boolean }
+  /** The run of messages the reader has not seen yet (`findUnreadRun`): a
+   *  "N new messages" divider is drawn above the message whose
+   *  `durableMessageId` is `startId`, inside that message's own row so the
+   *  virtualizer measures the two together. The host decides when a run exists
+   *  and lands on the divider (`data-unread-divider`); the list only draws it. */
+  unreadRun?: UnreadRun | null
   /** Mount the rows inside the list's own virtualized scroller. Supplying it
    *  is what makes this component the scroll container: the host drops its
    *  `overflow-y-auto` div and its follow hook, and reaches the scroller
@@ -215,6 +223,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   renderers,
   onDisplayItems,
   hiddenRow,
+  unreadRun,
   transcript,
 }: ChatMessageListProps, ref) {
   // Row indexing is inferred from the props that consume it, not a separate
@@ -342,6 +351,17 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     const entry = resolveRenderer(m, activeRenderers)
     if (!entry) return null
 
+    // The unread divider rides inside the first unseen message's own output,
+    // ahead of it, so a turn row that holds both seen and unseen messages is
+    // still split at the right message and the row's measured height carries
+    // the divider.
+    const leadsUnread = unreadRun != null && durableMessageId(m) === unreadRun.startId
+    const withDivider = (node: React.ReactNode) => (
+      leadsUnread && node != null
+        ? <React.Fragment key={key}><NewMessagesDivider count={unreadRun.count} contentWidth={contentWidth} />{node}</React.Fragment>
+        : node
+    )
+
     const ctx: MessageRenderContext = {
       index: i,
       messages: versioned.messages,
@@ -361,8 +381,8 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       wrapper,
       row,
     }
-    return entry.render(m, ctx)
-  }, [versioned, running, contentWidth, onFileOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers])
+    return withDivider(entry.render(m, ctx))
+  }, [versioned, running, contentWidth, onFileOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun])
 
 
   // Render a TurnItem (single or group)

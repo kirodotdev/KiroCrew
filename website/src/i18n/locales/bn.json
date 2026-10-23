@@ -314,6 +314,10 @@
       "open_path": "{{path}} খোলো",
       "show_less": "কম দেখান",
       "show_more": "আরও দেখান"
+    },
+    "newMessagesDivider": {
+      "new_messages_one": "{{count}}টি নতুন বার্তা",
+      "new_messages_other": "{{count}}টি নতুন বার্তা"
     }
   },
   "apps": {
@@ -12460,7 +12464,9 @@
       "comments_refused": "{{name}} এই মন্তব্যগুলো পাননি — নথি থেকে সেগুলো আবার পাঠাও। সেগুলো এখনও সেখানেই আছে।",
       "comments_refused_overlay": "{{name}} এই মন্তব্যগুলো পাননি — সাইড প্যানেল আবার খোলো এবং সেগুলো আবার পাঠাও। সেগুলো এখনও নথিতেই আছে।",
       "comments_sent_other": "{{count}}টি মন্তব্য পাঠানো হয়েছে",
-      "your_crewmate": "তোমার ক্রুমেট"
+      "your_crewmate": "তোমার ক্রুমেট",
+      "jump_to_new_one": "{{count}}টি নতুন · সর্বশেষে যান",
+      "jump_to_new_other": "{{count}}টি নতুন · সর্বশেষে যান"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1টি এড়িয়ে যাওয়া হয়েছে — এখন বেছে নেওয়া আছে)",

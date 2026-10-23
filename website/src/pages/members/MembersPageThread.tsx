@@ -365,11 +365,17 @@ interface MembersPageThreadViewOptions {
   t: TFn
   createOpen: boolean
   active: MemberRosterRow | undefined
+  /** The Profile card is up as a FLOATING card over the thread column (its
+   *  docked placement sits beside the chat and covers nothing). */
+  profileFloating: boolean
+  /** The phone roster drawer is mounted over the thread column (opening, open
+   *  or closing); it covers the chat for all three. */
+  rosterDrawerMounted: boolean
 }
 
 /** The header's live readings, the greeting card, and read marking while the thread is on screen. */
 export function useMembersPageThreadView({
-  layout, rosterView, thread, t, createOpen, active,
+  layout, rosterView, thread, t, createOpen, active, profileFloating, rosterDrawerMounted,
 }: MembersPageThreadViewOptions) {
   const { isMobile, rosterBar } = layout
   const { isRunning, activeView } = rosterView
@@ -504,6 +510,14 @@ export function useMembersPageThreadView({
   // The New crewmate card hides the chat while it
   // stays mounted: hidden is not viewed, so it neither reads nor suppresses.
   const threadShown = pageVisible && !createOpen
+  // What the PANE may count as seen: the thread is shown AND nothing floats
+  // over the chat. An overlay side panel (a phone sheet, a desktop overlay
+  // under its scrim), a floating Profile card and the phone roster drawer all
+  // cover the transcript, while the docked placements sit beside it, so a reply
+  // landing behind any of them stays unseen. Narrower than `threadShown` on
+  // purpose: the roster's read marking above keeps its own meaning of a viewed
+  // thread.
+  const chatUncovered = threadShown && !(layout.panelVisible && !layout.beside) && !profileFloating && !rosterDrawerMounted
   useEffect(() => {
     // Viewing the thread is the read — but only a VISIBLE view is a view. A
     // hidden member tab neither clears its own badge nor relays one; on
@@ -545,6 +559,10 @@ export function useMembersPageThreadView({
   return {
     threadHeaderRef, setSwitcherOpenRequest, switcherOpenRequest, topbarSlot, headerInBar, headerInset,
     betweenHeaderH, betweenHeaderRef, dismissMateGreeting, mateGreeting, mateGreetingFailure, pillActivity,
+    // The same "a person can see the thread" the read marking above uses; the
+    // pane's unread landing marks a message read under the same condition.
+    threadShown,
+    chatUncovered,
   }
 }
 
@@ -1114,6 +1132,7 @@ export function MembersPageThreadColumn({
                         // them (see the block above); a card between already paid.
                         topInset={betweenHeaderH > 0 ? 0 : headerInset}
                         crewmate={crewmateIdentity}
+                        crewmateShown={threadView.chatUncovered}
                         crewmateGreeting={mateGreeting && crewmateIdentity
                           ? <MateWelcomeCard recap={mateGreeting.recap} crewmate={crewmateIdentity} onDismiss={dismissMateGreeting} />
                           : null}

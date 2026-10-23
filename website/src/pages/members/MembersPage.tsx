@@ -617,7 +617,11 @@ export default function MembersPage() {
     window.addEventListener('beforeunload', onUnload)
     return () => window.removeEventListener('beforeunload', onUnload)
   }, [anyDraftAtStake])
-  const threadView = useMembersPageThreadView({ layout, rosterView, thread, t, createOpen, active })
+  const threadView = useMembersPageThreadView({
+    layout, rosterView, thread, t, createOpen, active,
+    profileFloating: !!profile && profile.placement !== 'column',
+    rosterDrawerMounted,
+  })
   const rosterSignals = useMembersPageRosterSignals({ rosterRead, rosterView, slotKeyOf })
   const profileFlight = useMembersPageProfileFlight({ profileCard, rosterView, rosterSignals, thread, activeName, profile, active })
   const { faceFlight, endFaceFlight } = profileFlight
