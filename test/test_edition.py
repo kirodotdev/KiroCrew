@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from types import ModuleType
 
@@ -151,8 +152,12 @@ def test_build_py_runs_the_stamper() -> None:
 
 def test_makefile_editions_match_the_module() -> None:
     makefile = (_REPO / "Makefile").read_text(encoding="utf-8")
-    assert re.search(r"^EDITION \?= oss$", makefile, re.MULTILINE)
-    listed = re.search(r"^EDITIONS := (.+)$", makefile, re.MULTILINE)
+    assert re.search(
+        r"^override EDITION := \$\(if \$\(_EDITION_ENV\),\$\(_EDITION_ENV\),oss\)$",
+        makefile,
+        re.MULTILINE,
+    )
+    listed = re.search(r"^override EDITIONS := (.+)$", makefile, re.MULTILINE)
     assert listed and frozenset(listed.group(1).split()) == edition.EDITIONS
 
 
@@ -165,23 +170,204 @@ def test_packaging_targets_check_and_pass_the_edition(target: str) -> None:
     assert "KIROCREW_BUILD_EDITION=$(EDITION)" in block.group(2)
 
 
-@pytest.mark.skipif(shutil.which("make") is None, reason="no make on PATH")
+_NO_MAKE = pytest.mark.skipif(shutil.which("make") is None, reason="no make on PATH")
+
+
+def _make_dry_run(
+    target: str,
+    *,
+    edition: str | None = None,
+    env_edition: str | None = None,
+    ambient_edition: str | None = None,
+    make_flags: tuple[str, ...] = (),
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """``make -n <target>`` with only the given edition inputs set.
+
+    ``ambient_edition`` is an exported shell ``EDITION``, which must be ignored.
+    """
+    dropped = {"EDITION", "EDITIONS", "KIROCREW_BUILD_EDITION", "MAKEFLAGS", "MFLAGS"}
+    env = {k: v for k, v in os.environ.items() if k not in dropped}
+    if env_edition is not None:
+        env["KIROCREW_BUILD_EDITION"] = env_edition
+    if ambient_edition is not None:
+        env["EDITION"] = ambient_edition
+    env.update(extra_env or {})
+    argv = ["make", "-s", "-n", *make_flags, target]
+    if edition is not None:
+        argv.append(f"EDITION={edition}")
+    return subprocess.run(
+        argv, cwd=_REPO, env=env, capture_output=True, text=True, encoding="utf-8", timeout=120
+    )
+
+
+@_NO_MAKE
 @pytest.mark.parametrize(
-    ("value", "ok"),
-    [("oss", True), ("enterprise", True), ("foo", False), ("oss enterprise", False)],
+    ("edition_arg", "env_edition", "expected"),
+    [
+        (None, None, "oss"),
+        ("enterprise", None, "enterprise"),
+        (None, "enterprise", "enterprise"),
+        ("enterprise", "enterprise", "enterprise"),
+        ("oss", None, "oss"),
+    ],
 )
-def test_make_check_edition(value: str, ok: bool) -> None:
+def test_make_check_edition_resolves(
+    edition_arg: str | None, env_edition: str | None, expected: str
+) -> None:
+    result = _make_dry_run("check-edition", edition=edition_arg, env_edition=env_edition)
+    assert result.returncode == 0, result.stderr
+    assert f'edition: {expected}"' in result.stdout
+
+
+@_NO_MAKE
+@pytest.mark.parametrize(
+    ("edition_arg", "env_edition", "error"),
+    [
+        ("foo", None, "unknown EDITION 'foo'"),
+        ("oss enterprise", None, "unknown EDITION 'oss enterprise'"),
+        ("%", None, "unknown EDITION '%'"),
+        ("ent%", None, "unknown EDITION 'ent%'"),
+        (None, "%", "unknown EDITION '%'"),
+        ("oss", "enterprise", "conflicts with KIROCREW_BUILD_EDITION 'enterprise'"),
+        ("enterprise", "oss", "conflicts with KIROCREW_BUILD_EDITION 'oss'"),
+    ],
+)
+def test_make_check_edition_refuses(
+    edition_arg: str | None, env_edition: str | None, error: str
+) -> None:
+    result = _make_dry_run("check-edition", edition=edition_arg, env_edition=env_edition)
+    assert result.returncode != 0
+    assert error in result.stderr
+
+
+@_NO_MAKE
+@pytest.mark.parametrize("target", ["wheel", "backend-bin", "desktop"])
+@pytest.mark.parametrize(
+    ("edition_arg", "env_edition", "expected"),
+    [(None, None, "oss"), ("enterprise", None, "enterprise"), (None, "enterprise", "enterprise")],
+)
+def test_packaging_target_passes_the_resolved_edition(
+    target: str, edition_arg: str | None, env_edition: str | None, expected: str
+) -> None:
+    result = _make_dry_run(target, edition=edition_arg, env_edition=env_edition)
+    assert result.returncode == 0, result.stderr
+    stamped = re.findall(r"KIROCREW_BUILD_EDITION=(\S+)", result.stdout)
+    assert stamped == [expected], result.stdout
+
+
+@_NO_MAKE
+@pytest.mark.parametrize("target", ["check-edition", "wheel", "backend-bin", "desktop"])
+@pytest.mark.parametrize(
+    ("ambient", "env_edition", "expected"),
+    [("enterprise", None, "oss"), ("foo", None, "oss"), ("%", None, "oss"),
+     ("enterprise", "oss", "oss"), ("oss", "enterprise", "enterprise")],
+)  # fmt: skip
+def test_exported_shell_edition_is_ignored(
+    target: str, ambient: str, env_edition: str | None, expected: str
+) -> None:
+    result = _make_dry_run(target, env_edition=env_edition, ambient_edition=ambient)
+    assert result.returncode == 0, result.stderr
+    if target == "check-edition":
+        assert f'edition: {expected}"' in result.stdout
+    else:
+        assert re.findall(r"KIROCREW_BUILD_EDITION=(\S+)", result.stdout) == [expected]
+
+
+def _resolved(result: subprocess.CompletedProcess[str], target: str) -> str:
+    assert result.returncode == 0, result.stderr
+    if target == "check-edition":
+        (value,) = re.findall(r'edition: (\S+)"', result.stdout)
+        return value
+    (value,) = re.findall(r"KIROCREW_BUILD_EDITION=(\S+)", result.stdout)
+    return value
+
+
+@_NO_MAKE
+@pytest.mark.parametrize("target", ["check-edition", "wheel"])
+@pytest.mark.parametrize(
+    ("flags", "extra_env", "edition_arg", "env_edition", "ambient", "expected"),
+    [
+        (("-e",), None, None, None, "enterprise", "oss"),
+        ((), {"MAKEFLAGS": "e"}, None, None, "enterprise", "oss"),
+        (("-e",), None, "enterprise", None, None, "enterprise"),
+        (("-e",), None, None, "enterprise", None, "enterprise"),
+        (("-e",), None, None, "oss", "enterprise", "oss"),
+        (("-e",), {"_EDITION_ENV": "enterprise"}, None, None, None, "oss"),
+    ],
+)  # fmt: skip
+def test_environment_override_mode_cannot_pick_the_edition(
+    target: str,
+    flags: tuple[str, ...],
+    extra_env: dict[str, str] | None,
+    edition_arg: str | None,
+    env_edition: str | None,
+    ambient: str | None,
+    expected: str,
+) -> None:
+    result = _make_dry_run(
+        target,
+        edition=edition_arg,
+        env_edition=env_edition,
+        ambient_edition=ambient,
+        make_flags=flags,
+        extra_env=extra_env,
+    )
+    assert _resolved(result, target) == expected
+
+
+@_NO_MAKE
+@pytest.mark.parametrize("flags", [("-e",), ()])
+def test_an_ambient_editions_list_cannot_widen_the_allowed_set(flags: tuple[str, ...]) -> None:
+    extra = {"EDITIONS": "oss enterprise foo"}
+    if not flags:
+        extra["MAKEFLAGS"] = "e"
+    result = _make_dry_run("check-edition", edition="foo", make_flags=flags, extra_env=extra)
+    assert result.returncode != 0
+    assert "unknown EDITION 'foo'" in result.stderr
+
+
+@_NO_MAKE
+def test_command_line_edition_still_wins_over_an_exported_one() -> None:
+    result = _make_dry_run("wheel", edition="enterprise", ambient_edition="oss")
+    assert result.returncode == 0, result.stderr
+    assert re.findall(r"KIROCREW_BUILD_EDITION=(\S+)", result.stdout) == ["enterprise"]
+
+
+@_NO_MAKE
+@pytest.mark.parametrize("target", ["wheel", "backend-bin", "desktop"])
+def test_packaging_target_refuses_a_conflict(target: str) -> None:
+    result = _make_dry_run(target, edition="oss", env_edition="enterprise")
+    assert result.returncode != 0
+    assert "conflicts with KIROCREW_BUILD_EDITION" in result.stderr
+
+
+def test_enterprise_wheel_carries_the_enterprise_stamp(tmp_path: Path) -> None:
+    """Build a real wheel offline through setup.py and read edition.py out of it."""
+    pytest.importorskip("setuptools.command.bdist_wheel")
+    env = {k: v for k, v in os.environ.items() if k != "KIROCREW_BUILD_EDITION"}
+    env["KIROCREW_BUILD_EDITION"] = "enterprise"
+    dist = tmp_path / "dist"
+    argv = [
+        "egg_info", "--egg-base", str(tmp_path),
+        "build", "--build-base", str(tmp_path / "build"),
+        "bdist_wheel", "--bdist-dir", str(tmp_path / "bdist"), "--dist-dir", str(dist),
+    ]  # fmt: skip
     result = subprocess.run(
-        ["make", "-s", "-n", "check-edition", f"EDITION={value}"],
+        [sys.executable, "setup.py", "-q", *argv],
         cwd=_REPO,
+        env=env,
         capture_output=True,
         text=True,
         encoding="utf-8",
-        timeout=60,
+        timeout=600,
     )
-    assert (result.returncode == 0) is ok, result.stderr
-    if not ok:
-        assert "unknown EDITION" in result.stderr
+    assert result.returncode == 0, result.stderr[-2000:]
+    (wheel,) = dist.glob("*.whl")
+    with zipfile.ZipFile(wheel) as zf:
+        built = zf.read("kiro_crew/edition.py").decode("utf-8")
+    assert 'EDITION = "enterprise"' in built.splitlines()
+    assert _load(_EDITION_SRC).EDITION == "oss"
 
 
 def test_setup_py_build_py_stamps_and_refuses(tmp_path: Path) -> None:

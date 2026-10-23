@@ -5,15 +5,28 @@
 #   make wheel     — self-contained pip wheel (dashboard bundled)
 #   make backend-bin — standalone backend tree (bundled interpreter, no system Python)
 #   make desktop   — double-clickable desktop app (universal DMG on macOS / AppImage on Linux)
-# All three take EDITION=oss (default) or EDITION=enterprise.
+# All three take EDITION=oss|enterprise (else $KIROCREW_BUILD_EDITION, else oss).
 .PHONY: all build frontend backend test clean wheel backend-bin desktop check-edition
 
 PY ?= python3
 # Edition stamped into the built package (src/kiro_crew/edition.py). The
 # packaging targets pass it to setup.py's build_py as KIROCREW_BUILD_EDITION;
 # the source tree always stays oss. Keep EDITIONS equal to edition.EDITIONS.
-EDITION ?= oss
-EDITIONS := oss enterprise
+# EDITION comes from `EDITION=`, else from KIROCREW_BUILD_EDITION, else oss, so
+# `KIROCREW_BUILD_EDITION=enterprise make wheel` cannot quietly build oss.
+# check-edition refuses the two when both are set and differ.
+# `override` on each edition variable: under `make -e` (or `e` in MAKEFLAGS)
+# an environment variable of the same name beats a plain assignment, which
+# would let an ambient EDITION, EDITIONS or helper pick or widen the edition.
+override EDITIONS := oss enterprise
+override _EDITION_ENV := $(strip $(KIROCREW_BUILD_EDITION))
+# Only a command-line EDITION= counts: an exported shell EDITION is a generic
+# name something else may have set, so it is ignored.
+ifneq ($(origin EDITION),command line)
+override EDITION := $(if $(_EDITION_ENV),$(_EDITION_ENV),oss)
+endif
+# Exact string equality; findstring has no % wildcard, unlike filter.
+override _edition_eq = $(and $(findstring $(1),$(2)),$(findstring $(2),$(1)))
 VENV := .venv
 PIP := $(VENV)/bin/pip
 # Build the venv under a umask that masks group/other WRITE so bin/kirocrew is
@@ -113,10 +126,13 @@ wheel: check-edition frontend backend
 	$(PIP) install --upgrade build
 	KIROCREW_BUILD_EDITION=$(EDITION) $(VENV)/bin/python -m build --wheel
 
-# Refuse an unknown EDITION before any slow build step runs. setup.py checks it
-# again, so a direct `python -m build` or build-desktop.sh run is covered too.
+# Refuse an unknown or conflicting EDITION before any slow build step runs.
+# EDITION is the TEXT and EDITIONS the patterns, so `EDITION=%` matches nothing.
+# setup.py checks the value again, so a direct `python -m build` or
+# build-desktop.sh run is covered too.
 check-edition:
-	$(if $(and $(filter 1,$(words $(EDITION))),$(filter $(EDITION),$(EDITIONS))),,$(error unknown EDITION '$(EDITION)' (want one of: $(EDITIONS))))
+	$(if $(and $(_EDITION_ENV),$(if $(call _edition_eq,$(_EDITION_ENV),$(EDITION)),,x)),$(error EDITION '$(EDITION)' conflicts with KIROCREW_BUILD_EDITION '$(_EDITION_ENV)'; set one, or set both the same))
+	$(if $(and $(filter 1,$(words $(EDITION))),$(filter $(EDITIONS),$(EDITION))),,$(error unknown EDITION '$(EDITION)' (want one of: $(EDITIONS))))
 	@echo "edition: $(EDITION)"
 
 # Standalone backend tree on a bundled python-build-standalone interpreter (no
