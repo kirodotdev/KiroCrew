@@ -1264,13 +1264,15 @@ class TestBlockedLinkCardRecords:
             assert all(token not in str(r) for r in links)
 
     def test_each_removed_value_is_checked_on_its_own(self):
-        """A link token right after ``.`` matches only at a delta start, and the
-        same delta also redacts a PAT: one span would cover both values, but
-        each is checked alone, so the token the whole-text pass would keep
-        withholds the segment and neither value is saved."""
-        token = "eyJ" + "a-b_" * 25 + "." + "c" * 21 + "-" + "d" * 21
+        """A token glued to the one before it is removed whole only by a
+        per-delta pass, and the same delta also redacts a PAT. The whole-text
+        pass's first match runs into the glued token and leaves its body in the
+        text, so the saved text shows more than the streamed redaction did: the
+        segment is withheld and neither value is saved."""
+        first = "ghp_" + "Ab1" * 12
+        token = "ghp_" + "Zq7" * 12
         pat = "ghp_" + "A1b2C3d4E5" * 3 + "f6G7h8"
-        deltas = ["prefix.", f"{token} and {pat}", " end"]
+        deltas = [f"tokens: {first}", f"{token} and {pat}", " end"]
         shown, removed = chat_runner._redact_delta(deltas[1])
         assert token not in shown and pat not in shown
         assert token in [value for value, _ in removed]
@@ -1279,10 +1281,27 @@ class TestBlockedLinkCardRecords:
         assert token not in content and pat not in content
 
     def test_a_record_holding_a_value_only_a_per_delta_pass_removed_fails_closed(self):
-        """A link token after ``.`` that only a per-delta
-        pass removes, inside a blocked link's query, must not be saved in the
-        link's record (``meta.blocked_links[].url``) any more than in the text.
-        Any record string holding such a value fails the flush closed."""
+        """A link token glued to a word, which only a per-delta pass removes
+        (the whole-text pass reads the letter before ``eyJ`` as part of a word),
+        inside a blocked link's query, must not be saved in the link's record
+        (``meta.blocked_links[].url``) any more than in the text. Any record
+        string holding such a value fails the flush closed."""
+        token = "eyJ" + "a-b_" * 25 + "." + "c" * 21 + "-" + "d" * 21
+        deltas = [f"https://{self.H}/r?q=prefix", token, "&padding=" + "z" * 80]
+        shown, removed = chat_runner._redact_delta(deltas[1])
+        assert token not in shown and token in [value for value, _ in removed]
+        content, links = self._flush(deltas)
+        assert token not in content
+        assert all(token not in str(r) for r in links)
+        assert (content, links) == (chat_runner._SEGMENT_UNCHECKED_TEXT, [])
+
+    def test_a_link_token_in_a_blocked_link_query_is_saved_in_neither_text_nor_record(self):
+        """A link token after ``.`` inside a blocked link's query, split across
+        deltas, is saved in neither the text nor the link's record
+        (``meta.blocked_links[].url``): the whole-text pass removes it, so the
+        segment saves the link's placeholder. The record check for a value only
+        a per-delta pass removed is covered by the
+        ``_records_hold_removed_credential`` tests below."""
         token = "eyJ" + "a-b_" * 25 + "." + "c" * 21 + "-" + "d" * 21
         deltas = [f"https://{self.H}/r?q=prefix.", token, "&padding=" + "z" * 80]
         shown, removed = chat_runner._redact_delta(deltas[1])
@@ -1290,7 +1309,7 @@ class TestBlockedLinkCardRecords:
         content, links = self._flush(deltas)
         assert token not in content
         assert all(token not in str(r) for r in links)
-        assert (content, links) == (chat_runner._SEGMENT_UNCHECKED_TEXT, [])
+        assert content == f"[REDACTED: suspicious URL to {self.H}]"
 
     def test_a_check_past_the_work_ceiling_fails_closed_without_scanning(self):
         """Tens of thousands of removed values would cost seconds of substring
