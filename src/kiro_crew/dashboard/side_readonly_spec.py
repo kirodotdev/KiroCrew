@@ -15,8 +15,11 @@ This module closes that gap at the spec: the side session is bound to
 ``<agent>--readonly``, a copy of the active agent's spec with every backend-side
 grant emptied and the lifecycle ``hooks`` removed (shell commands the backend
 runs with no permission request). Everything else — ``tools``, ``mcpServers``,
-``resources``, the prompt, the model — is kept, so reads still work: they simply
-raise a permission request now, which the READ_ONLY gate judges.
+``resources``, the prompt, the model — is kept, so reads still work. A read
+outside the session cwd raises a permission request the READ_ONLY gate judges;
+kiro-cli runs ``fs_read`` / ``grep`` inside the cwd natively, so the spec also
+carries ``deniedPaths`` for the host's credential paths, which kiro-cli refuses
+itself.
 
 Where the file lives, and why: kiro-cli discovers its selectable agents ONLY from
 ``~/.kiro/agents/*.json`` (user scope) and ``$PWD/.kiro/agents/*.json`` (the
@@ -84,6 +87,10 @@ OWNER_MARKER = "Kiro Crew derived read-only spec"
 #: narrow or list — are kept.
 _TOOL_SETTING_GRANT_PREFIXES = ("allowed", "trusted", "auto")
 
+#: The ``toolsSettings`` keys of kiro-cli's read tools (``read`` is the current
+#: name of ``fs_read``). Each gets the credential ``deniedPaths``.
+_READ_TOOL_SETTINGS = ("fs_read", "read", "grep", "glob")
+
 #: Serializes a publication against the reaper's delete of the same registry.
 #: Publication holds it from reading the base spec to writing the derived file;
 #: the reaper holds it while it re-checks the base and unlinks. So a base that
@@ -110,6 +117,8 @@ class ReadOnlySpecError(RuntimeError):
     * ``base_spec_malformed`` — the base spec carries ``mcpServers`` or
       ``toolsSettings`` (or an entry under either) that is neither an object
       nor ``null``, so its grants cannot be found to empty.
+    * ``credential_paths_unresolved`` — the credential paths the spec denies
+      could not be resolved, so the spec would lack its ``deniedPaths``.
     """
 
     def __init__(self, code: str, detail: str):
@@ -256,8 +265,27 @@ def _grant_entry(value: Any, key: str) -> dict[str, Any]:
     return value
 
 
+def credential_denied_paths() -> tuple[str, ...]:
+    """kiro-cli ``deniedPaths`` globs for the host's credential paths.
+
+    The targets are :func:`~kiro_crew.security.sandbox_credential_targets`, the
+    same set the claude side session denies (``client_claude_session``), each as
+    itself and as everything under it. Blocking (resolves the roots).
+    """
+    from kiro_crew.security import sandbox_credential_targets
+
+    paths: list[str] = []
+    for target in sandbox_credential_targets():
+        paths.extend((target, f"{target.rstrip('/')}/**"))
+    return tuple(paths)
+
+
 def derive_readonly_spec(
-    base_spec: dict[str, Any], *, base_name: str, source_id: str | None = None
+    base_spec: dict[str, Any],
+    *,
+    base_name: str,
+    source_id: str | None = None,
+    denied_read_paths: Collection[str] = (),
 ) -> dict[str, Any]:
     """A deep copy of *base_spec* with every backend-side grant emptied.
 
@@ -298,9 +326,14 @@ def derive_readonly_spec(
       decision, so the shipped bash audit hook is not needed here. Kiro Crew's
       own ``hooks.auto_approve_tools`` grant list goes with it.
 
+    * ``toolsSettings.<read tool>.deniedPaths`` += *denied_read_paths* — kiro-cli
+      runs ``fs_read`` / ``grep`` inside the session cwd with no permission
+      request, so the gate never sees those reads; this list makes kiro-cli
+      refuse them itself (:func:`credential_denied_paths`). Existing entries stay.
+
     ``tools``, ``mcpServers`` (minus ``autoApprove``), ``resources``, ``prompt``,
     ``model`` and every other key are untouched: mounting a tool is not
-    approving it, and the reads the side chat exists for go through the gate.
+    approving it. A read outside the cwd goes through the gate.
 
     A ``mcpServers`` or ``toolsSettings`` value, or an entry under either, that
     is neither an object nor ``null`` raises ``base_spec_malformed``: its grants
@@ -338,6 +371,22 @@ def derive_readonly_spec(
         entry = _grant_entry(tool_settings, "toolsSettings")
         for key in [k for k in entry if str(k).startswith(_TOOL_SETTING_GRANT_PREFIXES)]:
             entry.pop(key, None)
+    if denied_read_paths:
+        tools_settings = spec.get("toolsSettings")
+        if tools_settings is None:
+            tools_settings = spec["toolsSettings"] = {}
+        for tool in _READ_TOOL_SETTINGS:
+            if tools_settings.get(tool) is None:
+                tools_settings[tool] = {}
+            entry = tools_settings[tool]
+            existing = entry.get("deniedPaths")
+            if existing is None:
+                existing = []
+            elif not isinstance(existing, list):
+                raise ReadOnlySpecError(
+                    "base_spec_malformed", f"toolsSettings.{tool}.deniedPaths is not a list"
+                )
+            entry["deniedPaths"] = existing + [p for p in denied_read_paths if p not in existing]
     spec.pop("useLegacyMcpJson", None)
     spec["includeMcpJson"] = False
     if "autoAllowReadonly" in spec:
@@ -472,9 +521,20 @@ def publish_readonly_spec(base_name: str, project_dir: str | None = None) -> Pub
     """
     from kiro_crew.agent import _atomic_json_write, kiro_agents_dir_path
 
+    try:
+        denied_read_paths = credential_denied_paths()
+    except (OSError, RuntimeError) as exc:
+        raise ReadOnlySpecError(
+            "credential_paths_unresolved", f"could not resolve the credential paths: {exc}"
+        ) from exc
     with _SPEC_FILE_LOCK:
         base_spec, source_id = _read_base_spec(base_name, project_dir)
-        derived = derive_readonly_spec(base_spec, base_name=base_name, source_id=source_id)
+        derived = derive_readonly_spec(
+            base_spec,
+            base_name=base_name,
+            source_id=source_id,
+            denied_read_paths=denied_read_paths,
+        )
         derived_name = derived["name"]
         agents_dir = kiro_agents_dir_path()
         target = agents_dir / f"{derived_name}.json"

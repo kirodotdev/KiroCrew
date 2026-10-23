@@ -442,12 +442,18 @@ request, and the gate judges all of them. kiro-cli trusts `fs_read` natively
 (observed on a live pod: an `fs_read` ran with no permission request and no host
 decision row, while `pwd` under `execute_bash` raised one the gate approved); a
 native read runs outside the gate, and the guarantee holds because it is a
-read. FAIL CLOSED: a turn whose spec cannot be derived or published is refused
-with a coded error (`ReadOnlySpecError.code`: `unsafe_name`,
-`base_spec_missing`, `base_spec_unreadable`, `derived_name_shadowed`,
-`derived_path_foreign`, `spec_write_failed`, `base_spec_malformed` — a
-`mcpServers`/`toolsSettings` value or entry that is neither an object nor
-`null`). The code is logged and SEL-audited (`chat.side_turn`, `denied`); the
+read. kiro-cli trusts it only inside the session cwd; a read outside it raises
+a permission request. So the derived spec also adds `deniedPaths` under
+`toolsSettings` `fs_read`, `read`, `grep` and `glob`, built from
+`security.sandbox_credential_targets()` (the list the claude side session
+denies), and kiro-cli refuses those reads itself even inside the cwd
+(`side_readonly_spec.credential_denied_paths`). FAIL CLOSED: a turn whose spec
+cannot be derived or published is refused with a coded error
+(`ReadOnlySpecError.code`: `unsafe_name`, `base_spec_missing`,
+`base_spec_unreadable`, `derived_name_shadowed`, `derived_path_foreign`,
+`spec_write_failed`, `base_spec_malformed` — a `mcpServers`/`toolsSettings`
+value or entry that is neither an object nor `null`,
+`credential_paths_unresolved`). The code is logged and SEL-audited (`chat.side_turn`, `denied`); the
 panel shows a generic message without it. The turn never runs under the base agent.
 
 **Orphaned derived specs are reaped.** kiro-cli lists every file in the
