@@ -7679,6 +7679,7 @@
         "subagent_model": "Subagent Model",
         "model_for_background_lite_heartbeat_work": "Model for background work — title generation, history compaction, and heartbeat polling.",
         "model_for_spawned_sub_agents": "Model for spawned subagents.",
+        "subagent_pin_runtime_cost": "Setting Subagent Model or Subagent Effort to anything but its default runs each subagent in its own process, about 0.55 GB of memory each, which can slow a machine with 16 GB or less. With both on their defaults, subagents can share the chat's process.",
         "role_model_auto_hint": "'Auto' lets the provider pick — it does not inherit your Default Model. Pin a model to run this work on it.",
         "failed_to_save_role_model": "Failed to save role model",
         "disabled_by_instance_config_tips_enabled_false": "Disabled by instance config (tips_enabled: false)",

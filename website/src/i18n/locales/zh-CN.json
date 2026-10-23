@@ -16100,6 +16100,7 @@
         "model_default_applies_no_override_the_model_pick": "模型默认在回答前思考的时长。“模型默认”不应用任何覆盖 — 由模型自行决定强度。",
         "model_for_background_lite_heartbeat_work": "用于后台工作的模型 — 标题生成、历史压缩和心跳轮询。",
         "model_for_spawned_sub_agents": "用于派生子代理的模型。",
+        "subagent_pin_runtime_cost": "将子代理模型或子代理推理强度设为非默认值时，每个子代理都会在自己的进程中运行，每个约占 0.55 GB 内存，可能会拖慢 16 GB 及以下内存的电脑。两者都保持默认时，子代理可以共用聊天的进程。",
         "model_tried_when_your_current_model_stays_rate_li": "当前模型在重试预算耗尽后仍被限流时尝试的模型。",
         "more_encourage_widgets": "较多（鼓励使用小组件）",
         "multiline": "多行",

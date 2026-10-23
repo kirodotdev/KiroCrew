@@ -16100,6 +16100,7 @@
         "model_default_applies_no_override_the_model_pick": "モデルがデフォルトで回答する前に考える時間。「モデルデフォルト」はオーバーライドを適用しません — モデルは独自の努力度を選択します。",
         "model_for_background_lite_heartbeat_work": "バックグラウンド処理に使用するモデル — タイトル生成、履歴の圧縮、ハートビートのポーリング。",
         "model_for_spawned_sub_agents": "起動されたサブエージェントに使用するモデル。",
+        "subagent_pin_runtime_cost": "サブエージェントモデルまたはサブエージェントの推論強度を既定以外にすると、各サブエージェントが専用のプロセスで動き、それぞれ約 0.55 GB のメモリを使います。16 GB 以下のマシンでは動作が遅くなることがあります。どちらも既定のままなら、サブエージェントはチャットのプロセスを共有できます。",
         "model_tried_when_your_current_model_stays_rate_li": "現在のモデルが再試行の上限を超えてレート制限され続けた場合に試されるモデル。",
         "more_encourage_widgets": "多い（ウィジェットを推奨）",
         "multiline": "複数行",

@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         _SPAWN_REJECTED_CODE,
         DEFERRED_QUEUED_REASONS,
         NATIVE_CHILD_NOT_RESUMABLE,
+        PINNED_RUNTIME_NOTE,
         SPAWN_RUN_SCHEMA,
         DashboardState,
         KiroCrewConfig,
@@ -492,6 +493,44 @@ async def api_spawn(request: web.Request) -> web.Response:
         field, text = await asyncio.to_thread(_effort_verdict)
         if field:
             resp[field] = text
+
+    # Reporting only, like the effort verdict. Read from the run's own sharing
+    # plan, the one decision the start and admission take, so the note can
+    # never follow a copy of the pin rule. The plan reads config (file I/O),
+    # so off the loop; a crew spawn already loaded it above.
+    def _runtime_note() -> str:
+        manager = state.subagents
+        if manager is None:
+            return ""
+        import copy
+
+        from kiro_crew.subagent import _selection_kind
+
+        try:
+            # Only a template run can ever take the shared arm.
+            if _selection_kind(info) != "template":
+                return ""
+            plan = manager._sharing_plan(info, cfg=config)
+            pins = (getattr(plan, "eff_model", ""), getattr(plan, "eff_effort", ""))
+            if not any(isinstance(p, str) and p for p in pins):
+                return ""
+            if getattr(plan, "shared", None) is not False or getattr(info, "keep", False):
+                return ""
+            # Name the pin only when it is what took the share away: the same
+            # run without its own model would take the shared arm. A backend
+            # or setting that never shares gets no note.
+            unpinned = copy.copy(info)
+            unpinned.model = ""
+            unpinned.routed_model = ""
+            if manager._should_use_session_sharing(unpinned) is not True:
+                return ""
+        except Exception:
+            return ""
+        return PINNED_RUNTIME_NOTE
+
+    runtime_note = await asyncio.to_thread(_runtime_note)
+    if runtime_note:
+        resp["runtime_note"] = runtime_note
     if keep:
         # The conversation id is the FIRST run's id: spawn_continue targets it.
         resp["conversation"] = info.id

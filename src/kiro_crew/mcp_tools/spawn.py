@@ -270,6 +270,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     # (subagent id, note) pairs for a level only session start can judge: with
     # no model pinned the provider binds it to the model the backend serves.
     effort_pendings: list[tuple[str, tuple[str, str]]] = []
+    # (subagent id, note) pairs for a run a pin starts on its own runtime.
+    runtime_notes: list[tuple[str, tuple[str, str]]] = []
     agent_tasks: list[str] = []
     # Each accepted member's label, "" where the call gave none.
     agent_labels: list[str] = []
@@ -427,6 +429,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             effort_applies.append((str(d.get("id", "?")), (t_effort, str(d["effort_applied"]))))
         if d.get("effort_pending"):
             effort_pendings.append((str(d.get("id", "?")), (t_effort, str(d["effort_pending"]))))
+        if d.get("runtime_note"):
+            runtime_notes.append((str(d.get("id", "?")), ("", str(d["runtime_note"]))))
 
     def _receipt() -> str:
         return _spawn_run_receipt(
@@ -437,6 +441,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             effort_drops=effort_drops,
             effort_applies=effort_applies,
             effort_pendings=effort_pendings,
+            runtime_notes=runtime_notes,
             queued_reasons=queued_reasons,
             errors=errors,
             transport_errors=transport_errors,
@@ -470,6 +475,7 @@ def _spawn_run_receipt(
     can_work: bool,
     keep: bool,
     agent_labels: list[str] | None = None,
+    runtime_notes: list[tuple[str, tuple[str, str]]] | None = None,
 ) -> str:
     """Render the accumulated background-run receipt without gateway requests."""
     spawn_lines: list[str] = []
@@ -492,6 +498,10 @@ def _spawn_run_receipt(
         # Neither a ✓ nor "dropped": the outcome is decided after this result.
         for pending_ids, (lvl, pending_note) in _collapse_effort_verdicts(effort_pendings):
             spawn_lines.append(f"ℹ reasoning_effort='{lvl}' for {pending_ids}: {pending_note}")
+        # Memory cost of a pin: it is the user's setting, not the call's, that
+        # usually carries it, so the receipt is where the caller first sees it.
+        for note_ids, (_unused, note) in _collapse_effort_verdicts(runtime_notes or []):
+            spawn_lines.append(f"ℹ {note_ids}: {note}")
     if not parent_session and agent_ids:
         # Orphan alert: without a parent session key the subagents cannot
         # deliver completion events back to this conversation and will

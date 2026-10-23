@@ -272,6 +272,20 @@ def effort_drop_reason(
     return ""
 
 
+#: Receipt text for a run whose sharing plan carries a model or effort (a
+#: per-call value, a ``subagent`` role pin, or a routed model) where the run
+#: would otherwise share its parent's runtime: the pin forces a runtime of its
+#: own. The size is the measured cost of one kiro-cli
+#: process plus its three managed MCP servers on macOS; it is a guide for the
+#: reader, not a limit anything enforces.
+PINNED_RUNTIME_NOTE = (
+    "a set model or effort (per call, a Subagent Model/Effort setting, or "
+    "routing) starts it in its own runtime (its own agent process and MCP "
+    "servers, about 0.55 GB of memory each); without one it would share the "
+    "parent chat's runtime"
+)
+
+
 def effort_applied_note(
     model: str,
     reasoning_effort: str,

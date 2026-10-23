@@ -16634,6 +16634,7 @@
         "model_default_applies_no_override_the_model_pick": "Por quanto tempo os modelos pensam antes de responder, por padrão. 'Padrão do modelo' não aplica nenhuma substituição — o modelo escolhe o próprio esforço.",
         "model_for_background_lite_heartbeat_work": "Modelo para trabalho em segundo plano — geração de títulos, compactação do histórico e sondagem de heartbeat.",
         "model_for_spawned_sub_agents": "Modelo para os subagentes gerados.",
+        "subagent_pin_runtime_cost": "Se Modelo de subagente ou Esforço de subagente não estiver no padrão, cada subagente roda em seu próprio processo, com cerca de 0,55 GB de memória cada, o que pode deixar lenta uma máquina com 16 GB ou menos. Com os dois no padrão, os subagentes podem compartilhar o processo do chat.",
         "model_tried_when_your_current_model_stays_rate_li": "Modelo usado quando seu modelo atual continua limitado por taxa além do orçamento de novas tentativas.",
         "more_encourage_widgets": "Mais (incentivar widgets)",
         "multiline": "Multilinha",

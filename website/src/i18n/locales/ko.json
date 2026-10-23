@@ -16100,6 +16100,7 @@
         "model_default_applies_no_override_the_model_pick": "모델이 기본적으로 답변 전에 생각하는 시간입니다. ‘모델 기본값’은 재정의를 적용하지 않습니다 — 모델이 추론 강도를 직접 선택합니다.",
         "model_for_background_lite_heartbeat_work": "백그라운드 작업에 사용할 모델 — 제목 생성, 기록 압축, 하트비트 폴링.",
         "model_for_spawned_sub_agents": "생성된 서브에이전트에 사용할 모델입니다.",
+        "subagent_pin_runtime_cost": "서브에이전트 모델이나 서브에이전트 추론 강도를 기본값이 아닌 값으로 정하면 서브에이전트마다 별도 프로세스에서 실행되어 각각 약 0.55GB의 메모리를 사용하며, 16GB 이하 컴퓨터가 느려질 수 있습니다. 둘 다 기본값이면 서브에이전트가 채팅의 프로세스를 공유할 수 있습니다.",
         "model_tried_when_your_current_model_stays_rate_li": "현재 모델이 재시도 한도를 넘어 속도 제한 상태가 지속될 때 시도되는 모델입니다.",
         "more_encourage_widgets": "많음(위젯 권장)",
         "multiline": "여러 줄",

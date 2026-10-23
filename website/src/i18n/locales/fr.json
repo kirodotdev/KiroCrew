@@ -16634,6 +16634,7 @@
         "model_default_applies_no_override_the_model_pick": "Durée de réflexion des modèles avant de répondre, par défaut. « Par défaut du modèle » n’applique aucune surcharge — le modèle choisit son propre effort.",
         "model_for_background_lite_heartbeat_work": "Modèle pour le travail en arrière-plan : génération des titres, compactage de l’historique et sondage heartbeat.",
         "model_for_spawned_sub_agents": "Modèle pour les sous-agents lancés.",
+        "subagent_pin_runtime_cost": "Si Modèle de sous-agent ou Effort des sous-agents n'est pas sur sa valeur par défaut, chaque sous-agent s'exécute dans son propre processus, soit environ 0,55 Go de mémoire chacun, ce qui peut ralentir une machine de 16 Go ou moins. Avec les deux par défaut, les sous-agents peuvent partager le processus du chat.",
         "model_tried_when_your_current_model_stays_rate_li": "Modèle utilisé lorsque votre modèle actuel reste limité en débit au-delà du budget de nouvelles tentatives.",
         "more_encourage_widgets": "Plus (encourager les widgets)",
         "multiline": "Multiligne",

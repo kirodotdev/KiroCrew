@@ -16367,6 +16367,7 @@
         "model_default_applies_no_override_the_model_pick": "Wie lange Modelle standardmäßig nachdenken, bevor sie antworten. „Modellstandard“ wendet keine Überschreibung an — das Modell wählt seinen Aufwand selbst.",
         "model_for_background_lite_heartbeat_work": "Modell für Hintergrundarbeit – Titelerzeugung, Verlaufskomprimierung und Heartbeat-Abfrage.",
         "model_for_spawned_sub_agents": "Modell für erzeugte Subagenten.",
+        "subagent_pin_runtime_cost": "Wenn Subagent-Modell oder Subagent-Aufwand nicht auf dem Standard steht, läuft jeder Subagent in einem eigenen Prozess mit jeweils etwa 0,55 GB Speicher, was Rechner mit 16 GB oder weniger verlangsamen kann. Stehen beide auf dem Standard, können Subagenten den Prozess des Chats mitnutzen.",
         "model_tried_when_your_current_model_stays_rate_li": "Modell, das verwendet wird, wenn Ihr aktuelles Modell über das Wiederholungsbudget hinaus ratenbegrenzt bleibt.",
         "more_encourage_widgets": "Mehr (Widgets fördern)",
         "multiline": "Mehrzeilig",

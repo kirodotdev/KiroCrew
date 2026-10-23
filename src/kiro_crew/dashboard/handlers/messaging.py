@@ -340,6 +340,7 @@ from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions  # noq
 from kiro_crew.spawn_warm import warm_project_agents_for_spawn  # noqa: F401
 from kiro_crew.subagent import (  # noqa: F401
     DEFERRED_QUEUED_REASONS,
+    PINNED_RUNTIME_NOTE,
     SUCCESSOR_UNKNOWN,
     effort_applied_note,
     effort_drop_reason,

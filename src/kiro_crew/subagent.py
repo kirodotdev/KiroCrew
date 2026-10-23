@@ -328,6 +328,7 @@ from kiro_crew.subagent_parts.host_memory import (  # noqa: F401
 )
 from kiro_crew.subagent_parts.manager import SubagentManager
 from kiro_crew.subagent_parts.model_choice import (  # noqa: F401
+    PINNED_RUNTIME_NOTE,
     _effort_channel,
     _effort_judged_at_session_start,
     _resolved_model_of,
