@@ -69,7 +69,7 @@ from computer_use_snapshot_macos_helpers import (  # noqa: F401 -- the fixture i
 # broke on the 3.10 shard. pytest inserts each test file's directory on
 # ``sys.path`` (rootdir-relative ``consider_namespace_packages``-free import mode),
 # so the bare module name is the form that always resolves.
-from test_computer_use_ffi import _H_ELEMENT, _H_SOURCE, _Fakes
+from test_computer_use_ffi import _H_ELEMENT, _H_SOURCE, _FakeFn, _Fakes
 
 from kiro_crew.computer_use import (
     macos_driver,
@@ -566,15 +566,225 @@ class TestMacOSDriverHappyPaths:
 
     def test_scroll_falls_back_to_a_wheel_event_when_the_ax_action_is_refused(self, fakes: _Fakes):
         """The live finding: an AXScrollArea ADVERTISED AXScrollDownByPage and then
-        returned kAXErrorActionUnsupported. The advertised list is never trusted."""
+        returned kAXErrorActionUnsupported. The advertised list is never trusted.
+
+        The wheel event is aimed at the element's centre: unaimed, it carried the
+        operator's pointer position, and a background TextEdit dropped it while the
+        tool reported "scrolled"."""
+        window = _stage_window(
+            fakes,
+            children=[{"role": "AXScrollArea", "frame": (100.0, 200.0, 400.0, 300.0)}],
+            bounds=(50.0, 60.0, 800.0, 600.0),
+        )
+        rec = next(
+            r
+            for r in snapshot_macos.build_snapshot(_APP, _req()).elements
+            if r.role == "AXScrollArea"
+        )
+        child = fakes.heap.payload(fakes.ax.attrs[(window, "AXChildren")])[0]
+        for action in ("AXScrollDownByPage", "AXScrollUpByPage"):
+            fakes.ax.perform_results[(child, action)] = macos_ffi.AX_ERR_ACTION_UNSUPPORTED
+        result = macos_driver.MacOSBackend().scroll(_APP, rec, "down", 1.0)
+        assert result.ok is True
+        assert "wheel" in result.text
+        assert "not confirmed" in result.text
+        assert [a for (n, a) in fakes.cg.calls if n == "CGEventPostToPid"]
+        located = [args[1] for (n, args) in fakes.cg.calls if n == "CGEventSetLocation"]
+        assert located == [(300.0, 350.0)]
+
+    def test_scroll_refuses_a_wheel_event_it_cannot_aim(self, fakes: _Fakes):
+        """No on-screen frame means no point to aim at, and an unaimed wheel event
+        lands under the operator's pointer instead. So nothing is posted."""
         backend, rec, window = self._staged(fakes)
-        kids = fakes.ax.attrs[(window, "AXChildren")]
-        child = fakes.heap.payload(kids)[0]
+        child = fakes.heap.payload(fakes.ax.attrs[(window, "AXChildren")])[0]
         for action in ("AXScrollDownByPage", "AXScrollUpByPage"):
             fakes.ax.perform_results[(child, action)] = macos_ffi.AX_ERR_ACTION_UNSUPPORTED
         result = backend.scroll(_APP, rec, "down", 1.0)
+        assert result.ok is False
+        assert "pagedown" in result.text
+        assert not [a for (n, a) in fakes.cg.calls if n == "CGEventPostToPid"]
+
+    def _staged_scroll_bar(
+        self,
+        fakes: _Fakes,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        position: float,
+        enabled: bool = True,
+        moves: bool = True,
+        stale_reads: int = 0,
+        max_moves: int = 99,
+    ):
+        """A TextEdit-shaped scroll area: its AX scroll action is refused, and its
+        vertical bar exposes both page areas. Each accepted increment press moves the
+        bar 0.6 toward the end when *moves*, so a long request reaches the bottom.
+        The bar's AXValue keeps reporting the old position for *stale_reads* reads
+        after each press, as an animated scroll does on a real Mac."""
+        monkeypatch.setattr(macos_driver, "_SCROLL_SETTLE_INTERVAL_SECS", 0.0)
+        area, bar = fakes.new_element(), fakes.new_element()
+        increment, decrement = fakes.new_element(), fakes.new_element()
+        _stage_window(
+            fakes,
+            children=[
+                {
+                    "handle": area,
+                    "role": "AXScrollArea",
+                    "frame": (100.0, 200.0, 400.0, 300.0),
+                    "children": [
+                        {
+                            "handle": bar,
+                            "role": "AXScrollBar",
+                            "children": [
+                                {
+                                    "handle": increment,
+                                    "role": "AXButton",
+                                    "subrole": "AXIncrementPage",
+                                },
+                                {
+                                    "handle": decrement,
+                                    "role": "AXButton",
+                                    "subrole": "AXDecrementPage",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+            bounds=(50.0, 60.0, 800.0, 600.0),
+        )
+        fakes.ax.attrs[(area, "AXVerticalScrollBar")] = bar
+        fakes.ax.attrs[(bar, "AXEnabled")] = fakes.new_bool(enabled)
+        fakes.ax.attrs[(bar, "AXValue")] = fakes.new_number(position)
+        for action in ("AXScrollDownByPage", "AXScrollUpByPage"):
+            fakes.ax.perform_results[(area, action)] = macos_ffi.AX_ERR_ATTRIBUTE_UNSUPPORTED
+        presses: list[int] = []
+        pending: dict[str, float | int] = {}
+        perform = fakes.ax.AXUIElementPerformAction
+        copy_attr = fakes.ax.AXUIElementCopyAttributeValue
+
+        def press(elem, name_ref):
+            result = perform(elem, name_ref)
+            identity = fakes.heap.identity(elem)
+            if identity in (increment, decrement) and moves:
+                presses.append(identity)
+                if len(presses) > max_moves:
+                    return result
+                current = fakes.heap.payload(fakes.ax.attrs[(bar, "AXValue")])
+                value = (
+                    min(1.0, current + 0.6) if identity == increment else max(0.0, current - 0.6)
+                )
+                pending.update(value=value, stale=stale_reads)
+            return result
+
+        def read(elem, key, out_ref):
+            if (
+                fakes.heap.identity(elem) == bar
+                and fakes.heap.payload(key) == "AXValue"
+                and pending
+            ):
+                if pending["stale"]:
+                    pending["stale"] -= 1
+                else:
+                    fakes.ax.attrs[(bar, "AXValue")] = fakes.new_number(pending.pop("value"))
+                    pending.clear()
+            return copy_attr(elem, key, out_ref)
+
+        fakes.ax.AXUIElementPerformAction = _FakeFn(press)
+        fakes.ax.AXUIElementCopyAttributeValue = _FakeFn(read)
+        rec = next(
+            r
+            for r in snapshot_macos.build_snapshot(_APP, _req()).elements
+            if r.role == "AXScrollArea"
+        )
+        return rec, presses
+
+    def test_scroll_presses_the_scroll_bar_page_area_and_confirms_it_moved(
+        self, fakes: _Fakes, monkeypatch: pytest.MonkeyPatch
+    ):
+        """TextEdit refuses AXScrollDownByPage (-25205) and ignores a wheel event
+        aimed at its centre. Its scroll bar's page area does scroll, and the bar's
+        position confirms it, so no wheel event is posted."""
+        rec, presses = self._staged_scroll_bar(fakes, monkeypatch, position=0.0)
+        result = macos_driver.MacOSBackend().scroll(_APP, rec, "down", 20.0)
         assert result.ok is True
-        assert "wheel" in result.text
+        assert "2 of 20 page(s)" in result.text
+        assert "reaching the bottom" in result.text
+        assert "0% -> 100%" in result.text
+        assert len(presses) == 2
+        assert not [a for (n, a) in fakes.cg.calls if n == "CGEventPostToPid"]
+
+    def test_scroll_reports_a_disabled_scroll_bar_as_nothing_to_scroll(
+        self, fakes: _Fakes, monkeypatch: pytest.MonkeyPatch
+    ):
+        """TextEdit disables the bar while the text fits. Posting a wheel event then
+        would report a scroll that cannot happen."""
+        rec, presses = self._staged_scroll_bar(fakes, monkeypatch, position=0.0, enabled=False)
+        result = macos_driver.MacOSBackend().scroll(_APP, rec, "down", 1.0)
+        assert result.ok is False
+        assert "already fits" in result.text
+        assert not presses
+        assert not [a for (n, a) in fakes.cg.calls if n == "CGEventPostToPid"]
+
+    def test_scroll_at_the_end_says_so_without_pressing(
+        self, fakes: _Fakes, monkeypatch: pytest.MonkeyPatch
+    ):
+        rec, presses = self._staged_scroll_bar(fakes, monkeypatch, position=1.0)
+        result = macos_driver.MacOSBackend().scroll(_APP, rec, "down", 3.0)
+        assert result.ok is True
+        assert "already at the bottom" in result.text
+        assert not presses
+
+    @pytest.mark.parametrize(
+        ("position", "direction", "end"),
+        [(0.9995, "down", "bottom"), (0.0005, "up", "top")],
+    )
+    def test_scroll_near_the_end_still_presses_the_page_area(
+        self,
+        fakes: _Fakes,
+        monkeypatch: pytest.MonkeyPatch,
+        position: float,
+        direction: str,
+        end: str,
+    ):
+        rec, presses = self._staged_scroll_bar(fakes, monkeypatch, position=position)
+        result = macos_driver.MacOSBackend().scroll(_APP, rec, direction, 1.0)
+        assert result.ok is True
+        assert f"reaching the {end}" in result.text
+        assert len(presses) == 1
+        assert not [a for (n, a) in fakes.cg.calls if n == "CGEventPostToPid"]
+
+    def test_scroll_waits_for_an_animated_scroll_bar_to_settle(
+        self, fakes: _Fakes, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A press animates the scroll, so the bar still reads its old position right
+        after it. Read at once, the press looks like a no-op and the tool falls
+        through to a 20-page wheel scroll."""
+        rec, presses = self._staged_scroll_bar(fakes, monkeypatch, position=0.0, stale_reads=3)
+        result = macos_driver.MacOSBackend().scroll(_APP, rec, "down", 20.0)
+        assert result.ok is True
+        assert "2 of 20 page(s)" in result.text
+        assert "0% -> 100%" in result.text
+        assert len(presses) == 2
+        assert not [a for (n, a) in fakes.cg.calls if n == "CGEventPostToPid"]
+
+    def test_scroll_counts_only_the_presses_that_moved_the_view(
+        self, fakes: _Fakes, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A last press that moved nothing is not a page scrolled."""
+        rec, presses = self._staged_scroll_bar(fakes, monkeypatch, position=0.0, max_moves=1)
+        result = macos_driver.MacOSBackend().scroll(_APP, rec, "down", 3.0)
+        assert result.ok is True
+        assert "1 of 3 page(s)" in result.text
+        assert "0% -> 60%" in result.text
+        assert len(presses) == 2
+
+    def test_scroll_falls_through_to_the_wheel_when_the_page_area_moves_nothing(
+        self, fakes: _Fakes, monkeypatch: pytest.MonkeyPatch
+    ):
+        """An unchanged position is not success: the press reached nothing."""
+        rec, _ = self._staged_scroll_bar(fakes, monkeypatch, position=0.0, moves=False)
+        result = macos_driver.MacOSBackend().scroll(_APP, rec, "down", 1.0)
+        assert "not confirmed" in result.text
         assert [a for (n, a) in fakes.cg.calls if n == "CGEventPostToPid"]
 
     def test_scroll_rejects_an_unknown_direction(self, fakes: _Fakes):
