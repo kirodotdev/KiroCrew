@@ -1028,7 +1028,7 @@ async def api_side_state(request: web.Request) -> web.Response:
             "last_run_id": side.last_run_id,
             # The busy gate ``api_side_turn`` applies, so the panel offers steer and
             # queue exactly when a submit would get them.
-            "running": bool(side.last_run_id) and (not side.is_complete or side.is_stopping),
+            "running": side.turn_in_flight,
             "messages": [_wire_side_row(entry) for entry in side.messages],
             "queue": [
                 {"id": entry["id"], "content": redact(entry["content"]), "ts": entry["ts"]}
@@ -1156,7 +1156,7 @@ async def api_side_turn(request: web.Request) -> web.Response:
             status=409,
         )
 
-    if slot._side.last_run_id and (not slot._side.is_complete or slot._side.is_stopping):
+    if slot._side.turn_in_flight:
         # A turn is in flight. Mirror the main chat: steer injects into the
         # RUNNING turn, queue defers it to the next one, and an unavailable
         # steer falls through to the queue so the text is NEVER dropped.
