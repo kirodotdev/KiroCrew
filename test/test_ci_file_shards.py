@@ -539,8 +539,12 @@ class TestFileShards(unittest.TestCase):
             self.assertNotIn("--splits", command)
             if name == "backend-test":
                 leaf = command.split('if [ "$LEAF" = "true" ]; then', 1)[1].split("exit 0", 1)[0]
-                self.assertNotIn("ci_file_shards", leaf)
-                self.assertIn('"${CHANGED[@]}"', leaf)
+                # Leaf gates are partitioned by the same owner function; the
+                # changed-file repeats stay whole on every job.
+                gates, repeats = leaf.split('for pass in $(seq 1 "$LEAF_REPEAT")', 1)
+                self.assertIn("from scripts.ci_file_shards import file_shard", gates)
+                self.assertNotIn("ci_file_shards", repeats)
+                self.assertIn('"${CHANGED[@]}"', repeats)
                 self.assertCountEqual(
                     [word for word in command.split() if word.startswith("--cov=")],
                     [
