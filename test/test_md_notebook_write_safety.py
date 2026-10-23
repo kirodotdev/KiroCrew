@@ -782,6 +782,8 @@ async def test_a_sync_while_the_temp_is_still_staging_never_commits_it(
 
             save_status = 0
             save_body: dict[str, Any] = {}
+            sync_status = 0
+            sync_body: dict[str, Any] = {}
             sync: Optional[asyncio.Task[tuple[int, Any]]] = None
             try:
                 # flake-ok: pre-existing 10 s thread-pool wait for the staging write the test gates, failing by name; moved verbatim
@@ -803,9 +805,15 @@ async def test_a_sync_while_the_temp_is_still_staging_never_commits_it(
                 assert not sync.done(), "the Sync ran while a note was still staging"
             finally:
                 release_stage.set()
+                # After staging releases the vault lock, the sync that was
+                # parked behind it acquires the lock first and runs all git
+                # operations; save cannot re-acquire the lock to publish
+                # until sync releases it.  Drain sync before awaiting save
+                # so the save-await is not racing git work on a slow runner.
+                if sync is not None:
+                    sync_status, sync_body = await real_asyncio.wait_for(sync, timeout=30)
                 save_status, save_body = await real_asyncio.wait_for(save, timeout=10)
             assert sync is not None
-            sync_status, sync_body = await real_asyncio.wait_for(sync, timeout=30)
             assert sync_status == 200, sync_body
             committed = [c["path"] for c in sync_body["result"]["committed"]]
 
