@@ -778,7 +778,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_consume_pending_reset",
             "async function",
-            "(state: 'DashboardState', slot: '_ChatSlot', *, allow_discard: 'bool' = False) -> 'bool'",
+            "(state: 'DashboardState', slot: '_ChatSlot', *, allow_discard: 'bool' = False,"
+            " own_turn: 'bool' = False) -> 'bool'",
         ),
     ),
     "slash_commands": (

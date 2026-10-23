@@ -921,6 +921,71 @@ class TestDiscardConversation:
         assert mgr.consume_replay_suppression("k1") is False
 
     @pytest.mark.asyncio
+    async def test_refuse_if_closes_a_window_skip_if_busy_cannot_see(self, cfg):
+        """``skip_if_busy`` reads the session; some callers' busy lives elsewhere.
+
+        A dashboard slot can hold an admission reservation that has not reached
+        a semaphore, so this layer has nothing to read it from. The caller hands
+        its own question in and it is answered in the same lock hold as the pop,
+        because acquiring that lock can wait — another key's teardown holds it
+        across ``record_session_ended`` — and a pre-call answer is stale by then.
+        """
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+        assert provider.has_active_turn() is False
+
+        discarded = await mgr.discard_conversation(
+            "k1", replay=False, skip_if_busy=True, refuse_if=lambda: True
+        )
+
+        assert discarded is False
+        provider.shutdown.assert_not_awaited()
+        assert mgr.has_session("k1"), "the refusal must leave the session intact"
+        assert mgr.consume_replay_suppression("k1") is False, "nor move the replay flag"
+
+    @pytest.mark.asyncio
+    async def test_refuse_if_answering_no_leaves_the_teardown_alone(self, cfg):
+        """Positive control: the hook must not refuse on its own.
+
+        Without this, the test above passes for a hook wired to refuse always,
+        which would strand every teardown that passes one.
+        """
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+
+        discarded = await mgr.discard_conversation(
+            "k1", replay=False, skip_if_busy=True, refuse_if=lambda: False
+        )
+
+        assert discarded is True
+        provider.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_refuse_if_is_asked_before_the_pop(self, cfg):
+        """Order matters: asked after the pop, a refusal could not undo it.
+
+        The session must still be registered at the moment the hook runs.
+        """
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.release("k1")
+
+        still_registered: list[bool] = []
+
+        def ask() -> bool:
+            still_registered.append(mgr.has_session("k1"))
+            return True
+
+        assert (
+            await mgr.discard_conversation("k1", replay=False, skip_if_busy=True, refuse_if=ask)
+            is False
+        )
+
+        assert still_registered == [True]
+
+    @pytest.mark.asyncio
     async def test_skip_if_busy_proceeds_once_the_turn_releases(self, cfg):
         """The refusal is a wait, not a cancellation."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())

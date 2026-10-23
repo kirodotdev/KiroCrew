@@ -11,6 +11,7 @@ import logging
 import uuid
 from typing import Any
 
+from kiro_crew.dashboard.chat_utils_injected_rows import teardown_hold_active
 from kiro_crew.dashboard.chat_utils_slots import dashboard_slot_key, effective_session_key
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
@@ -241,7 +242,12 @@ async def chat_done_payload(
         continuing = bool(
             continuing
             or slot._pending_synthesis
-            or (slot.queue_depth and not queue_held and not slot._last_turn_auth_required)
+            or (
+                slot.queue_depth
+                and not queue_held
+                and not slot._last_turn_auth_required
+                and not teardown_hold_active(state, slot)
+            )
             or await subagents_attached_async(
                 state, slot, effective_session_key(slot), "completion_sound"
             )

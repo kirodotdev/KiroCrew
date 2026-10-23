@@ -23,6 +23,10 @@ _BUSY_HELPERS: dict[str, frozenset[str]] = {
     "_switch_target_busy": frozenset({"running"}),
     # Member Fresh start: the slot's task or the session's turn.
     "_turn_busy": frozenset({"running"}),
+    # The deferred discard's foreign-owner check: the reservation plus the
+    # slot's task, minus the caller's own turn, since the turn-path consume runs
+    # inside that task.
+    "_a_foreign_turn_owns_the_slot": frozenset({"running"}),
 }
 
 
@@ -137,6 +141,12 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("mate_thread_wakes.py", "_idle"),
                 ("chat_folders.py", "api_chat_slot_mode"),
                 ("chat_api/slot_guards.py", "_switch_target_busy"),
+                ("chat_turn/session_reset.py", "_arm_pending_reset_retry"),
+                # The deferred discard's own consume: it re-reads the
+                # RESERVATION after its awaited probes, because a turn that
+                # reserved during one of them has not acquired the session yet,
+                # so `skip_if_busy` cannot see it.
+                ("chat_turn/session_reset.py", "_consume_pending_reset"),
                 # The palette create's retraction of a newborn whose app-agent
                 # binding did not persist: it reads the RESERVATION, because a
                 # turn that started on the slot during the write keeps it.

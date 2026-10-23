@@ -335,6 +335,7 @@ from kiro_crew.dashboard.chat_turn.prompt_assembly import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_turn.queue_cycle import (
     TURN_FAILED_META,
+    _arm_synthesis_recheck,
     _end_turn_tail,
     _note_failed_before_the_try,
     _send_chat_done,
@@ -424,7 +425,11 @@ from kiro_crew.dashboard.chat_turn.session_events import (
     _on_compaction_status,
     _on_todo_update,
 )
-from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
+from kiro_crew.dashboard.chat_turn.session_reset import (
+    _arm_pending_reset_retry,
+    _consume_pending_reset,
+    _wake_pending_reset_retry,
+)
 from kiro_crew.dashboard.chat_turn.slash_commands import (
     _answer_slash_without_channel,
     _handle_agent_command,
@@ -615,6 +620,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     run_to_completion,
     slack_mirror_is_paused,
     slot_history_key,
+    teardown_hold_active,
     tighten_live_slot_memory_mode,
     tighten_replacement_to_restricted_original,
     user_text_span,

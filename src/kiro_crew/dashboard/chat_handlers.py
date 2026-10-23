@@ -353,10 +353,12 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     save_slot_off_loop,
 )
 from kiro_crew.dashboard.chat_runner import (  # noqa: F401
+    _arm_pending_reset_retry,
     _context_usage_payload,
     _run_chat,
     _start_next_queued_turn,
     _sync_served_model,
+    _wake_pending_reset_retry,
     context_entry_expired,
     schedule_eager_spawn,
     subagents_hold_user_messages,
@@ -408,6 +410,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     slot_history_key,
     slot_transcript_key,
     subagents_attached_async,
+    teardown_hold_active,
     tighten_live_slot_memory_mode,
 )
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401

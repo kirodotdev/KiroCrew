@@ -750,6 +750,7 @@ async def discard_conversation(
     replay: bool = True,
     skip_if_busy: bool = False,
     refuse_only_on_active_turn: bool = False,
+    refuse_if: Callable[[], bool] | None = None,
 ) -> bool:
     """Drop only the native conversation while preserving channel linkage.
 
@@ -769,6 +770,18 @@ async def discard_conversation(
     invisible to ``has_active_turn`` and is exactly the case a caller-side
     pre-check cannot close.
 
+    ``refuse_if`` extends that same contract to busy-ness this layer cannot
+    see. ``skip_if_busy`` reads the session; a caller whose own idea of busy
+    lives elsewhere — a dashboard slot holding an admission reservation that
+    has not yet reached a semaphore — has nothing here to read it from, and a
+    pre-call check of its own leaves the window above: acquiring
+    ``owner._lock`` can wait arbitrarily long, because another key's teardown
+    holds it across ``record_session_ended``. So the predicate is evaluated
+    HERE, in the same lock hold as the busy check and the pop, and a true
+    answer refuses exactly as ``skip_if_busy`` does, changing nothing. It
+    must be synchronous: an await inside the lock hold would reopen the very
+    window it closes.
+
     The sid clear runs in the SAME event-loop tick as the pop, with no await
     between them, so a cold start racing this teardown cannot have mapped a
     replacement sid for the key by the time it runs — the clear can never
@@ -780,6 +793,8 @@ async def discard_conversation(
     requested_key = key
     key = owner._fold_key(key)
     async with owner._lock:
+        if refuse_if is not None and refuse_if():
+            return False
         current = owner._sessions.get(key)
         if skip_if_busy and _turn_in_flight(
             current, refuse_only_on_active_turn=refuse_only_on_active_turn

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         _app_claim_refused,
         _app_slot_acquisition_denial,
         _app_slot_acquisition_recheck,
+        _arm_pending_reset_retry,
         _build_stream_chunk,
         _ChatSlot,
         _deny_app_session_settings,
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
         _redact_meta,
         _run_chat,
         _start_next_queued_turn,
+        _wake_pending_reset_retry,
         app_slot_is_local_user_session,
         attachment_meta,
         audit_app_slot_denial,
@@ -77,6 +79,7 @@ if TYPE_CHECKING:
         start_queue_persist,
         steer_into_running_turn,
         subagents_hold_user_messages,
+        teardown_hold_active,
         warm_project_agent_names,
         warn_if_not_durable,
     )
@@ -862,6 +865,13 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # Opt-out: if the user explicitly chose steer mode, honour it — start a new
     # turn immediately so the message is processed without waiting for children.
     # An app on a session it does not own has no opt-out (`steer` is None there).
+    # The opt-out covers the SUB-AGENT hold only. It is a choice about waiting,
+    # not about which conversation answers, so it cannot waive a deferred
+    # discard: the composer's Steer action on an idle slot with children running
+    # is exactly the state that defers one, and answering there would use the
+    # conversation the person asked to drop. `_turn_admit` consumes without
+    # ``allow_discard``, so nothing later in the turn drops it either.
+    _teardown_hold = bool(not slot.running and teardown_hold_active(state, slot))
     _sub_key = effective_session_key(slot)
     _held = subagents_hold_user_messages(state, _sub_key)
     # Messages parked while a child was live stay parked once it is flagged
@@ -873,7 +883,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         and state.subagents is not None
         and state.subagents.running_agents_for(_sub_key)
     )
-    if not steer and (_held or _behind_parked):
+    if (not steer and (_held or _behind_parked)) or _teardown_hold:
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
 
@@ -921,6 +931,11 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         if _hold_meta.get("quote"):
             _hold_push.setdefault("meta", {})["quote"] = _hold_meta["quote"]
         state.broadcast_ws("queue_push", _hold_push)
+        if _teardown_hold:
+            # Deduped, so this only matters when no decline armed one: the retry
+            # is what lands the discard and drains the queue this send joined.
+            _arm_pending_reset_retry(state, slot)
+            _wake_pending_reset_retry(slot)
         if _behind_parked:
             await _start_next_queued_turn(state, slot)
         # Same receipt contract as the busy-slot queue branch: `queue_id` binds

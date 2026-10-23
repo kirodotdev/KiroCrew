@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         logger,
         spawn_guarded_turn,
         synthesis_fire_verdict,
+        teardown_hold_active,
         title_then_refresh,
     )
     from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
@@ -171,6 +172,11 @@ def _arm_synthesis_recheck(state: DashboardState, slot: _ChatSlot) -> None:
                 and not slot.turn_running
                 and not slot._closing
                 and state._slots.get(slot.key) is slot
+                # This path reaches `_launch_synthesis` without passing the
+                # fire site in `_finish_queue_cycle`, so the hold has to be
+                # read here too or the timer drains a held queue behind the
+                # synthesis turn — the loss the hold exists to stop.
+                and not teardown_hold_active(state, slot)
             )
 
         if not _still_wanted():
@@ -234,7 +240,11 @@ async def _finish_queue_cycle(
         # Running, delivering, pending in memory, or queued in the store: the
         # one fire-gate read (`synthesis_fire_verdict`).
         verdict = await synthesis_fire_verdict(state, slot)
-        will_synthesize = verdict == SYNTHESIS_CLEAR and not _drop_single_turn_synthesis(slot)
+        will_synthesize = (
+            verdict == SYNTHESIS_CLEAR
+            and not _drop_single_turn_synthesis(slot)
+            and not teardown_hold_active(state, slot)
+        )
         if verdict == SYNTHESIS_UNKNOWN:
             _arm_synthesis_recheck(state, slot)
         if not will_synthesize and drain and slot._queue and not slot._last_turn_auth_required:
@@ -282,9 +292,7 @@ async def _finish_queue_cycle(
     owner = slot.task
     stop_pending = slot._stop_state != "idle"
     stop_session_key = effective_session_key(slot)
-    # A held queue keeps what it held when the hold was decided. A send that
-    # queues during the read below is the user's next send, the one a hold
-    # resumes on, so it gets the floor either way.
+    # A held queue keeps what it held when the hold was decided.
     held = {entry.get("id") for entry in slot._queue}
     while True:
         queued = [entry.get("id") for entry in slot._queue]
@@ -299,6 +307,12 @@ async def _finish_queue_cycle(
         if (
             not drain
             and arrived
+            # Naming the id here would read as an explicit request at the choke
+            # point and turn the hold off, so the arrival would be answered by
+            # the conversation the person asked to drop. Being their next send
+            # does not change which conversation answers it. The retry drains
+            # it once the discard lands.
+            and not teardown_hold_active(state, slot)
             and await _start_next_queued_turn(state, slot, required_queue_id=arrived)
         ):
             return
@@ -583,7 +597,7 @@ async def _end_turn_tail(
             # full cold start the eager path exists to hide. Keyed on what
             # actually tore down, not on what was queued -- a discard left armed
             # behind attached sub-agents changed nothing to respawn for.
-            if await _consume_pending_reset(state, slot, allow_discard=True):
+            if await _consume_pending_reset(state, slot, allow_discard=True, own_turn=True):
                 schedule_eager_spawn(state, slot, start_priority=outcome.start_priority)
         except Exception:
             logger.debug("_consume_pending_reset failed", exc_info=True)
