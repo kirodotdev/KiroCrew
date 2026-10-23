@@ -1,6 +1,6 @@
 import { createContext, forwardRef, useCallback, useEffect, useMemo, useRef, useState, type HTMLAttributes, type ReactNode, type Ref, type ForwardedRef } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { AlarmClock, Brain, ChevronLeft, ChevronRight, FolderOpen, Goal, IdCard, NotebookPen, Pencil, RotateCcw, Route, X } from 'lucide-react'
+import { AlarmClock, Brain, ChevronLeft, ChevronRight, Download, FolderOpen, Goal, IdCard, NotebookPen, Pencil, RotateCcw, Route, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
@@ -10,6 +10,7 @@ import type { AutomationRecord } from '../../monitoring/automation'
 import type { CronJob } from '../../types'
 import CrewMonitorDetails, { type MonitorReadState } from './CrewMonitorDetails'
 import CrewScheduleList from './CrewScheduleList'
+import CrewExportView from './CrewExportView'
 import { cn } from '../../lib/utils'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -26,8 +27,8 @@ export const PROFILE_FACE_PX = 84
 
 /** A page the card pushes OVER its tabs (iOS push: one back control pointing at
  *  the card), for the things a tab opens in place: the full description, the
- *  crewmate's notes, and the schedule create form. */
-type Pushed = 'about' | 'notes' | 'new-schedule' | 'tab-page'
+ *  crewmate's notes, the Export confirm view, and the schedule create form. */
+type Pushed = 'about' | 'notes' | 'export' | 'new-schedule' | 'tab-page'
 
 /** A tab's own page pushed over the card (the Goals tab's milestone, goal and
  *  check-in pages). The tab keeps the page's state and renders it into `host`
@@ -96,6 +97,9 @@ export interface CrewProfilePanelProps {
   onClose: () => void
   /** Runs a pushed-page back action through the host's draft guard. */
   onRequestBack: (proceed: () => void) => void
+  /** The Export view's lessons text is typed: the host's exit guards then ask
+   *  before any exit (back, close, backdrop, pill, switch, route) drops it. */
+  onExportDraftChange?: (dirty: boolean) => void
   onEdit: () => void
   onOpenFiles: () => void
   /** Fresh start: stop any turn and start a clean conversation on the same
@@ -234,7 +238,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
   // Land it on the back control instead (the New schedule page focuses its own
   // form), and hand it back to the opener when the page pops.
   useEffect(() => {
-    if (pushed === 'about' || pushed === 'notes' || pushed === 'tab-page') {
+    if (pushed === 'about' || pushed === 'notes' || pushed === 'export' || pushed === 'tab-page') {
       backRef.current?.focus({ preventScroll: true })
     } else if (!pushed) {
       const opener = openerRef.current
@@ -279,7 +283,9 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
     ? t('pages.membersPage.profile_about')
     : pushed === 'notes'
       ? t('pages.membersPage.notes_tab')
-      : t('pages.membersPage.schedule_new')
+      : pushed === 'export'
+        ? t('pages.membersPage.export_title')
+        : t('pages.membersPage.schedule_new')
 
   const slide = reduce
     ? { initial: { opacity: 1 }, animate: { opacity: 1 }, exit: { opacity: 1 } }
@@ -464,6 +470,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
 
                 <div className="rounded-2xl border border-border bg-bg overflow-hidden">
                   <Row icon={<NotebookPen size={16} />} tone="warn" label={t('pages.membersPage.notes_tab')} sub={t('pages.membersPage.profile_notes_sub')} onClick={() => push('notes')} testId="crew-profile-notes" />
+                  <Row icon={<Download size={16} />} tone="info" label={t('pages.membersPage.export_row')} sub={t('pages.membersPage.export_row_sub')} onClick={() => push('export')} testId="crew-profile-export" />
                 </div>
 
                 {p.settingsBody}
@@ -498,6 +505,8 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
                 </div>
               ) : pushed === 'notes' ? (
                 p.notesBody
+              ) : pushed === 'export' ? (
+                <CrewExportView slug={p.member.slug} member={p.member.name} onDirtyChange={p.onExportDraftChange} />
               ) : pushed === 'tab-page' ? (
                 <div ref={setTabPageHost} className="px-4 py-4" />
               ) : (
