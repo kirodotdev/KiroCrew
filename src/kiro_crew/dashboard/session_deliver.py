@@ -143,7 +143,10 @@ async def deliver(
     records it for a requeue, and an app message's queue entry carries it so the
     drain re-checks it. :data:`QUEUE_FULL` means the live queue had no room and
     nothing was written. *evict_oldest* makes a cron notification on a full live
-    queue drop the oldest entry and its card instead, so the newest report waits.
+    queue drop the oldest queued cron notification no person edited, and its card,
+    so the newest report waits; with none, nothing else gives way, nothing is
+    written and the answer is :data:`QUEUE_FULL`, which each cron caller turns into
+    its out-of-session fallback.
     """
     if origin.kind == ORIGIN_PEER:
         return await _deliver_peer(state, slot, text, origin, admission, queue_meta)
@@ -206,12 +209,38 @@ async def _deliver_running(
         from kiro_crew.dashboard.cron_inject import queue_cron_notification
 
         if evict_oldest:
-            from kiro_crew.dashboard.chat_utils import _remove_queued_by_id
+            from kiro_crew.dashboard.chat_utils import (
+                CRON_NOTIFICATION_KIND,
+                _remove_queued_by_id,
+            )
             from kiro_crew.dashboard.slot_queue_repository import MAX_LIVE_QUEUE_ENTRIES
 
             if len(slot._queue) >= MAX_LIVE_QUEUE_ENTRIES:
-                evicted = slot.queue_pop(0)
-                logger.warning("Queue full for slot %s: evicting oldest message", slot.key)
+                # Only another cron notification gives way: a person's prompt, an
+                # app's message or a peer's send is never dropped by automation,
+                # and neither is a cron card a person edited (its words are theirs
+                # now, though it keeps the cron kind).
+                index = next(
+                    (
+                        i
+                        for i, entry in enumerate(slot._queue)
+                        if entry.get("kind") == CRON_NOTIFICATION_KIND
+                        and not entry.get("_directive_user_origin")
+                        and not entry.get("_directive_channel_origin")
+                    ),
+                    None,
+                )
+                if index is None:
+                    logger.warning(
+                        "Queue full for slot %s with no cron notification to evict: "
+                        "dropping this one",
+                        slot.key,
+                    )
+                    return QUEUE_FULL
+                evicted = slot.queue_pop(index)
+                logger.warning(
+                    "Queue full for slot %s: evicting the oldest cron notification", slot.key
+                )
                 _remove_queued_by_id(slot.messages, evicted["id"])
                 # Open dashboards render queue cards from WebSocket frames, not
                 # from this slot's message list.

@@ -792,11 +792,13 @@ async def api_send_message(request: web.Request) -> web.Response:
                     # queued card, dropping the oldest entry when the live queue is full).
                     from kiro_crew.dashboard import session_deliver
 
-                    await session_deliver.deliver(
+                    delivery = await session_deliver.deliver(
                         state, slot, wrapped, session_deliver.cron(label), evict_oldest=True
                     )
                     state.push_slots_update()
-                    sent_session = True
+                    # A full queue with nothing that may give way wrote nothing,
+                    # so the message takes the fallback below instead.
+                    sent_session = delivery != session_deliver.QUEUE_FULL
         # Fall back to normal delivery if no session target or session is gone
         if not sent_session:
             await _deliver_send_message_fallback(

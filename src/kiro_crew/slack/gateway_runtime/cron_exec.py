@@ -463,7 +463,7 @@ async def _deliver_script_result(
                 # send_message: a script that fires faster than its
                 # notification turns run would otherwise grow the queue
                 # without bound.
-                await session_deliver.deliver(
+                delivery = await session_deliver.deliver(
                     self.dashboard_state,
                     slot,
                     wrapped,
@@ -471,6 +471,12 @@ async def _deliver_script_result(
                     evict_oldest=True,
                 )
                 self.dashboard_state.push_slots_update()
+                if delivery == session_deliver.QUEUE_FULL:
+                    # Nothing in the full queue could give way: the result goes
+                    # out as a notification, as it does when the session is gone.
+                    self.dashboard_state.notify(
+                        "cron", f"⚡ {label}", message, meta={"job_id": job.id}
+                    )
             else:
                 self.dashboard_state.notify("cron", f"⚡ {label}", message, meta={"job_id": job.id})
         elif message and not job.silent and self.dashboard_state:

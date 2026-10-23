@@ -40,8 +40,13 @@ was reachable. `dashboard/handlers/messaging.py` wraps the text:
   wrapper. The text wrapper stays in `content` because that is what the model
   reads.
 - If the slot is mid-turn the message is queued as `queued` and drained later; a
-  queue at capacity evicts its oldest entry rather than growing without bound, and
-  broadcasts `queue_cancel` for it so an open dashboard retracts that card. Its
+  queue at capacity evicts its oldest queued cron notification rather than growing
+  without bound, and broadcasts `queue_cancel` for it so an open dashboard retracts
+  that card. Only a cron notification no person edited gives way: when the full
+  queue holds none, a person's prompt, an app message, a peer send or an edited card
+  stays, and the new notification leaves the session instead (a script cron's result
+  as a dashboard notification, a cron's `send_message` through its usual fallback).
+  Its
   waiting card names the entry in `meta.queueId`, the id the drain's `queue_pop`
   frame carries, so the card comes down when the message starts its turn
   (`cron_inject.queue_cron_notification`, which a script cron's result uses too). An
