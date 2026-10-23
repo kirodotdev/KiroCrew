@@ -1,7 +1,8 @@
 """The browser CLI's lifecycle around the gateway.
 
-The loop that keeps the snapshot directory bounded, and the cleanup hooks that stop a
-browser install and the CLI dashboard process when the gateway shuts down.
+The loop that keeps the snapshot directory bounded, the imported-cookies watcher, and
+the cleanup hooks that stop a browser install and the CLI dashboard process when the
+gateway shuts down.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.server import (
         DashboardState,
+        browser_cli_cookies,
         browser_cli_launcher,
         browser_cli_snapshots,
         browser_cli_view,
@@ -91,9 +93,22 @@ def _register_browser_view_cleanup(app: web.Application, state: DashboardState) 
     owner tag in the name keeps a sibling gateway's browsers out of reach. It
     spawns the CLI, so it runs as a background task rather than gating the port
     bind (the same reasoning as the instances revive below).
+
+    The imported-cookies ``SessionWatcher`` (``browser_cli.cookies``) is started
+    here too and stopped on cleanup: it is the gateway-side thread that injects
+    imported cookies into agent browser daemons that appear after the import,
+    over their control sockets. One per gateway, a daemon thread entirely off
+    the event loop; the app only starts and stops it. Starting it is a no-op
+    until a state file exists (the first import starts it), so a gateway that
+    never imports cookies runs no thread.
     """
 
     async def _browser_sessions_startup(app_: web.Application) -> None:
+        try:
+            await asyncio.to_thread(browser_cli_cookies.start_session_watcher)
+        except Exception:  # noqa: BLE001 - startup must not raise
+            logger.debug("browser cookie watcher failed to start", exc_info=True)
+
         # The exec of an in-place restart skips _browser_view_shutdown below but
         # keeps the pid, so the detached `playwright-cli show` child would
         # outlive this image still parented to the new one, which then starts a
@@ -130,6 +145,10 @@ def _register_browser_view_cleanup(app: web.Application, state: DashboardState) 
             await handlers.close_relay_client(app_)
         except Exception:  # noqa: BLE001 - shutdown must not raise
             logger.debug("browser view relay client close failed during shutdown", exc_info=True)
+        try:
+            await asyncio.to_thread(browser_cli_cookies.stop_session_watcher)
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            logger.debug("browser cookie watcher stop failed during shutdown", exc_info=True)
         try:
             await asyncio.to_thread(browser_cli_launcher.close_all)
         except Exception:  # noqa: BLE001 - shutdown must not raise

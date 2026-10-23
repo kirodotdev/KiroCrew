@@ -463,7 +463,9 @@ def _url_payload_command(n: int) -> str:
 #: exemption. No pass widened, no threshold moved, and the exfil URL scan is unchanged.
 #: Six more for its ``keep_sri_digests=False`` switch: a streamed segment whose delta
 #: boundary split an SRI value saves main's verdict on the digest, not the notice.
-_PACKAGE_LINE_BUDGET = 32_188
+#: One more for the ``browser-cookie-import`` entry in ``_CREW_SECRET_LEAVES``: the
+#: imported browser cookies, fenced at the tool gate as well as masked.
+_PACKAGE_LINE_BUDGET = 32_189
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -37,6 +37,7 @@ from kiro_crew.apps.hooks_integration import (  # noqa: F401
 from kiro_crew.apps.manager import cleanup_migrated_builtin, register_builtin_apps
 from kiro_crew.autonudge import get_instance as _autonudge_get  # noqa: F401
 from kiro_crew.autonudge_authz import authorize_and_add_nudge  # noqa: F401
+from kiro_crew.browser_cli import cookies as browser_cli_cookies  # noqa: F401
 from kiro_crew.browser_cli import launch as browser_cli_launch
 from kiro_crew.browser_cli import launcher as browser_cli_launcher  # noqa: F401
 from kiro_crew.browser_cli import snapshots as browser_cli_snapshots

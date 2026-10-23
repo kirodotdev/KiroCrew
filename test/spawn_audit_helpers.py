@@ -404,6 +404,21 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # The agent's OWN browser commands are not spawned by us at all -- it
         # runs them as ordinary shell tool calls through the standard approval
         # path.
+        #   * ``cookies.py::_live_session_names`` runs ``playwright-cli list``
+        #     (fixed argv, no free element);
+        #     ``cookies.py::_run_on_sessions`` runs ``-s=kc-<8hex> cookie-clear``
+        #     once per live Kiro Crew session right after the dashboard OWNER
+        #     cleared cookies. The session names come from the
+        #     ``kc-<8hex>``-shaped lifecycle roots under the data home (or
+        #     ``list`` filtered to the reserved prefix), so no request input
+        #     reaches argv. The routes are owner-only and refuse internal-secret
+        #     (agent) callers, same as ``launcher.py::_run_cli``; not sandboxed
+        #     for the same reason ``show`` is not. Never a daemon START for an
+        #     agent session, and never a cookie VALUE: imported cookies reach
+        #     the agent's daemon over its control socket from the gateway's own
+        #     process (``cookies.py::_inject_into_session``), with no spawn.
+        "browser_cli/cookies.py::_live_session_names",
+        "browser_cli/cookies.py::_run_on_sessions",
         "browser_cli/install_runner.py::_run",
         # The KAS engine installer (`kirocrew kas install`, operator terminal, outside
         # the sandbox). `_open_tar` runs the host's `zstd -d -c` on an archive whose

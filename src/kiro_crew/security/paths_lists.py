@@ -265,6 +265,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     "quarantined-clones",
     "vouched-executions",  # member-store vouches; also sandbox-masked
     "browser-cookies.txt",
+    "browser-cookie-import",  # imported cookies (browser_cli/cookies.py)
     "playwright-storage-state.json",
     # The refused-inbound spool (messaging/inbound_spool.py). Not a secret: it is
     # an OUTBOUND SOURCE. Each entry names a conversation and carries text the

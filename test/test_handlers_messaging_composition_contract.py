@@ -413,7 +413,7 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
     assert len({id(h) for h in served}) >= 28
     assert [h.__name__ for h in served if getattr(msg, h.__name__) is not h] == []
     reexports = _package_reexports()
-    assert len(reexports) == 59
+    assert len(reexports) == 62
     assert [n for n in reexports if getattr(handlers_pkg, n) is not getattr(msg, n)] == []
     server_names = _server_handler_names()
     assert {"api_spawn", "api_send_message", "stop_browser_install"} <= server_names
@@ -1329,11 +1329,12 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 # ── the path-keyed guards keep their reach ────────────────────────────────────
 
 #: Constructs repository guards read by path, each with the owners that hold it beside
-#: ``dashboard/handlers/messaging.py``: the two bounded body reads the JSON-body register keys
+#: ``dashboard/handlers/messaging.py``: the bounded body reads the JSON-body register keys
 #: by function -- the Teams activity route's in the facade, the agent push's in
-#: ``agent_push``, a row the register names by that path. An owner that grew one would
-#: move it out of the guard's sight, so each stays in exactly these files.
-_STAYS_IN_THE_FACADE = ((r"await read_bounded_json\(", ("agent_push",)),)
+#: ``agent_push`` and the cookie import's in ``browser_routes``, each a row the register
+#: names by that path. An owner that grew one would move it out of the guard's sight, so
+#: each stays in exactly these files.
+_STAYS_IN_THE_FACADE = ((r"await read_bounded_json\(", ("agent_push", "browser_routes")),)
 
 
 @pytest.mark.parametrize(
