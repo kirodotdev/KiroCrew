@@ -4,6 +4,7 @@ import modelTokensRaw from '../../model_tokens.json'
 import { markModelsDegraded, markModelsAuthRequired } from '../modelListHealth'
 import { isPricedMultiplier } from '../modelList'
 import { i18nT } from '../../i18n/t'
+import { setModelLabel, clearModelLabels } from '../../lib/modelLabels'
 import type {
   ProviderAdapter,
   ProviderCapabilities,
@@ -40,6 +41,12 @@ const LIVE_WINDOWS: Record<string, number> = {}
 function learnWindow(name: string, window: number): void {
   if (name && Number.isFinite(window) && window > 0) LIVE_WINDOWS[name] = window
 }
+
+// Model ids the backend explicitly reported with no window (`context_window:
+// null`). Qoder serves per-model windows that ACP does not expose, so the
+// reference fallback would be a made-up figure. For these ids the lookup
+// answers 0, which the consumers already read as "no known limit".
+const UNKNOWN_WINDOWS = new Set<string>()
 
 /** Narrow view of GET /api/config/kirocrew — only the fields the composer needs
  *  to resolve what a new session will actually run on. */
@@ -97,7 +104,12 @@ function readCachedModels(): ModelInfo[] | null {
  *  when the backend gave one, else its own fallback, which is the value the
  *  lookup would have produced anyway. Either way the next live response corrects
  *  it. */
-for (const m of readCachedModels() ?? []) learnWindow(m.name, m.contextWindow ?? 0)
+for (const m of readCachedModels() ?? []) {
+  learnWindow(m.name, m.contextWindow ?? 0)
+  // A cached 0 is an unknown window, written from an explicit null row.
+  if (m.contextWindow === 0) UNKNOWN_WINDOWS.add(m.name)
+  setModelLabel(m.name, m.label)
+}
 
 /** Drop the last-good list. Called when `agent.acp_backend` changes: the cache
  *  is keyed by nothing but time, so after a switch it still holds the PREVIOUS
@@ -107,6 +119,11 @@ for (const m of readCachedModels() ?? []) learnWindow(m.name, m.contextWindow ??
  *  backend rejects. Dropping it makes the degraded answer auto-only, which every
  *  backend accepts, until the first live success rewrites the cache. */
 export function clearCachedModels(): void {
+  // Unknown-window verdicts belong to the previous backend too; a shared id such
+  // as `auto` must not stay 0 until the new backend's live list arrives.
+  UNKNOWN_WINDOWS.clear()
+  // Display labels are the previous backend's names too (see lib/modelLabels).
+  clearModelLabels()
   try {
     if (typeof localStorage === 'undefined') return
     localStorage.removeItem(MODELS_CACHE_KEY)
@@ -165,14 +182,21 @@ interface RawPlugin {
 /** Raw model entry from /api/models. */
 interface RawModel {
   model_name: string
+  display_name?: string
+  /** Only an exclusive advertised catalog (Qoder today) may relabel ids. A
+   *  non-exclusive row's display name is provenance metadata, not a picker
+   *  label: its id remains the identity every harness consumes. */
+  advertised_models_exclusive?: boolean
   description?: string
   /** Backend-resolved context window. Two spellings because the endpoint has two
    *  branches: the kiro path returns `kiro-cli --list-models` rows verbatim
    *  (`context_window_tokens`), the claude_code path enriches its merged rows via
    *  the central resolver (`context_window`). Both are authoritative and cover
    *  models the bundled static map has never heard of. Optional so a gateway
-   *  predating either field still works (we fall back to the map). */
-  context_window?: number
+   *  predating either field still works (we fall back to the map). An explicit
+   *  `null` means the backend knows the window is not reported (exclusive
+   *  harnesses such as Qoder), so it is unknown rather than the fallback. */
+  context_window?: number | null
   context_window_tokens?: number
   /** Relative credit cost of a turn on this model, Auto = 1.0. Optional: a
    *  gateway/kiro-cli predating the field simply omits it, and we render no
@@ -417,12 +441,29 @@ export class AcpAdapter implements ProviderAdapter {
         // models this bundle does not list. Learn only the reported value — never
         // the fallback, or a row with no window would record 200K as fact and
         // clobber a window learned from an earlier, better-informed response.
+        // An explicit null is unknown, not the fallback: forget any window learned
+        // for this id earlier (a 1M from the 24h cache included) and report 0.
+        const unknown = m.context_window === null
+        if (unknown) {
+          delete LIVE_WINDOWS[m.model_name]
+          UNKNOWN_WINDOWS.add(m.model_name)
+        } else {
+          UNKNOWN_WINDOWS.delete(m.model_name)
+        }
         const reported = rowWindow(m)
         learnWindow(m.model_name, reported)
+        // A row without a label clears any earlier one, so a label from another
+        // list cannot leak onto this id.
+        const label =
+          m.advertised_models_exclusive && m.display_name && m.display_name !== m.model_name
+            ? m.display_name
+            : undefined
+        setModelLabel(m.model_name, label)
         return {
           name: m.model_name,
+          ...(label ? { label } : {}),
           description: m.description || '',
-          contextWindow: reported || MODEL_TOKENS[m.model_name] || DEFAULT_CONTEXT,
+          contextWindow: unknown ? 0 : reported || MODEL_TOKENS[m.model_name] || DEFAULT_CONTEXT,
           rateMultiplier: rowMultiplier(m),
         }
       })
@@ -461,6 +502,8 @@ export class AcpAdapter implements ProviderAdapter {
   }
 
   getContextWindow(model: string): number {
+    // The backend said this id has no reported window: 0, never a guess.
+    if (UNKNOWN_WINDOWS.has(model)) return 0
     // Learned-from-backend first, bundled snapshot second, reference default
     // last. This is the value the composer's context meter shows between a model
     // switch and the next turn's live usage_update, so a miss here is what made

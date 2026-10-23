@@ -49,6 +49,34 @@ def is_valid_effort(level: object) -> bool:
     return isinstance(level, str) and level in EFFORT_LEVELS
 
 
+# Least to most effort. ``none`` and ``off`` are both "no thinking" under two
+# harness spellings, so they share a rank.
+_LADDER_RANK: dict[str, int] = {
+    "none": 0,
+    "off": 0,
+    "minimal": 1,
+    "low": 2,
+    "medium": 3,
+    "high": 4,
+    "xhigh": 5,
+    "max": 6,
+}
+
+
+def order_effort_levels(levels: Sequence[str]) -> list[str]:
+    """Order a harness's advertised effort levels least to most effort.
+
+    A harness may advertise its options in any order (Qoder: xhigh, low, medium,
+    none), and the slider draws them in the order given. Sorts by ``_LADDER_RANK``
+    only when EVERY level is a known ladder name; one unknown level and the
+    advertised order is returned unchanged, so a vocabulary this table does not
+    describe is never reshuffled. The sort is stable and keeps every entry.
+    """
+    if not all(isinstance(level, str) and level in _LADDER_RANK for level in levels):
+        return list(levels)
+    return sorted(levels, key=_LADDER_RANK.__getitem__)
+
+
 def model_supports_effort(model: str | None) -> bool:
     """True when *model* accepts a reasoning-effort level.
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -21,9 +21,22 @@ from kiro_crew.dashboard.handlers import agents
 
 
 @pytest.fixture(autouse=True)
-def _cold_advertised_cache(monkeypatch):
-    monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
-    monkeypatch.setattr(model_registry, "persist_advertised_models", lambda: None)
+def _cold_advertised_cache(_floor_monkeypatch):
+    _floor_monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
+    _floor_monkeypatch.setattr(model_registry, "persist_advertised_models", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _cold_qoder_catalog_refresh(_floor_monkeypatch):
+    """Keep the Qoder retry arm from probing a locally installed harness."""
+    _floor_monkeypatch.setattr(
+        agents,
+        "refresh_exclusive_catalog",
+        AsyncMock(return_value=[]),
+    )
+    _floor_monkeypatch.setattr(
+        agents, "_QODER_CATALOG_REFRESH_STATE", {"task": None, "started_at": 0.0}
+    )
 
 
 def _request(*providers):
@@ -57,6 +70,7 @@ def test_pi_models_use_live_pi_advertisement_and_preserve_ids():
 
     assert _names(rows) == ["auto", "vendor/model-one", "other/model-two"]
     assert rows[1]["display_name"] == "Model One"
+    assert all(row["advertised_models_exclusive"] is False for row in rows)
     assert rows[1]["description"] == "First"
     assert all(row["context_window"] > 0 for row in rows)
 
@@ -116,5 +130,8 @@ async def test_api_models_routes_advertised_backends_without_spawning_kiro(
     response = await agents.api_models(_request(*providers))
 
     assert response.status == 200
-    expected = ["auto"] if source == "cold" else ["auto", "vendor/model-one"]
+    # An exclusive advertised catalog has no measured ``auto`` id. Its cold
+    # picker stays empty; once the capture exists, only its own id appears.
+    auto = [] if capabilities_for(backend).advertised_models_are_exclusive else ["auto"]
+    expected = auto if source == "cold" else [*auto, "vendor/model-one"]
     assert _names(json.loads(response.body)) == expected

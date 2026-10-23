@@ -365,11 +365,11 @@ def test_is_kiro_cli_is_positive(tmp_path) -> None:
     ours, so skip ours" — granted to a harness without one, it leaves the agent
     process unconfined. A negative form grants it to every future harness.
 
-    Asked of the launch itself rather than of its spelling: every known host is
-    launched through the driver that serves it -- each per-session host on
-    ``AcpClient``, and every host the shared runtime serves on ``AcpRuntime`` --
-    with the pod-bundle step that decides the flag left real, and the flag the
-    sandbox wrap receives must be exactly membership.
+    Asked of the launch itself rather than of its spelling: every known host that
+    reaches a launch is driven through the driver that serves it -- each
+    per-session host on ``AcpClient``, and every host the shared runtime serves on
+    ``AcpRuntime`` -- with the pod-bundle step that decides the flag left real,
+    and the flag the sandbox wrap receives must be exactly membership.
     """
     from unittest.mock import AsyncMock, patch
 
@@ -1439,6 +1439,18 @@ def test_the_projection_seam_is_never_awaited_on_a_shared_construction_path():
         "with no mirror pays an awaited adapter step on its construction path (H13):\n  "
         + "\n  ".join(unguarded)
     )
+
+
+def test_kiro_client_init_drain_has_no_qoder_mode_coroutine() -> None:
+    """H13: the Kiro init drain names no adapter seam and no Qoder step.
+
+    Qoder's mode witness runs at session open (``_verify_qoder_routing``), which
+    only the Qoder construction path reaches, so the shared drain stays identical
+    to the Kiro path.
+    """
+    source = inspect.getsource(acp_client.AcpClient._drain_notifications)
+    for forbidden in ("process_adapter_for", "init_notification_guard", "qoder", "Qoder"):
+        assert forbidden not in source, f"the init drain names {forbidden!r} (H13)"
 
 
 def test_every_runtime_path_identity_test_is_declared():

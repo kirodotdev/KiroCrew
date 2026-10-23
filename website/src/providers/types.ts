@@ -132,6 +132,13 @@ export interface ProviderLabels {
 
 export interface ModelInfo {
   name: string
+  /**
+   * Backend-authored display label from an exclusive advertised catalog
+   * (Qoder today). Optional because kiro-family and most ACP catalogs
+   * identify rows by id; absent
+   * means render `name` exactly as before.
+   */
+  label?: string
   description: string
   contextWindow?: number
   supportsExtendedContext?: boolean

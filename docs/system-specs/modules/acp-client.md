@@ -26,7 +26,7 @@ error chains and tracebacks still name the path callers import it from.
 | `acp/runtime_process_tree.py` | descendant enumeration, child identity capture, the escaped-child sweep and RSS-tree measurement |
 | `acp/runtime_start.py` | cold-start admission, `SessionStartGate` / `StartPermit`, `StartCollector` and the session-start timeouts |
 | `acp/launch.py` | the launch tail both drivers hand their plan to (`launch`): pod bundle swap, scratch window, sandbox wrap with the host's credential mask, cgroup scope, the child's environment and the suspended spawn; plus what several per-process hosts share before it -- the Node-adapter and self-served binary ladders, the resolution-cache generation fence, the enforced-host preflight and the read-back child plumbing |
-| `acp/harness/{claude,opencode,goose,pi,deepseek}.py` | one `ProcessAdapter` per host the client starts one process per session for (`process_adapter_for`): its binary resolution and caches, argv and labels, credential mask, gate sealing and routing read-back, and its additions to the child's environment |
+| `acp/harness/{claude,opencode,goose,pi,deepseek,qoder}.py` | one `ProcessAdapter` per host the client would otherwise start one process per session for (`process_adapter_for`): its binary resolution and caches, argv and labels, credential mask, gate sealing and routing read-back, and its additions to the child's environment. Qoder's dormant adapter stops before the launch tail: it resolves the launch row, then refuses because its tool-gate routing is unverified |
 
 `AcpClient`'s own behaviour lives in `acp/client_*.py` owner modules, one
 responsibility each. A member's body is a module-level function there whose first
@@ -55,6 +55,7 @@ through it reaches every owner binding the same object (`kiro_crew._facade_mirro
 | `acp/client_claude_seed.py` | the session's `settings.local.json` seed: render, create, adopt, re-seed, share and retract |
 | `acp/client_seed_ownership.py` | proving and handing back Crew's ownership of the seed on disk: bounded no-follow reads, move-aside and restore, settle, discard and release |
 | `acp/client_model_selection.py` | the session's model: advertised list and entitlement re-probe, served-default correction, `set_model`, the config-option push ladder (`_push_model_via_effort_split`, `_is_config_value_rejection`) and effort levels |
+| `acp/client_qoder.py` | Qoder's pinned-ask route: fresh per-call ask/approve/deny witnesses, bounded request bookkeeping, version and mode read-back, unasked-execution tripwires, signed-out session errors, and the session-less exclusive catalog refresh |
 | `acp/client_permissions.py` | permission requests and in-band tool restrictions: the permission event, approve and reject, the auto-approve identity gate, zero-tool and spec-disabled refusals, identity-drift refusals, the pi, DeepSeek and goose-mode tripwires and the routing read-back |
 | `acp/client_mcp_array.py` | the session's `mcpServers` array: member mounts, pooled broker stubs, the per-harness translations, the pi handoff, pruning of servers that cannot start, the MCP registration report and the spec's zero-tools answer |
 | `acp/client_transport.py` | JSON-RPC over the child's stdio: request ids, bounded request and response writes, frame reads, waiting for a response while deferring other frames, and draining notifications |

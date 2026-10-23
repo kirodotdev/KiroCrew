@@ -5,7 +5,8 @@ first-class harness — `kiro-cli` (`ACP_BACKEND_KIRO`, spelled `""`) — and a
 growing set of adapted ones: Claude Code (`ACP_BACKEND_CLAUDE`), `KAS`
 (`ACP_BACKEND_KAS`), Codex (`ACP_BACKEND_CODEX`), OpenCode
 (`ACP_BACKEND_OPENCODE`), Pi (`ACP_BACKEND_PI`), goose (`ACP_BACKEND_GOOSE`),
-and DeepSeek Harness (`ACP_BACKEND_DEEPSEEK`), plus whatever a bring-your-own
+DeepSeek Harness (`ACP_BACKEND_DEEPSEEK`), and Qoder (`ACP_BACKEND_QODER`,
+selectable on `Routing.PINNED_ASK_RULE`), plus whatever a bring-your-own
 (BYO) adapter registers next. Adding a harness requires reviewing
 `session_pid_orphan_scan.py::_BROWSER_PLAUSIBLE_OWNER_NAMES` as a separate
 touchpoint, because an unreadable environment on a recognizable harness process

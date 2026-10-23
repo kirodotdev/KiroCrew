@@ -24,12 +24,15 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKEND_LAUNCH,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKENDS_ACP_RUNTIME,
+    ACP_BACKENDS_ADVERTISED_MODEL_EXCLUSIVE,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_CLIENT_META_SETTINGS,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
+    ACP_BACKENDS_EFFORT_LADDER_ORDERED,
     ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_FORK_AT_MESSAGE,
@@ -70,6 +73,10 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     ACP_BACKENDS_UNMARKED_COMPACTION_PAIR,
     ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY,
+    QODER_ALLOW_ALWAYS_OPTION_ID,
+    QODER_MEASURED_VERSIONS,
+    QODER_REQUIRED_MODE,
+    QODER_SUPPORTED_VERSION,
     effort_config_option_id,
     effort_config_option_value,
     model_registry_namespace,
@@ -133,6 +140,7 @@ EVENT_STRUCTURED_STATUS = "structured_status"
 # ── ACP Protocol Methods ──
 
 METHOD_INITIALIZE = "initialize"
+METHOD_AUTHENTICATE = "authenticate"
 METHOD_SESSION_NEW = "session/new"
 METHOD_SET_MODEL = "session/set_model"
 METHOD_SET_MODE = "session/set_mode"
@@ -364,6 +372,7 @@ PROVIDER_LABEL_OPENCODE = "opencode"
 PROVIDER_LABEL_PI = "pi"
 PROVIDER_LABEL_GOOSE = "goose"
 PROVIDER_LABEL_DEEPSEEK = "deepseek"
+PROVIDER_LABEL_QODER = "qoder"
 
 #: Backend id -> its label. The mapping is what ``provider_label`` resolves
 #: through, so a harness's label and the answer a session persists under are one
@@ -383,6 +392,7 @@ PROVIDER_LABEL_BY_BACKEND: dict = {
     ACP_BACKEND_PI: PROVIDER_LABEL_PI,
     ACP_BACKEND_GOOSE: PROVIDER_LABEL_GOOSE,
     ACP_BACKEND_DEEPSEEK: PROVIDER_LABEL_DEEPSEEK,
+    ACP_BACKEND_QODER: PROVIDER_LABEL_QODER,
 }
 
 # KAS reads only fs.readTextFile / fs.writeTextFile / terminal from the top

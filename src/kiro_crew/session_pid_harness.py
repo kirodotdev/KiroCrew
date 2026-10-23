@@ -476,9 +476,17 @@ def _cmdline_names_a_harness(cmdline: bytes) -> bool:
     the ``dist/index.js`` launch unreclaimable. The second is a path this repository
     publishes rather than a name read out of one, which is what keeps an unrelated npm
     application from answering for a harness.
+
+    qodercli is the one launch-table binary whose interactive form is the same argv0.
+    The managed form is always the ACP server (`qodercli --acp`), so after the normal
+    basename match, a qoder row must also see that argv token. This is narrower than
+    the substring marker and applies only to this row; no other harness gains a new
+    argv requirement.
     """
     for token in _harness_naming_tokens(cmdline):
         if _basename_names_a_harness(_basename_of(token)):
+            if _basename_of(token) == b"qodercli":
+                return b"--acp" in _argv_tokens(cmdline)
             return True
         if _token_is_node_adapter_entry(token):
             return True

@@ -39,9 +39,12 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKENDS_ACP_RUNTIME,
+    ACP_BACKENDS_ADVERTISED_MODEL_EXCLUSIVE,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_COMPACT,
+    ACP_BACKENDS_EFFORT_LADDER_ORDERED,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
@@ -66,8 +69,10 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 #: below stays here too, because the harness membership is still this module's subject.
 CAPABILITY_SETS = (
     "ACP_BACKENDS_ACP_RUNTIME",
+    "ACP_BACKENDS_ADVERTISED_MODEL_EXCLUSIVE",
     "ACP_BACKENDS_ADVERTISED_MODEL_SELECTION",
     "ACP_BACKENDS_COMPACT",
+    "ACP_BACKENDS_EFFORT_LADDER_ORDERED",
     "ACP_BACKENDS_INTERNAL_SANDBOX",
     "ACP_BACKENDS_SEED_LOCAL_SETTINGS",
     "ACP_BACKENDS_SESSION_EVICTION",
@@ -214,6 +219,8 @@ def test_membership_is_unchanged_by_the_move() -> None:
     # deepseek joins for that same capture reason, in its strongest form: its
     # select's values are JSON-encoded ``[provider, model]`` pairs from its own live
     # catalog, which nothing can spell from a stored bare model name.
+    # qoder joins because its ``models.availableModels`` is the service-owned picker
+    # vocabulary and the measured model write is the ``model`` config option.
     assert ACP_BACKENDS_ADVERTISED_MODEL_SELECTION == frozenset(
         {
             ACP_BACKEND_CLAUDE,
@@ -222,8 +229,11 @@ def test_membership_is_unchanged_by_the_move() -> None:
             ACP_BACKEND_PI,
             ACP_BACKEND_GOOSE,
             ACP_BACKEND_DEEPSEEK,
+            ACP_BACKEND_QODER,
         }
     )
+    assert ACP_BACKENDS_ADVERTISED_MODEL_EXCLUSIVE == frozenset({ACP_BACKEND_QODER})
+    assert ACP_BACKENDS_EFFORT_LADDER_ORDERED == frozenset({ACP_BACKEND_QODER})
     assert ACP_BACKENDS_SEED_LOCAL_SETTINGS == frozenset({ACP_BACKEND_CLAUDE})
 
 
@@ -236,6 +246,7 @@ def test_model_registry_namespace_maps_every_known_backend() -> None:
     assert model_registry_namespace(ACP_BACKEND_KIRO) == "acp"
     assert model_registry_namespace(ACP_BACKEND_KAS) == "acp"
     assert model_registry_namespace(ACP_BACKEND_CODEX) == "codex"
+    assert model_registry_namespace(ACP_BACKEND_QODER) == "qoder"
     # An unknown/unregistered backend defaults to the kiro namespace, never crashes.
     assert model_registry_namespace("something-new") == "acp"
 

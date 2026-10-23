@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -114,8 +115,16 @@ class TestModelRegistry:
         assert mr.model_window("qwen3-coder-next") == 256_000
         assert mr.model_window("qwen3-coder-480b") == 256_000
         assert mr.model_window("glm-4.7-flash") == 128_000
-        for m in ("deepseek-3.2", "minimax-m2.5", "minimax-m3", "minimax-m2.7",
-                  "glm-5", "gpt-5.6-terra", "qwen3-coder-next", "glm-4.7-flash"):
+        for m in (
+            "deepseek-3.2",
+            "minimax-m2.5",
+            "minimax-m3",
+            "minimax-m2.7",
+            "glm-5",
+            "gpt-5.6-terra",
+            "qwen3-coder-next",
+            "glm-4.7-flash",
+        ):
             assert mr.has_known_window(m) is True
             assert mr.window_source(m) == "supplementary"
 
@@ -149,7 +158,9 @@ class TestModelRegistry:
         try:
             mr._KIRO_WINDOWS.clear()
             assert mr.model_window("auto") == 200_000  # stale registry literal
-            assert mr.model_window("unlisted-model-zzz") is None  # neither registry nor supplementary
+            assert (
+                mr.model_window("unlisted-model-zzz") is None
+            )  # neither registry nor supplementary
             # refresh does the in-memory update synchronously and returns True
             # when the cache changed (signalling the async caller to persist).
             changed = mr.refresh_kiro_windows(
@@ -176,10 +187,15 @@ class TestModelRegistry:
                 is False
             )
             # The catalog is ground truth: a model absent from it is evicted.
-            assert mr.refresh_kiro_windows([{"model_id": "auto", "context_window_tokens": 1000000}]) is True
+            assert (
+                mr.refresh_kiro_windows([{"model_id": "auto", "context_window_tokens": 1000000}])
+                is True
+            )
             assert mr.model_window("unlisted-model-zzz") is None
             # A snapshot with no usable window never wipes a good cache.
-            assert mr.refresh_kiro_windows([{"model_id": "bad", "context_window_tokens": 0}]) is False
+            assert (
+                mr.refresh_kiro_windows([{"model_id": "bad", "context_window_tokens": 0}]) is False
+            )
             assert mr.model_window("auto") == 1000000
             # persist is a separate step (offloaded to an executor by the caller).
             mr.persist_kiro_windows()
@@ -248,8 +264,7 @@ class TestModelRegistry:
     def test_fable_5_canonical_round_trip(self):
         # Fable 5 entry: canonical -> provider id -> canonical.
         assert (
-            mr.to_provider_id("fable-5-1m", "claude_code")
-            == "global.anthropic.claude-fable-5[1m]"
+            mr.to_provider_id("fable-5-1m", "claude_code") == "global.anthropic.claude-fable-5[1m]"
         )
         assert (
             mr.from_provider_id("global.anthropic.claude-fable-5[1m]", "claude_code")
@@ -399,10 +414,10 @@ class TestAcpProviderIds:
         # index still folds them for claude-agent-acp dropdown dedup/downgrade.
         cases = {
             # kiro id            acp canonical    window   cc fold (downgrade)
-            "claude-haiku-4.5":  ("haiku-4.5",    200_000, "sonnet-4.6-1m"),
-            "claude-sonnet-4.5": ("sonnet-4.5",   200_000, "sonnet-4.6-1m"),
-            "claude-sonnet-4":   ("sonnet-4",     200_000, "sonnet-4.6-1m"),
-            "claude-opus-4.6":   ("opus-4.6-1m", 1_000_000, "opus-4.8-1m"),
+            "claude-haiku-4.5": ("haiku-4.5", 200_000, "sonnet-4.6-1m"),
+            "claude-sonnet-4.5": ("sonnet-4.5", 200_000, "sonnet-4.6-1m"),
+            "claude-sonnet-4": ("sonnet-4", 200_000, "sonnet-4.6-1m"),
+            "claude-opus-4.6": ("opus-4.6-1m", 1_000_000, "opus-4.8-1m"),
         }
         for kiro_id, (acp_canon, win, cc_canon) in cases.items():
             assert mr.from_provider_id(kiro_id, "acp") == acp_canon, kiro_id
@@ -604,7 +619,9 @@ class TestAdvertisedModelCache:
         assert too_long not in kept
         assert len(kept) == len(set(kept)) == mr.ADVERTISED_MODELS_MAX_IDS
         # 1 over-long + 2 past the cap; the duplicate "m0" is neither.
-        assert sum("sidecar for acp refused 3 model id(s)" in r.message for r in caplog.records) == 1
+        assert (
+            sum("sidecar for acp refused 3 model id(s)" in r.message for r in caplog.records) == 1
+        )
 
     def test_a_refused_window_row_is_not_readmitted_from_the_sidecar(
         self, monkeypatch, tmp_path, caplog
@@ -668,7 +685,9 @@ class TestAdvertisedModelCache:
         # window is still a kiro id. And a full cache never refuses a NEW
         # catalog id -- the snapshot replaces the cache, so the two stores
         # cannot disagree about whether the newest model exists.
-        monkeypatch.setattr(mr, "_KIRO_WINDOWS", {f"old{i}": 1 for i in range(mr.ADVERTISED_MODELS_MAX_IDS)})
+        monkeypatch.setattr(
+            mr, "_KIRO_WINDOWS", {f"old{i}": 1 for i in range(mr.ADVERTISED_MODELS_MAX_IDS)}
+        )
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
         rows = [
             {"model_id": "new-model", "model_name": "new-model", "context_window_tokens": 272000},
@@ -696,7 +715,10 @@ class TestAdvertisedModelCache:
         assert mr.registered_model_key("claude-opus-4-8") == "opus-4.8"
         assert mr.registered_model_key("openai.gpt-9-nova[high]") is None
         assert mr.same_registered_model("claude-opus-4.8", "claude-opus-4-8") is False
-        assert mr.same_registered_model("global.anthropic.claude-opus-4-8[1m]", "claude-opus-4.8") is True
+        assert (
+            mr.same_registered_model("global.anthropic.claude-opus-4-8[1m]", "claude-opus-4.8")
+            is True
+        )
         # Unknown is not different.
         assert mr.same_registered_model("openai.gpt-9-nova[high]", "claude-opus-4.8") is True
         # A hand-typed case variant is the same registered model, not an unknown
@@ -707,13 +729,133 @@ class TestAdvertisedModelCache:
 
     def test_persist_round_trips(self, monkeypatch, tmp_path):
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
         monkeypatch.setattr(mr, "_advertised_models_cache_path", lambda: tmp_path / "pm.json")
-        mr.refresh_advertised_models("claude_code", ["global.anthropic.claude-opus-5[1m]"])
+        mr.refresh_advertised_model_rows(
+            "claude_code",
+            [
+                {
+                    "modelId": "global.anthropic.claude-opus-5[1m]",
+                    "name": "Opus 5 (1M)",
+                    "description": "",
+                }
+            ],
+            observed_at=123,
+        )
         mr.persist_advertised_models()
         # Reload into a fresh dict and confirm the sidecar was written.
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
         mr._load_advertised_models()
         assert mr.advertised_models("claude_code") == ["global.anthropic.claude-opus-5[1m]"]
+        assert mr.advertised_models_observed_at("claude_code") == 123
+        assert mr.advertised_model_rows("claude_code")[0]["name"] == "Opus 5 (1M)"
+
+    def test_a_new_stamp_on_an_unchanged_catalog_needs_no_persist_by_default(self, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        rows = [{"modelId": "a", "name": "Alpha", "description": ""}]
+        assert mr.refresh_advertised_model_rows("claude_code", rows, observed_at=1) is True
+        assert mr.refresh_advertised_model_rows("claude_code", rows, observed_at=2) is False
+        # The stamp is still stored in memory; only the persist signal is withheld.
+        assert mr.advertised_models_observed_at("claude_code") == 2
+
+    def test_persist_stamp_makes_a_new_stamp_on_an_unchanged_catalog_need_persist(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        rows = [{"modelId": "a", "name": "Alpha", "description": ""}]
+        mr.refresh_advertised_model_rows("qoder", rows, observed_at=1)
+        assert (
+            mr.refresh_advertised_model_rows("qoder", rows, observed_at=2, persist_stamp=True)
+            is True
+        )
+        assert mr.advertised_models_observed_at("qoder") == 2
+        assert (
+            mr.refresh_advertised_model_rows("qoder", rows, observed_at=2, persist_stamp=True)
+            is False
+        )
+
+    def test_changed_ids_or_rows_need_persist_whatever_the_stamp_flag(self, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        alpha = [{"modelId": "a", "name": "Alpha", "description": ""}]
+        mr.refresh_advertised_model_rows("claude_code", alpha, observed_at=1)
+        added = alpha + [{"modelId": "b", "name": "Beta", "description": ""}]
+        assert mr.refresh_advertised_model_rows("claude_code", added, observed_at=2) is True
+        renamed = [{"modelId": "b", "name": "Beta 2", "description": ""}]
+        assert mr.refresh_advertised_model_rows("claude_code", renamed, observed_at=3) is True
+
+    def test_persist_round_trips_the_legacy_id_only_shape(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        monkeypatch.setattr(mr, "_advertised_models_cache_path", lambda: tmp_path / "pm.json")
+        (tmp_path / "pm.json").write_text(
+            json.dumps({"claude_code": ["global.anthropic.claude-opus-5[1m]"]}),
+            encoding="utf-8",
+        )
+        mr._load_advertised_models()
+        assert mr.advertised_models("claude_code") == ["global.anthropic.claude-opus-5[1m]"]
+        assert mr.advertised_model_rows("claude_code") == [
+            {
+                "modelId": "global.anthropic.claude-opus-5[1m]",
+                "name": "global.anthropic.claude-opus-5[1m]",
+                "description": "",
+            }
+        ]
+
+    def test_persist_round_trips_an_ids_only_catalog(self, monkeypatch, tmp_path):
+        # kiro/KAS retain only ids in the live store. Their sidecar must keep the
+        # same population after restart; writing the raw (empty) row store would
+        # erase the catalog on the next load.
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        monkeypatch.setattr(mr, "_advertised_models_cache_path", lambda: tmp_path / "pm.json")
+        mr.refresh_advertised_models("acp", ["claude-fable-5", "claude-opus-5"])
+        mr.persist_advertised_models()
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        mr._load_advertised_models()
+        assert mr.advertised_models("acp") == ["claude-fable-5", "claude-opus-5"]
+
+    def test_a_changed_id_catalog_reconciles_cached_rows(self, monkeypatch, tmp_path):
+        # A kiro refresh carries ids only. It must retire rows for removed ids,
+        # keep display data for surviving ids, and synthesize rows for new ids;
+        # otherwise persist restores a stale removed model after restart.
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        monkeypatch.setattr(mr, "_advertised_models_cache_path", lambda: tmp_path / "pm.json")
+        mr.refresh_advertised_model_rows(
+            "acp",
+            [
+                {"modelId": "a", "name": "Alpha", "description": "old"},
+                {"modelId": "b", "name": "Beta", "description": "keep"},
+            ],
+            observed_at=1,
+        )
+
+        assert mr.refresh_advertised_models("acp", ["b", "c"]) is True
+        mr.persist_advertised_models()
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        mr._load_advertised_models()
+
+        assert mr.advertised_models("acp") == ["b", "c"]
+        assert mr.advertised_model_rows("acp") == [
+            {"modelId": "b", "name": "Beta", "description": "keep"},
+            {"modelId": "c", "name": "c", "description": ""},
+        ]
 
     def test_wire_id_folds_bare_onto_advertised_versioned(self, monkeypatch):
         # The core fix: a bare id the registry does not carry folds onto the

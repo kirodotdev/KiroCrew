@@ -13,7 +13,7 @@ Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
 ``_last_activity``, ``_last_substitution_model``, ``_mode_frame_awaited``,
 ``_mode_frame_superseded``, ``_model``, ``_native_skill_projection``, ``_pid``,
 ``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``,
-``_resume_session_id``, ``_resumed``, ``_session_id``, ``_session_mcp_cache``,
+``_qoder_live_prompt_seen``, ``_resume_session_id``, ``_resumed``, ``_session_id``, ``_session_mcp_cache``,
 ``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_work_dir_ready``.
 
 Instance fields read: ``_agent``, ``_available_mode_ids``, ``_channel_id``,
@@ -69,6 +69,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKENDS_FORK_AT_MESSAGE,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_INTERNAL_SANDBOX,
@@ -158,6 +159,10 @@ PROTOCOL_VERSION_GOOSE = launch_for(ACP_BACKEND_GOOSE).protocol_version
 # so it speaks the SPEC dialect too. Verified off its own wire, and its own literal
 # for the same reason the two above have one (harness-parity H10).
 PROTOCOL_VERSION_DEEPSEEK = launch_for(ACP_BACKEND_DEEPSEEK).protocol_version
+# qodercli answers ``initialize`` with an integer ``protocolVersion`` of 1 (captured off
+# 1.1.17's own wire), so it speaks the SPEC dialect; its own literal for the same H10
+# reason as the rows above.
+PROTOCOL_VERSION_QODER = launch_for(ACP_BACKEND_QODER).protocol_version
 #: Handshake dialect per harness. A TABLE, not an if-chain: the handshake runs on
 #: the construction path kiro-cli shares with every adapter, and harness-parity H13
 #: keeps that path free of conditionals added in service of one. A harness added
@@ -799,6 +804,8 @@ async def _initialize_session(self: AcpClient) -> None:
     self._steering_advertised = steering_advertised(init_resp)
     self._note_pi_adapter_version()
     self._note_goose_version()
+    if self._is_qoder:
+        self._verify_qoder_version()
 
     # The subprocess has now read its agent spec, which closes the window the
     # pre-spawn snapshot opened: a write landing before this point is caught here,
@@ -831,6 +838,11 @@ async def _initialize_session(self: AcpClient) -> None:
     if fork_request and not resume_sid and self._can_load_session:
         # A successful fork is then restored like any resume.
         resume_sid = await self._fork_session(*fork_request, capabilities)
+    if self._is_qoder:
+        # Load and new replay transcript notifications before their response.
+        # Those are history, not this session's execution, and the tripwire
+        # stays disarmed until Crew sends the first live prompt.
+        self._qoder_live_prompt_seen = False
     sent_snapshot: DerivedSpecSnapshot | None = None
 
     if resume_sid and self._can_load_session:
@@ -962,6 +974,8 @@ async def _initialize_session(self: AcpClient) -> None:
                 # own read-back on the response that replaces this one.
                 if self._is_goose and self._resumed:
                     self._verify_goose_routing(load_resp)
+                if self._is_qoder and self._resumed:
+                    self._verify_qoder_routing(load_resp)
                 if self._is_claude and self._resumed:
                     await self._pin_claude_starting_mode(load_resp)
         else:
@@ -993,6 +1007,8 @@ async def _initialize_session(self: AcpClient) -> None:
         # an adapter (harness-parity H13).
         if self._is_goose:
             self._verify_goose_routing(session_resp)
+        if self._is_qoder:
+            self._verify_qoder_routing(session_resp)
         if not self._session_id:
             # Both the initial attempt and the substitution retry failed to
             # yield a session. Raise a clear, actionable error instead of

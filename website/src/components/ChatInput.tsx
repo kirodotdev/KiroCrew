@@ -1749,7 +1749,7 @@ function ChatInput({
           )}
           </div>
           <div className="flex items-center shrink-0">
-          {contextPct != null && (
+          {contextPct != null && contextWindowTokens !== 0 && (
             <ContextUsageControl contextPct={contextPct} contextUsedTokens={contextUsedTokens} contextWindowTokens={contextWindowTokens} showContextPct={showContextPct} showContextTokens={showContextTokens} shelfCompact={shelfCompact} modelName={modelName} ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen} ctxWrapRef={ctxWrapRef} autoCompactThreshold={autoCompactThreshold} />
           )}
           {onModelClick && modelName && (

@@ -836,6 +836,7 @@ export function AgentBackendTab() {
     seeded_settings: i18nT('pages.developer.agentBackendTab.approval_seeded_settings'),
     verified_seeded_settings: i18nT('pages.developer.agentBackendTab.approval_verified_seeded_settings'),
     verified_gate_extension: i18nT('pages.developer.agentBackendTab.approval_verified_gate_extension'),
+    pinned_ask_rule: i18nT('pages.developer.agentBackendTab.approval_pinned_ask_rule'),
     [APPROVAL_UNVERIFIED]: i18nT('pages.developer.agentBackendTab.approval_unverified'),
   }
 

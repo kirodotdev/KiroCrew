@@ -50,6 +50,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_CONTEXT_RECYCLE,
@@ -529,6 +530,11 @@ class AcpProvider(LLMProvider):
         return self._client.backend == ACP_BACKEND_DEEPSEEK
 
     @property
+    def is_qoder_backend(self) -> bool:
+        """True when this ACP provider talks to Qoder CLI (vs kiro-cli)."""
+        return self._client.backend == ACP_BACKEND_QODER
+
+    @property
     def is_kas_backend(self) -> bool:
         """True when this ACP provider talks to KAS (kiro-agent)."""
         return self._client.backend == ACP_BACKEND_KAS
@@ -720,7 +726,7 @@ class AcpProvider(LLMProvider):
         return await self._client.wait_for_declared_mcp(timeout)
 
     def get_valid_effort_levels(self) -> list[str]:
-        """Effort levels the backend reported for the CURRENT model, in ACP order.
+        """Effort levels the backend reported for the CURRENT model, least to most effort.
 
         Read live from the session's ``configOptions`` so the dashboard dropdown
         reflects exactly what this slot's active model supports (and updates on a
@@ -997,6 +1003,7 @@ class AcpProvider(LLMProvider):
     _resolve_effort = _acp_model_effort._resolve_effort
     _set_effort_config_option = _acp_model_effort._set_effort_config_option
     change_effort = _acp_model_effort.change_effort
+    _roll_back_effort_push = _acp_model_effort._roll_back_effort_push
     reapply_live_effort = _acp_model_effort.reapply_live_effort
     set_model = _acp_model_effort.set_model
     clear_effort = _acp_model_effort.clear_effort

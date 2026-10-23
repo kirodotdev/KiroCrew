@@ -89,7 +89,7 @@ IGNORED_SUFFIXES = (
 IGNORED_NAMES = (
     "__init__.py",
     "_shared.py",
-    "index.ts",
+    "agents_models.py",
 )
 
 # The router. Route entries are counted, not parsed: a `<Route ` occurrence is one

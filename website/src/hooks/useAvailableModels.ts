@@ -60,3 +60,9 @@ export function useAvailableModelsQuery({ enabled }: AvailableModelsOptions = {}
 export function useAvailableModels(options: AvailableModelsOptions = {}): ModelInfo[] {
   return useAvailableModelsQuery(options).data
 }
+
+/** Text a picker shows for a model id: the backend's `label` when it sent one,
+ *  else the id. Display only; the id stays the stored and sent value. */
+export function labelFor(models: ModelInfo[], id: string): string {
+  return models.find(m => m.name === id)?.label || id
+}
