@@ -10279,6 +10279,14 @@
         "tool_search_label": "Recherche d’outils",
         "tool_search_description": "Charger à la demande des spécifications d’outils MCP différées."
       }
+    },
+    "uninstalledBuiltinSkillsList": {
+      "title": "Compétences intégrées désinstallées",
+      "hint": "Les compétences intégrées que tu as supprimées. Elles restent supprimées après les redémarrages et les mises à jour, jusqu’à ce que tu les restaures.",
+      "load_failed": "Impossible de charger les compétences intégrées désinstallées.",
+      "restore": "Restaurer",
+      "restoring": "Restauration…",
+      "restore_failed": "Impossible de restaurer cette compétence. Réessaie."
     }
   },
   "hooks": {
