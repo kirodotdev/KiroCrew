@@ -1241,6 +1241,15 @@ _WRITE_PROTECTED_HOME_PATHS += [
     f"{prefix}/app-sources"
     for prefix in _CREW_HOME_PREFIXES
 ]
+_WRITE_PROTECTED_HOME_PATHS += [
+    # The Meetings app's per-meeting user notes and their pasted images: free text
+    # the user cannot regenerate, kept outside the meeting directory every meeting
+    # agent may ``fs_write``. Write-only on purpose: the dashboard serves the images
+    # through ``/api/file-raw``, which applies the READ floor. The app backend opens
+    # these files directly and never routes through this gate.
+    f"{prefix}/apps/meetings/data/notes"
+    for prefix in _CREW_HOME_PREFIXES
+]
 
 
 # ── kiro-cli agent-spec directory (~/.kiro/agents) ──
