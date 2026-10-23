@@ -479,6 +479,49 @@ def test_a_base_approval_the_file_never_listed_can_be_switched_off_and_on(layout
     assert revocations.revoked("qwe") == []
 
 
+def test_a_mate_preview_labels_each_impact_and_shows_the_proposed_rows(layout, monkeypatch):
+    """One impact per moved row, labelled by direction; the rows read the PROPOSED spec."""
+    mc, mates = _mate_edit_env(
+        layout,
+        monkeypatch,
+        spec={
+            "name": "qwe",
+            "prompt": "hi",
+            "tools": ["@jira", "fs_read"],
+            "allowedTools": ["@jira/read"],
+            "mcpServers": {"jira": {"command": "jira-mcp"}},
+        },
+    )
+    body = {
+        "revision": mc._revision(json.loads((mates / "qwe.json").read_text())),
+        "operations": [
+            {"section": "allowedTools", "id": "@jira/search", "action": "set", "value": True},
+            {"section": "allowedTools", "id": "@jira/read", "action": "remove"},
+            {"section": "tools", "id": "fs_read", "action": "remove"},
+            {"section": "prompt", "id": "prompt", "action": "set", "value": "bye"},
+        ],
+        "accept_parent": [],
+        "accept_members": [],
+    }
+
+    preview = mc.preview("qwe", body, {})
+
+    impact = {
+        (i["section"], i["id"]): (i["change"], i["approval_expanded"]) for i in preview["impact"]
+    }
+    assert len(preview["impact"]) == len(impact)
+    assert impact == {
+        ("allowedTools", "@jira/search"): ("added", True),
+        ("allowedTools", "@jira/read"): ("removed", False),
+        ("tools", "fs_read"): ("removed", False),
+        ("prompt", "prompt"): ("changed", False),
+    }
+    rows = {(r["section"], r["id"]): r for r in preview["rows"]}
+    assert rows[("prompt", "prompt")]["value"] == "bye"
+    assert rows[("allowedTools", "@jira/search")]["present"] is True
+    assert ("tools", "fs_read") not in rows
+
+
 def test_mate_edit_writes_the_owned_file_in_place_no_fork(layout, monkeypatch):
     """A skill-add lands in mates/agents/<id>.json; no crew- draft, binding untouched."""
     mc, mates = _mate_edit_env(layout, monkeypatch)

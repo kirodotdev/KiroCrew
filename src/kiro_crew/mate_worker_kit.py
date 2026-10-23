@@ -155,7 +155,12 @@ def _changes(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str, st
     for name in sorted(set(before["mcpServers"]) | set(after["mcpServers"])):
         old, new = before["mcpServers"].get(name), after["mcpServers"].get(name)
         if old != new:
-            change = "added" if old is None else "removed" if new is None else "changed"
+            if old is None:
+                change = "added"
+            elif new is None:
+                change = "removed"
+            else:
+                change = "changed"
             rows.append({"section": "mcpServers", "id": name, "change": change})
     for key in ("resources", "skills", "allowedTools", "tools"):
         old_set, new_set = set(before[key]), set(after[key])

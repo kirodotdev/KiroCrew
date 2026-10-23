@@ -245,17 +245,12 @@ def _base_toggles(path: Any, body: Any) -> tuple[list[str], list[str]]:
     return list(dict.fromkeys(off)), list(dict.fromkeys(on))
 
 
-def get(member: str, catalog: dict[str, str]) -> dict:
-    """The editor view for a mate: its own file, flagged ``mode="mate"``.
+def _view_rows(rows: dict[str, dict], approvals: dict[str, dict[str, bool]]) -> list[dict]:
+    """The editor rows for section *rows*, every one ``state="local"``.
 
-    Every row is ``state="local"``; ``revision`` locks the file bytes. The view
-    goes through ``safe_view``, so transport credentials show as ``[REDACTED]``.
+    An approval section lists every approval in *approvals*, on or off; ``prompt``
+    and ``model`` always carry a row, valued ``""`` when unset.
     """
-    from kiro_crew.agent_capabilities import _rows, safe_view
-
-    path, spec = _load_spec(member)
-    rows = _rows(spec, catalog)
-    approvals = _approval_rows(path, rows)
     output = []
     for section in SECTIONS:
         present = rows[section]
@@ -275,6 +270,20 @@ def get(member: str, catalog: dict[str, str]) -> dict:
                     "shared_reference": section in ("skills", "resources"),
                 }
             )
+    return output
+
+
+def get(member: str, catalog: dict[str, str]) -> dict:
+    """The editor view for a mate: its own file, flagged ``mode="mate"``.
+
+    Every row is ``state="local"``; ``revision`` locks the file bytes. The view
+    goes through ``safe_view``, so transport credentials show as ``[REDACTED]``.
+    """
+    from kiro_crew.agent_capabilities import _rows, safe_view
+
+    path, spec = _load_spec(member)
+    rows = _rows(spec, catalog)
+    output = _view_rows(rows, _approval_rows(path, rows))
     return safe_view(
         {
             "schema_version": 1,
@@ -353,18 +362,23 @@ def preview(member: str, body: Any, catalog: dict[str, str]) -> dict:
     for section in SECTIONS:
         for key in dict.fromkeys([*old_rows[section], *proposed_rows[section]]):
             before, after = old_rows[section].get(key), proposed_rows[section].get(key)
-            if before != after:
-                change = "added" if before is None else "removed" if after is None else "changed"
-                impact.append(
-                    {
-                        "member": member,
-                        "section": section,
-                        "id": key,
-                        "change": change,
-                        "approval_expanded": section in ("allowedTools", "autoApprove")
-                        and after is not None,
-                    }
-                )
+            if before == after:
+                continue
+            if before is None:
+                change = "added"
+            elif after is None:
+                change = "removed"
+            else:
+                change = "changed"
+            impact.append(
+                {
+                    "member": member,
+                    "section": section,
+                    "id": key,
+                    "change": change,
+                    "approval_expanded": section in _APPROVAL_SECTIONS and after is not None,
+                }
+            )
     # A base approval switched off or on moves no file row but is an impact.
     path, _ = _load_spec(member)
     base_off, base_on = _base_toggles(path, body)
@@ -395,26 +409,7 @@ def preview(member: str, body: Any, catalog: dict[str, str]) -> dict:
                     }
                 )
     # Rebuild the rows off the PROPOSED spec so the preview reflects the edit.
-    view_rows = []
-    for section in SECTIONS:
-        present = proposed_rows[section]
-        keys = dict.fromkeys(approvals.get(section, present))
-        if section in ("prompt", "model"):
-            keys.setdefault(section)
-        for key in keys:
-            view_rows.append(
-                {
-                    "section": section,
-                    "id": key,
-                    "label": key,
-                    "state": "local",
-                    "present": approvals[section][key] if section in approvals else key in present,
-                    "value": present.get(key, "" if section in ("prompt", "model") else None),
-                    "managed": False,
-                    "shared_reference": section in ("skills", "resources"),
-                }
-            )
-    view["rows"] = view_rows
+    view["rows"] = _view_rows(proposed_rows, approvals)
     view["impact"] = impact
     view["preview_token"] = _revision(old_spec)
     view["withheld_approvals"] = []
