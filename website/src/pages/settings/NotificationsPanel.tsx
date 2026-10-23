@@ -14,6 +14,7 @@ import {
   loadSoundSettings, saveSoundSettings, playPreset, presetForKind, customSoundId, customSoundName,
 } from '../../hooks/useNotificationSound'
 import { CustomSoundsSection, type UndoResult } from './CustomSoundsSection'
+import { PushSection } from './NotificationsPushSection'
 import { loadChatCompleteNotify, saveChatCompleteNotify } from '../../hooks/chatCompleteNotify'
 import { loadBannerEnabled, saveBannerEnabled } from '../../hooks/notificationBanner'
 import { loadUnreadOnAttention, saveUnreadOnAttention } from '../../hooks/unreadOnAttention'
@@ -554,6 +555,7 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
 
         case 'alerts':
           return (
+      <>
       <SettingsSection title={i18nT('pages.settings.notificationsPanel.desktop_alerts')}>
         <SettingsCard>
           <SystemNotificationsRow />
@@ -583,6 +585,8 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
           />
         </SettingsCard>
       </SettingsSection>
+      <PushSection />
+      </>
           )
 
         case 'sound':

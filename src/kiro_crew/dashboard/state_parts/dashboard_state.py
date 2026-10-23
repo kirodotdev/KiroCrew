@@ -43,6 +43,7 @@ from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging import turn_ceiling
 from kiro_crew.notifications.bus import NotificationBus
+from kiro_crew.notifications.push_store import PushSubscriptionStore
 from kiro_crew.notifications.rate_limit import AppRateLimiter
 from kiro_crew.notifications.resource_pressure import ResourcePressureNotifier
 from kiro_crew.notifications.settings import ChannelSettings
@@ -480,7 +481,12 @@ class DashboardState:
         self.unrestored_slot_keys: set[str] = set()
         self._notification_log: list[dict[str, Any]] = _load_notifications()
         self._unread_count: int = 0
-        self._notification_coordinator = _new_notification_coordinator()
+        self._notification_coordinator = _new_notification_coordinator(
+            web_push_fanout=lambda note: self._fan_out_web_push(note)
+        )
+        # Web Push subscription store (browser push endpoints). State-owned like
+        # the bus/limiter/settings so its lifecycle matches the gateway.
+        self.push_subscription_store = PushSubscriptionStore()
         # Notification bus (schema v2) — notify() adapts legacy calls onto it;
         # _deliver_note is the delivery sink (log, count, broadcast, persist).
         self.notification_bus = NotificationBus(sink=self._deliver_note)
@@ -1050,6 +1056,8 @@ class DashboardState:
     _flush_dirty_slots = _dashboard_services._flush_dirty_slots
     _persist_open_slots = _dashboard_services._persist_open_slots
     notify = _dashboard_services.notify
+    _fan_out_web_push = _dashboard_services._fan_out_web_push
+    _send_web_push_all = _dashboard_services._send_web_push_all
     _deliver_note = _dashboard_services._deliver_note
     register_sse = _dashboard_services.register_sse
     unregister_sse = _dashboard_services.unregister_sse

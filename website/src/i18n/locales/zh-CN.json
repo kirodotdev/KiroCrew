@@ -16620,7 +16620,15 @@
         "custom_sound_undo": "撤销",
         "custom_sound_option": "{{name}}（自定义）",
         "channel_member": "队友消息",
-        "channel_apps": "应用更新"
+        "channel_apps": "应用更新",
+        "push_section": "推送通知",
+        "push_toggle_label": "将通知发送到此设备",
+        "push_toggle_description": "即使 {{productName}} 已关闭，也能在此设备上收到通知。",
+        "push_install_hint": "在 iOS 上，请先将 {{productName}} 添加到主屏幕以启用推送通知。",
+        "push_unsupported": "此浏览器不支持 Web Push 通知。",
+        "push_error_permission": "未允许通知。请在浏览器询问时允许，然后重试。",
+        "push_error_subscribe": "无法为此设备开启通知。请重试，或重新加载页面。",
+        "push_error_unsubscribe": "无法为此设备关闭通知。请重试，或重新加载页面。"
       },
       "privacyPanel": {
         "recordMetricsLabel": "记录指标",
