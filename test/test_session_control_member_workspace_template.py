@@ -160,3 +160,47 @@ def test_a_non_member_caller_in_a_member_workspace_is_not_widened(member_home):
         _create(state, caller, agent=_WORKER)
 
     assert error.value.code == "agent_workspace_mismatch"
+
+
+def test_the_members_worker_opens_its_own_child_in_the_members_workspace(member_home):
+    # The worker runs as a template, but its record keeps the member's id and
+    # store, so its own child runs where it runs, on that same store.
+    from kiro_crew.execution_context import read_session_execution
+
+    state, caller, execution, _home = member_home
+    worker = state.get_slot(_create(state, caller, agent=_WORKER)["target"])
+
+    result = _create(state, worker, agent=_WORKER)
+
+    child = state.get_slot(result["target"])
+    assert child is not None
+    assert child.workspace == "member-pixel"
+    actual = read_session_execution(slot_history_key(child), required=True)
+    assert actual.store == execution.store
+    assert actual.member_id == execution.member_id
+
+
+def test_a_template_caller_on_another_members_store_is_not_widened(member_home):
+    # The member id alone is not enough: the store must be that member's own.
+    from dataclasses import replace
+
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.execution_context import bind_session_execution, resolve_member_execution
+
+    state, _member, execution, _home = member_home
+    peer_store = resolve_member_execution(KiroCrewConfig.load(), "peer").store
+    caller = state.get_or_create_slot("chat-borrowed")
+    caller.workspace = "member-pixel"
+    bind_session_execution(
+        slot_history_key(caller),
+        replace(
+            execution.with_template(_WORKER, _WORKER),
+            store=replace(peer_store, member_id=execution.member_id),
+        ),
+        vouch=True,
+    )
+
+    with pytest.raises(sc.SessionControlError) as error:
+        _create(state, caller, agent=_WORKER)
+
+    assert error.value.code == "agent_workspace_mismatch"

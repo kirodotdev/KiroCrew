@@ -1558,11 +1558,40 @@ def _caller_member_workspace(
     """
     if caller_execution is None:
         return None
-    crewmate = _dispatching_crewmate(cfg, caller_slot, caller_execution)
+    crewmate = _dispatching_crewmate(cfg, caller_slot, caller_execution) or _store_s_crewmate(
+        cfg, caller_execution
+    )
     if crewmate is None:
         return None
     name = crewmate.workspace or ""
     return name if name in cfg.workspaces else None
+
+
+def _store_s_crewmate(cfg: KiroCrewConfig, caller_execution: ExecutionContext) -> Any | None:
+    """The crewmate whose own store *caller_execution* runs on, or ``None``.
+
+    A crewmate's worker runs as a template, so :func:`_dispatching_crewmate`
+    does not name it, but its attested record keeps the crewmate's id (or, for
+    an id-less crewmate, its selection) and store. Only the workspace is read
+    from the answer: the child then runs where its worker runs, on the same
+    store. A store that is not that crewmate's own answers ``None``.
+    """
+    from kiro_crew.memory_stores import require_member_memory_store
+
+    try:
+        if caller_execution.member_id is not None:
+            alias, record = member_config_for_id(cfg, caller_execution.member_id)
+        elif caller_execution.selection_kind == "member":
+            alias = caller_execution.selection_name
+            record = cfg.agents.get(alias)
+        else:
+            return None
+        if record is None:
+            return None
+        store = require_member_memory_store(cfg, alias, require_directory=False)
+    except Exception:  # noqa: BLE001 - a missing or ambiguous member is "no crewmate"
+        return None
+    return record if store == caller_execution.store.store_id else None
 
 
 async def _record_spawn(caller_key: str, child: Any) -> bool:

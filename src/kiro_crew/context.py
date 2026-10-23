@@ -1293,7 +1293,12 @@ def _skills_injection_plan(
         pinned
         if pinned is not None
         else (
-            agent_skill_globs(agent, project_dir=project_dir, inherit_defaults=inherit)
+            agent_skill_globs(
+                agent,
+                project_dir=project_dir,
+                inherit_defaults=inherit,
+                session_key=session_key or "",
+            )
             if agent
             else []
         )

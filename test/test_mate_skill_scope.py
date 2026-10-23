@@ -66,6 +66,39 @@ def test_a_crewmate_worker_searches_its_base_and_its_crewmates_skills(mates, mon
     assert _found(globs, skills / "release" / "SKILL.md")
 
 
+def test_a_crewmate_workers_context_skill_plan_reaches_its_crewmates_skills(mates, monkeypatch):
+    """The session-start and post-compaction plan names the worker's session, so
+    the crewmate's own skill is in its context, not only in skill_search."""
+    from kiro_crew import context
+
+    folder, skills = mates
+    _spec(folder, mate_worker.MATE_WORKER_AGENT, [f"skill://{skills}/triage/SKILL.md"])
+    _spec(folder, "pixel", [f"skill://{skills}/release/SKILL.md"], mcpServers={})
+    monkeypatch.setattr(mate_worker, "mate_file_for_member", lambda member: "pixel")
+    monkeypatch.setattr(
+        "kiro_crew.execution_context.read_session_execution",
+        lambda key, **_: (
+            ExecutionContext(
+                "pixel",
+                MemoryStoreRef("member-pixel", "pixel"),
+                "template",
+                mate_worker.MATE_WORKER_AGENT,
+                "persistent",
+            )
+            if key == "chat-1"
+            else None
+        ),
+    )
+
+    inject, globs = context._skills_injection_plan(
+        mate_worker.MATE_WORKER_AGENT, is_cc=False, session_key="chat-1"
+    )
+
+    assert inject
+    assert _found(globs, skills / "release" / "SKILL.md")
+    assert _found(globs, skills / "triage" / "SKILL.md")
+
+
 def test_a_missing_crewmate_service_spec_still_refuses(mates):
     with pytest.raises(agent_discovery.SkillScopeResolutionError):
         agent_discovery.session_skill_globs("", mate_worker.MATE_CONDUCTOR_AGENT)

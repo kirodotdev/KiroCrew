@@ -486,6 +486,10 @@ it (steering, below, is the one block the backend does gate).
 | custom | none | **nothing** | the agent is expected to bring its own |
 | custom | mapped | only the mapped set, on **either** backend | bounded directory and scoped activation |
 
+The plan hands `agent_skill_globs` the session's key, so a crewmate's worker
+is scoped by its merged kit, the worker base plus its crewmate's additions
+(`mate_worker.mate_service_scope_spec`), in its context as in `skill_search`.
+
 The mapping is read by `agent_discovery_parts/skill_scope.py` → `agent_skill_globs`, which pulls the
 `skill://` entries out of the spec's `resources` (`skill_resource_uris`) and
 expands each into an fnmatch glob over real paths (`expand_skill_uri`:
