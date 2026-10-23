@@ -215,8 +215,12 @@ config.
 A mate's **Goals** tab (Profile card) holds what it works toward:
 
 - **Goals.** As many as you like, each one paragraph, numbered and coloured on
-  the tab. Add one with **+**, open one to edit or remove it, or confirm one the
-  mate proposes (`set_goal` puts a card in its chat). The mate is
+  the tab. A new goal starts as a conversation: **Create a goal** (the last
+  row of the list) explains in a few words how the mate uses a goal and offers
+  one button, **Tell {name} what to aim for**, which sends an opening message
+  to its chat; the mate asks what matters, writes the goal down and puts it on
+  a card (`set_goal`) for you to confirm. Open an existing goal to edit or
+  remove its text. The mate is
   encouraged to keep the list short and to suggest merging goals that overlap;
   you decide.
 - **Milestones.** Key results that show how far it is from its goals, one
@@ -240,7 +244,8 @@ A mate's **Goals** tab (Profile card) holds what it works toward:
   readings. To keep a PDF, choose **Download** in the report's **More actions**
   menu, open the file in your browser and print it.
 - **Heartbeat.** A fourth switch, off by default and only available once a goal
-  is set, shown as a full-width row under the three check-ins. While it is on,
+  is set. It lives on the mate's **Schedules** tab, the first row there, since
+  it is what wakes the mate on its own rather than a goal check-in. While it is on,
   the mate wakes in its own chat every 30 minutes, hour (the default),
   2 hours or 4 hours, looks for what it can move forward toward its goals,
   and does it. It works quietly: what it did shows on its **Dashboard** tab and
@@ -249,10 +254,6 @@ A mate's **Goals** tab (Profile card) holds what it works toward:
   now. When it has nothing to move, it ends the wake without a word. Anything
   it does write during a wake shows in the chat. A wake is skipped while the chat is busy or a monitor loop is running in it. Each run uses credits. The
   mate can suggest turning it on with a card; only you can press it.
-- **Track something in chat.** Sends "I'd like you to track something for me."
-  to the mate's chat as your own message. Tell it what to track there; it
-  keeps that item up to date on its task list, which the Crew board shows. Tracked
-  items do not appear on the Goals tab.
 - **Reports.** The newest weekly reports and monthly reviews, each linking its
   artifact.
   When the monthly review finds the goal or its key results no longer fit the

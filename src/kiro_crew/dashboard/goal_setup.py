@@ -223,7 +223,7 @@ def milestones_prompt(
             "Weekly report and the Monthly review would do for them, "
             + _HEARTBEAT_OFFER
             + " Suggest the ones that fit this goal, and tell the user they turn them on "
-            "on your Goals tab."
+            "on your Goals tab (the Heartbeat on your Schedules tab)."
         )
     if dashboard_line:
         lines.extend(["", dashboard_line])

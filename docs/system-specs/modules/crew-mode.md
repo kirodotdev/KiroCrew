@@ -2097,8 +2097,32 @@ returns `409 briefing_slug_ambiguous`. Redaction and truncation are visible line
 not tooltips. Owner gating, app-token denial, and the `members.briefing.read` SEL
 record are unchanged.
 
-**Schedules** first shows the next enabled wake, then one `CrewScheduleList` row
-per schedule attributed to this mate. Each row states its name, active/paused/
+**Schedules** first shows the **Heartbeat** row (`CrewHeartbeat.tsx`,
+`CrewHeartbeatRow`, mounted through the card's `heartbeatBody`), then the next
+enabled wake, then one `CrewScheduleList` row
+per schedule attributed to this mate. The Heartbeat sits here, not among the
+Goals tab's check-ins (decided 2026-10-22, docs/decisions): it is the one wake
+that is neither a schedule a person wrote nor a goal check-in, and "what wakes
+this mate on its own" is this tab's question. The row is a full-width card: a
+tinted tile, its name, the line "Every 1 hr, finds work on its own" with its
+interval and, while it is on, "Each run uses credits. · up to 12 runs a day"
+(the daily bound, `wakesPerDay`), and its switch at the right (a switch state,
+never "Running", which read as work in progress beside the mate's Idle);
+while it is on the interval picker (`HEARTBEAT_INTERVALS`, each option naming
+its daily bound) shows under the line. With no goal the switch is disabled and
+the row says "Set a goal to turn these on.", as the check-ins do. The row reads
+and writes the goal record's `schedules` (`useMemberGoals`,
+`PUT /api/members/{slug}/goals/schedules`, one gateway-owned cron per switch,
+`dashboard/goal_reminder.py`), the same record the Goals tab's check-ins use,
+serializing its own writes. A failed read shows the goals load-failed notice
+where the row would be (this tab has no other surface for that record); a
+failed save shows the agent hand-off notice. A write in flight is published
+as busy into the card's leave guard through the Goals pane's publisher (the
+two bodies are never mounted together), so close, navigation and the tab rail
+refuse to leave Schedules until it settles. While the Heartbeat is on, the
+schedule list's empty line reads "No schedules yet." (`schedule_none_self_waking`)
+instead of "Nothing wakes this mate on its own yet.", which the row above
+would contradict. Each row states its name, active/paused/
 running state, cadence, previous run, result, and next run. A failed list read
 shows an actionable `ErrorNotice` above any retained rows instead of replacing
 them. A failed previous run remains an inline row status and also produces one
@@ -2227,19 +2251,26 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   `set_key_results` descriptions, the goal-setup nudge and its own context say
   that a few goals and milestones are easier to track, and to suggest merging
   as the list grows), and the whole record stays inside its 64 KiB byte bound;
-- the tab has **two pages**. The first only shows state, one card each with its
-  icon after its label: the goals (the card itself is not a button: one row per
-  goal, its number on a coloured circle then its text, each row a door to that
-  goal's page; a **+** icon button, labelled "Add a goal", at the label's right
-  opens that page with an empty editor and is always shown), the milestones
-  (each row a door to its own page: the latest reading large, every earlier
-  update, Edit milestone and Remove milestone), the check-ins as three tiles
-  saying on or off and when they run, with the **Heartbeat** as one full-width
-  row under them (its name, the line "Every 1 hr, finds work on its own" with
-  its interval, a second line "Each run uses credits. · up to 12 runs a day" while it is on (the daily bound, `wakesPerDay`), and Off
-  or Turned on -- a switch state, never "Running", which
-  read as work in progress beside the mate's Idle; the card is a door to the switches and
-  pickers), a full-width **Add something {name} should track** row, and the reports. The
+- the tab has **two pages**. The first only shows state, in four sections,
+  each card opening with its header as the FIRST row, a hairline under it
+  (`SectionHeader`: the icon on a tinted tile at the Profile tab's `Tile`
+  size, 36px, then the title in sentence case; a count or an action rides at
+  the header's right): **Goals**
+  (the card itself is not a button: one row per goal, its number on a coloured
+  circle then its text, each row a door to that goal's page; "No goal yet."
+  while there is none; the list's LAST row is **Create a goal**, a dashed
+  `+` circle in accent, always shown, which opens the New goal modal below,
+  not an editor), **Milestones** (each row a door to its own page: the
+  latest reading large, every earlier update, Edit milestone and Remove
+  milestone; the count at the header's right), **Check-ins** (the three tiles in
+  a row saying on or off and when they run, inside ONE button that is the door
+  to the Check-ins page, so the row carries one control and a screen reader
+  hears every tile's state as its name; "Set a goal to turn these on." above
+  the tiles while there is no goal), and
+  **Reports**.
+  The **Heartbeat** is NOT on this tab (see the Schedules tab above, decided
+  2026-10-22): it wakes the mate to find its own work, which is what Schedules
+  lists, where the goal check-ins read on the work. The
   goal colours are five theme tile hues (`--tile-blue`, `--tile-purple`,
   `--tile-pink`, `--tile-teal`, `--tile-indigo`), never the ok/warn green and
   yellow, picked by list position and cycling past five; a goal's number always
@@ -2249,32 +2280,50 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   control as About and Notes); outside the card the page replaces the first
   page with its own back control. A removed milestone or goal returns to the
   first page, where its Undo row is. Error notices offer the existing agent
-  hand-off for draft-free check-in, Undo and milestone-removal failures, but
-  keep it off while a goal, milestone or tracking form holds unsaved text.
-  Goal, milestone and tracking drafts publish dirty/busy state into Profile's
+  hand-off for draft-free check-in, Undo, milestone-removal and New-goal-send
+  failures, but keep it off while a goal or milestone form holds unsaved text.
+  Goal and milestone drafts publish dirty/busy state into Profile's
   existing leave and automatic-placement guards. Close, Back, Cancel, leaving
   Goals, route/browser navigation and member switches ask before dropping a
-  dirty draft; an in-flight save or tracking send refuses those exits. Automatic
+  dirty draft; an in-flight save or New-goal send refuses those exits. Automatic
   narrow-viewport relocation and a cross-tab panel reveal keep the same Profile
   mounted while either state is at stake. If the goal or milestone a dirty draft
   edits is removed elsewhere, the page stays open, says the item is gone and
   shows the unsaved text read-only; only its Discard button clears it. A
   successful save clears its draft;
   failed saves preserve it. Writes are serialized while one is pending;
-- **Add something {name} should track** opens a page with a text box; Send
-  posts what the user typed as their own message (`"Please track this for me:
-  <text>"`, localized) into the mate's thread through the
-  ordinary send path (`chat-core/transport/sendTurn`), so it shows in the
-  transcript as anything they typed would; no hidden nudge. Only a `dispatched`
-  or `queued` receipt clears the input and closes a floating profile card so
-  the reply is in view; a docked one stays. A refusal retains the input with
-  the failure notice. `unknown`, `response-late` and `transport-error` retain
-  it with the shared unconfirmed-delivery notice: check the conversation before
-  resending. No outcome automatically resends. What the mate
-  then tracks is an item in its work ledger (the Crew board's items): the
-  mate's own context teaches it to record what it is asked to track there
-  and to call it tracking, never a ledger, when it talks to the user. The Goals
-  tab shows no tracked item;
+- a NEW goal is set by TALKING to the mate, never typed into the tab (decided
+  2026-10-22, docs/decisions): **Create a goal** opens the **New goal** modal
+  (the shared `Modal`, 360px wide, no inner card), which says in plain words
+  what a goal is and how the mate uses one -- "A goal is the big thing you want
+  {name} to make happen." and three steps, *You say it* / *{name} writes it
+  down* / *{name} keeps at it* -- with no word the user has to learn first (no
+  "milestone", "card", "check-in" or "research"), then one button, a chat icon
+  and **Tell {name} what to aim for**. The button posts one opening message as
+  the user's own (`goals_new_goal_message`, "I want to set a goal for you. Ask
+  me what matters, then write it down for me to approve.", localized) into the
+  mate's thread through the ordinary send path (`chat-core/transport/sendTurn`),
+  so it shows in the transcript as anything they typed would; no hidden nudge.
+  The mate then asks back and proposes the goal on its `crewmate.goal` card as
+  it does today, so the goal is still written by the mate and approved by the
+  user, and no route changes. Only a `dispatched` or `queued` receipt closes the
+  modal and a floating profile card, so the reply is in view; a docked one
+  stays. A refusal keeps the modal open with the failure notice; `unknown`,
+  `response-late` and `transport-error` keep it open with the shared
+  unconfirmed-delivery notice: check the conversation before sending again. No
+  outcome automatically resends; the button is disabled with no thread to send
+  to. The editor page stays for an EXISTING goal: its row opens the text, Save
+  and Remove goal. Create a goal ALWAYS opens the modal, with no branch on the
+  crewmate's tools: every crewmate's chat holds `set_goal` (a crewmate on its
+  own file chats on the conductor, which the gateway builds with
+  `kirocrew-mate` whatever the template carried; `member_mate_tools`
+  `PLATFORM_PROVIDED`), so a chat that cannot write the goal down is a defect
+  in that chat, never a state this tab routes around. The mate's no-tools
+  prompts name the Schedules tab for the Heartbeat
+  (`context_assembly/member._NO_MATE_TOOLS_IDENTITY`, `goal_setup`,
+  `mcp_mate`'s `set_check_ins` description). The former **Add something {name} should track** row is
+  gone from this tab (same decision): what the mate tracks is an item in its
+  work ledger, which this tab never showed, and the user asks for it in chat;
 - three **check-ins**, each its own switch, off by default and disabled without
   a goal, sharing one time of day: **Daily Goal Reminder**, **Weekly
   report** (a weekday) and **Monthly review** (a day of the month, 1-28)
@@ -2449,7 +2498,8 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   `set_check_ins` and card-kind text, which tells the mate to write it to
   the user that way and, since the card has no timing control, to point at the
   Goals tab's Check-ins (where each check-in is switched off on its own and
-  its time or interval changed) rather than at the card; the Goals tab's `fmtInterval` gives the same English
+  its time changed) and the Schedules tab's Heartbeat row (its switch and
+  interval) rather than at the card; the Goals tab's `fmtInterval` gives the same English
   words through `Intl` short units,
   writing through the schedules route, which is a
   card-hooked route (`change_card_catalog.HOOKED_ROUTES`) like the goal and
@@ -2496,9 +2546,10 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   The check-in jobs are not listed on the Schedule page or in the mate's
   Schedules tab (`GET /api/crons` drops them through
   `goal_reminder.is_reminder_job`); the switches are their only control;
-- the **Heartbeat**, a fourth check-in (`member_goals.CADENCE_HEARTBEAT`; related:
+- the **Heartbeat**, a fourth cadence of the same record (`member_goals.CADENCE_HEARTBEAT`; related:
   the RFC "Mate heartbeat", rfc-crewmate-heartbeat.md under
-  docs/request-for-change), off by default and
+  docs/request-for-change; its switch is the Schedules tab's row, not a Goals
+  tab check-in), off by default and
   disabled without a goal like the other three. A record written before it reads
   with `heartbeat` off and `interval` 60. Its `interval` is one of
   `member_goals.HEARTBEAT_INTERVALS` (30, 60, 120, 240 minutes; anything

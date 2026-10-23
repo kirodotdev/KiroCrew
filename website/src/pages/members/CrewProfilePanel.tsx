@@ -97,6 +97,16 @@ export interface CrewProfilePanelProps {
   /** The schedule CREATE form (the crew editor's own pane), pushed as a page.
    *  The card is a summary with doors, never a second source of truth. */
   newScheduleBody: ReactNode
+  /** The Heartbeat row at the top of the Schedules tab (CrewHeartbeatRow):
+   *  the one wake that is neither a schedule nor a goal check-in. */
+  heartbeatBody?: ReactNode
+  /** Whether that Heartbeat is on: the schedule list's empty line then says
+   *  "No schedules yet" instead of "Nothing wakes this mate on its own yet",
+   *  which the row above it would contradict. */
+  heartbeatOn?: boolean
+  /** A Heartbeat write is in flight: the tab rail refuses to leave Schedules
+   *  until it settles (the host's leave guard refuses close and navigation). */
+  heartbeatBusy?: boolean
   sessionsBody: ReactNode
   notesBody: ReactNode
   /** The Goals tab: the goals, the milestones, the check-in switches
@@ -150,7 +160,7 @@ function Tile({ icon, tone, label, value, title, onClick, testId }: {
  * the selected tab's word. Profile is a summary with doors (edit, description,
  * memory, workspace, notes) plus the crewmate's own settings (permission,
  * model, effort); Schedules is a readable list of
- * what wakes it; Sessions is the sessions it is driving; Goals is the goal
+ * what wakes it, the Heartbeat row first; Sessions is the sessions it is driving; Goals is the goal
  * record the user and the crewmate share (CrewGoalsPane).
  *
  * It is a floating card over the right of the thread — a hover card, not a
@@ -445,6 +455,10 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               value={tab}
               onChange={next => {
                 if (tab === 'goals' && next !== tab) p.onRequestBack(() => { popPage(); setTab(next) })
+                // A Heartbeat write still in flight would be unmounted by the
+                // switch and its failure lost: refuse the exit until it settles,
+                // as the leave guard refuses a busy Goals write.
+                else if (tab === 'schedule' && p.heartbeatBusy) return
                 else setTab(next)
               }}
               ariaLabel={t('pages.membersPage.profile_card')}
@@ -513,7 +527,10 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               </div>
             )}
             {tab === 'schedule' && (
-              <CrewScheduleList jobs={p.schedules} loading={p.schedulesLoading} error={p.schedulesError} nowTs={p.nowTs} onOpenAll={p.onOpenSchedule} onOpenJob={p.onOpenScheduleJob} onCreate={() => push('new-schedule')} />
+              <div className="flex flex-col gap-3">
+                {p.heartbeatBody}
+                <CrewScheduleList jobs={p.schedules} loading={p.schedulesLoading} error={p.schedulesError} nowTs={p.nowTs} onOpenAll={p.onOpenSchedule} onOpenJob={p.onOpenScheduleJob} onCreate={() => push('new-schedule')} selfWaking={p.heartbeatOn} />
+              </div>
             )}
             {tab === 'sessions' && p.sessionsBody}
             {tab === 'goals' && <ProfilePagePushContext.Provider value={pagePush}>{p.goalsBody}</ProfilePagePushContext.Provider>}

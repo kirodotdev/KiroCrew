@@ -64,8 +64,16 @@ vi.mock('../../api/client', () => ({
     agentCatalog: vi.fn(() => Promise.resolve({ agents: [], default_agent: 'kirocrew' })),
     workspaces: vi.fn(() => Promise.resolve({ workspaces: [] })),
     kirocrewConfig: vi.fn(() => Promise.resolve({ agents: {} })),
+    // The goal record. The Schedules tab's Heartbeat row reads it too
+    // (`schedules.heartbeat`), so the quiet default is a whole record with no
+    // goal, not a bare `{ goals: [] }`.
     memberGoals: {
-      get: vi.fn(() => Promise.resolve({ goals: [] })), setGoal: vi.fn(), setKeyResults: vi.fn(), setSchedules: vi.fn(),
+      get: vi.fn(() => Promise.resolve({
+        slug: '', member: '', goals: [], key_results: [], reports: [], removed_goal: null, removed_key_result: null,
+        schedules: { time: '09:00', timezone: '', daily: false, weekly: false, weekday: 1, monthly: false, month_day: 1, heartbeat: false, interval: 60 },
+        limits: { goal_text_max_chars: 2000, key_result_text_max_chars: 200, key_result_value_max_chars: 40, key_result_reading_max_chars: 120 },
+      })),
+      setGoal: vi.fn(), setKeyResults: vi.fn(), setSchedules: vi.fn(),
     },
     sendChat: vi.fn(),
   },
@@ -815,7 +823,7 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
     reports: [], removed_goal: null, removed_key_result: null,
     limits: { goal_text_max_chars: 2000, key_result_text_max_chars: 200, key_result_value_max_chars: 40, key_result_reading_max_chars: 120 },
   }
-  type Draft = 'goal' | 'milestone' | 'tracking'
+  type Draft = 'goal' | 'milestone'
   const draftText = 'Keep this draft'
 
   beforeEach(() => {
@@ -825,28 +833,39 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
     vi.mocked(api.sendChat).mockResolvedValue({ ok: true, json: async () => ({ ok: true }) } as Response)
   })
 
-  async function openGoalsDraft(kind: Draft, docked = false) {
+  /** Open the Goals tab on the card. */
+  async function openGoalsTab(docked = false) {
     if (docked) localStorage.setItem('mc-members-panel-open', '0')
     await openCrewmate('oncall', ['scout'])
     fireEvent.click(screen.getByTestId('member-identity-pill'))
     fireEvent.click(await screen.findByRole('tab', { name: 'Goals' }))
+  }
+
+  async function openGoalsDraft(kind: Draft, docked = false) {
+    await openGoalsTab(docked)
     if (kind === 'goal') {
       fireEvent.click(await screen.findByTestId('crew-goals-goal'))
-    } else if (kind === 'milestone') {
+    } else {
       fireEvent.click(await screen.findByTestId('goal-key-result-open'))
       fireEvent.click(await screen.findByRole('button', { name: 'Edit milestone' }))
-    } else {
-      fireEvent.click(await screen.findByTestId('crew-goals-track'))
     }
     const input = kind === 'milestone'
       ? await screen.findByLabelText('Milestone')
-      : await screen.findByTestId(kind === 'goal' ? 'crew-goals-long-term-input' : 'crew-goals-track-input')
+      : await screen.findByTestId('crew-goals-long-term-input')
     fireEvent.change(input, { target: { value: draftText } })
     await waitFor(() => expect(holdsDocument()).toBe(true))
     return input
   }
 
-  it.each(['goal', 'milestone', 'tracking'] as const)('guards every local exit and the route for a %s draft', async kind => {
+  /** Open the New goal modal from the Goals card and press its one button. */
+  async function sendNewGoal() {
+    fireEvent.click(await screen.findByTestId('crew-goals-add'))
+    const dialog = await screen.findByRole('dialog', { name: 'New goal' })
+    fireEvent.click(within(dialog).getByTestId('crew-goals-new-goal-send'))
+    return dialog
+  }
+
+  it.each(['goal', 'milestone'] as const)('guards every local exit and the route for a %s draft', async kind => {
     const input = await openGoalsDraft(kind)
     const exits = [
       () => fireEvent.click(screen.getByTestId('crew-profile-close')),
@@ -878,7 +897,7 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
     await waitFor(() => expect(screen.queryByDisplayValue(draftText)).toBeNull())
   })
 
-  it.each(['goal', 'milestone', 'tracking'] as const)('keeps the %s draft on a declined member switch', async kind => {
+  it.each(['goal', 'milestone'] as const)('keeps the %s draft on a declined member switch', async kind => {
     const input = await openGoalsDraft(kind)
     fireEvent.click(screen.getByTestId('crewmate-switcher'))
     fireEvent.click(await screen.findByRole('option', { name: /scout/i }))
@@ -887,7 +906,7 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
   })
 
-  it.each(['goal', 'milestone', 'tracking'] as const)('retains the same %s input below md and on a remote panel reveal', async kind => {
+  it.each(['goal', 'milestone'] as const)('retains the same %s input below md and on a remote panel reveal', async kind => {
     const original = window.matchMedia
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
       media: query, get matches() { return query.includes('max-width: 767px') && window.innerWidth < 768 },
@@ -911,19 +930,20 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
     } finally { window.matchMedia = original }
   })
 
-  it.each(['goal', 'milestone', 'tracking', 'checkins'] as const)('refuses all exits while a %s request is pending', async kind => {
+  it.each(['goal', 'milestone', 'checkins'] as const)('refuses all exits while a %s request is pending', async kind => {
     let finish: (value: never) => void = () => {}
     const pending = new Promise<never>(resolve => { finish = resolve })
-    const mutation = kind === 'goal' ? api.memberGoals.setGoal : kind === 'milestone' ? api.memberGoals.setKeyResults : kind === 'checkins' ? api.memberGoals.setSchedules : api.sendChat
+    const mutation = kind === 'goal' ? api.memberGoals.setGoal : kind === 'milestone' ? api.memberGoals.setKeyResults : api.memberGoals.setSchedules
     vi.mocked(mutation).mockReturnValue(pending)
     await openGoalsDraft(kind === 'checkins' ? 'goal' : kind)
     if (kind === 'checkins') {
       fireEvent.click(screen.getByTestId('crew-profile-back'))
       await answer('Discard')
-      fireEvent.click(await screen.findByTestId('crew-goals-checkins-open'))
+      // Any check-in tile opens the Check-ins page, where the switches are.
+      fireEvent.click(await screen.findByTestId('crew-goals-checkin-daily'))
       fireEvent.click(await screen.findByRole('switch', { name: 'Weekly report' }))
     } else {
-      fireEvent.click(screen.getByRole('button', { name: kind === 'tracking' ? 'Send' : 'Save' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     }
     await waitFor(() => expect(mutation).toHaveBeenCalledTimes(1))
     expect(holdsDocument()).toBe(true)
@@ -933,7 +953,25 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
     expect(askToLeave()).toBe('false')
     expect(screen.getByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'goals')
     expect(screen.queryByRole('dialog')).toBeNull()
-    await act(async () => { finish((kind === 'tracking' ? { ok: true, json: async () => ({ ok: true }) } : goals) as never) })
+    await act(async () => { finish(goals as never) })
+    await waitFor(() => expect(holdsDocument()).toBe(false))
+  })
+
+  it('refuses all exits while the New goal message is in flight, with no discard question', async () => {
+    let finish: (value: never) => void = () => {}
+    const pending = new Promise<never>(resolve => { finish = resolve })
+    vi.mocked(api.sendChat).mockReturnValue(pending)
+    await openGoalsTab()
+    const dialog = await sendNewGoal()
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    expect(holdsDocument()).toBe(true)
+    fireEvent.click(screen.getByTestId('crew-profile-close'))
+    fireEvent.click(screen.getByRole('tab', { name: 'Sessions', hidden: true }))
+    expect(askToLeave()).toBe('false')
+    expect(screen.getByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'goals')
+    // The one dialog on screen is the modal itself; no discard question is asked.
+    expect(screen.getAllByRole('dialog')).toEqual([dialog])
+    await act(async () => { finish({ ok: true, json: async () => ({ ok: true }) } as never) })
     await waitFor(() => expect(holdsDocument()).toBe(false))
   })
 
@@ -946,18 +984,24 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
         json: async () => { if (status === 'unknown') throw new SyntaxError('unreadable'); return status === 'queued' ? { ok: true, queued: true } : { ok: status === 'dispatched' } },
       } as Response)
     }
-    const input = await openGoalsDraft('tracking')
-    fireEvent.click(screen.getByTestId('crew-goals-track-send'))
+    await openGoalsTab()
+    await sendNewGoal()
     if (status === 'dispatched' || status === 'queued') {
+      // Delivered: the modal closes and, floating over the thread, so does the card.
       await waitFor(() => expect(screen.queryByTestId('crew-profile-panel')).toBeNull())
+      expect(screen.queryByRole('dialog', { name: 'New goal' })).toBeNull()
       expect(holdsDocument()).toBe(false)
     } else {
-      const notice = await screen.findByTestId(status === 'refused' ? 'crew-goals-track-error' : 'crew-goals-track-unconfirmed')
+      const notice = await screen.findByTestId(status === 'refused' ? 'crew-goals-new-goal-error' : 'crew-goals-new-goal-unconfirmed')
       if (status !== 'refused') expect(notice).toHaveTextContent('check the conversation above before sending it again')
-      expect(input).toHaveValue(draftText)
-      expect(holdsDocument()).toBe(true)
+      // The modal stays open over the card, for another try.
+      expect(screen.getByRole('dialog', { name: 'New goal' })).toContainElement(notice)
       expect(screen.getByTestId('crew-profile-modal')).toBeInTheDocument()
+      expect(screen.getByTestId('crew-goals-new-goal-send')).toBeEnabled()
     }
     expect(api.sendChat).toHaveBeenCalledTimes(1)
+    const [message, slot] = vi.mocked(api.sendChat).mock.calls[0]
+    expect(message).toBe('I want to set a goal for you. Ask me what matters, then write it down for me to approve.')
+    expect(slot).toBe('member-oncall')
   })
 })
