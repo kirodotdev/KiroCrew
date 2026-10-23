@@ -3118,14 +3118,16 @@ the Kiro Crew docs search (`search_docs`, `find_ui` on `kirocrew-guide`, which
 both the conductor's fixed servers and the worker's base config mount);
 `work_ledger_record` / `work_ledger_read`, `save_goal_report`, `save_notes`;
 the worker's kit, the capability card that adds to it, the Profile's
-Permissions reaching its sessions. `test_every_crewmate_only_tool_is_named_in_the_assembled_conductor_prompt`
+Permissions reaching its sessions, and its own worktree under the crew/
+prefix. `test_every_crewmate_only_tool_is_named_in_the_assembled_conductor_prompt`
 reads the tool names from the `kirocrew-mate`, `kirocrew-panel`,
 `kirocrew-crew-log` and `kirocrew-work` server sources plus the guide and
 session tools, and fails when the assembled prompt omits one, with an explicit
 exempt list (`panel_templates`, `work_brief`, `work_report`,
 `work_ledger_rebuild`). The worker's principles add one line: facts the
 crewmate's Dashboard depends on are recorded as crew-log events, through the
-tools that record them.
+tools that record them, and it commits in the crewmate's own worktree and checks
+a branch with `git merge-tree` before it pushes.
 
 `scripts/crewmate_prompt_preview.py --fixture <name> [--piece <p>] [--diff | --write]`
 runs the real assembly over a fixture in a throwaway data home and prints
@@ -3722,6 +3724,139 @@ worker is archived by `dashboard.idle_slot_sweep_days` like any tab, and a
 conductor's `session_send` to it revives it first (session-control.md). The
 conductor reads `process: live | released` on `session_status`, and the worker
 tab shows a released one with a small marker (`session-row-released`).
+
+**Each crewmate works in a git worktree of its own** (`kiro_crew.crewmate_worktree`,
+`dashboard/crewmate_worktree_scope.py`), so two crewmates handed one repository
+never share a working tree or a checked-out branch. At the start of a worker's
+turn, after its Permissions are seeded, turn admission
+(`chat_turn/turn_admission._turn_admit`) calls `scope_worker_turn`:
+for a worker (a `template` record on `kirocrew-mate-worker` with the crewmate's
+`member_id`; the conductor is left alone) it reads the repository from the
+paths the turn's message names, then the slot's current project, then the
+crewmate's goals (an absolute, `~` or Windows drive path; a quoted one is read
+whole, spaces included, `crewmate_worktree.paths_in`; a path that does not exist
+yet, such as a file the brief asks to create, is read from its nearest existing
+folder, `crewmate_worktree._nearest_dir`), and the first path inside
+a git repository gets the
+crewmate's own worktree of that repository's checkout (git's common directory,
+so a path inside another crewmate's worktree maps to the same repository):
+`<parent>/<repo>.worktrees/<crewmate slug>/` BESIDE the repository
+`<parent>/<repo>` (`crewmate_worktree.path_for`, both parts sanitised) on branch
+`crew/<crewmate slug>/<repo>`, cut from the repository's default branch
+(`crewmate_worktree._default_branch`, the base every later sync uses too) the
+first time and reused, as it is, by every worker the crewmate opens. A slug or
+repository name the cleaning changed (`app+tools`) or longer than 40 characters
+keeps an 8-character digest of the whole (`crewmate_worktree._name`), so two
+names never share a path or a branch. Each segment is also a legal git ref
+component (`crewmate_worktree._ref_safe`: no `..`, no leading or trailing `.`, no
+`.lock` ending), so a repository named `app.lock` or `app..tools` still gets a
+branch git can create. When the repository's parent (or an existing
+`<repo>.worktrees`) is not writable, or the repository is a filesystem root, the
+fallback under the crewmate's workspace is used instead,
+`<crewmate workspace>/worktrees/<crewmate slug>/<repo>-<hash>` (`legacy_path_for`), and the reason
+is logged once per repository (`crewmate_worktree.destination`). Every worktree is
+listed in the crewmate's index in its workspace,
+`<crewmate workspace>/worktrees/index.json` (`{worktree path: {repo, branch,
+member}}`; read through `hooks.safe_read_prefix`, 1 MiB at most, since it sits in
+the agent-writable workspace: a link to a sensitive path reads as no index, and so
+does a `worktrees` folder that is a link; it is written with no-follow descriptors,
+`worktrees` made and opened through `pinned_fs.open_pinned_descendant_dir` and the
+file renamed into place relative to it, so a `worktrees` swapped for a link (to
+the governance `profiles/`, say) or a destination on a sensitive path gets nothing
+written and the lookup is refused, `crewmate_worktree._write_index`). Two crewmates may share one workspace (the default one, when neither
+names its own), so every lookup, reuse and removal reads only the entries whose
+`member` is the crewmate's slug (`crewmate_worktree._own_entries`): the "already
+in one of its worktrees" check is membership in those (`crewmate_worktree.owns`,
+called by `scope_worker_turn`; a path in ANOTHER of the crewmate's worktrees, of
+another repository, still sends the turn there, and a path in the worktree the
+turn already runs in, or in the shared checkout of that same repository, is
+passed over, so the project and session stay as they are; a `~` path is
+expanded first, `describe` included, so it names the same worktree), and removal reads them rather than
+scanning the disk; a worktree they already list for the repository, on any of the crewmate's
+branches (`crew/<slug>/...`, a topic branch a worker cut there included), is used
+where it is and reported on the branch it has checked out
+(`crewmate_worktree._listed`), so a fallback one keeps serving after the parent
+becomes writable. Every gateway write under an agent-writable folder goes through
+no-follow descriptors: a new worktree folder is made below the workspace or the
+repository's parent with `pinned_fs.open_pinned_descendant_dir`
+(`crewmate_worktree._make_dest`; a link, or a sensitive destination, refuses the
+lookup), and removal drops the index and the empty fallback folder relative to
+the pinned `worktrees` descriptor (`_tidy_index_folder`). Every path probe the
+gateway makes is one that cannot raise (`os.path.exists`), and one candidate
+that fails (an unsearchable folder named in a brief, say) is logged and the next
+tried; only a host with no git sandbox at all ends the lookup. Each index read-modify-write (`ensure`, removal) holds a lock
+per index file, so two worker turns of one crewmate never drop each other's
+entry. A repository on another drive than the crewmate's workspace is never
+treated as containing it (`crewmate_worktree._contains`). `slot.project` -- the worker's cwd and project scope -- is
+set to it (the same subdirectory when the path named one) and the binding is
+re-captured under the dispatch lock, so the shared checkout is never a worker's
+cwd; a session already running takes the deferred reset `set_project` uses. A
+repository that contains the crewmate's own workspace is not one it was handed
+and is skipped. The `[PROJECT]` line of a turn in such a worktree names the
+repository and the branch and says to edit and commit there (read from the
+worktree's own `.git` file and the `HEAD` it points at, a linked worktree on a
+`crew/` branch, `crewmate_worktree.describe`, no git call; each of those files is
+read through `hooks.safe_read_prefix`, 4 KiB at most, so a `.git` linked to a
+sensitive path such as a credential file is refused, not read; `HEAD` must be one
+line, `ref: refs/heads/<name>`, with a name `crewmate_worktree.valid_branch` takes
+(the characters `[A-Za-z0-9._/-]` and git's ref rules), and the repository path
+must hold no control character or bracket (`rail_safe`), else no worktree is
+named; the rail checks both again before it writes the line); work
+that truly needs a further branch names it under the crewmate's prefix
+(`crew/<slug>/<topic>`) and cuts it in the same worktree. That naming is the
+prompt's alone: nothing in the gateway refuses another branch name. The gateway
+never rebases, merges or checks anything out in a crewmate's worktree after it
+is made: every worker turn in a worktree, a later one included, only counts, read
+only, the commits the repository's default branch has that the branch lacks
+(`crewmate_worktree.note_behind_base`, called by `scope_worker_turn`:
+`git rev-list --count HEAD..<base>` through the sandboxed runner). The base is the
+repository's default branch (`crewmate_worktree._default_branch`: `origin/HEAD`,
+else a local `main` or `master`, never the shared checkout's `HEAD`, which <!-- wokeignore:rule=master -->
+whoever has that checkout open decides; always resolved by its full name,
+`refs/remotes/origin/HEAD` or `refs/heads/<name>`, so a tag named `main` is never
+the base, and shortened only for the note); a repository with none of them gets
+no note, and only the first cut of its branch starts from `HEAD`. When the count is
+above zero, the next `[PROJECT]` line carries one line once
+(`worktree.base_behind`, `crewmate_worktree.take_base_note`): the branch is that
+many commits behind the base, and the worker rebases it itself before it pushes
+if it needs the base's changes; before any push it runs
+`git merge-tree --write-tree <base> HEAD` and rebases only when that reports a
+conflict, saying so in its report (`worker.principles`). The branch and base
+names in it are one plain line with brackets turned to parentheses
+(`crewmate_worktree.rail_text`), and the rail neutralizes the note's structural
+markers and drops it unless `rail_safe` takes it. A subfolder named in a brief
+becomes the project only when `rail_safe` takes it and its real path stays inside
+the worktree (a link such as `docs -> ../../repo` leads back to the shared
+checkout, so the worktree root is used instead). The `[PROJECT]` line prints the
+project path as one line with its structural markers neutralized
+(`context_assembly/turn.rail_parts`), since a repository's parent folder is the
+user's or the brief's to name.
+Git runs through the follow-up card's sandboxed
+runner (`handlers/worktree._run_git`): no hooks, no fsmonitor, and a repository
+declaring a checkout filter is refused. A worktree folder deleted by hand stays
+registered with git and holds its branch, so a missing holder is pruned
+(`git worktree prune`) and the worktree built again; a locked one is kept and
+still refuses (`crewmate_worktree._create`). A `worktree add` that fails, times
+out or loses its sandbox is unwound before the error is raised, so no later turn
+reuses a half-made worktree (`crewmate_worktree._unwind_add`): the folder this
+lookup made is removed by descriptor (`pinned_fs.remove_tree_pinned`), approved
+only when the folder it opens has the `(dev, ino)` recorded at the make, so a
+parent swapped for a link in between (to the crew data home, say) leads to
+nothing being removed; no by-name `rmtree` runs. Then
+`handlers/worktree._cleanup_partial` with `created=False` prunes git's
+registration and drops the branch this lookup claimed. Deleting the crewmate
+(`crew_removal.api_kirocrew_agent_delete`) removes its worktrees with
+`git worktree remove` (never `--force`): only an index entry this gateway would
+have made is removed, its folder `path_for` or `legacy_path_for` of that
+repository and slug, and git still showing it on one of the crewmate's own
+`crew/<slug>/` branches (`crewmate_worktree._verified_own`; the index is
+agent-written, so anything else, or anything git cannot answer, is kept); one with uncommitted changes is kept and
+logged, and so is one whose repository configures a checkout filter (the
+removal's own change check could run it), the branches stay, the repositories' own checkouts and every worktree
+the index does not list for this crewmate (another crewmate's beside the same
+repository, or one another crewmate sharing the workspace listed) are never
+touched, and `<repo>.worktrees` is removed only once it is empty
+(`test/test_crewmate_worktree.py`, `test/test_crewmate_worktree_layout.py`).
 
 **A worker reports back on its own** (`dashboard/mate_thread_wakes.py`), so the
 conductor dispatches and ends its turn. Every top-level turn end calls

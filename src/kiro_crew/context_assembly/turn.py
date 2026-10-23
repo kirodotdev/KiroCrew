@@ -366,13 +366,43 @@ def rail_parts(
                 "anything pushed to git is still on its remote.\n\n"
             )
     elif project and project_on:
+        # The path is the repository's (and, for a crewmate worker, partly the
+        # brief's) to choose: one plain line, its structural markers neutralized.
+        _shown_project = ctx._neutralize_structural_markers(
+            "".join(" " if ord(c) < 0x20 or c == "\x7f" else c for c in str(project))
+        )
         parts.append(
-            f"[PROJECT] Active project directory: {project}\n"
+            f"[PROJECT] Active project directory: {_shown_project}\n"
             "This is the codebase you are working in for this session. "
             "File search, @-mentions, and code references are scoped to "
             "this directory. Prefer files and patterns from this project "
             "when answering questions.\n\n"
         )
+        from kiro_crew.crewmate_worktree import describe as _crewmate_worktree
+        from kiro_crew.crewmate_worktree import rail_safe as _crewmate_rail_safe
+        from kiro_crew.crewmate_worktree import take_base_note as _crewmate_worktree_base_note
+
+        _worktree = _crewmate_worktree(project)
+        if _worktree is not None and not all(_crewmate_rail_safe(t) for t in _worktree):
+            # Checked again where it lands: the line is trusted context.
+            _worktree = None
+        if _worktree is not None:
+            _wt_path, _wt_repo, _wt_branch = _worktree
+            _wt_prefix = _wt_branch.rsplit("/", 1)[0] + "/"
+            parts[-1] = parts[-1][:-1] + (
+                f"It is your crewmate's own git worktree of {_wt_repo}, on branch "
+                f"{_wt_branch}. Other crewmates work in that repository too, each in a "
+                f"worktree of its own, so edit and commit here, on {_wt_branch}, and "
+                f"leave {_wt_repo} itself and other branches as they are. Work that "
+                f"truly needs a branch of its own gets one named under {_wt_prefix} "
+                f"(such as {_wt_prefix}<topic>), cut in this worktree, so every branch "
+                f"here reads as your crewmate's.\n\n"
+            )
+            # The note carries ref names, a config key and git's error, all the
+            # repository's to choose: neutralized and checked like the line above.
+            _base_note = ctx._neutralize_structural_markers(_crewmate_worktree_base_note(_wt_path))
+            if _base_note and _crewmate_rail_safe(_base_note):
+                parts[-1] = parts[-1][:-1] + _base_note + "\n\n"
 
     # Board state — the session's dashboard board tags, so the agent knows
     # its own workflow lane and which tags it is allowed to change with
