@@ -12,12 +12,85 @@ import { isUnsafeKey, safeKey } from './wire'
 
 const MAX_RETIRED_QUEUE_IDS = 50
 
+/** Non-raw queue entries a close dropped, retained independently of the slot
+ *  state so a delayed receipt can identify its conversation after a reopen.
+ *  A requeued steer's demoted receipt carries only its steer id, while an
+ *  ordinary queued receipt carries its queue id, so each card keeps both. */
+type SideQueueCardDroppedByClose = { queueId: string; steerId?: string }
+const sideQueueCardsDroppedByClose = new Map<string, SideQueueCardDroppedByClose[]>()
+
+function noteSideQueueCardsDroppedByClose(slot: string, entries: readonly SideQueueEntry[]): void {
+  if (entries.length === 0) return
+  const dropped = sideQueueCardsDroppedByClose.get(slot) ?? []
+  for (const entry of entries) {
+    const existing = dropped.findIndex(card =>
+      card.queueId === entry.id || (!!entry.steerId && card.steerId === entry.steerId)
+    )
+    if (existing >= 0) dropped.splice(existing, 1)
+    dropped.push({ queueId: entry.id, ...(entry.steerId ? { steerId: entry.steerId } : {}) })
+  }
+  sideQueueCardsDroppedByClose.set(slot, dropped.slice(-MAX_RETIRED_QUEUE_IDS))
+}
+
+function takeSideQueueCardDroppedByClose(
+  slot: string,
+  matches: (card: SideQueueCardDroppedByClose) => boolean,
+): boolean {
+  const dropped = sideQueueCardsDroppedByClose.get(slot)
+  const at = dropped?.findIndex(matches) ?? -1
+  if (!dropped || at < 0) return false
+  dropped.splice(at, 1)
+  if (dropped.length === 0) sideQueueCardsDroppedByClose.delete(slot)
+  return true
+}
+
+/** Consume the record that a close dropped this queue entry. */
+export function takeSideQueueDroppedByClose(slot: string, queueId: string): boolean {
+  return takeSideQueueCardDroppedByClose(slot, card => card.queueId === queueId)
+}
+
+/** Consume the record that a close dropped this requeued steer. */
+export function takeSideSteerDroppedByClose(slot: string, steerId: string): boolean {
+  return takeSideQueueCardDroppedByClose(slot, card => card.steerId === steerId)
+}
+
 /** Monotonic tick, so an observation can be ordered against a request already in flight.
  *  A bare boolean cannot: it could have been set by an earlier, unrelated edit. */
 let queueEditBroadcastSeq = 0
 /** Nested per slot rather than keyed on a joined string: queue ids are unique only within
  *  their own sidecar, and a joined key would need a separator literal. */
 const queueEditBroadcasts = new Map<string, Map<string, number>>()
+
+type PendingQueueEdit = { content: string; handedBack: boolean }
+const pendingQueueEdits = new Map<string, Map<string, PendingQueueEdit>>()
+
+/** Record the latest text submitted for a queue card while its edit request is in flight. */
+export function beginSideQueueEdit(slot: string, queueId: string, content: string): void {
+  let perSlot = pendingQueueEdits.get(slot)
+  if (!perSlot) {
+    perSlot = new Map<string, PendingQueueEdit>()
+    pendingQueueEdits.set(slot, perSlot)
+  }
+  perSlot.set(queueId, { content, handedBack: false })
+}
+
+/** Return an in-flight edit's text to a closing composer and remember that hand-back. */
+export function takeSideQueueEditForClose(slot: string, queueId: string): string | undefined {
+  const edit = pendingQueueEdits.get(slot)?.get(queueId)
+  if (!edit) return undefined
+  edit.handedBack = true
+  return edit.content
+}
+
+/** Retire a settled edit and report whether closure already returned its text. */
+export function finishSideQueueEdit(slot: string, queueId: string): boolean {
+  const perSlot = pendingQueueEdits.get(slot)
+  const edit = perSlot?.get(queueId)
+  if (!edit || !perSlot) return false
+  perSlot.delete(queueId)
+  if (perSlot.size === 0) pendingQueueEdits.delete(slot)
+  return edit.handedBack
+}
 
 function noteQueueEditBroadcast(slot: string, queueId: string): void {
   let perSlot = queueEditBroadcasts.get(slot)
@@ -498,13 +571,15 @@ export const sideReducers = {
     side.releasedText = current.slice(consumed.length).replace(/^\s+/, '')
   },
   sideClose(state: ChatState, action: PayloadAction<string>) {
-    delete state.slotSide[action.payload]
-    if (isUnsafeKey(action.payload)) return
-    state.slotSideClosed[safeKey(action.payload)] = true
+    const slot = action.payload
+    if (isUnsafeKey(slot)) return
+    noteSideQueueCardsDroppedByClose(slot, state.slotSide[slot]?.queue?.filter(entry => !entry.raw) ?? [])
+    delete state.slotSide[slot]
+    state.slotSideClosed[safeKey(slot)] = true
     // Closed here, so this page knows the gateway holds nothing for the slot: a
     // restore read still in flight describes the conversation just closed.
     state.slotSideRestored ??= {}
-    state.slotSideRestored[safeKey(action.payload)] = true
+    state.slotSideRestored[safeKey(slot)] = true
   },
   /** Settle a slot's panel against the gateway's own copy of its side
    *  conversation (`GET .../side`), once per page: what a reload had dropped

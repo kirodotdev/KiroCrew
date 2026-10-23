@@ -5,8 +5,8 @@ import { api } from '../../api/client'
 import { sendTurn, SEND_ABORT_MS, type SendReceipt } from '../../chat-core/transport/sendTurn'
 import { sendFailureCopy, deliveryUnconfirmedCopy } from '../../chat-core/transport/receiptCopy'
 import { sideTurnWire } from './sideTurnWire'
-import { useAppSelector, useAppDispatch } from '../../store'
-import { sideClose, sideOptimisticAccepted, sideOptimisticAppend, sideOptimisticRollback, restoreSideConversation, awaitSideRestore, sseSideQueue, sideReleaseConsumed, sideSendStatus, queueEditBroadcastAt, stageToMainComposer, transcriptTsMs, type SideStandingNotice } from '../../store/chatSlice'
+import { useAppSelector, useAppDispatch, useAppStore } from '../../store'
+import { beginSideQueueEdit, finishSideQueueEdit, sideClose, sideOptimisticAccepted, sideOptimisticAppend, sideOptimisticRollback, restoreSideConversation, awaitSideRestore, sseSideQueue, sideReleaseConsumed, sideSendStatus, queueEditBroadcastAt, stageToMainComposer, takeSideQueueDroppedByClose, takeSideSteerDroppedByClose, transcriptTsMs, type SideStandingNotice } from '../../store/chatSlice'
 import QueueStack from '../../components/QueueStack'
 import ChatMessageList from '../../app-sdk/ChatMessageList'
 import FollowUpBar from '../../components/FollowUpBar'
@@ -106,6 +106,7 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
 }) {
   const connected = useConnected()
   const dispatch = useAppDispatch()
+  const chatStore = useAppStore()
   // The footer describes what the backend enforces, so it asks the gateway the
   // question the side turn asks itself: the selected harness, and on claude
   // whether the installed adapter honours the read-only session options. Keyed
@@ -499,6 +500,21 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
       if (vars.optimistic && res.run_id && !res.queued) {
         dispatch(sideOptimisticAccepted({ slot: vars.slot, content: vars.q, runId: res.run_id }))
       }
+      // Another tab closed the conversation while this question was on its way, and
+      // the gateway dropped the queue with it. The close records each dropped card's
+      // queue id and, for a requeued steer, its steer id because a demoted receipt has
+      // no queue id. That record survives a replacement conversation that reopens the
+      // slot before this receipt arrives. The slot's closed flag covers a close whose
+      // card never reached this tab. A chip's question comes back too because the close
+      // took the suggestion with the transcript.
+      const droppedByClose = res.queued && stillQueued && (
+        (!!res.queue_id && takeSideQueueDroppedByClose(vars.slot, res.queue_id))
+        || (!!res.steer_id && takeSideSteerDroppedByClose(vars.slot, res.steer_id))
+      )
+      if (res.queued && stillQueued && (droppedByClose || chatStore.getState().chat.slotSideClosed[vars.slot])) {
+        recoverFor(vars.slot, handBack(vars))
+        return
+      }
       if (res.queued && res.queue_id) {
         // Record the raw text even when the entry has already drained: a cancel
         // racing the response still needs somewhere honest to restore from.
@@ -662,11 +678,13 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
   const editQueued = useMutation({
     mutationFn: ({ queueId, content, slot: target }: { queueId: string; content: string; slot: string }) =>
       api.sideQueueEdit(target, queueId, content),
-    onMutate: ({ queueId, slot: target }: { queueId: string; content: string; slot: string }) => {
+    onMutate: ({ queueId, content, slot: target }: { queueId: string; content: string; slot: string }) => {
       markQueuePending(queueId, true)
+      beginSideQueueEdit(target, queueId, content)
       return { broadcastAt: queueEditBroadcastAt(target, queueId) }
     },
     onSuccess: (_res, vars) => {
+      finishSideQueueEdit(vars.slot, vars.queueId)
       // The edit supersedes what this client had cached for the card. A cancel PREFERS
       // the cached copy over the card's content, so leaving it stale would restore the
       // pre-edit text and throw the user's newer wording away.
@@ -679,12 +697,16 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
       dispatch(sseSideQueue({ slot: vars.slot, action: 'edit', queue_id: vars.queueId, content: vars.content, raw: true }))
     },
     onError: (_err, vars, ctx) => {
+      // A close already returned this submitted edit while removing its card. The
+      // request result cannot return it again, whichever path settled the edit.
+      if (finishSideQueueEdit(vars.slot, vars.queueId)) return
       // The server broadcast an edit for this card after the request went out, so the edit DID
       // land and only its response was lost. Restoring here would leave the question both
-      // queued and in the composer, and it would be asked twice. The cache is refreshed
-      // instead, because a later cancel prefers it and the server now holds this wording.
+      // queued and in the composer, and it would be asked twice. Refresh both the cache
+      // and the card because a later cancel or close must use the wording the server holds.
       if (queueEditBroadcastAt(vars.slot, vars.queueId) > (ctx?.broadcastAt ?? 0)) {
         submittedRaw.current.set(vars.queueId, vars.content)
+        dispatch(sseSideQueue({ slot: vars.slot, action: 'edit', queue_id: vars.queueId, content: vars.content, raw: true }))
         return
       }
       setLocalError(i18nT('pages.chat.sideChat.queue_edit_failed'))

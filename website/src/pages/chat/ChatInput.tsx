@@ -1,10 +1,12 @@
-import { openActivityToTab, awaitSideRestore, setAgentSwitchNotice, sideSendStatus } from '../../store/chatSlice'
+import { openActivityToTab, awaitSideRestore, setAgentSwitchNotice, sideSendStatus, sseSideQueue, takeSideQueueDroppedByClose } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { sendTurn, SEND_ABORT_MS } from '../../chat-core/transport/sendTurn'
 import { deliveryUnconfirmedCopy } from '../../chat-core/transport/receiptCopy'
+import { readSideChatDraft, writeSideChatDraft } from '../../chat-core/composer/sideChatDrafts'
+import { mergeIntoDraft } from '../../utils/chatDrafts'
 import { sideTurnWire } from './sideTurnWire'
-import type { AppDispatch } from '../../store'
+import type { AppDispatch, RootState } from '../../store'
 import { performAgentSlotSwitch } from '../../lib/agentSwitch'
 import { agentSwitchFailureMessage } from '../../utils/agentSwitchFeedback'
 
@@ -199,8 +201,24 @@ export async function interceptSlashCommand(
     const receipt = await sendTurn({ message, slot, wire: sideTurnWire(slot) })
     switch (receipt.status) {
       case 'dispatched':
-      case 'queued':
+      case 'queued': {
+        const res = receipt.body as Awaited<ReturnType<typeof api.sideTurn>>
+        if (res.queued && res.queue_id && (res.still_queued ?? true)) {
+          // Another tab's close drops a queue card whose raw text this tab does not
+          // hold, so the question goes on its card unredacted, as the panel's own
+          // composer does. A close that dropped it before this receipt arrived
+          // hands it to the slot's side draft instead, as it would the card.
+          const droppedByClose = takeSideQueueDroppedByClose(slot, res.queue_id)
+          const closed = dispatch((_: AppDispatch, getState: () => RootState) => getState().chat.slotSideClosed?.[slot] === true)
+          if (droppedByClose || closed) {
+            writeSideChatDraft(slot, mergeIntoDraft(readSideChatDraft(slot), message))
+          } else {
+            dispatch(sseSideQueue({ slot, action: 'push', queue_id: res.queue_id, content: message, raw: true }))
+            dispatch(sseSideQueue({ slot, action: 'edit', queue_id: res.queue_id, content: message, raw: true }))
+          }
+        }
         return { intercepted: true }
+      }
       case 'refused':
         // The server said no (409 a side turn is already in flight, 400 the
         // expanded question exceeds the byte limit). `failed` lets the caller
