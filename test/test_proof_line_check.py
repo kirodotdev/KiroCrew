@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from ai_review_workflows_helpers import _bash, _child_env
 from skill_script_helpers import load_skill_script
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -427,14 +428,20 @@ _CI_BODIES = [
 
 
 def _ci_sees_tests(body: str, tmp_path: Path) -> bool:
+    # A bare `bash` on a Windows runner is the WSL launcher, which neither runs the
+    # script nor reads its Windows paths; `_bash()` resolves Git for Windows' Bash there.
+    bash = _bash()
+    assert bash, "the template check needs a Bash that reads native paths"
     out = tmp_path / "out"
     out.write_text("", encoding="utf-8")
-    env = {
-        "PATH": os.environ.get("PATH", ""),
-        "PR_BODY": _CI_PREFIX + body,
-        "GITHUB_OUTPUT": str(out),
-    }
-    subprocess.run(["bash", str(DESC_CHECK)], env=env, check=True, capture_output=True)
+    env = _child_env(
+        {
+            "PATH": os.environ.get("PATH", ""),
+            "PR_BODY": _CI_PREFIX + body,
+            "GITHUB_OUTPUT": str(out),
+        }
+    )
+    subprocess.run([bash, str(DESC_CHECK)], env=env, check=True, capture_output=True)
     lines = out.read_text("utf-8").splitlines()
     annotation = next(ln for ln in lines if ln.startswith("annotation="))
     return "## Tests" not in annotation
