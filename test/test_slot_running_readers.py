@@ -167,6 +167,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The memory-ready queue drain starts a turn only on a slot no
                 # dispatch has reserved, the same guard the dispatch routes take.
                 ("chat_turn/queue_drain.py", "_drain_parked_queues"),
+                # The hand-off for a dispatch that never ran a turn's tail: that
+                # task has ended, so this reads a send's reservation.
+                ("chat_turn/queue_cycle.py", "_hand_off_unstarted_turn"),
                 ("chat_turn/eager_spawn.py", "_eager_spawn"),
                 ("chat_turn/eager_spawn.py", "_prefetch_ttl"),
                 ("handlers/autonudge.py", "api_autonudge_fire"),
@@ -250,6 +253,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         ("chat_regenerate.py", "api_chat_slot_regenerate"),
         ("chat_rewind.py", "api_chat_slot_rewind"),
         ("chat_turn/queue_cycle.py", "_launch_synthesis"),
+        # The cycle end of a dispatch that never ran a turn's tail holds the
+        # floor the way the synthesis launch does.
+        ("chat_turn/queue_cycle.py", "_hand_off_unstarted_turn"),
         ("chat_turn/queue_drain.py", "_start_next_queued_turn"),
         ("handlers/taskrunner.py", "api_taskrunner_to_chat"),
         ("openai_compat.py", "api_completions"),

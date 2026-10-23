@@ -28,7 +28,8 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_synthesis_recheck``, ``_task``, ``_trust``, ``_trust_reads``, ``_trust_scope``,
 ``_trusted_pattern_deadlines``, ``_trusted_patterns``, ``_turn_admission_reserved``,
 ``_turn_generation``, ``_turn_in_flight_generation``, ``_turn_in_flight_prompt``,
-``_turn_reply_mids``, ``_wake_starting_task``, ``credential_evidence``, ``event``,
+``_turn_reply_mids``, ``_unstarted_generation``, ``_wake_starting_task``,
+``credential_evidence``, ``event``,
 ``linked_session_key``, ``segment_message_id``, ``segment_raw_text``,
 ``segment_removed``, ``segment_shown_sha``.
 
@@ -226,6 +227,12 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # None after teardown, so consumers that span awaits cannot distinguish
     # "stayed idle" from "ran and finished" by comparing task references.
     self._turn_generation = 0
+    # The ``_turn_generation`` of a dispatch that ended without starting its
+    # turn (``turn_dispatch.mark_turn_unstarted``), so no tail hands off the
+    # queue a send built behind it; its done callback does
+    # (``chat_turn.queue_cycle._hand_off_unstarted_turn``). -1: none, since a
+    # published ``task`` is generation 1 or later.
+    self._unstarted_generation = -1
     # The turn a structured monitor wake started, until the runner accepts it
     # and the wake's ``nudge`` row is written. Until then the transcript cannot
     # say who opened the running turn, so the projection's ``wake_starting``
