@@ -25,6 +25,7 @@ from kiro_crew.context_assembly import store_admission
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.testing.clock import ManualClock
 
 MESSAGE = "Summarize the deploy checklist."
 _REAL_READS = store_admission.read_session_memory
@@ -555,6 +556,14 @@ def test_the_join_ends_at_the_build_embed_deadline(builder, monkeypatch) -> None
     from kiro_crew import context as ctx
     from kiro_crew.embeddings import EmbeddingWork, embedding_work
 
+    # Pin store_admission.time to a manual clock so the deadline computation is
+    # exact: (monotonic_start + 0.05) - monotonic_start == 0.05 by construction.
+    # Without this, a coarse Windows monotonic clock (~15.6 ms ticks) makes two
+    # real readings return the same float, and IEEE rounding of large_float + 0.05
+    # yields a value strictly above 0.05, breaking the equality check.
+    clock = ManualClock(monotonic_start=0.0)
+    clock.install(monkeypatch, store_admission)
+
     store_admission.reserve_memory_prefetch(None, None, MESSAGE)
     entry = _held(MESSAGE)
     entry.started.set()  # running, never done
@@ -573,7 +582,7 @@ def test_the_join_ends_at_the_build_embed_deadline(builder, monkeypatch) -> None
     finally:
         embedding_work.set(previous)
     assert got is None
-    assert len(done.waits) == 1 and done.waits[0] <= 0.05
+    assert len(done.waits) == 1 and done.waits[0] == 0.05
 
 
 def test_a_prefetch_older_than_its_ttl_is_not_taken(builder, reads) -> None:
