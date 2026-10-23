@@ -613,6 +613,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DISPLAY_REDACTION_SALT,
         _DISPLAY_REDACTION_STRINGS_PER_ROW,
         _NO_BASE,
+        BLOCKED_LINKS_ORDERED_KEY,
         REDACTION_RECORD_FIELDS,
         SLOT_DETAIL_MAX_LIMIT,
         UNKNOWN_ROW_FIELDS_KEY,

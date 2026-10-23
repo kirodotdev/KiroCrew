@@ -191,3 +191,25 @@ def test_a_clean_command_reply_carries_no_meta() -> None:
     chat_runner._append_command_reply(slot, "No saved workflows yet.")
 
     assert _reply(slot)["meta"] is None
+
+
+def test_a_command_reply_vouches_the_order_of_its_links() -> None:
+    """A command reply is redacted in one pass, so its records are in reply order
+    and the row says so: two different links on one allowed host both come back."""
+    from kiro_crew.dashboard.chat_utils import (
+        BLOCKED_LINKS_ORDERED_KEY,
+        with_allowed_links_restored,
+    )
+    from kiro_crew.security.exfil import scoped_exempt_hosts
+
+    first = "https://collect.example.com/a?q=" + "a" * 250
+    second = "https://collect.example.com/b?q=" + "b" * 250
+    slot = _Slot()
+
+    chat_runner._append_command_reply(slot, f"one {first} two {second} end")
+
+    row = _reply(slot)
+    assert row["meta"][BLOCKED_LINKS_ORDERED_KEY] is True
+    with scoped_exempt_hosts(frozenset({"collect.example.com"})):
+        shown = with_allowed_links_restored(row)
+    assert shown["content"] == f"one {first} two {second} end"
