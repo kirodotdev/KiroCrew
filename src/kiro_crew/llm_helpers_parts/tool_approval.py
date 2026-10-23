@@ -207,6 +207,26 @@ def _orphan_reject_done(task: asyncio.Task[Any]) -> None:
         )
 
 
+def _no_approver_shell_commands(event: Any) -> list[str]:
+    """The shell text the no-approver git refusal judges for *event*.
+
+    The recovered shell command when there is one. A harness can stream its
+    shell tool under a kind other than ``execute`` (DeepSeek sends ``bash`` as
+    ``other``), so no shell command is recovered; the tool's own
+    ``command``/``cmd`` argument is then judged, as the hook gate's
+    ``GateFacts.raw_shell_commands`` does. A call that names its MCP server is
+    left out: its ``command``-named arguments are not shell text. Used only to
+    refuse, so a value that is not really shell text can only refuse more.
+    """
+    command = name_grant.shell_command_for_event(event)
+    if command:
+        return [command]
+    params = getattr(event, "raw_tool_params", None)
+    if getattr(event, "mcp_server_name", "") or not isinstance(params, dict):
+        return []
+    return [value for key in ("command", "cmd") if isinstance(value := params.get(key), str)]
+
+
 async def _resolve_permission(
     provider: LLMProvider,
     event: LLMEvent,
@@ -788,21 +808,57 @@ async def _resolve_permission(
         await provider.reject_tool(event.request_id)
         return False
 
-    # A git read the gate's read-only tier declined (git reads `.git/config`,
-    # whose `core.fsmonitor` / `core.hooksPath` name a program no text
-    # classifier sees) falls through to the surface's approver. With no
-    # approver on a hook-based surface (a Meetings dispatch), the default
-    # below would run it unchecked -- not even the name-grant check the
-    # read-only approve ran -- so it is refused instead.
+    # Every git command runs programs its repository config names
+    # (`core.fsmonitor`, `core.hooksPath`, commit and checkout hooks) that no
+    # text classifier sees, read or not. A git command the hook gate did not
+    # deny or positively grant (a grant approved above) falls through to the
+    # surface's approver. With no approver on a hook-based surface (a Meetings
+    # dispatch), the default below would run it unchecked, so it is refused
+    # instead. `name_grant.no_approver_git_refusal` reads the program at each
+    # command position and matches its basename exactly, so a command that only
+    # mentions git as an argument keeps the default. A program it cannot read (a
+    # substitution, an expansion, a dispatcher such as `sh -c` or `env`) may be
+    # git, so that refuses too, with its own reason. A git command can be granted
+    # in the hook's `auto_approve_tools` (approved above, name-grant checked); an
+    # unreadable one cannot, since the name-grant check refuses the same classes.
     if policy == ToolApprovalPolicy.HOOK_BASED and hooks and on_tool_approval is None:
-        _git_command = name_grant.shell_command_for_event(event)
-        if _git_command and command_invokes_git(_git_command) and is_read_only_bash(_git_command):
+        _git_commands = _no_approver_shell_commands(event)
+        _git_reason = next(filter(None, map(name_grant.no_approver_git_refusal, _git_commands)), "")
+        if _git_reason:
+            _unread = _git_reason != name_grant.RUNS_GIT
+            _what = (
+                f"this command's program cannot be read ({_git_reason}), so it may run git"
+                if _unread
+                else "this command runs git"
+            )
+            # A hook grant is name-checked above, and that check refuses the same
+            # unreadable classes, so a grant only helps a command that names git.
+            _remedy = (
+                "a hook grant cannot lift this, because the name check refuses the same "
+                "command; name the program directly, or run it where an approver exists"
+                if _unread
+                else "grant it in the hook's auto_approve_tools to allow it here"
+            )
+            _why = (
+                f"{_what}, which runs programs its repository config names, so it is never "
+                f"run without an approval and this surface has no approver; {_remedy}"
+            )
+            _audit = "git_unreadable_headless_reject" if _unread else "git_headless_reject"
+            _log("rejected", metadata={"reason": _audit})
+            await _steer_host_deny(provider, event, _why, cause=DENY_CAUSE_SURFACE_POLICY)
+            await provider.reject_tool(event.request_id)
+            return False
+        if any(
+            command_invokes_git(_git_command) and is_read_only_bash(_git_command)
+            for _git_command in _git_commands
+        ):
             _log("rejected", metadata={"reason": "git_read_headless_reject"})
             await _steer_host_deny(
                 provider,
                 event,
-                "a git command is never auto-approved as a read (git runs programs "
-                "its repository config names) and this surface has no approver",
+                "a read whose program cannot be read from its text may run git, which "
+                "runs programs its repository config names, and this surface has no "
+                "approver",
                 cause=DENY_CAUSE_SURFACE_POLICY,
             )
             await provider.reject_tool(event.request_id)
