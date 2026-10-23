@@ -8,7 +8,7 @@
  * asymmetric part worth pinning: `dashboard_` comes off, a channel-born
  * `slack_<ts>` must pass through untouched.
  */
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -274,6 +274,9 @@ describe('useRecentsProvider — Current group', () => {
   })
 
   it('creates the session before navigating when the create row is activated', async () => {
+    // Off the chat page: on it the URL sync owns the new session's entry.
+    window.history.replaceState(null, '', '/settings')
+    onTestFinished(() => window.history.replaceState(null, '', '/'))
     const { result } = harness([slot({ key: 'zzq-a', title: 'zzq A' })])
     const rows = await result.current.search('')
     rows[0].onActivate?.()

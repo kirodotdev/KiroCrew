@@ -1,6 +1,7 @@
 import { createElement, useMemo } from 'react'
 import { MessageSquare, Clock } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { isOnChatRoute } from '../../../lib/chatRoute'
 import { useQueryClient } from '@tanstack/react-query'
 import i18next from 'i18next'
 
@@ -348,11 +349,12 @@ export function useRecentsProvider(): ResourceProvider {
             onActivate: () => {
               // Await the create BEFORE navigating: landing on /chat with no
               // active slot triggers ChatPage's auto-create, which would race
-              // this thunk into a duplicate session.
+              // this thunk into a duplicate session. Already on chat, the URL
+              // sync owns the entry (see isOnChatRoute).
               void dispatch(createSlot({ defaultFolder: true }))
                 .unwrap()
                 .catch(() => {})
-                .finally(() => navigate('/chat'))
+                .finally(() => { if (!isOnChatRoute()) navigate('/chat') })
             },
           })
         }

@@ -1,6 +1,7 @@
 import { useMemo, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { NavigateFunction } from 'react-router-dom'
+import { isOnChatRoute } from '../../lib/chatRoute'
 import { useMutation } from '@tanstack/react-query'
 
 import { useAppDispatch, useAppSelector } from '../../store'
@@ -122,7 +123,9 @@ export function usePaletteActions(): PaletteActions {
 
   const newSessionWithToken = useCallback((token: string) => {
     doCreateSlot(undefined, {
-      onSuccess: () => { dispatch(setPendingInput(token)); navigate('/chat') },
+      // The chat page consumes the pending input reactively, so staying on it
+      // is enough; the URL sync owns the entry there (see isOnChatRoute).
+      onSuccess: () => { dispatch(setPendingInput(token)); if (!isOnChatRoute()) navigate('/chat') },
     })
   }, [doCreateSlot, dispatch, navigate])
 

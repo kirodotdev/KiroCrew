@@ -1,10 +1,7 @@
 import { useMemo } from 'react'
+import { isChatRoute } from '../../lib/chatRoute'
 
-/** The chat route, spelled once. Two things key off it on the phone -- the
- *  single-bar header variant and the shell nav drawer's swipe gate -- and a
- *  drift between two spellings is exactly how "two drawers for one gesture"
- *  would come back. */
-export const isChatRoute = (pathname: string) => pathname === '/chat' || pathname.startsWith('/chat/') || pathname === '/'
+export { isChatRoute }
 
 /**
  * Which rail row is lit, derived from the URL: the Apps namespace split between
