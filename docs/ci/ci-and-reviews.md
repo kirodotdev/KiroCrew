@@ -1027,11 +1027,22 @@ CodeConnections connection, no App installation credential and no AWS role, and
 reaches neither the signing keys, the CDN bucket nor the Bedrock review roles.
 
 **Why CodeQL.** It is the largest single editable `runs-on` in the repository,
-it already excludes forks through the `Analyze` job's own `if`, and it is not a
-required check, so a runner misconfiguration cannot wedge a merge on it. Its
-load is also permanent for an unrelated reason: GitHub's CodeQL default setup,
-which this workflow replaced, is off, so there is no second scan to fall back
-to.
+and it already excludes forks through the `Analyze` job's own `if`. Its load is
+also permanent for an unrelated reason: GitHub's CodeQL default setup, which
+this workflow replaced, is off, so there is no second scan to fall back to.
+
+**CodeQL is the one site here that can hold merges, so treat a stuck run as an
+immediate rollback.** `pr-readiness.yml` watches `CodeQL`, and with default
+setup off it resolves the lane to the newest `.github/workflows/codeql.yml` run
+(`codeql_source=advanced`). A queued `Analyze` job is therefore recorded as
+pending rather than skipped, which keeps the required `PR Readiness` status
+pending and holds every same-repo merge, for up to the 24-hour queue timeout.
+`codeql.yml`'s own comment that a skipped `Analyze` job blocks nothing is about
+the SKIPPED state, which is a resolved answer; a job waiting for a runner is a
+different state and readiness treats it differently. So if the group does not
+admit the repository, or is at its `maximum_runners` cap, restore
+`runs-on: ubuntu-latest` on this line at once rather than waiting to see whether
+the queue clears.
 
 **Nothing gets faster.** A public-repository `ubuntu-latest` is already 4 vCPU
 and 16 GB, and `kirocrew-linux-4-core` is the same CPU and memory with roughly
