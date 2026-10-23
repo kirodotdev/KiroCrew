@@ -204,6 +204,11 @@ async def _record_explicit_agent_selection(
     if cancelled is not None:
         await drained_to_thread(restore_agent_selection, session_key, change)
         raise cancelled
+    # The backend and model selection read the worker set in memory: a worker
+    # switched to an ordinary template leaves it at the commit, not at its next turn.
+    from kiro_crew.mate_worker import note_worker_session
+
+    note_worker_session(session_key, bindings.execution_context)
     return change
 
 

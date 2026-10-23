@@ -251,6 +251,68 @@ def test_the_worker_keeps_its_backend_after_a_restart(crewmate, tmp_path, no_kno
     assert _selected(key) == ACP_BACKEND_KAS
 
 
+def test_a_worker_switched_to_another_template_leaves_its_crewmates_backend(
+    crewmate, tmp_path, no_known_workers
+):
+    """Its record now names another template, so the next read before allocating
+    takes the key off the crewmate's backend."""
+    from dataclasses import replace
+
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+    from kiro_crew.execution_context import bind_session_execution, read_session_execution
+    from kiro_crew.session_agent_selection import resolve_session_agent_bindings
+
+    _set_backends(tmp_path, default="kiro", member="kas")
+    state, caller, _execution = crewmate
+    key = slot_history_key(state.get_slot(_create(state, caller)["target"]))
+    assert _selected(key) == ACP_BACKEND_KAS
+    worker = read_session_execution(key, required=True)
+    switched = replace(worker, template_id="kirocrew", selection_name="kirocrew")
+    bind_session_execution(key, switched, replace_existing=True, expected=worker)
+
+    def resolver(config, selected, *project, **kwargs):
+        return SimpleNamespace(kiro_agent="kirocrew", memory_store_name="")
+
+    resolve_session_agent_bindings(resolver, loader.KiroCrewConfig.load(), key, "kirocrew")
+
+    assert _selected(key) == ACP_BACKEND_KIRO
+
+
+def test_a_worker_slot_made_again_on_an_ordinary_template_leaves_at_the_commit(
+    crewmate, tmp_path, no_known_workers, monkeypatch
+):
+    """The explicit selection's commit takes the key out, before any turn, so the
+    model picker and the eager start read the configured backend too."""
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_app_with_agent_routes
+    from dashboard_owner_helpers import as_owner
+
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+
+    _set_backends(tmp_path, default="kiro", member="kas")
+    state, caller, _execution = crewmate
+    worker = state.get_slot(_create(state, caller)["target"])
+    key = slot_history_key(worker)
+    assert _selected(key) == ACP_BACKEND_KAS
+    monkeypatch.setattr(
+        loader, "_MATERIALIZED_AGENTS", frozenset({*loader._MATERIALIZED_AGENTS, "kirocrew"})
+    )
+    state._slots.pop(worker.key)
+
+    async def remake():
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+            response = await client.post(
+                "/api/chat/slots",
+                json={"name": worker.key, "agent": "kirocrew", "agent_kind": "template"},
+            )
+            assert response.status == 200, await response.text()
+
+    asyncio.run(remake())
+
+    assert state._slots[worker.key].agent == "kirocrew"
+    assert _selected(key) == ACP_BACKEND_KIRO
+
+
 def test_a_worker_on_a_backend_that_cannot_carry_its_kit_is_refused(
     crewmate, tmp_path, no_known_workers
 ):

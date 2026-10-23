@@ -630,11 +630,15 @@ def note_worker_session(session_key: str, execution: Any) -> bool:
     What makes the backend selection (``members.select_provider_backend``) route
     the worker to its crewmate's backend: the selection is an in-memory test, and
     this is the one writer, called wherever the record is read before a session
-    is allocated. Returns whether the key is a worker.
+    is allocated and when an agent switch records a new selection. Returns whether
+    the key is a worker. Any other record (a session switched onto another
+    template) drops the key, so the session leaves the crewmate's backend with its
+    worker template.
     """
-    from kiro_crew.members import note_crewmate_worker_session
+    from kiro_crew.members import forget_crewmate_worker_session, note_crewmate_worker_session
 
     if not is_own_worker_execution(execution):
+        forget_crewmate_worker_session(session_key)
         return False
     note_crewmate_worker_session(session_key)
     return True

@@ -67,6 +67,16 @@ def note_crewmate_worker_session(session_key: str) -> None:
         _CREWMATE_WORKER_SLOTS.add(_slot_part(session_key))
 
 
+def forget_crewmate_worker_session(session_key: str) -> None:
+    """Drop *session_key* from the crewmate workers (any key spelling).
+
+    A session switched off the worker template is not its crewmate's worker, so
+    its next allocation takes the configured default backend.
+    """
+    if session_key:
+        _CREWMATE_WORKER_SLOTS.discard(_slot_part(session_key))
+
+
 def is_crewmate_worker_session(session_key: str | None) -> bool:
     """Whether *session_key* is a session this process knows as a crewmate's worker.
 

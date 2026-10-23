@@ -3692,7 +3692,10 @@ chat, the hand-off (`_dispatching_crewmate`) and `is_conductor_execution` alike
   a restart keeps it -- takes `agent.member_acp_backend` through the same gate
   (a stored `kiro` reads as KAS), never `agent.acp_backend`. The identity is
   positive: a `template` record on `kirocrew-mate-worker` with a member id
-  (`mate_worker.is_own_worker_execution`). The pin is that record, so the worker
+  (`mate_worker.is_own_worker_execution`). A record that no longer says so drops the
+  key, on every read before an allocation and at an explicit selection's commit
+  (`slot_guards._record_explicit_agent_selection`), so a session switched off the
+  worker template leaves the crewmate's backend too. The pin is that record, so the worker
   follows its crewmate's backend for its whole life. Only a backend in
   `ACP_BACKENDS_MATE_WORKER_KIT` carries the per-session spec (harness-parity.md);
   today that is KAS. `session_create` refuses a worker anywhere else

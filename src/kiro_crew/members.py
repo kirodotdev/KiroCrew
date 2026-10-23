@@ -72,6 +72,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _member_session_element,
         _slot_part,
         crew_panel_enabled,
+        forget_crewmate_worker_session,
         is_crewmate_worker_session,
         is_member_session_key,
         member_dispatch_session_server,
