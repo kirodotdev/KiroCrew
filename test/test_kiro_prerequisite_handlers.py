@@ -25,6 +25,7 @@ from kiro_prerequisite_helpers import _isolate_agent_specs  # noqa: F401
 from kiro_prerequisite_helpers import _FakeRuntime, _make_executable, _no_audit
 
 from kiro_crew import kiro_prerequisite as prerequisite_module
+from kiro_crew.acp_backends import ACP_BACKEND_KIRO
 from kiro_crew.dashboard.chat_handlers import api_chat_slot_create
 from kiro_crew.dashboard.chat_regenerate import api_chat_slot_edit_resend, api_chat_slot_regenerate
 from kiro_crew.dashboard.chat_rewind import api_chat_slot_rewind
@@ -369,8 +370,21 @@ class TestKiroPrerequisiteHandlers:
             {"role": "assistant", "content": "answer", "ts": "a1"},
         ]
         original_messages = copy.deepcopy(messages)
-        slot = SimpleNamespace(messages=messages)
+        # A real slot: the gate now runs after the slot is looked up, because it
+        # judges the backend of the session the rerun acts on.
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        slot = _ChatSlot("paused")
+        slot.messages = messages
         sessions = MagicMock()
+        # The installed provider factory builds kiro-cli sessions, so the gate
+        # applies; no live session exists to say otherwise. Attribute writes are
+        # not calls, so ``sessions.mock_calls`` below still pins "no session work".
+        sessions._provider_factory = object()
+        sessions._cfg = SimpleNamespace(
+            agent=SimpleNamespace(acp_backend=ACP_BACKEND_KIRO, member_acp_backend=ACP_BACKEND_KIRO)
+        )
+        sessions._sessions = {}
         persistence = MagicMock()
         state = SimpleNamespace(
             _slots={"paused": slot},

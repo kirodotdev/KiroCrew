@@ -1144,7 +1144,13 @@ async def api_sessions_usage(request: web.Request) -> web.Response:
     # read then waits seconds on the probe. The wider window authorizes many
     # polls between probes while still containing the only risk (a browser login
     # spawned on a stale ready=True).
-    blocked = await reject_if_kiro_unverified(request, max_age_secs=_POLL_GATE_MAX_AGE_SECS)
+    #
+    # ``signs_in_via_kiro_cli=True`` whatever the selected harness: the scrape
+    # spawns kiro-cli itself, so the latch is about THIS spawn, not about the
+    # sessions' backend. The gate must not stand aside on a foreign harness here.
+    blocked = await reject_if_kiro_unverified(
+        request, max_age_secs=_POLL_GATE_MAX_AGE_SECS, signs_in_via_kiro_cli=True
+    )
     if blocked is not None:
         return blocked
     now = time.time()
@@ -1192,7 +1198,9 @@ async def api_sessions_usage_refresh(request: web.Request) -> web.Response:
       same-identity prior reading dimmed ``stale``, or an unavailable marker
       (see :func:`_cache_without_scrape` / :func:`_cache_transient_failure`).
     """
-    blocked = await reject_if_kiro_unverified(request)
+    # Gated on kiro-cli whatever the selected harness, as in the GET: the refresh
+    # spawns kiro-cli itself.
+    blocked = await reject_if_kiro_unverified(request, signs_in_via_kiro_cli=True)
     if blocked is not None:
         return blocked
     if _usage_fetching:

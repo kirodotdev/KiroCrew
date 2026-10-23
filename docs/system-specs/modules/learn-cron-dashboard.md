@@ -1895,16 +1895,27 @@ specified compatibility change.
   server logs)", since the side panel has no other channel to tell the user what
   to do. It latches the service signed-out too.
   **Two classes still fail closed** via the blocking guard
-  `reject_if_kiro_unverified()`, because neither can use the ACP attempt as its
-  authority: the **poll-driven `kiro-cli` spawn sites** (`/api/models`,
-  `/api/sessions/usage`) have no turn to carry the failure and `kiro-cli`
-  auto-opens an interactive browser login when run unauthenticated (and
-  `kiro-cli chat` hangs), so an unverified spawn on a timer opens a window and
-  leaks a process every poll; and the **destructive reruns** (regenerate,
-  edit-resend, rewind) have already rewritten durable history by the time a turn
-  could fail; and `POST /v1/chat/completions` has no transcript, so an error card
-  would surface as a successful empty completion. A missing or invalid service
-  fails closed in all three.
+  `reject_if_kiro_unverified()`: the **poll-driven `kiro-cli` spawn sites**
+  (`/api/models`, `/api/sessions/usage`) have no turn to carry the failure and
+  would auto-open an interactive login every poll, while
+  `POST /v1/chat/completions` has no transcript and would otherwise surface an
+  authentication error card as an empty success. Destructive reruns also use
+  the guard when their selected harness signs in through kiro-cli; a foreign
+  harness uses its turn as the authority, and a failed rerun leaves the durable
+  truncation in place with the discarded tail in `archive/`. **The reruns and
+  `/v1/chat/completions` apply it only while the selected harness signs in
+  through kiro-cli** (the two spawn sites run kiro-cli themselves, so they stay
+  gated on every backend): the guard reads `agent.acp_backend` first and
+  stands aside — returning `None` without consulting the service — unless the
+  backend is a member of `backends_retired_by_host_logout()`, because the latch
+  describes a kiro-cli sign-in and says nothing about a claude-agent-acp or
+  codex-acp session (see `modules/acp-client.md` § "The latch governs only a
+  harness that signs in through kiro-cli"). "Selected" means the backend the
+  turn will run on: plain regenerate continues the slot's live session, which
+  keeps its backend across a hot switch, so it gates on
+  `live_session_signs_in_via_kiro_cli()` (the provider's own
+  `uses_kiro_identity_store` declaration) and falls back to the configured
+  default only with no session live.
   **These callers authorize on a FRESH probe, not the latch**
   (`kiro_verified_ready` → `KiroPrerequisiteService.verified_ready`, re-probing
   when the latch is older than the caller's bound). The destructive reruns,
@@ -4663,17 +4674,33 @@ overflow rows carry the same kind, so they get the same card. Pinned by `test_co
 turn, so "let the ACP attempt be the authority" does not hold for them: by the
 time the turn raises `AcpAuthRequired` the history is already rewritten and no
 error card can undo it. All three therefore call `reject_if_kiro_unverified`
-BEFORE any mutation, returning the shared `kiro_prerequisite_required` 503.
+BEFORE any mutation, returning the shared `kiro_prerequisite_required` 503, when
+the session they act on signs in through kiro-cli. A foreign harness uses the
+replacement turn as the authority. If that turn fails for authentication, it
+behaves like any failed rerun: the truncation stays durable and the discarded
+tail remains in the transcript's `archive/`.
 (`switch-variant` is exempt — it swaps an already-stored variant and starts no
 turn.)
 
 **`POST /v1/chat/completions` also fails closed**, for a different reason: it has
 no transcript the caller reads. Its collectors pick up only `chunk`/`assistant`
-roles, so the `error` card an `AcpAuthRequired` turn appends is invisible and the
-request would return **HTTP 200 with empty content** — an OpenAI SDK client
-cannot distinguish that from a model that legitimately said nothing. It returns
-the `kiro_prerequisite_required` 503 in OpenAI error shape until the endpoint
-learns to translate `AcpAuthRequired` itself.
+roles, so the `error` card an `AcpAuthRequired` turn appends would otherwise be
+invisible and the request would return **HTTP 200 with empty content** — an
+OpenAI SDK client cannot distinguish that from a model that legitimately said
+nothing. For a kiro-cli-authenticated harness the endpoint returns the shared
+`kiro_prerequisite_required` 503 in OpenAI error shape before the turn starts.
+On any other selected backend the endpoint translates `AcpAuthRequired` itself:
+both collectors retain the turn's terminal `error` row, and when the turn ends
+with the structural auth-required verdict they return the OpenAI
+`authentication_error` envelope (HTTP 401, `code: auth_required`) instead of an
+empty 200, and any other turn that ends with an `error` row and no reply text
+answers `server_error` (HTTP 500). The streaming path defers `StreamResponse.prepare()` only on turns
+the gate stands aside for (`defer_prepare=not signs_in_via_kiro_cli`, the same
+per-request verdict the gate used), so a pre-output failure on a foreign
+harness still carries its HTTP status while a kiro-backed turn — which the gate
+already vouched for pre-turn — sends its SSE headers eagerly as before. On the
+deferred path, headers can arrive as late as the first token or the keepalive,
+whichever comes first.
 
 **An unresolved check is never rendered as "setup required."** The cold probe
 spawns several sandboxed `kiro-cli` subprocesses (`--version`, `whoami`,

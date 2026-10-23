@@ -1423,7 +1423,10 @@ async def api_models(request: web.Request) -> web.Response:
     # cooldown is the short failure backoff below, so a wide stale-authorize window
     # would still let a stale ready=True latch spawn a browser-opening login on
     # most degraded ticks.
-    blocked = await reject_if_kiro_unverified(request)
+    #
+    # ``signs_in_via_kiro_cli=True``: the catalog below is kiro-cli's own, so the
+    # latch is about THIS spawn, not about which harness the sessions use.
+    blocked = await reject_if_kiro_unverified(request, signs_in_via_kiro_cli=True)
     if blocked is not None:
         return blocked
     try:

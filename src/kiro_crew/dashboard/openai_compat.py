@@ -27,12 +27,19 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import _neutralize_structural_markers
 from kiro_crew.dashboard.chat_handlers import write_sse_or_abort
 from kiro_crew.dashboard.chat_runner import TURN_FAILED_META, _run_chat
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.chat_utils import AUTH_REQUIRED_KIND, effective_session_key
+from kiro_crew.dashboard.kiro_readiness import (
+    backend_signs_in_via_kiro_cli,
+    live_session_signs_in_via_kiro_cli,
+    reject_if_kiro_unverified,
+    selected_backend,
+)
 from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_CODE,
     RELAY_ARCHIVE_ERROR,
     is_relay_archive,
 )
+from kiro_crew.dashboard.slot_ownership import deny_app_slot_session_access
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key, load_window_off_loop
 from kiro_crew.dashboard.turn_dispatch import chat_turn_timeout_secs
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -134,26 +141,79 @@ def _redact(text: str) -> str:
     return text
 
 
+def _auth_required_error(message: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """Translate a confirmed ACP auth error row into the OpenAI envelope."""
+    content = message.get("content")
+    if not isinstance(content, str) or not content:
+        content = "Authentication is required for the selected backend."
+    return {
+        "error": {
+            "message": _redact(content),
+            "type": "authentication_error",
+            "code": AUTH_REQUIRED_KIND,
+        }
+    }
+
+
+def _reject_unowned_app_slot(
+    request: web.Request,
+    state: DashboardState,
+    slot: Any | None,
+    *,
+    slot_id: str,
+    freshly_created: bool = False,
+) -> web.Response | None:
+    """The app-isolation 403 for *slot*, or ``None`` when the caller may use it.
+
+    One predicate for every refusal point on this route: the slot claim plus the
+    session and transcript it is linked to (``deny_app_slot_session_access``),
+    so an app that owns a channel-linked slot is refused exactly as for a slot
+    another app owns. Run before the readiness peek, so a foreign app learns
+    neither a slot's existence nor its session's sign-in state, and again on the
+    slot the request actually obtains after each await.
+    """
+    request_app = request.get("app", "") or ""
+    if not request_app:
+        return None
+    slot_app = getattr(slot, "_app", "") if slot is not None else ""
+    slot_key = getattr(slot, "key", "") or slot_id or "ephemeral"
+    if slot is None:
+        sel().log_api_access(
+            caller=request_app,
+            operation="openai_compat.chat",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={slot_key}",
+            error="app cannot access unscoped slots",
+        )
+    elif deny_app_slot_session_access(request_app, slot, slot_key, "openai_compat.chat") is None:
+        return None
+
+    if freshly_created and slot is not None:
+        state._slots.pop(slot.key, None)
+    if not slot_app:
+        message = "app cannot reach unscoped slots"
+    elif request_app != slot_app:
+        message = "slot owned by another app"
+    else:
+        message = "app cannot reach this slot"
+    return web.json_response(
+        {
+            "error": {
+                "message": message,
+                "type": "forbidden",
+                "code": "app_token_forbidden",
+            },
+            # Top-level duplicate is the dashboard/i18n contract
+            # (test_error_code_contract reads the top-level dict).
+            "code": "app_token_forbidden",
+        },
+        status=403,
+    )
+
+
 async def api_completions(request: web.Request) -> web.StreamResponse:
     """POST /v1/chat/completions — OpenAI-compatible chat endpoint."""
-    # Unlike the dashboard, this endpoint has no transcript the caller reads: the
-    # collectors below pick up only `chunk`/`assistant` roles, so the `error` card
-    # an AcpAuthRequired turn appends is invisible and the request would return
-    # HTTP 200 with empty content — an SDK client cannot tell that apart from a
-    # model that legitimately said nothing. Fail closed until this endpoint
-    # translates AcpAuthRequired into an OpenAI-shaped error.
-    blocked = await reject_if_kiro_unverified(request)
-    if blocked is not None:
-        return web.json_response(
-            {
-                "error": {
-                    "message": "Kiro CLI setup or sign-in is required before starting a session.",
-                    "type": "service_unavailable_error",
-                    "code": "kiro_prerequisite_required",
-                }
-            },
-            status=503,
-        )
     state: DashboardState = request.app["state"]
 
     try:
@@ -327,6 +387,56 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             {"error": {"message": "invalid model/agent name", "type": "invalid_request_error"}},
             status=400,
         )
+    # App ownership precedes the live-session readiness peek below. Otherwise an
+    # app that does not own a slot could tell a live kiro-backed session (503)
+    # from a foreign or absent one (the ordinary 403), reading state it may not
+    # see. An app is refused for an ABSENT target here too: a slot this request
+    # would create is unscoped, which the post-creation check refuses anyway,
+    # and answering it after readiness would let an app tell an existing
+    # unscoped slot (403) from a missing one (503) while kiro-cli is signed out.
+    # The post-creation check further down repeats this on the slot the request
+    # actually obtains.
+    request_app = request.get("app", "") or ""
+    live_slot = state._slots.get(normalized_slot_id) if slot_id else None
+    if request_app:
+        refused = _reject_unowned_app_slot(request, state, live_slot, slot_id=slot_id)
+        if refused is not None:
+            return refused
+
+    # This endpoint has no transcript the caller reads, so a kiro-backed turn is
+    # gated on the kiro-cli latch BEFORE it starts. The gate applies only to a
+    # harness that signs in through kiro-cli. An `id` naming a slot with a LIVE
+    # session continues that session, which keeps the harness it started on
+    # across a PATCH of agent.acp_backend, so its own verdict wins. A missing or
+    # not-yet-live slot gets a session built by the INSTALLED provider factory,
+    # so the verdict reads that factory's backend (`state=`), resolved for the
+    # slot's session key so a member thread is judged by its member backend.
+    # Resolved ONCE: the streaming path reads the same verdict to decide whether
+    # its SSE headers may go out before the turn produces anything. On a backend
+    # the gate stands aside for, a turn that fails is translated by the
+    # collectors below (401 for a sign-in failure, 500 otherwise), never an
+    # empty 200.
+    live_key = effective_session_key(live_slot) if live_slot is not None else None
+    signs_in_via_kiro_cli = (
+        await live_session_signs_in_via_kiro_cli(state, live_key) if live_key is not None else None
+    )
+    if signs_in_via_kiro_cli is None:
+        signs_in_via_kiro_cli = backend_signs_in_via_kiro_cli(
+            await selected_backend(live_key, state=state)
+        )
+    blocked = await reject_if_kiro_unverified(request, signs_in_via_kiro_cli=signs_in_via_kiro_cli)
+    if blocked is not None:
+        return web.json_response(
+            {
+                "error": {
+                    "message": "Kiro CLI setup or sign-in is required before starting a session.",
+                    "type": "service_unavailable_error",
+                    "code": "kiro_prerequisite_required",
+                }
+            },
+            status=503,
+        )
+
     completion_id = _make_id()
 
     if slot_id:
@@ -342,6 +452,13 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
         try:
             slot = state.get_or_create_slot(slot_id)
         except ValueError as exc:
+            # A slot another app now holds at this key must answer the ownership
+            # refusal, not describe itself through the constructor's reason.
+            current = state._slots.get(_normalize_slot_key(slot_id))
+            if current is not None:
+                refused = _reject_unowned_app_slot(request, state, current, slot_id=slot_id)
+                if refused is not None:
+                    return refused
             # The constructor's refusals (member-* key reservation,
             # memory-mode mismatch) map to a 409 in the OpenAI error shape —
             # the same translation the send and slot-create paths perform.
@@ -359,6 +476,18 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 },
                 status=409,
             )
+        # The readiness await above can outlast a close and a same-name create by
+        # another app, so judge the slot actually obtained before any of its own
+        # 409s can describe it.
+        refused = _reject_unowned_app_slot(
+            request,
+            state,
+            slot,
+            slot_id=slot_id,
+            freshly_created=bool(slot_id and freshly_created),
+        )
+        if refused is not None:
+            return refused
         # A relay archive is read-only. Reaching the local dispatch chokepoint
         # (`_run_chat`) would append the prompt and emit a WS-only `chat_done`,
         # leaving this HTTP caller waiting on a turn that never runs. Refuse
@@ -458,6 +587,15 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 _send_binding = await asyncio.to_thread(
                     members_mod.read_dm_binding_for_slot, slot.key
                 )
+                refused = _reject_unowned_app_slot(
+                    request,
+                    state,
+                    slot,
+                    slot_id=slot_id,
+                    freshly_created=bool(slot_id and freshly_created),
+                )
+                if refused is not None:
+                    return refused
                 if _send_binding is None or _send_binding.get("member", "") != slot.agent:
                     sel().log_api_access(
                         caller=request.remote or "",
@@ -521,39 +659,12 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
     # safe because mixed_internal_paths already gates access via X-Internal-Secret.
     # Note: app_middleware only runs for app-scoped paths; for mixed_internal_paths
     # callers (dashboard, CLI, curl), request["app"] is unset — treat as non-app.
-    request_app = request.get("app", "") or ""
     is_dashboard_caller = request_app == ""
-    if not is_dashboard_caller:
-        if not slot._app:
-            sel().log_api_access(
-                caller=request_app,
-                operation="openai_compat.chat",
-                outcome="denied",
-                source="app_isolation",
-                resources=f"slot={slot.key}",
-                error="app cannot access unscoped slots",
-            )
-            if slot_id and freshly_created:
-                state._slots.pop(slot.key, None)
-            return web.json_response(
-                {"error": {"message": "app cannot reach unscoped slots", "type": "forbidden"}},
-                status=403,
-            )
-        if request_app != slot._app:
-            sel().log_api_access(
-                caller=request_app,
-                operation="openai_compat.chat",
-                outcome="denied",
-                source="app_isolation",
-                resources=f"slot={slot.key}",
-                error="app does not own this slot",
-            )
-            if slot_id and freshly_created:
-                state._slots.pop(slot.key, None)
-            return web.json_response(
-                {"error": {"message": "slot owned by another app", "type": "forbidden"}},
-                status=403,
-            )
+    refused = _reject_unowned_app_slot(
+        request, state, slot, slot_id=slot_id, freshly_created=bool(slot_id and freshly_created)
+    )
+    if refused is not None:
+        return refused
 
     # Drain stale pending from prior turns whose reader disconnected
     slot.drain()
@@ -636,8 +747,19 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
         ephemeral = not slot_id
 
         if stream:
+            # A kiro-backed turn was gated above, so its SSE headers go out at
+            # once; a turn on a harness the gate stood aside for may fail before
+            # any output, so its headers wait until there is something to send
+            # and that failure can still answer a plain HTTP error.
             return await _stream_response(
-                request, state, slot, completion_id, model, created, ephemeral
+                request,
+                state,
+                slot,
+                completion_id,
+                model,
+                created,
+                ephemeral,
+                defer_prepare=not signs_in_via_kiro_cli,
             )
         else:
             return await _blocking_response(state, slot, completion_id, model, created, ephemeral)
@@ -653,6 +775,25 @@ def _turn_failed(msg: dict[str, Any]) -> bool:
     an empty successful reply."""
     meta = msg.get("meta")
     return isinstance(meta, dict) and bool(meta.get(TURN_FAILED_META))
+
+
+def _terminal_failure(
+    slot: Any, *, failed: bool, error_row: dict[str, Any] | None, produced: bool
+) -> str | None:
+    """How a turn that just reached ``done`` failed, or ``None`` when it did not.
+
+    ``"auth"`` when the turn ended ``AcpAuthRequired`` (the runner sets
+    ``_last_turn_auth_required``); ``"server"`` when it failed before it started
+    (``TURN_FAILED_META``) or appended an ``error`` row and produced no reply.
+    The second case is every other ACP failure -- a foreign harness that dies at
+    startup with stderr the auth vocabulary does not recognise lands here -- so
+    the caller gets an error instead of an empty 200.
+    """
+    if error_row is not None and getattr(slot, "_last_turn_auth_required", False) is True:
+        return "auth"
+    if failed or (error_row is not None and not produced):
+        return "server"
+    return None
 
 
 async def _stream_server_error(
@@ -672,25 +813,83 @@ async def _stream_response(
     model: str,
     created: int,
     ephemeral: bool,
+    *,
+    defer_prepare: bool = False,
 ) -> web.StreamResponse:
-    """Stream SSE in OpenAI format."""
-    resp = web.StreamResponse()
-    resp.content_type = "text/event-stream"
-    resp.headers["Cache-Control"] = "no-cache"
-    resp.headers["X-Accel-Buffering"] = "no"
-    await resp.prepare(request)
+    """Stream SSE in OpenAI format, keeping HTTP errors possible until output starts.
+
+    With *defer_prepare* the response is prepared on the first write, so a turn
+    that fails before any output still answers a plain HTTP 401 (sign-in) or 500.
+    That is the only route a foreign harness's failure has to an SDK client,
+    since the readiness gate stands aside for those backends. A turn the gate
+    already vouched for (a kiro-backed session) prepares eagerly, so its SSE
+    headers reach the client at once instead of with the first token or the 30s
+    keepalive.
+    """
+    resp: web.StreamResponse | None = None
+
+    async def _prepared_response() -> web.StreamResponse:
+        nonlocal resp
+        if resp is None:
+            resp = web.StreamResponse()
+            resp.content_type = "text/event-stream"
+            resp.headers["Cache-Control"] = "no-cache"
+            resp.headers["X-Accel-Buffering"] = "no"
+            await resp.prepare(request)
+        return resp
+
+    async def _write(data: bytes) -> None:
+        await write_sse_or_abort(request, await _prepared_response(), data)
+
+    async def _server_error() -> web.StreamResponse:
+        if resp is None:
+            return web.json_response(
+                {
+                    "error": {
+                        "message": "internal error",
+                        "type": "server_error",
+                        "code": "server_error",
+                    },
+                    "code": "server_error",
+                },
+                status=500,
+            )
+        return await _stream_server_error(request, resp)
+
+    if not defer_prepare:
+        await _prepared_response()
 
     try:
         _redact_buffer = ""
         _last_emitted_len = 0
         failed = False
+        error_row: dict[str, Any] | None = None
         while True:
             pending = slot.drain()
             for msg in pending:
                 failed = failed or _turn_failed(msg)
-                if msg.get("cls") == "done" and failed:
-                    return await _stream_server_error(request, resp)
+                if msg.get("role") == "error":
+                    error_row = msg
+                    continue
                 if msg.get("cls") == "done":
+                    failure = _terminal_failure(
+                        slot, failed=failed, error_row=error_row, produced=bool(_redact_buffer)
+                    )
+                    if failure == "auth" and error_row is not None:
+                        auth_error = _auth_required_error(error_row)
+                        if resp is None:
+                            return web.json_response(
+                                # Dict literal, not the variable: the error-code
+                                # ratchet only reads transparent bodies, and the
+                                # top-level code is the dashboard/i18n contract.
+                                {"error": auth_error["error"], "code": AUTH_REQUIRED_KIND},
+                                status=401,
+                            )
+                        await _write(f"data: {json.dumps(auth_error)}\n\n".encode())
+                        await _write(b"data: [DONE]\n\n")
+                        return resp
+                    if failure == "server":
+                        return await _server_error()
                     # Flush remaining buffer
                     if _redact_buffer:
                         final = _redact(_redact_buffer)
@@ -709,9 +908,7 @@ async def _stream_response(
                                     }
                                 ],
                             }
-                            await write_sse_or_abort(
-                                request, resp, f"data: {json.dumps(chunk)}\n\n".encode()
-                            )
+                            await _write(f"data: {json.dumps(chunk)}\n\n".encode())
                     chunk = {
                         "id": completion_id,
                         "object": _OPENAI_OBJECT_CHUNK,
@@ -719,11 +916,9 @@ async def _stream_response(
                         "model": model,
                         "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                     }
-                    await write_sse_or_abort(
-                        request, resp, f"data: {json.dumps(chunk)}\n\n".encode()
-                    )
-                    await write_sse_or_abort(request, resp, b"data: [DONE]\n\n")
-                    return resp
+                    await _write(f"data: {json.dumps(chunk)}\n\n".encode())
+                    await _write(b"data: [DONE]\n\n")
+                    return await _prepared_response()
 
                 # Stream assistant and chunk roles (token-level streaming)
                 if msg.get("role") not in ("assistant", "chunk"):
@@ -754,7 +949,7 @@ async def _stream_response(
                         }
                     ],
                 }
-                await write_sse_or_abort(request, resp, f"data: {json.dumps(chunk)}\n\n".encode())
+                await _write(f"data: {json.dumps(chunk)}\n\n".encode())
 
             # Detect task failure — prevents infinite loop
             if slot.task and slot.task.done():
@@ -762,12 +957,12 @@ async def _stream_response(
                     slot.task.result()
                 except BaseException as exc:
                     logger.warning("chat task failed: %s", exc)
-                    return await _stream_server_error(request, resp)
+                    return await _server_error()
 
             try:
                 await asyncio.wait_for(slot.event.wait(), timeout=30)
             except asyncio.TimeoutError:
-                await write_sse_or_abort(request, resp, b": keepalive\n\n")
+                await _write(b": keepalive\n\n")
     except (ConnectionResetError, asyncio.CancelledError):
         pass
     finally:
@@ -775,7 +970,7 @@ async def _stream_response(
             state._slots.pop(slot.key, None)
             if slot.task and not slot.task.done():
                 slot.task.cancel()
-    return resp
+    return await _prepared_response()
 
 
 async def _blocking_response(
@@ -793,13 +988,32 @@ async def _blocking_response(
     """
     collected: list[str] = []
     failed = False
+    error_row: dict[str, Any] | None = None
 
     try:
         while True:
             pending = slot.drain()
             for msg in pending:
                 failed = failed or _turn_failed(msg)
-                if msg.get("cls") == "done" and failed:
+                if msg.get("role") == "error":
+                    error_row = msg
+                    continue
+                failure = (
+                    _terminal_failure(
+                        slot, failed=failed, error_row=error_row, produced=any(collected)
+                    )
+                    if msg.get("cls") == "done"
+                    else None
+                )
+                if failure == "auth" and error_row is not None:
+                    auth_error = _auth_required_error(error_row)
+                    return web.json_response(
+                        # Dict literal for the error-code ratchet; top-level
+                        # code is the dashboard/i18n contract.
+                        {"error": auth_error["error"], "code": AUTH_REQUIRED_KIND},
+                        status=401,
+                    )
+                if failure == "server":
                     return web.json_response(
                         {
                             "error": {

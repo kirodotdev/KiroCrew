@@ -72,7 +72,7 @@ def _app(state, *, app_name: str = "") -> web.Application:
 def ready(monkeypatch):
     """Readiness is orthogonal to the archive guard; stub it so a 503 cannot mask it."""
 
-    async def _ok(_request):
+    async def _ok(_request, **_gate_inputs):
         return None
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_regenerate.reject_if_kiro_unverified", _ok)

@@ -598,7 +598,7 @@ class TestRegenerateAndSwitchVariant:
         _with_reply(replacement)
         before = [dict(m) for m in replacement.messages]
 
-        async def swap_during_await(_request):
+        async def swap_during_await(_request, **_gate_inputs):
             state._slots["s1"] = replacement
             return None
 

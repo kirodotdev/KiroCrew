@@ -19,7 +19,13 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
     variant_from_row,
 )
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.kiro_readiness import (
+    backend_signs_in_via_kiro_cli,
+    refuse_rerun_after_signed_out_turn,
+    reject_if_kiro_unverified,
+    rerun_signs_in_via_kiro_cli,
+    selected_backend,
+)
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
 from kiro_crew.dashboard.slot_ownership import (
     checkpoint_slot_replaced,
@@ -77,25 +83,48 @@ def _destructive_history_busy(slot: "_ChatSlot") -> web.Response | None:
 
 async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/regenerate — regenerate the last assistant reply."""
-    # Destructive: this truncates and PERSISTS history before the background
-    # turn runs, so a failed turn cannot undo it. Unlike an ordinary send, the
-    # readiness latch must be honored BEFORE the mutation.
-    blocked = await reject_if_kiro_unverified(request)
-    if blocked is not None:
-        return blocked
+    # Local import, and it must STAY local: ``chat_handlers`` cannot be the first
+    # module of the package to import (its own transitive
+    # ``validation`` <-> ``artifacts`` cycle resolves only once something else
+    # has pulled those in), so hoisting these two to module scope makes
+    # ``import kiro_crew.dashboard.chat_regenerate`` fail on its own. Same reason
+    # ``session_control`` and ``handlers/core`` reach it this way.
+    from kiro_crew.dashboard.chat_handlers import _reauthorize_after_await
+
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     # The app claim, recorded on the audit row below. Ownership itself is decided
     # before this handler runs, by the per-slot checkpoint (slot_ownership.py),
-    # on the slot that was live then. The readiness await above can outlast a
-    # close and a same-name create, so the slot looked up now must be that one.
+    # on the slot that was live then. A close and a same-name create can land
+    # before the handler runs, so the slot looked up now must be that one.
     request_app = request.get("app", "")
     if not slot or checkpoint_slot_replaced(request, slot):
         return slot_not_found()
     under_construction = reject_if_slot_under_construction(state, slot)
     if under_construction is not None:
         return under_construction
+
+    # Destructive: this truncates and PERSISTS history before the background turn runs.
+    # Kiro-backed sessions honor readiness BEFORE mutation. Regenerate continues the
+    # slot's live session, whose backend survives a hot switch of `agent.acp_backend`;
+    # only a slot with no live session uses the backend paired with the installed factory.
+    # A foreign harness uses the replacement turn as the authority; if it fails, the
+    # truncation stays durable and the discarded tail remains in the transcript archive.
+    # The verdict reads this slot's session, so the session and transcript halves of
+    # app ownership run first: an app must not learn a session's sign-in state
+    # through this 503. The per-slot checkpoint covered only the slot itself.
+    stale = _reauthorize_after_await(state, slot, name, request_app, "chat.slot_regenerate")
+    if stale is not None:
+        return stale
+    session_key = effective_session_key(slot)
+    signs_in_via_kiro_cli = await rerun_signs_in_via_kiro_cli(state, session_key)
+    blocked = await reject_if_kiro_unverified(
+        request,
+        signs_in_via_kiro_cli=signs_in_via_kiro_cli,
+    )
+    if blocked is not None:
+        return blocked
 
     # A relay archive is read-only: regenerate would truncate its history and
     # re-run the turn on this machine.
@@ -104,8 +133,31 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         return refusal
 
     async with slot._lock:
-        if request_app and state._slots.get(name) is not slot:
-            return slot_not_found()
+        # The lock wait can replace the slot or rebind its session. Re-authorize
+        # before reading the session key used for this readiness verdict.
+        stale = _reauthorize_after_await(state, slot, name, request_app, "chat.slot_regenerate")
+        if stale is not None:
+            return stale
+
+        session_key = effective_session_key(slot)
+        signs_in_via_kiro_cli = await rerun_signs_in_via_kiro_cli(state, session_key)
+        blocked = await reject_if_kiro_unverified(
+            request,
+            signs_in_via_kiro_cli=signs_in_via_kiro_cli,
+        )
+        if blocked is not None:
+            return blocked
+
+        # The readiness probe can yield while the slot is replaced or rebound.
+        # Re-authorize before reading the message window at the destructive boundary.
+        stale = _reauthorize_after_await(state, slot, name, request_app, "chat.slot_regenerate")
+        if stale is not None:
+            return stale
+        if not signs_in_via_kiro_cli:
+            signed_out = refuse_rerun_after_signed_out_turn(slot)
+            if signed_out is not None:
+                return signed_out
+
         busy = _destructive_history_busy(slot)
         if busy is not None:
             return busy
@@ -408,12 +460,6 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         _subagents_attached_response,
     )
 
-    # Destructive: this truncates and PERSISTS history before the background
-    # turn runs, so a failed turn cannot undo it. Unlike an ordinary send, the
-    # readiness latch must be honored BEFORE the mutation.
-    blocked = await reject_if_kiro_unverified(request)
-    if blocked is not None:
-        return blocked
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
@@ -440,6 +486,22 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     denied = deny_app_slot_session_access(request_app, slot, name, "chat.slot_edit_resend")
     if denied is not None:
         return denied
+
+    # Destructive: this truncates and PERSISTS history before the background turn runs.
+    # Kiro-backed sessions honor readiness BEFORE mutation. The discard rebuilds the
+    # session, so the backend paired with the installed factory decides the gate. A foreign
+    # harness uses the replacement turn as the authority; if it fails, the truncation
+    # stays durable and the discarded tail remains in the transcript archive. This runs
+    # after the app-ownership 404 so a foreign app cannot learn slot or sign-in state.
+    gate_session_key = effective_session_key(slot)
+    backend = await selected_backend(gate_session_key, state=state)
+    signs_in_via_kiro_cli = backend_signs_in_via_kiro_cli(backend)
+    blocked = await reject_if_kiro_unverified(
+        request,
+        signs_in_via_kiro_cli=signs_in_via_kiro_cli,
+    )
+    if blocked is not None:
+        return blocked
 
     # A relay archive is read-only. AFTER the app-ownership 404 above so a
     # foreign app cannot tell an archive apart from a missing slot via the 409.
@@ -492,6 +554,10 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         stale = _reauthorize_after_await(state, slot, name, request_app, "chat.slot_edit_resend")
         if stale is not None:
             return stale
+        if not signs_in_via_kiro_cli:
+            signed_out = refuse_rerun_after_signed_out_turn(slot)
+            if signed_out is not None:
+                return signed_out
 
         busy = _destructive_history_busy(slot)
         if busy is not None:
@@ -574,8 +640,9 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         # ``_question_pending``, and fires ``_on_question_retired``. On an
         # un-severed copy that publishes the edited row into the LIVE stream
         # reader's queue and announces the live question cards as retired
-        # BEFORE any of the five rejection points below (failed discard, busy
-        # session, failed flush, refused save, rebound slot) can refuse the edit
+        # BEFORE any of the six rejection points below (readiness re-check,
+        # failed discard, busy session, failed flush, refused save, rebound slot)
+        # can refuse the edit
         # -- so a refused edit leaves a phantom row and card-less "needs input"
         # behind.
         # Sever all five; the commit re-adopts them, and only then. ``_queue``
@@ -720,6 +787,22 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                 )
 
             if state.sessions is not None:
+                blocked = await reject_if_kiro_unverified(
+                    request,
+                    session_key=session_key,
+                    state=state,
+                )
+                if blocked is not None:
+                    return blocked
+
+                # The readiness probe can yield while the slot is replaced or rebound.
+                # Re-authorize before clearing the native conversation.
+                stale = _reauthorize_after_await(
+                    state, slot, name, request_app, "chat.slot_edit_resend"
+                )
+                if stale is not None:
+                    return stale
+
                 # Shielded and drained for the same reason the history save below
                 # is: ``discard_conversation`` pops the session and calls
                 # ``clear_sid`` BEFORE its own remaining awaits
