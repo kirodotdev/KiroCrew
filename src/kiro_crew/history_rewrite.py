@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 _HISTORY_LOGGER = logging.getLogger("kiro_crew.history")
 
 
-def rewrite_transcript(path: Path, content: str | bytes, *, mode: int | None = None) -> None:
+def rewrite_transcript(path: Path, content: str | bytes) -> None:
     """Replace a whole transcript file with *content*, synced before the rename.
 
     The history store's writers that rename a new copy over a transcript go
@@ -40,9 +40,11 @@ def rewrite_transcript(path: Path, content: str | bytes, *, mode: int | None = N
     ``auto_da_alloc`` an unsynced file renamed over the old one can come back
     empty or partial after a power loss, taking the whole conversation with it.
     There is deliberately no ``fsync`` switch, so a new caller cannot pick wrong.
-    *mode* is passed to ``atomic_write`` unchanged.
+    The mode is owner-only on every root, as the transcript's first write sets
+    it: a transcript can live outside the data home (an eval workspace), where
+    the default would follow the umask and widen the rewritten file.
     """
-    atomic_write(path, content, fsync=True, mode=mode)
+    atomic_write(path, content, fsync=True, mode=OWNER_ONLY_FILE_MODE)
 
 
 #: Marks a snapshot the unlocked pass could not take, so it never matches.
@@ -101,6 +103,7 @@ def rewrite_metadata_line(log: ConversationLog, key: str, build: MetadataLineBui
         seen = data
         content = build(path, _as_text(data))
         if content is not None:
+            # Owner-only on every root, as rewrite_transcript writes it.
             staged = stage_replacement(path, content, mode=OWNER_ONLY_FILE_MODE)
     except Exception:
         # The unlocked pass is an optimisation. Whatever stopped it (a read racing
@@ -117,12 +120,17 @@ def rewrite_metadata_line(log: ConversationLog, key: str, build: MetadataLineBui
                 published = True  # publish_replacement owns the file from here
                 publish_replacement(staged, path)
             else:
+                # Free the stale staged copy before writing a new one, so the
+                # fallback never needs room for two whole-transcript copies.
+                if staged is not None:
+                    discard_replacement(staged)
+                    staged = None
                 path = current_path
                 content = build(path, _as_text(current))
                 if content is None:
                     return
                 prev_mtime = facade._safe_mtime(path)
-                rewrite_transcript(path, content, mode=OWNER_ONLY_FILE_MODE)
+                rewrite_transcript(path, content)
             facade._restore_mtime(path, prev_mtime)
             # Inside the lock, so no reader publishes the old line under the new
             # generation.

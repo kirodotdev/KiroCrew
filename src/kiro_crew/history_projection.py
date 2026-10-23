@@ -55,7 +55,6 @@ from kiro_crew.jsonl_util import (
     raise_if_splitlines_boundary,
     strict_raw_records_with_offsets,
 )
-from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
 from kiro_crew.preview_text import speech_preview
 from kiro_crew.transcript_count import count_messages, message_row
 from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
@@ -494,10 +493,8 @@ class SessionMetadataProjection:
         # place carries every row of the conversation. The helper writes every byte
         # (a short write cannot publish a prefix of the transcript) and renames
         # through the shared retrying replace that a concurrent Windows reader
-        # needs. The mode is owner-only on every root, as the transcript's first
-        # write sets it: a transcript can live outside the data home (an eval
-        # workspace), where the default would follow the umask and widen the file.
-        rewrite_transcript(path, content, mode=OWNER_ONLY_FILE_MODE)
+        # needs, keeping the file owner-only on every root (eval workspaces too).
+        rewrite_transcript(path, content)
         _history_facade()._restore_mtime(path, previous_mtime)
         self._log._invalidate_cache(key)
         return True
