@@ -269,3 +269,31 @@ def test_no_write_reaches_the_worker_directory(tmp_path, monkeypatch):
             ws.write_file(path, "print('pwned')\n")
     assert not list(worker.iterdir())
     assert ws.write_file("ok.txt", "fine\n").startswith("wrote")
+
+
+def test_write_allowed_when_workspace_is_on_a_different_drive(tmp_path, monkeypatch):
+    """A workspace path on a different drive than _SELF_DIR must not crash or block writes.
+
+    On a GitHub-hosted Windows runner the checkout lands on D: while TEMP/tmp_path
+    lives on C:.  Before this fix ``os.path.commonpath`` raised
+    ``ValueError: Paths don't have the same drive`` and the write failed even though
+    the path was clearly not inside the worker directory.
+
+    ntpath.splitdrive is injected so the cross-drive branch exercises on every platform.
+    """
+    import ntpath
+
+    monkeypatch.setattr(wt.os.path, "splitdrive", ntpath.splitdrive)
+    # _SELF_DIR appears to be on D: (the checkout drive on hosted Windows runners).
+    monkeypatch.setattr(wt, "_SELF_DIR", "D:\\kirocrew-worker")
+    ws = wt.Workspace(str(tmp_path))
+    # Old code: commonpath(["C:\\...", "D:\\kirocrew-worker"]) raised ValueError.
+    # New code: drives differ -> _is_within returns False -> write proceeds.
+    result = ws.write_file("ok.txt", "fine\n")
+    assert result.startswith("wrote")
+    # Confirm the containment check still refuses a same-drive path inside the worker dir.
+    worker = tmp_path / ".kirocrew-worker"
+    worker.mkdir()
+    monkeypatch.setattr(wt, "_SELF_DIR", str(worker))
+    with pytest.raises(wt.ToolError, match="worker directory"):
+        ws.write_file(".kirocrew-worker/workspace_tools.py", "x")

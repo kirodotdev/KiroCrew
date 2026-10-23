@@ -38,6 +38,25 @@ LOCK_DIR = ".kirocrew-file-locks"
 _LOCK_POLL_SECS = 0.01
 #: This script's own directory: browsing runs it, so no workspace write may replace it.
 _SELF_DIR = os.path.dirname(os.path.realpath(__file__))
+
+
+def _is_within(path: str, root: str) -> bool:
+    """Return True if ``path`` is inside (or equal to) ``root``.
+
+    Drive-safe: on Windows, paths on different drives cannot share a parent,
+    so ``os.path.commonpath`` raises ``ValueError`` instead of returning a
+    common prefix.  Two paths on different drives are never in a parent/child
+    relation, so the function returns ``False`` rather than propagating the
+    error.
+    """
+    if os.path.splitdrive(path)[0].upper() != os.path.splitdrive(root)[0].upper():
+        return False
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
 #: Blanks a filter driver for one read: no command runs, and none is required.
 _FILTER_OFF = (("clean", ""), ("smudge", ""), ("process", ""), ("required", "false"))
 _LOCK_TIMEOUT_SECS = 300.0
@@ -213,7 +232,7 @@ class Workspace:
         if len(data) > MAX_WRITE_BYTES:
             raise ToolError(f"content exceeds {MAX_WRITE_BYTES} bytes")
         real = self.resolve(path, must_exist=False)
-        if os.path.commonpath([real, _SELF_DIR]) == _SELF_DIR:
+        if _is_within(real, _SELF_DIR):
             raise ToolError(f"{path!r} is in the Kiro Crew worker directory")
         parent = os.path.dirname(real)
         # Re-check after creating parents: a symlinked parent could point out.
