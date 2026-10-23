@@ -33,7 +33,7 @@ once at gateway startup and an unwrapped one would answer regardless of the opt-
 | POST | `/compiler/provision` | Install the managed Tectonic compiler. **202 + poll `/health`**; idempotent (200 when already installed), 422 `compiler_unsupported_platform` where no pinned build exists. See Managed compiler |
 | GET | `/projects` | List papers (display name, directory name, main-document mtime, whether a PDF exists) |
 | POST | `/projects` | Create a paper from the standard `article` template (or a supplied `template`) |
-| POST | `/projects/clone` | Shallow-clone a git remote as a paper. A repo with no `.tex` is rejected **and removed**, so the name is not held hostage by an unopenable project |
+| POST | `/projects/clone` | Shallow-clone a git remote as a paper. A repo with no `.tex` is rejected **and removed**, so the name is not held hostage by an unopenable project. When the request names no folder, the paper's document title becomes its display name (see Naming a paper) |
 | GET | `/project` | Resolved display name + main document + file list + PDF presence |
 | DELETE | `/project` | Delete a paper and its tree. **500 `project_delete_incomplete`** when the tree survives the removal, rather than answering `ok: true` over a partial delete that leaves the name taken with no explanation |
 | GET | `/files` | The paper's file list |
@@ -102,6 +102,19 @@ which for an Overleaf remote is the project id, so on its own it shows the reade
 a string they never chose. A **display name** can therefore be set beside it: the
 name the user typed, held in `.papyrus.json`, else the directory name.
 `PUT /title` sets it and an empty value clears it.
+
+A clone is named once, when it is created. When `POST /projects/clone` succeeds
+and the request named no folder, the handler reads `\title{...}` from the main
+document's preamble (`doc_title.py`: one linear scan, no macro expansion, no
+`\input`) and saves it as the display name through the same path `PUT /title`
+uses, unless the repository's `.papyrus.json` already holds one. The document is
+read through `read_text_file`, so a path that leaves the paper is refused. A
+missing or refused title, or an unwritable `.papyrus.json`, leaves the directory
+name and never fails the clone. `gitops.clone` moves the clone into place and
+reads its generation in one step under the config lock, and the name is saved
+only if the folder still has that generation, so a paper deleted and created
+again under the same name meanwhile keeps its own name. A later edit to
+`\title{}` does not change the name, as for a paper created here.
 
 The name is **untrusted** — `.papyrus.json` can be shipped inside a cloned
 repository — so it is kept as plain text: `%` and a backslash are ordinary
@@ -823,6 +836,7 @@ that host reports `supported: false` and keeps the manual install path.
 | `.../papyrus/backend/tectonic.py` | The managed, digest-pinned Tectonic install (pins, safe extract, provisioning job) |
 | `.../papyrus/backend/gitops.py` | Clone/status/commit/push/pull, **and** the repo-config RCE denylist (19 `-c` overrides + the attributes pin + pack-program flags + `GIT_PROXY_COMMAND`) |
 | `.../papyrus/backend/routes.py` | aiohttp handlers + `register_routes` |
+| `.../papyrus/backend/doc_title.py` | Reads `\title{...}` from a cloned paper's main document, once, at clone time |
 | `src/kiro_crew/builtin_skills/papyrus-writing/SKILL.md` | Base skill: conduct, paper-quality principles, LaTeX house style, project path, compile workflow |
 | `.../builtin_skills/papyrus-make-fluent/SKILL.md` | Polish English as tracked suggestions |
 | `.../builtin_skills/papyrus-latex-comments/SKILL.md` | Comment layer — `\aicomment` margin notes |
@@ -846,8 +860,10 @@ that host reports `supported: false` and keeps the manual install path.
 |------|--------|
 | `test/test_papyrus_store.py` | Traversal/symlink/backslash/NUL defenses, project-name slug rule, **the `.git` refusal (any depth, any case) and the symlinked-project-entry refusal incl. the self-referential `-> .` case**, untrusted `.papyrus.json`, main-document discovery, bounded walk, file I/O |
 | `test/test_papyrus_latex.py` | Log parsing (incl. the two-bangs rule), the `-no-shell-escape` invariant, the pass sequence, timeout kill, compiler discovery + cache, env minimalism (incl. the Windows location hints, and that widening the allowlist admitted no secrets), the platform `os.pathsep` for `BSTINPUTS`, and that a sandbox refusal is reported rather than bypassed |
-| `test/test_papyrus_gitops.py` | URL allowlist + `--` placement, autostash flows incl. the kept stash and the raising-pull restore, auth classification, sandbox/resource-limit-wrapper routing, tree-kill, the repo-config denylist against real git, **that the attributes pin ends up LAST even when pre-seeded and is never written through a symlink**, and that a sandbox refusal becomes `GitSandboxUnavailable` |
+| `test/test_papyrus_gitops.py` | URL allowlist + `--` placement, autostash flows incl. the kept stash and the raising-pull restore, auth classification, sandbox/resource-limit-wrapper routing, tree-kill, the repo-config denylist against real git, **that the attributes pin ends up LAST even when pre-seeded and is never written through a symlink**, that a sandbox refusal becomes `GitSandboxUnavailable`, and that `clone` returns the new paper's generation |
 | `test/test_papyrus_routes.py` | The `_require_enabled` gate on every registered route, name/path authorization, response contracts, PDF security headers, git status mapping, the provisioning endpoint (202/idempotent/unsupported/one-job) and its off-loop discipline |
+| `test/test_papyrus_routes_clone_title.py` | Clone-time naming: the document title becomes the display name, a shipped or requested name wins, a missing title or an unwritable `.papyrus.json` keeps the folder name without failing the clone, a paper deleted and recreated under the same name during the clone keeps its own name, a `main.tex` linking outside the paper is never read, and the title is redacted and capped |
+| `test/test_papyrus_doc_title.py` | The `\title{...}` parser: comments, look-alike commands, `\thanks`, line breaks, `~` as a space, escaped characters, and the inputs that give no title |
 | `test/test_papyrus_tectonic.py` | Platform→asset mapping incl. the arch-naming splits, digest-shape and mismatch/tamper refusal, tar **and** zip traversal + symlink + setuid + bomb refusal, the no-`filter` compatibility leg, atomic install + exec bit, unsupported-platform degradation, no partial install after a failure, that a user's own `pdflatex` still wins, cache reset after install, and daemon-thread/off-loop discipline |
 | `website/src/test/PapyrusLib.test.ts` | Tree building/flattening, artifact filter, word count, slot persistence + pruning |
 | `website/src/test/PapyrusDiagnostics.test.tsx` | Click/Enter-to-jump, non-interactive line-less rows, collapsed hints, no emoji |
