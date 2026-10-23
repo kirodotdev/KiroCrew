@@ -29,10 +29,11 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.agent_switch_command import ChannelAgentPicks, handle_channel_agent_command
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
-from kiro_crew.feishu.client import CHAT_GROUP
+from kiro_crew.feishu.client import CHAT_GROUP, CHAT_P2P
 from kiro_crew.feishu.renderer import FeishuRenderer
 from kiro_crew.feishu.transport import (
     FEISHU_CAPABILITIES,
+    FEISHU_STREAMING_CAPABILITIES,
     SPOOL_DM_ROUTE_PREFIX,
     SPOOL_GROUP_ROUTE_PREFIX,
 )
@@ -247,12 +248,32 @@ class FeishuDispatcher:
         conversation_id = f"feishu:{route[1]}"
         agent = self._resolve_agent(route)
 
+        # Streaming card: opt-in (``feishu.streaming``) and DIRECT MESSAGES ONLY.
+        # A group turn keeps the buffered text reply -- the official Feishu
+        # plugin resolves groups to static for the same reason, and a card
+        # animating in a busy room is noise for everyone who did not ask.
+        # The capability declaration follows the mode, so a gateway with
+        # streaming off never claims to stream.
+        #
+        # Read the flag STRICTLY, not through ``getattr(..., "streaming", False)``:
+        # a getattr default would compile and pass every test even if the config
+        # field were missing or misspelled, leaving a switch the user can set and
+        # that can never actually turn on. An attribute error here is the loud
+        # failure that keeps flag and field in step.
+        #
+        # Read through ``_live_cfg()``, not the constructor's ``self.cfg``: the
+        # field is hot (no ``restart=True``), and the live applier only calls
+        # ``transport.reconfigure``, so a stale copy would keep the old mode
+        # until a restart while Settings reports the change as applied.
+        stream = bool(self._live_cfg().feishu.streaming) and inbound.chat_type == CHAT_P2P
+
         # Feishu has no interactive buttons -> no decider (deny-by-default for
         # INTERACTIVE; auto/trust still auto-approve via the driver ladder).
         renderer = FeishuRenderer(
             self.client,
             inbound.message_id,
-            FEISHU_CAPABILITIES,
+            FEISHU_STREAMING_CAPABILITIES if stream else FEISHU_CAPABILITIES,
+            streaming=stream,
         )
 
         # Surface a newly-created Feishu session in the dashboard immediately

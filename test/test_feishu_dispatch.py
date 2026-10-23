@@ -11,6 +11,7 @@ import pytest
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
 from kiro_crew.feishu.client import LarkInbound
+from kiro_crew.feishu.transport import FEISHU_CAPABILITIES, FEISHU_STREAMING_CAPABILITIES
 from kiro_crew.feishu.transport_dispatch import FeishuDispatcher
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import (
@@ -221,7 +222,15 @@ def _cfg(default_agent: str = "", approval_mode: str = "interactive", **kw):
     dm_scope = kw.get("dm_scope", "per-channel-peer")
     return SimpleNamespace(
         agent=SimpleNamespace(default_agent=default_agent, approval_mode=approval_mode),
-        feishu=SimpleNamespace(hard_threshold_pct=95.0, soft_threshold_pct=80.0),
+        feishu=SimpleNamespace(
+            hard_threshold_pct=95.0,
+            soft_threshold_pct=80.0,
+            # Mirrors FeishuConfig.streaming's real default. The dispatcher reads
+            # this attribute STRICTLY (no getattr default) so that a config field
+            # gone missing fails loudly instead of leaving a switch that can
+            # never turn on -- which means this fake has to carry it too.
+            streaming=kw.get("streaming", False),
+        ),
         messaging=SimpleNamespace(
             dm_scope=dm_scope,
             idle_reset_minutes=kw.get("idle_reset_minutes", 0),
@@ -1247,3 +1256,108 @@ class TestAgentCommand:
         await d.handle_message(_inbound("/agent"))
         reply = client.replies[-1][1]
         assert "`beta`" in reply and "kirocrew-worker" not in reply
+
+
+class TestStreamingModeSelection:
+    """The streaming card is opt-in AND direct-messages-only.
+
+    Both halves are load-bearing. The capability declaration follows the mode, so
+    a gateway with the flag off must not *claim* to stream -- a renderer that
+    advertises a live surface it never updates is worse than an honest buffered
+    one. And a card animating in a busy room is noise for everyone who did not
+    ask, which is why a group turn keeps the buffered reply even with the flag on.
+    """
+
+    @staticmethod
+    def _spy(monkeypatch):
+        """Capture the renderer's mode, delegating to the real renderer.
+
+        A replacement stub would pass this assertion while silently skipping the
+        turn's actual rendering, so the spy constructs the real thing.
+        """
+        import kiro_crew.feishu.transport_dispatch as mod
+
+        captured: list = []
+        real = mod.FeishuRenderer
+
+        def factory(client, message_id, caps, **kw):
+            captured.append((caps, bool(kw.get("streaming", False))))
+            return real(client, message_id, caps, **kw)
+
+        monkeypatch.setattr(mod, "FeishuRenderer", factory)
+        return captured
+
+    @staticmethod
+    def _dispatch(monkeypatch, sessions, client, *, streaming: bool):
+        """A dispatcher whose boot copy AND live config carry *streaming*.
+
+        The mode is read from the live config, so the flag has to be there; the
+        boot copy carries it too so no test passes on the stale copy alone.
+        """
+        cfg = _cfg(streaming=streaming)
+        d = _dispatcher(sessions, FakeCtx(), client, cfg=cfg)
+        monkeypatch.setattr(d, "_live_cfg", lambda: cfg)
+        return d
+
+    def _turn(self):
+        provider = FakeProvider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="hi there"),
+                AcpEvent(kind=EVENT_COMPLETE),
+            ]
+        )
+        return FakeSessions(provider), FakeClient()
+
+    @pytest.mark.asyncio
+    async def test_streaming_off_keeps_the_buffered_capabilities(self, monkeypatch) -> None:
+        captured = self._spy(monkeypatch)
+        sessions, client = self._turn()
+        d = self._dispatch(monkeypatch, sessions, client, streaming=False)
+
+        await d.handle_message(_inbound("hello"))
+
+        assert captured == [(FEISHU_CAPABILITIES, False)]
+
+    @pytest.mark.asyncio
+    async def test_streaming_on_selects_the_streaming_mode_for_a_direct_message(
+        self, monkeypatch
+    ) -> None:
+        captured = self._spy(monkeypatch)
+        sessions, client = self._turn()
+        d = self._dispatch(monkeypatch, sessions, client, streaming=True)
+
+        await d.handle_message(_inbound("hello", chat_type="p2p"))
+
+        assert captured == [(FEISHU_STREAMING_CAPABILITIES, True)]
+        # This fake client exposes no card_api, so the card cannot open -- and the
+        # answer still arrives as an ordinary reply. That degradation is the point
+        # of the mode: enabling streaming must never be able to cost the answer.
+        assert any(content == "hi there" for _, content in client.replies)
+
+    @pytest.mark.asyncio
+    async def test_a_group_turn_stays_buffered_even_with_streaming_on(self, monkeypatch) -> None:
+        captured = self._spy(monkeypatch)
+        sessions, client = self._turn()
+        d = self._dispatch(monkeypatch, sessions, client, streaming=True)
+
+        await d.handle_message(_inbound("@bot hello", chat_type="group", chat_id="oc_grp"))
+
+        assert captured == [(FEISHU_CAPABILITIES, False)]
+
+    @pytest.mark.asyncio
+    async def test_the_mode_follows_the_live_config_not_the_boot_copy(self, monkeypatch) -> None:
+        """``feishu.streaming`` is hot: a live change applies on the next turn.
+
+        The boot copy says off and the live config says on; the turn must stream.
+        Reading the constructor's copy would leave the old mode in force until a
+        restart while Settings reports the change as applied.
+        """
+        captured = self._spy(monkeypatch)
+        sessions, client = self._turn()
+        d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg(streaming=False))
+        live_cfg = _cfg(streaming=True)
+        monkeypatch.setattr(d, "_live_cfg", lambda: live_cfg)
+
+        await d.handle_message(_inbound("hello", chat_type="p2p"))
+
+        assert captured == [(FEISHU_STREAMING_CAPABILITIES, True)]

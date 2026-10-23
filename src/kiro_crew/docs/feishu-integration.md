@@ -151,11 +151,14 @@ Deny-by-default, in both directions:
 | `feishu.soft_threshold_pct` | `80` | Context % that prompts you to `/compact` or `/new`. |
 | `feishu.hard_threshold_pct` | `95` | Context % that forces a compaction. |
 | `feishu.session_folder` | `""` | Sidebar folder for sessions that start here. Empty = unfiled. |
+| `feishu.streaming` | `false` | Stream direct message replies into a live interactive card. Needs the `cardkit:card:write` permission; any card failure falls back to the text reply. |
 
-Everything above except `hard_threshold_pct` is editable in **Settings →
-Messaging Channels → Feishu**; that one is file-only, because the panel exposes the soft
-threshold as the single number worth tuning and keeps the hard ceiling as a
-safety net.
+Everything above except `hard_threshold_pct` and `streaming` is editable in
+**Settings → Messaging Channels → Feishu**. `hard_threshold_pct` is file-only
+because the panel exposes the soft threshold as the single number worth tuning
+and keeps the hard ceiling as a safety net. `streaming` is file-only for now:
+set `feishu.streaming: true` in `config.yaml` after granting
+`cardkit:card:write`.
 
 Credentials come from the environment only (`FEISHU_APP_ID`,
 `FEISHU_APP_SECRET`), matching the console's own naming — they are never written
@@ -174,16 +177,18 @@ Anything else is a prompt.
 
 ## Limits
 
-Feishu v1 is deliberately single-shot: the agent's answer is buffered and sent
-as **one reply** when the turn completes, rather than streamed. There are no
+By default the agent's answer is buffered and sent as **one reply** when the
+turn completes. With `feishu.streaming` on, a direct message reply fills a live
+interactive card as the agent writes instead; group turns always use the single
+reply. There are no
 interactive buttons, so when the agent offers a choice, the `[OPTIONS: …]`
 trailer arrives as a numbered list and you answer by typing one — which is an
 ordinary message, so nothing extra has to be configured.
 
 Known gaps, all follow-up work rather than defects:
 
-- **No streaming.** Feishu supports `PATCH /im/v1/messages/{id}`, so
-  edit-in-place streaming is a natural next step.
+- **Streaming is direct messages only.** A group turn keeps the single reply
+  even with `feishu.streaming` on.
 - **Text only.** Non-text messages (images, files, audio) are not read inbound.
   The bot answers with a short line saying so rather than staying silent, so a
   photo does not look like a dead bot — but only to a sender who is already on
