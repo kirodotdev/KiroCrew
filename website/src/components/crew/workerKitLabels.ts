@@ -35,6 +35,16 @@ export function approvalLabel(id: string): string {
   return i18nT('crewWorkerKit.approval_tool_on_server', { tool, server })
 }
 
+/** A tool selector's reach: `@server/tool`, `@server` for all its tools. Worded
+ *  as what the worker can use, so it never reads like an auto-approval row. */
+export function toolAccessLabel(id: string): string {
+  const m = /^@([^/]+)(?:\/(.+))?$/.exec(id)
+  if (!m) return id
+  const [, server, tool] = m
+  if (!tool || tool === '*') return i18nT('crewWorkerKit.tool_access_every_tool', { server })
+  return i18nT('crewWorkerKit.tool_access_tool_on_server', { tool, server })
+}
+
 /** What a preview row names, or `null` for the instructions row, which names nothing. */
 export function changeLabel(change: Pick<WorkerKitChange, 'section' | 'id'>): string | null {
   switch (change.section) {
@@ -43,10 +53,11 @@ export function changeLabel(change: Pick<WorkerKitChange, 'section' | 'id'>): st
     case 'resources':
     case 'skills':
       return skillLabel(change.id)
+    case 'tools':
+      return toolAccessLabel(change.id)
     case 'allowedTools':
     case 'excludedTools':
     case 'disabledTools':
-    case 'tools':
       return approvalLabel(change.id)
     default:
       return change.id

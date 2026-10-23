@@ -141,16 +141,65 @@ describe('WorkerKitPane', () => {
     await screen.findByTestId('worker-kit-current')
     fireEvent.click(screen.getByRole('option', { name: 'release-bot' }))
     fireEvent.click(screen.getByTestId('worker-kit-preview'))
-    const changes = await screen.findByTestId('worker-kit-changes')
-    const rows = within(changes).getAllByRole('listitem')
-    expect(rows.map(r => r.textContent)).toEqual([
-      'AddedTurned offkirocrew-core',
-      'AddedTurned offcron_add on kirocrew-core',
+    const group = await screen.findByTestId('worker-kit-group-off')
+    expect(within(group).getByTestId('panel-section-header')).toHaveTextContent('Turned off2')
+    expect(within(group).getAllByTestId('worker-kit-change-name').map(n => n.textContent)).toEqual([
+      'cron_add on kirocrew-core',
+      'kirocrew-core',
     ])
+    // A restriction's badge states its effect, never a green "Added".
+    const badges = within(group).getAllByTestId('worker-kit-change-badge')
+    expect(badges.map(b => b.textContent)).toEqual(['Turns off', 'Turns off'])
+    expect(badges[0]).toHaveClass('bg-danger-subtle')
+  })
+
+  it('says a lifted restriction turns the tool back on', async () => {
+    mockKit.preview.mockResolvedValue({
+      ...PREVIEW,
+      changes: [{ section: 'disabledTools', id: '@kirocrew-core/cron_add', change: 'removed' }],
+    })
+    renderPane()
+    await screen.findByTestId('worker-kit-current')
+    fireEvent.click(screen.getByRole('option', { name: 'release-bot' }))
+    fireEvent.click(screen.getByTestId('worker-kit-preview'))
+    const badge = within(await screen.findByTestId('worker-kit-group-off')).getByTestId('worker-kit-change-badge')
+    expect(badge).toHaveTextContent('Turns back on')
+    expect(badge).toHaveClass('bg-ok-subtle')
+  })
+
+  it('groups the preview by kind, each change word a coloured badge that keeps its word', async () => {
+    mockKit.preview.mockResolvedValue({
+      ...PREVIEW,
+      changes: [
+        { section: 'allowedTools', id: '@jira/search', change: 'added' },
+        { section: 'mcpServers', id: 'slack', change: 'removed' },
+        { section: 'prompt', id: 'prompt', change: 'changed' },
+        { section: 'mcpServers', id: 'jira', change: 'added' },
+        { section: 'mcpServers', id: 'builder', change: 'changed' },
+      ],
+    })
+    renderPane()
+    await screen.findByTestId('worker-kit-current')
+    fireEvent.click(screen.getByRole('option', { name: 'release-bot' }))
+    fireEvent.click(screen.getByTestId('worker-kit-preview'))
+    const changes = await screen.findByTestId('worker-kit-changes')
+    const headers = within(changes).getAllByTestId('panel-section-header').map(h => h.textContent)
+    expect(headers).toEqual(['Instructions1', 'Connections3', 'Auto-approvals1'])
+    const connections = within(changes).getByTestId('worker-kit-group-connections')
+    // Added, then changed, then removed.
+    expect(within(connections).getAllByTestId('worker-kit-change-name').map(n => n.textContent)).toEqual(['jira', 'builder', 'slack'])
+    const badges = within(connections).getAllByTestId('worker-kit-change-badge')
+    expect(badges.map(b => b.textContent)).toEqual(['Added', 'Changed', 'Removed'])
+    // Tinted by hue; the word itself in the text colour, the hue on the glyph.
+    expect(badges[0]).toHaveClass('bg-ok-subtle', 'text-text')
+    expect(badges[1]).toHaveClass('bg-warn-subtle', 'text-text')
+    expect(badges[2]).toHaveClass('bg-danger-subtle', 'text-text')
+    expect(badges[0].querySelector('svg')).toHaveClass('text-ok-text')
+    expect(badges[2].querySelector('svg')).toHaveClass('text-danger-text')
   })
 
   it.each([
-    ['stale_revision', 'changed after the preview. Preview the copy again.'],
+    ['stale_revision', 'changed after the preview. Press “Copy into the worker” again to see the new changes.'],
     ['template_restrictions_uncarried', "hooks the worker can't keep. Choose another template."],
     ['template_unreadable', "That template can't be read."],
   ])('says what a %s refusal means, never the code', async (code, text) => {
@@ -164,6 +213,20 @@ describe('WorkerKitPane', () => {
     const notice = await screen.findByTestId('worker-kit-error')
     expect(notice).toHaveTextContent(text)
     expect(notice).not.toHaveTextContent(code)
+  })
+
+  it('names the re-copy button when that is the button the pane shows', async () => {
+    mockKit.get.mockResolvedValue({ member: 'pixel', template: 'release-bot', revision: 'r1', has_additions_since: false })
+    mockKit.apply.mockRejectedValue(new ApiError(409, 'stale_revision', '{"error":"stale_revision","code":"stale_revision"}'))
+    renderPane()
+    await screen.findByTestId('worker-kit-current')
+    fireEvent.click(screen.getByTestId('worker-kit-preview'))
+    await screen.findByTestId('worker-kit-changes')
+    fireEvent.click(screen.getByTestId('worker-kit-apply'))
+    const notice = await screen.findByTestId('worker-kit-error')
+    expect(notice).toHaveTextContent('Press “Re-copy from template” again')
+    // The button the sentence names is the one on screen.
+    expect(screen.getByTestId('worker-kit-preview')).toHaveTextContent('Re-copy from template')
   })
 
   it('drops a stale preview so the next step is a fresh one', async () => {

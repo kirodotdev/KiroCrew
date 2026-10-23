@@ -319,12 +319,13 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
     def _strs(value: Any) -> list[str]:
         return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
 
-    def _row(section: str, key: str, value: Any = True, label: str = "") -> dict:
+    def _row(section: str, key: str, value: Any = True) -> dict:
         return {
             "section": section,
             "id": key,
-            # A skill without a folder name is de-slugified from its id by the pane.
-            "label": label if section == "skills" else key,
+            # A skill carries no label: the pane names it from its id, a skill
+            # URI through ``workerKitLabels.skillLabel``, as the kit preview does.
+            "label": "" if section == "skills" else key,
             "state": "inherited",
             "present": True,
             "value": value,
@@ -341,16 +342,13 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
                 _row("mcpServers", name, {k: v for k, v in entry.items() if k != "autoApprove"})
             )
     names = {uri: key for key, uri in reversed(list(catalog.items()))}
-    skills: dict[str, str] = {}
-    for uri in _strs(spec.get("resources")):
-        if uri in names:
-            skills.setdefault(names[uri], "")
-        elif uri.startswith("skill://"):
-            # Named by the folder holding SKILL.md, as the kit preview names it.
-            skills.setdefault(uri, Path(uri.removeprefix("skill://")).parent.name)
-    for name in _strs(spec.get("skills")):
-        skills.setdefault(name, "")
-    rows += [_row("skills", key, key, label) for key, label in skills.items()]
+    skills = [
+        names[uri] if uri in names else uri
+        for uri in _strs(spec.get("resources"))
+        if uri in names or uri.startswith("skill://")
+    ]
+    skills += _strs(spec.get("skills"))
+    rows += [_row("skills", key, key) for key in dict.fromkeys(skills)]
     return {"rows": rows}
 
 

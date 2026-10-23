@@ -135,7 +135,7 @@ function CrewCard({ agent, isDefault, shared, memoryStores, onOpen }: {
   memoryStores: MemoryStores | undefined
   onOpen: () => void
 }) {
-  const { label: builtFrom, error: builtFromError } = useRosterBuiltFrom(agent)
+  const { label: builtFrom, error: builtFromError, report: builtFromReport } = useRosterBuiltFrom(agent)
   const sharedNote = i18nT('pages.kiroCrewAgentsPage.shared_lower')
   const filesShared = shared === 'files' || shared === 'both'
   const memoryShared = shared === 'memory' || shared === 'both'
@@ -188,7 +188,8 @@ function CrewCard({ agent, isDefault, shared, memoryStores, onOpen }: {
       </div>
       <div className="grid grid-cols-2 gap-x-3 gap-y-2 border-t border-border pt-3">
         <Binding icon={<Boxes className="lucide-inline" aria-hidden="true" />} label={i18nT('pages.kiroCrewAgentsPage.built_from')} value={builtFrom} plain testId="crew-built-from" />
-        {builtFromError && <ErrorNotice message={builtFromError} variant="inline" askAgent testId="crew-built-from-error" />}
+        {/* A sentence, not a word: it takes the whole row, the hand-off under it. */}
+        {builtFromError && <ErrorNotice message={builtFromError} variant="inline" askAgent actionPlacement="below" report={builtFromReport} className="col-span-2" testId="crew-built-from-error" />}
         <Binding icon={<FolderOpen className="lucide-inline" aria-hidden="true" />} label={i18nT('pages.kiroCrewAgentsPage.workspace_2')} value={agent.workspace} note={filesShared ? sharedNote : undefined} />
         <Binding icon={<Database className="lucide-inline" aria-hidden="true" />} label={i18nT('pages.kiroCrewAgentsPage.memory_store')} value={memoryStoreLabel(agent.name, agent.memory_store, memoryStores)} plain note={memoryShared ? sharedNote : undefined} />
         <Binding
@@ -229,7 +230,7 @@ function CrewRow({ agent, isDefault, shared, memoryStores, onOpen }: {
   memoryStores: MemoryStores | undefined
   onOpen: () => void
 }) {
-  const { label: builtFrom, error: builtFromError } = useRosterBuiltFrom(agent)
+  const { label: builtFrom, error: builtFromError, report: builtFromReport } = useRosterBuiltFrom(agent)
   const sharedNote = i18nT('pages.kiroCrewAgentsPage.shared_lower')
   const filesShared = shared === 'files' || shared === 'both'
   const memoryShared = shared === 'memory' || shared === 'both'
@@ -280,7 +281,7 @@ function CrewRow({ agent, isDefault, shared, memoryStores, onOpen }: {
         </div>
       </TableCell>
       <TableCell className="text-muted" data-testid="crew-built-from">
-        {builtFromError ? <ErrorNotice message={builtFromError} variant="inline" askAgent testId="crew-built-from-error" /> : builtFrom}
+        {builtFromError ? <ErrorNotice message={builtFromError} variant="inline" askAgent report={builtFromReport} testId="crew-built-from-error" /> : builtFrom}
       </TableCell>
       <TableCell className="font-mono text-muted">
         {agent.workspace}

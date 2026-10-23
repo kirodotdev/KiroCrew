@@ -400,6 +400,23 @@ describe('CrewEditorNextDialog — section rail', () => {
     expect(within(await within(dialog).findByTestId('next-builtfrom-skills')).getByText('Release Notes')).toBeInTheDocument()
   })
 
+  it("names a worker's skill URI as the kit preview does: its folder, or the folder a pattern covers", async () => {
+    const glob = 'skill://.kiro/skills/**/SKILL.md'
+    const one = 'skill:///home/x/skills/release-notes/SKILL.md'
+    const skill = (id: string): CapabilityRow => ({ section: 'skills', id, label: '', state: 'inherited', present: true, value: id, managed: false, shared_reference: true })
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' },
+      worker: { rows: [skill(glob), skill(one)] },
+    })
+    mockKit.get.mockResolvedValue({ member: 'oncall', template: 'release-captain', revision: 'r1', has_additions_since: false })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    fireEvent.click(await within(dialog).findByTestId('next-builtfrom-tab-skills'))
+    const skills = await within(dialog).findByTestId('next-builtfrom-skills')
+    expect(within(skills).getByText('Skills in skills')).toBeInTheDocument()
+    expect(within(skills).getByText('release-notes')).toBeInTheDocument()
+  })
+
   it('renders the General pane fields (name, built-from, workspace, color)', async () => {
     const dialog = await openNew()
     // General is the default section.

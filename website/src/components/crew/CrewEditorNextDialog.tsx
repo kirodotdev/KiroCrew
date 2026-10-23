@@ -30,6 +30,7 @@ import { crewCapabilitiesApi, crewCapabilitiesKey, type CapabilityRow, type Capa
 import CrewApprovalsEditor from './CrewApprovalsEditor'
 import WorkerKitPane from './WorkerKitPane'
 import { templateDisplayName, useBuiltFromName } from './builtFromName'
+import { skillLabel } from './workerKitLabels'
 import { crewDisplayName } from '../AgentSelector'
 import CrewWakeSection from '../CrewWakeSection'
 import CrewWebhookSection from '../CrewWebhookSection'
@@ -332,7 +333,8 @@ function SkillRow({ row, showTemplateBadge }: { row: CapabilityRow; showTemplate
             aria-hidden
           />
           <div className="flex min-w-0 flex-col">
-            <span className="truncate text-[12.5px] text-text">{row.label || display}</span>
+            {/* A resource URI with no label (a pattern) is named as the kit preview names it. */}
+            <span className="truncate text-[12.5px] text-text">{row.label || (row.id.includes('://') ? skillLabel(row.id) : display)}</span>
             {owner && <span className="truncate font-mono text-[11px] text-muted">{owner}</span>}
           </div>
         </div>

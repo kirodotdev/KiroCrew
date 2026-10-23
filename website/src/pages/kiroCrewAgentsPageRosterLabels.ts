@@ -12,7 +12,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { i18nT } from '../i18n/t'
 import { ApiError } from '../api/apiError'
-import { parseErrorCode } from '../utils/errorReport'
+import { parseErrorCode, reportForError, type ErrorReport } from '../utils/errorReport'
 import { crewWorkerKitApi, crewWorkerKitKey } from '../api/crewCapabilities'
 import { DEFAULT_TEMPLATE, kitTemplateName, templateDisplayName } from '../components/crew/builtFromName'
 import { workerKitErrorText } from '../components/crew/workerKitErrors'
@@ -36,9 +36,10 @@ export function memoryStoreLabel(member: string, store: string, stores: MemorySt
  * the kit endpoint answers `not_a_mate_file` when that name is in fact a shared
  * template, which is then shown by its own name. Empty while the kit loads.
  * Any other failure to read the kit is returned as `error`, with no label, so
- * the cell shows it rather than a provenance it does not know.
+ * the cell shows it rather than a provenance it does not know, and `report`
+ * carries the request behind it for the agent hand-off.
  */
-export function useRosterBuiltFrom(agent: { name: string; kiro_agent: string }): { label: string; error: string | null } {
+export function useRosterBuiltFrom(agent: { name: string; kiro_agent: string }): { label: string; error: string | null; report?: ErrorReport } {
   // A crewmate keyed `kirocrew` is bound to the default template, not to a file.
   const ownsFile = !!agent.kiro_agent && agent.kiro_agent === agent.name && agent.kiro_agent !== DEFAULT_TEMPLATE
   const kit = useQuery({
@@ -53,7 +54,9 @@ export function useRosterBuiltFrom(agent: { name: string; kiro_agent: string }):
     if (err instanceof ApiError && parseErrorCode(err.body) === 'not_a_mate_file') {
       return { label: templateDisplayName(agent.kiro_agent), error: null }
     }
-    return { label: '', error: workerKitErrorText(err) }
+    // The sentence is localized, so the hand-off is given the journalled
+    // report itself rather than looking it up by message.
+    return { label: '', error: workerKitErrorText(err), report: reportForError(err) }
   }
   if (!kit.data) return { label: '', error: null }
   return { label: kitTemplateName(kit.data) ?? templateDisplayName(DEFAULT_TEMPLATE), error: null }

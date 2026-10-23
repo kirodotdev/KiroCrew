@@ -45,13 +45,11 @@ def test_the_rows_are_the_workers_effective_spec(monkeypatch):
     assert all(r["present"] for r in summary["rows"])
 
 
-def test_a_skill_resource_is_named_by_its_folder(monkeypatch):
+def test_a_skill_row_carries_no_name_of_its_own(monkeypatch):
+    """The pane names every skill row; the server never derives a second name."""
     monkeypatch.setattr(mate_worker, "member_worker_spec", lambda member: WORKER)
     rows = mate_capabilities.worker_summary("ben", CATALOG)["rows"]
-    labels = {r["id"]: r["label"] for r in rows if r["section"] == "skills"}
-    assert labels["skill:///home/x/skills/release-notes/SKILL.md"] == "release-notes"
-    # A named skill carries no label: the pane names it from its id.
-    assert labels["triage"] == "" and labels["catalog-skill"] == ""
+    assert {r["label"] for r in rows if r["section"] == "skills"} == {""}
 
 
 def test_a_server_row_carries_its_switch_off_and_no_approvals(monkeypatch):

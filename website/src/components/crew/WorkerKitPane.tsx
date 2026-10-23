@@ -10,14 +10,15 @@
  */
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2 } from 'lucide-react'
-import { Btn, Checkbox } from '../ui'
+import { Loader2, Minus, PenLine, Plus, Power, PowerOff, type LucideIcon } from 'lucide-react'
+import { Btn, Checkbox, PanelSectionHeader } from '../ui'
 import SimpleSelect from '../SimpleSelect'
 import ErrorNotice from '../ErrorNotice'
 import { i18nT } from '../../i18n/t'
 import { kitTemplateName, templateDisplayName } from './builtFromName'
 import { changeLabel } from './workerKitLabels'
 import { workerKitErrorText } from './workerKitErrors'
+import { groupWorkerKitChanges } from './workerKitGroups'
 import { apiErrorCode } from '../../api/apiError'
 import {
   crewCapabilitiesKey,
@@ -27,21 +28,37 @@ import {
   type WorkerKitPreview,
 } from '../../api/crewCapabilities'
 
-const SECTION_KEYS: Record<WorkerKitChange['section'], string> = {
-  prompt: 'crewWorkerKit.section_prompt',
-  mcpServers: 'crewWorkerKit.section_mcp',
-  resources: 'crewWorkerKit.section_skill',
-  skills: 'crewWorkerKit.section_skill',
-  allowedTools: 'crewWorkerKit.section_approval',
-  excludedTools: 'crewWorkerKit.section_excluded',
-  disabledTools: 'crewWorkerKit.section_excluded',
-  disabledServers: 'crewWorkerKit.section_excluded',
-  tools: 'crewWorkerKit.section_mcp',
+// Each change's word as a badge tinted by its hue, with a hue-coloured glyph.
+// The word is painted in `text-text`, not the hue: a plain status hue on its
+// own tint falls under 4.5:1 in some dark palettes (kiro-dark `--ok` reads
+// 3.08:1), while the glyph only needs the 3:1 non-text floor. The word stays,
+// so the colour is never the only cue.
+const CHANGE_BADGES: Record<WorkerKitChange['change'], { label: () => string; tint: string; Icon: LucideIcon; ink: string }> = {
+  added: { label: () => i18nT('crewWorkerKit.change_added'), tint: 'bg-ok-subtle', Icon: Plus, ink: 'text-ok-text' },
+  changed: { label: () => i18nT('crewWorkerKit.change_changed'), tint: 'bg-warn-subtle', Icon: PenLine, ink: 'text-warn-text' },
+  removed: { label: () => i18nT('crewWorkerKit.change_removed'), tint: 'bg-danger-subtle', Icon: Minus, ink: 'text-danger-text' },
 }
-const CHANGE_KEYS: Record<WorkerKitChange['change'], string> = {
-  added: 'crewWorkerKit.change_added',
-  removed: 'crewWorkerKit.change_removed',
-  changed: 'crewWorkerKit.change_changed',
+
+// Under "Turned off" the row IS a restriction, so its badge states the effect:
+// adding one turns a tool off, removing one turns it back on.
+const RESTRICTION_BADGES: Record<WorkerKitChange['change'], typeof CHANGE_BADGES[WorkerKitChange['change']]> = {
+  added: { label: () => i18nT('crewWorkerKit.change_turns_off'), tint: 'bg-danger-subtle', Icon: PowerOff, ink: 'text-danger-text' },
+  changed: CHANGE_BADGES.changed,
+  removed: { label: () => i18nT('crewWorkerKit.change_turns_on'), tint: 'bg-ok-subtle', Icon: Power, ink: 'text-ok-text' },
+}
+
+function ChangeBadge({ change, restriction }: { change: WorkerKitChange['change']; restriction: boolean }) {
+  const { label, tint, Icon, ink } = (restriction ? RESTRICTION_BADGES : CHANGE_BADGES)[change]
+  return (
+    <span
+      className={`inline-flex min-w-[5rem] shrink-0 items-center gap-1 rounded-full px-2 py-[2px] text-[11px] font-medium text-text ${tint}`}
+      data-testid="worker-kit-change-badge"
+      data-change={change}
+    >
+      <Icon size={12} className={`lucide-inline shrink-0 ${ink}`} aria-hidden="true" />
+      {label()}
+    </span>
+  )
 }
 
 export default function WorkerKitPane({
@@ -75,6 +92,8 @@ export default function WorkerKitPane({
   const template = picked || (templates.includes(current) ? current : '')
   const isRecopy = !!current && template === current
   const askKeep = !!kit?.has_additions_since
+  // The preview button's label, which a refusal names as the way forward.
+  const previewLabel = isRecopy ? i18nT('crewWorkerKit.recopy') : i18nT('crewWorkerKit.copy')
 
   const reset = () => { setPreview(null); setErr(null) }
 
@@ -136,7 +155,7 @@ export default function WorkerKitPane({
       {/* No hand-off: the pane holds an unconfirmed preview; the hand-off would
           navigate away from the open editor and lose it. */}
       <ErrorNotice
-        message={workerKitErrorText(kitQuery.error) ?? workerKitErrorText(err)}
+        message={workerKitErrorText(kitQuery.error) ?? workerKitErrorText(err, previewLabel)}
         variant="inline"
         askAgent={false}
         testId="worker-kit-error"
@@ -180,7 +199,7 @@ export default function WorkerKitPane({
           {!preview && (
             <div>
               <Btn onClick={runPreview} disabled={!template || busy} data-testid="worker-kit-preview">
-                {isRecopy ? i18nT('crewWorkerKit.recopy') : i18nT('crewWorkerKit.copy')}
+                {previewLabel}
               </Btn>
             </div>
           )}
@@ -195,19 +214,23 @@ export default function WorkerKitPane({
               {preview.changes.length === 0 ? (
                 <span className="text-[12px] text-muted">{i18nT('crewWorkerKit.no_changes')}</span>
               ) : (
-                <ul className="m-0 flex list-none flex-col gap-1 p-0">
-                  {preview.changes.map(c => (
-                    <li key={`${c.section}:${c.id}`} className="flex items-baseline gap-2 text-[12px]">
-                      <span className="text-muted">{i18nT(CHANGE_KEYS[c.change])}</span>
-                      <span className="text-text">{i18nT(SECTION_KEYS[c.section])}</span>
-                      {changeLabel(c) !== null && (
-                        <span className="min-w-0 truncate text-text" title={c.id} data-testid="worker-kit-change-name">
-                          {changeLabel(c)}
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
+                groupWorkerKitChanges(preview.changes).map(group => (
+                  <section key={group.key} className="flex flex-col gap-1.5" data-testid={`worker-kit-group-${group.key}`}>
+                    <PanelSectionHeader label={group.heading} count={group.changes.length} />
+                    <ul className="m-0 flex list-none flex-col gap-1 p-0">
+                      {group.changes.map(c => (
+                        <li key={`${c.section}:${c.id}`} className="flex items-center gap-2 text-[12px]">
+                          <ChangeBadge change={c.change} restriction={group.key === 'off'} />
+                          {changeLabel(c) !== null && (
+                            <span className="min-w-0 truncate text-text" title={c.id} data-testid="worker-kit-change-name">
+                              {changeLabel(c)}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ))
               )}
               <div className="flex items-center gap-2">
                 <Btn onClick={reset} disabled={busy} data-testid="worker-kit-cancel">
