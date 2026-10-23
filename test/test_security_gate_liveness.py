@@ -499,7 +499,27 @@ def _url_payload_command(n: int) -> str:
 #: target) the way it steps over a ``VAR=val`` assignment, using the shared
 #: ``shell_normalizer._push_token_redirection`` recognizer. A redirect before
 #: ``rm`` cannot hide the program word.
-_PACKAGE_LINE_BUDGET = 32_518
+#:
+#: Raised again, from 32,518, by 149 lines for ``readonly_bash.command_names_git``: the
+#: no-approver hook surface refuses a command that names git at a command position, a
+#: substitution's included, without counting a command it cannot read as git, and reads
+#: only the program a runner runs. It reads the text with the package's shell state
+#: machine (``_iter_shell_chars``, the shared closers, ``_shell_tokens``), so a quoted
+#: separator stays in its word and a program name is read after quote removal:
+#: ``_names_git``, ``_substitution_opener``, ``_separator_at``, their call-time imports,
+#: ``_RUNNER_NUMBER_RE`` and two keywords on ``_runs_git_at_a_command_position``;
+#: ``_GLUED_REDIRECT_RE``, an fd name on ``_REDIRECT_RE`` and the loop keywords on
+#: ``_COMMAND_POSITION_OPENERS`` read past a redirection glued to the program word and
+#: after a conditional or loop keyword, in ``command_invokes_git`` too.
+#:
+#: Raised again, from 32,667, by 62 lines for ``_git_word_outside_inert_arguments``:
+#: a ``git`` word the position walk cannot place (a ``case`` arm, a function body,
+#: ``env -S``) is read as git unless it is an argument of a program that runs none
+#: of its arguments, so shell grammar the walk does not model refuses, not approves;
+#: ``_is_plain_assignment`` keeps a script word (``eval 'v=1 git commit'``) from
+#: passing as an assignment, and ``_BACKTICK_ESCAPE_RE`` reads a backtick body the
+#: way Bash unescapes it.
+_PACKAGE_LINE_BUDGET = 32_729
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

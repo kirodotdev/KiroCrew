@@ -53,7 +53,11 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
-from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
+from kiro_crew.security.readonly_bash import (
+    command_invokes_git,
+    command_names_git,
+    is_read_only_bash,
+)
 from kiro_crew.tool_gate_busy import hook_gate_busy
 
 if TYPE_CHECKING:
@@ -762,21 +766,38 @@ async def _resolve_permission(
         await provider.reject_tool(event.request_id)
         return False
 
-    # A git read the gate's read-only tier declined (git reads `.git/config`,
-    # whose `core.fsmonitor` / `core.hooksPath` name a program no text
-    # classifier sees) falls through to the surface's approver. With no
-    # approver on a hook-based surface (a Meetings dispatch), the default
-    # below would run it unchecked -- not even the name-grant check the
-    # read-only approve ran -- so it is refused instead.
+    # Every git command runs programs its repository config names
+    # (`core.fsmonitor`, `core.hooksPath`, commit and checkout hooks) that no
+    # text classifier sees, read or not. A git command the hook gate did not
+    # deny or positively grant (a grant approved above) falls through to the
+    # surface's approver. With no approver on a hook-based surface (a Meetings
+    # dispatch), the default below would run it unchecked, so it is refused
+    # instead. An operator who wants git there grants it in the hook config.
+    # A command whose program this cannot read (a substitution, an expansion as
+    # the program, quoting it cannot split) is not refused as git: refused only
+    # when it is also a read, the rule before every git command was refused, and
+    # otherwise left to the surface's default like any other unproven command.
     if policy == ToolApprovalPolicy.HOOK_BASED and hooks and on_tool_approval is None:
         _git_command = name_grant.shell_command_for_event(event)
+        if _git_command and command_names_git(_git_command):
+            _log("rejected", metadata={"reason": "git_headless_reject"})
+            await _steer_host_deny(
+                provider,
+                event,
+                "a git command is never run without an approval (git runs programs "
+                "its repository config names) and this surface has no approver",
+                cause=DENY_CAUSE_SURFACE_POLICY,
+            )
+            await provider.reject_tool(event.request_id)
+            return False
         if _git_command and command_invokes_git(_git_command) and is_read_only_bash(_git_command):
             _log("rejected", metadata={"reason": "git_read_headless_reject"})
             await _steer_host_deny(
                 provider,
                 event,
-                "a git command is never auto-approved as a read (git runs programs "
-                "its repository config names) and this surface has no approver",
+                "a read whose program cannot be read from its text may run git, which "
+                "runs programs its repository config names, and this surface has no "
+                "approver",
                 cause=DENY_CAUSE_SURFACE_POLICY,
             )
             await provider.reject_tool(event.request_id)

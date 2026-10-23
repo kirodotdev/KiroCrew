@@ -23,7 +23,10 @@ from __future__ import annotations
 import fnmatch
 import re
 import shlex
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
+
+if TYPE_CHECKING:
+    from .shell_normalizer_walk import _ShellChar
 
 _READ_ONLY_BASH_PREFIXES: tuple[str, ...] = (
     "ls",
@@ -1486,7 +1489,14 @@ def unsafe_bash_reason(cmd: str) -> str:
 
 
 #: Words that open a command position without being the program that runs there.
-_COMMAND_POSITION_OPENERS = frozenset({"(", ")", "{", "}", "!", "then", "do", "else", "elif"})
+_COMMAND_POSITION_OPENERS = frozenset(
+    {"(", ")", "{", "}", "!", "if", "then", "elif", "else", "while", "until", "do", "coproc"}
+)
+
+#: Where a redirection operator is glued to the end of a word (``git>&2``): the shell
+#: reads the word and the redirection apart. An fd number (``2>``), an fd name
+#: (``{fd}>``) or an operator character before it is part of the redirection instead.
+_GLUED_REDIRECT_RE = re.compile(r"(?<=[^\s\d<>&}])(?=[<>])")
 
 #: Programs that run the next word of their argv as another program.
 _PROGRAM_RUNNERS = frozenset(
@@ -1495,8 +1505,8 @@ _PROGRAM_RUNNERS = frozenset(
 
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
-#: A redirection operator at the start of a word, with an optional fd or ``&``.
-_REDIRECT_RE = re.compile(r"^(?:\d+|&)?(?:<<<|<<-?|>>|<>|>\||[<>])&?-?")
+#: A redirection operator at the start of a word, with an optional fd, fd name or ``&``.
+_REDIRECT_RE = re.compile(r"^(?:\d+|&|\{[A-Za-z_][A-Za-z0-9_]*\})?(?:<<<|<<-?|>>|<>|>\||[<>])&?-?")
 
 #: Shell text that runs a command the position walk does not see.
 _HIDDEN_COMMAND_RE = re.compile(r"\$\(|`|[<>]\(")
@@ -1529,7 +1539,7 @@ def command_invokes_git(cmd: str) -> bool:
         # A command or process substitution runs a command this walk does not see.
         return True
     for segment in re.split(r"&&|\|\||[;|\n]|(?<![<>])&(?!>)", cmd.replace("\r", "\n")):
-        spaced = segment.replace("(", " ( ").replace(")", " ) ")
+        spaced = _GLUED_REDIRECT_RE.sub(" ", segment).replace("(", " ( ").replace(")", " ) ")
         try:
             words = shlex.split(spaced)
         except ValueError:
@@ -1542,16 +1552,215 @@ def command_invokes_git(cmd: str) -> bool:
     return False
 
 
-def _runs_git_at_a_command_position(words: list[str]) -> bool:
-    after_runner = skip_target = False
+def command_names_git(cmd: str) -> bool:
+    """Whether ``cmd`` names ``git`` at a command position, a substitution's included.
+
+    Unlike :func:`command_invokes_git`, what cannot be read is not counted as git, and
+    after a program runner only the program it runs is read, so a caller that refuses
+    outright on this refuses only a command that runs git.
+
+    The text is read with the shell's own quoting (:func:`_iter_shell_chars`): a
+    separator inside quotes is part of a word, a word's quotes are removed the way the
+    shell removes them (``g"it"`` and ``$'git'`` are ``git``), and each command or
+    process substitution's body is read as a command of its own.
+    """
+    return _names_git(cmd, 0)
+
+
+#: Nesting of substitutions read before the rest is counted as git.
+_NAMES_GIT_MAX_DEPTH = 16
+
+
+def _names_git(text: str, depth: int) -> bool:
+    # Imported here so the module imports nothing from the package at its top, which
+    # is what lets ``hooks.py`` import it there.
+    from .shell_normalizer import _shell_tokens
+    from .shell_normalizer_walk import (
+        _iter_shell_chars,
+        _matching_close_backtick,
+        _matching_close_paren,
+        _split_shell_words,
+    )
+
+    if depth > _NAMES_GIT_MAX_DEPTH:
+        return True
+    segments: list[str] = []
+    buf: list[str] = []
+    pos, state, ansi = 0, 0, False
+    while pos < len(text):
+        resume: tuple[int, int, bool] | None = None
+        for step in _iter_shell_chars(text[pos:], state, ansi):
+            at = pos + step.offset
+            if step.trailing_escape:
+                break
+            if step.text == "\\\n":
+                continue  # a line continuation joins the words around it
+            opener = _substitution_opener(text, at, step)
+            if opener:
+                close = _matching_close_backtick if opener == "`" else _matching_close_paren
+                # The closers walk from the start of the text they are handed, so they
+                # are handed the text from the opener on: a body is read fresh by the
+                # shell, and each closer then reads only its own body.
+                end, proven = close(text[at:], len(opener))
+                end = at + end if proven else len(text)
+                body_end = end - 1 if proven else end
+                body = text[at + len(opener) : body_end]
+                if opener == "`":
+                    # Bash removes a backslash before `\`, `` ` `` and `$` in a
+                    # backtick body before it runs it, so a nested `\`git\`` runs.
+                    body = _BACKTICK_ESCAPE_RE.sub(r"\1", body)
+                if _names_git(body, depth + 1):
+                    return True
+                buf.append("$_")  # what the substitution expands to is not read
+                # A `$`, a backtick or `<` changes no quote state, so the walk
+                # resumes past the closer in the state the opener was read in.
+                resume = (end, step.state, step.ansi)
+                break
+            if (step.active and step.char == "\n") or _separator_at(text, at, step):
+                segments.append("".join(buf))
+                buf = []
+                continue
+            if step.active and step.char in "()":
+                buf.append(f" {step.char} ")
+                continue
+            buf.append(step.text)
+        if resume is None:
+            break
+        pos, state, ansi = resume
+    segments.append("".join(buf))
+    for segment in segments:
+        # A ``>`` inside quotes is split too; at worst that reads quoted text as git,
+        # which refuses rather than approves.
+        segment = _GLUED_REDIRECT_RE.sub(" ", segment)
+        tokens = _shell_tokens(segment)
+        # POSIX quote removal eats a Windows path's backslashes, so the words are
+        # read again with only their quote characters removed.
+        raw = [word.replace("'", "").replace('"', "") for word in _split_shell_words(segment)]
+        for words in (tokens, raw):
+            program: list[str] = []
+            if _runs_git_at_a_command_position(
+                words, unreadable_is_git=False, runner_args_too=False, program_out=program
+            ):
+                return True
+            if _git_word_outside_inert_arguments(words, program):
+                return True
+    return False
+
+
+#: Programs that never run a word of their argv, so ``git`` among their arguments is
+#: text (``grep -rn git docs/``). Kept short on purpose: ``find`` (``-exec``), ``sed``
+#: (``e``), ``awk`` (``system``) and ``sort`` (``--compress-program``) can all run one.
+_INERT_ARGUMENT_PROGRAMS = frozenset(
+    {"cat", "cut", "echo", "egrep", "fgrep", "grep", "head", "ls", "printf", "rg", "tail"}
+    | {"tr", "uniq", "wc", "which"}
+)
+
+
+def _is_plain_assignment(word: str) -> bool:
+    """A ``NAME=value`` word whose value is one plain word, so it can only set a variable.
+
+    ``v=1 git commit`` passed whole to ``eval`` or ``bash -c`` is a script, not an
+    assignment, so a value with whitespace or shell syntax in it is not exempt.
+    """
+    return bool(_ASSIGNMENT_RE.match(word)) and not re.search(r"[\s;&|<>()`$]", word)
+
+
+#: A backslash Bash removes from a backtick body before running it.
+_BACKTICK_ESCAPE_RE = re.compile(r"\\([\\`$])")
+
+
+#: ``git`` as a word of its own anywhere in a word (``"git commit"``, ``--x=git``), or
+#: glued to a one-letter option (``env -S'git commit'`` is the word ``-Sgit commit``).
+_GIT_WORD_RE = re.compile(r"(?:(?<![\w.-])|(?<=^-[A-Za-z]))git(?:\.exe)?(?![\w.-])", re.IGNORECASE)
+
+
+def _git_word_outside_inert_arguments(words: list[str], program: list[str]) -> bool:
+    """Whether a segment the position walk passed still carries ``git`` it cannot place.
+
+    The walk reads simple commands. Shell grammar it does not model (a ``case`` arm,
+    a function body, ``env -S "git ..."``) puts a command where the walk sees a
+    program's argument or nothing, so ``git`` anywhere in such a segment is read as
+    git. It is let through only as an argument of a program that runs none of its
+    arguments; ``rg --pre`` runs one, so that spelling is not. A ``NAME=value`` word
+    sets a variable (``make VCS=git``) and runs nothing itself.
+    """
+    if not any(_GIT_WORD_RE.search(word) and not _is_plain_assignment(word) for word in words):
+        return False
+    name = program[0].replace("\\", "/").rsplit("/", 1)[-1].lower() if program else ""
+    if name not in _INERT_ARGUMENT_PROGRAMS:
+        return True
+    return name == "rg" and any(word.startswith("--pre") for word in words)
+
+
+def _substitution_opener(text: str, at: int, step: _ShellChar) -> str:
+    """The opener of a command or process substitution starting at *at*, or ``""``.
+
+    ``$(`` and a backtick open one outside quotes and inside double quotes; ``<(`` and
+    ``>(`` only outside quotes. An escaped character opens nothing.
+    """
+    if step.text != step.char or step.state == 1:
+        return ""
+    if step.char == "$" and text.startswith("$(", at) and not text.startswith("$((", at):
+        return "$("
+    if step.char == "`":
+        return "`"
+    if step.active and step.char in "<>" and text.startswith("(", at + 1):
+        return step.char + "("
+    return ""
+
+
+def _separator_at(text: str, at: int, step: _ShellChar) -> bool:
+    """Whether the shell reads a command separator at *at* (``;``, ``|``, ``&``).
+
+    A ``&`` that belongs to a redirection (``2>&1``, ``&>``, ``>&``) separates nothing.
+    """
+    if not step.active or step.char not in ";|&":
+        return False
+    if step.char == "&":
+        return not (at and text[at - 1] in "<>") and not text.startswith(">", at + 1)
+    return not (step.char == "|" and at and text[at - 1] == ">")
+
+
+#: A runner's numeric operand (``timeout 60``, ``timeout 5s``, ``nice -n 10``).
+_RUNNER_NUMBER_RE = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
+
+
+def _runs_git_at_a_command_position(
+    words: list[str],
+    *,
+    unreadable_is_git: bool = True,
+    runner_args_too: bool = True,
+    program_out: list[str] | None = None,
+) -> bool:
+    """Whether a command position in *words* runs git; the program found goes in *program_out*."""
+    after_runner = skip_target = after_option = False
     for word in words:
         if _is_git(word):
             return True
         if after_runner:
-            # A runner's own options and values (``timeout 5``, ``env -i``) sit
-            # before the program it runs, so every later word is read as a
-            # possible program. Over-refusing here only costs an approval card.
-            continue
+            if runner_args_too:
+                # A runner's own options and values (``timeout 5``, ``env -i``) sit
+                # before the program it runs, so every later word is read as a
+                # possible program. Over-refusing here only costs an approval card.
+                continue
+            # Read only up to the program the runner runs. A word after an option
+            # may be that option's value (``timeout --signal KILL git``), so it is
+            # checked above but does not end the walk; the first other word that is
+            # not an option, an assignment or a number is the program, and the words
+            # after it are its arguments. The cost of not knowing which flags take a
+            # value: a program right after a flag is read as that flag's value, so
+            # ``xargs -0 grep git`` is still refused.
+            value_slot = after_option
+            after_option = word.startswith("-") and "=" not in word
+            if word.startswith("-") or value_slot or _ASSIGNMENT_RE.match(word):
+                continue
+            if _RUNNER_NUMBER_RE.match(word):
+                continue
+            if word.replace("\\", "/").rsplit("/", 1)[-1].lower() in _PROGRAM_RUNNERS:
+                continue
+            if program_out is not None:
+                program_out.append(word)
+            return False
         if skip_target:
             skip_target = False
             continue
@@ -1565,11 +1774,13 @@ def _runs_git_at_a_command_position(words: list[str]) -> bool:
             continue
         if "$" in word:
             # An expansion in the program position names a program this walk
-            # cannot read, so it is read as git, the safe answer.
-            return True
+            # cannot read, so it is read as git, the safe answer, when asked to.
+            return unreadable_is_git
         if word.replace("\\", "/").rsplit("/", 1)[-1].lower() in _PROGRAM_RUNNERS:
             after_runner = True
             continue
+        if program_out is not None:
+            program_out.append(word)
         return False
     return False
 

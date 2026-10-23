@@ -273,6 +273,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.security.readonly_bash import (  # noqa: F401
         command_invokes_git,
+        command_names_git,
         is_read_only_bash,
     )
     from kiro_crew.sel import sel as _sel  # noqa: F401
