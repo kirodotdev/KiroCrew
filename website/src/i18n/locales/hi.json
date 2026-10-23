@@ -12183,7 +12183,8 @@
       },
       "messageContextMenu": {
         "copy_link_text": "लिंक टेक्स्ट कॉपी करो",
-        "copy_link_address": "लिंक पता कॉपी करो"
+        "copy_link_address": "लिंक पता कॉपी करो",
+        "open_link_new_tab": "लिंक नए टैब में खोलो"
       },
       "dashboardPreviewPanel": {
         "tab_title": "{{name}} (पूर्वावलोकन)",

@@ -12183,7 +12183,8 @@
       },
       "messageContextMenu": {
         "copy_link_text": "লিঙ্কের টেক্সট কপি করো",
-        "copy_link_address": "লিঙ্কের ঠিকানা কপি করো"
+        "copy_link_address": "লিঙ্কের ঠিকানা কপি করো",
+        "open_link_new_tab": "লিঙ্ক নতুন ট্যাবে খোলো"
       },
       "dashboardPreviewPanel": {
         "tab_title": "{{name}} (প্রিভিউ)",

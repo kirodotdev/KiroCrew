@@ -12000,7 +12000,8 @@
       },
       "messageContextMenu": {
         "copy_link_text": "링크 텍스트 복사",
-        "copy_link_address": "링크 주소 복사"
+        "copy_link_address": "링크 주소 복사",
+        "open_link_new_tab": "새 탭에서 링크 열기"
       },
       "dashboardPreviewPanel": {
         "tab_title": "{{name}} (미리보기)",

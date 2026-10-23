@@ -26,10 +26,10 @@ const labels = () => screen.getAllByRole('menuitem').map(i => i.textContent)
 beforeEach(() => { vi.mocked(copyToClipboard).mockClear().mockResolvedValue(true) })
 
 describe('MessageContextMenu on a link', () => {
-  it('adds Copy link address and Copy link text above the host items', () => {
+  it('adds Open link in new tab, Copy link address and Copy link text above the host items', () => {
     render(<MessageContextMenu items={items}>{bubble}</MessageContextMenu>)
     fireEvent.contextMenu(screen.getByText('42'))
-    expect(labels()).toEqual(['Copy link address', 'Copy link text', 'Quote message', 'Copy text'])
+    expect(labels()).toEqual(['Open link in new tab', 'Copy link address', 'Copy link text', 'Quote message', 'Copy text'])
   })
 
   it('copies the resolved href and the visible text', async () => {
@@ -45,7 +45,39 @@ describe('MessageContextMenu on a link', () => {
   it('omits Copy link text for a link with no text', () => {
     render(<MessageContextMenu items={items}>{bubble}</MessageContextMenu>)
     fireEvent.contextMenu(screen.getByTestId('icon-link').querySelector('svg')!)
-    expect(labels()).toEqual(['Copy link address', 'Quote message', 'Copy text'])
+    expect(labels()).toEqual(['Open link in new tab', 'Copy link address', 'Quote message', 'Copy text'])
+  })
+
+  it('opens the resolved href in a new tab with no opener', () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    try {
+      render(<MessageContextMenu items={items}>{bubble}</MessageContextMenu>)
+      fireEvent.contextMenu(screen.getByText('42'))
+      fireEvent.click(screen.getByTestId('message-context-open-link-new-tab'))
+      expect(open).toHaveBeenCalledWith('https://example.com/build/42', '_blank', 'noopener,noreferrer')
+    } finally {
+      open.mockRestore()
+    }
+  })
+
+  it('offers no new-tab open for a link that is not a web page', () => {
+    render(
+      <MessageContextMenu items={items}>
+        <div><a href="mailto:a@example.com">mail</a></div>
+      </MessageContextMenu>,
+    )
+    fireEvent.contextMenu(screen.getByText('mail'))
+    expect(labels()).toEqual(['Copy link address', 'Copy link text', 'Quote message', 'Copy text'])
+  })
+
+  it('offers no new-tab open for a web link that carries userinfo', () => {
+    render(
+      <MessageContextMenu items={items}>
+        <div><a href="https://user:pass@example.com/x">creds</a></div>
+      </MessageContextMenu>,
+    )
+    fireEvent.contextMenu(screen.getByText('creds'))
+    expect(labels()).toEqual(['Copy link address', 'Copy link text', 'Quote message', 'Copy text'])
   })
 
   it('shows only the host items off a link', () => {

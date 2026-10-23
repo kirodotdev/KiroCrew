@@ -12366,7 +12366,8 @@
       },
       "messageContextMenu": {
         "copy_link_text": "Copiar texto do link",
-        "copy_link_address": "Copiar endereço do link"
+        "copy_link_address": "Copiar endereço do link",
+        "open_link_new_tab": "Abrir link em nova aba"
       },
       "dashboardPreviewPanel": {
         "tab_title": "{{name}} (pré-visualização)",

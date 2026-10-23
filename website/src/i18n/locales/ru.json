@@ -12549,7 +12549,8 @@
       },
       "messageContextMenu": {
         "copy_link_text": "Копировать текст ссылки",
-        "copy_link_address": "Копировать адрес ссылки"
+        "copy_link_address": "Копировать адрес ссылки",
+        "open_link_new_tab": "Открыть ссылку в новой вкладке"
       },
       "dashboardPreviewPanel": {
         "tab_title": "{{name}} (предпросмотр)",

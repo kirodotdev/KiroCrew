@@ -4957,7 +4957,8 @@
       },
       "messageContextMenu": {
         "copy_link_text": "Copy link text",
-        "copy_link_address": "Copy link address"
+        "copy_link_address": "Copy link address",
+        "open_link_new_tab": "Open link in new tab"
       },
       "chatNavPanel": {
         "link": "Link"

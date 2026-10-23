@@ -12183,7 +12183,8 @@
       },
       "messageContextMenu": {
         "copy_link_text": "Linktext kopieren",
-        "copy_link_address": "Linkadresse kopieren"
+        "copy_link_address": "Linkadresse kopieren",
+        "open_link_new_tab": "Link in neuem Tab öffnen"
       },
       "dashboardPreviewPanel": {
         "tab_title": "{{name}} (Vorschau)",
