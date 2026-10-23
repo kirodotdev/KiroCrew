@@ -237,10 +237,9 @@ function Host({ memberId, openCrew }: { memberId?: string; openCrew?: string } =
     <>
       <button data-testid="open-editor" onClick={() => setEditingCrew(openCrew ?? 'oncall')}>edit</button>
       {/* Direct controller drives for handlers the modal UI does not surface
-          (save flow, chat hand-off) and a readout of a computed value, so the
-          hook's save/chatWith/collision paths are exercised. */}
+          (save flow) and a readout of a computed value, so the hook's
+          save/collision paths are exercised. */}
       <button data-testid="ctl-save" onClick={() => ctl.save()}>save</button>
-      <button data-testid="ctl-request-chat" onClick={() => ctl.requestChat()}>chat</button>
       <div data-testid="ctl-colliding">{ctl.collidingCrews.join(',')}</div>
       <CrewEditorModal ctl={ctl} />
     </>
@@ -796,26 +795,6 @@ describe('CrewEditorNextDialog — save, chat hand-off, and sharing collisions',
     const call = mockApi.updateKirocrewAgent.mock.calls.at(-1)
     expect(call?.[0]).toBe('oncall')
     expect(call?.[1]?.display_name).toBe('On-Call Pager')
-  })
-
-  it('requestChat runs the guarded leave and mints a slot for the crew', async () => {
-    await openNew()
-    leaveSpy.mockClear()
-    fireEvent.click(screen.getByTestId('ctl-request-chat'))
-    // requestChat routes through the guarded leave; leaveSpy auto-performs, so
-    // the chatWith body (createSlot dispatch + close + navigate) runs.
-    await waitFor(() => expect(leaveSpy).toHaveBeenCalled())
-  })
-
-  it('requestChat on a dirty editor prompts to discard, then hands off on confirm', async () => {
-    const dialog = await openNew()
-    fireEvent.change(within(dialog).getByTestId('display-name-input'), { target: { value: 'Dirty Name' } })
-    leaveSpy.mockClear()
-    fireEvent.click(screen.getByTestId('ctl-request-chat'))
-    // A dirty pane routes requestChat through the discard prompt rather than
-    // straight to the hand-off; confirming it runs chatWith (guarded leave).
-    fireEvent.click(await screen.findByTestId('crew-sched-discard-confirm'))
-    await waitFor(() => expect(leaveSpy).toHaveBeenCalled())
   })
 
   it('reports mates sharing the edited crew\u2019s workspace or memory store', async () => {
