@@ -322,6 +322,25 @@ def effort_config_option_value(backend: str, level: str) -> str:
     return EFFORT_CONFIG_OPTION_VALUES.get(backend, {}).get(level, level)
 
 
+# Values a backend's effort select offers that mean "no override", not a level.
+# opencode 1.19 appends ``default`` to every reasoning model's variants
+# (``test/fixtures/acp_frames/opencode/effort-live.jsonl``); Crew's own no-override
+# state is the cleared slot level (``clear_effort``), so the value is dropped from
+# the advertised levels rather than offered, accepted or stepped down onto.
+# claude-agent-acp also offers ``default``, but outside
+# ``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION`` the registry, not the advertised
+# list, decides what it may be sent, so it needs no row.
+EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES: Mapping[str, frozenset[str]] = {
+    ACP_BACKEND_OPENCODE: frozenset({"default"}),
+}
+
+
+def effort_config_option_levels(backend: str, values: list[str]) -> list[str]:
+    """*values* advertised by *backend*'s effort option, minus its no-override values."""
+    hidden = EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES.get(backend, frozenset())
+    return [value for value in values if value not in hidden]
+
+
 # Backends that resolve the WIRE model id from the provider's OWN advertised list
 # (captured from ``session/new`` and cached across sessions) rather than trusting
 # the stored id verbatim. Needed where the spelling a backend SERVES differs from

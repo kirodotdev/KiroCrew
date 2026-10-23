@@ -54,6 +54,7 @@ from kiro_crew.acp.types import (
     MODEL_CONFIG_ID,
     effort_config_option_id,
 )
+from kiro_crew.agent_sdk.backends import effort_config_option_levels
 from kiro_crew.agent_sdk.drivers.acp import EntitlementRevalidating
 from kiro_crew.platform.context import redact_log_via_context
 
@@ -573,9 +574,10 @@ def get_valid_effort_levels(self: AcpSessionHandle) -> list[str]:
         if opt.get("id") == effort_option:
             options = opt.get("options", [])
             if isinstance(options, list):
-                return [
-                    o.get("value", "") for o in options if isinstance(o, dict) and o.get("value")
-                ]
+                return effort_config_option_levels(
+                    self._runtime.acp_backend,
+                    [o.get("value", "") for o in options if isinstance(o, dict) and o.get("value")],
+                )
     return []
 
 

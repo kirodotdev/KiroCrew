@@ -156,6 +156,8 @@ with no row here.
      - driver-internal (which ``configId`` carries the reasoning effort)
    * - ``effort_config_option_value``
      - driver-internal (which VALUE that option spells a Crew effort level with)
+   * - ``effort_config_option_levels``
+     - driver-internal (which advertised values are levels, not "no override")
    * - ``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION``
      - driver-internal (whether the ADVERTISED option, rather than Crew's model
        registry, answers that this session takes an effort level and which ones)
@@ -838,8 +840,10 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     CC_PERMISSION_MODE_ENV,
     DEFAULT_EFFORT_CONFIG_OPTION_ID,
     EFFORT_CONFIG_OPTION_IDS,
+    EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES,
     EFFORT_CONFIG_OPTION_VALUES,
     effort_config_option_id,
+    effort_config_option_levels,
     effort_config_option_value,
     model_refusal_phrase,
     model_registry_namespace,

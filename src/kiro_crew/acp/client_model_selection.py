@@ -48,7 +48,7 @@ from kiro_crew.acp.types import (
     effort_config_option_value,
 )
 from kiro_crew.agent import require_unchanged_derived_spec
-from kiro_crew.agent_sdk.backends import model_refusal_phrase
+from kiro_crew.agent_sdk.backends import effort_config_option_levels, model_refusal_phrase
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -1067,7 +1067,9 @@ def get_valid_effort_levels(self: AcpClient) -> list[str]:
     extracts its ``options[].value`` list in the order ACP reported them.
     Resolving the id here is what fills the dropdown on a backend that spells
     it differently; a hard-coded spelling returns an empty list there, which
-    every caller reads as "this model has no effort levels".
+    every caller reads as "this model has no effort levels". A value the
+    backend uses for "no override" (opencode's ``default``) is not a level and
+    is dropped.
     """
     effort_option = effort_config_option_id(self.backend)
     for opt in self._acp_config_options:
@@ -1076,5 +1078,8 @@ def get_valid_effort_levels(self: AcpClient) -> list[str]:
         if opt.get("id") == effort_option:
             options = opt.get("options", [])
             if isinstance(options, list):
-                return [o["value"] for o in options if isinstance(o, dict) and "value" in o]
+                return effort_config_option_levels(
+                    self.backend,
+                    [o["value"] for o in options if isinstance(o, dict) and "value" in o],
+                )
     return []
