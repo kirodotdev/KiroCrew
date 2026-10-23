@@ -279,9 +279,17 @@ class Worker:
             log(f"output pump failed: {type(exc).__name__}: {exc}"[:300])
             self.exit_code = 5
         if self.child.returncode is None:
-            self.child.terminate()
-        if self.child.returncode is None:
+            if not pump.done():
+                # stop fired before stdout EOF: the child is still running;
+                # terminate it promptly so it does not outlive its commands.
+                self.child.terminate()
             try:
+                # When pump is done the child already closed its stdout and is
+                # on the verge of calling _exit(); wait for the natural exit so
+                # the OS-assigned exit code reaches the asyncio transport before
+                # we collect it.  When stop fired first and we just sent
+                # SIGTERM, this wait collects the signal exit.  Bounded in
+                # either case: a stuck child is killed below.
                 await asyncio.wait_for(self.child.wait(), self.stop_grace)
             except asyncio.TimeoutError:
                 self.child.kill()
