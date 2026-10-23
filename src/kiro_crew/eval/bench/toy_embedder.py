@@ -73,10 +73,8 @@ def toy_embed(text: str, *, dim: int = TOY_DIM) -> list[float]:
         a, b = _token_slots(tok, dim)
         vec[a] += 1.0
         vec[b] += 1.0
+    # At least one token got here and each adds 1.0 to a slot, so the norm is at least 1.
     norm = math.sqrt(sum(v * v for v in vec))
-    if norm == 0.0:
-        vec[0] = 1.0
-        return vec
     return [v / norm for v in vec]
 
 

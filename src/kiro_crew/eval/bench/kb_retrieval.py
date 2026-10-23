@@ -659,8 +659,8 @@ def run_kb_retrieval(
 
     # Resolve the embedder identity from what the vector leg will ACTUALLY do, in
     # one place, so a keyword-only run can never carry a semantic label and a
-    # default run is always the toy id. This is the invariant the reviewers kept
-    # finding leaks in; deriving it here makes it hold by construction.
+    # default run is always the toy id. Deriving it here makes that hold by
+    # construction.
     if not use_embeddings:
         resolved_id = KEYWORD_ONLY_EMBEDDER_ID
         wrapped: Callable[[str], list[float]] | None = None
@@ -735,11 +735,10 @@ def run_kb_retrieval(
         # Close the store's SQLite connection BEFORE removing the temp dir: on
         # Windows an open handle blocks directory deletion and TemporaryDirectory
         # .cleanup() would raise PermissionError, crashing an otherwise-good run.
-        if store is not None:
-            try:
-                store.close()
-            except Exception:
-                pass
+        try:
+            store.close()
+        except Exception:
+            pass
         tmpdir.cleanup()
 
 
