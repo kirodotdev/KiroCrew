@@ -503,7 +503,10 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 8, from 32,518, for one ``_WRITE_PROTECTED_HOME_PATHS`` entry in
 #: ``paths_lists``: the crewmate agent folder, write-denied to the agent file tools
 #: like ``~/.kiro/agents``. Data, not rule logic: the matcher is unchanged.
-_PACKAGE_LINE_BUDGET = 32_526
+#:
+#: Raised by 3, from 32,526, for the ``web-push`` leaf in ``paths_lists`` (the Web
+#: Push key and device secrets): the leaf and its two-line reason. No rule changed.
+_PACKAGE_LINE_BUDGET = 32_529
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

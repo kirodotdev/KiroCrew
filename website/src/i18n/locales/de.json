@@ -17007,7 +17007,15 @@
         "custom_sound_undo": "Rückgängig",
         "custom_sound_option": "{{name}} (eigener)",
         "channel_member": "Crewmate-Nachrichten",
-        "channel_apps": "App-Aktualisierungen"
+        "channel_apps": "App-Aktualisierungen",
+        "push_section": "Push-Benachrichtigungen",
+        "push_toggle_label": "Benachrichtige mich auch, wenn {{productName}} geschlossen ist",
+        "push_toggle_description": "Ein eigener Schalter, getrennt von den Systembenachrichtigungen oben, die nur funktionieren, solange {{productName}} geöffnet ist.",
+        "push_install_hint": "Füge {{productName}} auf iOS zuerst zum Home-Bildschirm hinzu, um Push zu aktivieren.",
+        "push_unsupported": "Dieser Browser kann keine Benachrichtigungen senden, während {{productName}} geschlossen ist.",
+        "push_error_permission": "Benachrichtigungen wurden nicht erlaubt. Erlaube sie, wenn dein Browser fragt, und versuche es dann erneut.",
+        "push_error_subscribe": "Benachrichtigungen für dieses Gerät konnten nicht aktiviert werden. Versuche es erneut oder lade die Seite neu.",
+        "push_error_unsubscribe": "Benachrichtigungen für dieses Gerät konnten nicht deaktiviert werden. Versuche es erneut oder lade die Seite neu."
       },
       "privacyPanel": {
         "recordMetricsDescription": "Leistungsmetriken auf diesem Rechner erfassen.",

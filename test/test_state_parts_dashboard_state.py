@@ -98,6 +98,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "_emit_member_slot_transitions": ("function", False, False, "(self) -> 'None'"),
     "_expire_slot_list_rebuild": ("function", False, False, "(self) -> 'None'"),
+    "_fan_out_web_push": ("function", False, False, "(self, note: 'dict[str, Any]') -> 'None'"),
     "_flush_dirty_slots": ("function", False, False, "(self) -> 'None'"),
     "_flush_loop": ("function", True, False, "(self) -> 'None'"),
     "_has_legacy_slots_audience": ("function", False, False, "(self) -> 'bool'"),
@@ -176,6 +177,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "_running_loop": ("staticmethod", False, False, "() -> 'asyncio.AbstractEventLoop | None'"),
     "_schedule_trailing_flush": ("function", False, False, "(self, delay: 'float') -> 'None'"),
     "_send_slot_patch": ("function", False, False, "(self, data: 'dict[str, Any]') -> 'None'"),
+    "_send_web_push_all": ("function", True, False, "(self, note: 'dict[str, Any]') -> 'None'"),
     "_send_ws_all": (
         "function",
         False,

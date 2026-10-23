@@ -17278,7 +17278,15 @@
         "custom_sound_undo": "Annuler",
         "custom_sound_option": "{{name}} (le tien)",
         "channel_member": "Messages des coéquipiers",
-        "channel_apps": "Mises à jour des apps"
+        "channel_apps": "Mises à jour des apps",
+        "push_section": "Notifications push",
+        "push_toggle_label": "Me notifier même quand {{productName}} est fermé",
+        "push_toggle_description": "Un interrupteur distinct des notifications système ci-dessus, qui ne fonctionnent que lorsque {{productName}} est ouvert.",
+        "push_install_hint": "Sur iOS, ajoute {{productName}} à l’écran d’accueil pour activer les notifications push.",
+        "push_unsupported": "Ce navigateur ne peut pas envoyer de notifications quand {{productName}} est fermé.",
+        "push_error_permission": "Les notifications n'ont pas été autorisées. Autorise-les lorsque ton navigateur le demande, puis réessaie.",
+        "push_error_subscribe": "Impossible d'activer les notifications sur cet appareil. Réessaie ou recharge la page.",
+        "push_error_unsubscribe": "Impossible de désactiver les notifications sur cet appareil. Réessaie ou recharge la page."
       },
       "privacyPanel": {
         "recordMetricsDescription": "Collecter les métriques de performance sur cette machine.",

@@ -357,8 +357,9 @@ instance forward when the banner is clicked, posts only when its own permission
 is `granted`, and never prompts. The pane keeps its own mute, away and `silent`
 rules, so only a note it would have shown is relayed. It watches the count of unacked,
 unsilenced notes in the Redux store and, when the count grows, posts one toast
-carrying the newest note's title and flattened body, tagged with its
-`approval_id` / `job_id` / `task_id` (or `kirocrew-notif`) so a burst about
+carrying the newest note's title and flattened body, tagged with the
+gateway-stamped `tag` (else its `approval_id` / `job_id` / `task_id`, or
+`kirocrew-notif`) so a burst about
 one subject replaces rather than stacks. An `approval` frame reaches the OS
 through the feed entry the socket's approval registry
 (`website/src/hooks/websocket/approvals.ts`) dispatches for it; the socket layer
@@ -385,6 +386,51 @@ surface with its own `kirocrew-chat-done:<slot>` tag; it shares only the away
 predicate.
 
 An interactive chat's tool prompt (the chat runner's `permission` row, which has no feed note) is toasted by the socket's transcript owner `website/src/hooks/websocket/chatStream.ts` on the row's live arrival, behind the same gate as its chime (`shouldChimeOnPermissionRow`: not `resolved`, not a reconnect replay). It is on by default, posts only with the OS permission granted and while `isWindowAway()`, is `silent`, reads like the chat-complete toast (session title as the title, `Waiting for your approval: <tool>` as the body), and carries a `kirocrew-approval:<slot>:<request_id>` tag, so one pending prompt is one banner however many windows receive the row. Neither mute suppresses it, the session's own per-row mute or its creator's: a prompt is the session waiting on the user.
+
+## Web Push (closed app)
+
+Web Push is a second sink on the bus. `NotificationCoordinator.deliver` stamps
+`note["tag"] = native_notification_tag(note)` (the approval, job or task id,
+else the note timestamp, hashed when its JSON-serialized form is over 128
+bytes), runs local delivery, then calls the `web_push_fanout` hook
+(`DashboardState._fan_out_web_push`) for every note that is not silenced or
+passive. The fan-out schedules `_send_web_push_all` on the running loop; it is
+best effort and logs any failure, so a failed push never affects the note that
+already landed.
+
+- **Payload.** `_web_push_payload` builds one declarative payload
+  (`web_push: 8030` plus `notification`) that iOS and Safari 18.4+ render with no
+  service worker and that `sw.js`'s `push` handler reads on Chromium and
+  Firefox. Every string field has a budget in serialized bytes so the encrypted
+  message stays under 4096 bytes; a deep link over budget becomes `/`.
+- **One banner.** The tab toast (`useNativeNotification`) and the push banner use
+  the stamped `tag`, so a hidden tab plus a push shows one banner, and both carry
+  the note's `url` in `data.url` for `notificationclick`.
+- **Service worker.** The `push` handler skips the banner only when a visible
+  dashboard window answers its probe (`kc-push-probe` over a `MessageChannel`,
+  answered by `website/src/lib/swConnectedProbe.ts` from `dashboard.connected`)
+  with `connected: true`, since only a connected tab receives the note over the
+  WebSocket. No answer within 500 ms, `false`, or no visible dashboard shows the
+  banner, so a visible tab whose socket was refused never swallows a push.
+  `notificationclick` focuses or opens only dashboard windows. A standalone app window (`/app-windows/...`), a popout (`/popout/...`)
+  and an embed (`/embed/...`) count as neither: none renders the notification
+  banner or hosts the dashboard's routes, so none is probed or focused. Pinned by
+  `website/src/test/serviceWorkerNotificationClick.test.ts`.
+- **Sender.** `notifications/web_push.py` signs VAPID ES256 and encrypts RFC 8291
+  `aes128gcm` with `cryptography`. Its session resolves through
+  `PublicAddressResolver`, which drops every address
+  `link_unfurl.address_is_not_public` rejects. A 404 or 410 removes the
+  subscription.
+- **Stores.** The subscriptions (`push_store.py`) and the VAPID keypair
+  (`vapid_keys.py`) live in the `web-push` directory of the data home, which is
+  pre-created and masked in every sandbox and fenced from agents
+  (`sandbox_leaves.py`, `sandbox_precreate.py`, `security/paths_lists.py`).
+- **Routes.** Owner only: `GET /api/notifications/push/vapid-public-key`,
+  `POST /api/notifications/push/subscribe` (HTTPS endpoint, vetted by
+  `link_unfurl.vet_unfurl_url`) and `POST /api/notifications/push/unsubscribe`.
+- **Client.** `usePushSubscription` and `NotificationsPushSection.tsx` drive the
+  Settings toggle. `test/test_web_push.py`, `test/test_notification_push_routes.py`
+  and `website/src/test/notificationSharedTag.test.ts` cover the contract.
 
 ## Bell sheet dismissal (client)
 

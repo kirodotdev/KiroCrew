@@ -23,6 +23,21 @@ vi.mock('../hooks/useNotificationSound', async (importOriginal) => {
   return { ...actual, playPreset: vi.fn() }
 })
 
+// Mock the push hook so PushSection renders deterministically (supported, not
+// subscribed) without needing serviceWorker/PushManager in the test DOM.
+const mockPush = {
+  supported: true,
+  needsInstall: false,
+  subscribed: false,
+  busy: false,
+  error: null as string | null,
+  subscribe: vi.fn(() => Promise.resolve()),
+  unsubscribe: vi.fn(() => Promise.resolve()),
+}
+vi.mock('../hooks/usePushSubscription', () => ({
+  usePushSubscription: () => mockPush,
+}))
+
 const STORAGE_KEY = 'mc-notification-sound'
 
 // Stub AudioContext to prevent real Web Audio calls during component render.
@@ -347,5 +362,34 @@ describe('NotificationsPanel', () => {
     expect(saved.volume).toBe(0.55)
     expect(saved.perCategory.cron).toBe('ding')
     expect(saved.perCategory.all).toBe('chime')
+  })
+
+  it('renders the push toggle and calls subscribe on enable', () => {
+    render(<NotificationsPanel />, 'alerts')
+    const toggle = screen.getByRole('switch', { name: /Notify me even when .* is closed/i })
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(toggle)
+    expect(mockPush.subscribe).toHaveBeenCalledOnce()
+  })
+
+  it('disables the push toggle and describes it with the blocked hint when permission is denied', () => {
+    const g = globalThis as unknown as { Notification?: unknown }
+    const original = g.Notification
+    g.Notification = { permission: 'denied', requestPermission: vi.fn(() => Promise.resolve('denied')) }
+    mockPush.subscribe.mockClear()
+    try {
+      render(<NotificationsPanel />, 'alerts')
+      const toggle = screen.getByRole('switch', { name: /Notify me even when .* is closed/i })
+      expect(toggle.getAttribute('aria-disabled')).toBe('true')
+      const describedBy = toggle.getAttribute('aria-describedby')
+      expect(describedBy).toBeTruthy()
+      expect(document.getElementById(describedBy!)?.textContent).toMatch(/blocked/i)
+      fireEvent.click(toggle)
+      fireEvent.keyDown(toggle, { key: ' ' })
+      expect(mockPush.subscribe).not.toHaveBeenCalled()
+    } finally {
+      if (original === undefined) delete g.Notification
+      else g.Notification = original
+    }
   })
 })

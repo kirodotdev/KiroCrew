@@ -79,6 +79,8 @@ export function useNativeNotification(botName: string, avatar: string) {
         // Best-effort: Android Chrome throws "Illegal constructor" for a
         // page-context Notification even with permission granted; the helper
         // swallows it and the in-app notification center still shows the event.
+        // Service-worker delivery (needed for an installed iOS PWA) lives in
+        // `postNativeNotification` itself, so every call site gets it.
         postNativeNotification(title, {
           body,
           icon: avatar,
@@ -87,11 +89,20 @@ export function useNativeNotification(botName: string, avatar: string) {
           // its own system chime on top of the WebAudio tone — a double
           // sound. Browsers that ignore `silent` are no worse than before.
           silent: true,
+          // The gateway-stamped tag first: the service worker's Web Push
+          // banner for the same note carries exactly this value, so when the
+          // tab is open but hidden the second banner replaces the first
+          // instead of showing twice. Client-made notes (an approval frame)
+          // carry no stamp and never reach Web Push, so they keep the id chain.
           tag:
+            latestNotif?.tag ||
             latestNotif?.approval_id ||
             latestNotif?.job_id ||
             latestNotif?.task_id ||
             'kirocrew-notif',
+          // The same click target the push banner carries in `data.url`, so
+          // whichever of the two same-tag banners is on screen opens the note.
+          data: { url: latestNotif?.url || '/' },
         })
       } else if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
         // Best-effort only: browsers refuse a prompt with no user gesture

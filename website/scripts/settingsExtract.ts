@@ -230,6 +230,8 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ChatPanelLinkPatternsEditor.tsx': { tab: 'chat', params: { sub: 'transcript' } },
   // The default-folder picker ChatPanel's Sessions page mounts.
   'DefaultSessionFolderSetting.tsx': { tab: 'chat', params: { sub: 'sessions' } },
+  // The Web Push toggle NotificationsPanel's Desktop alerts page mounts.
+  'NotificationsPushSection.tsx': { tab: 'notifications', params: { sub: 'alerts' } },
 }
 
 /** Panels whose controls sit in `case '<sub>':` pages of a SettingsSubNav;
