@@ -378,14 +378,16 @@ class TestModelContextPolicy:
     @pytest.mark.parametrize(
         ("architecture", "context_length", "expected_sizes"),
         [
-            # gpt2: 1,024 learned absolute positions; the micro-batch stays 256.
-            ("gpt2", 1024, (1024, 1024, 256)),
+            # gpt2: 1,024 learned absolute positions; the micro-batch stays 128.
+            ("gpt2", 1024, (1024, 1024, 128)),
+            # A decoder trained for four times the micro-batch count.
+            ("starcoder", 512, (512, 512, 128)),
             # A decoder trained for twice the micro-batch count.
-            ("starcoder", 512, (512, 512, 256)),
-            # A decoder trained for exactly the micro-batch count.
-            ("gpt2", 256, (256, 256, 256)),
-            # Below the micro-batch: n_ubatch may never exceed n_batch.
+            ("gpt2", 256, (256, 256, 128)),
+            # Exactly the micro-batch count: n_ubatch may never exceed n_batch.
             ("gpt2", 128, (128, 128, 128)),
+            # Below the micro-batch: n_ubatch may never exceed n_batch.
+            ("gpt2", 64, (64, 64, 64)),
             # Qwen3-Embedding declares 32,768: the ceiling, the shipped sizes.
             ("qwen3", 32768, _DECODER_SIZES),
             ("qwen3", 8192, _DECODER_SIZES),
@@ -396,6 +398,7 @@ class TestModelContextPolicy:
             "starcoder-512",
             "gpt2-256",
             "gpt2-128",
+            "gpt2-64",
             "qwen3-32768",
             "qwen3-8192",
             "qwen3-absent",
@@ -438,7 +441,7 @@ class TestModelContextPolicy:
 
     @pytest.mark.parametrize(
         ("architecture", "expected_sizes"),
-        [("bert", (512, 512, 512)), ("gpt2", (512, 512, 256))],
+        [("bert", (512, 512, 512)), ("gpt2", (512, 512, 128))],
         ids=["encoder", "decoder"],
     )
     def test_trained_position_count_reaches_llama_constructor_with_one_warning(

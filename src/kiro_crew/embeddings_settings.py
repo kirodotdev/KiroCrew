@@ -125,10 +125,11 @@ _N_CTX = 2048
 # compute scratch arena and llama.cpp's per-token output buffer (one row per
 # micro-batch token, 610,772 bytes each for the shipped model) without reducing
 # the accepted context. On the shipped Qwen3 file and the vendored Linux CPU
-# runtime, 256, 512 and 2048 produce byte-identical vectors under last-token
-# pooling; 256 holds 317 MiB less anonymous memory than 512 once a long input
-# has run, at the same embed latency.
-_N_UBATCH = 256
+# runtime, 128, 256, 512 and 2048 produce byte-identical vectors under
+# last-token pooling. 256 holds 317 MiB less anonymous memory than 512 once a
+# long input has run, at the same embed latency, and 128 halves the compute
+# arena and the output buffer again: 83 MiB less than 256, at no more CPU time.
+_N_UBATCH = 128
 # Safety truncation (chars) before inference, sized under _N_CTX at a
 # conservative ~4 chars/token so a clipped input always fits the context
 # window. Only pathological un-chunked blobs exceed this; mirrors the

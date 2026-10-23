@@ -125,7 +125,7 @@ def test_embedder_keeps_the_full_logical_batch(tmp_path: pathlib.Path, monkeypat
     assert kwargs["n_ubatch"] < kwargs["n_batch"]
 
 
-def test_shipped_decoder_micro_batch_is_256(tmp_path: pathlib.Path, monkeypatch) -> None:
+def test_shipped_decoder_micro_batch_is_128(tmp_path: pathlib.Path, monkeypatch) -> None:
     """The shipped model decodes in 256-token micro-batches, with the full window kept.
 
     A literal on purpose: the value is a measured choice, not a derived one. On the
@@ -138,7 +138,7 @@ def test_shipped_decoder_micro_batch_is_256(tmp_path: pathlib.Path, monkeypatch)
     (``test_embed_bounded_decode.py::TestRealModel``).
     """
     kwargs = _load_embedder(tmp_path, monkeypatch)
-    assert (kwargs["n_ctx"], kwargs["n_batch"], kwargs["n_ubatch"]) == (2048, 2048, 256)
+    assert (kwargs["n_ctx"], kwargs["n_batch"], kwargs["n_ubatch"]) == (2048, 2048, 128)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
