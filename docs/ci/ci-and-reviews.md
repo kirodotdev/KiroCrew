@@ -1004,11 +1004,12 @@ its timeout starts; diagnose or roll back rather than raising that timeout.
 
 ### Larger runners for the fork review lanes and CodeQL
 
-Nine `runs-on` sites draw on the `kirocrew-runners` larger-runner group rather
-than `ubuntu-latest`: the six fork review lanes (`fork-opus-review`,
+Fourteen `runs-on` sites draw on the `kirocrew-runners` larger-runner group
+rather than `ubuntu-latest`: the six fork review lanes (`fork-opus-review`,
 `fork-gpt-review`, `fork-first-principles-review`, `fork-design-review`,
-`fork-ux-review`, and all three jobs of `fork-security-scope-review`), plus
-`codeql.yml`.
+`fork-ux-review`, and all three jobs of `fork-security-scope-review`), the five
+same-repo review lanes (`codex-review`, `claude-review`,
+`first-principles-review`, `design-review`, `ux-review`), and `codeql.yml`.
 
 **Why the fork lanes.** They are the largest block of hosted Linux load with no
 CodeBuild path, and the obstruction is structural rather than unfinished work.
@@ -1063,11 +1064,7 @@ group targeting dispatches to any available runner in the group, so adding a
 Windows definition to `kirocrew-runners` would make every one of these jobs
 eligible to land on Windows. A Windows definition belongs in its own group.
 
-**What is deliberately still on `ubuntu-latest`.** The five same-repo review
-lanes (`codex-review`, `claude-review`, `first-principles-review`,
-`design-review`, `ux-review`) are about 18 average concurrent slots and are
-being evaluated for a low-permission CodeBuild project, which would make paid
-capacity for them redundant; they wait on that answer. `security-scope-review.yml`
+**What is deliberately still on `ubuntu-latest`.** `security-scope-review.yml`
 is itself on that lane's own scope surface, so a diff touching it sets
 `in_scope=true` while giving the model no shell, flow or cron surface to propose
 candidates for, and `scope_candidates.py validate` refuses the resulting empty
@@ -1077,13 +1074,27 @@ candidates for, and `scope_candidates.py validate` refuses the resulting empty
 `ai-review-human-override.yml` is the mechanism that clears such a red, so it
 does not move in a change that could need it.
 
+**The same-repo lanes are provisional, not permanent.** `codex-review`,
+`claude-review`, `first-principles-review`, `design-review` and `ux-review` are
+about 18 average concurrent slots. Unlike the fork lanes, they have a plausible
+free alternative: a low-permission CodeBuild project, which would make paid
+capacity for them redundant. That option is not being worked at present, so they
+sit here rather than queueing on the shared pool, and the move is a one-line
+revert per file. Treat this as reversible spend and revisit it if that project
+is ever built.
+
 **Capacity.** The definition is capped at `maximum_runners: 100`, a per-runner
 limit established when the runner is created; raising it goes through GitHub
-Support rather than the organization settings page. These nine sites are about
-28 average concurrent slots, so they fit that cap with headroom at the 2.0x to
-2.4x peak-to-mean observed across the pool. Measure this definition's own peak
-before adding more, because a subset's burst pattern need not match the
-aggregate's.
+Support rather than the organization settings page, so it is not self-service.
+The fourteen sites here are about 46 average concurrent slots. At the 2.0x to
+2.4x peak-to-mean observed across the whole hosted pool that would be 92 to 110
+concurrent, which brushes or exceeds the cap -- but that ratio is an aggregate,
+and a subset's burst pattern need not match it. **Measure this definition's own
+peak rather than extrapolating from the pool's.** Exceeding the cap is not a
+failure state, just a worse one than headroom: jobs queue against our own 100
+slots instead of the shared pool, where the p90 wait has been measured at 1,250
+seconds. The cost of being wrong lands on lanes `PR Readiness` watches, so it
+shows up as slower merges rather than as a broken check.
 
 Rollback is per site and needs no AWS or runner-group change: restore
 `runs-on: ubuntu-latest` on the affected line. A job dispatched to a group that
