@@ -256,6 +256,21 @@ interface PendingSend {
   before: ReadonlySet<string>
 }
 
+/** One send's mutation input. `msg` is the trimmed wire text; `draftText` is
+ *  what the composer held, whitespace and all. */
+interface EmbedSendVars {
+  msg: string
+  meta?: ChatEmbedSendMeta
+  files: string[]
+  sentPastes: PasteBlock[]
+  draftText: string
+  /** A chip send: it never consumed the draft, so nothing is handed back. */
+  override: boolean
+  sendId: string
+  slot: string
+  hostProof?: HostSendProof
+}
+
 /** Whether the poll shows THIS optimistic send. The default path stamps
  *  `sendId` on the wire, so identity is the proof. A host `onSend` posts on
  *  its own endpoint and gets the same id proof only if it forwards
@@ -855,25 +870,32 @@ function ChatEmbed({
   // ChatPage keep). The unconfirmed notice says so in its own words for a
   // chip send -- "tap the suggestion again" -- instead of claiming a restore that
   // did not happen.
+  /** Where a send's outcome goes: onto this embed if it is still mounted and
+   *  still showing the slot the send belonged to; otherwise parked by that
+   *  slot for the next embed that shows it. Only a composer submit has text to
+   *  hand back -- a chip send never consumed the draft. Shared by the receipt
+   *  branches and `onError`, so a send that throws recovers like a refused one. */
+  const deliverOutcome = useCallback((
+    { files, sentPastes, draftText, override, sendId, slot }: EmbedSendVars,
+    tail: PendingEmbedRecovery['tail'],
+  ) => {
+    // The text is going back to the composer: drop this send's optimistic
+    // row so the user never sees two copies of it.
+    setPending(list => list.filter(p => p.sendId !== sendId))
+    const rec: PendingEmbedRecovery = override
+      ? { tail }
+      : { tail, restoreText: draftText, ...(files.length ? { restoreFiles: files } : {}), ...(sentPastes.length ? { restorePastes: sentPastes } : {}) }
+    if (mountedRef.current && slotKeyRef.current === slot) applyRecovery(rec)
+    else stashEmbedRecovery({ app: appName, slot }, rec)
+  }, [applyRecovery, appName])
+
   const sendMutation = useMutation({
     // `msg` is the trimmed wire text; `draftText` is what the composer held,
     // whitespace and all -- a recovery must give back what the user typed, not
     // what the wire carried.
-    mutationFn: async ({ msg, meta, files, sentPastes, draftText, override, sendId, slot, hostProof }: { msg: string; meta?: ChatEmbedSendMeta; files: string[]; sentPastes: PasteBlock[]; draftText: string; override: boolean; sendId: string; slot: string; hostProof?: HostSendProof }) => {
-      // Where the outcome goes: onto this embed if it is still mounted and still
-      // showing the slot the send belonged to; otherwise parked by that slot for
-      // the next embed that shows it. Only a composer submit has text to hand
-      // back -- a chip send never consumed the draft.
-      const deliver = (tail: PendingEmbedRecovery['tail']) => {
-        // The text is going back to the composer: drop this send's optimistic
-        // row so the user never sees two copies of it.
-        setPending(list => list.filter(p => p.sendId !== sendId))
-        const rec: PendingEmbedRecovery = override
-          ? { tail }
-          : { tail, restoreText: draftText, ...(files.length ? { restoreFiles: files } : {}), ...(sentPastes.length ? { restorePastes: sentPastes } : {}) }
-        if (mountedRef.current && slotKeyRef.current === slot) applyRecovery(rec)
-        else stashEmbedRecovery({ app: appName, slot }, rec)
-      }
+    mutationFn: async (vars: EmbedSendVars) => {
+      const { msg, meta, override, sendId, slot, hostProof } = vars
+      const deliver = (tail: PendingEmbedRecovery['tail']) => deliverOutcome(vars, tail)
       // The copy is the core's (`receiptCopy.ts`, shared with SideChat): a
       // refusal FRAMED as a failed send rather than the server's bare sentence
       // -- the optimistic row is dropped first, leaving no bubble to anchor a raw reason to --
@@ -912,8 +934,13 @@ function ChatEmbed({
       if (receipt.status === 'refused') fail(receipt.reason)
       if (receipt.status === 'response-late') unconfirmed()
     },
-    // A send that threw never reached the transcript: drop its optimistic row.
-    onError: (_err, { sendId }) => { setPending(list => list.filter(p => p.sendId !== sendId)) },
+    // A send that threw instead of returning a receipt (only a bug in the send
+    // path: `sendTurn` never rejects) recovers like a refused one: the
+    // optimistic row goes, a composer submit's text comes back, and a failure
+    // row says the message was not sent. Dropping only the row lost the text.
+    onError: (_err, vars) => {
+      deliverOutcome(vars, { role: 'error', content: sendFailureCopy(undefined, !vars.override), sendId: vars.sendId })
+    },
     onSettled: () => { void refetch() },
   })
 
