@@ -67,13 +67,26 @@ def _ledger_path():
     return paths_mod.mate_agents_dir().parent / "migrated.json"
 
 
+class LedgerUnreadable(Exception):
+    """``migrated.json`` exists but cannot be read as the ledger."""
+
+
 def _read_ledger() -> dict[str, Any]:
-    """``migrated.json`` as written, ``{}`` when it is absent or unreadable."""
+    """``migrated.json`` as written, ``{}`` when it is absent.
+
+    Raises :class:`LedgerUnreadable` when it exists but cannot be read or is not
+    an object: read as empty, it would move every rolled-back crewmate again and
+    the next write would drop the thread passes it still owes.
+    """
     try:
         data = json.loads(_ledger_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return {}
-    return data if isinstance(data, dict) else {}
+    except (OSError, ValueError) as exc:
+        raise LedgerUnreadable(f"{_ledger_path()} is unreadable") from exc
+    if not isinstance(data, dict):
+        raise LedgerUnreadable(f"{_ledger_path()} is not an object")
+    return data
 
 
 def _write_ledger(data: dict[str, Any]) -> None:
@@ -98,9 +111,24 @@ def _member_id(name: str) -> str:
     return str(getattr(record, "member_id", "") or "") if record is not None else ""
 
 
-def migrated_names() -> set[str]:
-    """The crewmates this migration has already moved. Unreadable reads empty."""
-    return _names(_read_ledger())
+def _moved_ids(data: dict[str, Any]) -> dict[str, str]:
+    ids = data.get("migrated_ids")
+    if not isinstance(ids, dict):
+        return {}
+    return {k: v for k, v in ids.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def _already_moved(data: dict[str, Any], name: str, member_id: str) -> bool:
+    """Whether the crewmate *name* with *member_id* was moved before.
+
+    A name moved under another ``member_id`` was deleted and made again, so the
+    new crewmate is not moved yet. A name recorded with no id (a ledger from
+    before the ids) still counts as moved.
+    """
+    if name not in _names(data):
+        return False
+    recorded = _moved_ids(data).get(name)
+    return recorded is None or recorded == member_id
 
 
 def _record_migrated(name: str, source: str = "", *, moved: bool = True) -> None:
@@ -112,13 +140,19 @@ def _record_migrated(name: str, source: str = "", *, moved: bool = True) -> None
     repoint (the intent), so a crash after the repoint still owes the threads.
     """
     data = _read_ledger()
+    member_id = _member_id(name)
     if moved:
         data["migrated"] = sorted(_names(data) | {name})
+        ids = _moved_ids(data)
+        if member_id:
+            ids[name] = member_id
+        else:
+            ids.pop(name, None)
+        data["migrated_ids"] = dict(sorted(ids.items()))
     if source:
         threads = data.get("threads")
         threads = threads if isinstance(threads, dict) else {}
         entry = {"from": source, "repointed": [], "done": False}
-        member_id = _member_id(name)
         if member_id:
             entry["member_id"] = member_id
         old = threads.get(name)
@@ -274,12 +308,15 @@ def _candidates(cfg: KiroCrewConfig) -> dict[str, str]:
     ``kiro_agent`` or ``member_id``, ones already on their own file, and moved ones.
     """
     out: dict[str, str] = {}
-    done = migrated_names()
+    ledger = _read_ledger()
     for name, binding in cfg.agents.items():
-        if name == "default" or name in done:
+        if name == "default":
             continue
-        if not str(getattr(binding, "member_id", "") or "").strip():
+        member_id = str(getattr(binding, "member_id", "") or "").strip()
+        if not member_id:
             logger.debug("crewmate migration: %r has no member id; not a crewmate", name)
+            continue
+        if _already_moved(ledger, name, member_id):
             continue
         if is_mate_service_agent(name):
             # Its file would overwrite a spec Kiro Crew generates in the same folder.
@@ -672,6 +709,12 @@ def migrate_existing_crewmates(
             report.threads_repointed = repoint_moved_threads()
             return report
         base = _worker_base()
+    except LedgerUnreadable as exc:
+        # Kept as it is, so the owner can fix it; nothing moves until then.
+        logger.warning(
+            "crewmate migration: %s; no crewmate moves until it is fixed or removed", exc
+        )
+        return report
     except Exception:
         logger.warning(
             "crewmate migration: could not read the crewmates or the worker base", exc_info=True

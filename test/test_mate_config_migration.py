@@ -722,6 +722,54 @@ def test_a_rolled_back_crewmate_s_threads_stay_on_its_old_agent(layout, persiste
     }
 
 
+def test_a_crewmate_made_again_under_a_moved_name_is_moved_too(layout, persisted):
+    """The ledger knows a moved crewmate by its member id, not only its name."""
+    user, mates = layout
+    _write(user, "builder", _template("builder", mcpServers={"jira": JIRA}, tools=["@jira"]))
+    cfg = _cfg(zxc=KiroCrewAgentConfig(member_id="zxc", kiro_agent="builder"))
+    persisted(cfg)
+    assert migrate_existing_crewmates(cfg).migrated == ["zxc"]
+
+    # Deleted, then made again under the same key on the shared template.
+    cfg.agents["zxc"] = KiroCrewAgentConfig(member_id="zxc-2", kiro_agent="builder")
+    again = migrate_existing_crewmates(cfg)
+
+    assert again.migrated == ["zxc"]
+    assert cfg.agents["zxc"].kiro_agent == "zxc"
+    assert _ledger(mates)["migrated_ids"] == {"zxc": "zxc-2"}
+
+
+def test_a_name_a_ledger_from_before_the_ids_lists_still_counts_as_moved(layout, persisted):
+    user, mates = layout
+    _write(user, "builder", _template("builder", mcpServers={"jira": JIRA}, tools=["@jira"]))
+    (mates.parent / "migrated.json").write_text(json.dumps({"migrated": ["zxc"]}))
+    cfg = _cfg(zxc=KiroCrewAgentConfig(member_id="zxc", kiro_agent="builder"))
+    saved = persisted(cfg)
+
+    assert migrate_existing_crewmates(cfg).migrated == []
+    assert saved == {}
+
+
+@pytest.mark.parametrize("damaged", ["{not json", "[]"])
+def test_an_unreadable_ledger_moves_nobody_and_is_kept(layout, persisted, caplog, damaged):
+    """Read as empty it would move a rolled-back crewmate again and drop owed passes."""
+    user, mates = layout
+    _write(user, "builder", _template("builder", mcpServers={"jira": JIRA}, tools=["@jira"]))
+    ledger = mates.parent / "migrated.json"
+    ledger.write_text(damaged, encoding="utf-8")
+    cfg = _cfg(zxc=KiroCrewAgentConfig(member_id="zxc", kiro_agent="builder"))
+    saved = persisted(cfg)
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.mate_config_migration"):
+        report = migrate_existing_crewmates(cfg)
+
+    assert report.migrated == [] and saved == {}
+    assert cfg.agents["zxc"].kiro_agent == "builder"
+    assert not (mates / "zxc.json").exists()
+    assert ledger.read_text(encoding="utf-8") == damaged
+    assert "no crewmate moves until it is fixed or removed" in caplog.text
+
+
 def test_a_ledger_entry_left_by_another_member_under_the_key_is_replaced(layout, persisted):
     from kiro_crew.mate_config_migration import _record_migrated
 

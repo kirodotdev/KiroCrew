@@ -3718,7 +3718,13 @@ Only after every candidate is proven are bindings repointed, one at a time:
 the ledger entry (`~/.kiro/mates/migrated.json`, `threads.<name>`) is written
 first as intent, then the binding is repointed (the create path's locked
 write), then the crewmate is marked moved, so a crash in between still owes its
-thread pass. Nothing is deleted: setting `kiro_agent` back rolls the crewmate's
+thread pass. A moved crewmate is known by name and `member_id`
+(`migrated_ids`), so one deleted and made again under the same name is a
+candidate again; a name a ledger from before the ids lists stays moved. A
+ledger that exists but cannot be read, or is not an object, moves nobody and is
+left as it is, with one WARNING, until it is fixed or removed
+(`LedgerUnreadable`): read as empty it would move a rolled-back crewmate again
+and the next write would drop the thread passes it still owes. Nothing is deleted: setting `kiro_agent` back rolls the crewmate's
 new chats back; threads already moved stay on the conductor.
 
 **Its pre-upgrade threads move with it**
