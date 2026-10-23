@@ -22,6 +22,8 @@
  * - dispatched / queued          -> unchanged acceptance handling (covered by
  *                                  SideChat.steerQueue.test.tsx, which passes
  *                                  unmodified -- the compatibility evidence).
+ * - a send that throws           -> the refusal recovery. `sendTurn` never
+ *                                  rejects, so only a bug reaches it.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, act, fireEvent } from '@testing-library/react'
@@ -50,8 +52,16 @@ vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
 }))
 
+// The real send, so every case above runs it. One case below makes it throw,
+// which `sendTurn` itself never does, to reach the mutation's error path.
+vi.mock('../chat-core/transport/sendTurn', async importOriginal => {
+  const actual = await importOriginal<typeof import('../chat-core/transport/sendTurn')>()
+  return { ...actual, sendTurn: vi.fn(actual.sendTurn) }
+})
+
 import SideChat from '../pages/chat/SideChat'
 import { api } from '../api/client'
+import { sendTurn } from '../chat-core/transport/sendTurn'
 
 const dashInitial = { ...dashboardReducer(undefined, { type: '@@INIT' }), connected: true }
 const SLOT = 'test-slot-1'
@@ -89,6 +99,8 @@ beforeEach(() => {
   // would otherwise be in the next case's composer.
   clearSideChatDrafts()
   vi.clearAllMocks()
+  // Back to the real send, dropping a throw a case queued and never used.
+  vi.mocked(sendTurn).mockReset()
 })
 
 afterEach(() => {
@@ -417,5 +429,26 @@ describe('SideChat send receipt policy', () => {
     expect(box()).toHaveValue('slow one')
     expect(screen.getByText(/^Delivery not confirmed/)).toBeInTheDocument()
     expect(store.getState().chat.slotSide[SLOT]?.pending ?? false).toBe(false)
+  })
+
+  it('a send that throws recovers like a refusal: the bubble rolls back, the text comes back, and a row says it was not sent', async () => {
+    const user = userEvent.setup()
+    vi.mocked(sendTurn).mockRejectedValueOnce(new Error('a bug in the wire'))
+    const store = sideState(false)
+    renderWithProviders(<SideChat slot={SLOT} />, { store })
+    await user.type(box(), 'thrown away?')
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(box()).toHaveValue('thrown away?'))
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't send — check your connection and try again.")
+    expect(sideMessages(store).filter(m => m.content === 'thrown away?')).toHaveLength(0)
+  })
+
+  it('a CHIP send that throws leaves the draft alone, since it never took the composer text, and still says it was not sent', async () => {
+    vi.mocked(sendTurn).mockRejectedValueOnce(new Error('a bug in the wire'))
+    renderWithProviders(<SideChat slot={SLOT} />, { store: chipState() })
+    await act(async () => { fireEvent.change(box(), { target: { value: 'my own draft' } }) })
+    await act(async () => { fireEvent.click(screen.getByLabelText('Send now: Run tests')) })
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent("Couldn't send — check your connection and try again."))
+    expect(box()).toHaveValue('my own draft')
   })
 })
