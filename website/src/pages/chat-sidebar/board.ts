@@ -13,6 +13,7 @@ import { crewWorkCounts } from '../../lib/crewWork'
 import { crewRootOf } from '../../lib/crewMode'
 import { api } from '../../api/client'
 import { loadChatConfig } from '../chat/ChatSettings'
+import { useChatSetting } from '../../hooks/useChatSetting'
 import { useDocumentImeLatch } from '../../hooks/useImeGuard'
 import { errMessage } from '../../utils/thunkError'
 import { i18nT } from '../../i18n/t'
@@ -65,6 +66,8 @@ export function useBoardColumns() {
   // Opt-in, through the same listener: a folder's count adds its subfolders'.
   const [countSubfolderContents, setCountSubfolderContents] = useState(() => loadChatConfig().countSubfolderContents)
   const [hideEmptyFolders, setHideEmptyFolders] = useState(() => loadChatConfig().hideEmptyFolders)
+  // Title-only cards also follow a save in another tab (`storage`), not only this tab's event.
+  const compactSessionCards = useChatSetting('compactSessionCards')
   useEffect(() => {
     const onChange = () => {
       const cfg = loadChatConfig()
@@ -85,7 +88,7 @@ export function useBoardColumns() {
   }, [rawColumns, tagColumnsEnabled])
   return {
     rawColumns, tagColumnsSettled, columnsFailed, columnsError, refetchColumns, tagColumnsEnabled,
-    hideEmptyFolderBody, countSubfolderContents, orderedColumns,
+    hideEmptyFolderBody, countSubfolderContents, compactSessionCards, orderedColumns,
     // List view only: the board (any column, see `renderedLane`) draws every folder.
     hideEmptyFolders: hideEmptyFolders && orderedColumns.length === 0,
   }
