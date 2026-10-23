@@ -608,7 +608,11 @@ export default function AppDetailPage() {
         // take effect, which the modal reports inline rather than closing on a
         // silent no-op.
         const outcome = await runInstall()
-        if (outcome === 'trust-required') throw new Error(APP_EXECUTION_DENIED)
+        // Carries the code as a property so `isTrustDeniedError` reads it as the
+        // trust refusal it is, the same as a refused enable's response body.
+        if (outcome === 'trust-required') {
+          throw Object.assign(new Error(APP_EXECUTION_DENIED), { code: APP_EXECUTION_DENIED })
+        }
         // The server's own sentence, so the modal can show WHY instead of only
         // the generic copy, with the machine code beside it so the modal can tell
         // a permanent refusal from a failure worth retrying (`errorCode` reads a
