@@ -212,6 +212,7 @@ from kiro_crew.dashboard.messaging_api.proactive_send import (  # noqa: F401
     api_update_message,
 )
 from kiro_crew.dashboard.messaging_api.run_control import (  # noqa: F401
+    _flag_collected_inline,
     _log_panel_dismissal,
     _native_child_refusal,
     _queue_unreadable,
@@ -221,6 +222,7 @@ from kiro_crew.dashboard.messaging_api.run_control import (  # noqa: F401
     _queued_run_payload,
     _queued_runs,
     _retry_failed_run,
+    _settle_collected_on_slot,
     _spawn_scope_refusal,
     api_spawn_delete,
     api_spawn_lost,
@@ -233,7 +235,9 @@ from kiro_crew.dashboard.messaging_api.run_control import (  # noqa: F401
 from kiro_crew.dashboard.messaging_api.run_views import (  # noqa: F401
     _apply_result_view,
     _awaiting_spawn_approval,
+    _parent_turn_holding,
     _redact,
+    _session_turn_holding,
     _spawn_result_view,
     api_spawn_list,
     api_spawn_status,
@@ -319,7 +323,7 @@ from kiro_crew.dashboard.ws_event_scope import (  # noqa: F401
 from kiro_crew.hidden_leaf_staging import EnvStagingRefused, publish_env  # noqa: F401
 from kiro_crew.members import attributable_session_key, member_identity_for_session  # noqa: F401
 from kiro_crew.messaging.display_safety import redact_for_display
-from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink  # noqa: F401
+from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink, canonical_key  # noqa: F401
 from kiro_crew.messaging.renderer import (  # noqa: F401
     chunk_for_transport,
     chunk_text,
@@ -337,6 +341,7 @@ from kiro_crew.notifications.bus import (  # noqa: F401
     NotificationPayload,
     NotificationValidationError,
 )
+from kiro_crew.parent_turns import ledger_of, settles_at_release  # noqa: F401
 from kiro_crew.platform.context import redact_via_context  # noqa: F401
 from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY  # noqa: F401
 from kiro_crew.platform_compat import IS_MACOS  # noqa: F401

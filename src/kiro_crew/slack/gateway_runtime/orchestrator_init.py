@@ -11,7 +11,8 @@ Orchestrator fields written: ``_adaptive_controller``, ``_allowed_users``,
 ``_batch_progress``, ``_bot_token``, ``_cfg``, ``_channel_handles``,
 ``_channel_restart_gen``, ``_channel_restart_lock``, ``_channel_restart_tasks``,
 ``_channel_transports_started``, ``_config_subs``, ``_console_script_repair_task``,
-``_cron_armed``, ``_cron_injecting``, ``_cron_reconciled``, ``_dashboard_runner``,
+``_cron_armed``, ``_cron_injecting``, ``_cron_reconciled``, ``_cron_runs_holding``,
+``_dashboard_runner``,
 ``_feature_video_task``, ``_handler_tasks``, ``_inbound_replay_task``, ``_json_ready``,
 ``_mandatory_update_deferred_at``, ``_mandatory_update_deferred_key``,
 ``_marker_clear_pending``, ``_marker_write_task``, ``_mcp_gateway_manager``,
@@ -157,6 +158,15 @@ def __init__(
     # Wave accounting for the completion digest (batch_id -> progress).
     self._batch_progress = {}
     self._cron_injecting = {}  # parent_key → pending injection count
+    # The tasks of message cron runs, each from before its first acquire to its
+    # end (cron_fire._cron_callback): the last sub-agent's cleanup leaves a
+    # session whose permit one of them holds to that run's finalizer
+    # (_reset_cron_parent_when_idle).
+    self._cron_runs_holding = set()
+    # Completions whose inline-returned members' turn still held the parent's
+    # permit, keyed by that holding; settled at its release (_settle_inline).
+    self._inline_parked = {}
+    self._inline_tasks = set()  # settled parked completions still routing
     self._running_script_ids = set()  # job IDs with in-flight script/command execution
     self.task_runner = None
     # Runner admission over the task queue, attached by _wire_runner_admission
