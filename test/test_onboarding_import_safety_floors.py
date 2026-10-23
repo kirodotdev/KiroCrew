@@ -15,6 +15,7 @@ in ``test_onboarding_import_instructions_and_conflicts.py``.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib
 import json
@@ -31,6 +32,7 @@ from onboarding_import_helpers import (  # noqa: F401 -- the autouse fixture reg
     _write_jsonl,
     _write_openclaw_session,
 )
+from source_corpus import parsed_candidates, src_root
 
 from kiro_crew import onboarding_apply, onboarding_plan, onboarding_scan, onboarding_sources
 from kiro_crew.cron import CronService
@@ -506,7 +508,15 @@ class TestSessionImportRemoved:
             onboarding_sources,
             *(
                 importlib.import_module(f"kiro_crew.onboarding_sources.{name}")
-                for name in ("claude_code", "codex", "gemini", "hermes", "lineage", "openclaw")
+                for name in (
+                    "amazon_quick",
+                    "claude_code",
+                    "codex",
+                    "gemini",
+                    "hermes",
+                    "lineage",
+                    "openclaw",
+                )
             ),
         ]
 
@@ -542,11 +552,14 @@ class TestSessionImportRemoved:
             [{"role": "user", "content": "predecessor secret talk"}],
         )
         _write_openclaw_session(home / ".openclaw")
+        quick_session = home / ".quickwork" / "profiles" / "work" / "sessions" / "s1" / "workspace"
+        quick_session.mkdir(parents=True)
+        (quick_session / "notes.md").write_text("quick secret talk", encoding="utf-8")
 
         plan = api.preview_import(home=home, env={})
         serialized = json.dumps(plan)
 
-        for source_id in ("codex", "claude_code", "predecessor", "openclaw"):
+        for source_id in ("codex", "claude_code", "predecessor", "openclaw", "amazon_quick"):
             assert "sessions" not in _categories(plan, source_id)
         assert "secret talk" not in serialized
 
@@ -666,3 +679,79 @@ class TestSessionImportRemoved:
         assert len(writes) < 3
         ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
         assert len(ledger["records"]) == 3
+
+
+_KEEP_ENABLED = "keep_enabled_state"
+#: The one source allowed to keep its servers' on/off state (invariant 10).
+_KEEP_ENABLED_SOURCE = "onboarding_sources/amazon_quick.py"
+#: ``_add_mcp_configs`` hands its own parameter on to ``_sanitize_mcp_spec``.
+_KEEP_ENABLED_FORWARD = ("onboarding_plan.py", "_add_mcp_configs")
+
+
+class _KeepEnabledPasses(ast.NodeVisitor):
+    """Collect every ``keep_enabled_state`` a call passes, with its enclosing function.
+
+    Seen: a plain keyword, and a ``**{...}`` dict display whose key is the
+    literal string. A ``**mapping`` built elsewhere, or a key assembled at run
+    time, is not visible to this walk.
+    """
+
+    def __init__(self) -> None:
+        self.functions: list[str] = []
+        self.passes: list[tuple[int, str, ast.expr]] = []
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self.functions.append(node.name)
+        self.generic_visit(node)
+        self.functions.pop()
+
+    visit_FunctionDef = _visit_function
+    visit_AsyncFunctionDef = _visit_function
+
+    def visit_Call(self, node: ast.Call) -> None:
+        enclosing = self.functions[-1] if self.functions else ""
+        for keyword in node.keywords:
+            if keyword.arg == _KEEP_ENABLED:
+                self.passes.append((keyword.value.lineno, enclosing, keyword.value))
+            elif keyword.arg is None and isinstance(keyword.value, ast.Dict):
+                for key, value in zip(keyword.value.keys, keyword.value.values):
+                    if isinstance(key, ast.Constant) and key.value == _KEEP_ENABLED:
+                        self.passes.append((value.lineno, enclosing, value))
+        self.generic_visit(node)
+
+
+def test_only_amazon_quick_passes_keep_enabled_state() -> None:
+    root = src_root()
+    offenders: list[str] = []
+    source_passes = 0
+    for path, _text, tree in parsed_candidates(
+        require_any=(_KEEP_ENABLED,), skip_syntax_errors=False
+    ):
+        rel = path.relative_to(root).as_posix()
+        if rel.startswith("_vendor/"):
+            continue
+        visitor = _KeepEnabledPasses()
+        visitor.visit(tree)
+        for lineno, enclosing, value in visitor.passes:
+            if isinstance(value, ast.Constant) and value.value is False:
+                continue
+            if rel == _KEEP_ENABLED_SOURCE:
+                source_passes += 1
+                continue
+            if (
+                (rel, enclosing) == _KEEP_ENABLED_FORWARD
+                and isinstance(value, ast.Name)
+                and value.id == _KEEP_ENABLED
+            ):
+                continue
+            offenders.append(f"src/kiro_crew/{rel}:{lineno}: {_KEEP_ENABLED}={ast.unparse(value)}")
+    assert not offenders, (
+        "only onboarding_sources/amazon_quick.py may pass keep_enabled_state "
+        "(onboarding-import.md invariant 10: imported MCP servers are written "
+        "disabled; another source gaining that exception is a reviewed change "
+        "to this test and that list):\n" + "\n".join(offenders)
+    )
+    assert source_passes, (
+        f"src/kiro_crew/{_KEEP_ENABLED_SOURCE} no longer passes keep_enabled_state; "
+        "update invariant 10 in onboarding-import.md and this test together"
+    )

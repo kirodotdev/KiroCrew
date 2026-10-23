@@ -263,6 +263,31 @@ def _safe_reason(value: object) -> str:
     return "not_imported"
 
 
+def _mcp_description(count: int, raw_enabled: object, source_name: str, plain: str) -> str:
+    """The MCP servers row text, true for however many servers will run.
+
+    The plan's ``enabled_count`` says how many planned servers arrive with no
+    ``disabled`` mark. A missing, zero or malformed value keeps *plain*, which
+    is true only when every server arrives disabled; a value above *count* is
+    clamped to it.
+    """
+    try:
+        enabled = min(_nonnegative_count(raw_enabled, default=0), count)
+    except RuntimeError:
+        enabled = 0
+    if enabled == 0:
+        return plain
+    if enabled == count:
+        if count == 1:
+            return f"Server definitions; 1 was on in {source_name} and will run"
+        return f"Server definitions; all {count} were on in {source_name} and will run"
+    verb = "was" if enabled == 1 else "were"
+    return (
+        f"Server definitions; {enabled} {verb} on in {source_name} and will run,"
+        " the rest arrive disabled"
+    )
+
+
 def _scan_response(plan: object) -> dict[str, Any]:
     """Project an internal plan to the content-free browser contract."""
     if not isinstance(plan, dict) or not isinstance(plan.get("sources"), list):
@@ -292,12 +317,18 @@ def _scan_response(plan: object) -> dict[str, Any]:
             category_id = category.get("id")
             if category_id not in _CATEGORY_IDS:
                 raise RuntimeError("invalid import preview")
+            count = _nonnegative_count(category.get("count"))
+            description = _CATEGORY_DESCRIPTIONS[category_id]
+            if category_id == "mcp_servers":
+                description = _mcp_description(
+                    count, category.get("enabled_count"), display_name, description
+                )
             projected_categories.append(
                 {
                     "id": category_id,
                     "label": _CATEGORY_NAMES[category_id],
-                    "count": _nonnegative_count(category.get("count")),
-                    "description": _CATEGORY_DESCRIPTIONS[category_id],
+                    "count": count,
+                    "description": description,
                 }
             )
         sources.append(

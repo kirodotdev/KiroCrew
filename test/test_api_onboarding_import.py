@@ -1193,6 +1193,75 @@ def test_handler_category_tables_match_the_backend() -> None:
     }
 
 
+def _mcp_description(count: int, enabled_count: object = None) -> str:
+    """The MCP servers row description ``_scan_response`` projects for one category."""
+    category: dict[str, Any] = {"id": "mcp_servers", "count": count}
+    if enabled_count is not None:
+        category["enabled_count"] = enabled_count
+    plan = {
+        "sources": [{"id": "synthetic", "name": "Synthetic Agent", "categories": [category]}],
+        "skipped": [],
+    }
+    response = _handler_module()._scan_response(plan)
+    return response["sources"][0]["categories"][0]["description"]
+
+
+@pytest.mark.parametrize(
+    ("count", "enabled_count", "description"),
+    [
+        (3, None, "Server definitions, imported disabled"),
+        (3, 0, "Server definitions, imported disabled"),
+        (
+            3,
+            1,
+            "Server definitions; 1 was on in Synthetic Agent and will run,"
+            " the rest arrive disabled",
+        ),
+        (
+            3,
+            2,
+            "Server definitions; 2 were on in Synthetic Agent and will run,"
+            " the rest arrive disabled",
+        ),
+        (3, 3, "Server definitions; all 3 were on in Synthetic Agent and will run"),
+        (1, 1, "Server definitions; 1 was on in Synthetic Agent and will run"),
+    ],
+)
+def test_mcp_description_says_how_many_servers_will_run(
+    count: int, enabled_count: object, description: str
+) -> None:
+    assert _mcp_description(count, enabled_count) == description
+
+
+def test_mcp_enabled_count_is_clamped_to_the_category_count() -> None:
+    assert _mcp_description(2, 5) == (
+        "Server definitions; all 2 were on in Synthetic Agent and will run"
+    )
+
+
+@pytest.mark.parametrize("enabled_count", [-1, "2", True, 1.5, [1]], ids=repr)
+def test_malformed_mcp_enabled_count_keeps_the_plain_description(
+    enabled_count: object,
+) -> None:
+    assert _mcp_description(3, enabled_count) == "Server definitions, imported disabled"
+
+
+def test_enabled_count_on_another_category_does_not_change_its_description() -> None:
+    plan = {
+        "sources": [
+            {
+                "id": "synthetic",
+                "name": "Synthetic Agent",
+                "categories": [{"id": "skills", "count": 2, "enabled_count": 2}],
+            }
+        ],
+        "skipped": [],
+    }
+    category = _handler_module()._scan_response(plan)["sources"][0]["categories"][0]
+    assert category["description"] == "User-authored skills and supporting files"
+    assert "enabled_count" not in category
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("method", "path"),

@@ -163,6 +163,10 @@ _MCP_CONSTRAINT_FIELDS = frozenset(
 )
 
 
+#: These two sets are the whole allowlist an imported MCP server must fit.
+#: Widening either one also widens what an ``amazon_quick`` import can start
+#: with its on switch kept, so review such a change against security
+#: invariant 10 in docs/system-specs/modules/onboarding-import.md.
 _MCP_STDIO_FIELDS = frozenset({"command", "args"}) | _MCP_RUNTIME_FIELDS
 
 
@@ -346,7 +350,24 @@ def _url_has_literal_secret(url: str) -> bool:
     return False
 
 
-def _sanitize_mcp_spec(spec: Any, scan: _Scan) -> dict[str, Any] | None:
+def _enabled_in_source(spec: dict[str, Any]) -> bool:
+    """True only when a source's own fields leave the server switched on.
+
+    ``disabled`` must be absent or the boolean ``False``, and ``enabled`` absent
+    or the boolean ``True``. Any other value, the string ``"false"`` included,
+    reads as off: an imported server is switched on only on the source's clear
+    word.
+    """
+    return spec.get("disabled", False) is False and spec.get("enabled", True) is True
+
+
+def _sanitize_mcp_spec(
+    spec: Any,
+    scan: _Scan,
+    *,
+    keep_enabled_state: bool = False,
+) -> dict[str, Any] | None:
+    """One server as its allowlisted fields, or None to refuse it; see ``_MCP_STDIO_FIELDS``."""
     if not isinstance(spec, dict):
         scan.diagnostic("mcp_servers", "unsupported_mcp_schema", unsupported=True)
         return None
@@ -411,8 +432,11 @@ def _sanitize_mcp_spec(spec: Any, scan: _Scan) -> dict[str, Any] | None:
             safe_args.append(arg)
         if safe_args:
             result["args"] = safe_args
-    # A copied definition is passive until the user reviews and enables it.
-    result["disabled"] = True
+    # A copied definition is passive until the user reviews and enables it,
+    # unless the caller keeps the source's own on/off choice. Kiro Crew marks
+    # only a server that is off; one that is on carries no ``disabled`` key.
+    if not (keep_enabled_state and _enabled_in_source(spec)):
+        result["disabled"] = True
     return result
 
 
@@ -438,7 +462,19 @@ def _mcp_maps(config: Any) -> list[dict[str, Any]]:
     return maps
 
 
-def _add_mcp_configs(scan: _Scan, configs: list[dict[str, Any]]) -> None:
+def _add_mcp_configs(
+    scan: _Scan,
+    configs: list[dict[str, Any]],
+    *,
+    keep_enabled_state: bool = False,
+) -> None:
+    """Project every MCP server in *configs* onto ``mcp_servers`` items.
+
+    A server is imported disabled, so the user reviews it before it runs. With
+    *keep_enabled_state* each server keeps the on/off state its source gave it
+    instead (see :func:`_enabled_in_source`); a source passes it when its
+    servers should run in Kiro Crew exactly when they ran there.
+    """
     seen: set[str] = set()
     omitted_secret_fields = 0
     for config in configs:
@@ -459,7 +495,7 @@ def _add_mcp_configs(scan: _Scan, configs: list[dict[str, Any]]) -> None:
                     continue
                 if name in seen:
                     continue
-                spec = _sanitize_mcp_spec(raw_spec, scan)
+                spec = _sanitize_mcp_spec(raw_spec, scan, keep_enabled_state=keep_enabled_state)
                 omitted_secret_fields += _count_secret_fields(raw_spec)
                 if spec is None:
                     continue
@@ -680,29 +716,48 @@ def _add_instruction_files(
         content = _read_text(path, anchor, scan, "instructions")
         if content is None:
             continue
-        cleaned = _sanitize_text(content, scan)
-        # Mirror the memory gate: only an actual redaction drops the file, not
-        # the size-cap truncation of an otherwise clean one.
-        if cleaned != content[:_MAX_TEXT_CHARS].strip():
-            scan.diagnostic("instructions", "credential_bearing_instruction")
-            continue
-        if contains_injection(cleaned):
-            scan.diagnostic("instructions", "injection_instruction_excluded")
-            continue
         try:
             relative = str(path.relative_to(anchor))
         except ValueError:
             relative = path.name
-        for index, directive in enumerate(_instruction_paragraphs(cleaned, scan)):
-            if len(scan.items["instructions"]) >= _MAX_IMPORTED_LESSONS:
-                scan.diagnostic("instructions", "instruction_count_limit")
-                return
-            digest = hashlib.sha256(directive.encode()).hexdigest()
-            scan.add(
-                "instructions",
-                f"{relative}\0{index}\0{digest}",
-                {"kind": "lesson", "rule": directive},
-            )
+        if not _add_instruction_text(scan, content, relative):
+            return
+
+
+def _add_instruction_text(scan: _Scan, content: str, origin: str) -> bool:
+    """Project one instruction document's text onto the lesson tier.
+
+    The body of :func:`_add_instruction_files`, for a source that keeps its
+    instructions in a config value rather than in a file of their own, so both
+    pass the same screens. *origin* keys the items, standing in for the file's
+    relative path. Returns False once the per-import lesson ceiling is reached,
+    so a caller stops reading further documents.
+
+    A directive whose key is already in the plan is skipped before the ceiling
+    is checked. :func:`_deduplicate_items` would drop it later anyway, so it
+    must not take a place that a new directive could still fill.
+    """
+    cleaned = _sanitize_text(content, scan)
+    # Mirror the memory gate: only an actual redaction drops the document, not
+    # the size-cap truncation of an otherwise clean one.
+    if cleaned != content[:_MAX_TEXT_CHARS].strip():
+        scan.diagnostic("instructions", "credential_bearing_instruction")
+        return True
+    if contains_injection(cleaned):
+        scan.diagnostic("instructions", "injection_instruction_excluded")
+        return True
+    offered = {item.key for item in scan.items["instructions"]}
+    for index, directive in enumerate(_instruction_paragraphs(cleaned, scan)):
+        digest = hashlib.sha256(directive.encode()).hexdigest()
+        key = f"{origin}\0{index}\0{digest}"
+        if key in offered:
+            continue
+        if len(scan.items["instructions"]) >= _MAX_IMPORTED_LESSONS:
+            scan.diagnostic("instructions", "instruction_count_limit")
+            return False
+        offered.add(key)
+        scan.add("instructions", key, {"kind": "lesson", "rule": directive})
+    return True
 
 
 def _add_db_directive(scan: _Scan, key: str, value: Any) -> None:
@@ -1011,7 +1066,7 @@ def _deduplicate_items(scan: _Scan) -> None:
 
 
 def _source_summary(scan: _Scan, *, display_name: str) -> dict[str, Any]:
-    categories = [
+    categories: list[dict[str, Any]] = [
         {
             "id": category,
             "label": _CATEGORY_LABELS[category],
@@ -1021,6 +1076,18 @@ def _source_summary(scan: _Scan, *, display_name: str) -> dict[str, Any]:
         for category in CATEGORY_IDS
         if scan.items[category]
     ]
+    # How many planned MCP servers carry no ``disabled: true`` and so will run.
+    # A count only, never names, and only when it is above zero, so a source
+    # that imports every server disabled keeps the plan shape it always had.
+    enabled = 0
+    for item in scan.items["mcp_servers"]:
+        spec = item.payload.get("spec") if isinstance(item.payload, dict) else None
+        if isinstance(spec, dict) and spec.get("disabled") is not True:
+            enabled += 1
+    if enabled:
+        for category_summary in categories:
+            if category_summary["id"] == "mcp_servers":
+                category_summary["enabled_count"] = enabled
     summary = {
         "id": scan.source_id,
         # `display_name` is REQUIRED, and deliberately: the caller already holds

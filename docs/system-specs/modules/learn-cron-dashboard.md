@@ -1453,10 +1453,12 @@ mapping into the memory hierarchy, the dry-run contract, the conflict
 strategies, and the per-source layout assumptions. This section covers only how
 the flow is surfaced through the dashboard and where it sits in onboarding.
 
-The dashboard can scan and selectively merge local setup from five shipped
-foreign agents — **Codex, Claude Code, Gemini CLI / Antigravity, OpenClaw, and
-Hermes** — plus any an edition registers through the `ImportSourceProvider`
-seam. Quick is not a source and must not appear as an import option.
+The dashboard can scan and selectively merge local setup from six shipped
+foreign agents — **Codex, Claude Code, Gemini CLI / Antigravity, OpenClaw,
+Hermes, and Amazon Quick** — plus any an edition registers through the
+`ImportSourceProvider` seam. The first-run Quick setup mode (`quick`) is not a
+source and must not appear as an import option; the Amazon Quick app is the
+`amazon_quick` source.
 
 The selectable categories are Instructions, Memories, Workspaces, MCP servers,
 Skills, Denied commands, Schedules and Settings; sessions are not a category. The
