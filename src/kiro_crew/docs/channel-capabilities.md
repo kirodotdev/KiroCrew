@@ -37,6 +37,11 @@ figure is the byte budget divided by four — the worst case for non-ASCII text.
 An ASCII-only reply on those channels fits far more than the character figure
 suggests.
 
+**Streams** and **Edits** show each channel's default. Feishu streams the reply
+into a live card, editing it in place, only when `feishu.streaming` is on, and
+only in a direct message; a group chat and the default setup keep one buffered
+reply, which is why its cells stay ❌.
+
 **Sends a file back to you** is what you receive from `file_send`. Slack has its
 own upload leg; Telegram, Discord and WeCom deliver through their `send_document`.
 On every other channel `file_send` does not post into that chat: the file reaches

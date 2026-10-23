@@ -1109,6 +1109,7 @@ def _build_feishu_config(feishu_data: dict) -> FeishuConfig:
         soft_threshold_pct=soft,
         hard_threshold_pct=hard,
         session_folder=_coerce_session_folder(section.get("session_folder")),
+        streaming=section.read("streaming", _safe_bool),
     )
 
 
