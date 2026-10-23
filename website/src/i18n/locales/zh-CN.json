@@ -6711,6 +6711,7 @@
       "copy_failed": "复制失败",
       "copy_selection": "复制所选",
       "disconnected_message": "终端已断开连接",
+      "displaced_enter_hint": "按 Enter 在此窗口使用",
       "displaced_message": "另一个窗口已接管此终端",
       "failed_retry": "失败 — 重试",
       "invalid_cwd_message": "终端工作目录“{{cwd}}”不可用。请恢复该目录后重新连接，或使用终端的起始目录。",

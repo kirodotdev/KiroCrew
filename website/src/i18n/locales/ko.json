@@ -6711,6 +6711,7 @@
       "copy_failed": "복사 실패",
       "copy_selection": "선택 항목 복사",
       "disconnected_message": "터미널 연결이 끊겼습니다",
+      "displaced_enter_hint": "여기에서 사용하려면 Enter를 누르세요",
       "displaced_message": "다른 창이 이 터미널을 가져갔습니다",
       "failed_retry": "실패 — 다시 시도",
       "invalid_cwd_message": "터미널 작업 디렉터리 ‘{{cwd}}’을(를) 사용할 수 없습니다. 복원한 후 다시 연결하거나 터미널 시작 디렉터리를 사용하세요.",

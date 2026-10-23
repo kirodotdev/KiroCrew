@@ -2329,6 +2329,7 @@
       "copy": "Copy",
       "copy_failed": "Copy failed",
       "disconnected_message": "Terminal disconnected",
+      "displaced_enter_hint": "Press Enter to use it here",
       "displaced_message": "Another window took over this terminal",
       "failed_retry": "Failed — retry",
       "invalid_cwd_message": "The terminal working directory “{{cwd}}” is unavailable. Restore it and reconnect, or use the terminal’s starting directory.",

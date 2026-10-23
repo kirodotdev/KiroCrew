@@ -7075,6 +7075,7 @@
       "copy_failed": "Error al copiar",
       "copy_selection": "Copiar la selección",
       "disconnected_message": "Terminal desconectada",
+      "displaced_enter_hint": "Pulsa Enter para usarla aquí",
       "displaced_message": "Otra ventana tomó el control de esta terminal",
       "failed_retry": "Error — reintentar",
       "invalid_cwd_message": "El directorio de trabajo del terminal «{{cwd}}» no está disponible. Restáuralo y vuelve a conectarte, o usa el directorio inicial del terminal.",

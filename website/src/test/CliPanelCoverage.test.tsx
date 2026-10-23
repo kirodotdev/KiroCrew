@@ -153,7 +153,9 @@ vi.mock('../utils/terminalRegistry', () => registry)
 
 // Both children own their own xterm hooks and are covered by their own suites;
 // stub them so this file exercises CliPanel alone.
-vi.mock('../components/TerminalCompletion', () => ({ default: () => <div data-testid="completion" /> }))
+vi.mock('../components/TerminalCompletion', () => ({
+  default: ({ active }: { active: boolean }) => <div data-testid="completion" data-active={active} />,
+}))
 vi.mock('../components/TerminalKeyBar', () => ({ default: () => <div data-testid="key-bar" /> }))
 
 const touch = vi.hoisted(() => ({ value: false }))
@@ -789,6 +791,18 @@ describe('CliPanel disconnected banner', () => {
     expect(screen.getByRole('button', { name: RECONNECT_LABEL })).toBeEnabled()
   })
 
+  it('disables completion while displaced and keeps it active for a connected pane', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.displaced.value = true
+    const { rerender, sessionId } = mount()
+    expect(screen.getByTestId('completion')).toHaveAttribute('data-active', 'false')
+
+    registry.connStatus.value = 'connected'
+    registry.displaced.value = false
+    rerender(<CliPanel sessionId={sessionId} visible />)
+    expect(screen.getByTestId('completion')).toHaveAttribute('data-active', 'true')
+  })
+
   it('names the other window, not a network failure, when the server displaced this socket', () => {
     // The registry parked the session after the server's `code: 'displaced'`
     // error frame: the banner must say so (neutral icon) rather than render
@@ -808,6 +822,32 @@ describe('CliPanel disconnected banner', () => {
     expect(takeBack).toBeEnabled()
     fireEvent.click(takeBack)
     expect(registry.retryTerminalConnection).toHaveBeenCalledWith(sessionId)
+  })
+
+  it('tells a keyboard user that Enter takes the displaced terminal back', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.displaced.value = true
+    mount()
+    expect(screen.getByRole('status')).toHaveTextContent(i18nT('components.cliPanel.displaced_enter_hint'))
+    expect(screen.getByRole('button', { name: i18nT('components.cliPanel.use_here') }))
+      .toHaveAttribute('aria-keyshortcuts', 'Enter')
+  })
+
+  it('drops the Enter hint on a touch device and for an ordinary disconnect', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.displaced.value = true
+    touch.value = true
+    const { unmount } = mount()
+    expect(screen.queryByTestId('cli-panel-displaced-enter-hint')).toBeNull()
+    expect(screen.getByRole('button', { name: i18nT('components.cliPanel.use_here') }))
+      .not.toHaveAttribute('aria-keyshortcuts')
+    unmount()
+
+    touch.value = false
+    registry.displaced.value = false
+    mount()
+    expect(screen.queryByTestId('cli-panel-displaced-enter-hint')).toBeNull()
+    expect(screen.getByRole('button', { name: RECONNECT_LABEL })).not.toHaveAttribute('aria-keyshortcuts')
   })
 })
 
