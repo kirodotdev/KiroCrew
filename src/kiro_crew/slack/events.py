@@ -98,6 +98,8 @@ from kiro_crew.session_lifecycle import (
     hand_queue_to_successor,
 )
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.slack.agent_sessions.session_events import AGENT_SESSION_EVENTS
+from kiro_crew.slack.agent_sessions.session_events import dispatch as dispatch_agent_session_event
 from kiro_crew.slack.allowlist import prompt_track_channel, send_dashboard_link
 from kiro_crew.slack.blocks import (
     build_stopping_blocks,
@@ -333,6 +335,11 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
                         source="slack",
                         error="unauthorized sender",
                     )
+            return
+
+        # ── Agent sessions: native Stop and user renames (agent_sessions) ──
+        if event_type in AGENT_SESSION_EVENTS:
+            dispatch_agent_session_event(orch, req.payload or {}, event)
             return
 
         # ── Messages and mentions ──

@@ -76,6 +76,7 @@ if TYPE_CHECKING:
         _thread_agents,
         _thread_context,
         _thread_meta_fallback,
+        _TurnScopeReset,
         acp_error_is_session_not_found,
         acp_error_needs_fresh_credentials,
         build_cancelled_turn_preamble,
@@ -84,6 +85,8 @@ if TYPE_CHECKING:
         canonical_key,
         consume_reinjection,
         credential_give_up_text,
+        enter_turn,
+        exit_turn,
         expire_slack_options,
         get_dashboard_state,
         handle_message,
@@ -164,6 +167,9 @@ class _SlackTurn:
     task: "Task"
     _turn_completed_ok: "bool"
     _working_ts: "str | None"
+    # Opened by ``_run_turn`` (native Stop's write fence); ``close_turn_scope`` closes it
+    # from ``handle_message``'s ``finally``, after delivery.
+    _turn_scope: "_TurnScopeReset | None"
 
     # Set by ``_deliver_answer`` before its first await; ``book_success`` and
     # ``book_failure`` read and set it, so the turn books exactly one verdict.
@@ -232,6 +238,7 @@ class _SlackTurn:
         self.spool_attachments = spool_attachments
         self._compaction_replay = _compaction_replay
         self.start_priority = start_priority
+        self._turn_scope = None
         self._t0 = _t0
         self.reply_ts = reply_ts
         self.session_key = session_key
@@ -263,6 +270,14 @@ class _SlackTurn:
             _close_gap = getattr(self.sessions, "close_replay_gap", None)
             if callable(_close_gap):
                 _close_gap(self.session_key)
+
+    # Close native Stop's write fence, if ``_run_turn`` opened it. ``handle_message``
+    # calls this from its ``finally``, so the fence covers delivery and closes on every
+    # exit. Idempotent: the scope is dropped once it is closed.
+    def close_turn_scope(self) -> None:
+        scope, self._turn_scope = self._turn_scope, None
+        if scope is not None:
+            exit_turn(scope)
 
     def book_success(self) -> None:
         if self._verdict_booked:
@@ -355,6 +370,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
     # Set assistant thread status while we wait for the LLM to respond.
     # Defer start_stream until the first text chunk arrives so the user
     # sees the status indicator instead of a blank bot message.
+    turn._turn_scope = enter_turn(channel, reply_ts)  # native Stop's write fence
     await slack.set_thread_status(channel, reply_ts, _STATUS_WORKING)
 
     # Post inline stop button (only in threaded conversations to avoid breaking tests)

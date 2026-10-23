@@ -24,6 +24,7 @@ from kiro_crew.slack.features import manifest_features
 
 COMBOS = slack_manifest.feature_sets()
 _CC = frozenset({slack_manifest.CODE_CHANNELS})
+_AS = frozenset({slack_manifest.AGENT_SESSIONS})
 #: A switch registered only for the test, the way a later PR registers one: an
 #: entry in ``FEATURE_SCOPES`` plus its ``#@<name>`` lines in the template.
 _FAKE = "fake_switch"
@@ -31,8 +32,8 @@ _FAKE_LINES = {
     "      - code_channels:manage  #@code_channels\n": (
         "      - code_channels:manage  #@code_channels\n" "      - fake:write  #@fake_switch\n"
     ),
-    "      - agent_session_stopped  #@code_channels\n": (
-        "      - agent_session_stopped  #@code_channels|fake_switch\n"
+    "      - agent_session_stopped  #@agent_sessions|code_channels\n": (
+        "      - agent_session_stopped  #@agent_sessions|code_channels|fake_switch\n"
         "      - fake_event  #@fake_switch\n"
     ),
 }
@@ -67,10 +68,13 @@ class TestRendering:
 
     def test_features_are_the_registry(self) -> None:
         assert slack_manifest.FEATURES == tuple(slack_manifest.FEATURE_SCOPES)
-        assert slack_manifest.FEATURES == (slack_manifest.CODE_CHANNELS,)
-        # No switch here declares the app a Slack agent: agent_view is one-way,
-        # so it lands with the runtime that handles it.
-        assert "agent_view" not in slack_manifest.raw_template()
+        assert slack_manifest.FEATURES == (
+            slack_manifest.AGENT_SESSIONS,
+            slack_manifest.CODE_CHANNELS,
+        )
+        # agent_view is one-way, so only the Agent sessions switch declares it.
+        assert "agent_view" not in slack_manifest.render("x", features=_CC)
+        assert "agent_view" in slack_manifest.render("x", features=_AS)
 
     @pytest.mark.parametrize("combo", COMBOS)
     def test_no_gate_survives_rendering(self, combo: frozenset[str]) -> None:
@@ -114,6 +118,21 @@ class TestRendering:
         assert slack_manifest.diff_requirements(
             slack_manifest.requirements(_CC), slack_manifest.requirements(_CC)
         ).empty
+
+    def test_agent_sessions_requirements(self) -> None:
+        """The agent view, its one scope and the two session events, nothing more."""
+        change = slack_manifest.diff_requirements(
+            slack_manifest.requirements(frozenset()), slack_manifest.requirements(_AS)
+        )
+        assert change.added_features == ("agent_view",)
+        assert change.added_scopes == ("assistant:write",)
+        assert change.added_events == ("agent_session_stopped", "agent_session_title_changed")
+        both = slack_manifest.diff_requirements(
+            slack_manifest.requirements(_CC), slack_manifest.requirements(_CC | _AS)
+        )
+        # Code channels already subscribe the Stop event; the title event is new.
+        assert both.added_events == ("agent_session_title_changed",)
+        assert "app_context_changed" not in slack_manifest.render("x", features=_AS)
 
     @pytest.mark.parametrize(
         "app_id,ok", [("A0123ABCD", True), ("a0123abcd", False), ("A1/../x", False), ("", False)]
@@ -257,9 +276,13 @@ class TestRegisteringASwitch:
         on = frozenset({fake_switch})
         assert slack_manifest.feature_sets() == (
             frozenset(),
+            _AS,
             _CC,
             on,
+            _AS | _CC,
+            _AS | on,
             _CC | on,
+            _AS | _CC | on,
         )
         text = slack_manifest.render("x", features=on)
         assert "fake:write" in text and "fake_event" in text and "#@" not in text
@@ -282,10 +305,12 @@ class TestRegisteringASwitch:
 
         from kiro_crew.dashboard import slack_code_settings as scs
 
-        cfg = SimpleNamespace(slack=SimpleNamespace(code_channels=False, fake_switch=True))
+        cfg = SimpleNamespace(
+            slack=SimpleNamespace(agent_sessions=False, code_channels=False, fake_switch=True)
+        )
         assert manifest_features(cfg) == {fake_switch}
         changes = scs.feature_changes()
-        assert set(changes) == {"code_channels", fake_switch}
+        assert set(changes) == {"agent_sessions", "code_channels", fake_switch}
         assert changes[fake_switch]["added_scopes"] == ["fake:write"]
         view = asyncio.run(scs.code_settings_view(cfg, None))
         assert view[fake_switch] is True and view["code_channels"] is False

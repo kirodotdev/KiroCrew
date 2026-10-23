@@ -12,7 +12,7 @@ import type { ClientTransport } from './transport'
  *  mirrors the server's `slack_manifest.FEATURE_SCOPES`; a new switch is
  *  registered by adding its key here (and to `SLACK_CODE_SWITCHES`), and the
  *  config, save and capability fields below follow from it. */
-export type SlackCodeSwitchKey = 'code_channels'
+export type SlackCodeSwitchKey = 'agent_sessions' | 'code_channels'
 
 /** Per registered switch, the toggle as saved (`<key>`) and whether the
  *  installed app can run it (`<key>_capability`). */

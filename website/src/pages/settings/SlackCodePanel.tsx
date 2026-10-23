@@ -1,6 +1,6 @@
 /**
- * Settings → Slack → Slack Code: the registered Slack Code switches (today
- * Code channels; see `slackCodeSwitches`), the code-channel defaults (folder /
+ * Settings → Slack → Slack Code: the registered Slack Code switches (Agent
+ * sessions and Code channels; see `slackCodeSwitches`), the code-channel defaults (folder /
  * agent / model / effort), and the "Update your Slack app" panel.
  *
  * The draft lives in `SlackPanel` (one Save for the whole page); this module
@@ -16,6 +16,7 @@ import SimpleSelect from '../../components/SimpleSelect'
 import ErrorNotice from '../../components/ErrorNotice'
 import FolderConfigModal from '../../components/FolderConfigModal'
 import { invalidateFoldersWhenIdle } from '../../api/chatFoldersWrite'
+import { useConfirm } from '../../components/ConfirmDialog'
 import { api, type SlackCapability, type SlackCodeSwitchKey, type SlackConfigData, type SlackConfigSave } from '../../api/client'
 import type { ChatFolder, ChatTag } from '../../types'
 import { orderFoldersWithPaths } from '../../utils/folderTree'
@@ -250,7 +251,27 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
         : slackAgent ? [slackAgent, 'slack'] : ['', '']
   const savedAgentMissing = (data.code_channel_warnings ?? []).includes('agent_missing')
     && draft.agent === (data.code_channel_defaults?.agent ?? '')
+  const { confirm, confirmDialog } = useConfirm()
 
+  // Turning Agent sessions on is reversible here, but saving the manifest it
+  // generates is not (Slack cannot take an app back from agent_view), so the
+  // switch asks before it flips on. Off never asks.
+  const setAgentSessions = async (on: boolean) => {
+    if (!on) { onChange({ switches: { ...draft.switches, agent_sessions: false } }); return }
+    const ok = await confirm({
+      title: i18nT('pages.settings.slackPanel.slackCode.agent_sessions_confirm_title'),
+      body: (
+        <div className="flex flex-col gap-2 text-[13px]">
+          <p className="m-0 text-warn">{i18nT('pages.settings.slackPanel.slackCode.agent_sessions_permanent')}</p>
+          <p className="m-0">{i18nT('pages.settings.slackPanel.slackCode.agent_sessions_confirm_body')}</p>
+        </div>
+      ),
+      confirmLabel: i18nT('pages.settings.slackPanel.slackCode.agent_sessions_confirm_ok'),
+      danger: false,
+      primary: true,
+    })
+    if (ok) onChange({ switches: { ...draft.switches, agent_sessions: true } })
+  }
 
   return (
     <SettingsSection title={i18nT('pages.settings.slackPanel.slackCode.section')}>
@@ -263,6 +284,32 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
           {/* ── Switches, one row each, in registry order. The Agent sessions
               row (#21422) is the first, above Code channels. ── */}
           <div className="flex flex-col gap-4" data-testid="slack-code-switches">
+            {/* ── Agent sessions ── */}
+            <div>
+              <SettingsToggle
+                label={i18nT('pages.settings.slackPanel.slackCode.agent_sessions')}
+                description={i18nT('pages.settings.slackPanel.slackCode.agent_sessions_desc')}
+                checked={draft.switches.agent_sessions}
+                onChange={v => { void setAgentSessions(v) }}
+                disabled={readOnly}
+                configKey="slack.agent_sessions"
+              />
+              {/* Muted while off, so the one warn-toned line on the page is the
+                  update notice that needs action; warn once the switch is on and
+                  the permanent step is the user's next move. */}
+              {draft.switches.agent_sessions ? (
+                <div className="flex items-start gap-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 mt-1" data-testid="slack-agent-sessions-warning" data-tone="warn">
+                  <AlertTriangle size={12} className="text-warn flex-none mt-0.5" />
+                  <span className="text-[12px] text-warn">{i18nT('pages.settings.slackPanel.slackCode.agent_sessions_irreversible')}</span>
+                </div>
+              ) : (
+                <div className="flex items-start gap-2 text-[12px] text-muted mt-1" data-testid="slack-agent-sessions-warning" data-tone="muted">
+                  <Info size={12} className="flex-none mt-0.5" />
+                  <span>{i18nT('pages.settings.slackPanel.slackCode.agent_sessions_irreversible')}</span>
+                </div>
+              )}
+              {data.agent_sessions && <CapabilityLine capability={data.agent_sessions_capability} />}
+            </div>
             {/* ── Code channels ── */}
             <div>
               <SettingsToggle
@@ -420,6 +467,7 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
           )}
         </div>
       </SettingsCard>
+      {confirmDialog}
     </SettingsSection>
   )
 }
