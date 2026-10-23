@@ -23,6 +23,7 @@ _spec.loader.exec_module(gate)
 # The ceiling only moves down. Raising it is the change this test exists to stop.
 X_CAPTURE_CEILING = 10
 KIRO_KAS_PAIR_CEILING = 0
+X_REGISTRATION_PENDING_CEILING = 12
 
 
 def test_tree_passes() -> None:
@@ -33,6 +34,58 @@ def test_allowlists_stay_under_their_ceiling() -> None:
     assert len(gate.X_CAPTURE_ALLOWLIST) <= X_CAPTURE_CEILING
     assert len(gate.KIRO_KAS_PAIR_ALLOWLIST) <= KIRO_KAS_PAIR_CEILING
     assert all(why.strip() for why in gate.X_CAPTURE_ALLOWLIST.values())
+    assert len(gate.X_REGISTRATION_PENDING) <= X_REGISTRATION_PENDING_CEILING
+
+
+def _with_set(monkeypatch, name: str) -> None:
+    sets = dict(gate.live_sets(), **{name: frozenset({"pi"})})
+    monkeypatch.setattr(gate, "live_sets", lambda: sets)
+
+
+def test_an_unclassified_new_set_fails(monkeypatch, capsys) -> None:
+    """A new ACP_BACKENDS_* set in none of the three lists cannot ship green."""
+    _with_set(monkeypatch, "ACP_BACKENDS_BRAND_NEW")
+    assert gate.enforce_x_captures(None) == 1
+    out = capsys.readouterr().out
+    assert "ACP_BACKENDS_BRAND_NEW: unclassified" in out and "HARNESS_EXEMPT_SETS" in out
+    monkeypatch.setitem(gate.HARNESS_EXEMPT_SETS, "ACP_BACKENDS_BRAND_NEW", "routing-only")
+    assert gate.enforce_x_captures(None) == 0
+    monkeypatch.setitem(gate.HARNESS_EXEMPT_SETS, "ACP_BACKENDS_BRAND_NEW", " ")
+    assert gate.enforce_x_captures(None) == 1
+
+
+def test_a_set_in_two_lists_fails(monkeypatch) -> None:
+    monkeypatch.setitem(gate.HARNESS_EXEMPT_SETS, "ACP_BACKENDS_STEER", "standard")
+    assert any("keep it in one" in e for e in gate.check_coverage(gate.live_sets()))
+
+
+def test_pending_only_shrinks_into_x_feature_sets(monkeypatch) -> None:
+    sets, prior = gate.live_sets(), set(gate.X_REGISTRATION_PENDING)
+    assert gate._pending_ratchet(prior, sets) == []
+    name = "ACP_BACKENDS_HOOKS_LIST"
+    monkeypatch.delitem(gate.X_REGISTRATION_PENDING, name)
+    monkeypatch.setitem(gate.HARNESS_EXEMPT_SETS, name, "moved to dodge the capture")
+    left = [f"{name}: left X_REGISTRATION_PENDING without joining X_FEATURE_SETS for every member"]
+    assert gate._pending_ratchet(prior, sets) == left
+    monkeypatch.delitem(gate.HARNESS_EXEMPT_SETS, name)
+    # An empty scope would check no member at all.
+    monkeypatch.setitem(gate.X_FEATURE_SETS, name, frozenset())
+    assert gate._pending_ratchet(prior, sets) == left
+    assert f"{name}: X_FEATURE_SETS scope checks none of its members" in gate.check_coverage(sets)
+    monkeypatch.setitem(gate.X_FEATURE_SETS, name, None)
+    assert gate._pending_ratchet(prior, sets) == []
+    assert gate._pending_ratchet(prior - {"ACP_BACKENDS_NATIVE_TODOS"}, sets) == [
+        "ACP_BACKENDS_NATIVE_TODOS: X_REGISTRATION_PENDING entry added; that list only shrinks"
+    ]
+
+
+def test_base_pending_is_read_back_from_the_gate_source(monkeypatch) -> None:
+    with open(_GATE_PATH, encoding="utf-8") as fh:
+        source = fh.read()
+    monkeypatch.setattr(gate, "git", lambda args: source)
+    assert gate._base_pending("base") == set(gate.X_REGISTRATION_PENDING)
+    monkeypatch.setattr(gate, "git", lambda args: "X = 1\n")
+    assert gate._base_pending("base") is None
 
 
 def test_pi_in_steering_request_without_its_capture_fails() -> None:
