@@ -9,47 +9,52 @@ import asyncio
 import functools
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.spec_hooks import (
+    crew_fired_spec_hooks,
+    session_agent,
+    spec_hook_events,
+    spec_hooks_run_nowhere,
+    spec_project_dir,
+    withheld_project_spec_hooks,
+)
+from kiro_crew.dashboard.chat_utils import (
+    SPEC_HOOKS_NOTICE_KIND,
+    RecoveryPayload,
+    is_synthetic_recovery_item,
+    mint_options_token,
+    remember_slack_options,
+)
+from kiro_crew.dashboard.state import (
+    DENY_CAUSE_POLICY,
+    HOOK_CONTINUATION_RECOVERY_PREFIX,
+    HOOK_HALTED_RECOVERY_PREFIX,
+    REFUSAL_RECOVERY_PREFIX,
+    build_refusal_recovery_prompt,
+    parse_hook_continuations,
+    should_queue_hook_continuation,
+    should_queue_refusal_recovery,
+)
+from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_STOP, pre_tool_match_names
+from kiro_crew.slack.outbound import PostedOptions
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         ACP_BACKEND_KAS,
-        DENY_CAUSE_POLICY,
-        HOOK_CONTINUATION_RECOVERY_PREFIX,
-        HOOK_EVENT_PRE_TOOL_USE,
-        HOOK_EVENT_STOP,
-        HOOK_HALTED_RECOVERY_PREFIX,
-        REFUSAL_RECOVERY_PREFIX,
         SEED_DECLINED_NOTICE_KIND,
-        SPEC_HOOKS_NOTICE_KIND,
         STOP_REASON_CANCELLED,
         SYNTHETIC_RECOVERY_KIND,
         DashboardState,
         KiroCrewConfig,
-        PostedOptions,
-        RecoveryPayload,
         _ChatSlot,
         _turn_full_reply_text,
         _turn_reply_segments,
         agent_welcome_message,
         append_and_surface,
-        build_refusal_recovery_prompt,
         capabilities_of,
-        crew_fired_spec_hooks,
         expire_slack_options,
-        is_synthetic_recovery_item,
         logger,
-        mint_options_token,
-        parse_hook_continuations,
-        pre_tool_match_names,
         redact_credentials,
         redact_exfiltration_urls,
-        remember_slack_options,
-        session_agent,
-        should_queue_hook_continuation,
-        should_queue_refusal_recovery,
-        spec_hook_events,
-        spec_hooks_run_nowhere,
-        spec_project_dir,
-        withheld_project_spec_hooks,
     )
     from kiro_crew.dashboard.chat_turn.deny_chokepoints import _redact_display_text
     from kiro_crew.dashboard.chat_turn.recipient import (

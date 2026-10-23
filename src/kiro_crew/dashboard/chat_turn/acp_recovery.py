@@ -17,47 +17,51 @@ import functools
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
+from kiro_crew.dashboard.chat_utils import (
+    TRANSIENT_GIVE_UP_TEXT,
+    TRANSIENT_NOTICE_GIVE_UP,
+    TRANSIENT_NOTICE_META_KEY,
+    TRANSIENT_NOTICE_RESUMING,
+    TRANSIENT_NOTICE_RETRYING,
+    TRANSIENT_RESUMING_TEXT,
+    TRANSIENT_RETRY_KIND,
+    TRANSIENT_RETRYING_TEXT,
+    RecoveryPayload,
+    ResetCause,
+    build_recovery_requeue,
+    payload_for_replay,
+)
+from kiro_crew.dashboard.recovery_replays import replays_of
+from kiro_crew.dashboard.state import _TURN_CONTINUING_INJECT_KINDS
+from kiro_crew.llm_helpers import (
+    CREDENTIAL_RELOAD_RETRY_NOTICE,
+    acp_error_is_connection_failure,
+    acp_error_is_throttle,
+    acp_error_needs_fresh_credentials,
+    connection_retry_delay,
+    credential_give_up_text,
+)
+from kiro_crew.recovery.ladder import SESSION_RECOVERY_MAX_ATTEMPTS
+from kiro_crew.security import redact
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _POSTTOKEN_RECOVER_MSG,
-        _TURN_CONTINUING_INJECT_KINDS,
-        CREDENTIAL_RELOAD_RETRY_NOTICE,
         SESSION_NOT_FOUND_GIVE_UP_TEXT,
         SESSION_NOT_FOUND_RETRY_TEXT,
-        SESSION_RECOVERY_MAX_ATTEMPTS,
         SYNTHETIC_RECOVERY_KIND,
-        TRANSIENT_GIVE_UP_TEXT,
-        TRANSIENT_NOTICE_GIVE_UP,
-        TRANSIENT_NOTICE_META_KEY,
-        TRANSIENT_NOTICE_RESUMING,
-        TRANSIENT_NOTICE_RETRYING,
-        TRANSIENT_RESUMING_TEXT,
         TRANSIENT_RETRIES,
-        TRANSIENT_RETRY_KIND,
-        TRANSIENT_RETRYING_TEXT,
         DashboardState,
-        RecoveryPayload,
         ReplayFamily,
-        ResetCause,
         _ChatSlot,
         _has_user_queued_followup,
-        _recovery_delay,
         _should_suppress_requeue,
-        acp_error_is_connection_failure,
-        acp_error_is_throttle,
-        acp_error_needs_fresh_credentials,
-        build_recovery_requeue,
-        connection_retry_delay,
-        credential_give_up_text,
         crew_log_emit,
         effective_session_key,
         fallback_rewound_transient_budget,
         logger,
-        payload_for_replay,
-        redact,
         redact_credentials,
         redact_exfiltration_urls,
-        replays_of,
         runtime_death,
         subagents_attached_async,
         throttle_retry_delay,
@@ -66,6 +70,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.recovery import (
         _count_turn_retry,
         _discard_unanswered_attempt,
+        _recovery_delay,
         _shared_dependency_delay,
     )
     from kiro_crew.dashboard.chat_turn.turn_entry import _session_stop_generation, _stop_pressed
@@ -267,8 +272,9 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
     message = turn.message
     logger.warning("ACP process died in slot %s: %s — resetting session", slot.key, exc)
     # The class this handler caught is a fact only this site holds, and the
-    # closer in `_run_chat`'s `finally` reads `_crew_log_error` for it, so naming it
-    # here is what keeps `turn/failed` from reporting an unnamed failure.
+    # closer in `_turn_close_crew_log` (chat_turn/crew_log_attribution.py), from `_run_chat`'s
+    # `finally`, reads `_crew_log_error` for it, so naming it here is what keeps
+    # `turn/failed` from reporting an unnamed failure.
     _crew_log_error = type(exc).__name__
     turn._crew_log_error = _crew_log_error
     needs_session_reset = True
@@ -375,7 +381,7 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
     # `_prompt_depth == 0` would let a depth>0 pipe-death fall through to
     # `_on_acp_error_card`: no reset (the next turn hits the dead process)
     # and the failure never counting toward the exhaustion threshold.
-    needs_session_reset = True  # checked in _run_chat's finally
+    needs_session_reset = True  # checked in _turn_release_session (chat_turn/session_reset.py)
     turn.needs_session_reset = needs_session_reset
     await _persist_partial_reply(turn, "error: process died")
     # Option Y: pipe-death ("process exited"/"not running") shares the
@@ -498,7 +504,7 @@ async def _on_acp_session_not_found(turn: _ChatTurn, exc) -> None:
         "could not load its cloud credentials" if _creds else "lost the session",
         slot.key,
     )
-    needs_session_reset = True  # checked in _run_chat's finally
+    needs_session_reset = True  # checked in _turn_release_session (chat_turn/session_reset.py)
     turn.needs_session_reset = needs_session_reset
     await _persist_partial_reply(
         turn,
@@ -523,8 +529,8 @@ async def _on_acp_session_not_found(turn: _ChatTurn, exc) -> None:
             cause=ResetCause.CONNECTION_LOST,
             message_is_synthetic=_is_synthetic,
         )
-        # Snapshot BEFORE the enqueue: the reset in this turn's finally is
-        # awaited, and a Stop landing there must veto the replay.
+        # Snapshot BEFORE the enqueue: the reset in _turn_release_session
+        # (chat_turn/session_reset.py) is awaited, and a Stop landing there must veto the replay.
         _snf_stop_gen = getattr(slot, "_stop_generation", 0)
         _snf_session_stop_gen = _session_stop_generation(turn)
         _snf_qid = _queue_recovery(
@@ -598,8 +604,8 @@ async def _on_acp_binding_mismatch(turn: _ChatTurn, exc) -> None:
             _binding_replay_meta = {k: list(v) for k, v in _attachment_meta.items()}
         elif _attachments:
             _binding_replay_meta = {"files": list(_attachments)}
-        # Snapshot BEFORE the enqueue: the discard in this turn's finally
-        # is awaited, and a Stop landing there must veto the replay.
+        # Snapshot BEFORE the enqueue: the discard in _turn_release_session
+        # (chat_turn/session_reset.py) is awaited, and a Stop landing there must veto the replay.
         _binding_stop_gen = getattr(slot, "_stop_generation", 0)
         _binding_session_stop_gen = _session_stop_generation(turn)
         _binding_qid = _queue_recovery(

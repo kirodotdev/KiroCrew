@@ -6,22 +6,24 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any, Callable
 
-from kiro_crew.llm_helpers import ROUTE_BASELINE_ATTR
+from kiro_crew.llm_helpers import (
+    ROUTE_BASELINE_ATTR,
+    TURN_FALLBACK_ATTR,
+    latch_route_baseline,
+    pick_epoch_host,
+    provider_advertised_ids,
+    provider_fallback_active,
+    resolve_substitute_set_model,
+    route_baseline_latch,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
-        TURN_FALLBACK_ATTR,
         DashboardState,
         LLMEvent,
         _ChatSlot,
         effective_session_key,
-        latch_route_baseline,
         logger,
-        pick_epoch_host,
-        provider_advertised_ids,
-        provider_fallback_active,
-        resolve_substitute_set_model,
-        route_baseline_latch,
         slot_switch_session_lock,
     )
     from kiro_crew.dashboard.chat_turn.crew_log_attribution import _crew_log_model

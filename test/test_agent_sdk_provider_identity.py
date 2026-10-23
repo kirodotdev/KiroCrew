@@ -240,7 +240,10 @@ def test_converted_files_ask_the_predicate(rel: str) -> None:
     Without this, deleting the branch (or renaming the file) would make the
     ratchet pass while the provider-specific logic went somewhere unwatched.
     """
-    body = (SRC / rel).read_text(encoding="utf-8")
+    # A composed file asks it in its own text or in an owner it composes.
+    body = "\n".join(
+        path.read_text(encoding="utf-8") for path in [SRC / rel, *_composed_owner_paths(rel)]
+    )
     assert "is_claude_code" in body, f"{rel} no longer asks is_claude_code()"
 
 

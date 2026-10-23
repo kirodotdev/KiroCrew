@@ -6,33 +6,35 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from kiro_crew.dashboard.chat_delivery import (
+    STEER_STATE_CONSUMED,
+    STEER_STATE_REQUEUED,
+    attachment_meta,
+    find_written_steer_row,
+    queued_text_for_display,
+    quote_meta,
+)
 from kiro_crew.dashboard.chat_utils import (
     AUTOMATION_NOTICE_KIND,
     CRON_NOTIFICATION_KIND,
     MCP_APP_MESSAGE_KIND,
     STEER_INTENT_META,
+    STEER_POSSIBLY_DELIVERED_META,
     SUBAGENT_COMPLETION_KIND,
+    _remove_queued_by_id,
+    _stamped_turn_actor,
+    is_synthetic_payload_item,
+    is_system_injection_item,
 )
 from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         COMMANDS_OFF_META_KEY,
-        STEER_POSSIBLY_DELIVERED_META,
-        STEER_STATE_CONSUMED,
-        STEER_STATE_REQUEUED,
         DashboardState,
         _ChatSlot,
-        _remove_queued_by_id,
-        _stamped_turn_actor,
-        attachment_meta,
         crew_log_emit,
-        find_written_steer_row,
-        is_synthetic_payload_item,
-        is_system_injection_item,
         logger,
-        queued_text_for_display,
-        quote_meta,
         settle_consumed_steers,
     )
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn

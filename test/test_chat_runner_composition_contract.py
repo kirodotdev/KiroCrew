@@ -449,7 +449,9 @@ def test_a_stalled_task_entry_reads_as_a_dashboard_chat_turn(name: str) -> None:
 #: and its body still runs without a suspension point: the check-then-mutate a queue
 #: drain or a consume gate makes stays atomic on the event loop, as the inline block
 #: was. An ``await`` added to one would let another task change the slot between the
-#: check and the mutation.
+#: check and the mutation. The ``finally``'s phases before ``_turn_release_session`` are
+#: await-free too: they run before its ``try``, so an ``await`` added to one would let a
+#: cancel skip the session permit's release.
 _AWAIT_FREE_PHASES = (
     "_refresh_genuine_turn_allowances",
     "_rearm_turn_episode",
@@ -471,6 +473,10 @@ _AWAIT_FREE_PHASES = (
     "_turn_context_usage",
     "_on_app_agent_not_loaded",
     "_on_session_closing",
+    "_turn_record_outcome",
+    "_turn_close_crew_log",
+    "_turn_release_handles",
+    "_turn_settle_debts",
 )
 _SUSPENDING_OPS = frozenset(
     {"GET_AWAITABLE", "SEND", "YIELD_VALUE", "GET_AITER", "GET_ANEXT", "BEFORE_ASYNC_WITH"}

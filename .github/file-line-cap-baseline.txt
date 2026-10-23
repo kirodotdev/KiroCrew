@@ -12,4 +12,3 @@
 # where it cannot tell which files those are, it refuses unless --whole-tree asks
 # it to rewrite every row:
 #   python3 scripts/check_file_line_cap.py --update-baseline
-18473 src/kiro_crew/dashboard/chat_runner.py

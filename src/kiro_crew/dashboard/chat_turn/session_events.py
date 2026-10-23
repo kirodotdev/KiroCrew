@@ -7,18 +7,21 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Literal
 
+from kiro_crew.dashboard.chat_utils import (
+    _broadcast_compaction_result,
+    drained_to_thread,
+    has_leaked_tool_call,
+)
+from kiro_crew.dashboard.state import durable_row_count
+from kiro_crew.security import redact
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         KiroCrewConfig,
-        _broadcast_compaction_result,
         append_and_surface,
         crew_log_emit,
-        drained_to_thread,
-        durable_row_count,
-        has_leaked_tool_call,
         logger,
         record_provider_agent_switch,
-        redact,
         refuse_stale_switch,
         restore_agent_selection,
         sel,
@@ -279,9 +282,9 @@ async def _on_agent_switched(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | N
         # so every further event of this turn — text and tool
         # calls alike — would execute as the foreign agent inside
         # the pinned thread. Returning BREAK ends _run_chat's stream loop and
-        # the session reset in _run_chat's finally tears the switched session
-        # down, the same way the tool-rejection paths in _on_permission_prompt bail
-        # out of a turn that must not continue.
+        # the session reset in _turn_release_session (chat_turn/session_reset.py) tears the
+        # switched session down, the same way the tool-rejection paths in
+        # _on_permission_prompt bail out of a turn that must not continue.
         return _Flow.BREAK
     elif new_agent:
         # A live provider event can change a template selection.

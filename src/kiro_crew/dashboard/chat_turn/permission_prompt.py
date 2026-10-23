@@ -7,39 +7,44 @@ import asyncio
 import json
 from typing import TYPE_CHECKING, Literal
 
+from kiro_crew.dashboard.chat_utils import _tool_identity_fields, slack_mirror_is_paused
+from kiro_crew.dashboard.state import (
+    DENY_CAUSE_APPROVAL_NO_BUDGET,
+    DENY_CAUSE_APPROVAL_TIMEOUT,
+    DENY_CAUSE_APPROVAL_UNDELIVERABLE,
+    DENY_CAUSE_BATCH_CASCADE,
+    _mark_permission_resolved,
+)
+from kiro_crew.dashboard.turn_dispatch import (
+    format_approval_no_budget_card,
+    format_approval_timeout_card,
+)
+from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE
+from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
+from kiro_crew.security.readonly_bash import (
+    command_invokes_git,
+    is_read_only_bash,
+    unsafe_bash_reason,
+)
+from kiro_crew.slack.handler import resolve_linked_approval
+from kiro_crew.trust_patterns import approval_command, approval_display_command
+from kiro_crew.trust_patterns import extract_bash_command as _extract_bash_command
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _MAX_TOOL_PURPOSE,
-        DENY_CAUSE_APPROVAL_NO_BUDGET,
-        DENY_CAUSE_APPROVAL_TIMEOUT,
-        DENY_CAUSE_APPROVAL_UNDELIVERABLE,
-        DENY_CAUSE_BATCH_CASCADE,
-        HOOK_EVENT_PRE_TOOL_USE,
-        OUTCOME_REJECTED_TRANSPORT_FLOOR,
         _extract_base_command,
-        _extract_bash_command,
         _extract_full_command,
-        _mark_permission_resolved,
         _redact_tool_field,
-        _tool_identity_fields,
         _validate_tool_name,
-        approval_command,
-        approval_display_command,
-        command_invokes_git,
         crew_log_emit,
-        format_approval_no_budget_card,
-        format_approval_timeout_card,
-        is_read_only_bash,
         logger,
         pin_human_approval,
         post_linked_approval,
         redact_credentials,
         redact_exfiltration_urls,
-        resolve_linked_approval,
         sel,
-        slack_mirror_is_paused,
         tool_approval_timeout_secs,
-        unsafe_bash_reason,
     )
     from kiro_crew.dashboard.chat_turn.deny_chokepoints import (
         _redact_display_text,

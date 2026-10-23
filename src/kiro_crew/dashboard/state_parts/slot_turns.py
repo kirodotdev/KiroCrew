@@ -458,11 +458,11 @@ def init_turns_fields(self: _ChatSlot) -> None:
     self._responsive = None
     self._side = None
     # Live inner AcpClient for the in-flight turn, published by _run_chat at
-    # turn start and cleared in its finally. Lets a concurrent request (the
-    # dashboard steer handler) reach the running session's client to inject
-    # a mid-turn steer. None when idle.
+    # turn start and cleared in _turn_release_handles (chat_turn/turn_entry.py).
+    # Lets a concurrent request (the dashboard steer handler) reach the running
+    # session's client to inject a mid-turn steer. None when idle.
     self._acp_client = None
-    # Hang-attribution snapshot stashed by _run_chat's finally just before
+    # Hang-attribution snapshot stashed by _turn_release_handles just before
     # _acp_client is dropped; read by finish_turn_task when the dashboard
     # ceiling cut the turn (kirocrew.turn.timeout.cause).
     self._last_turn_awaiting_permission = False

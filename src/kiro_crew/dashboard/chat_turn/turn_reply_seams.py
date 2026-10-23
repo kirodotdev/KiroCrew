@@ -8,20 +8,20 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
+from kiro_crew.constants import reflow_and_label_glued_option_marker
+from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND, slot_history_key
+from kiro_crew.security import redact
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         STOP_REASON_CANCELLED,
-        TRANSIENT_RETRY_KIND,
         _persist_abnormal_turn_usage,
         chunk_generation,
         crew_log_emit,
         logger,
         provider_last_turn_usage,
         read_turn_model,
-        redact,
-        reflow_and_label_glued_option_marker,
         save_slot_off_loop,
-        slot_history_key,
     )
     from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
     from kiro_crew.dashboard.chat_turn.segment_flush import (
@@ -171,7 +171,7 @@ async def _record_abnormal_turn_usage(turn, reason: str) -> None:
     context-window read live on the wrapper, so the inner handle alone would
     stamp every row ``provider="acp"`` with a ``(0, 0)`` window. The inner
     handle (``slot._acp_client``) is read only to gate on liveness -- it is
-    the ref the ``finally`` drops, so a non-None read means the credits are
+    the ref ``_turn_release_handles`` drops, so a non-None read means the credits are
     still reachable.
     """
     _ttft_visible = turn._ttft_visible

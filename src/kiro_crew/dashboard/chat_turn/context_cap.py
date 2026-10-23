@@ -15,11 +15,12 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.chat_utils import _broadcast_expired_oauth_banners
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         DashboardState,
         KiroCrewConfig,
-        _broadcast_expired_oauth_banners,
         _ChatSlot,
         append_and_surface,
         logger,
@@ -296,9 +297,9 @@ def _append_context_cap_notice(state: DashboardState, slot: _ChatSlot, tokens: i
 def _spend_context_cap_seed(session_key: str) -> None:
     """The turn that built a trim's seed delivered its first-turn history: spend the seed.
 
-    Called where ``_run_chat``'s ``finally`` settles the first-turn history debt, the
-    one point that knows the provider kept the prompt, before anything between turns
-    can end the session.
+    Called where ``_turn_settle_debts`` (``chat_turn/prompt_assembly.py``) settles the
+    first-turn history debt, the one point that knows the provider kept the prompt,
+    before anything between turns can end the session.
     """
     trim = _CONTEXT_CAP_TRIMS.get(session_key)
     if trim is not None and trim.seeded:

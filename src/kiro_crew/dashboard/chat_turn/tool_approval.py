@@ -7,47 +7,47 @@ import json
 import time
 from typing import TYPE_CHECKING, Any, Literal
 
-from kiro_crew.deny_guidance import DENY_CLASS_AWS_CREDENTIAL, DENY_CLASS_SSO_CREDENTIAL
+from kiro_crew.dashboard.chat_utils import _broadcast_auto_tool
+from kiro_crew.dashboard.state import DENY_CAUSE_POLICY
+from kiro_crew.deny_guidance import (
+    DENY_CLASS_AWS_CREDENTIAL,
+    DENY_CLASS_SSO_CREDENTIAL,
+    classify_deny,
+    resolve_credential_tool_hint,
+)
+from kiro_crew.executors import run_in_tool_gate_pool
+from kiro_crew.hooks import (
+    HOOK_EVENT_PRE_TOOL_USE,
+    TOOL_ALLOW,
+    TOOL_AUTO_APPROVE,
+    TOOL_DENY,
+    ToolHookResult,
+    hook_gate_kwargs,
+    identity_grant_covers_child,
+)
+from kiro_crew.name_grant import log_decline, shell_command_for_event, should_log_decline
+from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
+from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
+from kiro_crew.tool_gate_busy import hook_gate_busy
+from kiro_crew.trust_patterns import GrantEnded, approval_command
+from kiro_crew.trust_patterns import extract_bash_command as _extract_bash_command
+from kiro_crew.trust_patterns import live_trusted_patterns as _live_trusted_patterns
+from kiro_crew.trust_patterns import redirect_outside_grant as _redirect_outside_grant
+from kiro_crew.trust_patterns import timed_grant_deadline as _timed_grant_deadline
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
-        DENY_CAUSE_POLICY,
-        HOOK_EVENT_PRE_TOOL_USE,
-        OUTCOME_REJECTED_TRANSPORT_FLOOR,
-        TOOL_ALLOW,
-        TOOL_AUTO_APPROVE,
-        TOOL_DENY,
-        GrantDeadline,
-        GrantEnded,
         Refusal,
-        ToolHookResult,
-        _broadcast_auto_tool,
-        _extract_bash_command,
-        _live_trusted_patterns,
         _matches_trusted_pattern,
         _name_grant_refusal_off_loop,
-        _redirect_outside_grant,
-        _timed_grant_deadline,
         _validate_tool_name,
-        approval_command,
-        classify_deny,
-        command_invokes_git,
-        hook_gate_busy,
-        hook_gate_kwargs,
-        identity_grant_covers_child,
-        is_read_only_bash,
-        log_decline,
         logger,
         open_construct_at_end,
         read_effective_agent,
         redact_credentials,
         redact_exfiltration_urls,
-        resolve_credential_tool_hint,
-        run_in_tool_gate_pool,
         safety_override,
         sel,
-        shell_command_for_event,
-        should_log_decline,
     )
     from kiro_crew.dashboard.chat_turn.deny_chokepoints import (
         _redact_display_text,
@@ -63,6 +63,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
     from kiro_crew.dashboard.chat_turn.turn_reply_seams import _cut_segment
     from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _fire
+    from kiro_crew.trust_patterns import GrantDeadline
 
 
 def _pre_tool_hooks_should_block(pre_hook_results: Any) -> bool:

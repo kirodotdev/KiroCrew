@@ -19,18 +19,17 @@ globals would keep calling the unpatched object and the test would pass while
 exercising nothing, so the runner stays ONE namespace, as the one-module file was.
 Three consequences follow:
 
-* An owner's imports are inert for its functions. An owner imports the runner and
-  its siblings only under ``TYPE_CHECKING``; stdlib names, and the project constants
-  the module evaluates when it loads (``steer_queue`` from ``chat_utils``,
-  ``tool_approval`` from ``deny_guidance``), are imported plainly. Both serve the
-  type checker and the linter, and what the module itself evaluates when it loads
-  (a default argument, a class base, a constant). Every name a function reads must
-  be bound in ``kiro_crew.dashboard.chat_runner`` -- by the runner's own imports, which
-  is why the runner keeps imports only its owners read, or by :func:`compose`, which
-  binds each owner's own names there -- and
+* An owner imports at run time each name it reads, in a function or when the module
+  loads (a default argument, a class base, a constant), apart from the runner's and its
+  siblings' own names, which it imports only under ``TYPE_CHECKING``. Its functions
+  still read every name off the runner's globals: :func:`_bind` binds on the
+  runner each name an owner binds that the runner lacks, its imports included, and
   ``test_chat_runner_composition_contract.py`` sweeps each function's bytecode to
-  prove it does. A name bound on the runner and in an owner is the SAME object, or
-  the runner fails to import.
+  prove every name it reads is bound there. The runner imports only what its own code,
+  its importers or its tests read, a name the one-module runner bound that no owner
+  imports, a module object (which :func:`_bind` leaves out), and its
+  ``kiro_crew.acp*`` / ``kiro_crew.providers*`` statements. A name bound on the runner
+  and in an owner is the SAME object, or the runner fails to import.
 * A function's ``__module__`` reads ``kiro_crew.dashboard.chat_runner`` as it did
   before the split, so reprs and pickling by reference are unchanged, and it logs
   through the runner's ``logger``. Its source file differs, so a log record's

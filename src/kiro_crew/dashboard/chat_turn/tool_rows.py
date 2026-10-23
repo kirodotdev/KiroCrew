@@ -8,28 +8,31 @@ import asyncio
 import hashlib
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.chat_utils import (
+    _tool_identity_fields,
+    restore_replacement_if_handover_did_not_land,
+    slot_history_key,
+    tighten_replacement_to_restricted_original,
+)
+from kiro_crew.memory_stores import UnknownMemoryStore
+from kiro_crew.wakatime.heartbeats import is_coding_event
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _MAX_TOOL_PURPOSE,
         LLMEvent,
-        UnknownMemoryStore,
         _git_repo_touches,
         _redact_tool_field,
-        _tool_identity_fields,
         capabilities_of,
         crew_log_emit,
         fire_tool_hooks,
-        is_coding_event,
         logger,
         open_construct_at_end,
         redact_credentials,
         redact_exfiltration_urls,
-        restore_replacement_if_handover_did_not_land,
         save_slot_off_loop,
         sel,
         session_directive,
-        slot_history_key,
-        tighten_replacement_to_restricted_original,
     )
     from kiro_crew.dashboard.chat_turn.decisions_hooks import _tool_risk_meta
     from kiro_crew.dashboard.chat_turn.deny_chokepoints import _redact_display_text

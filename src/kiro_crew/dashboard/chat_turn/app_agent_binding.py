@@ -9,13 +9,14 @@ import asyncio
 import functools
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.capabilities import SessionCapabilities
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         DashboardState,
         KiroCrewConfig,
         ResolvedBindings,
         Routing,
-        SessionCapabilities,
         _ChatSlot,
         _MemoryUnavailable,
         effective_session_key,

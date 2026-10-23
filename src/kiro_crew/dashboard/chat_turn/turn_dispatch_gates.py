@@ -6,31 +6,33 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.context_blocks import (
+    PHASE_PER_TURN,
+    PHASE_SESSION_START,
+    USER_LABEL,
+    attributable_user_chars,
+    split_blocks,
+)
+from kiro_crew.dashboard.chat_utils import (
+    _SYNTHETIC_RECOVERY_MSGS,
+    STEER_POSSIBLY_DELIVERED_NOTE,
+    slack_mirror_is_paused,
+)
+from kiro_crew.dashboard.recovery_replays import ReplayRevocation, cancel_notice, replays_of
+from kiro_crew.hooks import HOOK_EVENT_AGENT_SPAWN, HOOK_EVENT_USER_PROMPT_SUBMIT
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
-        _SYNTHETIC_RECOVERY_MSGS,
-        HOOK_EVENT_AGENT_SPAWN,
-        HOOK_EVENT_USER_PROMPT_SUBMIT,
-        PHASE_PER_TURN,
-        PHASE_SESSION_START,
-        STEER_POSSIBLY_DELIVERED_NOTE,
-        USER_LABEL,
         RefusalInfo,
         ReplayFamily,
-        ReplayRevocation,
         SessionClosingError,
         StructuredStatus,
-        attributable_user_chars,
-        cancel_notice,
         classify_stop_reason,
         crew_log_emit,
         logger,
         read_context_tokens,
-        replays_of,
         row_mid,
         sel,
-        slack_mirror_is_paused,
-        split_blocks,
         telemetry_channel_of,
     )
     from kiro_crew.dashboard.chat_turn.crew_log_attribution import _crew_log_model
@@ -621,7 +623,8 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # this check and _run_chat's async-for — so the _closing read and the stream's
     # turn registration (AcpClient.stream_events clears _turn_done before its
     # first await) are one atomic span, strictly ordered w.r.t. close_all's
-    # _closing set. Abort (lease released by _run_chat's finally) if closing.
+    # _closing set. Abort (lease released by _turn_release_session in
+    # chat_turn/session_reset.py, from _run_chat's finally) if closing.
     try:
         if monitor_completion is not None:
             if not await monitor_completion.authorize():
@@ -750,7 +753,8 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         turn._crew_log_actor,
         depth=_prompt_depth,
     )
-    # From here the turn owes a closer, and _run_chat's finally is what pays it: a
+    # From here the turn owes a closer, and _turn_close_crew_log
+    # (chat_turn/crew_log_attribution.py), from _run_chat's finally, is what pays it: a
     # `turn/started` left open in the file is read as a turn whose writer died,
     # which this process being alive contradicts.
     _crew_log_turn_open = True

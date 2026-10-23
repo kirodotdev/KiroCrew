@@ -10,6 +10,14 @@ import math
 import time
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
+from kiro_crew.llm_helpers import provider_active_model, record_interaction_event
+from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
+from kiro_crew.metrics.turns import emit_turn_duration, emit_turn_usage, turn_outcome
+from kiro_crew.monitoring.completion import (
+    disposition_for_stop_reason,
+    is_monitor_completion_evidence,
+)
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         STOP_REASON_CANCELLED,
@@ -17,28 +25,19 @@ if TYPE_CHECKING:
         STOP_REASON_STALE_RECOVER,
         STOP_REASON_TOOL_STALL,
         STOP_RECOVERY_MAX_RETRIES,
-        TURN_TIMEOUT_CAUSE,
         RefusalInfo,
         _ChatSlot,
         capabilities_of,
         classify_stop_reason,
-        disposition_for_stop_reason,
-        emit_counter,
-        emit_turn_duration,
-        emit_turn_usage,
         get_recorder,
-        is_monitor_completion_evidence,
         logger,
         note_coding_activity,
         persist_token_record_async,
-        provider_active_model,
         read_context_tokens,
         read_effective_agent,
         read_turn_model,
-        record_interaction_event,
         row_mid,
         telemetry_channel_of,
-        turn_outcome,
         usage_has_billing,
     )
     from kiro_crew.dashboard.chat_turn.mcp_session import _redact_acp_string
@@ -804,8 +803,9 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # `turn/completed` in the file ahead of a `message/sent` belonging
     # to the turn it closes. A reader folding entries in order would
     # see a completed turn still producing text, and the closer is the
-    # one entry whose position carries meaning. _run_chat's finally runs
-    # them once every path has flushed.
+    # one entry whose position carries meaning. _turn_close_crew_log
+    # (chat_turn/crew_log_attribution.py) runs them from _run_chat's finally once
+    # every path has flushed.
     _crew_log_terminal = {
         "input_tokens": event.usage.input_tokens,
         "output_tokens": event.usage.output_tokens,
@@ -938,8 +938,8 @@ async def _turn_context_usage(turn: _ChatTurn) -> None:
         _escalation.record_landed_turn()
         slot._session_not_found_retry_used = False
         # This turn landed: the prompt (including any re-injected skills
-        # index) reached the model, so _run_chat's `finally` must NOT restore the
-        # one-shot flag.
+        # index) reached the model, so _turn_settle_debts (chat_turn/prompt_assembly.py)
+        # must NOT restore the one-shot flag.
         _turn_landed = True
         turn._turn_landed = _turn_landed
         # Per-interaction telemetry (PlatformContext seam) — shared helper so

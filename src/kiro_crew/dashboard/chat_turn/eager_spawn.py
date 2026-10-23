@@ -10,16 +10,19 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import resource_status
+from kiro_crew.agent_capabilities import CapabilityError
+from kiro_crew.agent_sdk.tool_search import resume_takes_tool_search_replay
+from kiro_crew.config.loader import normalize_agent_model
+from kiro_crew.security import redact_and_truncate
+from kiro_crew.session import SessionEndingError
+from kiro_crew.session_capabilities import CapabilityStartupError
 from kiro_crew.start_priority import StartPriority
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
-        CapabilityError,
-        CapabilityStartupError,
         DashboardState,
         KiroCrewConfig,
         SessionClosingError,
-        SessionEndingError,
         SpeculativeResumeRefused,
         _arm_generation,
         _armed_prefetches,
@@ -27,13 +30,10 @@ if TYPE_CHECKING:
         _eager_spawn_sem,
         effective_session_key,
         logger,
-        normalize_agent_model,
         record_agent_selection,
-        redact_and_truncate,
         refresh_materialized_agents,
         resolve_agent_bindings,
         resolve_session_agent_bindings,
-        resume_takes_tool_search_replay,
         select_provider_backend,
         shutdown_event,
         subprocess_executor,

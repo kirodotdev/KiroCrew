@@ -364,20 +364,26 @@ def test_every_real_entry_names_files_and_a_generator_that_exist(entry: dict) ->
     assert entry["argv"][0] in {"python3", "npm"}
 
 
-def test_every_real_entry_reruns_on_the_changes_its_generator_reads() -> None:
+def test_every_real_entry_reruns_on_the_changes_its_generator_reads(tmp_path: Path) -> None:
     by_name = {e["name"]: e for e in rs.REGEN}
     ui = by_name["find_ui index"]
     for path in ("website/src/uiLocations/areas/x.ts", "website/scripts/lib/ui-index.mjs"):
         assert rs.stale_entries([ui], [path], [], str(ROOT)) == [ui]
     assert rs.stale_entries([ui], ["src/kiro_crew/chat.py"], [], str(ROOT)) == []
-    for name in ("file-length baseline", "black baseline"):
+    # The file-length baseline only shrinks, and it is empty once every file is under the
+    # cap, so its row check reads a one-row copy at the same path, in the shape the real
+    # file has while a file is still over.
+    capped = tmp_path / by_name["file-length baseline"]["files"][0]
+    capped.parent.mkdir(parents=True)
+    capped.write_text("2001 src/kiro_crew/over_the_cap.py\n", encoding="utf-8")
+    for name, root in (("file-length baseline", tmp_path), ("black baseline", ROOT)):
         entry = by_name[name]
         assert entry["listed_in_output"] is True
-        listed = sorted(rs.baseline_paths(str(ROOT), entry["files"][0]))
+        listed = sorted(rs.baseline_paths(str(root), entry["files"][0]))
         assert listed, name
-        assert rs.stale_entries([entry], [listed[0]], [], str(ROOT)) == [entry]
+        assert rs.stale_entries([entry], [listed[0]], [], str(root)) == [entry]
         assert (
-            rs.stale_entries([entry], ["src/kiro_crew/not_in_a_baseline.py"], [], str(ROOT)) == []
+            rs.stale_entries([entry], ["src/kiro_crew/not_in_a_baseline.py"], [], str(root)) == []
         )
 
 

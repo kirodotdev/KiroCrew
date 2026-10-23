@@ -9,49 +9,54 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
+from kiro_crew.dashboard.chat_delivery import (
+    attachment_meta,
+    queue_entry_is_user_origin,
+    queued_text_for_display,
+    quote_meta,
+)
+from kiro_crew.dashboard.chat_title import RESTORED_TURN_META_KEY
+from kiro_crew.dashboard.chat_utils import (
+    AUTOMATION_NOTICE_KIND,
+    MCP_APP_MESSAGE_KIND,
+    STEER_INTENT_META,
+    STEER_POSSIBLY_DELIVERED_META,
+    SUBAGENT_DELIVERY_KINDS,
+    TURN_END_WIRE_CLS,
+    _remove_queued_by_id,
+    app_inject_row,
+    is_synthetic_payload_item,
+    is_synthetic_recovery_item,
+    is_system_injection_item,
+)
 from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
+from kiro_crew.dashboard.recovery_replays import replays_of
+from kiro_crew.dashboard.session_directive_apply import (
+    REFUSAL_SELF_WAKE_META_KEY,
+    REFUSAL_WAKE_LOOP_ID_META_KEY,
+)
+from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+from kiro_crew.dashboard.state import CRON_NOTIFY_RE, SUBAGENT_COMPLETION_PREFIXES
+from kiro_crew.history import HUMAN_TURN_META_KEY
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _PARKED_FOR_MEMORY,
-        AUTOMATION_NOTICE_KIND,
         COMMANDS_OFF_META_KEY,
         CRON_NOTIFICATION_KIND,
         CRON_NOTIFY_PREFIX,
-        CRON_NOTIFY_RE,
-        HUMAN_TURN_META_KEY,
-        MCP_APP_MESSAGE_KIND,
-        REFUSAL_SELF_WAKE_META_KEY,
-        REFUSAL_WAKE_LOOP_ID_META_KEY,
-        RESTORED_QUEUE_KEY,
-        RESTORED_TURN_META_KEY,
-        STEER_INTENT_META,
-        STEER_POSSIBLY_DELIVERED_META,
         SUBAGENT_COMPLETION_KIND,
-        SUBAGENT_COMPLETION_PREFIXES,
-        SUBAGENT_DELIVERY_KINDS,
-        TURN_END_WIRE_CLS,
         DashboardState,
         KiroCrewConfig,
         _ChatSlot,
         _dequeue_next_message,
         _dequeue_next_system_message,
-        _remove_queued_by_id,
         _run_chat,
-        app_inject_row,
         append_and_surface,
-        attachment_meta,
         effective_session_key,
-        is_synthetic_payload_item,
-        is_synthetic_recovery_item,
-        is_system_injection_item,
         logger,
-        queue_entry_is_user_origin,
-        queued_text_for_display,
-        quote_meta,
         redact_credentials,
         redact_exfiltration_urls,
-        replays_of,
         shutdown_event,
         spawn_guarded_turn,
     )

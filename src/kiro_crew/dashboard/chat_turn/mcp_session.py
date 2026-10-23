@@ -8,21 +8,21 @@ import asyncio
 import json
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.config.loader import oauth_endpoints_path
+from kiro_crew.dashboard.chat_utils import _redact_meta_for_role
+from kiro_crew.dashboard.urls import is_loopback
+from kiro_crew.security import sanitized_oauth_endpoint, sanitized_oauth_endpoint_display
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         DashboardState,
         SessionMcpReport,
         _ChatSlot,
         _is_safe_oauth_url,
-        _redact_meta_for_role,
         get_visible_providers,
-        is_loopback,
         kirocrew_managed_names,
         logger,
-        oauth_endpoints_path,
         oauth_url_contains_credential,
-        sanitized_oauth_endpoint,
-        sanitized_oauth_endpoint_display,
     )
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
 

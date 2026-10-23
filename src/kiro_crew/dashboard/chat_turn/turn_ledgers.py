@@ -7,20 +7,20 @@ import inspect
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.chat_delivery import attachment_meta
+from kiro_crew.dashboard.chat_utils import RecoveryPayload
+from kiro_crew.dashboard.recovery_replays import replays_of
+from kiro_crew.wakatime.heartbeats import CADENCE_MIN_INTERVAL_SECS
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
-        CADENCE_MIN_INTERVAL_SECS,
         COMMANDS_OFF_META_KEY,
         SUBAGENT_COMPLETION_KIND,
-        DirectiveOutcome,
         KiroCrewConfig,
-        RecoveryPayload,
         ReplayFamily,
         _redact_tool_field,
-        attachment_meta,
         logger,
         note_coding_cadence,
-        replays_of,
     )
     from kiro_crew.dashboard.chat_turn.file_changes import _turn_line_changes
     from kiro_crew.dashboard.chat_turn.queue_drain import (
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         TURN_ACTOR_META_KEY,
     )
     from kiro_crew.dashboard.chat_turn.recovery import _session_stop_generation_for
+    from kiro_crew.dashboard.session_directive_apply import DirectiveOutcome
 
 
 async def _report_consumed(turn, consumed: bool = True, *, irreversible: bool = False) -> None:

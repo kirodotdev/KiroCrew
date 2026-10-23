@@ -259,8 +259,9 @@ class TestRunnerBranch:
         # A turn-state copy (``turn.x = x``, written after a store so a later phase reads
         # the current value) or reload (``x = turn.x``, a phase's entry read) is plumbing
         # between the runner and its phases, not branch content: the character windows
-        # below measure the code without it.
-        return re.sub(
+        # below measure the code without it. A name a phase reads off the turn
+        # (``turn.x``) is the runner's ``x``, so the windows read it in that spelling.
+        stripped = re.sub(
             r"(?m)^[ \t]*(?:turn\.(\w+) = \1|(\w+) = turn\.\2)\n",
             "",
             "\n".join(
@@ -272,6 +273,7 @@ class TestRunnerBranch:
                 if turn_file.name != "__init__.py"
             ),
         )
+        return re.sub(r"(?<![\w.])turn\.(?=\w)", "", stripped)
 
     def test_reads_the_handles_verdict_not_a_regex(self, src):
         assert 'isinstance(getattr(client, "last_infra_error", None), InfraError)' in src

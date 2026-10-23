@@ -16,8 +16,6 @@ import stat as stat_module  # noqa: F401
 import time
 import uuid
 import weakref
-from collections.abc import Iterable
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import (  # noqa: F401
     Any,
@@ -82,41 +80,22 @@ from kiro_crew.acp_backends import (
     Routing,
     routing_for,
 )
-from kiro_crew.agent_capabilities import CapabilityError
 from kiro_crew.agent_discovery import (
     agent_welcome_message,
-    served_provider_label,
     session_skill_globs,
     warm_project_agent_names,
 )
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name  # noqa: F401
-from kiro_crew.agent_sdk.capabilities import (
-    SessionCapabilities,
-    capabilities_for,
-    capabilities_of,
-)
-from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.spec_hooks import (
-    crew_fired_spec_hooks,
     invalidate_stale_kas_session,
     refuse_stale_switch,
     reproject_claimed_session,
-    session_agent,
-    spec_hook_events,
-    spec_hooks_run_nowhere,
-    spec_project_dir,
-    withheld_project_spec_hooks,
 )
-from kiro_crew.agent_sdk.tool_search import resume_takes_tool_search_replay
-from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
-from kiro_crew.agent_switch_command import agent_switch_target, switch_announcement
-from kiro_crew.autonudge import FINISHED_LOOP_REASONS, get_instance, reason_in
-from kiro_crew.autonudge_authz import normalize_banner
+from kiro_crew.autonudge import get_instance
 from kiro_crew.config.loader import (  # noqa: F401
     KiroCrewConfig,
     data_home,
-    normalize_agent_model,
-    oauth_endpoints_path,
     refresh_materialized_agents,
     resolve_agent_bindings,
     resolve_effective_model,
@@ -124,57 +103,22 @@ from kiro_crew.config.loader import (  # noqa: F401
 from kiro_crew.config.sections import ResolvedBindings
 from kiro_crew.connections import get_visible_providers  # noqa: F401
 from kiro_crew.constants import strip_control_comments  # noqa: F401
-from kiro_crew.constants import (
-    STEER_NOTICE_BOUND_SECS,
-    reflow_and_label_glued_option_marker,
-)
+from kiro_crew.constants import STEER_NOTICE_BOUND_SECS
 from kiro_crew.context import (
     discard_memory_prefetch,
     embed_startup_query,
     prefetch_session_memory,
-    prepare_store_vectors,
     reserve_memory_prefetch,
-)
-from kiro_crew.context_blocks import (
-    PHASE_PER_TURN,
-    PHASE_SESSION_START,
-    USER_LABEL,
-    attributable_user_chars,
-    split_blocks,
 )
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import chat_turn as _chat_turn
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard import git_repo_touches as _git_repo_touches
-from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
-    COMMANDS_OFF_META_KEY,
-    STEER_STATE_CONSUMED,
-    STEER_STATE_REQUEUED,
-)
+from kiro_crew.dashboard.chat_delivery import COMMANDS_OFF_META_KEY  # noqa: F401
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
-from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
-    attachment_meta,
-    find_written_steer_row,
-    queue_entry_is_user_origin,
-    queued_text_for_display,
-    quote_meta,
-)
-from kiro_crew.dashboard.chat_folders import (
-    _resolve_folder_steering_dirs,
-    slot_steering_principal,
-)
-from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
-    local_turn_prompt_within_bounds,
-    register_guarded_history_write,
-    save_slot_off_loop,
-)
+from kiro_crew.dashboard.chat_persistence import save_slot_off_loop  # noqa: F401
 from kiro_crew.dashboard.chat_summary import generate_session_summary
-from kiro_crew.dashboard.chat_tag_grants import refresh_cache as refresh_tag_grants_cache
-from kiro_crew.dashboard.chat_tags import resolve_board_tags
-from kiro_crew.dashboard.chat_title import (
-    RESTORED_TURN_META_KEY,
-    title_then_refresh,
-)
+from kiro_crew.dashboard.chat_title import title_then_refresh
 from kiro_crew.dashboard.chat_turn.account_identity import (
     _mark_kiro_signed_out,
     _retire_sessions_on_identity_change,
@@ -189,233 +133,75 @@ from kiro_crew.dashboard.chat_turn.acp_recovery import (  # noqa: F401
     _on_acp_transient_exhausted,
     _on_acp_transient_retry,
     _on_process_died,
-    _recover_posttoken_transient,
 )
 from kiro_crew.dashboard.chat_turn.app_agent_binding import (
-    _app_agent_host_allowed,
-    _app_agent_turn_backend,
     _on_app_agent_not_loaded,
-    _provider_backend,
     _recover_app_agent_binding,
-    _retire_app_agent_session,
-    _runs_app_agent_launch,
-    app_agent_binding_applies,
 )
-from kiro_crew.dashboard.chat_turn.context_cap import _spend_context_cap_seed
 from kiro_crew.dashboard.chat_turn.crew_log_attribution import (
     PENDING_CHANNEL_ATTR,
     _crew_log_class,
-    _crew_log_inherited_parent,
-    _crew_log_lineage,
-    _crew_log_model,
-    _crew_log_seed_tree,
-    _crew_log_tree_depth,
     _crew_log_workspace,
     _slot_predecessor_store,
+    _turn_close_crew_log,
 )
-from kiro_crew.dashboard.chat_turn.decisions_hooks import (
-    _JEV_ROUTE_AUTO_MODELS,
-    _discard_stale_decision,
-    _jev_route_armed,
-    _jev_route_turn_ok,
-    _route_model_for_turn,
-    _settle_jev_route,
-    _tool_risk_meta,
-)
-from kiro_crew.dashboard.chat_turn.deny_chokepoints import (
-    _redact_display_text,
-    _reject_attributed,
-    _reject_hook_blocked,
-    _reject_hook_error,
-    _reject_invalid_tool,
-    _steer_policy_notice,
-    _steer_repeat_loop_notice,
-)
-from kiro_crew.dashboard.chat_turn.directives import (  # noqa: F401
-    _DIRECTIVE_NOT_APPLIED_FALLBACK,
-    _DIRECTIVE_NOT_APPLIED_OUTCOMES,
-    _MONITOR_DIRECTIVE_TOOLS,
-    UNCLAIMED_DIRECTIVE_NOTICE,
-    _directive_recovery_instruction,
-    _report_unclaimed_directives,
-    unverified_directive_notice,
-    unverified_directive_outcome,
-)
+from kiro_crew.dashboard.chat_turn.decisions_hooks import _JEV_ROUTE_AUTO_MODELS
+from kiro_crew.dashboard.chat_turn.deny_chokepoints import _steer_policy_notice
 from kiro_crew.dashboard.chat_turn.eager_spawn import (
-    _EAGER_SPAWN_DEBOUNCE_SECS,
-    _RESUME_PREFETCH_MAX_LIVE,
-    _RESUME_PREFETCH_TTL_SECS,
-    _clear_eager_spawn_failures,
-    _eager_spawn_held_off,
-    _is_pre_spawn_refusal,
-    _note_eager_spawn_failure,
     schedule_eager_spawn,
     stop_eager_spawns,
 )
-from kiro_crew.dashboard.chat_turn.file_changes import (  # noqa: F401
-    _MAX_RECONSTRUCT_BYTES,
-    _PATH_TRUNCATION_MARKER,
-    _apply_turn_snapshot_budget,
-    _budgeted_opcodes,
-    _classify_str_replace_before,
-    _disk_digest,
-    _excerpt_pair,
-    _failed_write_entries,
-    _flush_file_changes,
-    _forget_entries,
-    _line_change_input,
-    _note_reply_row,
-    _pending_str_replace_payload,
-    _read_turn_afters,
-    _record_turn_snapshot,
-    _resolve_pending_str_replace,
-    _safe_read_file_text,
-    _safe_read_snapshot,
-    _settle_failed_write,
-    _Snapshot,
-    _snapshot_write_target,
-    _truncate_snapshot,
-    _turn_after_reads,
-    _turn_line_changes,
-    _turn_rows,
-)
+from kiro_crew.dashboard.chat_turn.file_changes import _MAX_RECONSTRUCT_BYTES  # noqa: F401
 from kiro_crew.dashboard.chat_turn.mcp_session import (  # noqa: F401
-    _approve_discovered_mcp_oauth_endpoint,
-    _connections_managed_mcp_names,
-    _drain_session_init_oauth_requests,
-    _emit_mcp_oauth_request,
-    _mark_mcp_oauth_completed,
-    _mcp_server_name_is_ambiguous,
     _on_mcp_oauth_request,
     _on_mcp_server_init_failure,
     _on_mcp_server_initialized,
-    _publish_session_mcp_report,
-    _record_session_mcp_event,
 )
 from kiro_crew.dashboard.chat_turn.model_fallback import (  # noqa: F401
-    _agent_fallback_chain,
-    _app_allocation_kwargs,
-    _backfill_canonical_model,
-    _clear_fallback_sticky_state,
-    _configured_refusal_fallback,
     _fallback_swap_for_turn,
-    _inherited_default_model,
     _on_acp_model_access,
-    _probe_fallback_restore_for_slot,
-    _probe_fallback_restore_for_slot_locked,
-    _record_refused_cycle,
-    _refusal_fallback_retry,
-    _refusal_fallback_swap,
-    _resolve_refusal_fallback_target,
-    _restore_refusal_fallback,
-    _settle_session_model,
     _sync_served_model,
 )
 from kiro_crew.dashboard.chat_turn.native_cards import (
-    _append_native_output,
-    _native_subagent_close_all,
-    _native_subagent_sync,
     _on_subagent_activity,
     _on_subagent_list,
-    _post_native_question_card,
-    _retain_terminal_native,
-    _safe_native_crew_debug_title,
 )
 from kiro_crew.dashboard.chat_turn.permission_prompt import _on_permission_prompt
 from kiro_crew.dashboard.chat_turn.prompt_assembly import (  # noqa: F401
-    _checklist_resync,
-    _expand_dollar_skills,
     _expand_prompt_mention,
     _resolve_prompt_mention,
-    _scrub_dashboard_prefix,
-    _session_replay_history,
     _slot_prompt_project,
     _surface_prompt_chip,
     _turn_build_prompt,
+    _turn_settle_debts,
 )
 from kiro_crew.dashboard.chat_turn.queue_cycle import (
     TURN_FAILED_META,
     _end_turn_tail,
     _note_failed_before_the_try,
-    _send_chat_done,
+    _turn_record_outcome,
     _TurnExit,
-    _TurnOutcome,
 )
 from kiro_crew.dashboard.chat_turn.queue_drain import (
-    _RECOVERY_TURN_META_KEY,
-    _REPLAYS_COMPLETION_KEY,
-    TURN_ACTOR_META_KEY,
     _arm_queued_delivery_settlement,
     _start_next_queued_turn,
     drain_idle_parent_queue_for_stall,
-    settle_drained_subagent_notices,
     subagents_hold_user_messages,
 )
 from kiro_crew.dashboard.chat_turn.recipient import (  # noqa: F401
-    _attested_peer,
-    _audit_admission_refusal,
     _authorize_recipient,
-    _cross_surface_reply_text,
-    _deliver_cross_surface_reply,
-    _deliver_cross_surface_user_message,
-    _deliver_linked_slack_message,
-    _link_principal,
-    _log_once,
-    _marker_digest,
-    _prepare_mirror_msg,
-    _recipient_principal,
     _resolve_channel_target,
     _resolve_mirror_target,
-    _session_principal,
-    cross_surface_withheld,
-    slack_publication_withheld,
 )
 from kiro_crew.dashboard.chat_turn.recovery import (  # noqa: F401
-    _COMPACT_FAIL_REASON_MAX_CHARS,
-    _COMPACTION_FAILED_RETRIES,
-    COMPACT_REPLAY_PENDING_NOTICE,
     _answer_text_only,
-    _count_turn_retry,
     _current_turn_carries_image_ref,
-    _discard_unanswered_attempt,
-    _drop_queued_replay,
-    _drop_revoked_replays,
-    _empty_auto_continue_enabled,
-    _empty_max_auto_continues,
-    _forget_swept_replays,
-    _model_unentitled_meta,
-    _note_cycle_failure,
-    _note_cycle_start_failure,
-    _notice_compaction_after_turn,
-    _purge_superseded_continuations,
-    _rearm_allowances,
-    _rearm_turn_episode,
-    _recovery_delay,
-    _refresh_genuine_turn_allowances,
-    _replay_live,
-    _replay_vetoed_at_consume,
-    _requeue_after_prompt_busy,
-    _requeue_auth_retry,
-    _session_stop_generation_for,
-    _shared_dependency_delay,
     _should_suppress_requeue,
-    _terminal_error_meta,
-    _turn_retry_outcomes,
-    refusal_card_text,
 )
 from kiro_crew.dashboard.chat_turn.segment_flush import (
     _accumulate_segment_raw,
-    _append_command_reply,
-    _cleared_segment_text,
     _flush_segment,
-    _give_back_run,
-    _hold_segment_tail,
-    _open_segment_with,
     _redact_delta,
-    _redact_segment,
-    _reflow_label_and_audit,
-    _reset_segment_copy,
-    _segment_row_meta,
     _turn_settle_answer,
 )
 from kiro_crew.dashboard.chat_turn.session_events import (
@@ -424,94 +210,46 @@ from kiro_crew.dashboard.chat_turn.session_events import (
     _on_compaction_status,
     _on_todo_update,
 )
-from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
+from kiro_crew.dashboard.chat_turn.session_reset import _turn_release_session
 from kiro_crew.dashboard.chat_turn.slash_commands import (
     _answer_slash_without_channel,
-    _handle_agent_command,
-    _handle_goal_command,
-    _handle_workflow_command,
-    _refuse_blocked_slash,
-    _slash_command_backend,
     _turn_compact_command,
     _turn_slash_gate,
 )
 from kiro_crew.dashboard.chat_turn.steer_queue import (  # noqa: F401
-    _QUEUE_KIND_ACTORS,
-    _actor_for_queue_items,
-    _drop_stale_admissions,
     _has_user_queued_followup,
-    _mark_steer_row_state,
     _on_steer_consumed,
-    _queue_entry_is_orchestration,
     _requeue_unconsumed_steers,
-    _settle_consumed_steers,
 )
 from kiro_crew.dashboard.chat_turn.stop_recovery import (
     _turn_persist_and_settle,
     _turn_stop_recovery,
 )
 from kiro_crew.dashboard.chat_turn.tool_approval import (  # noqa: F401
-    _CREDENTIAL_HINT_CLASSES,
-    _SPEC_HOOKS_UNREADABLE_BLOCK,
-    _audit_name_grant_refusal,
     _auto_approve_reason,
-    _credential_tool_hint_for,
-    _name_grant_refusal_for,
-    _native_crew_should_auto_approve,
     _on_permission_request,
-    _persistable_session_policy,
-    _pre_tool_block_reason,
-    _pre_tool_hooks_should_block,
     _slot_is_trusted,
-    _spec_confirm_hooks_notice,
-    _spec_hooks_run_nowhere_notice,
-    _spec_keys_notice,
-    _spec_withheld_hooks_notice,
 )
 from kiro_crew.dashboard.chat_turn.tool_results import _on_tool_result
 from kiro_crew.dashboard.chat_turn.tool_rows import (
     _MAX_TCID_SOURCES,
     _on_tool_call,
     _on_tool_call_update,
-    _persist_tool_result_rows,
-    _refined_tool_row_content,
     _tcid_identity_key,
-    _tool_call_ws_payload,
-    _tool_meta,
 )
-from kiro_crew.dashboard.chat_turn.turn_admission import (
-    _check_owner,
-    _current_binding,
-    _release_dispatch_lock,
-    _require_current_binding,
-    _turn_admit,
-)
-from kiro_crew.dashboard.chat_turn.turn_context import (  # noqa: F401
-    _detach_appended_context,
-    _dm_member_binding_changed,
-    _folder_steering_turn,
-    _message_rewritten_before_build,
-    _read_and_tighten_turn_execution,
-    _require_session_memory_assignment,
-    _restore_skills_context_after_compaction,
-    _startup_query_prewarm_applies,
-    drain_pending_context,
-    unavailable_agent_message,
-)
+from kiro_crew.dashboard.chat_turn.turn_admission import _turn_admit
+from kiro_crew.dashboard.chat_turn.turn_context import _startup_query_prewarm_applies  # noqa: F401
 from kiro_crew.dashboard.chat_turn.turn_dispatch_gates import (
     _turn_dispatch_gates,
     _turn_dispatch_prep,
 )
 from kiro_crew.dashboard.chat_turn.turn_ending import _turn_ending_chain
 from kiro_crew.dashboard.chat_turn.turn_entry import (
-    _directive_producer_is_channel,
-    _session_stop_generation,
     _stop_pressed,
     _turn_open,
+    _turn_release_handles,
 )
 from kiro_crew.dashboard.chat_turn.turn_failures import (  # noqa: F401
-    _POISON_CANARY_PROMPT,
-    _POISON_CANARY_TIMEOUT_SECS,
     _on_acp_error_card,
     _on_auth_required,
     _on_cancelled,
@@ -520,112 +258,50 @@ from kiro_crew.dashboard.chat_turn.turn_failures import (  # noqa: F401
     _on_session_closing,
 )
 from kiro_crew.dashboard.chat_turn.turn_ledgers import (
-    _queue_recovery,
-    _record_terminal_directive,
     _replay_owes_delivery,
     _report_consumed,
-    _requeue_owed_completion,
-    _wt_collect,
-    _wt_maybe_cadence,
-    _wt_note_approved,
 )
 from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
 from kiro_crew.dashboard.chat_turn.turn_marker import (  # noqa: F401
-    _LOCAL_TURN_OPENER_ROLES,
-    _LOCAL_TURN_PROMPT_META_KEYS,
-    _begin_local_turn_marker,
     _clear_local_turn_marker,
     _gateway_shutdown_requested,
-    _local_turn_generation_for,
-    _local_turn_opening_row,
-    _retire_local_turn_marker,
 )
 from kiro_crew.dashboard.chat_turn.turn_reply_seams import (
     _cut_segment,
-    _drop_wire_tail,
-    _emit_error,
-    _emit_stale,
-    _emit_stall,
-    _flush_text_stream,
     _flush_thinking_stream,
-    _held_continued,
-    _persist_partial_reply,
     _settle_held,
-    _steer_segment_cut,
 )
-from kiro_crew.dashboard.chat_turn.turn_spec_hooks import (
-    _fire,
-    _prepare_spec_hooks,
-    _surface_agent_welcome,
-    _turn_stop_hook,
-)
+from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _turn_stop_hook
 from kiro_crew.dashboard.chat_turn.turn_stats import (  # noqa: F401
     _MAX_MODEL_ID_LEN,
-    _attach_owned_turn_stats,
-    _attach_turn_stats,
     _context_usage_payload,
-    _emit_recovery_outcome,
-    _emit_turn_metric,
-    _FirstVisibleClock,
     _on_complete,
-    _turn_clock,
     _turn_context_usage,
-    _turn_outcome,
     turn_stats_meta,
 )
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
-    _KIRO_ONLY_BLOCKED_SLASH_COMMANDS,
     _MAX_TOOL_PURPOSE,
-    STEER_INTENT_META,
-    STEER_POSSIBLY_DELIVERED_META,
-    STEER_POSSIBLY_DELIVERED_NOTE,
-    TURN_END_WIRE_CLS,
-    ResetCause,
-    _append_compaction_notice,
-    _apply_incognito_prefix,
-    _broadcast_auto_tool,
-    _broadcast_compaction_result,
-    _broadcast_expired_oauth_banners,
     _dequeue_next_message,
     _dequeue_next_system_message,
     _maybe_consolidate,
     _maybe_inject_persona,
-    _normalize_model,
     _redact_for_display,
-    _redact_meta_for_role,
     _redact_tool_field,
-    _remove_queued_by_id,
-    _stamped_turn_actor,
-    _tool_identity_fields,
     _validate_tool_name,
-    build_recovery_requeue,
     chat_done_payload,
     chunk_generation,
-    drained_to_thread,
     effective_session_key,
     expire_slack_options,
-    is_harness_slash_command,
-    is_system_injection_item,
     mirror_is_paused,
     open_construct_at_end,
-    parse_workflow_command,
-    remember_slack_options,
-    restore_replacement_if_handover_did_not_land,
     run_to_completion,
-    slack_mirror_is_paused,
-    slot_history_key,
-    tighten_live_slot_memory_mode,
-    tighten_replacement_to_restricted_original,
-    user_text_span,
-    with_bounded_redaction_records,
 )
 from kiro_crew.dashboard.handlers import (
     MAX_PROMPT_BYTES,
     _find_prompt,
     _get_skills,
     _list_aim_prompts,
-    _prompt_read_within_root,
 )
 from kiro_crew.dashboard.handlers.usage import (
     persist_token_record_async,
@@ -634,16 +310,9 @@ from kiro_crew.dashboard.handlers.usage import (
     read_turn_model,
 )
 from kiro_crew.dashboard.mate_thread_wakes import note_turn_end as _note_mate_wakes
-from kiro_crew.dashboard.member_message_notes import post_turn_reply
 from kiro_crew.dashboard.poisoned_escalation import POISONED_SESSION_CYCLES  # noqa: F401
-from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
 from kiro_crew.dashboard.recovery_replays import SESSION_NOT_FOUND_CANCELLED_TEXT  # noqa: F401
-from kiro_crew.dashboard.recovery_replays import (
-    ReplayFamily,
-    ReplayRevocation,
-    cancel_notice,
-    replays_of,
-)
+from kiro_crew.dashboard.recovery_replays import ReplayFamily
 
 # ``apply_session_directive`` is part of the
 # runner's base-names surface (``_BASE_NAMES`` in
@@ -651,136 +320,59 @@ from kiro_crew.dashboard.recovery_replays import (
 # ``chat_runner`` directly; the ratchet keeps it bound here even though the
 # turn loop itself consumes the structured outcome.
 from kiro_crew.dashboard.session_directive_apply import (  # noqa: F401
-    REFUSAL_SELF_WAKE_META_KEY,
-    REFUSAL_WAKE_LOOP_ID_META_KEY,
-    DirectiveOutcome,
-    _reset_conversation,
     apply_session_directive,
     apply_session_directive_outcome,
 )
-from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
 from kiro_crew.dashboard.state import (  # noqa: F401
     _MAX_SLOT_MESSAGES,
-    _TURN_CONTINUING_INJECT_KINDS,
     CRON_NOTIFY_PREFIX,
-    CRON_NOTIFY_RE,
-    DENY_CAUSE_APPROVAL_NO_BUDGET,
-    DENY_CAUSE_APPROVAL_TIMEOUT,
-    DENY_CAUSE_APPROVAL_UNDELIVERABLE,
-    DENY_CAUSE_BATCH_CASCADE,
-    DENY_CAUSE_HOOK_ERROR,
-    DENY_CAUSE_INVALID_NAME,
-    DENY_CAUSE_POLICY,
-    HOOK_CONTINUATION_RECOVERY_PREFIX,
-    HOOK_HALTED_RECOVERY_PREFIX,
-    MONITOR_WAKE_PREFIX,
     NATIVE_SUBAGENT_DONE_RESULT_CAP,
     NATIVE_SUBAGENT_DONE_TRUNC_MARKER,
     NATIVE_SUBAGENT_OUTPUT_HARD,
     NATIVE_SUBAGENT_OUTPUT_TAIL,
     NATIVE_SUBAGENT_TERMINAL_KEEP,
     NATIVE_SUBAGENT_TERMINAL_TTL_SECS,
-    REFUSAL_INBAND_RECOVERY_PREFIX,
-    REFUSAL_RECOVERY_PREFIX,
-    STALE_RECOVERY_PREFIX,
-    SUBAGENT_COMPLETION_PREFIXES,
-    SUBAGENT_SYNTHESIS_PREFIX,
-    SUBAGENT_SYNTHESIS_PROMPT,
-    TOOL_STALL_RECOVERY_PREFIX,
-    TURN_OPENING_INJECT_KINDS,
-    CrewLogPrevious,
     DashboardState,
     _ChatSlot,
-    _is_turn_inject,
-    _mark_permission_resolved,
     append_and_surface,
     build_infra_retry_prompt,
-    build_refusal_recovery_prompt,
-    build_refusal_steer_notice,
     build_stale_recovery_prompt,
-    build_tool_stall_recovery_prompt,
-    chat_message_note,
     context_entry_expired,
-    durable_row_count,
-    parse_hook_continuations,
     row_mid,
-    should_queue_hook_continuation,
-    should_queue_refusal_recovery,
 )
 from kiro_crew.dashboard.steer_settle import settle_consumed_steers
 from kiro_crew.dashboard.turn_dispatch import (
-    format_approval_no_budget_card,
-    format_approval_timeout_card,
     spawn_guarded_turn,
     tool_approval_timeout_secs,
 )
-from kiro_crew.dashboard.urls import is_loopback
 from kiro_crew.deny_guidance import (  # noqa: F401
     DENY_CLASS_AWS_CREDENTIAL,
     DENY_CLASS_SSO_CREDENTIAL,
-    classify_deny,
-    resolve_credential_tool_hint,
 )
 from kiro_crew.execution_context import (  # noqa: F401
-    canonical_memory_mode,
     read_session_execution,
-    stricter_memory_mode,
     tighten_live_session_execution,
 )
-from kiro_crew.executors import run_in_embed_pool, run_in_tool_gate_pool, subprocess_executor
-from kiro_crew.history import HUMAN_TURN_META_KEY
+from kiro_crew.executors import run_in_embed_pool, subprocess_executor
 from kiro_crew.hooks import (  # noqa: F401
-    HOOK_EVENT_AGENT_SPAWN,
     HOOK_EVENT_POST_TOOL_USE,
-    HOOK_EVENT_PRE_TOOL_USE,
-    HOOK_EVENT_STOP,
-    HOOK_EVENT_USER_PROMPT_SUBMIT,
-    TOOL_ALLOW,
-    TOOL_AUTO_APPROVE,
-    TOOL_DENY,
-    FileTooLargeError,
-    ToolHookResult,
     fire_tool_hooks,
-    hook_gate_kwargs,
-    identity_grant_covers_child,
-    pre_tool_match_names,
     safe_read_file,
-    safe_read_file_bytes_nolink,
     validate_file_path,
 )
 from kiro_crew.image_artifacts import register_images_off_loop
 from kiro_crew.llm_helpers import (  # noqa: F401
     _NO_PRIOR_STATS,
-    CREDENTIAL_RELOAD_RETRY_NOTICE,
-    ROUTE_BASELINE_ATTR,
     TRANSIENT_RETRIES,
-    TURN_FALLBACK_ATTR,
-    FallbackState,
     PromptBusyExhaustedError,
-    _billing_stats,
-    acp_error_is_connection_failure,
     acp_error_is_session_not_found,
-    acp_error_is_throttle,
     acp_error_is_transient,
-    acp_error_needs_fresh_credentials,
     advance_fallback_candidate,
-    configured_fallback_chain,
     connection_recovery_open,
-    connection_retry_delay,
-    credential_give_up_text,
     fallback_rewound_transient_budget,
     first_advertised_fallback,
-    latch_route_baseline,
-    pick_epoch_host,
     probe_fallback_restore,
-    provider_active_model,
-    provider_advertised_ids,
-    provider_fallback_active,
     provider_last_turn_usage,
-    provider_raw_model,
-    record_interaction_event,
-    resolve_substitute_set_model,
-    route_baseline_latch,
     run_bg_oneliner,
     slot_switch_session_lock,
     throttle_retry_delay,
@@ -789,53 +381,23 @@ from kiro_crew.llm_helpers import (  # noqa: F401
 )
 from kiro_crew.mcp_discovery import kirocrew_managed_names  # noqa: F401
 from kiro_crew.members import (
-    DM_SLOT_MODE,
-    is_dispatchable_member_name,
-    member_lifecycle,
     record_activity,
     select_provider_backend,
 )
-from kiro_crew.memory_stores import UnknownMemoryStore
-from kiro_crew.messaging.commands import compact_unsupported_backend, compact_unsupported_reply
-from kiro_crew.messaging.dispatch import (
-    consume_reinjection,
-    rearm_reinjection,
-    rollback_skill_bodies,
-)
-from kiro_crew.messaging.display_safety import redact_for_display
-from kiro_crew.messaging.egress import channel_egress_parts, send_channel_parts
-from kiro_crew.messaging.empty_turn_copy import (
-    EMPTY_TURN_NOTICE,
-    EMPTY_TURN_NOTICE_AFTER_RECOVERY,
-    EMPTY_TURN_NOTICE_AFTER_WORK,
-)
+from kiro_crew.messaging.empty_turn_copy import EMPTY_TURN_NOTICE_AFTER_RECOVERY
 from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.messaging.link import (  # noqa: F401
-    CHAT_TYPE_DIRECT,
     SLACK_NAMESPACE,
-    parse_session_key,
     telemetry_channel_of,
 )
-from kiro_crew.messaging.renderer import chunk_for_transport, split_options_trailer  # noqa: F401
-from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
+from kiro_crew.messaging.renderer import chunk_for_transport  # noqa: F401
 from kiro_crew.metrics.provider import get_recorder
-from kiro_crew.metrics.turns import emit_turn_duration, emit_turn_usage, turn_outcome
-from kiro_crew.mirror_admission import admission_required, verify_mirror_admission  # noqa: F401
-from kiro_crew.monitoring.completion import (
-    MonitorCompletionHook,
-    disposition_for_stop_reason,
-    is_monitor_completion_evidence,
-)
+from kiro_crew.monitoring.completion import MonitorCompletionHook
 from kiro_crew.name_grant import (  # noqa: F401
     Refusal,
-    log_decline,
     pin_human_approval,
     refusal_for_command_off_loop,
-    shell_command_for_event,
-    should_log_decline,
 )
-from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
-from kiro_crew.platform import redact_log_via_context, redact_via_context
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -850,42 +412,20 @@ from kiro_crew.providers.base import (
     LLMEvent,
     SessionMcpReport,
 )
-from kiro_crew.quick_prompts import QUICK_PROMPTS
-from kiro_crew.recovery.ladder import (
-    L1_TOOL_CALL,
-    SESSION_RECOVERY_MAX_ATTEMPTS,
-    InfraError,
-    default_ladder,
-)
 from kiro_crew.repeat_loop import RepeatLoopTracker
 from kiro_crew.safety_override import safety_override  # noqa: F401
 from kiro_crew.security import (
-    EXFILTRATION_REDACTION_TAG_PREFIX,
     REDACTED_CREDENTIAL_TAG,
-    StreamRedactor,
     is_sensitive_path,
     oauth_url_contains_credential,
-    redact,
-    redact_and_truncate,
     redact_credentials,
     redact_exfiltration_urls,
     redact_exfiltration_urls_with_records,
-    sanitized_oauth_endpoint,
-    sanitized_oauth_endpoint_display,
 )
-from kiro_crew.security.credential_sources import credential_records
-from kiro_crew.security.readonly_bash import (
-    command_invokes_git,
-    is_read_only_bash,
-    unsafe_bash_reason,
-)
-from kiro_crew.security.redaction import redact_credentials_with_records
-from kiro_crew.sel import SecurityEvent, sel, sel_is_warm
-from kiro_crew.session import process_shutdown_requested  # noqa: F401
+from kiro_crew.sel import sel, sel_is_warm
 from kiro_crew.session import (
     SessionBusyError,
     SessionClosingError,
-    SessionEndingError,
     SpeculativeResumeRefused,
 )
 from kiro_crew.session_agent_selection import (  # noqa: F401
@@ -895,33 +435,18 @@ from kiro_crew.session_agent_selection import (  # noqa: F401
     restore_agent_selection,
     session_agent_selection_kind,
 )
-from kiro_crew.session_capabilities import CapabilityStartupError
-from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
-from kiro_crew.slack.outbound import PostedOptions
+from kiro_crew.slack.handler import post_linked_approval
 from kiro_crew.start_priority import StartPriority, person_priority
-from kiro_crew.tool_gate_busy import hook_gate_busy
 from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
-    GrantDeadline,
-    GrantEnded,
     _mask_quoted_separators,
-    approval_command,
-    approval_display_command,
 )
 from kiro_crew.trust_patterns import extract_base_command as _extract_base_command
-from kiro_crew.trust_patterns import extract_bash_command as _extract_bash_command
 from kiro_crew.trust_patterns import extract_full_command as _extract_full_command
-from kiro_crew.trust_patterns import live_trusted_patterns as _live_trusted_patterns
 from kiro_crew.trust_patterns import matches_trusted_pattern as _matches_trusted_pattern
-from kiro_crew.trust_patterns import redirect_outside_grant as _redirect_outside_grant
 from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
     split_command_segments as _split_command_segments,
 )
-from kiro_crew.trust_patterns import timed_grant_deadline as _timed_grant_deadline
-from kiro_crew.validation import ValidationError, validate_ask_user_question
 from kiro_crew.wakatime.heartbeats import (  # noqa: F401
-    CADENCE_MIN_INTERVAL_SECS,
-    is_coding_event,
-    line_changes_from_file_changes,
     note_coding_activity,
     note_coding_cadence,
 )
@@ -975,69 +500,15 @@ SESSION_NOT_FOUND_GIVE_UP_TEXT = (
 # classify them identically to the turn logic here). Re-exported here so
 # callers importing them from chat_runner resolve them.
 from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
-    _ACTIVITY_NO_REPLY_CONTINUE_MSG,
-    _BUSY_RECOVER_MSG,
-    _COMPACTION_CONTINUE_MSG,
-    _CONN_RECOVER_MSG,
-    _EMPTY_AUTO_CONTINUE_MSG,
-    _MANUAL_RESUME_MSG,
     _POSTTOKEN_RECOVER_MSG,
-    _PROMISE_ONLY_CONTINUE_MSG,
-    _REFUSAL_FALLBACK_RESUME_MSG,
-    _SYNTHETIC_RECOVERY_MSGS,
-    APP_AGENT_REFUSED_KIND,
-    AUTH_REQUIRED_KIND,
-    AUTOMATION_NOTICE_KIND,
-    CONTEXT_OVERFLOW_KIND,
     CRON_NOTIFICATION_KIND,
-    EMPTY_RUNG_CONTINUE,
-    EMPTY_RUNG_GIVE_UP,
-    EMPTY_RUNG_REPLAY,
-    EMPTY_TURN_NOTICE_KIND,
-    FALSE_TOOL_BLOCKER_REPLAY_KIND,
-    KIRO_CLI_MISSING_KIND,
-    MCP_APP_MESSAGE_KIND,
-    MODEL_UNENTITLED_KIND,
     SEED_DECLINED_NOTICE_KIND,
-    SESSION_START_FAILED_KIND,
-    SPEC_HOOKS_NOTICE_KIND,
     SUBAGENT_COMPLETION_KIND,
-    SUBAGENT_DELIVERY_KINDS,
     SYNTHESIS_CLEAR,
-    SYNTHESIS_HELD,
-    SYNTHESIS_UNKNOWN,
     SYNTHETIC_RECOVERY_KIND,
-    TRANSIENT_GIVE_UP_TEXT,
-    TRANSIENT_NOTICE_GIVE_UP,
-    TRANSIENT_NOTICE_META_KEY,
-    TRANSIENT_NOTICE_RESUMING,
-    TRANSIENT_NOTICE_RETRYING,
-    TRANSIENT_RESUMING_TEXT,
-    TRANSIENT_RETRY_KIND,
-    TRANSIENT_RETRYING_TEXT,
-    USAGE_LIMIT_KIND,
-    EmptyTurnActivity,
-    RecoveryPayload,
-    app_inject_row,
-    classify_empty_turn,
-    has_leaked_tool_call,
-    has_unfinished_progress_claim,
-    is_false_current_tool_blocker,
-    is_false_current_tool_blocker_near_miss,
-    is_promise_only_terminal,
-    is_synthetic_payload_item,
-    is_synthetic_recovery_item,
-    mint_options_token,
-    normalize_stop_reason,
-    payload_for_replay,
-    should_continue_after_compaction,
-    should_notice_compaction_dropped_leak,
-    should_notice_leaked_tool_call,
-    should_notice_mixed_turn_leak,
     should_recover_promise_only,
     subagents_attached_async,
     synthesis_fire_verdict,
-    tool_calls_are_read_only_preparation,
 )
 
 # Consumption contract carried inside every pending-context frame, between the
@@ -1458,7 +929,7 @@ async def _persist_abnormal_turn_usage(
     ``read_context_tokens``, the effective agent -- live there, so the inner
     ``AcpClient`` would label every row ``provider="acp"`` with a ``(0, 0)``
     context window. The caller passes the inner handle only to decide liveness,
-    and runs this before the ``finally`` drops ``slot._acp_client`` -- the one
+    and runs this before ``_turn_release_handles`` drops ``slot._acp_client`` -- the one
     point the credits are still reachable.
 
     ``since`` is the per-turn stats object snapshotted BEFORE the turn's
@@ -1682,7 +1153,6 @@ async def _run_chat(
     _current_message: dict | None = None,
 ) -> None:
     """Stream LLM response into *slot*.  Survives browser disconnect."""
-    _crew_log_terminal: "dict | None"
     turn = _ChatTurn(
         state=state,
         slot=slot,
@@ -2236,463 +1706,18 @@ async def _run_chat(
     finally:
         # An interrupted or unexecuted proposal must not survive into a turn
         # whose backend may reuse its call id. Executed walker work is separate.
-        _acquired = turn._acquired
-        _compaction_completed = turn._compaction_completed
-        _crew_log_sid = turn._crew_log_sid
-        _crew_log_step = turn._crew_log_step
-        _crew_log_step_t0 = turn._crew_log_step_t0
-        _crew_log_turn_no = turn._crew_log_turn_no
-        _crew_log_turn_open = turn._crew_log_turn_open
-        _deferred_options_expiry = turn._deferred_options_expiry
-        _escalation = turn._escalation
         _local_turn_marker_generation = turn._local_turn_marker_generation
-        _mirror_active_task = turn._mirror_active_task
-        _mirror_active_task_title = turn._mirror_active_task_title
-        _mirror_chan = turn._mirror_chan
-        _mirror_stream_ts = turn._mirror_stream_ts
-        _mirror_thread = turn._mirror_thread
-        _native_card_output = turn._native_card_output
-        _native_tracker = turn._native_tracker
-        _recovering_compaction = turn._recovering_compaction
-        _replay_accepted_this_turn = turn._replay_accepted_this_turn
-        _responsive_recovery = turn._responsive_recovery
-        _responsive_turn = turn._responsive_turn
-        _seen_tool_identity = turn._seen_tool_identity
-        _shell_tool_calls = turn._shell_tool_calls
-        _terminal_synthetic = turn._terminal_synthetic
-        _turn_flushed_visible_text = turn._turn_flushed_visible_text
-        _turn_priority = turn._turn_priority
-        _turn_started = turn._turn_started
-        _turn_t0 = turn._turn_t0
-        _turn_thought = turn._turn_thought
-        _turn_tool_calls = turn._turn_tool_calls
-        _turn_tool_identities = turn._turn_tool_identities
-        session_key = turn.session_key
         slot._git_repo_touch_pending.clear()
         slot._git_repo_touch_terminal.clear()
         slot._git_repo_touch_overflow = False
-        # First: hand back the session-switch lock if this turn exited between
-        # its acquire and its post-registration release. Before anything that
-        # can await, and before the refusal-fallback restore below takes the
-        # same lock -- otherwise a turn that failed to register would block
-        # every switch on its session until the gateway restarts.
-        if turn._dispatch_lock_held:
-            turn._dispatch_lock_held = False
-            turn._dispatch_lock.release()
-        # Second: record this turn's outcome for its tail. Everything the tail
-        # needs is known by now, and any step below can raise or be cut short by
-        # a second cancel; recorded first, the exit guard then runs the tail with
-        # THIS turn's policy rather than an early exit's.
-        # The AutoNudge facts are the ones only this frame holds: what the turn
-        # dispatched and what it answered. The wake judge's feedback loop labels
-        # its own verdict from them -- a woken turn that changed nothing and
-        # answered short is the quiet-cycle shape the judge should have
-        # suppressed. The IDENTITIES go with the count because a count alone
-        # cannot tell a read from a write, which made that label constant-true;
-        # this is the same tuple the read-only-preparation check already reads,
-        # so the names cost nothing extra to collect. None is retained: the
-        # service reduces them to one boolean and two numbers. A nudge turn
-        # labels its verdict only when its response lands; failed and cancelled
-        # turns keep the retry unlabelled.
-        turn_exit.outcome = _TurnOutcome(
-            auth_required=turn._auth_required,
-            memory_admitted=turn._memory_preparation_admitted,
-            start_priority=_turn_priority,
-            nudge_facts={
-                "tool_calls": _turn_tool_calls,
-                "tool_identities": tuple(_turn_tool_identities),
-                "reply_text": turn.assistant_text if isinstance(turn.assistant_text, str) else "",
-                "reply_flushed": _turn_flushed_visible_text,
-                "nudge_turn": _directive_self_wake and turn._turn_landed,
-            },
-        )
-        # The turn's crew log closers, in the one order a reader can trust: every
-        # `message/sent` for this turn has now been flushed, so the tool closer,
-        # the last step's completion and the turn's own completion land after the
-        # text they close over. Emitted HERE rather than at the terminal event
-        # because several recovery paths return before that event is reached, and
-        # a stash that never runs leaves a turn open in the file forever.
-        # Derived-tier escalation hears how a routed turn ended. A no-op for a
-        # session with no routed turn in flight, which is every session while
-        # ``decisions.model_route_derive`` is off.
-        _settle_jev_route(session_key, _jev_route_turn_ok(turn._crew_log_terminal))
-        if turn._crew_log_terminal is not None:
-            # Any tool still open produced no result frame of its own. Closed
-            # before the turn completes so a turn never completes with an open
-            # call inside it -- the shape the interrupted-turn repair exists to
-            # fix, which a live turn must not produce in the first place.
-            crew_log_emit.close_open_tool_calls(_crew_log_sid, _crew_log_turn_no)
-            # The turn's LAST model call has no tool group after it to close it,
-            # so the turn's end does.
-            crew_log_emit.on_step_completed(
-                _crew_log_sid,
-                _crew_log_turn_no,
-                _crew_log_step,
-                ms=int((time.monotonic() - _crew_log_step_t0) * 1000),
-            )
-            crew_log_emit.on_turn_completed(
-                _crew_log_sid, _crew_log_turn_no, **turn._crew_log_terminal
-            )
-            _crew_log_terminal = None
-            turn._crew_log_terminal = _crew_log_terminal
-            _crew_log_turn_open = False
-            turn._crew_log_turn_open = _crew_log_turn_open
-        elif _crew_log_turn_open:
-            # The turn RAN and ended without its terminal event: the stream raised,
-            # or a recovery path (stale turn, tool stall, pipe death) returned
-            # before it. Closed here rather than left open, because this process
-            # OBSERVED the end -- and an open `turn/started` says the opposite, that
-            # the writer died mid-turn. Nothing in this process would ever correct
-            # it: the interrupted-turn repair is opt-in and only a resume asks for
-            # it, so a later resume would close it as an interruption that never
-            # happened, stamped at the last real entry's time.
-            #
-            # Same closer order as the measured path, for the same reason. Only
-            # locals bound BEFORE the stream are read: `_provider_name` and
-            # `_record_model` are bound only inside `_on_complete`, the terminal-event arm, so
-            # naming them here is a global lookup that raises NameError inside a `finally`
-            # and masks the very exception that brought us here.
-            crew_log_emit.close_open_tool_calls(_crew_log_sid, _crew_log_turn_no)
-            crew_log_emit.on_step_completed(
-                _crew_log_sid,
-                _crew_log_turn_no,
-                _crew_log_step,
-                ms=int((time.monotonic() - _crew_log_step_t0) * 1000),
-            )
-            crew_log_emit.on_turn_failed(
-                _crew_log_sid,
-                _crew_log_turn_no,
-                error=turn._crew_log_error,
-                duration_ms=int((time.monotonic() - _turn_t0) * 1000),
-                model=turn._turn_model,
-                provider=turn.provider_name,
-                depth=_prompt_depth,
-            )
-            _crew_log_turn_open = False
-            turn._crew_log_turn_open = _crew_log_turn_open
-        # Poisoned-conversation streak break — in the FINALLY on purpose (fork
-        # GPT review): several recovery paths (stale-turn, tool-stall,
-        # pipe-death) `return` before the main completion block in _turn_persist_and_settle, and a turn
-        # with model activity that exits through them must STILL break the
-        # exhaustion streak — the backend demonstrably served this
-        # conversation. Safe against _on_acp_error_card's streak
-        # increment: incrementing requires ZERO activity, so the two are
-        # mutually exclusive by construction and this can never clobber a
-        # legitimate increment. One-shot re-arm stays landed-turn-only.
-        _escalation.record_activity(emitted=turn._turn_emitted, thought=_turn_thought)
-        # Completion can be bypassed by cancellation, provider errors, or timeouts.
-        # Close cards idempotently and retain only bounded terminal records for
-        # reconnect replay until the next turn installs a fresh tracker.
-        # Snapshot which children were still unfinished FIRST — close_all
-        # force-marks every card done, and terminal entries linger in the
-        # tracker for replay, so reading the tracker afterwards would blame
-        # long-completed children for a later ceiling timeout.
-        _children_unfinished_final = any(not _i.get("done") for _i in _native_tracker.values())
-        try:
-            _native_subagent_close_all(state, slot, _native_tracker, _native_card_output)
-        finally:
-            slot._native_subagent_tracker = _retain_terminal_native(_native_tracker)
-            slot._native_subagent_output = {}
-        slot._batch_rejected = False
-        slot._batch_rejected_cause = ""
-        # Stash the hang-attribution snapshot BEFORE dropping the client ref:
-        # if this turn was cut by the dashboard ceiling (_bounded_turn), the
-        # done-callback (finish_turn_task) runs AFTER this finally, when
-        # _acp_client is already None — it reads these two fields to emit
-        # kirocrew.turn.timeout.cause for the ceiling path.
-        _lc = slot._acp_client
-        slot._last_turn_awaiting_permission = bool(
-            getattr(_lc, "_awaiting_permission", False)
-            or getattr(getattr(_lc, "_handle", None), "_awaiting_permission", False)
-        )
-        slot._last_turn_children_announced = _children_unfinished_final
-        # Steer handle: turn is over, drop the live client ref so a late steer
-        # can't target a dead session (the route also re-checks running state).
-        slot._acp_client = None
-        # Same lifecycle for the segment-cut handle: a late steer must not
-        # flush into a finished turn's (already-flushed) locals.
-        slot._steer_segment_cut = None
-        # Same lifecycle for the child-fidelity opt-in latched at turn start:
-        # it is THIS consumer's promise to render the low-fidelity downgrade
-        # card. Leaving it set would let a later, fidelity-UNAWARE consumer of
-        # the same provider/handle inherit the opt-in and silently disable the
-        # handle-level fail-close choke point.
-        try:
-            setattr(turn.client, "child_fidelity_aware", False)
-        except Exception:
-            pass
-        # Ensure file changes always surface, even on cancel/error. Wrapped so
-        # a raise here cannot skip the re-arm below and re-introduce the orphan
-        # bug this fix prevents.
-        try:
-            _flush_file_changes(
-                slot,
-                turn_boundary=turn._turn_msg_boundary,
-                turn_start_mid=turn._turn_start_mid,
-                turn_had_shell=bool(_shell_tool_calls),
-            )
-        except Exception:
-            logger.debug("_flush_file_changes failed", exc_info=True)
-        # Replay settlement belongs on the one path every turn exit crosses.
-        # A clean, non-synthetic landed end_turn is the only ordinary terminal
-        # whose fresh native transcript is durable enough to replace the prior
-        # full-history SID. Exceptions, hard cancellation, synthetic completion,
-        # recovery returns and unlanded terminals re-arm the lease; close_all then
-        # sees provider_switch_replay and preserves the old SID on restart.
-        if _replay_accepted_this_turn:
-            try:
-                _replay_landed = (
-                    turn._turn_landed
-                    and turn._stop_reason == STOP_REASON_END_TURN
-                    and not _terminal_synthetic
-                    and not turn._had_empty_response_verdict
-                )
-                if _replay_landed:
-                    if not state.sessions.commit_provider_switch_replay_sid(session_key):
-                        state.sessions.mark_provider_switch_replay(session_key)
-                else:
-                    state.sessions.mark_provider_switch_replay(session_key)
-            except Exception:
-                logger.debug("settling replay SID failed", exc_info=True)
-                try:
-                    state.sessions.mark_provider_switch_replay(session_key)
-                except Exception:
-                    logger.debug("re-arming replay after settlement failure failed", exc_info=True)
-        # This turn consumed the one-shot post-compaction re-injection flag but
-        # never landed, so the prompt carrying the skills index was discarded —
-        # an early return (stale-recover / tool-stall / error re-queue), an
-        # except arm, a hard CancelledError, a graceful cancel, or an empty
-        # re-queue. Put the flag back here rather than at the success check in
-        # _turn_context_usage, because most of those paths never reach it;
-        # without this the index is lost for the remaining life of the session.
-        # Wrapped for the same reason as the flush above.
-        #
-        # The member condition rides the same re-arm for the same reason: a
-        # member DM's FIRST turn that dies before landing (MemberRulesUnreadable
-        # abort, provider error — or a user Stop, whose cancelled completion
-        # never enters the except arm at all) leaves a warm session client, so
-        # the next turn would skip both member-section injection paths — no
-        # identity, no working protocol, and above all no [PERMANENT RULES].
-        # Re-arming here (the one block on EVERY exit path) makes the next turn
-        # rebuild the member section; the rules read inside stays fail-closed
-        # until the user repairs or clears the file.
-        rearm_reinjection(
-            state.sessions,
-            session_key,
-            consumed=turn._needs_reinjection or turn._member_session_start_pending,
-            landed=turn._turn_landed,
-        )
-        rollback_skill_bodies(state.context_builder, session_key, landed=turn._turn_landed)
-        if (
-            turn._turn_landed
-            and not _stop_pressed(turn)
-            and _responsive_turn.recovery is _responsive_recovery
-        ):
-            _responsive_turn.recovery = []
-        # Settle the durable FRESH first-turn history debt. The suppression arm of
-        # _turn_build_prompt's context branch already paid it directly (a reset asked to
-        # forget). The build arm only ASSEMBLED the replay — it reaches, and is durably KEPT by,
-        # the provider only on a turn kiro-cli does not discard or re-queue. Settle
-        # when the TURN'S TERMINAL is a normal ``end_turn`` the provider kept —
-        # a non-synthetic ``STOP_REASON_END_TURN`` with no empty-response verdict —
-        # NOT on ``_turn_landed`` (a reliability-metric flag that excludes
-        # promise-only / leaked-tool / infra-recovery turns, which still ended
-        # normally and were kept). Every other exit keeps the debt armed, which is
-        # exactly what the re-queue needs:
-        #   • pre-output backend 5xx — raises before any terminal; re-queued onto
-        #     this live session, so the re-queue must rebuild history.
-        #   • user Stop / cancel — a cancelled completion still sets
-        #     ``_saw_terminal_event``, but kiro-cli DISCARDS the cancelled turn
-        #     (the one carrying the assembled replay), so the provider does not
-        #     keep it; the next prompt must rebuild it.
-        #   • empty-response verdict — the empty-response rung re-queues the
-        #     message, so that turn is not durably kept either.
-        # Acceptance without assembly is a slash command's native output (``/help``)
-        # — it never built context, so it must not settle a debt it never paid.
-        # Nothing re-arms the debt after it clears, so it cannot re-inject forever.
-        #
-        # A COMPLETED mid-turn compaction is the one accepted terminal the
-        # landed-``end_turn`` test cannot see: ``_recovering_compaction`` is itself
-        # a guard on the landed-success block in _turn_context_usage, so a turn
-        # that summarized its window never sets ``_turn_landed`` — yet the backend
-        # DID accept the prompt and now holds a summarized live session, and the
-        # queued continuation runs ON that same session. Leaving the debt armed
-        # there makes the continuation re-prepend the full pre-compaction replay
-        # INTO the just-summarized session (the fresh first turn carries the
-        # largest replay of the session, which is exactly what fills the window
-        # mid-turn). This is distinct from the discarded / re-queued cases above:
-        # a completed compaction is durably kept, so it settles. A STARTED-but-not-
-        # completed compaction (``_recovering_compaction`` without
-        # ``_compaction_completed``) is NOT yet durable, so it stays armed.
-        # Settle on the TERMINAL itself — a normal ``end_turn`` the provider
-        # kept — NOT on ``_turn_landed``. ``_turn_landed`` is a reliability-metric
-        # flag deliberately left False for promise-only, leaked-tool and
-        # infra-recovery turns (see _turn_context_usage): those turns are not COUNTED as a
-        # landed success, but they still ended on a normal ``end_turn`` and the
-        # provider kept the conversation — so the first-turn history IS delivered
-        # and must settle, or the next turn re-sends the full fresh history to a
-        # session that already holds it. Cancelled (``STOP_REASON_CANCELLED``) and
-        # empty-response (``_had_empty_response_verdict``) terminals are excluded
-        # here because kiro-cli discards / re-queues them, so they stay armed.
-        #
-        # EXIT THAT KEEPS THE SESSION (``_turn_emitted``) — the general rule the
-        # ``end_turn`` disjunct is one instance of. Once assistant tokens or a
-        # tool call have STREAMED (``_turn_emitted``), the live kiro-cli session
-        # already holds the assembled prompt and the full first-turn history —
-        # the exact premise the post-token recovery arm settles on
-        # (``acp_recovery.py``). That retention does NOT depend on how the turn
-        # then ENDS: a non-transient backend error (a validation/refusal
-        # ``AcpError``), a timeout, or a generic ``except`` AFTER output lands in
-        # the terminal ``else`` (the generic AcpError exit), which sets no
-        # ``end_turn`` terminal and does NOT reset the session — so the SAME live
-        # session, still holding that history, serves the next turn. Leaving the
-        # debt armed there made the next FRESH-claimed turn re-prepend the whole
-        # conversation into a session that already held it (buluoray B1 /
-        # iamwhatever: the sibling of the post-output transient settle, treated
-        # oppositely). Settling on ``_turn_emitted`` closes that exit the same way
-        # the transient arm does. It is STILL excluded on the two states kiro-cli
-        # does not keep: a user Stop (``STOP_REASON_CANCELLED`` — the cancelled
-        # turn carrying the replay is discarded, so a cancel-after-output stays
-        # armed, which iamwhatever accepted) and an empty-response verdict
-        # (``_had_empty_response_verdict`` — re-queued). A pre-output exit
-        # (``not _turn_emitted``: a pre-stream 5xx re-queue, a bare early return)
-        # never streamed, so the history did NOT reach the provider and the debt
-        # correctly stays armed for the re-queue to rebuild.
-        _first_turn_history_delivered = (
-            (
-                turn._stop_reason == STOP_REASON_END_TURN
-                and not _terminal_synthetic
-                and not turn._had_empty_response_verdict
-            )
-            or (
-                turn._turn_emitted
-                and turn._stop_reason != STOP_REASON_CANCELLED
-                and not turn._had_empty_response_verdict
-            )
-            or (_recovering_compaction and _compaction_completed)
-        )
-        if turn._first_turn_history_assembled and _first_turn_history_delivered:
-            try:
-                state.sessions.consume_first_turn_history_owed(session_key)
-            except Exception:
-                logger.debug("settling first-turn history debt failed", exc_info=True)
-            # A conductor context-cap trim's seed rode in that history.
-            _spend_context_cap_seed(session_key)
-        # Clean up mirror stream on any exit path.
-        #
-        # The release below MUST happen however this block exits. Each await in
-        # here is already guarded against ``Exception``, but ``CancelledError``
-        # derives from ``BaseException`` (since 3.8), so a cancellation
-        # delivered while one of them is suspended slips past every
-        # ``except Exception`` and skips the release entirely.
-        #
-        # The permit is keyed by SESSION, so leaking it does not merely lose
-        # this turn: the session reads as permanently busy, every later turn for
-        # it blocks forever, no queued turn drains, and only a gateway restart
-        # clears it. The nested try/finally makes the release unconditional
-        # while preserving the reset-then-release ordering.
-        try:
-            if _deferred_options_expiry:
-                _deferred_options_expiry = False
-                turn._deferred_options_expiry = _deferred_options_expiry
-                await expire_slack_options(state, session_key)
-            if _mirror_stream_ts and state.slack_client and _mirror_chan:
-                try:
-                    # Fenced for the same reason _on_tool_call's in-progress append is:
-                    # if that one was withheld, marking it complete here would publish the
-                    # title for the first time. This runs BEFORE the fence is
-                    # cleared below, so it still sees the turn's own records.
-                    if (
-                        _mirror_active_task
-                        and not cross_surface_withheld(state, slot)
-                        and not slack_publication_withheld(
-                            state, slot, _mirror_chan, _mirror_thread
-                        )
-                    ):
-                        await state.slack_client.append_task(
-                            _mirror_chan,
-                            _mirror_stream_ts,
-                            _mirror_active_task,
-                            _mirror_active_task_title,
-                            "complete",
-                        )
-                except Exception:
-                    logger.debug("Task append cleanup failed", exc_info=True)
-                try:
-                    await state.slack_client.stop_stream(_mirror_chan, _mirror_stream_ts)
-                except Exception:
-                    logger.debug("Stream cleanup failed", exc_info=True)
-            if _acquired and (turn.needs_session_reset or turn.needs_conversation_discard):
-                # Neither branch below goes through `_reset_slot_session`, so the
-                # withhold verdict is dropped here: both replace the session that
-                # advertised the model list (an agent switch can even change the
-                # provider), and the verdict describes that session. Dropped for
-                # both branches and before the await, so a failed teardown leaves
-                # the slot at "unknown" rather than carrying a verdict it can no
-                # longer vouch for.
-                slot.forget_session_model_state()
-                try:
-                    if turn.needs_conversation_discard:
-                        # Poisoned-conversation escalation: clear ONLY the
-                        # resume sid (keeping the session-map entry with its
-                        # Slack thread/channel linkage), so the re-queued
-                        # recovery turn cold-starts a fresh native
-                        # conversation instead of session/load-ing the same
-                        # rejected one (which reset() would do).
-                        await state.sessions.discard_conversation(session_key)
-                    else:
-                        await state.sessions.reset(session_key)
-                except Exception:
-                    logger.warning("Failed to reset session %s after agent switch", session_key)
-                # Freshness push for open tabs. Unconditional where the old
-                # write-time retirement needed an outcome gate: the helper
-                # re-resolves the live child at call time, so a swallowed
-                # teardown failure leaves the child alive, the stamps still
-                # match, and nothing is broadcast (see
-                # _broadcast_expired_oauth_banners).
-                _broadcast_expired_oauth_banners(state, slot)
-        finally:
-            if _acquired:
-                # A successful reset() above already popped the key under its
-                # own lock, so this is a no-op on that path (the popped
-                # session's semaphore is discarded with it). Kept unconditional
-                # so a reset that failed or was cancelled still hands back the
-                # permit rather than stranding the session.
-                state.sessions.release(session_key)
-            # This turn's identity dies WITH its session, and inside the same
-            # finally for the same reason the release is: the reset above can be
-            # cancelled, and CancelledError derives from BaseException, so a
-            # clear placed after this block is simply skipped and the slot keeps
-            # advertising a turn that is gone.
-            #
-            # It must also land before `_start_next_queued_turn` further down
-            # can install the SUCCESSOR's key — a clear after that would wipe a
-            # live turn's identity and drop the cancel routes back to mutable
-            # routing. Compare-and-clear keeps that true if the ordering is ever
-            # rearranged: only the turn that installed a key may retire it.
-            #
-            # Outside the `_acquired` guard: the identity is published before
-            # the permit is taken, so a cold start that never acquired one still
-            # has something to retire.
-            if slot._active_turn_session_key == session_key:
-                slot._active_turn_session_key = ""
-            # Spelling-independent backstop for a directive call whose tool
-            # identity and result marker were both lost by the backend. The
-            # validated payload reached the gateway, but no frame claimed it,
-            # so every per-frame diagnostic in _on_tool_result was structurally unreachable.
-            # Inspect only records parked during THIS turn: residue from an
-            # earlier abandoned turn must not blame the current one. Diagnostic
-            # only — claim, refusal, and expiry semantics stay unchanged.
-            await _report_unclaimed_directives(
-                state,
-                slot,
-                session_key,
-                _turn_started=_turn_started,
-                _seen_tool_identity=_seen_tool_identity,
-            )
+        await _turn_record_outcome(turn)
+        await _turn_close_crew_log(turn)
+        await _turn_release_handles(turn)
+        await _turn_settle_debts(turn)
+        await _turn_release_session(turn)
         # Retire the in-flight marker once every transcript mutation is complete
-        # and the session permit above is released (an await here cannot skip
-        # that release), and only while the process is going to live on: during
+        # and the session permit is released in _turn_release_session (an await here
+        # cannot skip that release), and only while the process is going to live on: during
         # a shutdown the cancellation that ended this turn came from the process
         # dying, which is exactly the interruption the marker exists to record --
         # the graceful save writes it and the next start converts it. A turn

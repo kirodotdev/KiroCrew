@@ -8,14 +8,29 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.dashboard.chat_utils import (
+    _REFUSAL_FALLBACK_RESUME_MSG,
+    _SYNTHETIC_RECOVERY_MSGS,
+    TRANSIENT_RETRY_KIND,
+    payload_for_replay,
+)
+from kiro_crew.dashboard.recovery_replays import replays_of
+from kiro_crew.llm_helpers import (
+    TURN_FALLBACK_ATTR,
+    FallbackState,
+    configured_fallback_chain,
+    pick_epoch_host,
+    provider_active_model,
+    provider_advertised_ids,
+    provider_raw_model,
+    resolve_substitute_set_model,
+)
+from kiro_crew.security import redact
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
-        _REFUSAL_FALLBACK_RESUME_MSG,
-        _SYNTHETIC_RECOVERY_MSGS,
         SYNTHETIC_RECOVERY_KIND,
-        TRANSIENT_RETRY_KIND,
-        TURN_FALLBACK_ATTR,
-        FallbackState,
         KiroCrewConfig,
         RefusalInfo,
         ReplayFamily,
@@ -23,24 +38,14 @@ if TYPE_CHECKING:
         advance_fallback_candidate,
         advertised_model_ids,
         capabilities_of,
-        configured_fallback_chain,
         effective_session_key,
-        is_claude_code,
         logger,
         model_is_unusable,
         model_registry,
-        payload_for_replay,
-        pick_epoch_host,
         probe_fallback_restore,
-        provider_active_model,
-        provider_advertised_ids,
-        provider_raw_model,
-        redact,
         redact_credentials,
         redact_exfiltration_urls,
-        replays_of,
         resolve_pin_spelling,
-        resolve_substitute_set_model,
         slot_switch_session_lock,
     )
     from kiro_crew.dashboard.chat_turn.recovery import (

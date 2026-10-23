@@ -9,11 +9,23 @@ import asyncio
 import re
 from typing import TYPE_CHECKING, Literal
 
+from kiro_crew.dashboard.chat_utils import (
+    TRANSIENT_RETRY_KIND,
+    RecoveryPayload,
+    ResetCause,
+    build_recovery_requeue,
+    payload_for_replay,
+)
+from kiro_crew.dashboard.member_message_notes import post_turn_reply
+from kiro_crew.dashboard.state import (
+    STALE_RECOVERY_PREFIX,
+    TOOL_STALL_RECOVERY_PREFIX,
+    build_tool_stall_recovery_prompt,
+)
+from kiro_crew.recovery.ladder import L1_TOOL_CALL, SESSION_RECOVERY_MAX_ATTEMPTS, default_ladder
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
-        L1_TOOL_CALL,
-        SESSION_RECOVERY_MAX_ATTEMPTS,
-        STALE_RECOVERY_PREFIX,
         STOP_CLASS_FAILED,
         STOP_REASON_CANCELLED,
         STOP_REASON_COMPACTION_FAILED,
@@ -21,19 +33,10 @@ if TYPE_CHECKING:
         STOP_REASON_TOOL_STALL,
         STOP_RECOVERY_MAX_RETRIES,
         SYNTHETIC_RECOVERY_KIND,
-        TOOL_STALL_RECOVERY_PREFIX,
-        TRANSIENT_RETRY_KIND,
         WAIT_REASON_INPUT,
-        RecoveryPayload,
-        ResetCause,
         _maybe_consolidate,
-        build_recovery_requeue,
         build_stale_recovery_prompt,
-        build_tool_stall_recovery_prompt,
-        default_ladder,
         logger,
-        payload_for_replay,
-        post_turn_reply,
         runtime_death,
         save_slot_off_loop,
     )
@@ -85,15 +88,16 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
     # via session/cancel and got no ack within the grace window — a confirmed
     # wedge (a done-but-missing-frame turn would have acked and completed
     # normally). Reset the session (kill the wedged runtime + session/load
-    # resume in _run_chat's finally) and re-queue a continue-nudge so the turn
-    # finishes IN PLACE, on this same slot, with NO user message required —
+    # resume in _turn_release_session, chat_turn/session_reset.py) and re-queue a
+    # continue-nudge so the turn finishes IN PLACE, on this same slot, with NO
+    # user message required —
     # the dequeue in _run_chat's finally re-dispatches it against the resumed session,
     # which restores the prior committed work so the model continues rather
     # than restarts. Bounded so a permanently-broken session surfaces a clean
     # "start a new chat" instead of looping. Complementary to a companion guard,
     # which surfaces the stuck sessions this cannot recover.
     if _stop_reason == STOP_REASON_STALE_RECOVER:
-        needs_session_reset = True  # checked in _run_chat's finally (reset + resume)
+        needs_session_reset = True  # checked in _turn_release_session (reset + resume)
         turn.needs_session_reset = needs_session_reset
         # This arm and the three below return before _turn_settle_answer's end-of-turn
         # flush, where the streamed text exists only as chunk rows, which a save
@@ -187,8 +191,8 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
     # session reset IS needed either way: this completion is synthetic (the
     # client stopped reading; the backend never sent end_turn), so the
     # backend still counts the turn as in progress and the next prompt
-    # would collide with "prompt already in progress". The reset in _run_chat's
-    # finally tears that runtime down and session/load-resumes.
+    # would collide with "prompt already in progress". The reset in _turn_release_session
+    # (chat_turn/session_reset.py) tears that runtime down and session/load-resumes.
     #
     # Whether the abandoned message is re-queued depends on WHY compaction
     # failed, which is the whole point of the verdict the ACP layer
@@ -199,7 +203,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
     # and dropping the user's message for it silently ends the turn on a
     # backend hiccup the very next attempt would clear.
     if _stop_reason == STOP_REASON_COMPACTION_FAILED:
-        needs_session_reset = True  # checked in _run_chat's finally
+        needs_session_reset = True  # checked in _turn_release_session (chat_turn/session_reset.py)
         turn.needs_session_reset = needs_session_reset
         await _persist_partial_reply(turn, _stop_reason)
         if (
@@ -246,7 +250,8 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
             )
             # No backoff call here, matching the pipe-death sibling in this
             # function: the session teardown + session/load replay in
-            # _run_chat's finally already sits between this queue and the retry.
+            # _turn_release_session (chat_turn/session_reset.py) already sits between this queue
+            # and the retry.
             _queue_recovery(
                 turn,
                 0,
@@ -377,9 +382,9 @@ async def _turn_persist_and_settle(turn: _ChatTurn) -> None:
         # The turn-end disk reads and diffs (a whole file of up to two megabytes
         # for a large edited file) run off the event loop; the flush then applies
         # them to the slot here, on the loop. The teardown flush in
-        # _run_chat's finally reads inline without them: it runs where an await could
-        # skip the session-permit release, so it keeps the ordinary capped
-        # read only.
+        # _turn_release_handles (chat_turn/turn_entry.py) reads inline without them: it
+        # runs where an await could skip the session-permit release, so it keeps the
+        # ordinary capped read only.
         _changes_now = getattr(slot, "_file_changes", None)
         _after_reads = (
             await asyncio.to_thread(_turn_after_reads, list(_changes_now), bool(_shell_tool_calls))

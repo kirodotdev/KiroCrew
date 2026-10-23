@@ -11,45 +11,47 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.capabilities import capabilities_for
+from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.agent_switch_command import agent_switch_target, switch_announcement
+from kiro_crew.autonudge import FINISHED_LOOP_REASONS, reason_in
+from kiro_crew.autonudge_authz import normalize_banner
+from kiro_crew.dashboard.chat_utils import (
+    _KIRO_ONLY_BLOCKED_SLASH_COMMANDS,
+    _append_compaction_notice,
+    is_harness_slash_command,
+    parse_workflow_command,
+)
+from kiro_crew.dashboard.session_directive_apply import _reset_conversation
+from kiro_crew.dashboard.state import (
+    HOOK_CONTINUATION_RECOVERY_PREFIX,
+    MONITOR_WAKE_PREFIX,
+    SUBAGENT_SYNTHESIS_PREFIX,
+)
+from kiro_crew.messaging.commands import compact_unsupported_backend, compact_unsupported_reply
+from kiro_crew.security import redact
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _BLOCKED_SLASH_COMMANDS,
-        _KIRO_ONLY_BLOCKED_SLASH_COMMANDS,
         ACP_BACKEND_KAS,
         ACP_BACKEND_KIRO,
         ACP_BACKENDS_COMPACT,
         ACP_BACKENDS_LOCAL_CLEAR,
-        FINISHED_LOOP_REASONS,
-        HOOK_CONTINUATION_RECOVERY_PREFIX,
         MAX_PROMPT_BYTES,
-        MONITOR_WAKE_PREFIX,
-        SUBAGENT_SYNTHESIS_PREFIX,
         DashboardState,
         KiroCrewConfig,
         RepeatLoopTracker,
-        _append_compaction_notice,
         _ChatSlot,
         _expand_prompt_mention_off_loop,
         _list_aim_prompts,
-        _reset_conversation,
         _run_chat,
-        agent_switch_target,
-        capabilities_for,
         capabilities_of,
-        compact_unsupported_backend,
-        compact_unsupported_reply,
         data_home,
         get_instance,
-        is_claude_code,
-        is_harness_slash_command,
         logger,
-        normalize_banner,
-        parse_workflow_command,
-        reason_in,
-        redact,
         sel,
         select_provider_backend,
-        switch_announcement,
     )
     from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
     from kiro_crew.dashboard.chat_turn.queue_cycle import _send_chat_done
@@ -718,7 +720,8 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     _acquired = False
     turn._acquired = _acquired
     # Whether this turn holds the session-switch lock (see the acquire in _turn_admit);
-    # read by _run_chat's finally so an exit between acquire and release never leaks it.
+    # read by _turn_record_outcome (chat_turn/queue_cycle.py), from _run_chat's finally, so
+    # an exit between acquire and release never leaks it.
     turn._dispatch_lock_held = False
     _mirror_stream_ts: str = ""
     turn._mirror_stream_ts = _mirror_stream_ts
@@ -743,7 +746,8 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     client: Any = None
     turn.client = client
     # The pre-acquisition gate accepted this command. Keep its deferred OPTIONS
-    # drain owned by _run_chat's finally until acquisition either refuses or drains it.
+    # drain owned by _turn_release_session (chat_turn/session_reset.py), from _run_chat's
+    # finally, until acquisition either refuses or drains it.
     _deferred_options_expiry = (
         _prompt_depth == 0 and first_word in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
     )

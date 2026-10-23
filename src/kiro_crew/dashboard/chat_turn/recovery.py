@@ -8,40 +8,43 @@ import inspect
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
+from kiro_crew.dashboard.chat_utils import (
+    _COMPACTION_CONTINUE_MSG,
+    _PROMISE_ONLY_CONTINUE_MSG,
+    _SYNTHETIC_RECOVERY_MSGS,
+    APP_AGENT_REFUSED_KIND,
+    AUTH_REQUIRED_KIND,
+    CONTEXT_OVERFLOW_KIND,
+    FALSE_TOOL_BLOCKER_REPLAY_KIND,
+    KIRO_CLI_MISSING_KIND,
+    MODEL_UNENTITLED_KIND,
+    SESSION_START_FAILED_KIND,
+    TRANSIENT_RETRY_KIND,
+    USAGE_LIMIT_KIND,
+    ResetCause,
+    _remove_queued_by_id,
+    build_recovery_requeue,
+    is_synthetic_payload_item,
+)
+from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
+from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT
+from kiro_crew.llm_helpers import acp_error_is_throttle
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
-        _COMPACTION_CONTINUE_MSG,
-        _PROMISE_ONLY_CONTINUE_MSG,
-        _SYNTHETIC_RECOVERY_MSGS,
-        APP_AGENT_REFUSED_KIND,
-        AUTH_REQUIRED_KIND,
-        CONTEXT_OVERFLOW_KIND,
-        FALSE_TOOL_BLOCKER_REPLAY_KIND,
-        KIRO_CLI_MISSING_KIND,
-        MODEL_UNENTITLED_KIND,
-        SESSION_START_FAILED_KIND,
         SUBAGENT_COMPLETION_KIND,
-        SUBAGENT_SYNTHESIS_PROMPT,
         SYNTHETIC_RECOVERY_KIND,
-        TRANSIENT_RETRY_KIND,
-        USAGE_LIMIT_KIND,
         DashboardState,
         KiroCrewConfig,
-        PoisonedConversationEscalation,
         RefusalInfo,
-        ResetCause,
         _ChatSlot,
-        _emit_recovery_outcome,
         _has_user_queued_followup,
-        _remove_queued_by_id,
-        acp_error_is_throttle,
         append_and_surface,
-        build_recovery_requeue,
         effective_session_key,
-        is_synthetic_payload_item,
         logger,
         model_is_unusable,
     )
+    from kiro_crew.dashboard.chat_turn.turn_stats import _emit_recovery_outcome
     from kiro_crew.dashboard.recovery_replays import ConsumePhase, LiveSlot, ReplayFamily
 
 

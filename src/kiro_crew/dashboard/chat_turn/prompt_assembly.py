@@ -4,6 +4,8 @@ and skill mentions it expands.
 The prompt phase ``_turn_build_prompt`` runs the steps in order and makes the
 ContextBuilder call; each step reads what it is handed and returns what it adds. The
 context-composition record is written in ``_turn_dispatch_gates``, once the gates pass.
+When the turn ends, ``_turn_settle_debts`` settles what it owed its prompts: the replay,
+the re-injection flag, the skill bodies and the first-turn history debt.
 """
 
 from __future__ import annotations
@@ -12,44 +14,52 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_discovery import served_provider_label
+from kiro_crew.context import prepare_store_vectors
+from kiro_crew.dashboard.chat_folders import _resolve_folder_steering_dirs, slot_steering_principal
+from kiro_crew.dashboard.chat_tag_grants import refresh_cache as refresh_tag_grants_cache
+from kiro_crew.dashboard.chat_tags import resolve_board_tags
+from kiro_crew.dashboard.chat_utils import (
+    _BUSY_RECOVER_MSG,
+    _CONN_RECOVER_MSG,
+    _MANUAL_RESUME_MSG,
+    _apply_incognito_prefix,
+    user_text_span,
+)
+from kiro_crew.dashboard.handlers import _prompt_read_within_root
+from kiro_crew.dashboard.state import TURN_OPENING_INJECT_KINDS
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+from kiro_crew.messaging.dispatch import (
+    consume_reinjection,
+    rearm_reinjection,
+    rollback_skill_bodies,
+)
+
 if TYPE_CHECKING:
     from kiro_crew.context import ContextBuilder
     from kiro_crew.dashboard.chat_runner import (
-        _BUSY_RECOVER_MSG,
-        _CONN_RECOVER_MSG,
-        _MANUAL_RESUME_MSG,
         MAX_PROMPT_BYTES,
-        TURN_OPENING_INJECT_KINDS,
+        STOP_REASON_CANCELLED,
+        STOP_REASON_END_TURN,
         DashboardState,
-        FileTooLargeError,
-        _apply_incognito_prefix,
         _ChatSlot,
         _find_prompt,
         _get_skills,
         _maybe_inject_persona,
         _prewarm_startup_query,
-        _prompt_read_within_root,
-        _resolve_folder_steering_dirs,
-        consume_reinjection,
         context_omissions,
         is_sensitive_path,
         logger,
-        prepare_store_vectors,
-        refresh_tag_grants_cache,
-        resolve_board_tags,
         run_in_embed_pool,
-        safe_read_file_bytes_nolink,
         sel,
-        served_provider_label,
         session_skill_globs,
-        slot_steering_principal,
-        user_text_span,
         validate_file_path,
     )
     from kiro_crew.dashboard.chat_turn.context_cap import (
         CONTEXT_CAP_TAIL_CHARS,
         _context_cap_seed_head,
         _drop_context_cap_seed,
+        _spend_context_cap_seed,
         _take_context_cap_seed,
     )
     from kiro_crew.dashboard.chat_turn.queue_drain import settle_drained_subagent_notices
@@ -58,6 +68,7 @@ if TYPE_CHECKING:
         _folder_steering_turn,
         drain_pending_context,
     )
+    from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
 
 
@@ -92,8 +103,8 @@ async def _session_replay_history(
             # to forget, so there is no history to deliver and nothing to re-queue.
             # Pay the debt NOW, unconditionally — even if this turn then ends
             # pre-token, the re-queue must not replay the conversation the reset
-            # dropped. (The build arm's debt is settled by the finally in
-            # ``_run_chat``, gated on ``_first_turn_history_assembled`` and a
+            # dropped. (The build arm's debt is settled by ``_turn_settle_debts``,
+            # from ``_run_chat``'s finally, gated on ``_first_turn_history_assembled`` and a
             # durably-kept turn, because its replay only reaches the provider when
             # the stream starts.)
             state.sessions.consume_first_turn_history_owed(session_key)
@@ -587,7 +598,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         # command (the ``if is_slash:`` arm above) never reaches it. The build
         # arm's replay only reaches the provider when the stream starts, so a
         # pre-output backend 5xx fails AFTER assembly and the re-queue needs the
-        # debt — _run_chat's finally settles it (gated on this flag) only once the
+        # debt — _turn_settle_debts settles it (gated on this flag) only once the
         # provider durably keeps the prompt. The suppression arm (a reset asked
         # to forget) pays the debt directly inside the helper.
         if _context_is_new and not _provider_has_history:
@@ -926,7 +937,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             # context-bearing turn in the builder-less fallback handles its
             # history, so settle the FRESH first-turn debt here too. A reset
             # that asked to forget pays it now; otherwise record that history
-            # was assembled and let _run_chat's finally settle it on a durably-kept
+            # was assembled and let _turn_settle_debts settle it on a durably-kept
             # turn. Without this a standalone dashboard with no context_builder
             # leaves the debt armed and re-prepends full history every turn.
             _first_turn_history_assembled = True
@@ -948,3 +959,160 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 )
                 full_message = history + full_message
                 turn.full_message = full_message
+
+
+async def _turn_settle_debts(turn: _ChatTurn) -> None:
+    """Settle the turn's prompt debts: replay, re-injection, skill bodies, first-turn history."""
+    _compaction_completed = turn._compaction_completed
+    _recovering_compaction = turn._recovering_compaction
+    _replay_accepted_this_turn = turn._replay_accepted_this_turn
+    _responsive_recovery = turn._responsive_recovery
+    _responsive_turn = turn._responsive_turn
+    _terminal_synthetic = turn._terminal_synthetic
+    session_key = turn.session_key
+    state = turn.state
+    # Replay settlement belongs on the one path every turn exit crosses.
+    # A clean, non-synthetic landed end_turn is the only ordinary terminal
+    # whose fresh native transcript is durable enough to replace the prior
+    # full-history SID. Exceptions, hard cancellation, synthetic completion,
+    # recovery returns and unlanded terminals re-arm the lease; close_all then
+    # sees provider_switch_replay and preserves the old SID on restart.
+    if _replay_accepted_this_turn:
+        try:
+            _replay_landed = (
+                turn._turn_landed
+                and turn._stop_reason == STOP_REASON_END_TURN
+                and not _terminal_synthetic
+                and not turn._had_empty_response_verdict
+            )
+            if _replay_landed:
+                if not state.sessions.commit_provider_switch_replay_sid(session_key):
+                    state.sessions.mark_provider_switch_replay(session_key)
+            else:
+                state.sessions.mark_provider_switch_replay(session_key)
+        except Exception:
+            logger.debug("settling replay SID failed", exc_info=True)
+            try:
+                state.sessions.mark_provider_switch_replay(session_key)
+            except Exception:
+                logger.debug("re-arming replay after settlement failure failed", exc_info=True)
+    # This turn consumed the one-shot post-compaction re-injection flag but
+    # never landed, so the prompt carrying the skills index was discarded —
+    # an early return (stale-recover / tool-stall / error re-queue), an
+    # except arm, a hard CancelledError, a graceful cancel, or an empty
+    # re-queue. Put the flag back here rather than at the success check in
+    # _turn_context_usage, because most of those paths never reach it;
+    # without this the index is lost for the remaining life of the session.
+    # Wrapped for the same reason as the flush in _turn_release_handles (chat_turn/turn_entry.py).
+    #
+    # The member condition rides the same re-arm for the same reason: a
+    # member DM's FIRST turn that dies before landing (MemberRulesUnreadable
+    # abort, provider error — or a user Stop, whose cancelled completion
+    # never enters the except arm at all) leaves a warm session client, so
+    # the next turn would skip both member-section injection paths — no
+    # identity, no working protocol, and above all no [PERMANENT RULES].
+    # Re-arming here (run from _run_chat's finally, the one block on EVERY exit
+    # path) makes the next turn rebuild the member section; the rules read inside
+    # stays fail-closed until the user repairs or clears the file.
+    rearm_reinjection(
+        state.sessions,
+        session_key,
+        consumed=turn._needs_reinjection or turn._member_session_start_pending,
+        landed=turn._turn_landed,
+    )
+    rollback_skill_bodies(state.context_builder, session_key, landed=turn._turn_landed)
+    if (
+        turn._turn_landed
+        and not _stop_pressed(turn)
+        and _responsive_turn.recovery is _responsive_recovery
+    ):
+        _responsive_turn.recovery = []
+    # Settle the durable FRESH first-turn history debt. The suppression arm of
+    # _turn_build_prompt's context branch already paid it directly (a reset asked to
+    # forget). The build arm only ASSEMBLED the replay — it reaches, and is durably KEPT by,
+    # the provider only on a turn kiro-cli does not discard or re-queue. Settle
+    # when the TURN'S TERMINAL is a normal ``end_turn`` the provider kept —
+    # a non-synthetic ``STOP_REASON_END_TURN`` with no empty-response verdict —
+    # NOT on ``_turn_landed`` (a reliability-metric flag that excludes
+    # promise-only / leaked-tool / infra-recovery turns, which still ended
+    # normally and were kept). Every other exit keeps the debt armed, which is
+    # exactly what the re-queue needs:
+    #   • pre-output backend 5xx — raises before any terminal; re-queued onto
+    #     this live session, so the re-queue must rebuild history.
+    #   • user Stop / cancel — a cancelled completion still sets
+    #     ``_saw_terminal_event``, but kiro-cli DISCARDS the cancelled turn
+    #     (the one carrying the assembled replay), so the provider does not
+    #     keep it; the next prompt must rebuild it.
+    #   • empty-response verdict — the empty-response rung re-queues the
+    #     message, so that turn is not durably kept either.
+    # Acceptance without assembly is a slash command's native output (``/help``)
+    # — it never built context, so it must not settle a debt it never paid.
+    # Nothing re-arms the debt after it clears, so it cannot re-inject forever.
+    #
+    # A COMPLETED mid-turn compaction is the one accepted terminal the
+    # landed-``end_turn`` test cannot see: ``_recovering_compaction`` is itself
+    # a guard on the landed-success block in _turn_context_usage, so a turn
+    # that summarized its window never sets ``_turn_landed`` — yet the backend
+    # DID accept the prompt and now holds a summarized live session, and the
+    # queued continuation runs ON that same session. Leaving the debt armed
+    # there makes the continuation re-prepend the full pre-compaction replay
+    # INTO the just-summarized session (the fresh first turn carries the
+    # largest replay of the session, which is exactly what fills the window
+    # mid-turn). This is distinct from the discarded / re-queued cases above:
+    # a completed compaction is durably kept, so it settles. A STARTED-but-not-
+    # completed compaction (``_recovering_compaction`` without
+    # ``_compaction_completed``) is NOT yet durable, so it stays armed.
+    # Settle on the TERMINAL itself — a normal ``end_turn`` the provider
+    # kept — NOT on ``_turn_landed``. ``_turn_landed`` is a reliability-metric
+    # flag deliberately left False for promise-only, leaked-tool and
+    # infra-recovery turns (see _turn_context_usage): those turns are not COUNTED as a
+    # landed success, but they still ended on a normal ``end_turn`` and the
+    # provider kept the conversation — so the first-turn history IS delivered
+    # and must settle, or the next turn re-sends the full fresh history to a
+    # session that already holds it. Cancelled (``STOP_REASON_CANCELLED``) and
+    # empty-response (``_had_empty_response_verdict``) terminals are excluded
+    # here because kiro-cli discards / re-queues them, so they stay armed.
+    #
+    # EXIT THAT KEEPS THE SESSION (``_turn_emitted``) — the general rule the
+    # ``end_turn`` disjunct is one instance of. Once assistant tokens or a
+    # tool call have STREAMED (``_turn_emitted``), the live kiro-cli session
+    # already holds the assembled prompt and the full first-turn history —
+    # the exact premise the post-token recovery arm settles on
+    # (``acp_recovery.py``). That retention does NOT depend on how the turn
+    # then ENDS: a non-transient backend error (a validation/refusal
+    # ``AcpError``), a timeout, or a generic ``except`` AFTER output lands in
+    # the terminal ``else`` (the generic AcpError exit), which sets no
+    # ``end_turn`` terminal and does NOT reset the session — so the SAME live
+    # session, still holding that history, serves the next turn. Leaving the
+    # debt armed there made the next FRESH-claimed turn re-prepend the whole
+    # conversation into a session that already held it (buluoray B1 /
+    # iamwhatever: the sibling of the post-output transient settle, treated
+    # oppositely). Settling on ``_turn_emitted`` closes that exit the same way
+    # the transient arm does. It is STILL excluded on the two states kiro-cli
+    # does not keep: a user Stop (``STOP_REASON_CANCELLED`` — the cancelled
+    # turn carrying the replay is discarded, so a cancel-after-output stays
+    # armed, which iamwhatever accepted) and an empty-response verdict
+    # (``_had_empty_response_verdict`` — re-queued). A pre-output exit
+    # (``not _turn_emitted``: a pre-stream 5xx re-queue, a bare early return)
+    # never streamed, so the history did NOT reach the provider and the debt
+    # correctly stays armed for the re-queue to rebuild.
+    _first_turn_history_delivered = (
+        (
+            turn._stop_reason == STOP_REASON_END_TURN
+            and not _terminal_synthetic
+            and not turn._had_empty_response_verdict
+        )
+        or (
+            turn._turn_emitted
+            and turn._stop_reason != STOP_REASON_CANCELLED
+            and not turn._had_empty_response_verdict
+        )
+        or (_recovering_compaction and _compaction_completed)
+    )
+    if turn._first_turn_history_assembled and _first_turn_history_delivered:
+        try:
+            state.sessions.consume_first_turn_history_owed(session_key)
+        except Exception:
+            logger.debug("settling first-turn history debt failed", exc_info=True)
+        # A conductor context-cap trim's seed rode in that history.
+        _spend_context_cap_seed(session_key)

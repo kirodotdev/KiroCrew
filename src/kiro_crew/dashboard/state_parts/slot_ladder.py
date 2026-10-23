@@ -295,8 +295,8 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     self._compaction_failed_retries = 0
     self._compaction_fail_streak = 0
     self._compaction_fail_cooldown_until = 0.0
-    # Sync callable published by _run_chat alongside _acp_client (cleared in
-    # the same finally): flushes the turn's accumulated text as a finalized
+    # Sync callable published by _run_chat alongside _acp_client (both cleared in
+    # _turn_release_handles): flushes the turn's accumulated text as a finalized
     # assistant segment NOW. The steer handler calls it right BEFORE
     # persisting the steer user message, so the transcript order is
     # [assistant(pre-steer), user(steer), assistant(post-steer)] — matching

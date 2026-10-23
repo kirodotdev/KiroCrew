@@ -9,17 +9,17 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
+from kiro_crew.execution_context import canonical_memory_mode, stricter_memory_mode
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _CONTEXT_FRAME_CONTRACT,
-        NATIVE_SKILL_ALIAS_PREFIX,
         _ChatSlot,
         _MemoryUnavailable,
-        canonical_memory_mode,
         context_entry_expired,
         logger,
         read_session_execution,
-        stricter_memory_mode,
         tighten_live_session_execution,
     )
 
