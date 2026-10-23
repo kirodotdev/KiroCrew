@@ -494,7 +494,7 @@ def is_sensitive_write_path(path_str: str, base_dir: str | None = None) -> bool:
 def sensitive_home_dirs() -> tuple[str, ...]:
     """Public, read-only view of the read+write-blocked home-relative paths.
 
-    Lets the security-posture surface (``security_posture.py``) enumerate what
+    Lets the security-posture surface (``security_posture_controls.py``) enumerate what
     :func:`is_sensitive_path` actually blocks without coupling to the private
     ``_SENSITIVE_HOME_DIRS`` name — the same rationale as
     :func:`get_credential_patterns`. Returned as a tuple so a caller cannot

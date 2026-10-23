@@ -63,7 +63,7 @@ _HARD_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # prefix at all, so nothing above can see it and `SecretAccessKey=<secret>` in a
     # prompt reached the deployed image. What makes it findable is the label, which is
     # how this repo's own detector finds it (`security.py:_HARD_CREDENTIAL_RE`,
-    # described in security_posture.py as covering "labelled secret-access-key and
+    # described in security_posture_controls.py as covering "labelled secret-access-key and
     # session-token forms"). Spelled here from that same shape, and the canonical
     # module is preferred over it below when importable.
     (

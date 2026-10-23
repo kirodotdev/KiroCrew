@@ -15,7 +15,7 @@ from here rather than restated:
   ceilings (cgroup scope, RLIMIT, file descriptors).
 
 Counts are deliberately absent from this document. Every posture count is
-derived at runtime by `security_posture.py` and rendered in Settings → Security
+derived at runtime by `security_posture_controls.py` and rendered in Settings → Security
 from `GET /api/security/posture`; a number written into prose goes stale silently
 while the code it describes keeps changing.
 
@@ -383,13 +383,13 @@ response truncation at `MAX_RESPONSE_LEN` (100 000 chars) so unbounded tool outp
 cannot be a DoS vector.
 
 The schema count is a runtime-derived posture value (`tool_schemas` in
-`security_posture.py`), surfaced in Settings; it is not stated here.
+`security_posture_controls.py`), surfaced in Settings; it is not stated here.
 
 ## Layer 4: Output redaction
 
 Redaction runs at **every** boundary where agent-derived output reaches a human or
 an external service. The authoritative list is the `redaction_paths` control in
-`security_posture.py`, whose registry is kept honest by an omission-detecting
+`security_posture_controls.py`, whose registry is kept honest by an omission-detecting
 test: every redactor call site in the package must be either a registered sink or
 on an explicit non-egress allowlist, so a new egress path cannot be added without
 someone deciding which bucket it belongs in.

@@ -538,7 +538,7 @@ operator is never told a control covers nothing when it may well be active.
 
 The effective transport posture is that shape of fact, so it is registered as a
 control rather than written as prose: an entry in `_CONTROLS`
-(`src/kiro_crew/security_posture.py`) whose items are the methods
+(`src/kiro_crew/security_posture_controls.py`) whose items are the methods
 `allowed_methods` currently permits. `SecurityPanel` already states the dividing
 line this follows — every control whose posture is a count belongs in the
 registry, and the panel itself carries only qualitative descriptions.

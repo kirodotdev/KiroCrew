@@ -13,4 +13,3 @@
 # it to rewrite every row:
 #   python3 scripts/check_file_line_cap.py --update-baseline
 18473 src/kiro_crew/dashboard/chat_runner.py
-3181 src/kiro_crew/security_posture.py

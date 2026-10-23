@@ -245,7 +245,7 @@ risk #19897 avoided.
 
 Two of the properties below **do not exist in the wrapper today**, and Phase 1a
 has to add them. `wrap_argv` never enters a network namespace (the network
-egress note in `src/kiro_crew/security_posture.py` says so: agent commands need
+egress note in `src/kiro_crew/security_posture_sinks_gateway.py` says so: agent commands need
 the network), and it has no parameter to mount a directory read-only. The
 Linux launcher already has a read-only bind (`seal_readonly` in
 `src/kiro_crew/sandbox_launcher_parts/mask_stages.py`), which is the likely base. Until

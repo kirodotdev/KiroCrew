@@ -58,6 +58,7 @@ SENSITIVE_GLOBS: tuple[str, ...] = (
     "src/kiro_crew/builtin_skills/security-conductor/rules-of-engagement.json",
     "src/kiro_crew/builtin_skills/security-conductor/golden-paths.json",
     "src/kiro_crew/security_posture.py",
+    "src/kiro_crew/security_posture_*.py",
     "src/kiro_crew/computer_use/gate.py",
     "src/kiro_crew/dashboard/handlers/*redaction*.py",
     ".github/workflows/sensitive-change-review*.yml",

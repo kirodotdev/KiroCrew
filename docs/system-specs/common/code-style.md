@@ -262,8 +262,8 @@ classes keep the facade's name because error text renders it, and a family-scope
 the original module's logger, `logging.getLogger("kiro_crew.<original>")`: the log format
 prints the logger name, and `caplog` tests filter on it.
 
-**Registries keyed by path follow the code.** A `_REDACTION_SINKS` row in
-`src/kiro_crew/security_posture.py` names the module that redacts that sink; when a split
+**Registries keyed by path follow the code.** A `_REDACTION_SINKS` row (in
+`src/kiro_crew/security_posture_sinks_*.py`) names the module that redacts that sink; when a split
 moves the redactor calls, re-key the row to the owner that now makes them. The sink test
 in `test/test_security_posture.py` also counts calls in the facade's declared owners, so a
 row left on the facade can stay green while it no longer tells an operator where the sink

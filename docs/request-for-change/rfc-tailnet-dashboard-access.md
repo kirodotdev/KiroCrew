@@ -392,7 +392,7 @@ Exit criteria:
   same-host-proxied path — cloudflared, ngrok and Tailscale alike — and says
   plainly what the pin does and does not bind to behind a local proxy.
 - Security Posture reports what the session pin is bound to, via a
-  `_token_auth_items()` entry (`security_posture.py`), distinguishing
+  `_token_auth_items()` entry (`security_posture_controls.py`), distinguishing
   "pinned to peer address" from "pinned to a local proxy".
 - A test asserts that entry reports the proxy-pinned state when the request
   carries `X-Forwarded-For` from a loopback peer.

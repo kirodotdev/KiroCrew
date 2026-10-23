@@ -554,9 +554,12 @@ class TestDisclosureContract:
         # Pinning the module as governance-free is the property that actually
         # holds the boundary: if this module cannot reach the governance
         # machinery, it cannot republish its rules under any key name.
+        import importlib
         import inspect
 
-        src = inspect.getsource(security_posture)
+        src = inspect.getsource(security_posture) + "".join(
+            inspect.getsource(importlib.import_module(owner)) for owner in security_posture._OWNERS
+        )
         for forbidden in (
             "platform.governance",
             "platform import governance",
@@ -761,7 +764,12 @@ class TestOmissionDetection:
         # The ``security`` package DEFINES the redactors; security_posture.py only
         # names them. The whole package is skipped, not one file, because the
         # definitions are spread across its submodules.
-        self_referential = {"security_posture.py"}
+        self_referential = {
+            "security_posture.py",
+            "security_posture_controls.py",
+            "security_posture_sinks_delivery.py",
+            "security_posture_sinks_gateway.py",
+        }
 
         unclassified: list[str] = []
         for path in sorted(pkg.rglob("*.py")):
@@ -930,7 +938,13 @@ class TestOmissionDetection:
         pkg = Path(security_posture.__file__).resolve().parent
         explicit: set[str] = set()
         for path in pkg.rglob("*.py"):
-            if path.name in {"sel.py", "security_posture.py"}:
+            if path.name in {
+                "sel.py",
+                "security_posture.py",
+                "security_posture_controls.py",
+                "security_posture_sinks_delivery.py",
+                "security_posture_sinks_gateway.py",
+            }:
                 continue
             explicit |= set(
                 re.findall(
