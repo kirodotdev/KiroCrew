@@ -352,8 +352,8 @@ harness for crew-member DM sessions, reads the same values.
 | `slack.tracking_channels` | Channels to monitor for new members | `[]` |
 | `slack.open_channels` | Channel records retained in config | `[]` |
 | `slack.command` | Slash-command name | `"kirocrew"` |
-| `slack.reactions` | Override phase reaction emojis (set a value to `null` to suppress that phase) | `{}` |
-| `slack.reactions_enabled` | Show phase reactions on Slack messages | `true` |
+| `slack.reactions` | Override the status reaction emojis: `queued` (the ack shown while answering where Slack shows no native thread status) and `error`; set a value to `null` to suppress it | `{}` |
+| `slack.reactions_enabled` | Show the status reaction (ack / error) on Slack messages | `true` |
 | `slack.dm_single_session` | Treat each 1:1 DM as one continuous session, threaded replies included, instead of one per message. Applies only on the default messaging transport (`messaging.use_transport`, on by default) and never in a DM set to `review` mode | `false` |
 
 Only the owner (`KIROCREW_OWNER_ID`) is authorized to interact over Slack.

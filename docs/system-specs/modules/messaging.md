@@ -923,12 +923,14 @@ ladder is armed lazily and only when there is something to decorate: reactions
 enabled for the channel, a transport that declares `reactions`, a recorded user
 message id, and a renderer that has not been closed, since a late event after
 teardown must not arm a fresh ladder whose timers would then outlive the turn.
-Slack still runs its own `StatusReactionController` (`slack/handler_runtime/reactions.py`,
-re-exported by `slack/handler.py`), the
-implementation this module was generalized from, so until Slack moves over the
-same phase machine exists twice. `test/test_status_reactions.py` pins both: the
-shared ladder's phases, debounce, stall marks, close-drain and sink-failure
-tolerance, and Slack's controller beside them.
+Slack does not use this ladder. Its `StatusReactionController`
+(`slack/handler_runtime/reactions.py`, re-exported by `slack/handler.py`), the
+implementation this module was generalized from, now wears at most one reaction:
+none where Slack shows the native thread status, a single ack removed when the
+reply lands where it does not, and the error reaction on failure — no phase trail
+and no `done` reaction. `test/test_status_reactions.py` pins both: the shared
+ladder's phases, debounce, stall marks, close-drain and sink-failure tolerance,
+and Slack's single reaction beside them.
 
 ## Durable inbound spool (`inbound_spool.py`)
 

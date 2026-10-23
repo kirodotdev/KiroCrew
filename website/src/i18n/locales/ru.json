@@ -17885,7 +17885,7 @@
         "saved_restart_the_gateway_to_apply": "Сохранено. Перезапусти шлюз, чтобы применить.",
         "saving": "Сохранение...",
         "setup_guide": "Руководство по настройке",
-        "show_phase_aware_emoji_reactions_queued_thinking": "Показывать на сообщениях эмодзи-реакции по этапам (в очереди → размышление → написание кода → готово).",
+        "show_phase_aware_emoji_reactions_queued_thinking": "Ставит на сообщение 👀, пока на него отвечают (только там, где Slack не показывает статус ветки), и 😱, если ход завершился ошибкой.",
         "show_thinking": "Показывать размышления",
         "slack": "Slack",
         "slack_app_token": "Токен приложения Slack",

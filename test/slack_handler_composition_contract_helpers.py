@@ -439,9 +439,6 @@ def world_fixture(monkeypatch: pytest.MonkeyPatch, tmp_path):
         # Companion-plugin agents are discovered under the real home directory, so a
         # host that has some would add them to every agent listing.
         "_iter_cc_agent_names": lambda cc_plugins_dir=None: iter(()),
-        "_PHASE_DEBOUNCE_SECS": 3600.0,
-        "_STALL_SOFT_SECS": 3600.0,
-        "_STALL_HARD_SECS": 7200.0,
         "_owner_id": "UOWNER",
         "_cached_default_agent": None,
         "_dashboard_state": None,

@@ -17072,7 +17072,7 @@
         "saved_restart_the_gateway_to_apply": "저장되었습니다. 적용하려면 게이트웨이를 재시작하세요.",
         "saving": "저장 중…",
         "setup_guide": "설정 가이드",
-        "show_phase_aware_emoji_reactions_queued_thinking": "메시지에 단계별 이모지 리액션(대기 → 사고 → 코딩 → 완료)을 표시합니다.",
+        "show_phase_aware_emoji_reactions_queued_thinking": "응답하는 동안 메시지에 👀를 추가하고(Slack이 스레드 상태를 표시하지 않는 경우에만) 턴이 실패하면 😱를 추가합니다.",
         "show_thinking": "사고 과정 표시",
         "slack": "Slack",
         "slack_app_token": "Slack 앱 토큰",

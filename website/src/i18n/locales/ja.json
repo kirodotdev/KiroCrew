@@ -17072,7 +17072,7 @@
         "saved_restart_the_gateway_to_apply": "保存されました。ゲートウェイを再起動して適用してください。",
         "saving": "保存中…",
         "setup_guide": "セットアップガイド",
-        "show_phase_aware_emoji_reactions_queued_thinking": "フェーズ対応の絵文字リアクション（キュー中→考え中→コーディング中→完了）をメッセージに表示します。",
+        "show_phase_aware_emoji_reactions_queued_thinking": "応答中のメッセージに 👀 を付け（Slack がスレッドのステータスを表示しない場合のみ）、ターンが失敗したら 😱 を付けます。",
         "show_thinking": "思考を表示",
         "slack": "Slack",
         "slack_app_token": "Slack アプリトークン",

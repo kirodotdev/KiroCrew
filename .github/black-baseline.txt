@@ -562,7 +562,6 @@ test/test_learn.py
 test/test_lesson_contradiction.py
 test/test_lesson_ranking.py
 test/test_lifecycle_hooks.py
-test/test_link_dashboard.py
 test/test_local_gate.py
 test/test_manifest_hooks.py
 test/test_mark_permission_resolved.py
@@ -636,8 +635,6 @@ test/test_omc_ledger_sync_coverage.py
 test/test_onboarding_import.py
 test/test_one_conversation_one_session.py
 test/test_open_dm_retry.py
-test/test_options_click_validation.py
-test/test_options_submit.py
 test/test_override_expiry_notice.py
 test/test_papyrus_gitops.py
 test/test_papyrus_latex.py
@@ -741,13 +738,10 @@ test/test_skill_update_flow.py
 test/test_skill_versioning.py
 test/test_slack_agent_passthrough.py
 test/test_slack_dashboard_live_sync.py
-test/test_slack_handler_coverage_branches.py
 test/test_slack_home_tab.py
 test/test_slack_linked_approval.py
 test/test_slack_mirror_unlink.py
-test/test_slack_options_lifecycle.py
 test/test_slack_pins_reactions.py
-test/test_slack_render_pipeline.py
 test/test_slack_scope_probe.py
 test/test_slack_sessions_view.py
 test/test_slack_thread_session_binding.py

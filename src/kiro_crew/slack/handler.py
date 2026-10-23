@@ -333,8 +333,6 @@ from kiro_crew.slack.handler_runtime.permission_ladder import (  # noqa: F401
 )
 from kiro_crew.slack.handler_runtime.reactions import (  # noqa: F401
     StatusReactionController,
-    _add_phase_reaction,
-    _tool_to_phase,
     phase_emojis,
     refresh_phase_emojis,
 )
@@ -532,17 +530,21 @@ _pending_approvals: dict[str, _PendingApproval] = {}
 # exactly while the loop is unwinding.
 _orphan_rejects: "set[asyncio.Task[bool]]" = set()
 
-# ── Phase-aware reaction constants ──────────────────────────────────────
+# ── Status reaction constants ───────────────────────────────────────────
 
+# A Slack turn wears at most ONE reaction on the message it answers: the
+# ``queued`` ack while it works, and only where Slack shows no native thread
+# status, then nothing once the reply lands (the reply is the done signal) --
+# or the ``error`` reaction when the turn failed.
 _DEFAULT_PHASE_EMOJIS: dict[str, str] = {
     "queued": "eyes",
-    "thinking": "thinking_face",
-    "coding": "man_technologist",
-    "browsing": "globe_with_meridians",
-    "tool": "wrench",
-    "done": "lobster",
     "error": "scream",
 }
+
+# ``slack.reactions`` keys of the retired per-phase trail (thinking, coding,
+# browsing, tool) and its ``done`` reaction. A config written for that trail
+# still loads: these are accepted and ignored rather than reported as unknown.
+_RETIRED_PHASES: frozenset[str] = frozenset({"thinking", "coding", "browsing", "tool", "done"})
 
 
 def _build_phase_emojis(
@@ -550,19 +552,19 @@ def _build_phase_emojis(
 ) -> tuple[dict[str, str | None], list[str]]:
     """Return ``(phase_emoji_dict, unknown_keys)`` with optional overrides applied.
 
-    A phase value may be ``None`` to suppress that phase entirely (no emoji
-    will be added or swapped in for it).  Stall emojis and transitions from
-    other phases are unaffected.
+    A phase value may be ``None`` to suppress that reaction entirely.
 
     Unknown keys are collected and returned so callers can surface them
     to the user (e.g. startup warning) rather than silently dropping them.
+    Keys of the retired trail (``_RETIRED_PHASES``) are neither applied nor
+    reported.
     """
     result: dict[str, str | None] = dict(_DEFAULT_PHASE_EMOJIS)
     unknown: list[str] = []
     for key, value in (overrides or {}).items():
         if key in _DEFAULT_PHASE_EMOJIS:
             result[key] = value
-        else:
+        elif key not in _RETIRED_PHASES:
             unknown.append(key)
     return result, unknown
 
@@ -589,25 +591,6 @@ if _unknown_phases:
         ", ".join(sorted(_DEFAULT_PHASE_EMOJIS)),
     )
 del _unknown_phases
-
-
-_STALL_EMOJI_SOFT = "yawning_face"
-_STALL_EMOJI_HARD = "fearful"
-
-_STALL_SOFT_SECS = 15.0
-_STALL_HARD_SECS = 45.0
-_PHASE_DEBOUNCE_SECS = 0.7
-
-_TERMINAL_PHASES = frozenset({"done", "error"})
-_IMMEDIATE_PHASES = frozenset({"queued"})
-
-_CODING_TOOLS: frozenset[str] = frozenset(
-    {"Bash", "Write", "Edit", "Read", "Glob", "Grep", "NotebookEdit"}
-)
-_WEB_TOOLS: frozenset[str] = frozenset({"WebFetch", "WebSearch", "Browser"})
-
-_CODING_KINDS: frozenset[str] = frozenset(t.lower() for t in _CODING_TOOLS)
-_WEB_KINDS: frozenset[str] = frozenset(t.lower() for t in _WEB_TOOLS)
 
 
 # Trust/YOLO state

@@ -23,8 +23,8 @@ from slack_options_lifecycle_helpers import (
 from test_handler_turn import TURN_ENTRY_FUNCTIONS
 
 from kiro_crew.slack.format import (
-    OPTIONS_CHECKBOXES_ACTION,
-    OPTIONS_SUBMIT_ACTION,
+    OPTIONS_ACTION_PREFIX,
+    OPTIONS_SEVERAL_ACTION,
     build_options_blocks,
     replace_options_blocks,
 )
@@ -82,8 +82,8 @@ class TestExpireOptions:
         control = {
             "type": "actions",
             "elements": [
-                {"type": "checkboxes", "action_id": OPTIONS_CHECKBOXES_ACTION},
-                {"type": "button", "action_id": OPTIONS_SUBMIT_ACTION},
+                {"type": "button", "action_id": f"{OPTIONS_ACTION_PREFIX}0"},
+                {"type": "overflow", "action_id": OPTIONS_SEVERAL_ACTION},
             ],
         }
         posted = PostedOptions(
@@ -122,7 +122,7 @@ class TestReplaceOptionsBlocks:
         top = {"type": "section", "text": {"type": "mrkdwn", "text": "top"}}
         control = {
             "type": "actions",
-            "elements": [{"type": "checkboxes", "action_id": OPTIONS_CHECKBOXES_ACTION}],
+            "elements": [{"type": "button", "action_id": f"{OPTIONS_ACTION_PREFIX}0"}],
         }
         tail = {"type": "context", "elements": [{"type": "mrkdwn", "text": "tail"}]}
         spent = [{"type": "context", "elements": [{"type": "mrkdwn", "text": "~A~"}]}]
@@ -152,7 +152,7 @@ class TestReplaceOptionsBlocks:
     def test_input_blocks_are_not_mutated(self):
         control = {
             "type": "actions",
-            "elements": [{"type": "checkboxes", "action_id": OPTIONS_CHECKBOXES_ACTION}],
+            "elements": [{"type": "button", "action_id": f"{OPTIONS_ACTION_PREFIX}0"}],
         }
         blocks = [control]
 
@@ -180,7 +180,7 @@ class TestLifecycleOnTheSlot:
             blocks=(
                 {
                     "type": "actions",
-                    "elements": [{"type": "checkboxes", "action_id": OPTIONS_CHECKBOXES_ACTION}],
+                    "elements": [{"type": "button", "action_id": f"{OPTIONS_ACTION_PREFIX}0"}],
                 },
             ),
         )

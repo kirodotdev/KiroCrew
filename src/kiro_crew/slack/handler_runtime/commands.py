@@ -27,7 +27,6 @@ if TYPE_CHECKING:
         SlackClientOps,
         SubagentManager,
         TaskRunner,
-        _add_phase_reaction,
         _dashboard_state,
         _discover_project_agents,
         _get_default_agent,
@@ -466,7 +465,6 @@ async def _bang_voice(
             "`!voice speed <80%>` `!voice pitch <+10%>`",
             reply_ts,
         )
-    await _add_phase_reaction(slack, channel, msg_ts, "done")
     return ""
 
 
@@ -511,7 +509,6 @@ async def _bang_agent(
         )
         await sessions.remove(session_key)
         await slack.post_message(channel, "🔄 Reset to default agent.", reply_ts)
-        await _add_phase_reaction(slack, channel, msg_ts, "done")
         return ""
     resolved = await asyncio.to_thread(
         _resolve_agent_name, agent_name, _thread_projects.get(session_key)
@@ -537,7 +534,6 @@ async def _bang_agent(
     )
     await sessions.remove(session_key)
     await slack.post_message(channel, f"🔄 Switched to agent: *{resolved}*", reply_ts)
-    await _add_phase_reaction(slack, channel, msg_ts, "done")
     return ""
 
 
@@ -742,7 +738,6 @@ async def _bang_thread_agent(
             "🔄 Thread agent reset." if held else thread_override_slots.unheld_reset_text("agent"),
             reply_ts,
         )
-        await _add_phase_reaction(slack, channel, msg_ts, "done")
         return ""
     resolved = await asyncio.to_thread(
         _resolve_agent_name, agent_name, _thread_projects.get(session_key)
@@ -811,7 +806,6 @@ async def _bang_thread_agent(
     )
     await sessions.remove(session_key)
     await slack.post_message(channel, f"🔄 Thread agent: *{resolved}*", reply_ts)
-    await _add_phase_reaction(slack, channel, msg_ts, "done")
     return ""
 
 
@@ -1142,7 +1136,7 @@ async def _bang_title(
             source="slack",
             resources=f"{channel}:{session_key}",
         )
-        await _add_phase_reaction(slack, channel, msg_ts, "done")
+        await slack.post_message(channel, f"🏷️ Thread title set: *{title_text[:80]}*", reply_ts)
     else:
         await slack.post_message(
             channel, "Usage: `!title <text>` — set a title for this thread.", reply_ts
@@ -1280,7 +1274,6 @@ async def _handle_compact_command(
             )
             try:
                 await slack.remove_reaction(channel, msg_ts, "recycle")
-                await _add_phase_reaction(slack, channel, msg_ts, "done")
             except Exception:
                 pass
             return
@@ -1309,7 +1302,6 @@ async def _handle_compact_command(
             logger.debug("Failed to log compact outcome for %s", session_key, exc_info=True)
         try:
             await slack.remove_reaction(channel, msg_ts, "recycle")
-            await _add_phase_reaction(slack, channel, msg_ts, "done")
         except Exception:
             pass
     finally:

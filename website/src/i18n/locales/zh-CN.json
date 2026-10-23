@@ -17072,7 +17072,7 @@
         "saved_restart_the_gateway_to_apply": "已保存。重启网关后生效。",
         "saving": "保存中…",
         "setup_guide": "设置指南",
-        "show_phase_aware_emoji_reactions_queued_thinking": "在消息上显示阶段感知的表情反应（排队 → 思考 → 编码 → 完成）。",
+        "show_phase_aware_emoji_reactions_queued_thinking": "回复期间在消息上添加 👀（仅在 Slack 不显示线程状态时），回合失败时添加 😱。",
         "show_thinking": "显示思考过程",
         "slack": "Slack",
         "slack_app_token": "Slack 应用令牌",

@@ -587,7 +587,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Phase reactions (Slack)",
     "labelKey": "pages.settings.slackPanel.phase_reactions",
     "labelSuffix": "Slack",
-    "description": "Show phase-aware emoji reactions (queued → thinking → coding → done) on messages.",
+    "description": "Add 👀 to a message while it is answered (only where Slack shows no thread status) and 😱 if the turn fails.",
     "tab": "channels",
     "type": "toggle",
     "occurrence": 1,

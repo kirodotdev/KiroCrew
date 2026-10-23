@@ -536,36 +536,28 @@ async def _scenario_privacy_modifiers(log):
 
 
 async def _scenario_status_reactions(log):
-    """The phase ladder, debounce and stall watchdog, with each timer callback fired by
-    hand: the real timers are parked an hour out, so the order is the code's alone."""
+    """The one status reaction: the ack where no native status shows, taken down at the
+    reply; nothing where it does; the error reaction on failure; nothing when disabled."""
     slack = _Slack(log)
     ctrl = handler.StatusReactionController(slack, "C1", "1.0")
-    ctrl.set_phase("queued")
+    ctrl.start(native_status=False)
+    ctrl.start(native_status=False)
     await _settle()
-    ctrl.set_phase("thinking")
-    ctrl.set_phase(handler._tool_to_phase("mcp__x__Bash"))
-    ctrl._fire_debounce()
+    ctrl.finalize()
+    ctrl.finalize(error=True)
     await _settle()
-    ctrl._on_stall_soft()
+    native = handler.StatusReactionController(slack, "C1", "2.0")
+    native.start(native_status=True)
+    native.finalize()
     await _settle()
-    ctrl._on_stall_hard()
+    failed = handler.StatusReactionController(slack, "C1", "3.0")
+    failed.start(native_status=False)
+    failed.finalize(error=True)
     await _settle()
-    ctrl.on_progress()
+    off = handler.StatusReactionController(slack, "C1", "4.0", enabled=False)
+    off.start(native_status=False)
+    off.finalize(error=True)
     await _settle()
-    ctrl.pause_stall_watchdog()
-    ctrl._on_stall_soft()
-    await _settle()
-    ctrl.resume_stall_watchdog()
-    ctrl.set_phase("error")
-    await _settle()
-    ctrl.set_phase("thinking")
-    ctrl._on_stall_hard()
-    await _settle()
-    off = handler.StatusReactionController(slack, "C1", "2.0", enabled=False)
-    off.set_phase("queued")
-    off.finalize()
-    await _settle()
-    log.add("timers", soft=ctrl._stall_soft_handle is None, hard=ctrl._stall_hard_handle is None)
 
 
 async def _scenario_builders_and_filters(log):
@@ -604,20 +596,6 @@ async def _scenario_builders_and_filters(log):
         out=handler._resolve_comment_hold("<!-- keep-visible -->", "x <!-- keep-visible -->"),
     )
     log.add("hold", out=handler._resolve_comment_hold("<!-- nope", "x <!-- nope"))
-    log.add(
-        "phases",
-        out=[
-            handler._tool_to_phase(t, k)
-            for t, k in (
-                ("Bash", ""),
-                ("x", "edit"),
-                ("WebFetch", ""),
-                ("y", "fetch"),
-                ("mcp__a__Grep", ""),
-                ("z", ""),
-            )
-        ],
-    )
     log.add("phase_table", out=handler._build_phase_emojis({"done": None, "bogus": "x"}))
     log.add(
         "keyword",
@@ -997,15 +975,15 @@ SCENARIOS = {
 #: scenario sends, audits, counts or asks of the session manager changes its digest; the
 #: failure prints the transcript it produced.
 _GOLDEN_DIGESTS: dict[str, str] = {
-    "agent_commands": "39b8b3d66b3217fb6317adc4771441310d0643612260626511b63446b106b669",
-    "append_refused_then_rotated": "a9a19cb62f8ff1e7a7b1908cbca4c1b540d49637e4986ad37fbfdd6f2cd51d34",
-    "auto_approval_mode": "70f52018d5f65bf50cd313b653a57df4fe0c691764352ddfc2ef81dd1b071411",
-    "builders_and_filters": "18a6d4f9613d0ee226214b549f0b821676bd9083bc843aadbc27b3e1f2030872",
-    "cancelled_messages": "fcfbabbeaa380023b98273c08331bbae08d6971a5c5237c6f3b218d827aac943",
-    "cancelled_stop_reason": "38c292699d20bc4d1b460b264e2ca9cb62a3e67ddbf465434566d482b7a1f50c",
+    "agent_commands": "53f8669524467a6e0535e78cb6d7c76320d2941050133cf251e8840208e5e878",
+    "append_refused_then_rotated": "9c1eedd5bddda91331b57115e526c08f99efd760808df9e158568d09f55d2bbc",
+    "auto_approval_mode": "306f8e3b049b7630c658941173cf939e4750de03c8159847a66848808b034fec",
+    "builders_and_filters": "e83b3068f914e362d4738a90e786aa0065c719f516678efb0b6a72daee1eab84",
+    "cancelled_messages": "1ce2bd933bba66acdd14b5720028027e7a41fe978dc4168fd3aaf4634a0b309d",
+    "cancelled_stop_reason": "a597b2ba7db789e3eab7fad4e42c9ee89391d8c4010e01ae5c3f943a0e107a64",
     "cmd_allowed_denied": "0802fc63efe6e37f62e532419b17548240110c89100b8b4925703f80306e2621",
     "cmd_allowlist_and_channel": "0b64b0c42209ad4e75596212067a1b7fd2c7dabdba488324355a4cdcca3f9d43",
-    "cmd_compact": "6e48bff6ebaa74ae629d99c5f6977e10e73aed3c42f10c7f906cfc91d65f2a62",
+    "cmd_compact": "b70200b397f2c31b14e23658e410ed24509d3db9a8581262cd721a2892793431",
     "cmd_dashboard_bad_duration": "38a7cb5332a1ba5ff255ec3303f56379bdd35ad259fede729cbba8f807d1b162",
     "cmd_link_to_dashboard_unavailable": "3a7c8916de8eec9ddf603e7ccaaa8d892e682a9f5d7a56783277ea8e64955fdd",
     "cmd_owner_only_denied": "91655cbd5755fc47ca671f71bff1ef08fb9e5bd93da44cfa302a56330f569275",
@@ -1013,16 +991,16 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "cmd_status": "99a5ab8189db5fc1241f21fd9fbc161a6696609d0597bd78cd183b445e00a763",
     "cmd_stop_no_session": "de5c5a671702ba32d7a8fef5d2528b07a3803d772f21f8d5a0aa64206f5b1d42",
     "cmd_stop_running": "1698b578b632c700afdb4c0a717b6ae66493a42dda13e6a9be522506f133262e",
-    "cmd_ta_and_project": "0c1a7c878d745efc579eff89b6ebc4de99cb1fdfadecb29560afa5942a370443",
-    "cmd_title": "d2d928c6a0e2a5a6b1b0cafe0cad309a92d321947c1e42e4f35de7b240b40bd5",
+    "cmd_ta_and_project": "da91983c4edfed45f574c7c82096c52ab7f94d02aa2b005a8abb698c9b15e58b",
+    "cmd_title": "5f25036c41f40fff19e669411f763e9568c27bac69821dd769da1e49c536e205",
     "cmd_unknown_bang": "3ac3bfd77e7207cdf6a0a2d5c394d7acdcf42c7833ef8f49d17bdd4ff17ddc4a",
-    "cmd_voice": "303e13ef1d640f338b7456d4e070d9e66c66a1173a468b1ad67bb407fd25cbf7",
+    "cmd_voice": "3688c2b4bd978ee8cd953b840db52c9d27ad24eb6bf9e5746c5832ba9b8ad95e",
     "cmd_yolo_status": "5370a104288a5f4cd6c22a392cc9c04d006d7cf1bcdaaf60ff4a95a1a6b2ee16",
-    "comment_hold_and_brackets_at_end": "2a567067edee4ea284bf3a3a59d9136943f2c329f8f9f05587e370105c1a8172",
-    "compaction_failed_permanent": "b2b310eeab6a25f773777e6d4b3fb1fd7fbdd04f5f103983b85e2a7ad790f3d3",
-    "compaction_failed_transient_replay": "5d66704abad764ed644d01d6a0b59c01cdc5c63460a8140b2224401aa191e601",
-    "credential_redaction": "0782b2c2f1c02318bb8fae507aa566609357c98c52fa856e63e27564c9452177",
-    "delivery_failures": "27aa79d438fdd6b057e6e50055c1db0fc6c840de810ac3618d74297057ac1ab3",
+    "comment_hold_and_brackets_at_end": "d0fd5228d627cd7a7c7a9e9d340cb7b82f6227512a6004c2045d9b77ce25722f",
+    "compaction_failed_permanent": "12425d478afceb49e320ea9ea894199006a9905edf42d2467d43daba9d7881db",
+    "compaction_failed_transient_replay": "8329e5437f0cc904e320387180c25977f64b68afce8a9fa81ff57ef0acf1dc95",
+    "credential_redaction": "fb606f07f49ed7c4b3bb6b0ce484ac99fd7d8879a8cd287daca999b93d2d80e0",
+    "delivery_failures": "6b2655727d8f6981481f77732fce4e09c3e3589d2632d06c54814783bd228380",
     "error_acp": "8efbab04ebf42b0989c9d19a805da15a77bd032d920f031a215a66f7ea6f2e4c",
     "error_after_partial_text": "816e7d73a1bd9eed97fb1027758343201ff318e64eae58df0e399c4c69384171",
     "error_from_trusted_bot": "f347570f5f67a5ca3659343ec439a0802b29970f757e66c3a5330e530afac193",
@@ -1031,37 +1009,37 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "error_timeout": "608f9764fe3ed40a4e758a69d881f2c829e08a6aa89302e9f007a1c1b463db44",
     "error_unexpected": "ae7bc265f3ffd8441f818df443f1586b1e0f3c6d2009d7b707220f0b6e92829a",
     "hook_auto_reply": "f976c5ff2c752a2259381bcfd9fbf6e2fb72ca95fcdb1bbfa53c5ddf98f68f53",
-    "hook_deny_and_flag": "128570569dc7d30d1327ba223a903e3d1da2c190df536c018cc8555f04bfb1da",
+    "hook_deny_and_flag": "0cf7af0e949723738338810993c3454dbe2da49ca88c231905b2a68fc36944eb",
     "interaction_edges": "80e9ab4e4ba623f57a0360df952f7d6c787348fc81ff69368bbfcfb2ce22bc8f",
-    "interactive_approve": "e6f33da7bfb82b921f184c46ac76705f6a2d0bfb3841c230d5be7c30c5783e47",
-    "interactive_approve_answered": "cbcfe6a559c59c8314699ebb58b1ca04c0ea7e0cc01b301fc345b93d7f7fc963",
-    "interactive_reject": "2caf89795617e42d1a38dddcc05a93bdba195fb10036f67d71438e824e44cfee",
-    "interactive_timeout": "8767f772a5d23a1d318c0fe1ff69acc56bad7b024d552a4e4c5f132be2e024a4",
-    "interactive_trust_in_dm": "d1f9b4ac5a71a94236bf697afab088161b9dd828f1aa8beee479ed6c02e76bbb",
-    "keyword_commands": "0ef1fd95b16ed0bbdcce2999f6632c4be8acc92e943cd4a69c05ccd5ffb2fb73",
+    "interactive_approve": "b20c7df4968528b252f984f62503202294c5c0caa75eb04be3231f2310ef5110",
+    "interactive_approve_answered": "08dd0d7d62480853b98cff28fa65d158d327339f2dd69ed2b74fbbbfe8c6356a",
+    "interactive_reject": "7e51857cb81a6b1806af280a1f441a7962f3f2e4e7ce8dd3cb440f6dfc1960c6",
+    "interactive_timeout": "e2a9e8c0d6398cbe68f81f17eb94ade5c20921c6221d4100f521ac5736448e30",
+    "interactive_trust_in_dm": "8b16590ebe23568228ed607a24202a50b8edc4e80aef76e5774c7bef013e5ad5",
+    "keyword_commands": "2acbad12808587a76ab0d64101da6d512b3ba8f0bc1f28ed2dab246d7a88b386",
     "linked_approval": "8a85aaf602b5281707519634a49589c814694ac0f9c7b71164bbdaa2cc474bc9",
-    "linked_dashboard_session": "224ca7d87df8c73e94811b56554a3000701402072c1dd2b46cb770803ccd24b0",
-    "linked_thread_routes_to_slot": "ac7b70b93a3f485e84491edcac4cb8eb3e5aff6fa8a54a23846d8dae6be746af",
-    "mention_prefixed_bang": "f6ba6be59eb71104d3fa7202fd9bbcf91a5a6376f253db3fda41a256d468ab1e",
-    "pinned_answer": "c590ad8ef702c7284d257b0d486a8c6b69f76255d32a5d0ae4dd896ad6f549d5",
-    "presentation_raises": "361a0de433fd48b58f859146ae2c68a7d9519ea8181399752673f044c299d2ce",
-    "privacy_modifiers": "4061ede8e707257cf7903974e6de0a090562202d606bb78e60b2554d945ec8ba",
-    "reasoning_only": "a18cd8aa10fbb3dcbb6897ce5fb316ec5ebc84acd12632c4570a295e7bf6721c",
-    "replay_stopped_before_prompt": "148eaa37b40ed17826eae6b36aaa56909402e9e42b20ad1dd8f4c4b8fed192cb",
-    "review_mode": "2c6cf08bc3259143b5e8711d64adc1f109ee1f1a6fa5a98caa1be62f3d4951f6",
+    "linked_dashboard_session": "f5b3918834a0a69943c3e2e338d815c4370db7b6c5fe6a800b0d6f9d865029cb",
+    "linked_thread_routes_to_slot": "0a481316843499aaa985a421a16e4c2510f5a1ff7b1a9a56e9f6cf4a37832e6e",
+    "mention_prefixed_bang": "48e18741859e097ccf60e7d04b6c70546baa391b3451b065b997348a4a5d7734",
+    "pinned_answer": "28c748b1cf0d80d87ab2efccaf102d311fcc583d2a63992bc2fb86a5fb829016",
+    "presentation_raises": "648684b8c85a999655782b4553854eea6e4b85302ecf65951643680add824f8d",
+    "privacy_modifiers": "4d2844c96b28e07a815c7e1b3d2e943d5bd70e3fb7457dd4106f6cf4781d12ec",
+    "reasoning_only": "c89a99216bc42101b006b40d7dce9f582dae7fe5c8c53731764517c963dfc88f",
+    "replay_stopped_before_prompt": "3d79fc1c49d7e9c049318f30d03939dd5b09838a582621fb78de956d5a5cc9d8",
+    "review_mode": "89331664b810662dc31b0a11065705d42ef651896c65e7f6a89a32958509a53a",
     "shared_runtime_deaths": "7448fcb0e2a7665b8dfbf9e6343876d16fa9f2dab262ac2db302f9defef129d7",
-    "status_reactions": "14c5040b7db5254737f18a51d8aefce91330427f59142ee4dc59106f8bb098dd",
-    "streamed_turn": "e10e8c45137bb50f1c38513b9b5c25c7b0450381277d18f3ae7e4e286cd95887",
-    "tool_then_rejected_while_streaming": "fb8a0d0b3be37ee59571bf1482fe4c14049899f301ed538ad079da4728af020b",
-    "top_level_no_placeholder": "416dbaac1ae3932ccb2df432ea72b0d56ab0e9dd8455eafa04baf1c274172891",
-    "transport_floor_refusal": "8bc29ce9634f29549dbcab78cb139f12f0eb565ea92cc8a6856f6aa8eaae1803",
-    "trusted_session": "33cdb5f7e51781f7636d4a8591bda14b7b57c094df5590633f5124d4bf05759d",
-    "turn_ceiling_and_shutdown": "3ac9dcaeb5c6c42bf8886118f06df788a8b280da346addf25dbc811baf9e2c9d",
-    "turn_with_history": "bcc140758baf11312bd9e0bd2ec299c92cc4f51802eb5d8afb0e376d29799583",
-    "unstreamed_long_reply": "a338e70172346e12ef9c1d2a7cc155041dfdb54d5e155bd5fb3aa56a58601a94",
-    "unstreamed_tool_and_auto_approval": "a771de255da501fa0a5a7a2636fd02cfa115f6bd75e5fd0a058b891bf890acf8",
-    "voice_reply_requested": "bd69ab9912c71fa6225deec2acc4d2a49be5f7d39dabb89bc22f5dfe4cb2af1a",
-    "wait_tool_seals_stream": "da9e4d35f2fb9f1460b361a5b82cfe66096dbc4e4e5243163b984a3df434a037",
+    "status_reactions": "0c53791195fe55281c9103c0dbe4e8b101d63bfaba331f0856f6fe82fa35f9cc",
+    "streamed_turn": "9bcdb4e071c8a4399e0f4e42b40c7103e4bf35572323d07fa08c4f93573f98e2",
+    "tool_then_rejected_while_streaming": "470973604465d0e22ca8e541d8ff6039b68cdf04ceb0cbadb5d109d9aecfa124",
+    "top_level_no_placeholder": "da9023327a43497b07e9ca44f6cb54e53eed7d1cfb8a048e4d09531e52cabce7",
+    "transport_floor_refusal": "9fb31cc46463b655120bcd722e0a1a7b70c07037bc472d606b76c451bab30ea3",
+    "trusted_session": "07445e20db083c7eaf2f75b3590ad82a9637bc4add04a00226c42b26b3ec4058",
+    "turn_ceiling_and_shutdown": "e12fa7e525db4a8d6c477ad0c3f5622e97c4d8ba45ca2fbfff90d4598d61e01d",
+    "turn_with_history": "db9b4f05d1388068d09b10eb0b2da0817ad379083046c29d43381f76757ead10",
+    "unstreamed_long_reply": "24762f37e6a615577ccdb6f679d8c5cc8bc217a41620d12a1c1306d454cb4a46",
+    "unstreamed_tool_and_auto_approval": "cfe992c51ae6285338d5081142175a990428ecd963ab312766c8439b8f697c1f",
+    "voice_reply_requested": "a28dfcf4f40175d528fde82de05ab643004e57a7ee86eae2af9ce8fb8b934c22",
+    "wait_tool_seals_stream": "198489a363db046df74be769a5ee27de977f3d53c65d8a145d7209d23fbfb394",
 }
 
 

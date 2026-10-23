@@ -218,13 +218,15 @@ class TestHandleMessage:
         assert any(r[1]["emoji"] == "eyes" for r in reacts)
 
     @pytest.mark.asyncio
-    async def test_adds_checkmark_after(self):
+    async def test_ack_comes_down_with_no_done_reaction(self):
         slack = MockSlackClient()
         sessions = FakeSessionManager()
         await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
+        await asyncio.sleep(0)
 
-        reacts = [a for a in slack.actions if a[0] == "react"]
-        assert any(r[1]["emoji"] == "lobster" for r in reacts)
+        reacts = [a[1]["emoji"] for a in slack.actions if a[0] == "react"]
+        unreacts = [a[1]["emoji"] for a in slack.actions if a[0] == "unreact"]
+        assert reacts == ["eyes"] and unreacts == ["eyes"]
 
     @pytest.mark.asyncio
     async def test_thinking_posted_then_updated(self):

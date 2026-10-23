@@ -17343,7 +17343,7 @@
         "saved_restart_the_gateway_to_apply": "सहेजा गया। लागू करने के लिए गेटवे रीस्टार्ट करें।",
         "saving": "सहेजा जा रहा है…",
         "setup_guide": "सेटअप गाइड",
-        "show_phase_aware_emoji_reactions_queued_thinking": "मैसेज पर फ़ेज़-आधारित इमोजी प्रतिक्रियाएँ दिखाएँ (क़तार में → सोच रहा है → कोडिंग → पूर्ण)।",
+        "show_phase_aware_emoji_reactions_queued_thinking": "जवाब दिए जाने तक मैसेज पर 👀 जोड़ें (केवल जहाँ Slack थ्रेड स्टेटस नहीं दिखाता) और टर्न विफल होने पर 😱।",
         "show_thinking": "थिंकिंग दिखाएँ",
         "slack": "Slack",
         "slack_app_token": "Slack ऐप टोकन",

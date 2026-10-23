@@ -9592,7 +9592,7 @@
         "post_the_model_s_reasoning_as_a_thread_reply_dis": "Post the model's reasoning as a thread reply. Disable to keep responses concise.",
         "required": "Required",
         "setup_guide": "Setup guide",
-        "show_phase_aware_emoji_reactions_queued_thinking": "Show phase-aware emoji reactions (queued → thinking → coding → done) on messages.",
+        "show_phase_aware_emoji_reactions_queued_thinking": "Add 👀 to a message while it is answered (only where Slack shows no thread status) and 😱 if the turn fails.",
         "show_thinking": "Show thinking",
         "slack": "Slack",
         "slack_app_token": "Slack app token",

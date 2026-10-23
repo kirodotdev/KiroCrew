@@ -88,7 +88,6 @@ from kiro_crew.slack.handler import (
     _filter_options_brackets,
     _resolve_comment_hold,
     _safe_update,
-    _tool_to_phase,
     build_timing_footer,
 )
 from kiro_crew.slack.outbound import PostedOptions
@@ -702,7 +701,6 @@ class SlackRenderer(Renderer):
         self._tool_start_time = 0.0  # monotonic ts of current tool start
         self._tool_timer_task: asyncio.Task | None = None  # 30s elapsed updater
         self._controller: Any = None
-        self._tool_to_phase: Any = None
         self._finalized = False  # guards close() from double-finalizing
         # Redaction placeholders in text this turn shipped: the final answer
         # body counted once at on_done, plus the posted 💭 reasoning. Feeds the
@@ -725,41 +723,31 @@ class SlackRenderer(Renderer):
         self._ref_hold = ""
 
     async def on_turn_start(self) -> None:
-        # Native sets the working thread-status before streaming and arms the
-        # reaction controller at "queued". Idempotent: the dispatcher fires this
-        # early (before session acquisition) so the ack reaction reaches the user
-        # immediately; the TurnDriver's later call then no-ops.
+        # Native sets the working thread-status before streaming and, only where
+        # Slack does not show that status, acks the message with the "queued"
+        # reaction. Idempotent: the dispatcher fires this early (before session
+        # acquisition) so the status or ack reaches the user immediately; the
+        # TurnDriver's later call then no-ops.
         if self._started:
             return
         self._started = True
         self._t0 = self._now()
-        self._ensure_controller()  # set_phase("queued")
         # Best-effort: MUST NOT raise. Decoration only.
+        native_status = False
         try:
-            await self.slack.set_thread_status(self.channel, self.thread_ts or "", _STATUS_WORKING)
+            native_status = bool(
+                await self.slack.set_thread_status(
+                    self.channel, self.thread_ts or "", _STATUS_WORKING
+                )
+            )
         except Exception:
             logger.warning("Slack set_thread_status failed — skipping status", exc_info=True)
-
-    def _ensure_controller(self) -> Any:
-        """Lazily create the (reused) StatusReactionController.
-
-        Imported lazily to avoid a ``handler <-> renderer`` import cycle once
-        ``handler`` drives this renderer. Reuses the real controller so the
-        debounce/stall/emoji behavior matches native exactly.
-        """
-        if self._controller is None and self._reactions_enabled:
-            self._tool_to_phase = _tool_to_phase
+        if self._reactions_enabled:
+            # The same controller native uses, so both paths wear one reaction.
             self._controller = StatusReactionController(
                 self.slack, self.channel, self._react_ts, enabled=True
             )
-            self._controller.set_phase("queued")
-        return self._controller
-
-    def _set_phase(self, phase: str) -> None:
-        ctrl = self._ensure_controller()
-        if ctrl is not None:
-            ctrl.set_phase(phase)
-            ctrl.on_progress()
+            self._controller.start(native_status=native_status)
 
     async def _ensure_stream(self) -> str | None:
         if self._stream_ts is None:
@@ -1402,7 +1390,6 @@ class SlackRenderer(Renderer):
         # Flush any accumulated reasoning as a 💭 reply first so it lands above
         # the answer (no-op when show_thinking is off or nothing accumulated).
         await self._maybe_post_thinking()
-        self._set_phase("thinking")
         ts = await self._ensure_stream()
         # Accumulate the FULL raw text (incl. any [OPTIONS:...]) so the final
         # extract_options in on_done sees it; only filter what is *shown*.
@@ -1447,7 +1434,6 @@ class SlackRenderer(Renderer):
             self._last_edit = now
 
     async def on_thinking(self, text: str) -> None:
-        self._set_phase("thinking")
         # Thinking is surfaced via the thread status indicator, not the stream.
         # Best-effort: MUST NOT raise. Decoration only.
         try:
@@ -1502,10 +1488,6 @@ class SlackRenderer(Renderer):
         # task + its 30s elapsed timer.
         await self._ensure_stream()
         tool_name = title.removeprefix("Running: ")
-        self._ensure_controller()
-        if self._controller is not None and self._tool_to_phase is not None:
-            self._controller.set_phase(self._tool_to_phase(tool_name, tool_kind))
-            self._controller.on_progress()
         # Best-effort: MUST NOT raise. Decoration only — a raise
         # escapes to the transport catch-all and fakes a terminal error on a
         # live turn.

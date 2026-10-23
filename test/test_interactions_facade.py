@@ -70,7 +70,7 @@ _KNOWN_SEAMS = frozenset(
         "channel_inbound_permitted",
         "redact_credentials",
         "_import_thread_to_slot",
-        "_handle_options_submit",
+        "_open_options_several",
         "_forget_options_control",
         "_post_review_auth_error",
         "_resume_locks",
@@ -92,7 +92,7 @@ _BASE_IMPORTS = frozenset("""
     ACTION_ALLOWLIST_APPROVE ACTION_ALLOWLIST_DENY ACTION_TRACK_APPROVE
     ACTION_TRACK_DENY ACTIVATION_REVIEW APPROVAL_INTERACTIVE Any Awaitable Callable
     ConfigReadError CronStoreBusy CronStoreUnreadable LINK_DASHBOARD_ACTION
-    LoopBoundLock OPTIONS_ACTION_PREFIX OPTIONS_CHECKBOXES_ACTION OPTIONS_SUBMIT_ACTION
+    LoopBoundLock OPTIONS_ACTION_PREFIX OPTIONS_SEVERAL_ACTION
     PostedOptions SESSION_LINK_ACTION STOP_DECLINED_COMPACTING_TEXT SlackApprovalDecider
     StartPriority TOOL_APPROVE_ACTION_PREFIX TOOL_DENY_ACTION_PREFIX
     TOOL_TRUST_ACTION_PREFIX TYPE_CHECKING add_trusted_session aiohttp asyncio
@@ -121,6 +121,7 @@ _LOGGER_NAME = FACADE
 _BASE_VIEW_REGISTRATIONS = (
     ("mc_config_panel", "_handle_config_submission"),
     ("mc_voice_config", "_handle_voice_config_submission"),
+    ("options_several_submit", "_handle_options_several_submission"),
     ("mc_review_edit_submit", "_handle_review_edit_submit"),
     ("mc_review_revise_submit", "_handle_review_revise_submit"),
 )

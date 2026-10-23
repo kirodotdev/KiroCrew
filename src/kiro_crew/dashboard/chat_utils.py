@@ -887,6 +887,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         encode_options_token,
         expire_options,
         mark_options_terminal,
+        options_answer_settled,
         options_edit_lock,
     )
     from kiro_crew.validation import (  # noqa: F401

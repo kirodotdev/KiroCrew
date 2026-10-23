@@ -467,15 +467,15 @@ class TestDispatchRouting:
     """Each recognised action_id must reach exactly its own handler."""
 
     @pytest.mark.asyncio
-    async def test_checkboxes_toggle_is_a_noop(
+    async def test_choose_several_opens_the_modal(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from kiro_crew.slack.format import OPTIONS_CHECKBOXES_ACTION
+        from kiro_crew.slack.format import OPTIONS_SEVERAL_ACTION
 
         spy = AsyncMock()
-        monkeypatch.setattr(ix, "_handle_options_submit", spy)
-        await ix.dispatch(_action_payload(OPTIONS_CHECKBOXES_ACTION))
-        spy.assert_not_awaited()
+        monkeypatch.setattr(ix, "_open_options_several", spy)
+        await ix.dispatch(_action_payload(OPTIONS_SEVERAL_ACTION))
+        spy.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_spent_options_marker_is_a_noop(
@@ -492,13 +492,16 @@ class TestDispatchRouting:
     async def test_options_blocked_by_channels_governance(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from kiro_crew.slack.format import OPTIONS_SUBMIT_ACTION
+        from kiro_crew.slack.format import OPTIONS_ACTION_PREFIX, OPTIONS_SEVERAL_ACTION
 
         monkeypatch.setattr(ix, "channel_inbound_permitted", AsyncMock(return_value=False))
-        spy = AsyncMock()
-        monkeypatch.setattr(ix, "_handle_options_submit", spy)
-        await ix.dispatch(_action_payload(OPTIONS_SUBMIT_ACTION))
-        spy.assert_not_awaited()
+        click, menu = AsyncMock(), AsyncMock()
+        monkeypatch.setattr(ix, "_handle_options", click)
+        monkeypatch.setattr(ix, "_open_options_several", menu)
+        await ix.dispatch(_action_payload(f"{OPTIONS_ACTION_PREFIX}0", "A"))
+        await ix.dispatch(_action_payload(OPTIONS_SEVERAL_ACTION))
+        click.assert_not_awaited()
+        menu.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_review_action_blocked_by_channels_governance(

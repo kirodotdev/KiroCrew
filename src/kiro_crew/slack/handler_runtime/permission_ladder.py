@@ -174,7 +174,6 @@ async def _answer_permission_request(
     context_builder = turn.context_builder
     session_key = turn.session_key
     _agent = turn._agent
-    status_ctrl = turn.status_ctrl
     answer = turn.answer
     task = turn.task
     # Check tool hooks for auto-approve
@@ -348,7 +347,6 @@ async def _answer_permission_request(
         return False
 
     logger.info("Permission request: tool=%s req_id=%s", event.title, event.request_id)
-    status_ctrl.pause_stall_watchdog()
     task.await_approval()
     # The stream-prep Slack calls below run BEFORE _request_approval
     # answers the permission. If any raises (rate-limit, network),
@@ -371,7 +369,6 @@ async def _answer_permission_request(
         is_dm=channel.startswith("D"),
     )
     task.resume()
-    status_ctrl.resume_stall_watchdog()
     sel().log_tool_invocation(
         session_key=session_key,
         source="slack",

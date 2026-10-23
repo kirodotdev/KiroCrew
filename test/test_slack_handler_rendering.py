@@ -301,13 +301,13 @@ class TestReactionOverrides:
 
     def test_defaults_without_overrides(self):
         result, unknown = _build_phase_emojis({})
-        assert result["done"] == "lobster"
-        assert result["queued"] == "eyes"
+        assert result == {"queued": "eyes", "error": "scream"}
+        assert "lobster" not in result.values()
         assert unknown == []
 
     def test_override_applies(self):
-        result, unknown = _build_phase_emojis({"done": "sparkle"})
-        assert result["done"] == "sparkle"
+        result, unknown = _build_phase_emojis({"error": "sparkle"})
+        assert result["error"] == "sparkle"
         assert result["queued"] == "eyes"  # others unchanged
         assert unknown == []
 

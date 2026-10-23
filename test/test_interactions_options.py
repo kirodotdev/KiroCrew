@@ -3,7 +3,7 @@
 Covers the single-click OPTIONS path end to end (the in-place edit, the post-and-delete
 fallback, a delete that fails and keeps the control's record, a duplicate click, a
 superseded control struck through, the answer pinned to the conversation that asked),
-the multi-select submit's stale and duplicate refusals, the ``action::`` routing edge
+the "Choose several..." modal's stale and duplicate refusals, the ``action::`` routing edge
 cases (an overflow label, a failing message edit, an oversized payload), the helpers
 that read a control back off its own blocks, and the Slack-thread import into a
 dashboard slot.
@@ -27,8 +27,9 @@ from kiro_crew.dashboard import chat_persistence
 from kiro_crew.slack import interactions as ix
 from kiro_crew.slack.format import (
     OPTIONS_ACTION_PREFIX,
-    OPTIONS_CHECKBOXES_ACTION,
-    OPTIONS_SUBMIT_ACTION,
+    OPTIONS_SEVERAL_BLOCK,
+    OPTIONS_SEVERAL_INPUT,
+    is_options_actions_block,
 )
 from kiro_crew.slack.outbound import (
     PostedOptions,
@@ -69,6 +70,8 @@ def _make_orch() -> MagicMock:
     orch.slack.post_message = AsyncMock(return_value="label-ts")
     orch.slack.post_blocks = AsyncMock(return_value="fallback-ts")
     orch.slack.delete_message = AsyncMock()
+    orch.slack.post_ephemeral = AsyncMock()
+    orch.slack.views_open = AsyncMock()
     orch.dashboard_state = None
     orch._handler_tasks = set()
     return orch
@@ -134,27 +137,6 @@ def _buttons(choices: list[str], block_id: str | None = None) -> dict:
     return block
 
 
-def _checkboxes(choices: list[str], block_id: str = "blk1") -> dict:
-    return {
-        "type": "actions",
-        "block_id": block_id,
-        "elements": [
-            {
-                "type": "checkboxes",
-                "action_id": OPTIONS_CHECKBOXES_ACTION,
-                "options": [
-                    {"text": {"type": "plain_text", "text": c}, "value": c} for c in choices
-                ],
-            },
-            {
-                "type": "button",
-                "action_id": OPTIONS_SUBMIT_ACTION,
-                "text": {"type": "plain_text", "text": "Send"},
-            },
-        ],
-    }
-
-
 def _click(choices: list[str], index: int, *, block_id: str | None = None) -> tuple[dict, dict]:
     """A single-click OPTIONS press on button *index*, from thread ``t1`` message ``m1``."""
     control = _buttons(choices, block_id)
@@ -169,22 +151,43 @@ def _click(choices: list[str], index: int, *, block_id: str | None = None) -> tu
     return payload, action
 
 
-def _submit(choices: list[str], picked: list[str], block_id: str = "blk1") -> dict:
-    """A multi-select Send press from thread ``t1`` message ``m1``."""
+def _card(choices: list[str], block_id: str = "blk1") -> dict:
+    """A button-click payload on an OPTIONS card from thread ``t1`` message ``m1``."""
     return {
         "user": {"id": "U1"},
         "team": {"id": "T1"},
-        "message": {"ts": "m1", "thread_ts": "t1", "blocks": [_checkboxes(choices, block_id)]},
-        "state": {
-            "values": {
-                block_id: {
-                    OPTIONS_CHECKBOXES_ACTION: {
-                        "selected_options": [{"value": v} for v in picked],
-                    }
-                }
-            }
-        },
+        "trigger_id": "trig",
+        "message": {"ts": "m1", "thread_ts": "t1", "blocks": [_buttons(choices, block_id)]},
     }
+
+
+async def _submit_several(orch: MagicMock, choices: list[str], picked: list[int], block_id="blk1"):
+    opened = _card(choices, block_id)
+    await ix._open_options_several(opened, {"block_id": block_id}, "C1", "m1")
+    view = orch.slack.views_open.await_args.args[1]
+    await ix._handle_options_several_submission(
+        {
+            "user": {"id": "U1"},
+            "view": {
+                "private_metadata": view["private_metadata"],
+                "state": {
+                    "values": {
+                        OPTIONS_SEVERAL_BLOCK: {
+                            OPTIONS_SEVERAL_INPUT: {
+                                "selected_options": [{"value": str(i)} for i in picked]
+                            }
+                        }
+                    }
+                },
+            },
+        }
+    )
+
+
+def _answered(blocks: list[dict], *chosen: str) -> bool:
+    """Whether the context line reads "✅ <@U1> chose <chosen> · <time>"."""
+    names = ", ".join(f"*{c}*" for c in chosen)
+    return _summary(blocks).startswith(f"✅ <@U1> chose {names} · <!date^")
 
 
 def _summary(blocks: list[dict]) -> str:
@@ -201,13 +204,7 @@ def _summary(blocks: list[dict]) -> str:
 
 
 def _has_live_control(blocks: list[dict]) -> bool:
-    return any(
-        el.get("action_id", "").startswith(OPTIONS_ACTION_PREFIX)
-        or el.get("action_id") in (OPTIONS_CHECKBOXES_ACTION, OPTIONS_SUBMIT_ACTION)
-        for b in blocks
-        if b.get("type") == "actions"
-        for el in b.get("elements", [])
-    )
+    return any(is_options_actions_block(b) for b in blocks)
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +226,7 @@ class TestSingleClickOptions:
         assert (channel, ts, kwargs["text"]) == ("C1", "m1", "B")
         assert kwargs["blocks"][0] is HEADER
         assert not _has_live_control(kwargs["blocks"])
-        assert _summary(kwargs["blocks"]) == "~A~  |  *B*"
+        assert _answered(kwargs["blocks"], "B")
         orch.slack.post_blocks.assert_not_awaited()
         orch.slack.delete_message.assert_not_awaited()
 
@@ -238,7 +235,7 @@ class TestSingleClickOptions:
         assert args[2:7] == ("C1", "B", "t1", "m1", "U1")
         assert hm["team_id"] == "T1"
         assert (hm["target_slot_name"], hm["route_pinned"], hm["asker_key"]) == (None, False, None)
-        forget.assert_called_once_with(None, "t1", "m1", keys=("slack:t1",))
+        forget.assert_called_once_with(None, "t1", "m1", keys=("slack:t1",), channel="C1")
         # The answer is spent: a later click on the same control cannot claim it.
         assert claim_options_answer("C1", "m1") is False
 
@@ -254,10 +251,10 @@ class TestSingleClickOptions:
         orch.slack.post_blocks.assert_awaited_once()
         channel, blocks, text, thread_ts = orch.slack.post_blocks.await_args.args
         assert (channel, text, thread_ts) == ("C1", "A", "t1")
-        assert _summary(blocks) == "*A*  |  ~B~"
+        assert _answered(blocks, "A")
         orch.slack.delete_message.assert_awaited_once_with("C1", "m1")
         assert turns.await_args.args[2:7] == ("C1", "A", "t1", "fallback-ts", "U1")
-        forget.assert_called_once_with(None, "t1", "m1", keys=("slack:t1",))
+        forget.assert_called_once_with(None, "t1", "m1", keys=("slack:t1",), channel="C1")
 
     @pytest.mark.asyncio
     async def test_a_failed_delete_keeps_the_record_and_still_answers(
@@ -299,6 +296,9 @@ class TestSingleClickOptions:
         turns.assert_not_awaited()
         assert orch._handler_tasks == set()
         assert any("was already answered" in m for m in _messages(caplog))
+        orch.slack.post_ephemeral.assert_awaited_once_with(
+            "C1", "U1", "Already answered.", thread_ts="t1"
+        )
 
     @pytest.mark.asyncio
     async def test_a_superseded_choice_is_struck_through_and_not_answered(
@@ -319,6 +319,9 @@ class TestSingleClickOptions:
         assert kwargs["blocks"][0] is HEADER
         # Struck through means retired: no later click may answer it.
         assert claim_options_answer("C1", "m1") is False
+        orch.slack.post_ephemeral.assert_awaited_once_with(
+            "C1", "U1", "Already answered.", thread_ts="t1"
+        )
 
     @pytest.mark.asyncio
     async def test_a_tokened_choice_is_pinned_to_the_conversation_that_asked(
@@ -342,7 +345,7 @@ class TestSingleClickOptions:
         assert hm["target_slot_name"] == "chat-1"
         assert hm["route_pinned"] is True
         assert hm["asker_key"] == "dashboard:chat-1"
-        forget.assert_called_once_with(state, "t1", "m1", keys=("slack:t1",))
+        forget.assert_called_once_with(state, "t1", "m1", keys=("slack:t1",), channel="C1")
 
     @pytest.mark.parametrize(
         "action,channel,bound",
@@ -458,7 +461,7 @@ class TestForgetOptionsControl:
         monkeypatch.setattr(ix, "forget_slack_options_for_thread", recorder)
         with caplog.at_level(logging.DEBUG, logger=LOGGER):
             ix._forget_options_control("t1", "m1", keys=("slack:t1",))
-        recorder.assert_called_once_with(None, "t1", "m1", keys=("slack:t1",))
+        recorder.assert_called_once_with(None, "t1", "m1", keys=("slack:t1",), channel=None)
         assert "Failed to clear recorded OPTIONS control" in _messages(caplog)
 
 
@@ -476,39 +479,20 @@ class TestOptionsBlockId:
         payload = {"actions": ["not-a-dict", {"block_id": ""}, {"block_id": "second"}]}
         assert ix._options_block_id(payload, {"block_id": 7}) == "second"
 
-    def test_the_checkbox_state_key_is_the_last_resort(self) -> None:
-        payload = {
-            "actions": [],
-            "state": {"values": {"other": {"x": {}}, "cb-block": {OPTIONS_CHECKBOXES_ACTION: {}}}},
-        }
-        assert ix._options_block_id(payload) == "cb-block"
+    def test_a_later_rows_suffixed_id_still_decodes_to_the_token(self) -> None:
+        from kiro_crew.slack.outbound import decode_options_token, options_row_block_id
+
+        token = encode_options_token("slack:t1", MINTED_TS)
+        assert token is not None
+        row = ix._options_block_id({}, {"block_id": options_row_block_id(token, 1)})
+        assert row != token
+        assert decode_options_token(row) == ("slack:t1", MINTED_TS)
 
     def test_an_unmarked_payload_has_no_block_id(self) -> None:
         assert ix._options_block_id({"state": None, "actions": None}) is None
 
 
 class TestOptionsChoicesFromPayload:
-    def test_checkbox_choices_read_their_label_then_their_value(self) -> None:
-        blocks = [
-            "not-a-block",
-            {"type": "section", "elements": ["not-an-element"]},
-            {
-                "type": "actions",
-                "elements": [
-                    {
-                        "action_id": OPTIONS_CHECKBOXES_ACTION,
-                        "options": [
-                            {"text": {"text": "Alpha"}, "value": "a"},
-                            {"value": "b"},
-                            {"text": {}},
-                            "skipped",
-                        ],
-                    }
-                ],
-            },
-        ]
-        assert ix._options_choices_from_payload(blocks) == ["Alpha", "b", ""]
-
     def test_button_choices_are_gathered_across_every_block(self) -> None:
         blocks = [
             HEADER,
@@ -535,9 +519,9 @@ class TestRefuseStaleOptions:
     ) -> None:
         slack = orch.slack
         orch.slack = None
-        await ix._refuse_stale_options("C1", "m1", _submit(["A"], ["A"]))
+        await ix._refuse_stale_options("C1", "m1", _card(["A"]))
         monkeypatch.setattr(ix, "_orch", None)
-        await ix._refuse_stale_options("C1", "m1", _submit(["A"], ["A"]))
+        await ix._refuse_stale_options("C1", "m1", _card(["A"]))
         slack.update_message.assert_not_awaited()
         assert claim_options_answer("C1", "m1") is True
 
@@ -546,12 +530,12 @@ class TestRefuseStaleOptions:
         self, orch: MagicMock
     ) -> None:
         assert claim_options_answer("C1", "m1") is True
-        await ix._refuse_stale_options("C1", "m1", _submit(["A", "B"], ["A"]))
+        await ix._refuse_stale_options("C1", "m1", _card(["A", "B"]))
         orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_stale_control_is_struck_through_and_retired(self, orch: MagicMock) -> None:
-        payload = _submit(["A", "B"], ["A"])
+        payload = _card(["A", "B"])
         payload["message"]["blocks"].insert(0, HEADER)
         await ix._refuse_stale_options("C1", "m1", payload)
         orch.slack.update_message.assert_awaited_once()
@@ -571,7 +555,7 @@ class TestRefuseStaleOptions:
     ) -> None:
         expire = AsyncMock(side_effect=RuntimeError("slack 500"))
         monkeypatch.setattr(ix, "expire_options", expire)
-        payload = _submit(["A", "B"], ["A"])
+        payload = _card(["A", "B"])
         with caplog.at_level(logging.DEBUG, logger=LOGGER):
             await ix._refuse_stale_options("C1", "m1", payload)
         expire.assert_awaited_once()
@@ -594,15 +578,15 @@ class TestRefuseStaleOptions:
 # ---------------------------------------------------------------------------
 
 
-class TestOptionsSubmitRefusals:
+class TestChooseSeveralRefusals:
     @pytest.mark.asyncio
-    async def test_a_superseded_submit_is_refused_and_audited(
+    async def test_a_superseded_submission_is_refused_and_audited(
         self, orch: MagicMock, turns: AsyncMock, audit: MagicMock
     ) -> None:
         orch.dashboard_state = SimpleNamespace(conversation_log=_Log(LATER_TS))
         token = encode_options_token("slack:t1", MINTED_TS)
         assert token is not None
-        await ix._handle_options_submit(_submit(["A", "B"], ["B"], block_id=token), "C1", "m1")
+        await _submit_several(orch, ["A", "B"], [1], block_id=token)
         await _join(orch)
 
         turns.assert_not_awaited()
@@ -614,22 +598,41 @@ class TestOptionsSubmitRefusals:
         assert _summary(orch.slack.update_message.await_args.kwargs["blocks"]) == "~A~  |  ~B~"
 
     @pytest.mark.asyncio
-    async def test_a_second_send_on_an_answered_control_does_nothing(
+    async def test_a_submission_on_an_answered_control_does_nothing(
         self,
         orch: MagicMock,
         turns: AsyncMock,
         audit: MagicMock,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        assert claim_options_answer("C1", "m1") is True
+        opened = _card(["A", "B"])
+        await ix._open_options_several(opened, {"block_id": "blk1"}, "C1", "m1")
+        view = orch.slack.views_open.await_args.args[1]
+        assert claim_options_answer("C1", "m1") is True  # a click answered it meanwhile
         with caplog.at_level(logging.DEBUG, logger=LOGGER):
-            await ix._handle_options_submit(_submit(["A", "B"], ["A"]), "C1", "m1")
+            await ix._handle_options_several_submission(
+                {
+                    "user": {"id": "U1"},
+                    "view": {
+                        "private_metadata": view["private_metadata"],
+                        "state": {
+                            "values": {
+                                OPTIONS_SEVERAL_BLOCK: {
+                                    OPTIONS_SEVERAL_INPUT: {"selected_options": [{"value": "0"}]}
+                                }
+                            }
+                        },
+                    },
+                }
+            )
         await _join(orch)
 
         orch.slack.update_message.assert_not_awaited()
         orch.slack.post_blocks.assert_not_awaited()
         turns.assert_not_awaited()
-        audit.log_tool_invocation.assert_not_called()
+        assert audit.log_tool_invocation.call_args.kwargs["metadata"]["reason"] == (
+            "already_answered"
+        )
         assert any(
             "was already answered; dropping the duplicate click" in m for m in _messages(caplog)
         )

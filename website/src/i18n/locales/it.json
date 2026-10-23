@@ -17614,7 +17614,7 @@
         "saved_restart_the_gateway_to_apply": "Salvato. Riavvia il gateway per applicare.",
         "saving": "Salvataggio…",
         "setup_guide": "Guida alla configurazione",
-        "show_phase_aware_emoji_reactions_queued_thinking": "Mostra sui messaggi reazioni emoji legate alla fase (in coda → riflessione → codifica → completato).",
+        "show_phase_aware_emoji_reactions_queued_thinking": "Aggiunge 👀 a un messaggio mentre riceve risposta (solo dove Slack non mostra lo stato del thread) e 😱 se il turno non riesce.",
         "show_thinking": "Mostra il ragionamento",
         "slack": "Slack",
         "slack_app_token": "Token dell'app Slack",

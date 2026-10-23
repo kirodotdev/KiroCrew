@@ -17614,7 +17614,7 @@
         "saved_restart_the_gateway_to_apply": "Guardado. Reinicia el gateway para aplicar los cambios.",
         "saving": "Guardando…",
         "setup_guide": "Guía de configuración",
-        "show_phase_aware_emoji_reactions_queued_thinking": "Muestra reacciones emoji según la fase (en cola → pensando → programando → listo) en los mensajes.",
+        "show_phase_aware_emoji_reactions_queued_thinking": "Añade 👀 a un mensaje mientras se responde (solo donde Slack no muestra el estado del hilo) y 😱 si el turno falla.",
         "show_thinking": "Mostrar el razonamiento",
         "slack": "Slack",
         "slack_app_token": "Token de app de Slack",

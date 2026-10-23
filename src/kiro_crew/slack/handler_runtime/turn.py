@@ -159,11 +159,11 @@ class _SlackTurn:
     _had_error: "bool"
     _replayed: "bool"
     routed_link_key: "str | None"
-    status_ctrl: "StatusReactionController"
     _stop_reason: "str"
     task: "Task"
     _turn_completed_ok: "bool"
     _working_ts: "str | None"
+    status_ctrl: "StatusReactionController"
 
     # Set by ``_deliver_answer`` before its first await; ``book_success`` and
     # ``book_failure`` read and set it, so the turn books exactly one verdict.
@@ -283,6 +283,9 @@ class _SlackTurn:
             return
         self._verdict_booked = True
         self._had_error = True
+        # The turn body finalized the reaction before delivery; a reply that then
+        # failed still owes the user the error reaction.
+        self.status_ctrl.finalize(error=True)
         await self.sessions.record_failure(self.session_key)
         Stats().inc_message_failed()
 
@@ -334,7 +337,6 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         msg_ts,
         enabled=KiroCrewConfig.load().slack.reactions_enabled,
     )
-    status_ctrl.set_phase("queued")
     _had_error = False
     _stop_reason = ""
     # Whether the stream delivered an EVENT_COMPLETE; ``_stop_reason`` alone
@@ -354,8 +356,11 @@ async def _run_turn(turn: _SlackTurn) -> bool:
 
     # Set assistant thread status while we wait for the LLM to respond.
     # Defer start_stream until the first text chunk arrives so the user
-    # sees the status indicator instead of a blank bot message.
-    await slack.set_thread_status(channel, reply_ts, _STATUS_WORKING)
+    # sees the status indicator instead of a blank bot message. Where Slack
+    # shows that native status it is the progress signal; elsewhere the
+    # message gets the 👀 ack instead (``StatusReactionController.start``).
+    _native_status = await slack.set_thread_status(channel, reply_ts, _STATUS_WORKING)
+    status_ctrl.start(native_status=bool(_native_status))
 
     # Post inline stop button (only in threaded conversations to avoid breaking tests)
     _working_ts: str | None = None
@@ -391,7 +396,6 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         user_id=user_id,
         channel_activation=channel_activation,
         show_thinking=KiroCrewConfig.load().slack.show_thinking,
-        status=status_ctrl,
     )
 
     task = Task(id=msg_ts)
@@ -468,8 +472,8 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # inject it twice.
         _needs_reinjection = False
         _turn_compacted = False
-        # This attempt is over: stop its reaction ladder and stall watchdog now
-        # (idempotent, so the ``finally`` re-call is a no-op), and take down what
+        # This attempt is over: take its ack reaction down now (idempotent, so
+        # the ``finally`` re-call is a no-op), and take down what
         # it posted -- the Working block and a reasoning placeholder that a
         # thinking-only attempt left above where the answer would have gone. The
         # nested call posts its own.
@@ -773,7 +777,6 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # them is rebound past this point.
         turn.session_key = session_key
         turn._agent = _agent
-        turn.status_ctrl = status_ctrl
         turn.answer = answer
         turn.task = task
 
@@ -839,7 +842,6 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                     _turn_compacted = True
 
             elif event.kind == EVENT_COMPLETE:
-                status_ctrl.on_progress()
                 # The turn ended: text carried across a final ``wait`` is answer.
                 answer.take_carried()
                 _stop_reason = event.stop_reason
@@ -1220,6 +1222,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         status_ctrl.finalize(error=_had_error)
 
     # What ``_deliver_answer`` reads off the turn, as this phase left it.
+    turn.status_ctrl = status_ctrl
     turn._acquired = _acquired
     turn._agent = _agent
     turn.answer = answer

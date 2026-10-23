@@ -17343,7 +17343,7 @@
         "saved_restart_the_gateway_to_apply": "সেভ হয়েছে। কার্যকর করতে গেটওয়ে রিস্টার্ট করো।",
         "saving": "সেভ হচ্ছে…",
         "setup_guide": "সেটআপ গাইড",
-        "show_phase_aware_emoji_reactions_queued_thinking": "মেসেজে ফেজ-সচেতন ইমোজি রিঅ্যাকশন দেখান (কিউতে → ভাবছে → কোডিং → সম্পন্ন)।",
+        "show_phase_aware_emoji_reactions_queued_thinking": "উত্তর দেওয়ার সময় মেসেজে 👀 যোগ করুন (শুধু যেখানে Slack থ্রেড স্ট্যাটাস দেখায় না) এবং টার্ন ব্যর্থ হলে 😱।",
         "show_thinking": "থিঙ্কিং দেখান",
         "slack": "Slack",
         "slack_app_token": "Slack অ্যাপ টোকেন",

@@ -224,11 +224,14 @@ class SlackClientOps(ABC):
         """Append a task_update chunk to a streaming message. Returns True on success."""
         return False
 
-    async def set_thread_status(self, channel: str, thread_ts: str, status: str) -> None:
+    async def set_thread_status(self, channel: str, thread_ts: str, status: str) -> bool:
         """Set assistant thread status via assistant.threads.setStatus.
 
-        Pass an empty string to clear the status indicator.
+        Pass an empty string to clear the status indicator. Returns True only
+        when Slack accepted it -- i.e. this thread shows the bot's native
+        status -- so a caller can tell whether another progress signal is needed.
         """
+        return False
 
     async def set_thread_title(self, channel: str, thread_ts: str, title: str) -> None:
         """Set assistant thread title via assistant.threads.setTitle."""
@@ -837,8 +840,12 @@ class RealSlackClient(SlackClientOps):
             logger.debug("chat.stopStream failed", exc_info=True)
             return False
 
-    async def set_thread_status(self, channel: str, thread_ts: str, status: str) -> None:
-        """Set assistant thread loading status via assistant.threads.setStatus."""
+    async def set_thread_status(self, channel: str, thread_ts: str, status: str) -> bool:
+        """Set assistant thread loading status via assistant.threads.setStatus.
+
+        True when Slack accepted it; the SDK raises on an ``ok: false`` answer
+        (e.g. a thread that is not an assistant thread), which reads as False.
+        """
         try:
             await self._web.api_call(
                 "assistant.threads.setStatus",
@@ -846,6 +853,8 @@ class RealSlackClient(SlackClientOps):
             )
         except Exception:
             logger.debug("assistant.threads.setStatus failed", exc_info=True)
+            return False
+        return True
 
     async def set_thread_title(self, channel: str, thread_ts: str, title: str) -> None:
         """Set assistant thread title via assistant.threads.setTitle."""

@@ -321,7 +321,7 @@
       "label": "Phase reactions (Slack)",
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=channels.phase-reactions-slack",
-      "description": "Show phase-aware emoji reactions (queued → thinking → coding → done) on messages."
+      "description": "Add 👀 to a message while it is answered (only where Slack shows no thread status) and 😱 if the turn fails."
     },
     {
       "id": "channels.reply-in-thread-webex",

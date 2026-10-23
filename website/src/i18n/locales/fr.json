@@ -17614,7 +17614,7 @@
         "saved_restart_the_gateway_to_apply": "Enregistré. Redémarre la passerelle pour appliquer.",
         "saving": "Enregistrement…",
         "setup_guide": "Guide de configuration",
-        "show_phase_aware_emoji_reactions_queued_thinking": "Afficher des réactions emoji selon la phase (en file → réflexion → codage → terminé) sur les messages.",
+        "show_phase_aware_emoji_reactions_queued_thinking": "Ajoute 👀 à un message pendant sa réponse (uniquement là où Slack n'affiche pas d'état de fil) et 😱 si le tour échoue.",
         "show_thinking": "Afficher le raisonnement",
         "slack": "Slack",
         "slack_app_token": "Jeton d'application Slack",

@@ -17343,7 +17343,7 @@
         "saved_restart_the_gateway_to_apply": "Gespeichert. Starte das Gateway neu, um dies anzuwenden.",
         "saving": "Wird gespeichert…",
         "setup_guide": "Einrichtungsanleitung",
-        "show_phase_aware_emoji_reactions_queued_thinking": "Phasenbewusste Emoji-Reaktionen (in Warteschlange → denkt → programmiert → fertig) an Nachrichten anzeigen.",
+        "show_phase_aware_emoji_reactions_queued_thinking": "Fügt einer Nachricht 👀 hinzu, solange sie beantwortet wird (nur wo Slack keinen Thread-Status zeigt), und 😱, wenn der Durchlauf fehlschlägt.",
         "show_thinking": "Denkprozess anzeigen",
         "slack": "Slack",
         "slack_app_token": "Slack-App-Token",

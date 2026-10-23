@@ -247,10 +247,18 @@ def test_book_success_without_a_client_records_no_interaction(recorded: _Recorde
 
 @pytest.mark.asyncio
 async def test_book_failure_books_once_and_marks_the_error(recorded: _Recorder) -> None:
-    turn = _turn(recorded, _verdict_booked=False, _had_error=False)
+    class _Reaction:
+        def finalize(self, error: bool = False) -> None:
+            recorded.calls.append(("reaction.finalize", error))
+
+    turn = _turn(recorded, _verdict_booked=False, _had_error=False, status_ctrl=_Reaction())
     await turn.book_failure()
     await turn.book_failure()
-    assert recorded.calls == [("record_failure", "slack:1.2"), ("stats.inc_message_failed",)]
+    assert recorded.calls == [
+        ("reaction.finalize", True),
+        ("record_failure", "slack:1.2"),
+        ("stats.inc_message_failed",),
+    ]
     assert turn._verdict_booked is True and turn._had_error is True
 
 
