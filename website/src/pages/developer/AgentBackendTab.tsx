@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useInRouterContext, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Bot, Boxes, Check, CircleHelp, Sparkles, Terminal, X } from 'lucide-react'
+import { Check, CircleHelp, X } from 'lucide-react'
 
 import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpProbeBlocksUse, agentChoiceSaved, configuredAcpBackend, DEFAULT_ACP_BACKEND, mcpWholeServerDeny, setupMarkerErrorBody, setupMarkerErrorMessage } from '../../api/acpBackend'
 import { api } from '../../api/client'
@@ -23,6 +23,7 @@ import { clearCachedModels } from '../../providers/adapters/acp'
 import { KiroSignInCard } from './KiroSignInCard'
 import { MCP_SERVERS_HREF } from '../connections/useConnectionsSubTab'
 import { KIRO_SIGN_IN_BACKEND } from './kiroSignInLink'
+import { HarnessLogo } from '../../components/HarnessLogo'
 
 /** The config field the switch owns. Also the schema path the options are gated on. */
 const CONFIG_KEY = 'agent.acp_backend'
@@ -762,12 +763,6 @@ export function AgentBackendTab() {
     return lines
   }
 
-  const ICON: Record<string, React.ReactNode> = {
-    [KIRO]: <Terminal size={14} />,
-    [CLAUDE]: <Sparkles size={14} />,
-    [KAS]: <Bot size={14} />,
-  }
-
   /**
    * One label per CAPABILITY, keyed by the id the server sends.
    *
@@ -938,8 +933,8 @@ export function AgentBackendTab() {
    */
   const nameOf = (value: string): string => acpBackendName({ id: value, policy_id: probe(value)?.policy_id })
 
-  /** Generic mark for an agent this frontend has no icon for. */
-  const iconOf = (value: string): React.ReactNode => ICON[value] ?? <Boxes size={14} />
+  /** The harness's own brand mark, or the generic one for an agent with none here. */
+  const iconOf = (value: string): React.ReactNode => <HarnessLogo id={value} size={14} />
 
   /**
    * The card's capability lines for one agent, dropping ids with no label here.

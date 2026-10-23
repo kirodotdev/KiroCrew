@@ -206,6 +206,29 @@ describe('ChatPage closed-session provider', () => {
     expect(apiMocks.sessionMeta).toHaveBeenCalledWith(CLOSED)
   })
 
+  // The chip caches the answer for the page's life, so it must stay raw: the
+  // chip localizes "Untitled session" at render (#23084).
+  it.each([
+    ['no title', null, ''],
+    ['a title equal to its key', `dashboard_${CLOSED}`, `dashboard_${CLOSED}`],
+  ])('answers an untitled found session (%s) with its raw title, never the label (#23084)', async (_case, title, expected) => {
+    const { store } = renderChatPage(true)
+    seedMessage(store)
+    apiMocks.sessionMeta = vi.fn().mockResolvedValue({ key: `dashboard_${CLOSED}`, title })
+    await act(async () => { fireEvent.click(await screen.findByTestId('lookup')) })
+    await vi.waitFor(() => expect(screen.getByTestId('answer').textContent).toBe(expected))
+  })
+
+  it('resumes an untitled session with its key as the payload title, never the label (#23084)', async () => {
+    const { store } = renderChatPage(true)
+    seedMessage(store)
+    apiMocks.sessionMeta = vi.fn().mockResolvedValue({ key: `dashboard_${CLOSED}`, title: '' })
+    apiMocks.resumeChatSlot = vi.fn().mockResolvedValue({ ok: false })
+    await act(async () => { fireEvent.click(await screen.findByTestId('open')) })
+    await vi.waitFor(() => expect(screen.getByTestId('answer').textContent).toBe('opened'))
+    expect(apiMocks.resumeChatSlot).toHaveBeenCalledWith(`dashboard_${CLOSED}`, `dashboard_${CLOSED}`)
+  })
+
   it('a missing session is a quiet null, with no error notice', async () => {
     const { store } = renderChatPage(true)
     seedMessage(store)

@@ -1415,7 +1415,7 @@ class TestRunCommandSandboxed:
         assert result["status"] == "error"
         assert result["exit_code"] == -1
         # Both platform wordings lead with this; each one's body is pinned in
-        # test_cron_script.TestCommandCronShellResolution.
+        # test_cron_script_execution.TestCommandCronShellResolution.
         assert "POSIX shell" in result["output"]
         assert "script cron" in result["output"]
 

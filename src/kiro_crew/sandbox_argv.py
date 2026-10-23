@@ -898,7 +898,7 @@ def sandbox_exec_argv(
     # since config/loader_config.py seeds them into os.environ for trusted children only.
     unset_args = _sandbox_env_unset_args(sandbox_level, strip_python_env, forward_ssh_auth_sock)
     # Mark the sandboxed tree, exactly as the Linux namespace launcher does after
-    # its own env scrub (see ``scrub_env`` in ``sandbox_launcher_program``, the
+    # its own env scrub (see ``scrub_env`` in ``sandbox_launcher_parts/exec_lockdown.py``, the
     # program ``_build_launcher_script`` renders). Without
     # this, an in-sandbox ``wrap_argv`` call cannot tell that Kiro Crew's own
     # sandbox already confines it, tries to nest, and gets EPERM — which then

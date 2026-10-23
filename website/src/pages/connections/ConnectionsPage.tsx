@@ -22,7 +22,7 @@ import { guideAnchor } from '../../uiLocations/targetRegistry'
 import { ConnectionCard } from './ConnectionsPageCard'
 import {
   confirmedGrantPresent, connectionStateFor, disconnectFeedback, effectiveOAuth, latestOAuthByServer, mintOutcome,
-  mintRowIsOurs, uninstallOnCancel, withMintedUrl, type ConnectionAction, type Feedback, type PendingConnect,
+  mintRowIsOurs, undismissedOAuth, uninstallOnCancel, withMintedUrl, type ConnectionAction, type Feedback, type PendingConnect,
 } from './connectionsPageCardState'
 
 // A provider card renders from `ConnectionsPageCard.tsx`, and what it shows is
@@ -74,6 +74,9 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
    *  fences off stale `mcp_oauth` banners left over from an earlier grant of
    *  the same server name (they must not mark a fresh attempt connected). */
   const [locallyWaiting, setLocallyWaiting] = useState<Record<string, PendingConnect>>({})
+  /** Newest chat banner timestamp seen when Cancel was pressed, per slug. A
+   *  later Connect supersedes it (its own `sinceTs` fence takes over). */
+  const [dismissedOAuth, setDismissedOAuth] = useState<Record<string, number>>({})
   const [busy, setBusy] = useState<{ slug: string; action: ConnectionAction } | null>(null)
   const [feedback, setFeedback] = useState<Record<string, Feedback>>({})
   const [highlightedSlug, setHighlightedSlug] = useState('')
@@ -358,6 +361,12 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     // names the row THIS tab started, so a sibling tab's terminal state cannot be
     // mistaken for ours.
     const started = await api.connectionsMint(provider.slug)
+    setDismissedOAuth(current => {
+      if (!(provider.slug in current)) return current
+      const next = { ...current }
+      delete next[provider.slug]
+      return next
+    })
     setLocallyWaiting(current => ({
       ...current,
       [provider.slug]: {
@@ -526,6 +535,12 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
       delete next[provider.slug]
       return next
     })
+    // Fence off the chat banner holding the card open (often an older
+    // Authorize card for the same server), or Cancel renders the same card.
+    setDismissedOAuth(current => ({
+      ...current,
+      [provider.slug]: oauthByServer[provider.slug]?.timestamp ?? 0,
+    }))
     if (uninstallOnCancel(pending)) {
       // The entry may not be in the cached list yet (probe still pending) —
       // fall back to the slug the connect just wrote so Cancel always undoes it.
@@ -705,8 +720,12 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
               {filteredProviders.map(provider => {
                 const server = serverForConnection(provider, servers)
                 const pending = locallyWaiting[provider.slug]
+                // A new Connect supersedes an earlier Cancel. Only the chat
+                // banner is fenced: Cancel disposes its own mint, and a mint a
+                // sibling tab starts later is live and must keep its URL.
+                const dismissedTs = pending ? undefined : dismissedOAuth[provider.slug]
                 const oauth = withMintedUrl(
-                  effectiveOAuth(oauthByServer[provider.slug], pending),
+                  undismissedOAuth(effectiveOAuth(oauthByServer[provider.slug], pending), dismissedTs),
                   mintByServer[provider.slug],
                 )
                 const status = statusBySlug[provider.slug]
@@ -721,6 +740,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                   // a refresh mid-consent still renders the waiting card.
                   status?.status === 'awaiting_consent',
                   status?.needsClientConfig === true,
+                  dismissedTs !== undefined,
                 )
                 const cardBusy = busy?.slug === provider.slug ? busy.action : undefined
                 // Named only when a DIFFERENT card owns the running test: this

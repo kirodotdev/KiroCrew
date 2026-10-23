@@ -34,7 +34,7 @@ import type {
 import type { ArtifactDetailPageCompanionRead } from './useArtifactDetailPageCompanion'
 import type { ArtifactDetailPageMenuRead } from './ArtifactDetailPageHeader'
 import {
-  CodeCommentContext, codeFenceSpans, routeCodeComments, buildCodeCommentAnchor, type CodeCommentContextValue,
+  CodeCommentContext, codeFenceSpans, routeCodeComments, buildCodeCommentAnchor, postedCodeRange, type CodeCommentContextValue,
 } from '../components/codeComments'
 import type { PendingAnchor } from './useArtifactDetailPageComments'
 import type { ExternalSelectionState } from '../hooks/useSelectionComposerAnchor'
@@ -48,7 +48,7 @@ import type { ExternalSelectionState } from '../hooks/useSelectionComposerAnchor
  *  the light-DOM overlay should still paint. */
 function useArtifactCodeComments({
   commentable, isMarkdown, sourceContent, durableComments, unreadRootIds, activeCommentId,
-  openThreadHandler, stageSelection,
+  openThreadHandler, stageSelection, lastPosted,
 }: {
   commentable: boolean
   isMarkdown: boolean
@@ -58,6 +58,8 @@ function useArtifactCodeComments({
   activeCommentId: string | null
   openThreadHandler: (id: string, rect?: { x: number; y: number; w: number; h: number }) => void
   stageSelection: (anchor: PendingAnchor, sel: ExternalSelectionState) => void
+  /** The anchor of the last successful post, so its code range can clear. */
+  lastPosted?: { startOffset: number; quote: string; seq: number } | null
 }): { codeCommentCtx: CodeCommentContextValue | null; overlayComments: ArtifactComment[] } {
   // Routed for every markdown view, commentable or not: a code thread that a
   // fence does not claim falls to the light-DOM overlay, whose quote match
@@ -80,12 +82,19 @@ function useArtifactCodeComments({
       : durableComments.filter(c => !codeRouting.claimedThreadIds.has(c.thread_id))),
     [durableComments, codeRouting],
   )
+  // The block and lines the last successful post was made on, if it was a
+  // code range: that block clears its line selection.
+  const postedFor = useMemo(
+    () => (lastPosted ? postedCodeRange(sourceContent, codeSpans, lastPosted) : null),
+    [lastPosted, sourceContent, codeSpans],
+  )
   const codeCommentCtx = useMemo<CodeCommentContextValue | null>(() => {
     if (!commentable || !isMarkdown) return null
     return {
       annotationsFor: fenceStartLine => codeRouting.byFence.get(fenceStartLine) ?? [],
       activeId: activeCommentId,
       onActivate: openThreadHandler,
+      postedFor,
       onCommentRange: ({ blockStartLine, start, end, x, y }) => {
         const span = codeSpans.find(s => s.contentStartLine === blockStartLine)
         if (!span) return
@@ -107,7 +116,7 @@ function useArtifactCodeComments({
         )
       },
     }
-  }, [commentable, isMarkdown, codeRouting, codeSpans, sourceContent, activeCommentId, openThreadHandler, stageSelection])
+  }, [commentable, isMarkdown, codeRouting, codeSpans, sourceContent, activeCommentId, openThreadHandler, stageSelection, postedFor])
   return { codeCommentCtx, overlayComments }
 }
 
@@ -289,7 +298,7 @@ export function ArtifactDetailPageBody({
   const {
     selectionComposer, iframeSelection, onSidebarDraftDirtyChange, onThreadDraftDirtyChange,
     sidebarDiscardSignal, composerResetNonce, selectionActions, handleIframeSelect, stageIframeSelection,
-    openThread, setOpenThread,
+    openThread, setOpenThread, lastPosted,
   } = composerRead
   const {
     sendNav, boundSlot, chatCreating, connected, newCompanionChat, pendingComments, pendingCommentIds,
@@ -511,6 +520,7 @@ export function ArtifactDetailPageBody({
                 sourceContent={artifact.content ?? ''} durableComments={durableComments}
                 unreadRootIds={unreadRootIds} activeCommentId={activeCommentId}
                 openThreadHandler={openThreadHandler} stageSelection={stageIframeSelection}
+                lastPosted={lastPosted}
               >{overlayComments => (
                 <ArtifactBodyNative
                   kind={artifact.kind}

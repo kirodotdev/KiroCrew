@@ -6859,7 +6859,7 @@
     {
       "id": "settings-voice-tts-provider-select",
       "feature": "settings",
-      "title": "Switch TTS Provider (built-in / Piper / Amazon Polly)",
+      "title": "Switch TTS Provider (built-in / Amazon Polly)",
       "user_story": "As a dashboard user, I want to switch the TTS Provider in Settings > Voice, so that spoken replies use the engine I choose.",
       "start_url": "/settings/voice",
       "entry_path": "Settings > Voice > Provider select (TTS card)",
@@ -6867,7 +6867,7 @@
         "seed": "minimal",
         "members": [],
         "feature_flags": [],
-        "notes": "Selecting Polly reveals AWS profile/region inputs; Piper reveals binary/model paths."
+        "notes": "Selecting Polly reveals AWS profile/region inputs; the built-in engine reveals its voice and speed."
       },
       "runnable": "nightly",
       "estimated_steps": 4,

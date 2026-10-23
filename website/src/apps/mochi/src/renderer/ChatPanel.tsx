@@ -406,12 +406,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
         // The bridge answers untyped rows, so the shape is asserted per FIELD here
         // rather than trusted wholesale: the filter is what guarantees `role` is one
         // of the two this panel renders, and a row missing a timestamp gets 0.
+        // The server row id (`meta.mid`) is kept so a patch frame for a row loaded
+        // here still finds it (see the `_patch` branch below).
         const mapped = history
           .filter((m) => m.role === 'user' || m.role === 'assistant')
-          .map((m, i): ChatMessage => ({
-            id: `hist-${i}`, role: m.role as ChatMessage['role'], content: m.content as string,
-            timestamp: (m.timestamp as number) || 0,
-          }))
+          .map((m, i): ChatMessage => {
+            const mid = (m.meta as { mid?: unknown } | null | undefined)?.mid
+            return {
+              id: `hist-${i}`, role: m.role as ChatMessage['role'], content: m.content as string,
+              timestamp: (m.timestamp as number) || 0,
+              ...(typeof mid === 'string' && mid ? { meta: { mid } } : {}),
+            }
+          })
         setAllHistory(mapped)
         setMessages(mapped.slice(-INITIAL_HISTORY))
         wasNearBottomRef.current = true
@@ -481,6 +487,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
       if (typeof retractId === 'string') {
         setMessages((prev: ChatMessage[]) => prev.filter(m => m.id !== retractId))
         setAllHistory((prev: ChatMessage[]) => prev.filter(m => m.id !== retractId))
+        return
+      }
+      // A patch frame: new content for a committed row, named by the server
+      // row id (`meta.mid`) the row carries, from its own frame or from the
+      // history load. The gateway gives back the last run of text it held across
+      // a tool call or approval prompt this way. Like a retraction it carries no
+      // renderable role.
+      const patchMid = (msg as { _patch?: unknown })._patch
+      if (typeof patchMid === 'string') {
+        const content = String(msg.content ?? '')
+        const patch = (prev: ChatMessage[]) => prev.map(m =>
+          (m as { meta?: { mid?: unknown } }).meta?.mid === patchMid ? { ...m, content } : m)
+        setMessages(patch)
+        setAllHistory(patch)
         return
       }
       if (msg.role) {
@@ -1096,8 +1116,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
           ) : null}
         </div>
 
-        {/* Message items — normal flow */}
-        {messages.map((msg) => (
+        {/* Message items — normal flow. An assistant row committed with no text
+            yet is not drawn: all of its text is a run the gateway holds across
+            the tool call or approval prompt after it, and it arrives as a patch
+            (the dashboard hides the same row). */}
+        {messages.filter((msg) => msg.role !== 'assistant' || msg.content).map((msg) => (
           <div key={msg.id} style={{ padding: '3px 10px', display: 'flex', flexDirection: 'column' }}>
             <Bubble message={msg} onOption={sendText} onImageClick={openLightboxCb}
               animate={!msg.id.startsWith('hist-')}

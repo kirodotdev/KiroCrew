@@ -583,6 +583,27 @@ class DashboardConfig:
             "itself is always created either way, so it is one click away.",
         ),
     )
+    side_panel_always_open: bool = field(
+        default=False,
+        metadata=_meta(
+            "Keep the side panel open",
+            "Open the chat's right side panel in every chat you open, new or "
+            "existing, and after a reload. Closing it hides it until you switch "
+            "chats. Each chat still remembers its own open or closed panel, and "
+            "turning this off brings that back. This setting does not apply on a "
+            "phone.",
+        ),
+    )
+    side_panel_pin_summary: bool = field(
+        default=False,
+        metadata=_meta(
+            "Pin Summary in the side panel",
+            "Show the session Summary as the first side panel tab, which cannot be "
+            "closed, and show it each time the panel opens. A panel opened for "
+            "something specific, such as a file, still shows that. Works only "
+            "while session summaries are on.",
+        ),
+    )
     # Default TRUE: the chip strip shipped unconditionally before this switch
     # existed, so a config that never mentions the key must render exactly what
     # it rendered before.

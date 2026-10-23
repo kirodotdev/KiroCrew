@@ -1066,6 +1066,7 @@ _RUNTIME_PATH_MODULES = (
     "src/kiro_crew/acp/runtime_host_requests.py",
     "src/kiro_crew/acp/runtime_frame_accounting.py",
     "src/kiro_crew/acp/runtime_reader_loop.py",
+    "src/kiro_crew/acp/runtime_remote_workspace.py",
     "src/kiro_crew/acp/runtime_class.py",
     "src/kiro_crew/acp/session_handle.py",
     "src/kiro_crew/acp/session_handle_runtime_contract.py",
@@ -1089,6 +1090,14 @@ _RUNTIME_PATH_MODULES = (
 #: comparison against an ``ACP_BACKEND_*`` constant that is not listed here fails
 #: :func:`test_every_runtime_path_identity_test_is_declared`.
 _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
+    (
+        "src/kiro_crew/acp/runtime_remote_workspace.py",
+        "check_remote_workspace_supported",
+    ): "A remote session environment is fenced by unmounting the built-in file and "
+    "shell tools through the custom-agent tool allowlist KAS carries on the wire "
+    "(kas_custom_agents). KAS is the only host that sends that allowlist, so a "
+    "positive identity test refuses every other harness instead of letting one run "
+    "the agent's local tools on the gateway machine.",
     (
         "src/kiro_crew/acp/session_handle_permissions.py",
         "_build_permission_event",

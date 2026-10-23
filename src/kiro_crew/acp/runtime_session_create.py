@@ -16,7 +16,8 @@ Instance fields written: ``_entitlement_probe_attempt_at``, ``_entitlement_probe
 Instance fields read: ``_agent``, ``_agent_capabilities``, ``_crew_agent``, ``_dead``,
 ``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``,
 ``_mcp_gateway_overlay``, ``_member_context``, ``_pending_init_notifications``, ``_pid``,
-``_pool_lookup``, ``_process``, ``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``.
+``_pool_lookup``, ``_process``, ``_remote_session_servers``, ``_remote_workspace_agents``,
+``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``.
 """
 
 from __future__ import annotations
@@ -334,9 +335,11 @@ async def create_session(
     # unresolved-ref guard. The pre-filter roster is not that; a host that
     # narrows its array would otherwise be reported as having been sent servers
     # the wire never carried, and the guard would judge refs against them.
-    wire_servers = self._harness.session_mcp_servers(
-        mcp_servers, agent_capabilities=self._agent_capabilities
+    await self._write_remote_token()
+    wire_servers = self._remote_session_servers(
+        self._harness.session_mcp_servers(mcp_servers, agent_capabilities=self._agent_capabilities)
     )
+    kas_agents = self._remote_workspace_agents(kas_agents, wire_servers)
     params = build_session_new_params(
         session_work_dir,
         mcp_servers=wire_servers,

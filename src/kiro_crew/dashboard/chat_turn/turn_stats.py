@@ -1,23 +1,52 @@
 """The per-turn stats footer, its first-token clock and the context meter payload, the
-turn outcome, the turn metric and the recovery-outcome counter."""
+turn outcome, the turn metric and the recovery-outcome counter, the stream's terminal
+(``_on_complete``) and the turn's context usage and landed verdict after it
+(``_turn_context_usage``)."""
 
 from __future__ import annotations
 
+import asyncio
 import math
 import time
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
+        STOP_REASON_CANCELLED,
+        STOP_REASON_END_TURN,
+        STOP_REASON_STALE_RECOVER,
+        STOP_REASON_TOOL_STALL,
+        STOP_RECOVERY_MAX_RETRIES,
+        TURN_TIMEOUT_CAUSE,
+        RefusalInfo,
         _ChatSlot,
+        capabilities_of,
+        classify_stop_reason,
+        disposition_for_stop_reason,
+        emit_counter,
         emit_turn_duration,
         emit_turn_usage,
         get_recorder,
+        is_monitor_completion_evidence,
         logger,
+        note_coding_activity,
+        persist_token_record_async,
+        provider_active_model,
+        read_context_tokens,
+        read_effective_agent,
+        read_turn_model,
+        record_interaction_event,
         row_mid,
+        telemetry_channel_of,
         turn_outcome,
+        usage_has_billing,
     )
     from kiro_crew.dashboard.chat_turn.mcp_session import _redact_acp_string
+    from kiro_crew.dashboard.chat_turn.model_fallback import _backfill_canonical_model
+    from kiro_crew.dashboard.chat_turn.native_cards import _native_subagent_close_all
+    from kiro_crew.dashboard.chat_turn.tool_rows import _MAX_TCID_SOURCES
+    from kiro_crew.dashboard.chat_turn.turn_ledgers import _report_consumed, _wt_collect
+    from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
 
 
 def _context_usage_payload(slot_key: str, client: Any) -> dict[str, Any]:
@@ -345,3 +374,575 @@ def turn_stats_meta(
 # entitlement error surfaces instead -- the already-bounded path this branch
 # exists to improve on.
 _MAX_MODEL_ID_LEN = 256
+
+
+async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
+    """The stream's terminal: the turn's stats, usage row and metric, and its stop reason."""
+    _crew_log_terminal: "dict | None"
+    _turn_refusal: RefusalInfo | None
+    _stop_reason: str
+    _native_card_output = turn._native_card_output
+    _native_tracker = turn._native_tracker
+    _prompt_depth = turn._prompt_depth
+    _stall_command = turn._stall_command
+    _stall_evidence = turn._stall_evidence
+    _stall_status = turn._stall_status
+    _stall_tool_title = turn._stall_tool_title
+    _turn_cost_usd = turn._turn_cost_usd
+    _turn_credits = turn._turn_credits
+    _turn_project = turn._turn_project
+    _turn_provenance_restored = turn._turn_provenance_restored
+    _turn_t0 = turn._turn_t0
+    _wt_pending_coding = turn._wt_pending_coding
+    _wt_pending_dropped = turn._wt_pending_dropped
+    agent_model = turn.agent_model
+    client = turn.client
+    monitor_completion = turn.monitor_completion
+    session_key = turn.session_key
+    slot = turn.slot
+    state = turn.state
+    # Latch the terminal reason the INSTANT the completion arrives,
+    # before any cancellable await in this arm runs. The full
+    # assignment (with the slot mirror and the tool-stall/timeout
+    # refinements) still happens below at its original site; this is
+    # only the earliest-possible capture of the reason itself.
+    #
+    # Why it must be here and not there: the arm then runs several
+    # awaits that can be cancelled mid-flight -- `_report_consumed()`,
+    # the wakatime `asyncio.to_thread` collect, the shielded partial
+    # persist -- and the wall-clock turn ceiling (or a hard Stop that
+    # surfaces as a bare `CancelledError`) can fire during any of
+    # them. If the cancel lands before the lower assignment, `_stop_reason`
+    # would still be `""` in _run_chat's finally even though this was a
+    # genuinely CANCELLED completion. The first-turn history-debt
+    # settle keys `_turn_emitted and _stop_reason != STOP_REASON_CANCELLED`
+    # off that value: an un-latched `""` would read as "not cancelled"
+    # and settle the debt on a turn kiro-cli DISCARDS, so the next warm
+    # turn goes out without the history the cancelled prompt carried
+    # (GPT 6.1 F1 — crash-data-loss). Latching here closes that window:
+    # a cancelled completion sets `_stop_reason = STOP_REASON_CANCELLED`
+    # before the first await, so the settle correctly stays armed.
+    if event.stop_reason:
+        _stop_reason = event.stop_reason
+        turn._stop_reason = _stop_reason
+    # A turn that ran to a real END OF TURN processed this prompt, so it
+    # was consumed even if it produced nothing at all -- an empty
+    # response re-queues a CONTINUATION, not a replay, so whoever armed
+    # this turn must not keep waiting for a delivery that happened.
+    #
+    # Only that stop reason. The same event also carries the reasons
+    # that CUT a turn short -- stale-recover, tool-stall, cancelled, an
+    # unrecognised provider error -- and those re-queue the prompt
+    # itself, so reporting consumption for them would start the
+    # retention clock on a result the retry still has to deliver. An
+    # absent stop reason is deliberately not treated as end-of-turn
+    # either: a provider that streamed anything has already reported
+    # through the token/tool triggers, and the cost of being wrong here
+    # is asymmetric (a duplicate re-announce versus a pruned result).
+    if event.stop_reason == STOP_REASON_END_TURN:
+        await _report_consumed(turn)
+        # A coding key still held here reached no permission
+        # decision, so it executed without a gating denial and
+        # counts as activity. One bounded summary for any keys the
+        # cap shed this turn, instead of a line per drop.
+        if _wt_pending_coding:
+            turn._wt_coded_this_turn = True
+        if _wt_pending_dropped:
+            logger.warning(
+                "wakatime pending-coding cap (%d) shed %d tool key(s) this turn",
+                _MAX_TCID_SOURCES,
+                _wt_pending_dropped,
+            )
+        # A restricted (incognito/temporary) session persists no
+        # durable state, and a heartbeat is an external, irreversible
+        # write of session metadata (project label, token and
+        # line-change deltas). Gate on the same slot.is_restricted
+        # signal the artifact and history writers key off, so the
+        # privacy-mode guarantee holds for this path too. Also skip
+        # app-owned slots (slot._app): the config help scopes this
+        # feature to the gateway chat loop and states the app /
+        # task-runner exclusion as deliberate, and a persistent
+        # app slot would otherwise emit despite that. Finally, only
+        # interactive user turns emit: cron, autonudge, sub-agent,
+        # and other injected turns are outside the declared scope.
+        # Restored queue rows have lost their actor stamp, so their
+        # explicit provenance guard keeps the user fallback from
+        # misclassifying a gateway-restart replay as interactive.
+        if (
+            turn._wt_coded_this_turn
+            and turn._crew_log_actor == "user"
+            and not _turn_provenance_restored
+            and not slot.is_restricted
+            and not slot._app
+        ):
+            _wt_out = await asyncio.to_thread(_wt_collect, turn)
+            if _wt_out is not None:
+                _wt_cfg, _wt_line_changes = _wt_out
+                _wt_usage = event.usage
+                # The turn's own project snapshot: a set_project
+                # directive or a chip pick can move slot.project
+                # while this turn streams, and the heartbeat
+                # describes coding done in this turn.
+                note_coding_activity(
+                    _turn_project or None,
+                    ai_input_tokens=getattr(_wt_usage, "input_tokens", 0) or 0,
+                    ai_output_tokens=getattr(_wt_usage, "output_tokens", 0) or 0,
+                    ai_line_changes=_wt_line_changes,
+                    config=_wt_cfg,
+                )
+    # Turn-end diagnostics. Read only from `event`, which nothing in
+    # this arm mutates, so the position is free — kept below the
+    # consumption gate because that gate's adjacency to the arm's start
+    # is pinned by test_subagent_delivery_ttl_anchor.
+    # `synthetic_completion` is readable ONLY here, and the
+    # empty-response verdict that needs it runs in _turn_settle_answer.
+    _saw_terminal_event = True
+    turn._saw_terminal_event = _saw_terminal_event
+    _terminal_synthetic = bool(event.synthetic_completion)
+    turn._terminal_synthetic = _terminal_synthetic
+    _turn_billed = usage_has_billing(event.usage)
+    turn._turn_billed = _turn_billed
+    # Hang-attribution snapshot BEFORE the close-all safety net
+    # below force-marks every card done: only children still
+    # unfinished at the cut may count toward timeout attribution
+    # (terminal entries linger in the tracker for reconnect
+    # replay and would corrupt the series).
+    _children_unfinished = any(not _i.get("done") for _i in _native_tracker.values())
+    # Safety net: complete any native subagent cards still marked
+    # running at turn end (in case a terminal status was missed),
+    # so cards don't stay stuck "running".
+    _native_subagent_close_all(state, slot, _native_tracker, _native_card_output)
+    _u = event.usage
+    if monitor_completion is not None and is_monitor_completion_evidence(
+        event.stop_reason,
+        synthetic=event.synthetic_completion,
+    ):
+        try:
+            await monitor_completion.complete(
+                disposition_for_stop_reason(event.stop_reason),
+                event.usage,
+            )
+        except Exception:
+            logger.warning(
+                "dashboard monitor turn completion callback failed",
+                exc_info=True,
+            )
+    # Capture per-turn stats for the assistant-message footer.
+    # Prefer the provider-reported duration (claude_code) over the
+    # local wall clock (kiro/acp reports duration_ms=0).
+    try:
+        _turn_elapsed_ms = int(_u.duration_ms or (time.monotonic() - _turn_t0) * 1000)
+        turn._turn_elapsed_ms = _turn_elapsed_ms
+        _turn_credits = float(_u.credits or 0.0)
+        turn._turn_credits = _turn_credits
+        _turn_cost_usd = float(_u.cost_usd or 0.0)
+        turn._turn_cost_usd = _turn_cost_usd
+    except (TypeError, ValueError):
+        _turn_elapsed_ms = int((time.monotonic() - _turn_t0) * 1000)
+        turn._turn_elapsed_ms = _turn_elapsed_ms
+    # Model attribution for the footer. read_turn_model reports the
+    # id the backend actually served, or the bare "auto" when the
+    # turn was handed to Auto and no concrete id came back — the
+    # two are different facts and a blank footer conflates them
+    # with a missing measurement. Still never guesses: an
+    # unattributable turn stays "" and the footer omits the field.
+    _turn_model = read_turn_model(client)
+    turn._turn_model = _turn_model
+    _turn_stats_captured = True
+    turn._turn_stats_captured = _turn_stats_captured
+    # ── Turn outcome for this turn's histogram sample ──
+    # ``exhausted`` mirrors the stop-reason branches of _turn_stop_recovery: the
+    # recovery-outcome exclusion from fault_rate is earned only by a
+    # turn that is actually re-driven in place, so a stall takes the
+    # terminal stall_exhausted label when its 3-attempt budget is
+    # already spent ("Session stuck") OR when it is a NESTED turn
+    # (depth > 0), which those branches never re-queue — it dies
+    # with "please retry", a user-visible fault that must reach
+    # fault_rate. Only this surface maintains such a budget; every
+    # other surface's outcome comes from its stop reason alone.
+    #
+    # Computed ABOVE the billing gate deliberately: both the persist
+    # call inside it and the unconditional emit below read it, and a
+    # zero-billing timeout takes the second path only.
+    if event.stop_reason == STOP_REASON_STALE_RECOVER:
+        _turn_exhausted = (
+            _prompt_depth > 0 or slot._stale_recovery_retries >= STOP_RECOVERY_MAX_RETRIES
+        )
+    elif event.stop_reason == STOP_REASON_TOOL_STALL:
+        _turn_exhausted = _prompt_depth > 0 or slot._tool_stall_retries >= STOP_RECOVERY_MAX_RETRIES
+    else:
+        _turn_exhausted = False
+    # Model + provider for the row AND the metric attributes, resolved
+    # ABOVE the billing gate for exactly the reason _turn_exhausted
+    # is: the unconditional emit below reads them, and a zero-billing
+    # turn (a timeout, a cancel) reaches only that path — reading names
+    # bound inside the gate would raise NameError on the one
+    # population whose latency matters most. Both reads are cheap and
+    # side-effect-free; the CC late-backfill that WRITES slot.model
+    # stays behind the gate below.
+    #
+    # The provider is the SERVED backend, read off the live client,
+    # NOT `cfg.agent.provider`: that field is declared `enum=["acp"]`
+    # and `validate_config_data` deletes an out-of-enum value, so it is
+    # a constant naming no backend at all. Reading it labelled every
+    # dashboard turn "acp" — a claude_code turn included — which makes
+    # a provider split answer nothing.
+    #
+    # Read as `SessionCapabilities.provider_seam`, the label the
+    # agent-SDK boundary now exposes for this question. It replaced an
+    # `is_claude_backend(client)` ternary that had to be spelled that
+    # way because `providers.acp.provider_label` is behind a forbidden
+    # root: `scripts/check_agent_sdk_boundary.py` rejects an ACP-layer
+    # import on any line a change touches, baselined file or not, so
+    # reaching the real label helper was a hard gate failure. Asking
+    # the SDK is the sanctioned route the old comment here pointed at.
+    #
+    # Known residue, deliberately UNCHANGED by that move: this still
+    # cannot name the KAS backend, so a KAS turn labels "acp". Only the
+    # ACP layer's own `PROVIDER_LABEL_*` constants distinguish it, and
+    # promoting that distinction would change what every KAS turn
+    # records — a telemetry change, not a refactor, so it belongs in
+    # its own commit with its own reason.
+    #
+    # A fallback model serving the turn records the model that RAN,
+    # not the one the user pinned: billing a model that never
+    # executed is wrong.
+    #
+    # Read from the LIVE client rather than from
+    # `slot._active_fallback_model` directly, because that sticky
+    # field can outlive the swap it records. It deliberately survives
+    # a landed turn (the session stays on the fallback until the
+    # start-of-turn restore probe succeeds), and that probe is skipped
+    # for a synthetic recovery message — so a turn that reset the
+    # session and resumed it on `slot.model` runs on the PRIMARY with
+    # the sticky candidate still set. Recording the candidate there
+    # would bill a model that, again, never executed.
+    #
+    # `provider_active_model` reads the provider's own
+    # `served_model` / `_model` accessor directly: the live
+    # provider is the freshest witness to what served THIS turn,
+    # and passing it as the caller-side model makes the row correct
+    # by construction — `_resolve_model` short-circuits on a
+    # non-blank caller-side model. `persist_token_record_async`'s
+    # `model_source` walk is the independent second witness, not
+    # the row's only source: blanking here and leaving recovery to
+    # another module's traversal of the wrapper graph makes this
+    # turn's attribution hostage to that graph's shape, and a row
+    # that lands `"model": ""` is rendered as `unknown` at read
+    # time, merging this turn's credits with genuinely
+    # attribute-less rows.
+    #
+    # An unreadable provider still yields `""` and falls through to
+    # the `model_source` walk — no worse than the blank it would
+    # write anyway.
+    _provider_name = capabilities_of(client).provider_seam
+    _record_model = slot.model
+    # Occupancy is read ABOVE the billing gate, beside the other locals
+    # the turn closer needs. Two reasons, and either alone decides it:
+    # the closer runs for EVERY completed turn, so a name bound only
+    # inside the gate is unbound on a turn that billed nothing (a fake
+    # backend, an unmetered provider) and the completion path raises;
+    # and occupancy is not a billing quantity -- a turn that costs
+    # nothing still filled the window, so gating the read would drop a
+    # real measurement for the turns least likely to have one recorded
+    # elsewhere. `read_context_tokens` never raises and answers (0, 0)
+    # for a provider without the accessors.
+    _ctx_used, _ctx_window = read_context_tokens(client)
+    if slot._active_fallback_model or slot._refusal_fallback_primary:
+        # Either fallback mechanism active ⇒ the model that SERVED
+        # this turn is the provider's, not the pin; attribute usage
+        # to it without ever writing it into slot.model.
+        _record_model = provider_active_model(client)
+    # One shared predicate across every persist gate: a
+    # claude-seam turn ending via a synthetic EVENT_COMPLETE
+    # (timeout, tool-stall, cancel-unacked) can carry cost or cache
+    # tokens with zero fresh tokens and zero credits, and the
+    # footer above already reads _u.cost_usd for the same event.
+    #
+    # ── Turn-completion histogram (OTel M2) ──
+    # kirocrew.turn.duration → turn latency p50/p90 + fault rate.
+    # Emitted HERE, BEFORE the cancellable persist await below, and
+    # UNCONDITIONALLY (outside the usage_has_billing gate), for three
+    # reasons the gated persist cannot serve:
+    #
+    #   1. The persist await is offloaded to a thread and can be
+    #      cancelled mid-turn. Emitting after it means a cancellation
+    #      landing on that await unwinds past this call into the
+    #      abnormal-end seam, which — seeing the row already claimed —
+    #      records nothing, so the turn's ONLY kirocrew.turn.* sample
+    #      is lost. Emitting first makes the sample survive a
+    #      cancelled persist (GPT/Opus terminal-metric finding).
+    #   2. The persist sits behind usage_has_billing. A turn that
+    #      timed out having billed nothing writes no row, and letting
+    #      the row's absence swallow the sample would drop exactly the
+    #      faults fault_rate exists to count, so this emit is
+    #      unconditional.
+    #   3. session_key is the EFFECTIVE session, which for a linked
+    #      channel conversation is its channel key, while the row
+    #      stays keyed by slot.key for title and navigation joins.
+    #      Attributing the sample to the slot would file every linked
+    #      Slack or Telegram turn under `dashboard`.
+    # `_record_model` here is pre-backfill, but the emit prefers
+    # `_turn_model` (the served id) and the backfill only fills a
+    # blank model for a CC row, so the sample's attribution is
+    # unaffected.
+    _emit_turn_metric(
+        event.usage.duration_ms,
+        event.stop_reason,
+        session_key,
+        elapsed_ms=_turn_elapsed_ms,
+        exhausted=_turn_exhausted,
+        # The same usage object the persist call below is given, so
+        # the row store and the instruments describe one turn's
+        # NUMBERS identically.
+        usage=event.usage,
+        model=_turn_model or _record_model,
+        provider=_provider_name,
+    )
+    if usage_has_billing(_u):
+        # Claim the turn's single usage row BEFORE the persist await
+        # below, then SHIELD the write so a turn cancellation cannot
+        # drop it. persist_token_record_async offloads the append via
+        # asyncio.to_thread, and a cancel delivered BEFORE the executor
+        # thread picks up the write cancels that future so the append
+        # never lands -- while the claim above already told the
+        # abnormal-end seam the row was written, so the seam writes
+        # nothing and the row is lost (GPT 6.1 F1). asyncio.shield runs
+        # the write as its own task the turn's cancel cannot reach, so
+        # the append completes; the CancelledError still propagates
+        # afterwards. The claim-before-await also keeps the double-bill
+        # guard: were the claim set only after the await, that
+        # cancellation would unwind into the abnormal-end seam with the
+        # guard still False and the seam would re-read live stats and
+        # bill the turn a second time. Claimed here, the seam sees it
+        # recorded and writes nothing (GPT/Opus double-bill finding).
+        turn._turn_usage_persisted = True
+        # Late backfill: CC reports model only via the `init`
+        # system event which arrives after the run starts, so
+        # slot.model may still be empty here even though the
+        # provider learned the model mid-turn. Read it back
+        # before persisting so tokens.jsonl is never tagged
+        # with a blank model for CC sessions.
+        #
+        # The `_active_fallback_model` clause guards the slot.model
+        # WRITE, not the row's value: the provider reports the
+        # FALLBACK, and writing it into slot.model would make the
+        # temporary swap a permanent pin (same guard as the pre-turn
+        # site). Kept as its own condition rather than folded into the
+        # `_record_model` check above, so the write's safety does not
+        # depend on whether the live provider happened to report a
+        # served model.
+        #
+        # _record_model / _provider_name are already resolved above
+        # the gate; this only refines the model, and only here
+        # because the slot.model WRITE must not run for a turn that
+        # billed nothing.
+        if (
+            not _record_model
+            and not slot._active_fallback_model
+            and not slot._refusal_fallback_primary
+        ):
+            _canonical = _backfill_canonical_model(client, _provider_name)
+            if _canonical:
+                # Same rule as the pre-turn backfill: a slot that
+                # inherits (no crew pin either) is recorded but
+                # never pinned.
+                if agent_model:
+                    slot.model = _canonical
+                _record_model = _canonical
+        await asyncio.shield(
+            persist_token_record_async(
+                slot.key,
+                _record_model,
+                event,
+                provider=_provider_name,
+                # The row stays keyed by its dashboard slot for title
+                # and navigation joins; source follows the session the
+                # turn actually ran on, including linked channel
+                # sessions.
+                surface=telemetry_channel_of(session_key),
+                # Resolved agent, not the slot alias:
+                # resolve_agent_bindings maps e.g. "default" to
+                # "kirocrew" before dispatch, so the alias would credit
+                # an agent that never ran.
+                agent=read_effective_agent(client) or slot.agent or "",
+                context_used=_ctx_used,
+                context_window=_ctx_window,
+                # Ownership is recorded at write time (see
+                # _build_token_record): the row must outlive the slot
+                # without becoming readable by whoever recreates its
+                # name.
+                app=getattr(slot, "_app", "") or "",
+                # Same wall clock the turn-duration histogram below is
+                # given, so the row store and the histogram can never
+                # disagree about one turn. acp reports 0 here.
+                elapsed_ms=_turn_elapsed_ms,
+                model_source=client,
+                # The turn's sample is emitted ABOVE, before this
+                # cancellable persist and outside the usage_has_billing
+                # gate, where its exhausted-aware outcome and the
+                # effective session key reach the histogram; this call
+                # must not also sample, so it opts out.
+                emit_metric=False,
+            )
+        )
+    # The turn's crew log closers are STASHED, not emitted here. This
+    # arm runs inside _run_chat's stream loop, and the turn's LAST assistant
+    # message is flushed after that loop breaks -- so emitting now puts
+    # `turn/completed` in the file ahead of a `message/sent` belonging
+    # to the turn it closes. A reader folding entries in order would
+    # see a completed turn still producing text, and the closer is the
+    # one entry whose position carries meaning. _run_chat's finally runs
+    # them once every path has flushed.
+    _crew_log_terminal = {
+        "input_tokens": event.usage.input_tokens,
+        "output_tokens": event.usage.output_tokens,
+        "cache_read_tokens": event.usage.cache_read_tokens,
+        "cache_write_tokens": event.usage.cache_creation_tokens,
+        "credits": _turn_credits,
+        "duration_ms": _turn_elapsed_ms,
+        "stop_reason": event.stop_reason,
+        "model": _turn_model or _record_model,
+        "provider": _provider_name,
+        "depth": _prompt_depth,
+        # The same occupancy reading the row store is given just above,
+        # so the crew log and the row describe one turn's window
+        # identically. It is the provider's own figure; the token counts
+        # beside it are billing, which is a different quantity.
+        "context_used": _ctx_used,
+        "context_window": _ctx_window,
+    }
+    turn._crew_log_terminal = _crew_log_terminal
+    if "timeout" in (event.stop_reason or ""):
+        # Hang-resilience series: attribute the CAUSE of a turn
+        # timeout (the 2h-ceiling hang class). Both attrs are
+        # booleans read defensively from live state — the inner
+        # client may be an AcpClient (flag on itself) or an
+        # AcpSessionProvider (flag on its handle).
+        _ac = slot._acp_client
+        _awaiting = bool(
+            getattr(_ac, "_awaiting_permission", False)
+            or getattr(getattr(_ac, "_handle", None), "_awaiting_permission", False)
+        )
+        emit_counter(
+            TURN_TIMEOUT_CAUSE,
+            {
+                "path": "provider_timeout",
+                "awaiting_permission": _awaiting,
+                "children_announced": _children_unfinished,
+            },
+        )
+    _stop_reason = event.stop_reason
+    turn._stop_reason = _stop_reason
+    _turn_refusal = event.refusal
+    turn._turn_refusal = _turn_refusal
+    # Recorded on the slot so post-turn consumers reached later
+    # (which do not receive the event) can tell a turn that really
+    # finished from one cut short by a timeout, cancel or stall.
+    slot._last_stop_reason = _stop_reason or ""
+    if _stop_reason == STOP_REASON_TOOL_STALL:
+        _stall_tool_title = event.title
+        turn._stall_tool_title = _stall_tool_title
+        _stall_command = event.tool_input
+        turn._stall_command = _stall_command
+        _stall_evidence = event.text
+        turn._stall_evidence = _stall_evidence
+        # The watchdog's typed verdict (``kirocrew/status``), when the
+        # provider carries one: the wait reason is read from it, not
+        # parsed back out of the evidence text.
+        _stall_status = getattr(event, "status", None)
+        turn._stall_status = _stall_status
+    # One mapping for every entry (acp.types.classify_stop_reason):
+    # a reason the table does not know is logged here and handled
+    # in _turn_stop_recovery as the generic `failed` class. An abandoned
+    # post-compaction-failure turn is an EXPECTED terminal state
+    # (the compaction notice already told the user), so it is a
+    # known class and must not log as unexpected.
+    _stop_class = classify_stop_reason(
+        _stop_reason,
+        compaction_transient=(getattr(client, "last_compaction_transient", False) is True),
+    )
+    turn._stop_class = _stop_class
+    if _stop_reason and not _stop_class.known:
+        logger.warning(
+            "Unexpected stop_reason %r for slot %s",
+            _stop_reason,
+            slot.key,
+        )
+    return _Flow.BREAK
+
+
+async def _turn_context_usage(turn: _ChatTurn) -> None:
+    """The turn's context usage and prompt stats, and its landed verdict (``record_success``, ``_turn_landed``)."""
+    from kiro_crew.dashboard import responsive_chat
+
+    _escalation = turn._escalation
+    _noticed_leak = turn._noticed_leak
+    _recovering_compaction = turn._recovering_compaction
+    _recovering_infra = turn._recovering_infra
+    _recovering_promise = turn._recovering_promise
+    _responsive_owner = turn._responsive_owner
+    _responsive_turn = turn._responsive_turn
+    _retrying_empty = turn._retrying_empty
+    _stop_reason = turn._stop_reason
+    client = turn.client
+    session_key = turn.session_key
+    slot = turn.slot
+    state = turn.state
+    # An interrupted owner can otherwise queue /compact ahead of the human
+    # answer on the same permit. The protected answering turn checks again.
+    _defer_compaction = (
+        _responsive_turn.owner is _responsive_owner
+        and _responsive_turn.interrupted
+        and responsive_chat.first_priority_id(slot) is not None
+    )
+    if _defer_compaction:
+        state.sessions.check_context_usage(session_key, client, defer_compaction=True)
+    else:
+        state.sessions.check_context_usage(session_key, client)
+    pct = client.context_usage_pct()
+    state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
+    if (
+        _stop_reason != STOP_REASON_CANCELLED
+        and not _retrying_empty
+        and not _recovering_promise
+        and not _recovering_compaction
+        and not _noticed_leak
+        and not _recovering_infra
+    ):
+        # An unacted turn (promise-only, or a tool call leaked as text) is
+        # deliberately NOT recorded as a landed success: it announced or
+        # serialized work it never did, so counting it would tell the
+        # reliability metrics (and the poisoned-conversation one-shot) the turn
+        # succeeded. The promise-only continuation gets its own turn; if THAT
+        # lands, it records success normally.
+        state.sessions.record_success(session_key)
+        # A LANDED turn breaks the pre-stream-exhaustion streak and
+        # re-arms the poisoned-conversation one-shot: only a prompt that
+        # actually reached the model and completed proves the (possibly
+        # fresh) conversation works. Deliberately NOT in the cancel-
+        # inclusive budget block of _turn_persist_and_settle — a Stop press during the recovery
+        # turn must not re-arm a second discard without that evidence.
+        _escalation.record_landed_turn()
+        slot._session_not_found_retry_used = False
+        # This turn landed: the prompt (including any re-injected skills
+        # index) reached the model, so _run_chat's `finally` must NOT restore the
+        # one-shot flag.
+        _turn_landed = True
+        turn._turn_landed = _turn_landed
+        # Per-interaction telemetry (PlatformContext seam) — shared helper so
+        # the payload shape and model reflection cannot drift across surfaces.
+        record_interaction_event(client, session_key, "dashboard")
+    # Broadcast prompt stats for activity viewer
+    _prompt_stats = getattr(  # type: ignore[assignment]
+        getattr(client, "_client", client), "last_prompt_stats", None
+    )
+    if _prompt_stats:
+        state.broadcast_ws(
+            "activity_event",
+            {
+                "slot": slot.key,
+                "kind": "stats",
+                "text": f"Turn complete: {_prompt_stats.event_count} events, {len(_prompt_stats.tool_calls)} tool calls, context {round(pct)}%",  # type: ignore[attr-defined]
+            },
+        )

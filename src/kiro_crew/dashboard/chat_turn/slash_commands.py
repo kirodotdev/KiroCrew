@@ -1,7 +1,8 @@
 """The dashboard's local slash commands and the turn's slash gate (``_turn_slash_gate``, which
 answers a local slash command before a session is claimed): /workflow, /agent and /goal, the
 backend a slash command would run on, the refusal of a slash command the dashboard does not
-offer, and the answer to a slash command no channel can take."""
+offer, the answer to a slash command no channel can take, and the answer to a /compact the
+session did not compact for (``_turn_compact_command``)."""
 
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
         DashboardState,
         KiroCrewConfig,
         RepeatLoopTracker,
+        _append_compaction_notice,
         _ChatSlot,
         _expand_prompt_mention_off_loop,
         _list_aim_prompts,
@@ -40,17 +42,30 @@ if TYPE_CHECKING:
         get_instance,
         is_claude_code,
         is_harness_slash_command,
+        logger,
         normalize_banner,
         parse_workflow_command,
         reason_in,
+        redact,
         sel,
         select_provider_backend,
         switch_announcement,
     )
     from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
-    from kiro_crew.dashboard.chat_turn.segment_flush import _append_command_reply
+    from kiro_crew.dashboard.chat_turn.queue_cycle import _send_chat_done
+    from kiro_crew.dashboard.chat_turn.recovery import (
+        _COMPACT_FAIL_REASON_MAX_CHARS,
+        COMPACT_REPLAY_PENDING_NOTICE,
+    )
+    from kiro_crew.dashboard.chat_turn.segment_flush import (
+        _append_command_reply,
+        _cleared_segment_text,
+    )
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
+    from kiro_crew.dashboard.chat_turn.turn_context import _restore_skills_context_after_compaction
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
+    from kiro_crew.dashboard.chat_turn.turn_reply_seams import _drop_wire_tail
+    from kiro_crew.dashboard.chat_turn.turn_stats import _context_usage_payload
 
 
 async def _slash_command_backend(state: DashboardState, session_key: str) -> str:
@@ -734,3 +749,126 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     )
     turn._deferred_options_expiry = _deferred_options_expiry
     return None
+
+
+async def _turn_compact_command(turn: _ChatTurn) -> None:
+    """Answer a /compact the session did not compact for."""
+    _replay_pending = turn._replay_pending
+    client = turn.client
+    first_word = turn.first_word
+    saw_compaction = turn.saw_compaction
+    slot = turn.slot
+    state = turn.state
+    # /compact acknowledged but compaction deferred — send a lightweight
+    # follow-up that triggers the actual compaction so the user doesn't have to.
+    logger.debug("Compaction check: first_word=%r saw_compaction=%s", first_word, saw_compaction)
+    if first_word == "/compact" and not saw_compaction:
+        # Clear streamed "Compacting conversation..." text from kiro-cli.
+        # claude-agent-acp streams its own "Compacting..." notice, which the
+        # ACP layer recognises and reports as a status event WITHOUT deleting
+        # the chunk (`parse_claude_compaction_notice`) — so on that backend
+        # the notice is cleared by this same purge rather than by suppression
+        # upstream.
+        slot.purge_chunks()
+        _drop_wire_tail(turn)
+        turn.assistant_text = _cleared_segment_text(slot)
+        turn._produced_visible_output = True
+        await _send_chat_done(state, slot, continuing=True, ends_turn=False)
+
+        # claude-agent-acp performs /compact synchronously inside session/prompt;
+        # there is no out-of-band _kiro.dev/compaction/status notification, so
+        # EVENT_COMPLETE is the done signal. Skip the kiro-only async wait.
+        #
+        # This arm is now a FALLBACK, not the normal path: the ACP layer
+        # translates the adapter's own "Compacting..." / "Compacting
+        # completed." notices into EVENT_COMPACTION_STATUS, so a manual
+        # /compact on this backend normally leaves `saw_compaction` True and
+        # never reaches here. It still earns its place — if the adapter
+        # reworks those literals the translation stops matching, and this
+        # keeps `/compact` acknowledged instead of silent.
+        #
+        # Note: the success message is hardcoded so no redaction pass is
+        # needed today. If claude-agent-acp ever returns a compaction
+        # summary (e.g. via EVENT_COMPLETE payload growing a `summary`
+        # field), pipe it through redact_credentials + redact_exfiltration_urls
+        # before interpolation — matching the kiro-cli path below.
+        #
+        # Gated on `SessionCapabilities.compacts_inline` -- does this backend
+        # finish the compaction inside the prompt turn? -- rather than on which
+        # harness it is. The two arms are not interchangeable: acknowledging a
+        # backend that reports asynchronously loses the notice, and awaiting one
+        # that already finished strands the waiter for its whole timeout.
+        if _replay_pending:
+            # A slash command never delivers the replay, so the lease is
+            # still armed and the provider session is empty: kiro-cli ends
+            # the turn with "Conversation too short to compact." and sends
+            # no compaction status. Awaiting one would hold the chat for the
+            # whole compaction timeout. Nothing was compacted, so skills
+            # context is not re-armed and the lease stays for the next prompt.
+            _append_compaction_notice(state, slot, COMPACT_REPLAY_PENDING_NOTICE)
+        elif capabilities_of(client).compacts_inline:
+            _restore_skills_context_after_compaction(turn)
+            msg = "✅ Conversation compacted."
+            _append_compaction_notice(state, slot, msg)
+            state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
+        else:
+            # Tell frontend to show compacting state and disable input
+            logger.info("Deferred compaction: waiting for compaction result")
+            state.broadcast_ws(
+                "chat_message",
+                {"slot": slot.key, "role": "compacting", "content": ""},
+            )
+            # kiro-cli fires compaction asynchronously after EVENT_COMPLETE —
+            # just wait for the result without sending another prompt.
+            compaction_result = await client.wait_for_compaction(
+                timeout=state.sessions.compact_wait_budget_secs()
+            )
+            logger.info("Deferred compaction result: %s", compaction_result)
+            if compaction_result["type"] == "completed":
+                _restore_skills_context_after_compaction(turn)
+                summary = redact(compaction_result.get("summary", ""))
+                msg = (
+                    f"✅ Conversation compacted: {summary}"
+                    if summary
+                    else "✅ Conversation compacted."
+                )
+            elif compaction_result["type"] == "failed":
+                # The provider ships the reason on `failed` too, and every
+                # other surface already tells the user what it was — Slack,
+                # Telegram, Discord, and this dashboard's own AUTO-compact
+                # notice (see chat_utils._compaction_notice_text). Dropping
+                # it here left the one path a user takes deliberately as the
+                # only one that says nothing, so a `/compact` that fails
+                # because the conversation is too large is indistinguishable
+                # from one that failed because the backend was unreachable —
+                # and the user's next move differs in those two cases.
+                #
+                # Redacted with the same pair as the completed branch above:
+                # the text is backend-echoed, so it is not trusted to be
+                # free of credentials or exfiltration URLs even though the
+                # provider already redacts once at its own boundary.
+                error = redact(compaction_result.get("summary", ""))
+                error = error.strip()
+                if len(error) > _COMPACT_FAIL_REASON_MAX_CHARS:
+                    # A notice is a one-line receipt, not a log: a provider
+                    # that echoes a wall of text (a stack trace, a dumped
+                    # payload) would otherwise push the whole transcript out
+                    # of the reader's view.
+                    error = error[:_COMPACT_FAIL_REASON_MAX_CHARS].rstrip() + "…"
+                msg = f"❌ Compaction failed: {error}" if error else "❌ Compaction failed."
+            else:
+                msg = "⚠️ Compaction timed out."
+            _append_compaction_notice(state, slot, msg)
+            # Update the context meter from the provider's post-compaction
+            # state. On success the provider has dropped its stale counts by
+            # the time the completed status arrives (reset_after_compaction),
+            # and wait_for_compaction grace-drains for kiro's fresh
+            # post-compaction metadata (~1s after the status), which
+            # re-derives REAL numbers against the kept served window.
+            # _context_usage_payload ships those accurate counts when the
+            # metadata has landed, and otherwise a `reset` frame (used == 0)
+            # carrying whatever pct the provider currently reports, so the
+            # frontend drops its stale counts and the meter self-corrects on
+            # the next turn. On failure/timeout `used` is unchanged and still
+            # valid, so the same call re-sends the real counts as-is.
+            state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))

@@ -47,6 +47,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED, emit_counter
+from kiro_crew.session_environment import WORKSPACE_SERVER_NAME
 from kiro_crew.trust_patterns import GrantDeadline, GrantEnded, grant_deadline_guard
 
 if TYPE_CHECKING:
@@ -573,6 +574,13 @@ async def apply_session_permission_routing(self: AcpSessionHandle) -> None:
     )
 
 
+def _remote_workdir(remote_workspace: object) -> str:
+    """The guest workdir of an attached remote workspace; empty when unreadable, which
+    leaves its tools unmapped rather than anchored somewhere else."""
+    workdir = remote_workspace.get("workdir") if isinstance(remote_workspace, dict) else None
+    return workdir if isinstance(workdir, str) else ""
+
+
 def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpEvent | None:
     """Build an AcpEvent for a permission request via the shared parser.
 
@@ -582,6 +590,7 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
     AcpClient. Records the advertised optionIds so approve/reject echo them.
     """
     _perm_params = msg.params if isinstance(msg.params, dict) else {}
+    _remote = getattr(self._runtime, "_remote_workspace", None)
     event, recorded = build_permission_event(
         msg,
         tool_input_cache=self._tool_call_inputs,
@@ -601,6 +610,10 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
         cache_scope=str(_perm_params.get("sessionId") or self._session_id),
         kas_consent_meta=self._runtime.acp_backend == ACP_BACKEND_KAS,
         harness_backend=self._runtime.acp_backend,
+        # Set only on a runtime that attached a remote workspace server, with the
+        # guest workdir its relative path arguments resolve in.
+        remote_workspace_server=(WORKSPACE_SERVER_NAME if _remote is not None else ""),
+        remote_workspace_root=_remote_workdir(_remote),
     )
     if event is None:
         return None

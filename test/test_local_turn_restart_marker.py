@@ -34,7 +34,7 @@ from kiro_crew.dashboard.chat_runner import (
     _retire_local_turn_marker,
 )
 from kiro_crew.history import SLOT_OWNED_META_KEYS
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 _RESTART_KIND = "gateway_restart_interruption"
 
@@ -336,7 +336,7 @@ async def test_a_cancelled_admission_write_lands_before_the_cancel_propagates(
     assert not task.done()
     release.set()
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, 10)
+        await await_until(task, what="the cancelled admission finishing its write")
     assert log.get_metadata("dashboard:chat-1")["turn_in_flight_generation"] == 6
     # And a clear issued afterwards is ordered after it, so nothing resurrects it.
     await _clear_local_turn_marker(state, slot, 6)
@@ -375,7 +375,7 @@ async def test_repeated_cancellation_still_waits_for_the_admission_write(tmp_pat
         assert not task.done(), "a cancel delivered mid-write must not end the admission"
     release.set()
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, 10)
+        await await_until(task, what="the thrice-cancelled admission finishing its write")
     assert log.get_metadata("dashboard:chat-1")["turn_in_flight_generation"] == 7
     await _clear_local_turn_marker(state, slot, 7)
     assert "turn_in_flight_generation" not in log.get_metadata("dashboard:chat-1")

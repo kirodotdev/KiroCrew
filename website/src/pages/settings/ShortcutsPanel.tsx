@@ -189,7 +189,7 @@ export function ShortcutsPanel() {
           <SettingsSection title={i18nT('components.shortcutsModal.desktop_app')} />
           <SettingsCard>
             <GlobalHotkeyRow />
-            <div className="text-[12px] text-muted px-2 pb-1">{i18nT('components.shortcutsModal.global_hotkey_hint')}</div>
+            <div className="text-[12px] text-muted px-2 pb-1">{i18nT(globalHotkey.accelerator ? 'components.shortcutsModal.global_hotkey_hint' : 'components.shortcutsModal.global_hotkey_hint_off')}</div>
           </SettingsCard>
         </div>
       )}

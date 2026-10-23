@@ -298,6 +298,33 @@ export interface CodeCommentContextValue {
   /** Open the thread. The popover finds the chip through
    *  {@link codeAnchorElement}, so a chip click passes no rect. */
   onActivate(id: string, rect?: { x: number; y: number; w: number; h: number }): void
+  /** The block and 1-based content lines a comment was last posted on;
+   *  `seq` changes per post. That block clears its line selection when it is
+   *  still that range, so the shading stops reading as the new comment's
+   *  highlight. */
+  postedFor?: PostedCodeRange | null
+}
+
+export interface PostedCodeRange { blockStartLine: number; start: number; end: number; seq: number }
+
+/** The fence and content-line range a successful post was made on, or null
+ *  when it was not a code range (a prose post, whose offset is in rendered
+ *  text, does not slice the source to its quote inside a fence). */
+export function postedCodeRange(
+  source: string,
+  spans: CodeFenceSpan[],
+  posted: { startOffset: number; quote: string; seq: number },
+): PostedCodeRange | null {
+  const { startOffset: at, quote, seq } = posted
+  if (!quote || !source.startsWith(quote, at)) return null
+  const span = spans.find(s => at >= s.contentStart && at + quote.length <= s.contentEnd)
+  if (!span) return null
+  const lineAt = (off: number) => {
+    let line = 1
+    for (let i = span.contentStart; i < off; i++) if (source.charCodeAt(i) === 10) line++
+    return line
+  }
+  return { blockStartLine: span.contentStartLine, start: lineAt(at), end: lineAt(at + quote.length), seq }
 }
 
 /* Live anchors for code threads, by root comment id. A chip lives in Pierre's

@@ -2089,9 +2089,24 @@ of the AUTOSDE rules; the semantic half is delegated to the line reviewers.
   a filled `**Goal:**` line under Problem / Motivation. On failure its error
   annotation names the missing parts and the fix (rebuild from the template,
   save the description, no push), and the step writes the full steps to the job
-  summary. Last, on the merge-base diff, it requires a reader list on take-away
+  summary. Next, on the merge-base diff, it requires a reader list on take-away
   diffs (`.github/scripts/take_away_check.py`, skipped for dependabot); see
-  [take-away-changes.md](../system-specs/common/take-away-changes.md). All five
+  [take-away-changes.md](../system-specs/common/take-away-changes.md). Last, a
+  `fix`/`revert` PR is checked for a `## Sibling sweep` section listing the other
+  places with the same defect (`.github/scripts/sibling_list_check.py`, run from the
+  base ref so a branch cannot weaken it; shape and path existence only, never
+  completeness). The sweep check is **advisory**: it annotates a warning and passes
+  until `ENFORCE_FROM` in the script names a date, after which it fails pull requests
+  opened on or after that date. Locally `diff_signals.py --check-body` prints the same
+  findings and returns exit 23 only once the check is enforcing. A further advisory
+  check asks a `fix:` PR for one `Proof:` line inside `## Tests`
+  (`.github/scripts/proof_line_check.py`, run from the base ref so a branch cannot weaken
+  it): `Proof: PROVEN <tests that fail without the fix> (head <sha12>)`, or `Proof: not
+  provable -- <reason>` from a closed list. It checks presence, place and shape only, so a
+  hand-typed `PROVEN` line passes CI; locally `diff_signals.py --check-body` compares the
+  line with the record `prove.py` writes for the same tree and returns exit 24 once
+  enforcing. Until `ENFORCE_FROM` in the script names a date it annotates a warning and
+  passes; after it, it fails pull requests opened on or after that date. The first five
   checks are blocking.
 
 Separately, **`dependency-review.yml`** fails a PR that adds or changes a
@@ -3711,6 +3726,136 @@ Two subtleties:
   the verdict was whatever the `pull_request_target` run saw *before* the monitored
   workflows existed, and the lookup independently reported already-green workflows as
   `(not started)`.
+
+## The weekly fix-loop report (`fix-loop-analysis.yml`)
+
+Every Monday 17:00 UTC the `metrics` job runs
+`.github/scripts/fix_loop_metrics.py` and files the numbers as an issue labeled
+`fix-loop-report`; the `analyze` job adds a model-written narrative. Every number
+comes from the script, never from the model. The script writes
+`fix-loop-metrics.json` (the artifact) and `fix-loop-metrics.md` (the summary
+table that becomes the issue body and the job summary). Its older groups are
+`volume`, `szz`, `deferrals`, `overrides` and `harvest`.
+
+The measures from decision D8 of
+[the review-loop RFC](../request-for-change/rfc-review-loop-and-escaped-bug-reduction.md)
+add two groups. Both print every rate beside its raw counts, so a reader sees the
+denominator move.
+
+### `pr_counters`: no API call of their own
+
+These read the merged-PR list that the `harvest` group already fetches (three more
+scalar fields on the same `gh pr list` search: `createdAt`, `changedFiles`,
+`author`). Nothing is fetched twice.
+
+| Counter | What it counts | Source |
+|---|---|---|
+| `size` | PRs with `>= 50` files, `>= 80` files, `>= 168` hours from creation to merge, and the flagged union (80 files or 168 h) | D6 thresholds; `changedFiles`, `createdAt`, `mergedAt` |
+
+Only the D6 size rule is counted today. The adoption counters for D3 (the
+`## Sibling sweep` section), D4 (the `Proof:` line) and D7 (the `Gate proof:` line,
+measures M4 and M5) are added by the change that first writes each line. Counting
+a format that nothing produces yet would publish a known zero and fix the format
+before it is decided. The push-level skip log of D7 lives in the author's git
+directory and CI cannot read it, so M4 and M5 will be per PR, read from the merged
+PR body.
+
+**Not counted here, because the existing data does not carry them.** Loops per
+PR, PASS and BLOCK counts per lane, BLOCKs overridden, owner approvals of a size
+flag and the D5 sweep counters all live in PR comments or in files that are never
+committed. Reading comments costs at least one call per PR, so they need their own
+call budget and are not part of this change. The override-record counters of D1
+are the separate `overrides` group.
+
+### `ci_waste`: the CI-waste census (M1 to M3), opt-in
+
+It is **off** unless asked for. It runs the logic of the study's `waste.py`
+(design F, section 1) over the newest merged PRs of the window.
+
+| Measure | Definition |
+|---|---|
+| M1 | Avoidable pushes per 100 merged PRs. A push is *avoidable* when every red job on it has a local command (the `LOCAL_COMMAND_JOBS` list in the script) and the PR has a later push |
+| M2 | Avoidable job-minutes per merged PR: the summed durations of every job on those pushes. The report also prints the minutes of the red jobs alone |
+| M3 | Share of PRs whose first push is red on a local-command job |
+
+Job-minutes are `completed_at - started_at` of each GitHub Actions check run of
+the head, summed. They are not billed minutes: no per-minute rounding, no
+Windows or macOS multiplier, and a cancelled job counts the time it ran. Dollar
+cost per runner-minute is unknown here; the billing owner has to supply it.
+
+**How to turn it on.** Run the workflow by hand with `ci_waste` ticked, or set the
+repository variable `FIX_LOOP_CI_WASTE` to `true` so the Monday run does it.
+Nothing else changes in the schedule or in who can run the workflow.
+
+| Setting | Dispatch input | Repository variable | Default |
+|---|---|---|---|
+| Run the census | `ci_waste` | `FIX_LOOP_CI_WASTE` | off |
+| PRs to read (newest first) | `ci_waste_sample` | `FIX_LOOP_CI_WASTE_SAMPLE` | 100 |
+| Hard cap on API calls | `ci_waste_max_calls` | `FIX_LOOP_CI_WASTE_MAX_CALLS` | 1000 |
+| Agent logins, comma-separated | none | `FIX_LOOP_AGENT_LOGINS` | unset |
+
+`FIX_LOOP_AGENT_LOGINS` is configuration, not a guess: the repository has no
+author-type field, so until someone lists the logins the census prints only the
+all-authors rows. With logins set, M1 to M3 are also printed for those authors.
+
+**Call budget.** For each PR the census makes two calls to find its pushed heads
+(`pulls/<n>/commits`, and `issues/<n>/events` for the heads that force-pushes
+replaced), then one to three calls per head for
+`commits/<sha>/check-runs`. Pages are 100 items and every page is a call. A trial
+on 40 merged PRs took 223 calls: about 5.6 per PR and 2.1 pushes per PR. At that
+rate the default cap of 1,000 reads about 180 PRs.
+
+- The cap is hard. A counter refuses the call that would pass it. The PR being
+  read at that moment is dropped whole, so a half-read PR never enters a rate. The
+  table says `CUT SHORT by the cap` and shows calls used against the cap.
+- A full census of a week (about 950 PRs) is several thousand calls, which
+  does not fit one run. The RFC estimated 10,000 a week. Sampling the newest PRs
+  is the default for that reason, and the report prints a 95% interval for M1.
+  Design F measured the spread: 200 PRs give about plus or minus 55%.
+- `GITHUB_TOKEN` allows 1,000 REST requests per hour per repository
+  ([GitHub docs](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)),
+  and `pr-readiness.yml` shares that pool. So the census reads the token's
+  remaining allowance first (one call) and lowers its cap to the remaining count
+  minus a reserve of 200. The table shows the configured and the effective cap.
+  Only a different token or a higher-limit plan lifts this, and the job uses
+  neither: it runs on the same `github.token`.
+- `checks: read` is added to the workflow's permissions (and restated in the
+  `analyze` job, which has its own block) because
+  `commits/<sha>/check-runs` needs it and `test_fix_loop_discipline.py` requires
+  every endpoint the script names to have its grant. It is read-only. The
+  schedule and every other permission are unchanged.
+- A head that GitHub no longer serves, or that has no Actions job, is skipped and
+  counted in the table. Push counts are therefore lower bounds, as in the study.
+  Any other API error stops the run and files the usual failure issue: a census
+  that quietly read less would publish a false low.
+
+**Differences from the study.** The study dropped 27 of 219 avoidable pushes
+because their loop record named main, a flake, infrastructure or a rebase. No loop
+records exist in this job, so the live M1 and M2 are the 219-push reading and sit
+about 14% above the published 192-push baseline when nothing has changed. A job
+rename in a workflow shrinks M1 silently; `test_fix_loop_metrics_d8.py` fails if a
+name in `LOCAL_COMMAND_JOBS` no longer matches a `name:` in `.github/workflows/`.
+
+**Baselines** (the study window, 1,980 PRs merged 2026-10-07 to 10-18; design F
+section 1 and RFC section 4.8):
+
+| Measure | Baseline | Read it against |
+|---|---|---|
+| M1 | 9.7 per 100 PRs (6.9 with author-owned loops only). 11.1 per 100 on the 219-push reading this job computes | M1 of the same kind |
+| M2 | 29.1 job-minutes per PR (19.5 author-owned) | M2, with the two caveats below |
+| M3 | 17.4% of 1,878 PRs (a lower bound) | M3 |
+| M4, M5 | 0%; none yet | Not in the report yet; added with D7 |
+| D3 / D4 adoption | 0 (no template section) | Not in the report yet; added with D3 and D4 |
+| D6 flagged | 65 PRs, 3.3% (80 files or 168 h) | `size.flagged_pct` |
+
+Two caveats on M2. The 219-push reading above makes it about 14% higher than the
+baseline on unchanged behaviour. And lint-first ([Lint first](#lint-first)) is
+merged: a lint-red push now stops before the heavy jobs, so M2 falls by design
+and the baseline overstates what an avoidable push costs today. M1 and M3 count
+pushes, not minutes, and do not move for that reason.
+
+A rate is a lead, not a verdict. Other changes land at the same time, and a
+measure that becomes a target drifts.
 
 ## Fork PRs
 

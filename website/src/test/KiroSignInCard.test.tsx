@@ -95,7 +95,7 @@ describe('KiroSignInCard', () => {
     // The card sits under a switch that also lists Kiro CLI, so the one sentence
     // must name the backend this identity is for and say the other's login is
     // untouched -- otherwise "this account" and the Kiro CLI option read alike.
-    expect(intro).toHaveTextContent('KAS (kiro-agent)')
+    expect(intro).toHaveTextContent('Kiro Agent')
     expect(intro).toHaveTextContent('Kiro CLI keeps its own kiro-cli login')
     expect(screen.getByRole('button', { name: 'Continue with Google' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Continue with GitHub' })).toBeInTheDocument()

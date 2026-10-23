@@ -1538,6 +1538,16 @@ class TestErrorCodes:
         assert status == 400
         assert body["code"] == "invalid_field_type"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999"])
+    async def test_an_infinite_timeout_gets_the_same_code(self, raw) -> None:
+        """JSON reads ``1e999`` as an infinite float, which ``int`` cannot convert."""
+        body = json.loads('{"session_key": "dashboard:chat-1", "timeout_secs": %s}' % raw)
+        body["questions"] = _questions()
+        status, payload = await self._ask(body)
+        assert status == 400
+        assert payload == {"error": "timeout_secs must be an integer", "code": "invalid_field_type"}
+
     # -- POST /api/ask-question/{ask_id}/answer --
 
     @staticmethod

@@ -516,11 +516,11 @@ class TestCommandOutputUsesLocaleDecoding:
     def test_neither_cron_spawn_pins_an_encoding(self):
         """Source-level guard: re-pinning either site fails here, at source."""
         cron = importlib.import_module("kiro_crew.cron_script")
-        source = pathlib.Path(cron.__file__).read_text(encoding="utf-8")
-        tree = ast.parse(source)
+        family = sorted(pathlib.Path(cron.__file__).parent.glob("cron_script*.py"))
         cron_spawns = [
             node
-            for node in ast.walk(tree)
+            for path in family
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
             if isinstance(node, ast.Call)
             and getattr(node.func, "id", None) == "popen_limited"
             and any(kw.arg == "abort_retry" for kw in node.keywords)
@@ -1219,9 +1219,8 @@ class TestSpawnOnlyCancellationIsReportedHonestly:
         cron_script = importlib.import_module("kiro_crew.cron_script")
         claimers = {
             node.name
-            for node in ast.walk(
-                ast.parse(pathlib.Path(cron_script.__file__).read_text(encoding="utf-8"))
-            )
+            for path in sorted(pathlib.Path(cron_script.__file__).parent.glob("cron_script*.py"))
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             and any(
                 isinstance(c, ast.Call)

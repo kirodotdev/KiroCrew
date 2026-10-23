@@ -50,7 +50,12 @@ from kiro_crew.config.loader import (  # noqa: F401
     published_autocompact_pct,
     resolve_agent_bindings,
 )
+from kiro_crew.config.sections import (  # noqa: F401 -- read by chat_api.slot_settings
+    AutocompactPctError,
+    parse_autocompact_pct,
+)
 from kiro_crew.dashboard import display_verdicts  # noqa: F401 -- read by chat_api.slot_detail
+from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed  # noqa: F401
 from kiro_crew.dashboard.chat_api import agent_switch as _owner_agent_switch
 from kiro_crew.dashboard.chat_api import app_admission as _owner_app_admission

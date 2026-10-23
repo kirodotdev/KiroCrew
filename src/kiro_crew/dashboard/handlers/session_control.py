@@ -368,6 +368,9 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             folder_id=str(body.get("folder_id") or ""),
             model=str(body.get("model") or ""),
             reasoning_effort=effort,
+            # Typed by `create_session`, which refuses a non-number (a bool
+            # included) with `invalid_field_type`.
+            autocompact_pct=body.get("autocompact_pct"),
             dry_run=dry_run,
             # The fence verdict this request's admission already settled, for the
             # same reason every other route forwards it as

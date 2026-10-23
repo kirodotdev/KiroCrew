@@ -380,9 +380,9 @@ def test_the_runner_gates_continuation_on_completed_not_on_any_terminal() -> Non
     `_broadcast_compaction_result` returns a message for BOTH terminals, so the
     turn-scoped `saw_compaction` is True after a FAILED compaction too. Passing it
     here would queue a continuation asserting a summary exists when none does.
-    Read from source because the branch lives inside the runner's single very long
-    turn function, which cannot be driven in a unit test -- the wiring is the whole
-    risk, so the wiring is what is pinned.
+    Read from source because the branch lives inside a turn phase, ``_turn_settle_answer``
+    in ``chat_turn/segment_flush.py``, which cannot be driven in a unit test -- the wiring
+    is the whole risk, so the wiring is what is pinned.
     """
     runner = (
         pathlib.Path(__file__).resolve().parents[1]
@@ -444,8 +444,8 @@ def test_the_dispatch_path_flags_the_notice_chunk_it_forwards() -> None:
 def _runner_source() -> str:
     """The runner's source text, for the invariants that can only be pinned there.
 
-    The terminal branch chain lives inside a ~5000-line async generator that no
-    unit test can drive, so the shape of the decision is what gets pinned.
+    The terminal branch chain lives in ``_turn_settle_answer`` (``segment_flush``), a
+    turn phase no unit test can drive, so the shape of the decision is what gets pinned.
     """
     runner = (
         pathlib.Path(__file__).resolve().parents[1]
@@ -494,7 +494,7 @@ def test_the_answer_branch_tests_the_answer_not_the_raw_segment() -> None:
         r"\s*(?:turn\.)?assistant_text, _compaction_notice_chunks\s*\n?\s*\)\n",
         src,
     ), "the answer text must be derived once, before the terminal chain"
-    chain_head = src.index("\n        if _branch_answer_text:\n")
+    chain_head = re.search(r"\n(?:    ){1,2}if _branch_answer_text:\n", src).start()
     continuation_branch = src.index("should_continue_after_compaction(")
     assert chain_head < continuation_branch, (
         "the continuation branch is an elif below the answer branch -- if that "
@@ -526,7 +526,7 @@ def test_a_notice_only_turn_is_still_flushed() -> None:
     assert match, "a notice-only turn must flush its text in its own block"
     # ...and that block must sit ABOVE the chain, otherwise it is just another
     # branch competing with the continuation instead of falling through to it.
-    assert match.start() < src.index("\n        if _branch_answer_text:\n"), (
+    assert match.start() < re.search(r"\n(?:    ){1,2}if _branch_answer_text:\n", src).start(), (
         "the notice-only flush must precede the terminal chain so the turn "
         "falls through to the post-compaction continuation"
     )
@@ -598,15 +598,18 @@ def test_the_runner_only_clears_text_on_an_observed_terminal() -> None:
     It is yielded after every text chunk of the turn, so clearing
     ``assistant_text`` on it deletes whatever the backend produced after
     compacting -- the exact data loss this invariant rules out. Pinned in source
-    for the same reason as the sibling wiring test: the branch sits inside the
-    runner's single very long turn function.
+    for the same reason as the sibling wiring test: the branch sits inside a turn
+    phase, ``_on_compaction_status`` in ``chat_turn/session_events.py``.
 
     The window admits the leaked-tool-call scan that sits ahead of the reset (a
     leak streamed before the boundary is invisible to the turn-end gates once
     the accumulator is cleared, so the scan has to read it here). Only that
     named statement and comments are allowed through: an arbitrary statement
     between the guard and the reset still fails, which is what keeps this from
-    degrading into "the two lines appear somewhere in the file".
+    degrading into "the two lines appear somewhere in the file". The reset drops
+    the wire redactor's withheld tail first (``_drop_wire_tail``), which settles a
+    run held at an earlier tool call while the segment it may belong to is still
+    there to be cleared with it.
     """
     runner = (
         pathlib.Path(__file__).resolve().parents[1]
@@ -628,10 +631,8 @@ def test_the_runner_only_clears_text_on_an_observed_terminal() -> None:
         r"|(?:turn\.)?assistant_text|\))\n)*"
     )
     assert re.search(
-        r"if not event\.synthesized:[ \t]*\n"
-        + filler
-        + r'[ \t]*(?:turn\.)?assistant_text = (?:""|_cleared_segment_text\(slot\))[ \t]*\n'
-        r"[ \t]*_wsred\.reset\(\)",
+        r"if not event\.synthesized:[ \t]*\n" + filler + r"[ \t]*_drop_wire_tail\(turn\)[ \t]*\n"
+        r'[ \t]*(?:turn\.)?assistant_text = (?:""|_cleared_segment_text\(slot\))[ \t]*\n',
         src,
     ), "the compaction-terminal text reset must be guarded by `not event.synthesized`"
 

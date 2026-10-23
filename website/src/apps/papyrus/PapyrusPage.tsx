@@ -1057,7 +1057,7 @@ export default function PapyrusPage() {
               that somewhere was `flex: 0 0 14rem` on the trigger itself, this
               span sized to the trigger's TEXT (measured at 202px against 315px
               of content) and the 224px trigger painted 113px past the span, over
-              the "Editing …" label beside it — a percentage width is circular
+              the file status beside it — a percentage width is circular
               while the parent is being measured, so the basis never reached the
               parent's intrinsic size. A definite width on a plain wrapper is not
               circular, so the span measures the full group. */}
@@ -1072,11 +1072,13 @@ export default function PapyrusPage() {
           </span>
         </span>
 
-        <span className="text-[12px] text-muted truncate">
-          {dirty
-            ? i18nT('apps.papyrus.workspace.editing_unsaved', { file: currentFile })
-            : i18nT('apps.papyrus.workspace.editing', { file: currentFile })}
-        </span>
+        {currentFile && (dirty || currentFile !== mainFile) && (
+          <span className="text-[12px] text-muted truncate">
+            {dirty
+              ? i18nT('apps.papyrus.workspace.editing_unsaved', { file: currentFile })
+              : i18nT('apps.papyrus.workspace.editing', { file: currentFile })}
+          </span>
+        )}
 
         {hasConflict && (
           // The conflict has to be VISIBLE and have an exit. A silent read-only editor

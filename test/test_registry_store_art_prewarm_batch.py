@@ -1041,6 +1041,79 @@ class TestOuterCancellationSettlesTheBatch:
                 await asyncio.wait(held, timeout=_BARRIER_CEILING_SECS)
 
 
+class TestCancelledBatchLeavesNoUnretrievedException:
+    """A cancelled batch is an outcome the prewarm handles, so it must not reach the
+    loop's exception handler. ``asyncio.gather`` records a requested cancellation with
+    ``set_exception(CancelledError())``; left unread, GC logs ``_GatheringFuture
+    exception was never retrieved`` and ``crash_guard`` writes a false ``ASYNCIO
+    UNHANDLED`` record to ``crash.log``. Both ways a batch is cancelled --
+    the budget and an outer cancel -- are covered."""
+
+    @staticmethod
+    async def _handler_reports(run) -> list[str]:
+        import asyncio
+        import gc
+
+        loop = asyncio.get_running_loop()
+        seen: list[str] = []
+        previous = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, ctx: seen.append(ctx.get("message", "")))
+        try:
+            await run()
+            # The batch is unreachable once the prewarm returned; collect it so an
+            # unread exception is reported now, inside this handler.
+            gc.collect()
+            await asyncio.sleep(0)
+        finally:
+            loop.set_exception_handler(previous)
+        return seen
+
+    @staticmethod
+    def _hang_on_fetch(monkeypatch, started):
+        import asyncio
+
+        async def _hang_fetch(git_url, branch, dest, log_lines, *, clone_env, sandbox_mode, **kw):
+            Path(dest).mkdir(parents=True, exist_ok=True)
+            started.set()
+            await asyncio.Event().wait()  # a git step that never finishes on its own
+
+        monkeypatch.setattr(reg_mod, "_git_fetch_branch", _hang_fetch)
+
+    @pytest.mark.asyncio
+    async def test_a_budget_cancelled_batch_reports_nothing(self, monkeypatch):
+        import asyncio
+
+        reg = _pin_registry(monkeypatch, _TRUST_OWNER)
+        self._hang_on_fetch(monkeypatch, asyncio.Event())
+        monkeypatch.setattr(reg_mod, "_PREWARM_BATCH_BUDGET", 0.2)
+
+        async def _run() -> None:
+            fetched = await await_until(
+                asyncio.ensure_future(_prewarm_owner_tier_store_assets(reg, [_entry()]))
+            )
+            assert fetched == 0
+
+        assert await self._handler_reports(_run) == []
+
+    @pytest.mark.asyncio
+    async def test_an_outer_cancelled_batch_reports_nothing(self, monkeypatch):
+        import asyncio
+
+        reg = _pin_registry(monkeypatch, _TRUST_OWNER)
+        started = asyncio.Event()
+        self._hang_on_fetch(monkeypatch, started)
+        monkeypatch.setattr(reg_mod, "_PREWARM_BATCH_BUDGET", 3600.0)
+
+        async def _run() -> None:
+            task = asyncio.ensure_future(_prewarm_owner_tier_store_assets(reg, [_entry()]))
+            await await_until(started)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task)
+
+        assert await self._handler_reports(_run) == []
+
+
 # ---------------------------------------------------------------------------
 # The row cap bounds preprocessing, not just task creation
 # ---------------------------------------------------------------------------

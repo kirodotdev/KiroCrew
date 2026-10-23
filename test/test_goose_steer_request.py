@@ -27,6 +27,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_PI,
     ACP_BACKENDS_STEERING_REQUEST,
     EVENT_COMPLETE,
     EVENT_STEER_CONSUMED,
@@ -155,10 +156,14 @@ def test_other_client_backends_keep_their_answers(tmp_path: Any) -> None:
 def test_every_client_spawnable_steering_request_member_has_a_verb() -> None:
     """A member this client can drive but has no request for would be advertised
     a steer it answers with nothing; one with a verb but no membership would
-    never be offered it. claude's verb is ``_session/steering``; every other
-    member's is named in ``_CLIENT_STEERING_REQUEST_METHODS``."""
+    never be offered it. claude's verb is ``_session/steering``; pi takes no request,
+    its steer is the sealed file Crew's gate extension reads (``acp.pi_steer_turn``);
+    every other member's is named in ``_CLIENT_STEERING_REQUEST_METHODS``."""
     spawnable = ACP_BACKENDS_STEERING_REQUEST & ACP_BACKENDS_ACP_CLIENT_SPAWNABLE
-    assert spawnable == set(acp_client._CLIENT_STEERING_REQUEST_METHODS) | {ACP_BACKEND_CLAUDE}
+    assert spawnable == set(acp_client._CLIENT_STEERING_REQUEST_METHODS) | {
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_PI,
+    }
 
 
 def test_the_card_shows_mid_turn_steer_for_goose() -> None:

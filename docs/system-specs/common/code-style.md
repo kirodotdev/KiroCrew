@@ -38,6 +38,7 @@ Paths below are relative to `src/kiro_crew/`.
 | Shell audit log cap | `shell_audit_log.py` | `SHELL_AUDIT_LOG_NAME`, `SHELL_AUDIT_LOG_MAX_BYTES` (the file the bundled `postToolUse` hook appends to, and the size at which the session cleanup loop rotates it aside to one `.1` generation). |
 | Slack UX strings and pacing | `slack/handler.py` | `_THINKING`, `_CURSOR`, `_NO_RESPONSE`, `_STATUS_WORKING`, `_TRUNCATION_MARKER`, plus `_EDIT_INTERVAL`, `_APPROVAL_TIMEOUT`, `_SLACK_SECTION_TEXT_LIMIT`, the stall thresholds and the phase debounce. |
 | Cross-cutting shared constants | `constants.py` | `KIROCREW_SPAWNED_ENV`, `ENV_TRUTHY`, `CHAT_TURN_TIMEOUT`, `COMPACT_WAIT_TIMEOUT_SECS` (one budget, shared by manual and automatic compaction; `session.compact_wait_secs` raises it for both, resolved for every caller by `SessionManager.compact_wait_budget_secs()`), the `[OPTIONS:]` parse regexes, `BANNER`, `MAX_BANNER_CHARS` and `ARTIFACT_MAX_CONTENT_BYTES` (bounds `validation.py` — a leaf — must read without importing the service module that enforces them; `artifacts.MAX_CONTENT_BYTES` re-exports the latter). |
+| Coder execution | `coder/client.py`, `coder/registry.py`, `constants.py` | CLI deadlines and output bounds belong to the client. Generated workspace-name bounds belong to the registry; `CODER_WORKSPACE_PREFIX_MAX_CHARS` lives in `constants.py`. |
 | Gateway shutdown budget | `gateway_shutdown_budget.py` | Gateway cooperative timeout, service-manager signal margin, and the derived systemd/launchd stop deadline. |
 | Process-wide shutdown signal | `__init__.py` | `shutdown_event`. Background loops `await shutdown_event.wait()` with a timeout instead of a plain `asyncio.sleep`, so they wake instantly on Ctrl-C. |
 | Base agent config | `config/defaults.json` | `tools`, `allowedTools`, `resources`, `hooks`, model. Packaged as package data, so editing it needs no code change. |
@@ -296,7 +297,8 @@ does not collect it); basenames stay unique across `test/`, which is not a packa
   is imported by name, so each part imports the ones its tests relied on. Copy the
   module-level `pytestmark`, `importorskip` and conftest flags (`ENFORCE_LAUNCH_APPROVAL`)
   into every part, and add each part wherever a conftest names the original module
-  (`_HOST_SERVICE_EXEC_ALLOWED_MODULES`, `_REAL_MCP_POST_MODULES`).
+  (`_HOST_SERVICE_EXEC_ALLOWED_MODULES` in `test/conftest_floor_services.py`,
+  `_REAL_MCP_POST_MODULES` in `test/conftest.py`).
 - Node ids move with their tests: rewrite their rows in the `test/` lists
   `windows-expected-failures.txt`, `macos-expected-failures.txt`,
   `codebuild-expected-failures.txt` and `requires-real-symlinks.txt` (nothing audits the

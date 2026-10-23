@@ -346,21 +346,22 @@ async def test_proven_steers_awaiting_the_terminal_count_toward_the_cap():
     assert rt.requests == []
 
 
-def test_only_codex_claude_and_goose_take_the_steering_request():
+def test_only_codex_claude_goose_and_pi_take_the_steering_request():
     """A mutation pin: a runtime backend added here would inherit this steer transport.
 
-    claude and goose are members on ``AcpClient``'s own requests and never run on
-    this handle.
+    claude, goose and pi are members on ``AcpClient``'s own channels (pi's is the
+    sealed steer file Crew's gate extension reads) and never run on this handle.
     """
     from kiro_crew.agent_sdk.backends import (
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_GOOSE,
+        ACP_BACKEND_PI,
         ACP_BACKENDS_ACP_RUNTIME,
         ACP_BACKENDS_STEERING_REQUEST,
     )
 
     assert ACP_BACKENDS_STEERING_REQUEST == frozenset(
-        {ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE}
+        {ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE, ACP_BACKEND_PI}
     )
     assert ACP_BACKENDS_STEERING_REQUEST & ACP_BACKENDS_ACP_RUNTIME == frozenset(
         {ACP_BACKEND_CODEX}

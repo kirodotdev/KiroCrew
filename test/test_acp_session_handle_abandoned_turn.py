@@ -26,6 +26,7 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_UPDATE,
     JsonRpcMessage,
 )
+from kiro_crew.testing.wait import await_until, finished
 
 
 class _Backend:
@@ -126,7 +127,7 @@ async def test_a_compact_abandoned_by_its_timeout_is_cancelled_before_the_next_t
 async def test_a_compact_that_ends_in_time_sends_no_cancel():
     handle, backend = _make(compact_ends=True)
 
-    await asyncio.wait_for(handle.compact(), timeout=5.0)
+    await finished(handle.compact(), "the compact that ends in time")
     reply = await _reply(handle)
 
     assert reply == "pong"
@@ -142,11 +143,11 @@ async def test_a_turn_cancelled_while_it_closes_the_abandoned_compact_leaves_the
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(handle.compact(), timeout=0.2)
     closing = asyncio.ensure_future(_reply(handle))
-    await asyncio.wait_for(backend.cancel_seen.wait(), timeout=5.0)
+    await await_until(backend.cancel_seen, what="the backend seeing the cancel")
     closing.cancel()
     with pytest.raises(asyncio.CancelledError):
         await closing
-    reply = await asyncio.wait_for(_reply(handle), timeout=5.0)
+    reply = await finished(_reply(handle), "the turn after the cancelled one")
 
     assert (
         reply == "pong"

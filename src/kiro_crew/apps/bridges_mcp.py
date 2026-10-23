@@ -25,7 +25,7 @@ from urllib.parse import urlparse, urlunparse
 
 from kiro_crew import platform_compat
 from kiro_crew.apps import deps_boot as _deps_boot_module
-from kiro_crew.apps.bridges_agents import _register_agents
+from kiro_crew.apps.bridges_agents import _is_within, _register_agents
 from kiro_crew.apps.bridges_mcp_config import (
     _health_reconcile_guard,
     _mcp_lock,
@@ -180,6 +180,46 @@ def _live_port_for(app_name: str, live_port: int | None) -> int | None:
 #: python when a version-matched one exists, else the RUNNING interpreter, which is the
 #: only one guaranteed to import ``kiro_crew``.
 _BARE_PYTHON = frozenset({"python", "python3", "py"})
+
+
+def _resolve_app_launcher_arg(args: list, app_root: Path) -> list:
+    """Anchor an app's OWN relative ``.py`` launcher to its install root.
+
+    Returns a new list with the launch target replaced by its real absolute
+    path, or ``args`` itself (the same object) when nothing is rewritten.
+
+    WHY: an app whose package is staged (``apps/<id>/src/...``) and not
+    pip-installed cannot start by ``-m its.package``: the package is not
+    importable, and without a ``requirements.txt`` nothing is put on
+    ``PYTHONPATH``. Such an app ships a launcher that registers its package
+    from its own ``__file__``. A manifest can name that launcher only relative
+    to the app root, and kiro-cli spawns these servers under the session cwd,
+    so a relative operand never reaches the staged file. This is the one place
+    that knows the install root.
+
+    Only the launch TARGET (``_py_target_index`` over already-normalized args)
+    is read, and only when it is a relative path ending in ``.py`` that
+    resolves (links followed) to an existing file inside the real app root.
+    Every other shape is left exactly as authored: ``-m``/``-c``, interpreter
+    options, arguments after the script, an absolute path, and a relative path
+    that is not a file under the app root.
+    """
+    ti = _py_target_index(args)
+    if ti is None:
+        return args
+    target = args[ti]
+    if not isinstance(target, str) or not target.endswith(".py") or os.path.isabs(target):
+        return args
+    try:
+        real_root = os.path.realpath(app_root)
+        real_target = os.path.realpath(os.path.join(real_root, target))
+        if not _is_within(Path(real_target), Path(real_root)):
+            return args
+        if not os.path.isfile(real_target):
+            return args
+    except (OSError, ValueError):
+        return args
+    return [*args[:ti], real_target, *args[ti + 1 :]]
 
 
 def resolve_stdio_command(cfg: dict, app_root: Path | None = None) -> dict:
@@ -396,6 +436,15 @@ def resolve_stdio_command(cfg: dict, app_root: Path | None = None) -> dict:
             # first. A shape with no resolvable target falls back to the
             # PYTHONPATH transport.
             _args = _normalize_attached_m(list(cfg.get("args") or []))
+            if app_root is not None:
+                # Anchor the app's own relative .py launcher to its install
+                # root BEFORE the shim below, so deps_boot (or the plain
+                # launch) receives the absolute target whatever the deps
+                # state. Written back only when it rewrote something.
+                _anchored = _resolve_app_launcher_arg(_args, app_root)
+                if _anchored is not _args:
+                    _args = _anchored
+                    cfg["args"] = list(_anchored)
             if (
                 app_root is not None
                 and cfg["command"] == sys.executable

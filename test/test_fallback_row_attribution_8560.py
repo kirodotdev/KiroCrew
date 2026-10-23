@@ -232,7 +232,7 @@ class TestFallbackServedTurnAttribution:
         """GPT review finding on 3f55ca11f: the sticky candidate can OUTLIVE the
         swap it records.
 
-        It deliberately survives a landed turn (`_run_chat`'s usage row --
+        It deliberately survives a landed turn (`_on_complete`'s usage row in `turn_stats` --
         the session stays on the fallback until the start-of-turn restore probe
         succeeds), that probe is skipped for a synthetic recovery message
         (`_turn_dispatch_gates`), and a reset resumes the session by re-sending

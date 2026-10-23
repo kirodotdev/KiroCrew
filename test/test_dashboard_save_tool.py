@@ -227,7 +227,7 @@ async def test_a_save_stores_the_page_and_apply_puts_it_live(monkeypatch, store)
         reply = await applied.json()
 
     saved = payload["saved"]
-    assert (saved["fields"], saved["blocks"]) == (2, 0)
+    assert saved["fields"] == 2 and "blocks" not in saved
     [record] = store.records.values()
     assert record.kind == DASHBOARD_KIND
     assert parse_package(record.content)["bound_to"] == f"crewmate:{SLUG}"
@@ -576,19 +576,17 @@ async def test_the_binding_comes_from_the_caller_and_the_body_cannot_carry_one(m
 # --------------------------------------------------------------------------- #
 
 
-async def test_a_block_layout_is_refused_for_a_crewmate_page(monkeypatch, store):
-    """A crewmate's page is drawn from view.html only, so a view of blocks is refused
-    at the save, before anything is stored, with the field-binding rule to follow."""
+async def test_a_block_layout_is_saved_as_its_page(monkeypatch, store):
+    """One way: a view of blocks is stored as the page it becomes, never as blocks."""
     body = _package_body()
     body["view"] = {"blocks": [{"id": "lead", "type": "stat", "fields": ["open_prs"]}]}
     async with _client(monkeypatch) as client:
         resp = await _save(client, body)
-        assert resp.status == 400
-        payload = await resp.json()
-    assert payload["code"] == "invalid_package"
-    assert "view.html only" in payload["error"]
-    assert "data-dashboard-field" in payload["error"]
-    assert store.records == {}
+        assert resp.status == 200, await resp.text()
+    [record] = store.records.values()
+    view = parse_package(record.content)["view"]
+    assert list(view) == ["html"]
+    assert 'data-dashboard-field="open_prs"' in view["html"]
 
 
 async def test_an_oversized_package_is_refused(monkeypatch, store):
@@ -903,7 +901,6 @@ def test_the_tool_sends_only_the_three_declarations(monkeypatch):
                 "package_version": 1,
                 "instance_version": 3,
                 "fields": 2,
-                "blocks": 2,
             },
             "dashboard": "[DASHBOARD]\nYour Dashboard tab shows the page you saved.",
         }
@@ -920,7 +917,7 @@ def test_the_tool_sends_only_the_three_declarations(monkeypatch):
 
 
 def test_the_tool_hands_back_a_refusal_whole(monkeypatch):
-    """The refusal names the key and the catalog, which is what the agent fixes from."""
+    """The refusal names the key and the reason, which is what the agent fixes from."""
     from kiro_crew import mcp_panel
 
     monkeypatch.setattr(mcp_panel, "_strict_session_key", lambda: ("sk", ""))
@@ -928,13 +925,13 @@ def test_the_tool_hands_back_a_refusal_whole(monkeypatch):
         mcp_panel,
         "_post",
         lambda *_a, **_k: {
-            "error": "dashboard package: view.blocks[0].type: unknown block type 'hologram'",
+            "error": "dashboard package: view.html: binds ['hologram'], which model.types does not declare",
             "code": "invalid_package",
         },
     )
     out = mcp_panel._call_tool_inner("dashboard_save", _package_body())
     assert "hologram" in out
-    assert "view.blocks[0].type" in out
+    assert "view.html" in out
 
 
 # --------------------------------------------------------------------------- #
@@ -1316,8 +1313,8 @@ def test_the_model_reaches_the_copy_as_the_route_serves_it(glue):
     assert list(ran.model["types"]) == ["state"], "a name was rewritten"
 
 
-def test_a_block_package_is_not_run(glue):
-    assert glue.module.verify_package_page(SLUG, CREW, "slot-1", {"view": {"blocks": []}}) is None
+def test_a_package_with_no_page_is_not_run(glue):
+    assert glue.module.verify_package_page(SLUG, CREW, "slot-1", {"view": {}}) is None
     assert _FakeLivePage.built == []
 
 
@@ -1381,7 +1378,7 @@ def test_the_tool_hands_the_verification_to_the_agent(monkeypatch):
         mcp_panel,
         "_post",
         lambda *_a, **_k: {
-            "saved": {"fields": 2, "blocks": 0},
+            "saved": {"fields": 2},
             "verification": _verdict(
                 "failed",
                 errors=[{"kind": "exception", "message": "Error: boom", "line": 3, "column": 1}],

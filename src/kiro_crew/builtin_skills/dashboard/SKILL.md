@@ -24,8 +24,8 @@ longer history, a new kind of reading -- is a good reason to redesign the page
 once; it is never a reason to redraw it every turn.
 
 `dashboard_save` takes `model`, `view` and an optional `theme`. `view.html`
-holds the markup, CSS and script; a crewmate page uses HTML rather than
-`view.blocks`. Every field read by a binding or a script belongs in `model`.
+holds the markup, CSS and script; it is the only view, and a stored view of
+blocks is read back as `view.html`. Every field read by a binding or a script belongs in `model`.
 The gateway derives `kind` and `bound_to` from the caller. Saving stores a
 draft; `dashboard_apply` with no arguments makes it a new live version.
 
@@ -55,6 +55,39 @@ A template from `dashboard_templates` uses `dashboard_apply(template_id=...)`.
 `dashboard_preview` is an optional look when the person asks, not an approval
 gate for authored code. `dashboard_rollback` restores a version listed by
 `dashboard_fields`; restoring an old version itself creates a new version.
+
+**Progress goes on the page, not in chat.** People check a crewmate once or
+twice a day, and the page is what they read. Keep where your work stands on
+your Dashboard page; the chat gets few reports, and when it gets one it covers
+several things in one message, never a stream of small updates. No goal or
+milestone is needed for a page: the first time you have work to report is
+reason enough to build one.
+
+**The daily review.** Your daily goal wake asks you to review your page:
+read it against the latest data (`dashboard_fields` for each field and its
+source, `dashboard_types` for the folds behind it), check that the page as a
+whole still makes sense for the work you do now, and update what is stale --
+a field with `dashboard_write`, the page with `dashboard_save` and
+`dashboard_apply` when a section no longer fits. A page that is current stays
+as it is. Then find one way to make the page better -- clearer, better made,
+nicer to look at -- by sections 2 to 6 below, and make it: one small, steady
+improvement a day rather than a redesign, every number still read from a fold
+and none invented.
+
+**Writing your page, and asking first on a template.** With nothing on your
+Dashboard tab, having work to report, or a wake that tells you to build your
+page, is the go-ahead:
+write it, `dashboard_save` it and `dashboard_apply` it, then post one short
+message that a Dashboard page is ready on the Dashboard tab -- no preview, no
+card, and no second message. On a template page (one the user adopted, or the
+page named for you) you never replace it unasked. When a Kiro Crew note in your
+turn says you can offer your own page, call `offer_dashboard_page` once: it
+raises one card asking whether to build a page around your goal in place of
+that template, and writes nothing. If the user says yes you are woken to write,
+save and apply it, with no second question, and post the same one message; a
+locked layout refuses the apply, and you say so once and stop. If they say no,
+or the card expires, nothing changes and you are not asked again. A page the
+user asks for in chat needs no card: write it then.
 
 **Layout lock.** The person's **Lock dashboard layout** switch on Profile
 holds the current page. A `[DASHBOARD]` block marked LOCKED means apply and

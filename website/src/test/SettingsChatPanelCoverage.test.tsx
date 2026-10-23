@@ -18,7 +18,7 @@
 vi.mock('@radix-ui/react-select', async () => await import('./__mocks__/@radix-ui/react-select'))
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
 import { SETTINGS_CARD_STAGGER_MS } from '../components/settings'
@@ -119,7 +119,7 @@ const LS_KEY = 'mc-chat-config'
 
 function wrap(sub = 'transcript') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
+  const view = render(
     <MemoryRouter initialEntries={[`/settings?tab=chat&sub=${sub}`]}>
     <Provider store={createTestStore()}>
     <QueryClientProvider client={qc}>
@@ -128,6 +128,7 @@ function wrap(sub = 'transcript') {
     </Provider>
     </MemoryRouter>
   )
+  return Object.assign(view, { qc })
 }
 
 /** The localStorage-backed chat config as the panel last wrote it. */
@@ -462,6 +463,48 @@ describe('ChatPanel — Messages', () => {
     fireEvent.click(await settledSwitch('MCP Apps in Side Panel'))
     await waitFor(() =>
       expect(updateDashboardConfigMock).toHaveBeenCalledWith({ mcp_app_panel: true })
+    )
+  })
+
+  it.each([
+    ['Keep Side Panel Open', 'side_panel_always_open'],
+    ['Pin Summary in Side Panel', 'side_panel_pin_summary'],
+  ])('shows %s off by default and persists turning it on', async (label, key) => {
+    wrap('sidepanel')
+    const sw = await settledSwitch(label)
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(sw)
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({ [key]: true })
+    )
+  })
+
+  it('names Session summaries on the Pin Summary row while they are off, and drops it once they are on', async () => {
+    const { qc } = wrap('sidepanel')
+    const row = () => document.querySelector('[data-setting-key="dashboard.side_panel_pin_summary"]') as HTMLElement
+    const needs = 'Session summaries are off. Turn them on in Settings → Chat → Sessions to pin Summary.'
+    // BASE_MC carries no session_summary section: summaries are off.
+    await waitFor(() => expect(within(row()).getByText(needs)).toBeInTheDocument())
+    // The toggle stays usable while they are off.
+    fireEvent.click(await settledSwitch('Pin Summary in Side Panel'))
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({ side_panel_pin_summary: true })
+    )
+    act(() => { qc.setQueryData(['kirocrewConfig'], { ...BASE_MC, session_summary: { enabled: true } }) })
+    await waitFor(() => expect(within(row()).queryByText(needs)).toBeNull())
+  })
+
+  it('refreshes every chat\'s cached summary state when Session summaries saves', async () => {
+    const { qc } = wrap('sessions')
+    // The side panel's + menu row and Pin Summary read this per-chat query,
+    // which never goes stale on its own.
+    qc.setQueryData(['session-summary', 'chat-1'], { enabled: false })
+    fireEvent.click(await settledSwitch('Session summaries'))
+    await waitFor(() =>
+      expect(patchConfigMock).toHaveBeenCalledWith('session_summary.enabled', true)
+    )
+    await waitFor(() =>
+      expect(qc.getQueryState(['session-summary', 'chat-1'])?.isInvalidated).toBe(true)
     )
   })
 

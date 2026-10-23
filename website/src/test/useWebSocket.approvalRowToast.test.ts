@@ -115,9 +115,23 @@ describe('interactive approval OS toast from the permission row', () => {
     ws.frame('chat_message', permissionRow(SLOT, 'req-1', 'mid-1'))
     expect(postNativeNotification).toHaveBeenCalledTimes(1)
     const [title, opts] = vi.mocked(postNativeNotification).mock.calls[0]
+    // No slot row is known, so the title is unknown rather than absent: an
+    // unknown session keeps its key, never "Untitled session".
     expect(title).toBe(SLOT)
     expect(opts?.body).toBe('Waiting for your approval: shell')
     expect(opts).toMatchObject({ silent: true, tag: `kirocrew-approval:${SLOT}:req-1` })
+  })
+
+  // #23084: an untitled session's stored title can be its raw slot key. The
+  // toast names it "Untitled session"; a titled one keeps its title.
+  it.each([
+    ['an untitled session (title equals the key)', SLOT, 'Untitled session'],
+    ['a titled session', 'Fix the build', 'Fix the build'],
+  ])('the toast title for %s', async (_case, stored, shown) => {
+    const ws = await connect()
+    act(() => { testStore.dispatch(sseSlots([{ key: SLOT, title: stored, messages: 1, running: true }])) })
+    ws.frame('chat_message', permissionRow(SLOT, 'req-1', 'mid-1'))
+    expect(vi.mocked(postNativeNotification).mock.calls[0][0]).toBe(shown)
   })
 
   it('stays quiet while the window is focused', async () => {

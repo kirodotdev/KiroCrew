@@ -87,7 +87,7 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
     >
       {/* Preview is non-interactive so clicks fall through to the card's onClick. */}
       <div className="pointer-events-none">
-        {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} /> : a.kind === 'image' ? <ImageThumb a={a} /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} />}
+        {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} /> : a.kind === 'image' ? <ImageThumb a={a} /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} goalReport={a.goal_report === true} /> : <ContentThumb content={content} kind={a.kind} />}
       </div>
       <div className="p-3">
         <div className="flex items-start justify-between gap-2">

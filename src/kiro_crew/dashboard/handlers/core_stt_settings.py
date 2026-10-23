@@ -94,62 +94,14 @@ def _stt_providers() -> list[str]:
     return providers
 
 
-#: English display label per built-in STT provider, for the ``providers`` rows.
-#: The dashboard localises a built-in by its ``name``; this is the fallback.
-_STT_BUILTIN_LABELS: dict[str, str] = {
-    "local": "Local (runs on this machine)",
-    "apple": "Apple Speech (on-device)",
-    "transcribe": "Transcribe (AWS)",
-    "off": "Off (no speech recognition)",
-}
+def _builtin_stt_rows(names: list[str]) -> dict[str, dict]:
+    """Capability rows for the built-in providers in *names*: ``{name, builtin}``.
 
-
-def _builtin_stt_rows(names: list[str], stt_cfg: SttConfig) -> dict[str, dict]:
-    """Capability rows for the built-in providers in *names*. BLOCKING (probes each).
-
-    Each row answers "could this provider run here if chosen", so it is probed
-    with that provider selected and speech-to-text on; ``off`` always can. A
-    probe that raises gives ``error`` true; an answered refusal keeps it false.
-
-    One exception keeps opening Settings as cheap as before: ``local`` is probed
-    only when it is selected and on, or its engine is already loaded,
-    because the probe imports numpy and the native recogniser. Otherwise it is
-    reported available, which it is on every host that ships it; a real refusal
-    shows the moment it is selected.
+    No probe runs: the dashboard reads a row's status only for a registered
+    provider, and labels a built-in from its own catalog by ``name``. The
+    selected built-in's readiness is the response's own ``available`` / ``code``.
     """
-    import dataclasses
-    import sys
-
-    from kiro_crew import speech_providers
-    from kiro_crew.platform.interfaces_runtime import ProviderStatus
-
-    rows: dict[str, dict] = {}
-    for name in names:
-        if name not in _VALID_STT_PROVIDERS:
-            continue
-        if name == "off" or (
-            name == PROVIDER_LOCAL
-            and not (stt_cfg.enabled and stt_cfg.provider == PROVIDER_LOCAL)
-            and "kiro_crew.stt.engine" not in sys.modules
-        ):
-            status = ProviderStatus(True)
-        else:
-            try:
-                detail = availability_detail(
-                    dataclasses.replace(stt_cfg, provider=name, enabled=True)
-                )
-            except Exception:
-                # A probe that raised is an error, not a missing prerequisite.
-                logger.warning("STT provider %r probe failed", name, exc_info=True)
-                status = ProviderStatus(False, "the provider check failed", error=True)
-            else:
-                status = ProviderStatus(
-                    detail.ok, None if detail.ok else (detail.detail or detail.code)
-                )
-        rows[name] = speech_providers.provider_entry(
-            name, _STT_BUILTIN_LABELS.get(name, name), True, status
-        )
-    return rows
+    return {name: {"name": name, "builtin": True} for name in names if name in _VALID_STT_PROVIDERS}
 
 
 async def _stt_provider_rows(
@@ -479,7 +431,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
         # api_stt_status uses) so the two fields cannot disagree, and the chat
         # modal can render the precise per-code reason from this one query.
         detail = availability_detail(cfg.stt)
-        builtin_rows = _builtin_stt_rows(provider_names, cfg.stt)
+        builtin_rows = _builtin_stt_rows(provider_names)
         return cmds, no_ffmpeg, unsupported, bundled, detail.ok, detail.code, builtin_rows
 
     (

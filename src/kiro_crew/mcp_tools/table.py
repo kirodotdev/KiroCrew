@@ -41,7 +41,6 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from kiro_crew import mcp_core
 from kiro_crew.mcp_shared import call_tool_with_logging
 from kiro_crew.mcp_tool_titles import with_titles
 from kiro_crew.mcp_tools.dashboard_client import (
@@ -110,10 +109,23 @@ class GatewayCaller:
         self.server = server
 
     def attribution(self) -> str:
-        return mcp_core._resolve_session_key()
+        return _mcp_core()._resolve_session_key()
 
     def require_strict_session_key(self, refusal: str) -> tuple[str, str]:
-        return mcp_core.require_strict_session_key(refusal, server=self.server)
+        return _mcp_core().require_strict_session_key(refusal, server=self.server)
+
+
+def _mcp_core() -> Any:
+    """``kiro_crew.mcp_core``, imported on the first call that needs a caller.
+
+    Not at module scope: the dashboard and work servers build their tables from
+    this module, and ``mcp_core`` brings history, knowledge and skills with it.
+    A server that is started but never called, such as one an auxiliary Codex
+    thread launches, then pays none of that.
+    """
+    from kiro_crew import mcp_core
+
+    return mcp_core
 
 
 @dataclass(frozen=True)

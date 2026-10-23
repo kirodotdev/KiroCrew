@@ -4,8 +4,10 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import type { RootState } from '../store'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
+import { sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { defaultAgentQuery } from '../api/defaultAgentQuery'
 import { recencyEpoch } from '../components/commandPalette/providers/recentsProvider'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 export interface AgentSource {
   id: string
@@ -46,10 +48,13 @@ export function useAgentSync() {
   const { data: defaultAgentData } = useQuery({ ...defaultAgentQuery, select: d => d.default_template })
   const defaultAgent = defaultAgentData ?? ''
 
-  const slotAgents = useMemo<AgentSource[]>(() => [...slots]
+  // `langGen` (read with `void` below) keys the memo on the language, so an
+  // untitled slot's localized "Untitled session" re-resolves on a switch.
+  const langGen = useLanguageGeneration()
+  const slotAgents = useMemo<AgentSource[]>(() => (void langGen, [...slots])
     .sort((a, b) => recencyEpoch(b) - recencyEpoch(a))
     .map(sl => ({
-    id: 'slot-' + sl.key, name: shortName(sl.title || sl.key),
+    id: 'slot-' + sl.key, name: shortName(sessionDisplayTitle(sl)),
     label: agentOrDefaultLabel(sl.agent, defaultAgent, sl.agent_kind), kind: 'slot' as const,
     running: sl.running, detail: sl.messages + ' msgs',
     lastMessage: sl.last_message || '',
@@ -57,7 +62,7 @@ export function useAgentSync() {
     pendingApproval: sl.pending_approval_info
       ? { tool: sl.pending_approval_info.tool, requestId: sl.pending_approval_info.request_id }
       : null,
-  })), [slots, defaultAgent])
+  })), [slots, defaultAgent, langGen])
 
   useEffect(() => {
     let cancelled = false

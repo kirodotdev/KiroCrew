@@ -87,9 +87,11 @@ export function acpBackendName(backend: { id: string; policy_id?: string }): str
   }
 }
 
-/** A harness name short enough for a row badge; the full label elsewhere. */
+/** A harness name for a row badge. Every built-in name is already short
+ *  ("Kiro Agent", "Kiro CLI", "Claude Code"), so the badge reads the same
+ *  translated label as everywhere else rather than a private abbreviation. */
 export function acpBackendShortName(id: string): string {
-  return id === ACP_BACKEND_KAS ? 'KAS' : acpBackendName({ id })
+  return acpBackendName({ id })
 }
 
 /**

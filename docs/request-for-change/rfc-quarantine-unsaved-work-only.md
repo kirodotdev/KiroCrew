@@ -248,7 +248,7 @@ has to add them. `wrap_argv` never enters a network namespace (the network
 egress note in `src/kiro_crew/security_posture.py` says so: agent commands need
 the network), and it has no parameter to mount a directory read-only. The
 Linux launcher already has a read-only bind (`seal_readonly` in
-`src/kiro_crew/sandbox_launcher_program.py`), which is the likely base. Until
+`src/kiro_crew/sandbox_launcher_parts/mask_stages.py`), which is the likely base. Until
 both exist on a host, that host always takes the whole-tree fallback.
 
 - The tree is mounted **read-only**. One fresh output directory is writable.

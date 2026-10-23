@@ -38,6 +38,7 @@ from kiro_crew.dashboard.handlers.sessions import (
     _redact_strings,
     _text_scrape_regresses_api_value,
 )
+from kiro_crew.testing.wait import finished
 
 SAMPLE_USAGE_WITH_BONUS = (
     "Estimated Usage | resets on 2026-08-01 | KIRO PRO+\n"
@@ -524,9 +525,9 @@ class TestFetchUsageDeadline:
             with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
                  patch.object(sessions_mod, "_fetch_whoami", AsyncMock(return_value={})), \
                  patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits", _hang):
-                # The outer wait_for is the assertion: unfixed, _fetch_usage_bg
-                # never returns and this raises instead of hanging the suite.
-                await asyncio.wait_for(sessions_mod._fetch_usage_bg(), timeout=10)
+                # The outer bound is the assertion: unfixed, _fetch_usage_bg only
+                # returns once the 30 s hang releases, so this must fail first.
+                await finished(sessions_mod._fetch_usage_bg(), "the usage fetch", timeout=10)
         finally:
             released.set()
 
@@ -551,7 +552,8 @@ class TestFetchUsageDeadline:
             with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
                  patch.object(sessions_mod, "_fetch_whoami", AsyncMock(return_value={})), \
                  patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits", _hang):
-                await asyncio.wait_for(sessions_mod._fetch_usage_bg(), timeout=10)
+                # Bounded below the 30 s hang: unfixed, the fetch would wait it out.
+                await finished(sessions_mod._fetch_usage_bg(), "the hung fetch", timeout=10)
         finally:
             released.set()
 
@@ -571,7 +573,7 @@ class TestFetchUsageDeadline:
                           AsyncMock(return_value={"email": "me@corp.com", "_profile_arn": arn})), \
              patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
                           return_value=_api_result({**api_dict, "_profile_arn": arn})):
-            await asyncio.wait_for(sessions_mod._fetch_usage_bg(), timeout=10)
+            await finished(sessions_mod._fetch_usage_bg(), "the successful usage fetch")
 
         assert sessions_mod._usage_cache.get("credits_plan") == 100.0
 

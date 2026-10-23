@@ -124,6 +124,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _py_target_index,
         _python_shebang_interpreter,
         _register_mcp_servers,
+        _resolve_app_launcher_arg,
         _resolve_live_mcp_url,
         _schedule_unresolvable_warning,
         _scrub_legacy_shared_mcp,

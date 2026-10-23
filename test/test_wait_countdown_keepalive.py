@@ -117,6 +117,24 @@ class TestWaitStateRecording:
         assert slot._end_wait_request is None
         state.push_slots_update.assert_called_once_with()
 
+    @pytest.mark.parametrize("field", ["remaining", "seconds"])
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999", '"soon"'])
+    def test_an_unparsable_budget_mints_a_zero_countdown(self, field, raw):
+        """JSON reads ``1e999`` as an infinite float, which ``int`` cannot convert.
+
+        It takes the same fallback as a non-numeric string: both budgets read 0.
+        """
+        slot = _ChatSlot(SLOT)
+        state = _mock_state(slot)
+        body = json.loads('{"wait_id": "w1", "seconds": 300, "remaining": 297}')
+        body[field] = json.loads(raw)
+
+        with patch.object(sessions_mod, "time", SimpleNamespace(time=lambda: 1000.0)):
+            reply = _ping(state, body)
+
+        assert reply == {"ok": True}
+        assert slot._wait_state == {"wait_id": "w1", "seconds": 0, "deadline_ts": 1000.0}
+
     def test_second_ping_same_id_does_not_remint_deadline(self):
         """B. Re-minting every ping would make the countdown jitter by one
         round-trip per tick, so the deadline is frozen on first sight."""

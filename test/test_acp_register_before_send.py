@@ -22,6 +22,7 @@ from test_update_provider import _UNALLOCATABLE_PID
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.types import JsonRpcMessage
+from kiro_crew.testing.wait import finished
 
 
 def _handle() -> tuple[AcpSessionHandle, AcpRuntime, MagicMock]:
@@ -46,7 +47,7 @@ async def _run_pre_turn_drain(handle: AcpSessionHandle, rt: AcpRuntime) -> None:
     rt.send_request = AsyncMock(return_value=999)  # type: ignore[method-assign]
     gen = handle.prompt("hi", timeout=0.2)
     with contextlib.suppress(StopAsyncIteration, asyncio.TimeoutError, Exception):
-        await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+        await finished(gen.__anext__(), "the abandoned turn's first event")
     await gen.aclose()
 
 
@@ -68,7 +69,7 @@ async def test_send_command_keeps_a_response_that_lands_during_the_drain():
     handle, rt, proc = _handle()
     _answer_inside_drain(handle, rt, proc, {"text": "compacted"})
 
-    text = await asyncio.wait_for(handle.send_command("/tools"), timeout=5.0)
+    text = await finished(handle.send_command("/tools"), "the /tools response")
 
     assert text == "compacted"
     assert not handle._awaited_responses
@@ -79,7 +80,7 @@ async def test_set_config_option_keeps_a_response_that_lands_during_the_drain():
     handle, rt, proc = _handle()
     _answer_inside_drain(handle, rt, proc, {})
 
-    await asyncio.wait_for(handle.set_config_option("effort", "high"), timeout=5.0)
+    await finished(handle.set_config_option("effort", "high"), "the config option's response")
 
     assert not handle._awaited_responses
 

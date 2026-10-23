@@ -35,3 +35,8 @@ src/kiro_crew/tool_call_title.py) reimplements the rule set of OpenAI
 Codex's parse_command.rs (https://github.com/openai/codex, Apache-2.0) in
 TypeScript and Python. No Rust source is copied; the Apache-2.0 notice for
 Codex is reproduced under "Ported rule sets" in THIRD-PARTY-NOTICES.
+
+Desktop releases bundle an audio-only build of FFmpeg 7.1.1, licensed under
+the GNU Lesser General Public License v2.1 or later, as a separate executable.
+Its license text and the location of its corresponding source are under
+"Bundled Programs" in THIRD-PARTY-NOTICES.

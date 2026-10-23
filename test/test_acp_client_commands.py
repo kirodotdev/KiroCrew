@@ -56,7 +56,7 @@ class TestSendCommand:
         )
 
         # send_command MUST run raw text through the redactor before returning.
-        # The redactor itself is unit-tested separately in test_security.py;
+        # The redactor itself is unit-tested separately in test_security_exfil_urls.py;
         # here we verify the call site wires it up at all (a vacuous isinstance
         # check would not catch a missed redact step).
         with patch(

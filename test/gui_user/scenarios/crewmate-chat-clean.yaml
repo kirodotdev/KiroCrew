@@ -32,7 +32,8 @@ steps:
   - You are on the Settings page. Open the Developer section and find the Feature Previews list.
   - Turn on the preview whose title starts with "Mates" (older builds may read "Crew Members" or "Crew Members and Crew Mode"; any of those is the right one). Ignore the Webhooks preview.
   - Open the Mates page. After the preview is on, a "Mates" item appears in the left rail, directly under Sessions; click it.
-  - Click the member card for Nova Sky (its card may read "nova-sky" instead of a display name; that is the same member, and it may be lower in the list) to open its chat.
+  - Click the search box at the top of the mates list (its placeholder reads "Search mates…") and type Nova. A mate you have not chatted with yet is hidden from the list until a search reaches it, so Nova Sky (its card may read "nova-sky" instead of a display name) is not in the list before you type; the Mate and default cards being there is normal.
+  - Click the member card for Nova Sky (its card may read "nova-sky" instead of a display name; that is the same member) to open its chat.
   - Type exactly "run a tool then answer [[TOOL]]" in the message box and send it with Enter. Wait about three seconds. Behind the scenes the mate runs a tool called "fake demo tool" and then answers; you only need to look at what appears.
   - Type exactly "and again [[TOOL]]" in the message box and send it with Enter. Wait about three seconds.
   - Look at the whole conversation, top to bottom, without scrolling past it.
@@ -41,5 +42,5 @@ expectations:
   - Each reply bubble shows the mate's avatar and its name (Nova Sky or "nova-sky") above the text, on the first bubble of that reply.
   - Nothing on screen mentions "fake demo tool", "echo hello-from-fake", a tool call or a command; no tool card, spinner or collapsed tool row sits between your messages and the replies.
   - No red error banner or error bubble is visible in the conversation.
-max_steps: 18
+max_steps: 20
 max_seconds: 480

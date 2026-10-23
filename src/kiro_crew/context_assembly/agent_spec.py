@@ -42,6 +42,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("kiro_crew.context")
 
+_WIDGET_TOKEN = "{{WIDGET_BLOCK}}"
+
+#: Built-in agents whose spec prompt asks for widgets (the conductor's
+#: introduction card and task board) and so get the per-surface widget pointer
+#: in their ``[AGENT SYSTEM PROMPT]`` block. ``kirocrew-ledger-conductor`` is the
+#: conductor's deprecated alias with the same body. ``kirocrew-worker`` is absent
+#: on purpose: it reports to the work ledger, not to a person.
+WIDGET_BLOCK_AGENTS = frozenset({"kirocrew-conductor", "kirocrew-ledger-conductor"})
+
 
 def steering_target_admissible(resolved: Path, base: Path | None = None) -> bool:
     """Admission gate for a steering document's RESOLVED path.
@@ -573,6 +582,13 @@ def _resolve_agent_prompt(
         pp = ctx._prompt_path()
         logger.debug("Prompt selection: mode=%r → %s", mode, pp)
         agent_prompt = _read_prompt_file(pp)
+    # A built-in spec whose own prompt asks for widgets gets the widget pointer
+    # here rather than as a token in its spec: kiro-cli loads that spec prompt
+    # natively and a crewmate's essentials deliver it verbatim, and neither path
+    # resolves a token. This block is the one copy that is resolved per surface,
+    # and the only one a private crewmate gets, so it may hold just the pointer.
+    if agent in WIDGET_BLOCK_AGENTS and _WIDGET_TOKEN not in agent_prompt:
+        agent_prompt = f"{agent_prompt}\n\n{_WIDGET_TOKEN}" if agent_prompt else _WIDGET_TOKEN
     if not agent_prompt:
         return ""
     # Any host-derived token in this prompt must be snapshotted per session:
@@ -604,4 +620,8 @@ def _resolve_agent_prompt(
     agent_prompt = self._resolve_prompt_templates(
         agent_prompt, session_key or "", cap_figure, computer_use=computer_use, browser=browser
     )
+    # Off the dashboard the pointer resolves to nothing, which leaves a prompt
+    # that held only the pointer empty: no block rather than a blank one.
+    if not agent_prompt.strip():
+        return ""
     return self._substitute_bot_name(agent_prompt)

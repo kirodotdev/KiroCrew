@@ -123,6 +123,29 @@ describe('mochi panelBridge chat transport', () => {
     expect(doneCount).toBe(1)
   })
 
+  it('hands a content patch for a committed row to the transcript as a _patch frame', () => {
+    // The gateway holds the last run of text before a tool call off the row it
+    // was cut from, then gives it back as this patch keyed by the row's `mid`.
+    // Without it the pet drops that word ("check the [config] file").
+    const frames: Record<string, unknown>[] = []
+    bridge.onChatMessage((m) => frames.push(m))
+    const ws = FakeWebSocket.last!
+
+    ws.emit('chat_message_update', {
+      slot: bridge.MOCHI_SLOT,
+      ts: 't1',
+      mid: 'm1',
+      content: 'Let me check the config',
+    })
+    // Nothing for a row the panel draws: a tool row's update, another slot's
+    // row, and a patch that changes only meta.
+    ws.emit('chat_message_update', { slot: bridge.MOCHI_SLOT, tool_call_id: 'tc-1', content: 'ls' })
+    ws.emit('chat_message_update', { slot: 'default', mid: 'm2', content: 'not mine' })
+    ws.emit('chat_message_update', { slot: bridge.MOCHI_SLOT, mid: 'm3', meta: { steerState: 'consumed' } })
+
+    expect(frames).toEqual([{ _patch: 'm1', content: 'Let me check the config' }])
+  })
+
   it('ignores chat events belonging to another slot', () => {
     const chunks: string[] = []
     let doneCount = 0

@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from kiro_crew import platform_compat as pc
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.fixture(autouse=True)
@@ -410,12 +411,16 @@ async def test_async_cleanup_keeps_the_pin_until_repeated_cancellation_settles(m
         assert closed == []
         release.set()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 5)
+            await await_until(task, what="the cancelled cleanup finishing its wait")
         assert closed == [1234]
         process.wait.assert_awaited_once()
     finally:
         release.set()
-        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
+        await await_until(
+            asyncio.gather(task, return_exceptions=True),
+            what="the cleanup task settling in teardown",
+            timeout=5,
+        )
 
 
 @pytest.mark.asyncio

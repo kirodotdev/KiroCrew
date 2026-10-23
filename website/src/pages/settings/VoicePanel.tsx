@@ -14,15 +14,13 @@ import { parseSpeechProviders, speechProviderNotice, speechProviderOptions } fro
 type VoiceConfig = {
   enabled: boolean; provider: string; voice: string; engine: string; rate: string
   autoSpeak: boolean; aws_profile: string; region: string
-  piper_binary: string; piper_model: string; piper_model_config: string; piper_length_scale: number
   system_voice: string
   /** Served provider entries (see lib/speechProviders); absent on an older gateway. */
   providers?: unknown
 }
 
 /** The options when the gateway serves no provider list. */
-const PROVIDER_OPTIONS = ['system', 'piper', 'polly']
-const PROVIDER_PIPER = 'piper'
+const PROVIDER_OPTIONS = ['system', 'polly']
 
 // Consent-gate service key for Polly; shared so the gate and the cache
 // invalidation below cannot drift apart.
@@ -39,29 +37,14 @@ const PROVIDER_POLLY = 'polly'
  */
 const PROVIDER_LABEL_KEY: Record<string, string> = {
   system: 'pages.settings.voicePanel.system_built_in',
-  piper: 'pages.settings.voicePanel.piper_local_offline',
   polly: 'pages.settings.voicePanel.amazon_polly_cloud',
 }
 
 /** Sentinel for "let the OS pick", which is what an empty `system_voice` means. */
 const SYSTEM_VOICE_DEFAULT = ''
 
-// Piper speed is controlled by length_scale (lower = faster). Map friendly
-// labels to length_scale values; the backend consumes piper_length_scale (rate
-// is a Polly-only knob and is ignored by Piper synthesis).
-const PIPER_SPEED_OPTIONS = ['0.7', '0.85', '1.0', '1.15', '1.3', '1.5']
-/** Catalog KEY per length_scale value; resolved per render (see PROVIDER_LABEL_KEY). */
-const PIPER_SPEED_LABEL_KEY: Record<string, string> = {
-  '0.7': 'pages.settings.voicePanel.fastest',
-  '0.85': 'pages.settings.voicePanel.faster',
-  '1.0': 'pages.settings.voicePanel.normal',
-  '1.15': 'pages.settings.voicePanel.slower',
-  '1.3': 'pages.settings.voicePanel.slow',
-  '1.5': 'pages.settings.voicePanel.slowest',
-}
-
 /**
- * Offline stand-in for `aws polly describe-voices` (Piper users have no AWS
+ * Offline stand-in for `aws polly describe-voices` (non-Polly users have no AWS
  * credentials, so the catalogue is never fetched for them).
  *
  * DO NOT TRANSLATE any of these. `value` is the Polly VoiceId sent verbatim to
@@ -82,8 +65,7 @@ const SPEED_OPTIONS = ['80%', '90%', '95%', '100%', '110%', '120%', '130%', '150
 /**
  * Voice settings — the single home for all voice config:
  *  - Text-to-Speech: spoken replies. Provider is the host's built-in engine
- *    (the default, nothing to install), Piper (local, offline, better quality)
- *    or Amazon Polly (cloud). The field set switches with the provider.
+ *    (the default, nothing to install) or Amazon Polly (cloud). The field set switches with the provider.
  *  - Speech-to-Text (Whisper / MLX / Transcribe): dictation + install flow.
  */
 export function VoicePanel() {
@@ -91,14 +73,12 @@ export function VoicePanel() {
   const [saveError, setSaveError] = useState('')
   const [localProfile, setLocalProfile] = useState('')
   const [localRegion, setLocalRegion] = useState('')
-  const [localPiperBinary, setLocalPiperBinary] = useState('')
-  const [localPiperModel, setLocalPiperModel] = useState('')
 
   // ── Text-to-Speech config (server-side) ──
   const voiceQ = useQuery<VoiceConfig>({ queryKey: ['voiceConfig'], queryFn: () => api.voiceConfig() })
   type PollyVoice = { id: string; name: string; language: string; languageCode: string; gender: string; engines: string[] }
   // Only fetch the Polly voice catalogue (aws polly describe-voices) when Polly
-  // is the active provider — Piper users have no AWS CLI/credentials.
+  // is the active provider — other users have no AWS CLI/credentials.
   const voicesQ = useQuery<{ voices: PollyVoice[] }>({ queryKey: ['voiceVoices'], queryFn: () => api.voiceVoices(), staleTime: 3600_000, enabled: voiceQ.data?.provider === 'polly' })
   type SystemVoice = { id: string; name: string; language: string }
   // Enumerating the host engine's voices costs a subprocess, so it is fetched
@@ -112,20 +92,15 @@ export function VoicePanel() {
       initializedRef.current = true
       setLocalProfile(voiceQ.data.aws_profile || '')
       setLocalRegion(voiceQ.data.region || '')
-      setLocalPiperBinary(voiceQ.data.piper_binary || '')
-      setLocalPiperModel(voiceQ.data.piper_model || '')
     }
   }, [voiceQ.data])
 
   // `voice` takes the first fallback entry rather than respelling the VoiceId:
   // one source for the same value, and the id is provider-supplied data that no
   // catalog can localise.
-  const voiceCfg = voiceQ.data ?? { enabled: false, provider: 'system', voice: VOICE_OPTIONS_FALLBACK[0].value, engine: 'generative', rate: '100%', autoSpeak: false, aws_profile: '', region: '', piper_binary: '', piper_model: '', piper_model_config: '', piper_length_scale: 1.0, system_voice: '' }
+  const voiceCfg = voiceQ.data ?? { enabled: false, provider: 'system', voice: VOICE_OPTIONS_FALLBACK[0].value, engine: 'generative', rate: '100%', autoSpeak: false, aws_profile: '', region: '', system_voice: '' }
   const isPolly = voiceCfg.provider === 'polly'
   const isSystem = voiceCfg.provider === 'system'
-  // Piper by name, not as "neither of the other two": a registered provider is
-  // neither, and has no model path or binary to set.
-  const isPiper = voiceCfg.provider === PROVIDER_PIPER
   const servedProviders = parseSpeechProviders(voiceCfg.providers)
   const providerChoices = speechProviderOptions(servedProviders, PROVIDER_OPTIONS, p =>
     Object.prototype.hasOwnProperty.call(PROVIDER_LABEL_KEY, p) ? i18nT(PROVIDER_LABEL_KEY[p]) : p)
@@ -167,8 +142,6 @@ export function VoicePanel() {
         qc.setQueryData(['voiceConfig'], ctx.prev)
         setLocalProfile(ctx.prev.aws_profile || '')
         setLocalRegion(ctx.prev.region || '')
-        setLocalPiperBinary(ctx.prev.piper_binary || '')
-        setLocalPiperModel(ctx.prev.piper_model || '')
         window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: ctx.prev }))
       }
       setSaveError(i18nT('pages.settings.voicePanel.failed_to_save_voice_config'))
@@ -193,7 +166,7 @@ export function VoicePanel() {
   return (
     <>
       {/* askAgent ON: `onError` above has already reverted localProfile /
-          localRegion / localPiperBinary / localPiperModel to the server value
+          localRegion to the server value
           by the time this banner shows, so the navigation cannot destroy an
           unsaved edit — the fields hold exactly what is persisted. */}
       <ErrorNotice message={saveError} onDismiss={() => setSaveError('')} className="mb-4 animate-rise" askAgent />
@@ -212,9 +185,9 @@ export function VoicePanel() {
           ) : (
             <>
               <SettingsToggle label={i18nT('pages.settings.voicePanel.auto_speak_responses')} hint={i18nT('pages.settings.voicePanel.speak_every_assistant_reply_automatically')} checked={voiceCfg.autoSpeak} onChange={v => setVoice({ autoSpeak: v, ...(v ? { enabled: true } : {}) })} disabled={voiceDisabled} />
-              <SettingsSelect settingId="voice.provider-2" label={i18nT('pages.settings.voicePanel.provider')} description={i18nT('pages.settings.voicePanel.the_built_in_engine_needs_no_setup_piper_is_offlin')} value={voiceCfg.provider} options={providerChoices.options} optionLabels={providerChoices.labels} onChange={v => setVoice({ provider: v })} disabled={voiceDisabled} />
-              {/* Hand-off on: with a registered provider selected, no Polly or
-                  Piper field is mounted, and every control left commits on change. */}
+              <SettingsSelect settingId="voice.provider-2" label={i18nT('pages.settings.voicePanel.provider')} description={i18nT('pages.settings.voicePanel.the_built_in_engine_needs_no_setup_amazon_polly_uses')} value={voiceCfg.provider} options={providerChoices.options} optionLabels={providerChoices.labels} onChange={v => setVoice({ provider: v })} disabled={voiceDisabled} />
+              {/* Hand-off on: with a registered provider selected, no Polly
+                  field is mounted, and every control left commits on change. */}
               {providerNotice && <SpeechProviderNotice entry={providerNotice} testId="tts-provider-notice" askAgent />}
               {isSystem ? (
                 <>
@@ -269,13 +242,7 @@ export function VoicePanel() {
                   <SettingsInput label={i18nT('pages.settings.voicePanel.aws_profile_polly')} hint={i18nT('pages.settings.voicePanel.aws_credentials_profile_for_polly')} value={localProfile} onChange={setLocalProfile} onBlur={() => setVoice({ aws_profile: localProfile.trim() })} placeholder={i18nT('pages.settings.voicePanel.default')} disabled={voiceDisabled} />
                   <SettingsInput label={i18nT('pages.settings.voicePanel.aws_region_polly')} hint={i18nT('pages.settings.voicePanel.aws_region_for_polly_api')} value={localRegion} onChange={setLocalRegion} onBlur={() => setVoice({ region: localRegion.trim() })} placeholder={i18nT('pages.settings.voicePanel.us_east_1')} disabled={voiceDisabled} />
                 </>
-              ) : isPiper && (
-                <>
-                  <SettingsInput label={i18nT('pages.settings.voicePanel.piper_model')} description={i18nT('pages.settings.voicePanel.path_to_the_piper_voice_model_onnx_required_down')} value={localPiperModel} onChange={setLocalPiperModel} onBlur={() => setVoice({ piper_model: localPiperModel.trim() })} placeholder={i18nT('pages.settings.voicePanel.piper_en_us_lessac_medium_onnx')} disabled={voiceDisabled} />
-                  <SettingsInput label={i18nT('pages.settings.voicePanel.piper_binary')} description={i18nT('pages.settings.voicePanel.path_to_the_piper_executable_leave_blank_to_auto')} value={localPiperBinary} onChange={setLocalPiperBinary} onBlur={() => setVoice({ piper_binary: localPiperBinary.trim() })} placeholder={i18nT('pages.settings.voicePanel.auto_detect')} disabled={voiceDisabled} />
-                  <SettingsSelect label={i18nT('pages.settings.voicePanel.speed')} hint={i18nT('pages.settings.voicePanel.piper_speech_speed_length_scale')} value={String(voiceCfg.piper_length_scale)} options={PIPER_SPEED_OPTIONS} optionLabels={PIPER_SPEED_OPTIONS.map(v => i18nT(PIPER_SPEED_LABEL_KEY[v]))} onChange={v => setVoice({ piper_length_scale: Number(v) })} disabled={voiceDisabled} />
-                </>
-              )}
+              ) : null}
             </>
           )}
         </SettingsCard>

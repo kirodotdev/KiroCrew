@@ -34,6 +34,7 @@ from kiro_crew.change_card_catalog_kinds import (
     KIND_CREWMATE_CAPABILITIES,
     KIND_CREWMATE_CHECK_INS,
     KIND_CREWMATE_CREATE,
+    KIND_CREWMATE_DASHBOARD_PAGE,
     KIND_CREWMATE_GOAL,
     KIND_CREWMATE_IMPORT,
     KIND_CREWMATE_KEY_RESULTS,
@@ -745,6 +746,10 @@ def build_preview(
                 },
             )
         ]
+    elif kind == KIND_CREWMATE_DASHBOARD_PAGE:
+        from kiro_crew import change_card_dashboard_page
+
+        change_card_dashboard_page.preview(p, snapshot, context, out, fail=_fail, step=step)
     elif kind == KIND_CREWMATE_CAPABILITIES:
         revision = snapshot.get("revision")
         if not revision:
@@ -987,6 +992,9 @@ def offers_no_undo(kind: str, params: dict[str, Any]) -> bool:
         KIND_CONNECTION_CONNECT,
         KIND_TRUST_APP,
         KIND_SCHEDULE_UPDATE,
+        # The yes only starts a wake; the page it leads to goes back with
+        # ``dashboard_rollback``, a version like any other.
+        KIND_CREWMATE_DASHBOARD_PAGE,
     ):
         return True
     return kind == KIND_DENIED_COMMAND and params.get("action") == "add"

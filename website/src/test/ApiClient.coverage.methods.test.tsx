@@ -591,6 +591,9 @@ describe('every api method issues one well-formed /api request', () => {
     importSessionFromFile: [new Blob(['{}'], { type: 'application/gzip' })],
     updateInstance: ['sw-1', {}, { signal: CALLER_SIGNAL }],
     chatSlotDetail: ['sw-1', undefined, undefined, CALLER_SIGNAL],
+    // The second argument is the list of routes the dashboard cannot open; a
+    // bare 'sw-2' string is not a list.
+    featureVideoNext: ['sw-1', ['/members']],
     sendChat: ['sw-1', 'sw-2', 'sw-3', CALLER_SIGNAL],
     spawnStatus: ['sw-1', { signal: CALLER_SIGNAL }],
     fileSearch: ['sw-1', 'sw-2', CALLER_SIGNAL],

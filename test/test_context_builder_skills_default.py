@@ -2,8 +2,8 @@
 
 a bare ``ContextBuilder()`` / ``SkillsLoader()`` never syncs the builtin-skills
 tree to disk, while an explicit ``install_builtins=True`` still gets the real
-sync. See ``conftest.py``'s ``_no_default_builtin_skills_sync`` docstring for why
-the floor exists (a bare construction otherwise costs ~20s on a loaded host).
+sync. ``test/conftest_floor_seams.py``'s ``_no_default_builtin_skills_sync`` docstring
+says why the floor exists (a bare construction otherwise costs ~20s on a loaded host).
 """
 
 from __future__ import annotations

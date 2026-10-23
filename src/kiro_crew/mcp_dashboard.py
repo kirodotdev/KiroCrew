@@ -969,7 +969,12 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # the project names this module imported that only its owners read
     from kiro_crew.conductor_patrol import reply_line  # noqa: F401
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F401
-    from kiro_crew.config.sections import FOLDER_SORT_DEFAULT, FOLDER_SORT_MODES  # noqa: F401
+    from kiro_crew.config.sections import (  # noqa: F401
+        AUTOCOMPACT_PCT_MAX,
+        AUTOCOMPACT_PCT_MIN,
+        FOLDER_SORT_DEFAULT,
+        FOLDER_SORT_MODES,
+    )
     from kiro_crew.constants import CHANNEL_SESSION_NAMESPACES  # noqa: F401
     from kiro_crew.dashboard.folder_ownership import (  # noqa: F401
         _folder_owner_app,

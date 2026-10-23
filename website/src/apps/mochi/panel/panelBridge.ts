@@ -686,6 +686,19 @@ function connect(): void {
         if (!isRenderableChatRole(data.role)) break
         for (const cb of messageListeners) cb(normaliseChatMessage(data))
         break
+      case 'chat_message_update': {
+        // New content for a row the panel already committed, named by its
+        // `mid`: the gateway holds the last run of text before a tool call or
+        // an approval prompt off that row until the text after it shows the run
+        // is not half of a credential, then gives it back as this patch. A
+        // frame keyed by `tool_call_id` patches a tool row, which the panel
+        // does not render.
+        const mid = data.mid
+        if (typeof mid === 'string' && mid && typeof data.content === 'string') {
+          for (const cb of messageListeners) cb({ _patch: mid, content: data.content })
+        }
+        break
+      }
       case 'chat_done':
         reportPetEvent('task_complete')
         for (const cb of doneListeners) cb()

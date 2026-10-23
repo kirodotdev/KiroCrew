@@ -1055,7 +1055,7 @@ def configured_sandbox_mode() -> str:
 # Kiro Crew namespace sandbox. Deny-by-default: the gate keys ONLY on the
 # explicit, single-purpose ``KIROCREW_SANDBOX_ACTIVE``, which is exported at
 # exactly one site — the namespace launcher's ``scrub_env`` stage
-# (``sandbox_launcher_program``, which ``_build_launcher_script`` renders). We
+# (``sandbox_launcher_parts/exec_lockdown.py``, which ``_build_launcher_script`` renders). We
 # deliberately do NOT key on ``KIROCREW_HOST_PID``:
 # it is dual-purpose session-identity plumbing, and gating a security-relevant
 # passthrough on a variable set for other reasons is a latent bypass. Since the

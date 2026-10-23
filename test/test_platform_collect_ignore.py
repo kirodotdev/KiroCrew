@@ -64,7 +64,11 @@ def test_conftest_declares_no_collect_ignore_list():
     Checked in the source rather than on the loaded module: the list applies only under
     a platform branch, so on Linux a runtime ``hasattr`` passes whatever the source says.
     """
-    tree = ast.parse(CONFTEST.read_text(encoding="utf-8"), filename=str(CONFTEST))
+    # test/conftest.py binds most of its definitions from plain modules beside it.
+    floor = set(TEST_DIR.glob("conftest_floor_*.py"))
+    parts = sorted(set(TEST_DIR.glob("conftest_*.py")) - floor)
+    source = "\n".join(p.read_text(encoding="utf-8") for p in (CONFTEST, *parts))
+    tree = ast.parse(source, filename=str(CONFTEST))
     assigned = sorted(
         {
             (target.id, node.lineno)

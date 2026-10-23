@@ -128,6 +128,13 @@ def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
 def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
     """Execute a cron tool and return the result as text."""
+    # Second fence behind the unmount: a job runs on the gateway machine, so a
+    # session working in a remote workspace may not schedule or drive one.
+    from kiro_crew.session_environment import refuse_local_only_tool
+
+    remote_refusal = refuse_local_only_tool(_resolve_session_key(), "kirocrew-cron", name)
+    if remote_refusal:
+        return f"Error: {remote_refusal}"
     # Managed callers use ordinary authenticated gateway routing, including
     # live restricted sessions whose execution record intentionally is not on disk.
     if current_caller() is not None or _resolve_session_key():

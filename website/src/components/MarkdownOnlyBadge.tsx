@@ -3,7 +3,7 @@ import { i18nT } from '../i18n/t'
 import type { MarkdownBlock } from '../lib/markdownAgents'
 
 /**
- * The agent pickers' "KAS only" pill: this row's agent is defined only in
+ * The agent pickers' "Kiro Agent only" pill: this row's agent is defined only in
  * markdown and the harness this chat runs cannot load it.
  *
  * A compact pill with the reason on hover, like the Default pill beside it.

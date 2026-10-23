@@ -147,12 +147,23 @@ sub-agent and MCP App state in [side](side.md), [subagent](subagent.md) and
 ## Return-triggered warm task brief
 
 The owner-only `slot_focused` WebSocket frame also drives the warm task brief.
-When the last owner connection viewing a thread sends `{slot: null, hidden:
-true}` or a frame naming another thread, that thread starts an in-memory away
-episode. The episode ends the next time any owner frame names the thread
-again; frames for other threads leave it alone. That return qualifies after at
-least 30 minutes. Socket cleanup, reconnect, ordinary null frames, focus loss,
-and elapsed time alone never start work. A return while the thread runs a turn
+The gateway keeps, in memory and bounded, when each thread was last on screen
+in any owner view: an owner frame naming it, an owner frame leaving it, and the
+close of an owner socket showing it all stamp that time. An owner frame naming
+a mate thread is a possible return only when no owner view already shows it, so
+watching a thread, a re-sent frame, and a second window never qualify. Time
+away runs from the latest of the last-on-screen time, the owner's last genuine
+(non-injected) user message, and the last brief claim row; the two durable
+times are read from the transcript off the event loop, naive rows from older
+builds as local time. With no on-screen record (after a restart) only the
+durable times count. The frame a socket sends on connect carries `announce:
+true`; an announce for a thread with no on-screen record marks it seen now and
+never qualifies, so the reconnect wave after a restart cannot fire a burst. A
+return qualifies after at least 30 minutes away; a thread with no time at all
+never does. Null frames, socket cleanup and elapsed time alone never start
+work. The open-task check reads the small session and work ledgers before the
+history, and a too-recent result is cached in memory until it can expire, so
+repeated focus frames stay cheap. A return while the thread runs a turn
 waits for the turn to end, up to 30 minutes, while the owner keeps the thread
 on screen. Each skip logs one debug line with the thread key and a fixed reason.
 
@@ -161,17 +172,33 @@ short fixed mate opener ("Welcome back, let me catch you up on where we
 are."), picked by the script of the user's request. It starts
 one tool-free background model call. The fingerprint covers the original
 genuine user request, conversation task rows, session ledger, and work ledger.
-The model result is a second ordinary mate message in first-person prose:
-what the user asked for, where it stands, and one to three suggestions, with no
-headings or lists. These generated rows
-are excluded from the task fingerprint. A new user turn, a new away episode,
+The model returns one JSON object: `asked` (at most 160 characters), `now`
+(240), and `needs_you` and `next` (at most three items of 120 each). The prompt
+words it to the user's `dashboard.verbosity` level. `now` is required; an older
+`{"message"}` reply is read as `now`, and a missing `asked` falls back to the
+quoted original request. Each field is redacted before and after whitespace is
+collapsed and `**` dropped, then control markers (`[OPTIONS:`, `[STEERING`,
+`<!--`, any bracket form) are defanged so no reader of `content` turns a field
+into a live control, then the field is capped. The result is a second mate
+message: `meta.brief` holds the fields and `content` holds the same brief as
+labelled plain text. The transcript draws `meta.brief` as a fixed card
+(`WarmBriefCard`) that renders every field as a plain text node; a row without a
+valid `meta.brief` keeps the ordinary bubble. The card is the body of the
+ordinary assistant bubble, so the row keeps its timestamp and row actions, and
+Copy takes the plain-text `content`; chat search reads the card's own visible
+text, so its count matches what can be highlighted. Only an assistant row draws it: any other
+role carrying the same `meta.kind` (the send route keeps client `meta` keys on
+the user row) draws as its own role. These generated rows
+are excluded from the task fingerprint. A new user turn, the owner leaving,
 slot replacement, reset, close, and a finished task drop a stale result
 unposted. Patrol turns, `[work-ledger wake]` rows, and worker reports change
 the dedup fingerprint but do not make a prepared result stale; a turn running
 at publication defers the result until it ends. Only a live user row the person
 typed cancels a brief in preparation; assistant rows, automation rows and turn
-admission never do.
-Away state is never persisted, so restart and network loss fail silent.
+admission never do. Repeated frames, reconnects and several windows share one
+in-flight task and then the durable claim, so each task state gets at most one
+brief, and the claim's time keeps a patrol-changed fingerprint from briefing
+again until another 30 minutes pass without the owner typing.
 
 ## Implementation Boundaries
 
@@ -5322,7 +5349,7 @@ so the next user turn gets a fresh budget and no recovery duration is recorded
 for an outage that never closed -- an interrupted run never ran its retry, so
 nothing observed the dependency come back.
 
-**Every recovery wait in `_run_chat` re-reads its interrupt signals after the
+**Every recovery wait of a dashboard turn re-reads its interrupt signals after the
 sleep, and WHAT it re-reads depends on what it re-queues.** All three waits on the
 exception/settlement path check their guards, sleep a multi-second floor, then
 insert at queue index 0. A Stop, steer or follow-up arriving during that sleep
@@ -5332,7 +5359,7 @@ continuations -- so each arm re-reads for itself.
 
 | Wait | Re-reads | Handed back on a drop |
 |---|---|---|
-| L1 gateway-capacity (CONTINUATION) | suppress, `_stop_pressed()`, queued user follow-up, `_pending_steers` | the counted `_infra_retries`; the ladder run is `forget`-ed, not recorded as recovered |
+| L1 gateway-capacity (CONTINUATION, `_turn_ending_chain`) | suppress, `_stop_pressed()`, queued user follow-up, `_pending_steers` | the counted `_infra_retries`; the ladder run is `forget`-ed, not recorded as recovered |
 | same-model transient 5xx (VERBATIM REPLAY) | suppress, `_stop_pressed()` **only** | all four per-turn budgets (`_transient_5xx_retries`, `_infra_retries`, `_fallback_candidate_idx`, `_fallback_walked`), byte-identical to the throttle-exhaustion drop arm |
 | post-token one-shot (CONTINUATION) | suppress, `_stop_pressed()`, queued user follow-up, `_pending_steers` | nothing: `_posttoken_retry_used` is consumed BELOW the wait, so a dropped retry never spends the allowance |
 

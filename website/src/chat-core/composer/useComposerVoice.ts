@@ -94,7 +94,7 @@ export interface ComposerVoiceHost {
   pendingCaretRef?: React.MutableRefObject<number | null>
 }
 
-export type SttConfig = { streaming?: boolean; enabled?: boolean; dictation_panel?: boolean; available?: boolean; provider?: string; polish?: boolean; submit_on_release?: boolean; code?: string; prereqs?: string[] }
+export type SttConfig = { streaming?: boolean; streaming_providers?: string[]; enabled?: boolean; dictation_panel?: boolean; available?: boolean; provider?: string; polish?: boolean; submit_on_release?: boolean; code?: string; prereqs?: string[] }
 
 /**
  * A deliberate finish (`StopIntent` 'finish') waiting for its transcript to
@@ -192,7 +192,14 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     queryKey: ['sttConfig'],
     queryFn: () => api.sttConfig() as Promise<SttConfig>,
   })
-  const sttStreaming = !!sttCfg?.streaming
+  // The saved preference alone is not enough: a provider that cannot stream
+  // (an edition's batch-only provider) would be sent to /api/ws/stt and refused.
+  // Stream only when the served capability list names the selected provider; a
+  // gateway that serves no list keeps the preference as it was.
+  const sttStreaming = !!sttCfg?.streaming && (
+    !Array.isArray(sttCfg?.streaming_providers)
+    || (typeof sttCfg?.provider === 'string' && sttCfg.streaming_providers.includes(sttCfg.provider))
+  )
   const sttEnabled = !!sttCfg?.enabled
   // Whether a finished transcript is handed to a fast model for punctuation and
   // spacing. Read here rather than inside the replacement so the request is never

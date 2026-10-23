@@ -265,6 +265,9 @@ from kiro_crew.dashboard.state_parts.slot_directory import (  # noqa: E402,F401 
     native_subagent_output_tail,
     request_slot_origin,
 )
+from kiro_crew.dashboard.state_parts.slot_list_hold import (  # noqa: E402,F401 -- re-exported; see state_parts
+    _SLOT_LIST_PARTIAL_DEADLINE_S,
+)
 from kiro_crew.dashboard.state_parts.slot_session import (  # noqa: E402,F401 -- re-exported; see state_parts
     _SLOT_KEY_TITLE_RE,
     NEW_SESSION_TITLE,
@@ -496,6 +499,7 @@ _OWNERS = (
     "kiro_crew.dashboard.state_parts.sidebar_stores",
     "kiro_crew.dashboard.state_parts.slots_frame",
     "kiro_crew.dashboard.state_parts.slots_push",
+    "kiro_crew.dashboard.state_parts.slot_list_hold",
     "kiro_crew.dashboard.state_parts.dashboard_state",
 )
 for _owner in _OWNERS:

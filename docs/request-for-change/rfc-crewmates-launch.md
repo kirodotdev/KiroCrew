@@ -5,9 +5,9 @@ author: CrysisDeu
 created: 2026-09-22
 last-audited: 2026-10-06
 audited-at: 9348a25a34
-revision: 2026-10-10 — §02 one-card create amendment
+revision: 2026-10-22 — §08 Meet your Mates launch intro
 doc-pr:
-implementation-prs: [12797, 12798, 12805, 12806, 12924, 14897, 14914, 14925, 15103, 15280, 16317]
+implementation-prs: [12797, 12798, 12805, 12806, 12924, 14897, 14914, 14925, 15103, 15280, 16317, 17156]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -354,6 +354,48 @@ Crewmates page keeps its on-demand **Meet CrewMates** entry. Reasoning: the
 flow introduces the concept and creates one crewmate the person names; neither
 depends on what the workspace already holds, and a person who opens the
 Crewmates page is looking for exactly this.
+
+Amended 2026-10-22 by the product owner (#17154, PR #17156): the four-step
+flow is replaced by **Meet your Mates**, a launch intro in the style of the
+launch poster, with "Not now" and "Try now". This supersedes the 2026-09-28
+amendment's showing rules and its on-demand entry, and the 2026-10-08 ruling
+for a looping video clip: the intro is a rendered dialog, not a clip, so it
+ships no media and nothing can fail to load.
+
+- **Where it lives:** a startup intro, shown once on a later launch after
+  first run is finished, through the feature-intro plumbing (`feature_videos`
+  catalog entry `crewmates`, `component: "crewmates"`). It is offered only
+  while the Mates preview is on, and never once `dashboard.crewmates_onboarded`
+  is true or the user has a mate of their own -- one besides `default` and the
+  first Mate (`mate`), which every install creates by itself. It is also
+  withheld once the first Mate has been deleted: "Try now" opens that Mate's
+  chat, and there would be none to open.
+- **What it shows:** the headline "Meet your Mates.", one line ("They find the
+  work, do it, and ask only when they need you."), a sample message from Mate
+  with the two answers it offers, and two rows of crewmate faces drifting past
+  in opposite directions (still under reduced motion), running off the card's
+  edges with a hard clip. The dialog is the poster's cream card in every theme;
+  the accent is the theme's own.
+- **What it does:** it does not create a crewmate. "Try now" opens Mate's chat
+  (`/members?member=mate`); on "Not now" Mate's avatar flies from the sample
+  card to the Mates rail item and lands as its "New" tag (under reduced
+  motion, or with the row off screen, the tag just appears), which opens the
+  same chat and clears the first time the page is opened by any path. Both
+  record the intro as seen. Escape is "Not now"; a click on
+  the scrim closes without a verdict, so the intro comes back.
+- **The first Mate's entrance** -- how Mate appears in the chat the first time
+  it opens, and whether anything travels from the dialog to its avatar -- is
+  not decided here. It is #23207.
+- **Entry point:** the Crewmates page has no Meet CrewMates entry.
+- **Off switch:** `dashboard.feature_videos_enabled: false` does not suppress
+  this intro, because it stands in for a first-run chapter that never had that
+  switch. `dashboard.crewmates_onboarded: true` turns it off.
+
+Reasoning: a person who already made a mate does not need the concept
+introduced, and creating a mate is the normal "+ New mate" card. A rendered
+dialog over a clip: the poster already says what the launch is about, a clip
+would need an asset shipped and fetched for a seven-second loop, and a
+missing or unplayable asset is the one failure a launch intro cannot afford.
 
 Already shipped and shown in the review as evidence, not re-decided here:
 crewmates are out of the ordinary session list; the ghost icon marks a

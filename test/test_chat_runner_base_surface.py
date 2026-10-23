@@ -749,14 +749,16 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_redact_segment_text",
             "function",
-            "(slot: '_ChatSlot', text: 'str') -> 'tuple[str, list[dict], list[dict]]'",
+            # keep_sri_digests: defaulted, so every old caller keeps its shape.
+            "(slot: '_ChatSlot', text: 'str', keep_sri_digests: 'bool' = True)"
+            " -> 'tuple[str, list[dict], list[dict]]'",
         ),
         ("_append_command_reply", "function", "(slot: '_ChatSlot', text: 'str') -> 'None'"),
         ("_TOOL_GROUP_ROLES", "value", "frozenset"),
         (
             "_flush_segment",
             "function",
-            "(state: 'DashboardState', slot: '_ChatSlot', assistant_text: 'str', *, broadcast: 'bool' = True, quiet_persist: 'bool' = False, interrupted: 'bool' = False) -> 'None'",
+            "(state: 'DashboardState', slot: '_ChatSlot', assistant_text: 'str', *, broadcast: 'bool' = True, quiet_persist: 'bool' = False, interrupted: 'bool' = False) -> 'dict[str, Any]'",
         ),
         (
             "_schedule_widget_registration",

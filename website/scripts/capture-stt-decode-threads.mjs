@@ -32,16 +32,12 @@ const MODELS = [
 const VOICE_CONFIG_FIXTURE = {
   enabled: false,
   autoSpeak: false,
-  provider: 'piper',
+  provider: 'system',
   voice: 'Ruth',
   engine: 'generative',
   rate: '100%',
   aws_profile: '',
   region: 'us-east-1',
-  piper_binary: '',
-  piper_model: '~/piper/en_US-lessac-medium.onnx',
-  piper_model_config: '',
-  piper_length_scale: 1.0,
 }
 
 const STT_CONFIG = {

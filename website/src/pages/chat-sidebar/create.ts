@@ -352,7 +352,7 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
         // `activate: false`, so createSlot asked the sidebar for nothing. Open
         // the default folder's path here, or its row stays hidden in a
         // collapsed folder, as for a plain New.
-        if (slot.folder_id) dispatch(requestSlotFolderOpen(slot.key))
+        dispatch(requestSlotFolderOpen({ key: slot.key, folder_id: slot.folder_id }))
       }
       // Plain create activated the new slot: leave Split View so it shows,
       // the same answer a row click gets (#21935). Guard on the live

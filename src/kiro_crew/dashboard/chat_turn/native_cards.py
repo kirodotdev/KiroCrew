@@ -1,5 +1,5 @@
 """kiro-cli native sub-agent Activity cards and the native AskUserQuestion card a dashboard turn
-shows."""
+shows, and the stream's native sub-agent arms (``_on_subagent_list``, ``_on_subagent_activity``)."""
 
 from __future__ import annotations
 
@@ -22,11 +22,13 @@ if TYPE_CHECKING:
         ValidationError,
         _redact_tool_field,
         logger,
+        redact,
         redact_and_truncate,
         redact_credentials,
         redact_exfiltration_urls,
         validate_ask_user_question,
     )
+    from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
 
 # Native subagent cards carry a short error string only, so a long provider
 # message is clipped. The request id is what identifies the failure
@@ -372,3 +374,61 @@ def _safe_native_crew_debug_title(title: str) -> str:
     safe, _ = redact_exfiltration_urls(title or "")
     safe, _ = redact_credentials(safe)
     return safe
+
+
+async def _on_subagent_list(turn: _ChatTurn, event) -> None:
+    """The session's native sub-agent list."""
+    _native_card_output = turn._native_card_output
+    _native_tracker = turn._native_tracker
+    slot = turn.slot
+    state = turn.state
+    # kiro-cli per-subagent state (native use_subagent crews).
+    # Reconcile one Activity card per sub-agent (spawn/done).
+    logger.debug(
+        "EVENT_SUBAGENT_LIST: %s subagents, slot=%s",
+        len(event.subagents or []),
+        slot.key,
+    )
+    _native_subagent_sync(state, slot, event.subagents, _native_tracker, _native_card_output)
+
+
+async def _on_subagent_activity(turn: _ChatTurn, event) -> None:
+    """A native sub-agent's activity."""
+    _native_card_output = turn._native_card_output
+    _native_card_output_len = turn._native_card_output_len
+    _native_tc_card = turn._native_tc_card
+    _native_tracker = turn._native_tracker
+    slot = turn.slot
+    state = turn.state
+    # kiro-cli's _kiro.dev/session/update tags a sub-agent's inner
+    # tool call with its sessionId. This ALWAYS arrives before the
+    # corresponding flat tool_call/tool_call_update, so building the
+    # toolCallId->card map here lets those flat events (which carry
+    # the full tool title AND the real output) attribute to the
+    # right sub-agent card.
+    _sid = event.sub_session_id
+    if _sid in _native_tracker and event.tool_call_id:
+        _native_tc_card[event.tool_call_id] = f"native:{_redact_tool_field(_sid)}"
+    # Permission-rejection notices (the handle's own "⛔ …" lines,
+    # e.g. drain-time rejects yielded at turn start) arrive BEFORE
+    # any subagent_list populates the per-turn tracker — dropping
+    # them here would leave the user watching a child tool fail
+    # with no explanation. When the card cannot exist yet, persist
+    # the explanation as a slot notice instead.
+    if _sid not in _native_tracker and event.text and event.text.startswith("⛔"):
+        _txt = redact(event.text)
+        slot.append("notice", _txt, "msg msg-info")
+    # Some kiro-cli builds also stream the sub-agent's own text via
+    # agent_message_chunk on this channel — surface it on the card.
+    if _sid in _native_tracker and event.text:
+        _card_id = f"native:{_redact_tool_field(_sid)}"
+        _txt = redact(event.text)
+        _native_card_output_len[_card_id] = _append_native_output(
+            _native_card_output.setdefault(_card_id, []),
+            _txt,
+            _native_card_output_len.get(_card_id, 0),
+        )
+        state.broadcast_ws(
+            "subagent_chunk",
+            {"id": _card_id, "slot": slot.key, "text": _txt},
+        )

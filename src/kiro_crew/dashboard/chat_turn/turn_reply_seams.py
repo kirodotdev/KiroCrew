@@ -1,6 +1,7 @@
 """What a dashboard turn writes as its reply: the partial reply a dying turn persists, the
-abnormal end's usage row, the text and thinking stream flushes, the steer's segment cut, and the
-error rows the stream watchdogs post."""
+abnormal end's usage row, the text and thinking stream flushes, the segment cut at a tool call or
+an approval prompt and the run it holds across it, the steer's segment cut, and the error rows the
+stream watchdogs post."""
 
 from __future__ import annotations
 
@@ -17,6 +18,8 @@ if TYPE_CHECKING:
         logger,
         provider_last_turn_usage,
         read_turn_model,
+        redact,
+        reflow_and_label_glued_option_marker,
         save_slot_off_loop,
         slot_history_key,
     )
@@ -24,6 +27,9 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.segment_flush import (
         _cleared_segment_text,
         _flush_segment,
+        _give_back_run,
+        _hold_segment_tail,
+        _open_segment_with,
         _redact_segment,
         _segment_row_meta,
     )
@@ -82,6 +88,10 @@ async def _persist_partial_reply(turn, reason: str = "") -> None:
     # ``_reply_flushed``: the end-of-turn flush already saved this text and
     # leaves it in ``assistant_text``, so a cancel landing after it (a late
     # Stop, the turn ceiling's task cancel) must not save it a second time.
+    #
+    # A run the live stream held at the turn's last display boundary is
+    # settled first: back on its row, or into this text when it is part of it.
+    rows_changed = _drop_wire_tail(turn)
     if turn.assistant_text and not turn._reply_flushed:
         slot.purge_chunks()
         # Same glued-marker repair and whole-text redaction as
@@ -110,24 +120,27 @@ async def _persist_partial_reply(turn, reason: str = "") -> None:
             text=_redacted,
             interrupted=True,
         )
-        if _gateway_shutdown_requested(state):
-            # The graceful save ran before this row existed, and the turn's
-            # teardown skips its own save while the process is going away, so
-            # without this the row dies with the process. Saved with the
-            # in-flight marker still set: the next start shows this text with
-            # its interruption row and the Resume button. Before the usage
-            # write and the recovery rows below, so the restart reconciles
-            # exactly the text the user watched stream.
-            try:
-                await save_slot_off_loop(
-                    state,
-                    slot,
-                    force=True,
-                    expected_history_key=slot_history_key(slot),
-                    expected_slot_name=slot.key,
-                )
-            except Exception:
-                logger.debug("Saving the partial reply at shutdown failed", exc_info=True)
+        rows_changed = True
+    if rows_changed and _gateway_shutdown_requested(state):
+        # The graceful save ran before these rows changed (this text's row, or
+        # a row the held run just went back on, which can happen with no text
+        # after the last tool call or approval prompt), and the turn's teardown
+        # skips its own save while the process is going away, so without this
+        # the change dies with the process. Saved with the in-flight marker
+        # still set: the next start shows this text with its interruption row
+        # and the Resume button. Before the usage write and the recovery rows
+        # below, so the restart reconciles exactly the text the user watched
+        # stream.
+        try:
+            await save_slot_off_loop(
+                state,
+                slot,
+                force=True,
+                expected_history_key=slot_history_key(slot),
+                expected_slot_name=slot.key,
+            )
+        except Exception:
+            logger.debug("Saving the partial reply at shutdown failed", exc_info=True)
     # The usage row is written whether or not the turn produced partial text
     # -- a turn cut after many tool calls bills credits with no final
     # assistant segment -- so it sits outside the ``assistant_text`` guard.
@@ -263,7 +276,8 @@ def _flush_text_stream(turn) -> None:
     _wsred = turn._wsred
     slot = turn.slot
     state = turn.state
-    wire = _wsred.flush()
+    continued = _held_continued(turn)
+    wire = _settle_held(turn, _wsred.flush(), continued=continued)
     if not wire:
         return
     _ttft_visible.mark(wire)
@@ -280,6 +294,121 @@ def _flush_text_stream(turn) -> None:
         "chat_chunk",
         {"slot": slot.key, "content": wire, "seq": turn.chunk_seq, "gen": chunk_generation()},
     )
+
+
+# A tool call or an approval prompt is a display boundary INSIDE the reply, not
+# its end: the text after it can finish a credential the text before it began,
+# and two redaction windows cut there emit and save both halves unmatched. So
+# the cut there (_cut_segment) leaves the run _wsred still withholds in the
+# redactor, where the next text joins it, and off the row it was cut from. The
+# first output that holds the run settles it (_settle_held), judged on the raw
+# text: a run that redacts together with the raw text after it exactly as the
+# two redact apart is a word of its own and goes back on its row; otherwise it
+# opens the segment it continued into and is saved with it, redacted as one
+# text. One entry per cut crossed before that output (``turn._held_runs``) --
+# the row, the raw run cut off it, the variant the row showed then and the
+# crew-log model call the row's text came from -- so a run held over several
+# cuts goes back piece by piece. The Slack stream carries its held run across a
+# `wait` the same way (slack/handler_runtime/stream.py: move_back, _give_back).
+
+
+def _held_continued(turn) -> bool:
+    """Whether text reached _wsred after the run it holds for a boundary."""
+    _wsred = turn._wsred
+    held = "".join(run for _, run, _, _ in turn._held_runs)
+    return bool(held) and (_wsred.discarding or _wsred.held != held)
+
+
+def _stands_alone(run: str, after: str) -> bool:
+    """Whether raw *run* redacts together with *after*, the raw text that
+    followed it, exactly as *run* unchanged followed by *after* redacted alone:
+    then no value starts in one and ends in the other."""
+    return redact(run + after) == run + redact(after)
+
+
+def _settle_held(turn, wire: str, *, continued: bool) -> str:
+    """Settle the run held at a boundary against *wire*, the redactor's next
+    output, and return what is left of *wire* for the current segment.
+    *continued* says whether text after the boundary reached the redactor too;
+    that text is the slot's raw segment copy, which the cut began afresh."""
+    slot = turn.slot
+    state = turn.state
+    if not turn._held_runs:
+        return wire
+    held = list(turn._held_runs)
+    turn._held_runs.clear()
+    run = "".join(piece for _, piece, _, _ in held)
+    after = slot.segment_raw_text if continued else ""
+    if after is not None and wire.startswith(run) and _stands_alone(run, after):
+        for row, piece, variant_idx, step in held:
+            _give_back_run(state, slot, row, piece, variant_idx)
+            _log_given_back(turn, piece, step)
+        return wire[len(run) :]
+    if not continued:
+        # Nothing followed the run, so what it redacts to is its own row's.
+        row, _, variant_idx, step = held[0]
+        _give_back_run(state, slot, row, wire, variant_idx)
+        _log_given_back(turn, wire, step)
+        return ""
+    turn.assistant_text = _open_segment_with(slot, turn.assistant_text, run)
+    return wire
+
+
+def _log_given_back(turn, text: str, step: int) -> None:
+    """Record *text*, given back to a row after its cut, in the crew log.
+
+    The row's ``message/sent`` went out at the cut, ahead of the tool call or
+    approval prompt, without the run held then. This entry carries the run under
+    the same turn and the same model call (*step*), so a model call's text is
+    its ``message/sent`` entries joined in order."""
+    crew_log_emit.on_message_sent(turn._crew_log_sid, turn._crew_log_turn_no, step=step, text=text)
+
+
+def _cut_segment(turn, *, broadcast: bool = True) -> None:
+    """Finalize the accumulated text as a segment at a display boundary inside
+    the reply, holding back the run _wsred still withholds (see _held_runs).
+
+    Held only while the whole segment saves that run as it was written: a run
+    the segment already redacts ends a value it holds whole, so the window
+    ends here as it does at the reply's end."""
+    _wsred = turn._wsred
+    slot = turn.slot
+    state = turn.state
+    run = "" if _wsred.discarding else _wsred.held
+    before = "".join(piece for _, piece, _, _ in turn._held_runs)
+    own = run[len(before) :] if run.startswith(before) else ""
+    raw = slot.segment_raw_text
+    kept = None
+    if (
+        own
+        and raw is not None
+        and redact(reflow_and_label_glued_option_marker(raw)[0]).endswith(own)
+    ):
+        kept = _hold_segment_tail(slot, turn.assistant_text, own)
+    if kept is None:
+        if not _wsred.discarding:
+            _flush_text_stream(turn)
+        _flush_segment(state, slot, turn.assistant_text, broadcast=broadcast)
+    else:
+        row = _flush_segment(state, slot, kept, broadcast=broadcast)
+        turn._held_runs.append((row, own, row.get("variant_idx"), turn._crew_log_step))
+    turn.assistant_text = _cleared_segment_text(slot)
+
+
+def _drop_wire_tail(turn) -> bool:
+    """Discard what _wsred withholds without streaming it, settling a run it
+    holds for a boundary first. Call it BEFORE the segment it drops is
+    cleared, so a run that belongs to that segment is dropped with it.
+
+    True when it settled such a run: back on its row, which changes a row
+    already in the window, or into the current segment's text."""
+    _wsred = turn._wsred
+    settled = bool(turn._held_runs)
+    if settled:
+        continued = _held_continued(turn)
+        _settle_held(turn, _wsred.flush(), continued=continued)
+    _wsred.reset()
+    return settled
 
 
 def _flush_thinking_stream(turn) -> None:
@@ -322,7 +451,6 @@ def _steer_segment_cut(turn, *, interrupted: bool = True) -> None:
     Sync on purpose — the handler and this turn share the event loop, so
     the flush cannot interleave with chunk processing.
     """
-    _wsred = turn._wsred
     slot = turn.slot
     state = turn.state
     # Drop the wire redactor's withheld tail instead of emitting it: a
@@ -330,8 +458,9 @@ def _steer_segment_cut(turn, *, interrupted: bool = True) -> None:
     # streaming message at the steer boundary, opening a phantom streaming
     # bubble below the steer card. No text is lost — assistant_text
     # accumulates the full segment independently of the wire buffer, and
-    # _flush_segment persists (and re-redacts) that full text.
-    _wsred.reset()
+    # _flush_segment persists (and re-redacts) that full text. A run held at
+    # an earlier tool call is settled into its row or into this segment.
+    _drop_wire_tail(turn)
     if turn.assistant_text.strip():
         # The persisted row may hold text the redactor never broadcast (a
         # fully withheld first chunk). It is published quietly, so it is

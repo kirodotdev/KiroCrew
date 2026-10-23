@@ -1,4 +1,5 @@
-"""Steer settlement, queue entry classification and the drain's admission sweep."""
+"""Steer settlement, queue entry classification, the drain's admission sweep and the stream's
+steer arm (``_on_steer_consumed``)."""
 
 from __future__ import annotations
 
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
         quote_meta,
         settle_consumed_steers,
     )
+    from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
 
 
 def _mark_steer_row_state(
@@ -647,3 +649,32 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
                 else ""
             ),
         )
+
+
+async def _on_steer_consumed(turn: _ChatTurn, event) -> None:
+    """A steer the session took in mid-turn."""
+    _person_steered_turn = turn._person_steered_turn
+    _refusal_notices = turn._refusal_notices
+    _refusal_notices_settled = turn._refusal_notices_settled
+    slot = turn.slot
+    state = turn.state
+    _had_person_steer = bool(getattr(slot, "_pending_steers", None))
+    _settle_consumed_steers(slot, event.text or "", state)
+    if _had_person_steer:
+        # A person's steer is in this turn (kiro-cli echoes
+        # consumption BEFORE the model's reply streams). Whether
+        # the quiet end has already applied or comes later, the
+        # post-terminal text drop must not eat their answer. Read
+        # before the settle, which clears the entry.
+        _person_steered_turn = True
+        turn._person_steered_turn = _person_steered_turn
+    if _refusal_notices:
+        # Same echo, same parser as the user-steer ledger: an
+        # empty echo is no evidence, and treating it as delivery
+        # would drop the fallback continuation and leave the model
+        # holding kiro-cli's "User denied tool execution"
+        # uncorrected.
+        _still_pending = settle_consumed_steers(_refusal_notices, event.text or "")
+        _refusal_notices_settled += len(_refusal_notices) - len(_still_pending)
+        turn._refusal_notices_settled = _refusal_notices_settled
+        _refusal_notices[:] = _still_pending

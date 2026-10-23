@@ -307,6 +307,75 @@ class TestWhatARowCarries:
         log.completed(1)
         assert log.row(1)["reply"] == "the settled answer"
 
+    def test_two_message_sent_of_one_model_call_join_into_the_reply(self) -> None:
+        """Settled rule 2a. The runner cuts the last run of a row off at a tool call or
+        approval prompt and logs it under the row's own step once the text after it
+        settles the run, so one model call's reply arrives as two `message/sent`: the
+        row's entry, then that run. The row shows the whole of it, joined in order."""
+        log = _Log()
+        log.prompt(1, "a question")
+        log.started(1)
+        log.reply(1, 1, "Let me check the ")
+        log.reply(1, 1, "config")
+        log.completed(1)
+        assert log.row(1)["reply"] == "Let me check the config"
+
+    def test_a_later_model_call_still_replaces_rather_than_joins(self) -> None:
+        """Rule 2a joins only within one step. A reply at a LATER step is the next
+        model call, so it replaces -- rule 2 (the newest call wins) is unchanged."""
+        log = _Log()
+        log.prompt(1, "a question")
+        log.started(1)
+        log.reply(1, 1, "narration before a tool")
+        log.reply(1, 1, " and the run held across it")
+        log.reply(1, 2, "the answer the next call gave")
+        log.completed(1)
+        assert log.row(1)["reply"] == "the answer the next call gave"
+
+    def test_a_given_back_run_joins_a_row_committed_with_no_text_yet(self) -> None:
+        """A segment that is all one held run commits an empty row (no `message/sent`),
+        and the run given back is the only entry for that step, so it stands alone."""
+        log = _Log()
+        log.prompt(1, "a question")
+        log.started(1)
+        log.reply(1, 1, "OK.")
+        log.completed(1)
+        assert log.row(1)["reply"] == "OK."
+
+    def test_a_run_given_back_after_a_chunked_body_leaves_the_preview_empty(self) -> None:
+        """Rule 2a does not resurrect an unreadable call. A long reply stored as chunks
+        carries no text here, and the run given back under its step must not become the
+        settled preview: the body before it could not be read, so empty stays empty."""
+        log = _Log()
+        log.prompt(1, "summarise the whole log")
+        log.started(1)
+        log.chunked_reply(1, 1)
+        log.reply(1, 1, "config")
+        log.completed(1)
+        assert log.row(1)["reply"] == ""
+
+    def test_a_chunked_part_after_a_readable_one_in_the_same_call_empties_it(self) -> None:
+        """If any part of one model call is unreadable, the whole call's preview is
+        empty, whichever part arrives first."""
+        log = _Log()
+        log.prompt(1, "a question")
+        log.started(1)
+        log.reply(1, 1, "Let me check the ")
+        log.chunked_reply(1, 1)
+        log.completed(1)
+        assert log.row(1)["reply"] == ""
+
+    def test_joined_parts_are_previewed_once_so_the_space_between_survives(self) -> None:
+        """The join is on the raw text, not on two previews: previewing each part
+        collapses its own trailing whitespace, which would glue the parts together."""
+        log = _Log()
+        log.prompt(1, "a question")
+        log.started(1)
+        log.reply(1, 1, "a sentence that ends with a space ")
+        log.reply(1, 1, "and continues")
+        log.completed(1)
+        assert log.row(1)["reply"] == "a sentence that ends with a space and continues"
+
     def test_a_steered_reply_is_cut_and_never_becomes_the_settled_one(self) -> None:
         """Settled rule 1, and the half that matters: a cut reply does not CLEAR.
 
@@ -771,9 +840,12 @@ class TestTheRegistryWiring:
         assert "outline" not in crew_log._SLOT_FOLD_ROW_BYTES
         assert crew_log._FOLDS["outline"].count_rows is None
 
-    def test_the_fold_stands_at_the_unmoved_state_version(self) -> None:
-        """It is new, so it has never had a stored meaning to retire."""
-        assert crew_log._FOLDS["outline"].state_version == crew_log._FOLD_STATE_VERSION_BASE
+    def test_the_fold_moved_its_state_version_when_the_draft_gained_its_step(self) -> None:
+        """The draft now carries its model-call step, raw text and an unreadable-body
+        flag so a run given back under a row's step joins that row (rule 2a) without
+        resurrecting an unreadable call's empty preview. That changed what a savepoint
+        stores, so the version moved past the base and an old file retires cold."""
+        assert crew_log._FOLDS["outline"].state_version == crew_log._FOLD_STATE_VERSION_BASE + 2
 
     def test_the_step_cannot_reach_the_state_it_was_handed(self) -> None:
         """``copy_state`` is spelled out, so this is what proves it deep enough.

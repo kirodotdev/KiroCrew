@@ -106,8 +106,7 @@ function seedVoice(over: Record<string, unknown>) {
   type VoiceConfig = Awaited<ReturnType<typeof api.voiceConfig>>
   const cfg = {
     enabled: false, provider: 'system', voice: 'Ruth', engine: 'generative', rate: '100%',
-    autoSpeak: false, aws_profile: '', region: '', piper_binary: '', piper_model: '',
-    piper_model_config: '', piper_length_scale: 1.0, system_voice: '', ...over,
+    autoSpeak: false, aws_profile: '', region: '', system_voice: '', ...over,
   } as VoiceConfig
   vi.spyOn(api, 'voiceConfig').mockResolvedValue(cfg)
   vi.spyOn(api, 'voiceVoices').mockResolvedValue({ voices: [] })
@@ -117,7 +116,7 @@ function seedVoice(over: Record<string, unknown>) {
   renderWithProviders(<VoicePanel />)
 }
 
-const TTS_BUILTINS = ['System (built-in)', 'Piper (local, offline)', 'Amazon Polly (cloud)']
+const TTS_BUILTINS = ['System (built-in)', 'Amazon Polly (cloud)']
 
 describe('TTS provider picker', () => {
   it('falls back to today\'s options, in order, when the gateway serves no list', async () => {
@@ -127,16 +126,15 @@ describe('TTS provider picker', () => {
     expect(screen.queryByTestId('tts-provider-notice')).toBeNull()
   })
 
-  it('lists a registered provider after the built-ins, without the Piper fields', async () => {
-    seedVoice({ provider: 'acme', providers: [builtin('system'), builtin('piper'), builtin('polly'), ACME_READY] })
+  it('lists a registered provider after the built-ins', async () => {
+    seedVoice({ provider: 'acme', providers: [builtin('system'), builtin('polly'), ACME_READY] })
     await screen.findByRole('combobox', { name: /Provider/ }, { timeout: 5_000 })
     expect(await optionNames(/Provider/)).toEqual([...TTS_BUILTINS, 'Acme Speech'])
-    expect(screen.queryByText('Piper Model')).toBeNull()
     expect(screen.queryByTestId('tts-provider-notice')).toBeNull()
   })
 
   it('keeps an unavailable provider selected, with its reason and a sign-in hint', async () => {
-    seedVoice({ provider: 'acme', providers: [builtin('system'), builtin('piper'), builtin('polly'), ACME_SIGNED_OUT] })
+    seedVoice({ provider: 'acme', providers: [builtin('system'), builtin('polly'), ACME_SIGNED_OUT] })
     const notice = await screen.findByTestId('tts-provider-notice', undefined, { timeout: 5_000 })
     expect(notice.textContent).toContain('Not signed in to Acme.')
     expect(screen.getByTestId('tts-provider-notice-login').textContent).toBe('Sign in with your Acme account to use it.')
@@ -146,7 +144,7 @@ describe('TTS provider picker', () => {
   })
 
   it('shows a failed check as an error with the agent hand-off', async () => {
-    seedVoice({ provider: 'acme', providers: [builtin('system'), builtin('piper'), builtin('polly'), ACME_CHECK_FAILED] })
+    seedVoice({ provider: 'acme', providers: [builtin('system'), builtin('polly'), ACME_CHECK_FAILED] })
     const notice = await screen.findByTestId('tts-provider-notice', undefined, { timeout: 5_000 })
     expect(notice.getAttribute('role')).toBe('alert')
     expect(notice.textContent).toContain('the provider did not answer in time')

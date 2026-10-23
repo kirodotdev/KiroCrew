@@ -32,6 +32,8 @@ vi.mock('../components/pierreStaging', async importOriginal => ({
 }))
 
 interface StandInProps {
+  options?: { onLineSelectionChange?: (r: { start: number; end: number } | null) => void }
+  selectedLines?: { start: number; end: number } | null
   lineAnnotations?: LineAnnotation<unknown>[]
   renderAnnotation?: (a: LineAnnotation<unknown>) => React.ReactNode
   renderGutterUtility?: (getHoveredLine: () => { lineNumber: number } | undefined) => React.ReactNode
@@ -39,7 +41,9 @@ interface StandInProps {
 vi.mock('../pierre', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   PierreCode: (props: StandInProps) => (
-    <div data-testid="pierre-code">
+    <div data-testid="pierre-code" data-selected={JSON.stringify(props.selectedLines ?? null)}>
+      {/* Stands in for a drag over the line numbers. */}
+      <button type="button" onClick={() => props.options?.onLineSelectionChange?.({ start: 2, end: 2 })}>pick line 2</button>
       {/* The reader hovers content line 2 of the fence. */}
       {props.renderGutterUtility?.(() => ({ lineNumber: 2 }))}
       {props.lineAnnotations?.map((a, i) => <div key={i}>{props.renderAnnotation?.(a)}</div>)}
@@ -122,11 +126,42 @@ describe('ArtifactDetailPage code-block comments', () => {
     expect(anchor.suffix).toMatch(/^\n```/)
   })
 
+  it('clears the picked line range once the comment it was made on posts', async () => {
+    renderPage()
+    const code = await screen.findByTestId('pierre-code')
+    fireEvent.click(within(code).getByRole('button', { name: 'pick line 2' }))
+    await waitFor(() => expect(code.dataset.selected).toBe(JSON.stringify({ start: 2, end: 2 })))
+    fireEvent.click(within(code).getByRole('button', { name: 'Add comment' }))
+    const input = await screen.findByLabelText('Comment on the selected text')
+    fireEvent.change(input, { target: { value: 'rename b' } })
+    // The refetch after the post returns the stored comment.
+    vi.mocked(api).artifactComments = vi.fn().mockResolvedValue({ comments: [codeComment()] })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Add comment' }).find(b => !code.contains(b))!)
+    await waitFor(() => expect(vi.mocked(api).postArtifactComment).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByTestId('pierre-code').dataset.selected).toBe('null'))
+  })
+
+  it('keeps the picked range when the post is refused', async () => {
+    vi.mocked(api).postArtifactComment = vi.fn().mockRejectedValue(new Error('nope'))
+    renderPage()
+    const code = await screen.findByTestId('pierre-code')
+    fireEvent.click(within(code).getByRole('button', { name: 'pick line 2' }))
+    await waitFor(() => expect(code.dataset.selected).toBe(JSON.stringify({ start: 2, end: 2 })))
+    fireEvent.click(within(code).getByRole('button', { name: 'Add comment' }))
+    const input = await screen.findByLabelText('Comment on the selected text')
+    fireEvent.change(input, { target: { value: 'rename b' } })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Add comment' }).find(b => !code.contains(b))!)
+    await waitFor(() => expect(vi.mocked(api).postArtifactComment).toHaveBeenCalledTimes(1))
+    // The refusal has settled once the composer says so.
+    expect(await screen.findByText(/Couldn.t save your comment/)).toBeInTheDocument()
+    expect(screen.getByTestId('pierre-code').dataset.selected).toBe(JSON.stringify({ start: 2, end: 2 }))
+  })
+
   it('routes a stored code anchor to its fence as a chip that opens the thread', async () => {
     vi.mocked(api).artifactComments = vi.fn().mockResolvedValue({ comments: [codeComment()] })
     renderPage()
     const code = await screen.findByTestId('pierre-code')
-    const chip = await within(code).findByRole('button', { name: 'Comment thread (1)' })
+    const chip = await within(code).findByRole('button', { name: 'Comment thread (1, unread)' })
     fireEvent.click(chip)
     expect(await screen.findByRole('dialog', { name: 'Comment thread' })).toBeInTheDocument()
   })
@@ -137,7 +172,7 @@ describe('ArtifactDetailPage code-block comments', () => {
     vi.mocked(api).artifactComments = vi.fn().mockResolvedValue({ comments: [prose, codeComment()] })
     renderPage()
     const code = await screen.findByTestId('pierre-code')
-    await within(code).findByRole('button', { name: 'Comment thread (1)' })
+    await within(code).findByRole('button', { name: 'Comment thread (1, unread)' })
     expect(within(code).getAllByRole('button', { name: /Comment thread/ })).toHaveLength(1)
   })
 })

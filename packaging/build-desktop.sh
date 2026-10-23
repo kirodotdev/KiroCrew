@@ -183,29 +183,37 @@ is_macos_intel_backend() {
   }
 }
 
-# The audio decoder wheel a backend installs, or nothing.
+# Install the pinned audio decoder into a backend's site-packages, or nothing.
+#
+# The bytes come from kiro_crew.stt.decoder's own pin table (`python -m
+# kiro_crew.stt.decoder --install-into`), downloaded from that module's release
+# and verified by size and SHA-256, so this build cannot ship a decoder the
+# runtime would refuse. It lands in site-packages/kirocrew_ffmpeg/bin
+# (stt.decoder.PACKAGED_DIR), which is where the runtime looks for it.
 #
 # The macOS Intel backend installs NONE and resolves a system FFmpeg the way a
 # source install does (kiro_crew.stt.decoder.bundle_carries_decoder). Do not add
-# the wheel back for it: the runtime carries no pin for that platform, so a
-# bundled copy would never be authenticated or used.
-#   $1 = target arch, as build_backend receives it
-desktop_decoder_requirement() {
-  if is_macos_intel_backend "$1"; then
+# one back for it: the runtime carries no pin for that platform, so a bundled
+# copy would never be authenticated or used.
+#   $1 = bundled interpreter, $2 = its site-packages, $3 = target arch
+install_desktop_decoder() {
+  if is_macos_intel_backend "$3"; then
     return 0
   fi
-  printf '%s\n' "imageio-ffmpeg==0.6.0"
+  log "Installing the pinned audio decoder…"
+  env PYTHONNOUSERSITE=1 PYTHONPATH= "$1" -s -m kiro_crew.stt.decoder \
+    --install-into "$2/kirocrew_ffmpeg/bin"
 }
 
 # NOTE ON THE APPLE-SILICON DECODER -- do NOT re-introduce a compressed payload.
 #
-# The arm64 imageio-ffmpeg executable ships as a PLAIN Mach-O under
+# The arm64 decoder executable ships as a PLAIN Mach-O under
 # Contents/Resources, so the app signer signs it with Developer ID + hardened
 # runtime + secure timestamp along with every other nested binary
 # (packaging/signing/generate-manifest.py enumerates it).
 #
 # #6746 instead stored it as inert gzip data, to keep the bytes byte-identical to
-# the pinned upstream wheel across signing. The Apple notary service DECOMPRESSES
+# the pinned upstream bytes across signing. The Apple notary service DECOMPRESSES
 # archive members and scans what is inside them, so that made notarization fail
 # closed on the whole release (submission 3dbd3c7d, three `error` issues on
 # .../binaries/ffmpeg-macos-aarch64-v7.1.gz/ffmpeg-macos-aarch64-v7.1: not signed
@@ -214,7 +222,7 @@ desktop_decoder_requirement() {
 # is the working shape.
 #
 # The runtime consequence is handled in kiro_crew.transcribe: the packaged decoder
-# is accepted either at the pinned upstream digest (local builds and the build gate
+# is accepted either at the pinned digest (local builds and the build gate
 # below, which run BEFORE signing) or on a valid Developer ID signature from our
 # team (the released app, whose bytes signing necessarily rewrote).
 
@@ -507,12 +515,10 @@ build_backend() {
   # installs from this checkout) prevents a surprise CMake/C++ source build. Missing
   # recogniser wheels fail every supported desktop build: local dictation is the
   # default and must be usable immediately. macOS Intel is the sole legacy exception.
-  local decoder_req
-  decoder_req="$(desktop_decoder_requirement "$want_arch")"
   env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
     "$out/bin/python3.12" -m pip install --prefer-binary \
     --no-warn-script-location --disable-pip-version-check \
-    "$ROOT[voice-aws]" ${decoder_req:+"$decoder_req"}
+    "$ROOT[voice-aws]"
   if ! env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
       "$out/bin/python3.12" -m pip install --prefer-binary \
       --only-binary pywhispercpp \
@@ -528,6 +534,7 @@ build_backend() {
 
   # Stage the dashboard dist into the package's static dir.
   sp="$out/lib/python3.12/site-packages"
+  install_desktop_decoder "$out/bin/python3.12" "$sp" "$want_arch"
   log "Staging dashboard dist into kiro_crew/static/dist…"
   mkdir -p "$sp/kiro_crew/static"
   ( cd "$sp/kiro_crew/static" && rm -rf dist && cp -R "$ROOT/website/dist" dist )
@@ -730,7 +737,7 @@ build_backend_windows() {
   env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
     "$out/python.exe" -m pip install --prefer-binary \
     --no-warn-script-location --disable-pip-version-check \
-    "kirocrew[voice-aws] @ $root_uri" "imageio-ffmpeg==0.6.0"
+    "kirocrew[voice-aws] @ $root_uri"
   env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
     "$out/python.exe" -m pip install --prefer-binary \
     --only-binary pywhispercpp \
@@ -738,6 +745,7 @@ build_backend_windows() {
     "kirocrew[voice] @ $root_uri"
 
   sp="$out/Lib/site-packages"
+  install_desktop_decoder "$out/python.exe" "$sp" ""
   log "Staging dashboard dist into kiro_crew/static/dist…"
   mkdir -p "$sp/kiro_crew/static"
   ( cd "$sp/kiro_crew/static" && rm -rf dist && cp -R "$ROOT/website/dist" dist )

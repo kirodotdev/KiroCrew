@@ -728,6 +728,12 @@ async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
             # no entry, which now means exactly "nothing left to wait for".
             self._manager._teardown_gates.pop(info.id, None)
             self._forget_finished_live_state(info)
+            if info._remote_workspace:
+                # Last, since it awaits, so a cancellation cannot skip the
+                # bookkeeping; a continuation re-inherits before it starts.
+                from kiro_crew.coder.session_launch import forget_subagent_environment
+
+                await forget_subagent_environment(session_key)
 
     # The report itself already ran (or is running) on the shielded task
     # spawned in the finally above; block until it completes so sequencing is

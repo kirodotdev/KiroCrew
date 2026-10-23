@@ -38,6 +38,7 @@ from pathlib import Path
 import pytest
 
 _SRC = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
+_RUNNER = _SRC / "dashboard" / "chat_runner.py"
 
 #: Calls that can compact a session in place, and so arm the flag.
 _TRIGGERS = frozenset({"check_context_usage", "compact_if_needed"})
@@ -146,7 +147,20 @@ def _violation(source: str) -> str | None:
 def _compacting_modules() -> dict[str, ast.Module]:
     found: dict[str, ast.Module] = {}
     for path in sorted(_SRC.rglob("*.py")):
+        if path.parent == _RUNNER.with_name("chat_turn"):
+            continue  # read with the runner, whose turn loop is composed from them
         source = path.read_text(encoding="utf-8")
+        if path == _RUNNER:
+            source = "\n".join(
+                [
+                    *(
+                        owner.read_text(encoding="utf-8")
+                        for owner in sorted(path.with_name("chat_turn").glob("*.py"))
+                        if owner.name != "__init__.py"
+                    ),
+                    source,
+                ]
+            )
         # Cheap text prefilter: parsing the whole tree costs seconds.
         if not any(trigger in source for trigger in _TRIGGERS):
             continue

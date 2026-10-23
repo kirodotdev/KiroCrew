@@ -325,6 +325,26 @@ class TestContextTrace:
                 cur = up
             return out
 
+        def function_of(node: ast.AST) -> ast.AST | None:
+            cur = parent.get(id(node))
+            while cur is not None and not isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                cur = parent.get(id(cur))
+            return cur
+
+        # The function that builds the turn closer's payload: the reading it passes is
+        # the one that function unpacks, wherever the turn's phases put it.
+        closer_fns = [
+            function_of(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Dict)
+            and {"stop_reason", "context_used", "context_window"}
+            <= {
+                k.value
+                for k in node.keys
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)
+            }
+        ]
+
         # The pair the provider reading is unpacked into, read from the runner rather
         # than assumed, so a rename moves both halves of this check together.
         unpacked: tuple[str, ...] = ()
@@ -337,7 +357,11 @@ class TestContextTrace:
             if name != "read_context_tokens":
                 continue
             target = node.targets[0]
-            if isinstance(target, ast.Tuple) and len(target.elts) == 2:
+            if (
+                isinstance(target, ast.Tuple)
+                and len(target.elts) == 2
+                and any(function_of(node) is fn for fn in closer_fns)
+            ):
                 unpacked = tuple(el.id for el in target.elts if isinstance(el, ast.Name))
                 unpack_guards = guards(node)
         assert len(unpacked) == 2, (

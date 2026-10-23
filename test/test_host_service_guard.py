@@ -190,8 +190,8 @@ class TestRatchet:
         assert not unaccounted, (
             "src/ names service-control tools the host-mutation guard neither "
             "covers nor explicitly excludes. Either add each to _SERVICE_MANAGERS "
-            "(with its mutating verbs in _MUTATING_VERBS) / _ALWAYS_REFUSED in the "
-            "root conftest.py, or add it to _DELIBERATELY_UNGUARDED here with a "
+            "(with its mutating verbs in _MUTATING_VERBS) / _ALWAYS_REFUSED in "
+            "test/conftest_floor_services.py, or add it to _DELIBERATELY_UNGUARDED here with a "
             f"reason:\n{unaccounted}"
         )
 

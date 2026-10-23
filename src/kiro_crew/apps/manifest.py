@@ -101,8 +101,6 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
 )
 from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS  # noqa: F401
-from kiro_crew.cron import is_valid_skip_date, is_valid_timezone
-from kiro_crew.cron_service.fields import validate_create_timeouts
 
 # This module is the facade of the app manifest: every name is reached through it as
 # ``kiro_crew.apps.manifest.<name>``. It keeps ``AppManifest`` itself, the cron grant rule
@@ -574,7 +572,12 @@ class AppManifest:
                     f"backend route (lowercase, no scheme, host or query): {ctl.statusPath!r}"
                 )
 
-        # Cron validation
+        # Cron validation. The cron modules are imported only for a manifest
+        # that declares crons: a manifest is also read by the stdio MCP servers
+        # at start-up, for its config keys, and the cron service is heavy.
+        if self.crons:
+            from kiro_crew.cron import is_valid_skip_date, is_valid_timezone
+            from kiro_crew.cron_service.fields import validate_create_timeouts
         for cron in self.crons:
             if not cron.name:
                 errors.append("cron entry missing required field: name")
@@ -1277,3 +1280,24 @@ def requirements_in_tree(app_root: Path, req_file: Path) -> tuple[Path, Path] | 
         # 500.
         return None
     return root_resolved, target
+
+
+#: Cron helpers served as attributes of this module on first access, so
+#: ``kiro_crew.apps.manifest.<name>`` is the object its home module holds. The
+#: cron service is heavy and the stdio MCP servers read manifests at start-up.
+_LAZY_CRON_NAMES: dict[str, str] = {
+    "is_valid_skip_date": "kiro_crew.cron",
+    "is_valid_timezone": "kiro_crew.cron",
+    "validate_create_timeouts": "kiro_crew.cron_service.fields",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module = _LAZY_CRON_NAMES.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+
+    value = getattr(importlib.import_module(module), name)
+    globals()[name] = value
+    return value

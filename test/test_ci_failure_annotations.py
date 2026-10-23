@@ -418,7 +418,12 @@ class TestTheMatcherThatLiedIsOffWhereverPytestRuns:
         leave exactly the runs that fail hardest with no annotation at all.
         """
         root = _ROOT_CONFTEST.read_text(encoding="utf-8")
-        suite = (_REPO_ROOT / "test" / "conftest.py").read_text(encoding="utf-8")
+        # test/conftest.py binds most of its definitions from plain modules beside it.
+        floor = set((_REPO_ROOT / "test").glob("conftest_floor_*.py"))
+        parts = sorted(set((_REPO_ROOT / "test").glob("conftest_*.py")) - floor)
+        suite = "\n".join(
+            p.read_text(encoding="utf-8") for p in (_REPO_ROOT / "test" / "conftest.py", *parts)
+        )
         hook = "def pytest_terminal_summary"
 
         assert hook in root, "the annotation emitter must be registered from the rootdir"

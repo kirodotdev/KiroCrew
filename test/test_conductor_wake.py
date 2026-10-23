@@ -40,6 +40,7 @@ from conductor_wake_helpers import (
 )
 
 from kiro_crew import conductor_wake, work_ledger
+from kiro_crew.testing.wait import async_wait_until, default_timeout
 
 # ── the shared lookup ────────────────────────────────────────────────────────
 
@@ -436,11 +437,11 @@ def test_a_work_fold_event_is_handed_to_the_service_loop(monkeypatch):
     try:
         first = conductor_wake._observe_event(_event(CONDUCTOR, [("it_a", "t1")]))
         assert first is not None
-        first.result(timeout=5)
+        first.result(timeout=default_timeout())
         assert set(conductor_wake._registry.boards[CONDUCTOR]) == {"it_a"}
         moved = conductor_wake._observe_event(_event(CONDUCTOR, [("it_a", "t2")]))
         assert moved is not None
-        moved.result(timeout=5)
+        moved.result(timeout=default_timeout())
         assert fired == [(CONDUCTOR, "it_a")], "the report reached the loop and fired"
     finally:
         loop.call_soon_threadsafe(loop.stop)
@@ -536,12 +537,9 @@ def _report(unit: str, board: str, worker: str, stamp: str, *, status: str = "do
     )
 
 
-async def _until(predicate, timeout: float = 5.0) -> bool:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while not predicate():
-        if asyncio.get_running_loop().time() > deadline:
-            return False
-        await asyncio.sleep(0.01)
+async def _until(predicate, timeout: float | None = None) -> bool:
+    """True once ``predicate()`` holds; a wait that never does fails by name."""
+    await async_wait_until(predicate, timeout=timeout)
     return True
 
 

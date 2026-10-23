@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, type MutableRefObject, type Dispatch, t
 import { useQuery } from '@tanstack/react-query'
 import { store, type AppDispatch, type AppStore } from '../store'
 import type { ErrorReport } from '../utils/errorReport'
-import { captureForkOrigin, forkMayOpen, forkSlot, switchSlot, createSlot, type FollowupItem, setPendingInput, clearFollowupCard, openActivityToTab } from '../store/chatSlice'
+import { captureForkOrigin, forkMayOpen, forkOpenSettled, forkOpenStarted, forkSlot, switchSlot, createSlot, type FollowupItem, setPendingInput, clearFollowupCard, openActivityToTab, requestSlotFolderOpen } from '../store/chatSlice'
 import { api } from '../api/client'
 import { safeSetSessionItem } from '../utils/safeStorage'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
@@ -40,6 +40,13 @@ export function useForkSession({
     const origin = captureForkOrigin(store.getState())
     let direction: 'head' | 'tail' = 'head' // hoisted so the catch advises the same way
     let control: string | undefined
+    // Pending until the child is active or the fork failed (the `finally`), so
+    // the chat page does not open another session if this one leaves the list.
+    // Released once: `switchSlot.pending` makes the child active synchronously,
+    // so the count drops before the child's transcript fetch, not after it.
+    let released = false
+    const release = () => { if (!released) { released = true; dispatch(forkOpenSettled()) } }
+    dispatch(forkOpenStarted())
     try {
       // Fork WITHOUT a prompt: an unsent composer draft must never be
       // auto-submitted into the freshly forked session. The
@@ -60,13 +67,24 @@ export function useForkSession({
       }
       const result = await dispatch(forkSlot({ slot: activeSlot, atIndex: visibleIndex, messageId, direction })).unwrap()
       if (result.ok) {
-        if (forkMayOpen(store.getState(), origin)) await dispatch(switchSlot(result.key))
+        if (forkMayOpen(store.getState(), origin)) {
+          const switching = dispatch(switchSlot(result.key))
+          // The child inherits this session's folder, which can be collapsed when
+          // the session was opened from the command bar, a tab or a link: open
+          // that path so the child's row shows. switchSlot.pending has already
+          // made the child active, so the request follows the activation.
+          dispatch(requestSlotFolderOpen({ key: result.key, folder_id: result.folder_id }))
+          release()
+          await switching
+        }
       } else {
         showTranscriptForkFailure(showActionError, result.code, result.error, direction, control)
       }
     } catch (e) {
       // A refusal is a non-2xx, so the thunk REJECTS: its code rides the rejection payload.
       showTranscriptForkFailure(showActionError, (e as { code?: string } | null)?.code, errMessage(e), direction, control)
+    } finally {
+      release()
     }
   }, [activeSlot, dispatch, forkCfg, showActionError])
   return {

@@ -455,9 +455,8 @@ const FIXTURE_OVERRIDES = async (language, path, route) => {
     return done({
       // `provider` must be one of `PROVIDER_OPTIONS`; anything else and the panel
       // renders neither provider's rows, which is a different screen.
-      enabled: false, provider: 'piper', voice: '0004', engine: '0005', rate: '0006',
+      enabled: false, provider: 'polly', voice: '0004', engine: '0005', rate: '0006',
       autoSpeak: false, aws_profile: '', region: '',
-      piper_binary: '', piper_model: '', piper_model_config: '', piper_length_scale: 1,
     })
   }
   if (path === '/api/voice/voices') return done({ voices: [] })

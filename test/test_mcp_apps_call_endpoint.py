@@ -28,6 +28,7 @@ from kiro_crew.mcp_gateway.app_call import handle_app_call
 from kiro_crew.mcp_gateway.apps import write_spool
 from kiro_crew.mcp_gateway.backend import MCP_APPS_ENV_FLAG, Backend
 from kiro_crew.mcp_gateway.pool import BackendPool, PoolKey
+from kiro_crew.testing.wait import finished
 
 SERVER_PATH = Path(__file__).parent / "fake_mcp_app_server.py"
 
@@ -114,8 +115,9 @@ class _LivePool:
         if self.process.returncode is None:
             self.process.terminate()
             try:
-                await asyncio.wait_for(self.process.wait(), timeout=5)
-            except asyncio.TimeoutError:
+                # A 5 s grace is the cleanup deadline before the kill, not a pass/fail bound.
+                await finished(self.process.wait(), "the terminated server exiting", timeout=5)
+            except AssertionError:
                 self.process.kill()
                 await self.process.wait()
 
@@ -160,10 +162,10 @@ async def _spawn_pooled_server() -> _LivePool:
             "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                        "clientInfo": {"name": "kiro-cli", "version": "0"}},
         })
-        await asyncio.wait_for(inbox.get(), timeout=10)
+        await finished(inbox.get(), "the initialize response")
     except BaseException:
         # BaseException, not Exception: a CancelledError delivered at the
-        # wait_for (timeout teardown, worker shutdown) must reap the child too.
+        # bounded wait (timeout teardown, worker shutdown) must reap the child too.
         await live.aclose()
         raise
     return live
@@ -1119,9 +1121,9 @@ async def test_the_round_trip_skips_stray_frames_to_its_own_response():
         *(make() for make in STRAY_LINES.values()),
         (json.dumps(reply) + "\n").encode("utf-8"),
     )
-    got = await asyncio.wait_for(
+    got = await finished(
         app_call_mod._roundtrip(backend, {"id": 4, "method": "tools/call"}, caller=None, timeout=10),
-        timeout=10,
+        "the round trip's reply",
     )
     assert got == reply
     assert len(backend.detached) == 1

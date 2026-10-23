@@ -231,12 +231,80 @@ describe('MarkdownPanel — commenting on a fenced code block', () => {
     expect(onSubmitComments.mock.calls[0][0]).toContain('1. (line 2, col 11, "pick(a)" in "const b = pick(a)"): "note"')
   })
 
-  it('does not underline the same words in the prose', async () => {
+  it('underlines the commented code, not the same words in the prose', async () => {
     mountPanel('Run mycli rm NAME by hand.\n\n```bash\nmycli rm NAME --force\n```\n')
     fireEvent.change(await selectInCode(), { target: { value: 'same words twice' } })
     fireEvent.click(screen.getByLabelText('Add comment'))
     await screen.findByText('same words twice')
-    expect(registeredRanges('mc-comment')).toEqual([])
+    await waitFor(() => expect(paintedText('mc-comment')).toEqual(['mycli rm NAME']))
+    expect(registeredRanges('mc-comment')[0].startContainer.getRootNode()).toBe(screen.getByTestId('code-host').shadowRoot)
+  })
+
+  it('underlines the block the comment was made in when another block has the same words', async () => {
+    const saved = await commentOn('```bash\nmycli rm NAME --force\n```\n\n```bash\nmycli rm NAME --force\n```\n', 'mycli rm NAME', 1)
+    expect(saved).toHaveProperty('codePosition')
+    const second = screen.getAllByTestId('code-host')[1]
+    await waitFor(() => expect(registeredRanges('mc-comment').map(r => r.startContainer.getRootNode())).toEqual([second.shadowRoot]))
+    expect(paintedText('mc-comment')).toEqual(['mycli rm NAME'])
+  })
+
+  it('underlines a code comment saved before it had a position when its words occur once in the code', async () => {
+    localStorage.setItem('mc-comment-drafts', JSON.stringify({ [FILE]: [{ id: 'c1', anchor: 'rm NAME', text: 'old note', inCode: true }] }))
+    mountPanel()
+    await screen.findByTestId('code-host')
+    await waitFor(() => expect(paintedText('mc-comment')).toEqual(['rm NAME']))
+  })
+
+  it('underlines the code again when the block is redrawn', async () => {
+    await commentOn(BODY, 'mycli rm NAME')
+    const host = screen.getByTestId('code-host')
+    await waitFor(() => expect(paintedText('mc-comment')).toEqual(['mycli rm NAME']))
+    const before = registeredRanges('mc-comment')[0]
+    await act(async () => { fillCodeBlock(host, [tokens('mycli rm NAME --force')]) })
+    await waitFor(() => expect(registeredRanges('mc-comment')[0]).not.toBe(before))
+    expect(registeredRanges('mc-comment')[0].startContainer.isConnected).toBe(true)
+    expect(paintedText('mc-comment')).toEqual(['mycli rm NAME'])
+  })
+
+  it('shows the comment text when the pointer rests on the commented code', async () => {
+    await commentOn(BODY, 'mycli rm NAME')
+    await waitFor(() => expect(paintedText('mc-comment')).toEqual(['mycli rm NAME']))
+    const painted = registeredRanges('mc-comment')[0]
+    // The caret stops at the host; the painted text's box is what is hit.
+    painted.getClientRects = () => [new DOMRect(10, 10, 80, 16)] as unknown as DOMRectList
+    const scroller = document.querySelector('.msg-content')!.parentElement as HTMLElement
+    await act(async () => { fireEvent.mouseMove(scroller, { clientX: 20, clientY: 15 }) })
+    expect(document.querySelector('.mc-comment-tooltip')).toHaveTextContent('note')
+  })
+
+  it.each([
+    { text: 'mycli rm NAME', cleared: false },
+    { text: '', cleared: true },
+  ])('clicking a code comment with selection "$text" clears it: $cleared', async ({ text, cleared }) => {
+    await commentOn(BODY, 'mycli rm NAME')
+    await waitFor(() => expect(paintedText('mc-comment')).toEqual(['mycli rm NAME']))
+    const painted = registeredRanges('mc-comment')[0]
+    painted.getClientRects = () => [new DOMRect(10, 10, 80, 16)] as unknown as DOMRectList
+    const removeAllRanges = vi.fn()
+    vi.spyOn(window, 'getSelection').mockReturnValue({
+      isCollapsed: true,
+      toString: () => text,
+      removeAllRanges,
+    } as unknown as Selection)
+    const scroller = document.querySelector('.msg-content')!.parentElement as HTMLElement
+
+    const allowed = fireEvent.click(scroller, { clientX: 20, clientY: 15 })
+
+    expect(removeAllRanges).toHaveBeenCalledTimes(cleared ? 1 : 0)
+    expect(allowed).toBe(!cleared)
+  })
+
+  it('underlines a prose comment in the prose, as before', async () => {
+    localStorage.setItem('mc-comment-drafts', JSON.stringify({ [FILE]: [{ id: 'p1', anchor: 'with care', text: 'prose note' }] }))
+    mountPanel()
+    await screen.findByTestId('code-host')
+    await waitFor(() => expect(paintedText('mc-comment')).toEqual(['with care']))
+    expect(registeredRanges('mc-comment')[0].startContainer.getRootNode()).toBe(document)
   })
 })
 

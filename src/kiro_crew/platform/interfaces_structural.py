@@ -147,6 +147,12 @@ class AppsLoader(Protocol):
         ``repo`` somewhere else. An operator can still add registries freely — just
         not silently repoint one the edition pinned.
 
+        A row may also carry ``"allowDefaultInstall": true``. Only then may that
+        registry's index mark apps ``defaultInstall``, which installs and trusts
+        them once on first boot (``apps/default_installs.py``). It is honoured only
+        for a row in force at the ``owner`` tier, and read only from this build
+        row, never from ``config.json``. Absent means ``false``.
+
         The public Default returns ``[]``, so standalone behaviour is byte-identical
         to reading ``config.registries`` alone. v1 method addition (no
         ``CONTRACT_VERSION`` bump).

@@ -20,9 +20,9 @@ from kiro_crew.dashboard.chat_utils import _MAX_TOOL_PURPOSE, _redact_tool_field
 from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, row_mid
 from kiro_crew.history import ConversationLog
+from kiro_crew.testing.wait import async_wait_until
 
 _WAIT_SECS = 30.0
-_POLL_SECS = 0.01
 
 
 def _record(approval_id: str, slot: str, *, tool: str = "spawn_run(t)") -> dict:
@@ -56,11 +56,11 @@ async def _register(state: DashboardState, approval_id: str, slot_key: str) -> a
     task = asyncio.get_running_loop().create_task(
         state.request_approval(approval_id, "subagent", "spawn_run(t)", slot=slot_key)
     )
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + _WAIT_SECS
-    while approval_id not in state._pending_approvals:
-        assert loop.time() < deadline, f"approval {approval_id!r} never registered"
-        await asyncio.sleep(_POLL_SECS)
+    await async_wait_until(
+        lambda: approval_id in state._pending_approvals,
+        timeout=_WAIT_SECS,
+        describe=lambda: f"approval {approval_id!r} never registered",
+    )
     return task
 
 
@@ -410,10 +410,11 @@ async def test_expired_older_request_leaves_its_same_id_replacement_live(tmp_pat
     # _register returns once the id has a record, which the older wait's already
     # is; wait for the replacement to have written its own.
     replacement = await _register(state, "same", parent.key)
-    deadline = asyncio.get_running_loop().time() + _WAIT_SECS
-    while state._pending_approvals["same"]["instance"] == older_instance:
-        assert asyncio.get_running_loop().time() < deadline, "replacement never registered"
-        await asyncio.sleep(_POLL_SECS)
+    await async_wait_until(
+        lambda: state._pending_approvals["same"]["instance"] != older_instance,
+        timeout=_WAIT_SECS,
+        describe=lambda: "replacement never registered",
+    )
     live = state._approval_futures["same"]
     state.push_slots_update.reset_mock()
 
@@ -474,11 +475,11 @@ async def test_a_huge_coordinator_purpose_is_bounded_before_it_is_retained(tmp_p
             "big", "subagent", "shell", slot=parent.key, tool_purpose="p" * (4 * 1024 * 1024)
         )
     )
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + _WAIT_SECS
-    while "big" not in state._pending_approvals:
-        assert loop.time() < deadline, "approval never registered"
-        await asyncio.sleep(_POLL_SECS)
+    await async_wait_until(
+        lambda: "big" in state._pending_approvals,
+        timeout=_WAIT_SECS,
+        describe=lambda: "approval never registered",
+    )
     retained = state._pending_approvals["big"]["tool_purpose"]
     assert len(retained.encode("utf-8")) <= _MAX_TOOL_PURPOSE + 200
     task.cancel()

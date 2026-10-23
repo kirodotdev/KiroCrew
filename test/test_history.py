@@ -17,15 +17,27 @@ session's context is built with).
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import threading
+from unittest.mock import patch
 
+import pytest
+
+from kiro_crew import history_search
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.history import (
     _SESSION_KEEP_LINES,
     _SESSION_MAX_BYTES,
     ConversationLog,
 )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_unreadable_warnings(_floor_monkeypatch):
+    """Each test starts with no unreadable session file already warned about."""
+    _floor_monkeypatch.setattr(history_search, "_unreadable_session_files_warned", set())
 
 
 class TestConversationLog:
@@ -307,6 +319,150 @@ class TestConversationLog:
         by_key = {s["key"]: s for s in log.list_sessions()}
         assert by_key["t-filed"].get("folder_id") == "folder-123"
         assert "folder_id" not in by_key["t-unfiled"]
+
+    def test_list_sessions_status_reports_scandir_failure(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+
+        with patch.object(history_search.os, "scandir", side_effect=OSError("disk gone")):
+            assert log.list_sessions_status() == ([], False)
+            assert log.list_sessions() == []
+
+    def test_list_sessions_status_treats_missing_directory_as_complete(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path / "missing")
+
+        assert log.list_sessions_status() == ([], True)
+
+    @pytest.mark.parametrize(
+        ("error", "expected_complete"),
+        [
+            (FileNotFoundError(errno.ENOENT, "gone"), True),
+            (OSError(errno.EIO, "read failed"), False),
+        ],
+    )
+    def test_list_sessions_status_distinguishes_vanished_and_unreadable_entries(
+        self, tmp_path, error, expected_complete
+    ):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("visible", "user", "positive control")
+        assert log.list_sessions_status()[1] is True
+
+        broken_path = os.fspath(tmp_path / "broken.jsonl")
+
+        class _Entry:
+            name = "broken.jsonl"
+            path = broken_path
+
+            @staticmethod
+            def stat():
+                raise error
+
+        class _Scan:
+            def __enter__(self):
+                return iter([_Entry()])
+
+            def __exit__(self, *_args):
+                return None
+
+        real_os_stat = os.stat
+
+        def _os_stat(path, *args, **kwargs):
+            if os.fspath(path) == broken_path:
+                raise error
+            return real_os_stat(path, *args, **kwargs)
+
+        with (
+            patch.object(history_search.os, "scandir", return_value=_Scan()),
+            patch.object(history_search.os, "stat", _os_stat),
+        ):
+            sessions, complete = log.list_sessions_status()
+
+        assert sessions == []
+        assert complete is expected_complete
+
+    def test_unreadable_file_check_and_add_run_under_one_lock(self, monkeypatch):
+        """Listings run on executor threads, so the warned-set check and its add
+        must both happen under the lock or two racing callers both log."""
+        lock = threading.Lock()
+        seen_unlocked: list[str] = []
+
+        class _LockCheckingSet(set):
+            def __contains__(self, item):
+                if not lock.locked():
+                    seen_unlocked.append("check")
+                return super().__contains__(item)
+
+            def add(self, item):
+                if not lock.locked():
+                    seen_unlocked.append("add")
+                super().add(item)
+
+        monkeypatch.setattr(history_search, "_unreadable_session_files_lock", lock)
+        monkeypatch.setattr(history_search, "_unreadable_session_files_warned", _LockCheckingSet())
+
+        history_search._warn_unreadable_session_file(
+            "/sessions/broken.jsonl", PermissionError(errno.EACCES, "denied")
+        )
+
+        assert seen_unlocked == []
+        assert set(history_search._unreadable_session_files_warned) == {"/sessions/broken.jsonl"}
+
+    def test_list_sessions_status_warns_once_per_unreadable_file(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        """One unreadable file holds every unread dot for the process lifetime,
+        so it is warned about, but once: the listing runs every few seconds."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("visible", "user", "positive control")
+        broken_path = os.fspath(tmp_path / "broken.jsonl")
+        (tmp_path / "broken.jsonl").write_text("")
+        monkeypatch.setattr(
+            history_search, "_unreadable_session_files_warned", set(), raising=False
+        )
+
+        real_os_stat = os.stat
+
+        def _os_stat(path, *args, **kwargs):
+            if os.fspath(path) == broken_path:
+                raise PermissionError(errno.EACCES, "denied", broken_path)
+            return real_os_stat(path, *args, **kwargs)
+
+        class _Entry:
+            def __init__(self, real):
+                self._real = real
+                self.name = real.name
+                self.path = real.path
+
+            def stat(self):
+                return _os_stat(self.path)
+
+            def is_symlink(self):
+                return self._real.is_symlink()
+
+        real_scandir = os.scandir
+
+        class _Scan:
+            def __init__(self, base):
+                self._it = real_scandir(base)
+
+            def __enter__(self):
+                return (_Entry(e) for e in self._it.__enter__())
+
+            def __exit__(self, *args):
+                return self._it.__exit__(*args)
+
+        with (
+            patch.object(history_search.os, "scandir", _Scan),
+            patch.object(history_search.os, "stat", _os_stat),
+            caplog.at_level("WARNING", logger=history_search.logger.name),
+        ):
+            for _ in range(2):
+                sessions, complete = log.list_sessions_status()
+                assert [s["key"] for s in sessions] == ["visible"]
+                assert complete is False
+
+        warnings = [r for r in caplog.records if broken_path in r.getMessage()]
+        assert len(warnings) == 1
+        assert warnings[0].levelname == "WARNING"
 
     def test_search_sessions_surfaces_folder_id(self, tmp_path):
         """search_sessions() results carry folder_id — the frontend groups on it."""

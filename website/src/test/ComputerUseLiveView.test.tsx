@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { screen, act } from '@testing-library/react'
+import i18next from 'i18next'
+import '../i18n/all'
 
 import ComputerUseLiveView, {
   applyGrip,
@@ -84,6 +86,35 @@ describe('ComputerUseLiveView', () => {
     await act(async () => { pushFrame('QUJD', { session_key: 'sess-9' }) })
     await screen.findByRole('dialog')
     expect(screen.getByText('· Desktop triage')).toBeInTheDocument()
+  })
+
+  it('labels an untitled driving session "Untitled session", never its key (#23084)', async () => {
+    // The stored title of an untitled session can equal its key.
+    const store = createTestStore()
+    store.dispatch(sseSlots([{ key: 'chat-9-1785440411', title: 'chat-9-1785440411' }] as never))
+    renderWithProviders(<ComputerUseLiveView />, { store })
+    await act(async () => { pushFrame('QUJD', { session_key: 'chat-9-1785440411' }) })
+    await screen.findByRole('dialog')
+    expect(screen.getByText('· Untitled session')).toBeInTheDocument()
+    expect(screen.queryByText(/chat-9-1785440411/)).toBeNull()
+  })
+
+  it('re-names an untitled driving session on a language switch with the slot list unchanged', async () => {
+    const store = createTestStore()
+    store.dispatch(sseSlots([{ key: 'chat-9-1785440411', title: 'chat-9-1785440411' }] as never))
+    const view = renderWithProviders(<ComputerUseLiveView />, { store })
+    await act(async () => { pushFrame('QUJD', { session_key: 'chat-9-1785440411' }) })
+    await screen.findByRole('dialog')
+    expect(screen.getByText('· Untitled session')).toBeInTheDocument()
+    try {
+      await act(async () => { await i18next.changeLanguage('zh-CN') })
+      // The harness has no LanguageProvider; a rerender stands in for its repaint.
+      view.rerender(<ComputerUseLiveView />)
+      expect(screen.getByText('· 未命名会话')).toBeInTheDocument()
+      expect(screen.queryByText('· Untitled session')).toBeNull()
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
   })
 
   it('omits the session label for an unknown session key', async () => {

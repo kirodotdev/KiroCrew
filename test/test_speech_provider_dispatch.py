@@ -145,13 +145,11 @@ def _clean_state():
     _invalidate_config_cache()
     sections_stt._WARNED_STT_PROVIDERS.clear()
     sections_stt._DEFERRED_STT_PROVIDERS.clear()
-    speech_providers._reset_owner_loop()
     yield
     reset_context()
     _invalidate_config_cache()
     sections_stt._WARNED_STT_PROVIDERS.clear()
     sections_stt._DEFERRED_STT_PROVIDERS.clear()
-    speech_providers._reset_owner_loop()
     bootstrap_mod._reset_boot_state()
 
 
@@ -228,6 +226,8 @@ def _voice_app(state) -> web.Application:
 
 
 _ROW_KEYS = {"name", "label", "builtin", "available", "reason", "action", "error"}
+#: A built-in row names the provider and nothing else: no status is probed for it.
+_BUILTIN_ROW_KEYS = {"name", "builtin"}
 
 
 class TestCapabilityResponses:
@@ -248,7 +248,8 @@ class TestCapabilityResponses:
         async with TestClient(TestServer(app)) as client:
             body = await (await client.get("/api/config/stt")).json()
         rows = body["providers"]
-        assert all(set(row) == _ROW_KEYS for row in rows)
+        assert all(set(row) == _BUILTIN_ROW_KEYS for row in rows if row["builtin"])
+        assert all(set(row) == _ROW_KEYS for row in rows if not row["builtin"])
         names = [row["name"] for row in rows]
         assert names[-2:] == ["acme", "off"]
         assert [n for n in names if n not in ("acme", "off")] == [
@@ -264,7 +265,6 @@ class TestCapabilityResponses:
             "action": {"kind": "login", "label": "Sign in to Acme"},
             "error": False,
         }
-        assert not any(row["error"] for row in rows)
         assert "acme" in body["streaming_providers"]
 
     @pytest.mark.asyncio
@@ -272,27 +272,36 @@ class TestCapabilityResponses:
         acme = _AcmeTts(status=ProviderStatus(False, "Acme needs a sign-in", action=_SIGN_IN))
         _install(tts=(acme,))
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.is_available", lambda *a, **k: True)
         async with TestClient(TestServer(_voice_app(_make_state(tmp_path)))) as client:
             rows = (await (await client.get("/api/voice/config")).json())["providers"]
-        assert all(set(row) == _ROW_KEYS for row in rows)
-        assert [row["name"] for row in rows] == ["system", "piper", "polly", "acme"]
-        assert [row["builtin"] for row in rows] == [True, True, True, False]
+        assert rows[:2] == [
+            {"name": "system", "builtin": True},
+            {"name": "polly", "builtin": True},
+        ]
+        assert set(rows[-1]) == _ROW_KEYS
+        assert rows[-1]["name"] == "acme"
         assert rows[-1]["available"] is False
         assert rows[-1]["reason"] == "Acme needs a sign-in"
         assert rows[-1]["action"] == {"kind": "login", "label": "Sign in to Acme"}
-        assert [row["error"] for row in rows] == [False, False, False, False]
+        assert rows[-1]["error"] is False
 
     @pytest.mark.asyncio
-    async def test_a_builtin_probe_that_raises_is_an_error(self, tmp_path, monkeypatch) -> None:
-        def raises(*a, **k):
-            raise RuntimeError("probe broke")
+    async def test_opening_settings_runs_no_builtin_probe(self, tmp_path, monkeypatch) -> None:
+        """Built-in rows carry no status, so no built-in check runs on a GET."""
+        from kiro_crew import voice_reply as vr
+        from kiro_crew.dashboard.handlers import core_stt_settings
 
+        def boom(*a, **k):
+            raise AssertionError("a built-in provider was probed for its row")
+
+        monkeypatch.setattr(vr, "is_available", boom)
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.is_available", raises)
         async with TestClient(TestServer(_voice_app(_make_state(tmp_path)))) as client:
             rows = (await (await client.get("/api/voice/config")).json())["providers"]
-        assert [(r["available"], r["error"]) for r in rows] == [(False, True)] * 3
+        assert all(set(r) == _BUILTIN_ROW_KEYS for r in rows)
+        assert core_stt_settings._builtin_stt_rows(["local", "apple", "transcribe", "off"]) == {
+            n: {"name": n, "builtin": True} for n in ("local", "apple", "transcribe", "off")
+        }
 
     @pytest.mark.asyncio
     async def test_a_check_that_raises_or_hangs_is_unavailable(self, monkeypatch) -> None:
@@ -382,11 +391,43 @@ class TestSttDispatch:
             asyncio.run(transcribe.transcribe_audio(str(clip), SttConfig(provider="acme"))) is None
         )
 
-    @pytest.mark.parametrize("builtin", ["local", "apple", "transcribe"])
-    def test_a_builtin_name_never_reaches_the_registry(self, builtin) -> None:
+    def test_a_registered_provider_gets_no_local_cap_or_split(self) -> None:
+        """The local decoder's ceiling and auto-split belong to the built-ins only.
+
+        Every caller skips the duration probe when the cap is None, so a webm
+        upload on a host without FFmpeg is not refused as unverifiable before
+        it reaches the registered provider.
+        """
         _install(stt=(_AcmeStt(),))
-        assert speech_providers.stt_provider(builtin) is None
-        assert speech_providers.stt_provider("off") is None
+        cfg = SttConfig(provider="acme")
+        assert transcribe.batch_duration_cap_secs(cfg) is None
+        assert transcribe.provider_splits_oversized(cfg) is False
+
+    @pytest.mark.parametrize(
+        "provider, cap, splits",
+        [("local", True, True), ("apple", True, False), ("transcribe", False, False)],
+    )
+    def test_the_builtin_caps_are_unchanged(self, provider, cap, splits) -> None:
+        cfg = SttConfig(provider=provider)
+        expected_cap = transcribe._MAX_AUDIO_SECS if cap else None
+        assert transcribe.batch_duration_cap_secs(cfg) == expected_cap
+        assert transcribe.provider_splits_oversized(cfg) is splits
+
+    def test_an_unregistered_unknown_name_keeps_the_local_ceiling(self) -> None:
+        _install(stt=(_AcmeStt(),))
+        cfg = SttConfig(provider="something-new")
+        assert transcribe.batch_duration_cap_secs(cfg) == transcribe._MAX_AUDIO_SECS
+
+
+@pytest.mark.parametrize(
+    "lookup, builtin",
+    [("stt", name) for name in ("local", "apple", "transcribe", "off")]
+    + [("tts", name) for name in ("system", "piper", "polly")],
+)
+def test_a_builtin_name_never_reaches_the_registry(lookup, builtin) -> None:
+    _install(stt=(_AcmeStt(),), tts=(_AcmeTts(),))
+    find = speech_providers.stt_provider if lookup == "stt" else speech_providers.tts_provider
+    assert find(builtin) is None
 
 
 # ── dispatch: TTS ────────────────────────────────────────────────────────────
@@ -416,18 +457,26 @@ class TestTtsDispatch:
         assert text == "Hello there"
         assert voice_config["provider"] == "acme" and voice_config["voice"] == "Ruth"
 
-    def test_an_unsupported_format_answers_none(self) -> None:
-        class _Ogg(_AcmeTts):
-            async def synthesize(self, text, voice_config):
-                yield AudioChunk(b"OggS", "audio/ogg")
+    @pytest.mark.parametrize("failure", ["format", "factory", "endless"])
+    def test_a_bad_stream_answers_none(self, failure, monkeypatch) -> None:
+        """An unsupported format, a raise on start, or no end all return ``None``."""
+        from kiro_crew import voice_reply_registered
 
-        _install(tts=(_Ogg(),))
+        class _Bad(_AcmeTts):
+            def synthesize(self, text, voice_config):
+                if failure == "factory":
+                    raise RuntimeError("cannot start")
+                return self._stream()
+
+            async def _stream(self):
+                if failure == "format":
+                    yield AudioChunk(b"OggS", "audio/ogg")
+                while True:
+                    yield AudioChunk(b"\x00" * 1024, "audio/mpeg")
+
+        monkeypatch.setattr(voice_reply_registered, "_MAX_REGISTERED_AUDIO_BYTES", 8 * 1024)
+        _install(tts=(_Bad(),))
         assert asyncio.run(voice_reply.synthesize_speech("hi", provider="acme")) is None
-
-    @pytest.mark.parametrize("builtin", ["system", "piper", "polly"])
-    def test_a_builtin_name_never_reaches_the_registry(self, builtin) -> None:
-        _install(tts=(_AcmeTts(),))
-        assert speech_providers.tts_provider(builtin) is None
 
     def test_a_cancel_mid_write_leaves_no_audio_file(self, tmp_path, monkeypatch) -> None:
         """The writer thread outlives a cancelled caller; its file must still go."""
@@ -569,103 +618,10 @@ class TestPreBootSnapshotIsNeverSavedAsOff:
         assert json.loads(path.read_text())["stt"]["provider"] == "off"
 
 
-# ── one loop for every check ─────────────────────────────────────────────────
+# ── a check is bounded ───────────────────────────────────────────────────────
 
 
-class _LoopBound:
-    """A provider whose client is bound to the loop its first call ran on.
-
-    Like an aiohttp or httpx session cached on first use: any later call from
-    another loop fails, as those clients do.
-    """
-
-    name = "acme"
-    streaming = False
-
-    def __init__(self) -> None:
-        self.loop: Optional[asyncio.AbstractEventLoop] = None
-
-    def _client(self) -> None:
-        current = asyncio.get_running_loop()
-        if self.loop is None:
-            self.loop = current
-        elif self.loop is not current:
-            raise RuntimeError("client is bound to a different event loop")
-
-    async def check(self, config: Any) -> ProviderStatus:
-        self._client()
-        return ProviderStatus(True)
-
-    async def transcribe_file(self, audio_path: str, stt_config: Any) -> Optional[str]:
-        self._client()
-        return "bound"
-
-    async def synthesize(self, text: str, voice_config: Any):
-        self._client()
-        yield AudioChunk(_wav(b"\x01\x00" * 4), "audio/wav")
-
-
-class _LoopBoundSession(_Session):
-    """A streaming session that uses its provider's loop-bound client."""
-
-    def __init__(self, owner: "_LoopBound") -> None:
-        super().__init__()
-        self._owner = owner
-
-    async def start(self) -> Optional[str]:
-        self._owner._client()
-        return None
-
-    async def feed(self, pcm: bytes) -> bool:
-        self._owner._client()
-        return await super().feed(pcm)
-
-
-class _LoopBoundStreaming(_LoopBound):
-    streaming = True
-
-    def open_stream(self, stt_config: Any) -> _LoopBoundSession:
-        self._client()
-        return _LoopBoundSession(self)
-
-
-class TestOneLoopForEveryCheck:
-    def test_settings_and_every_blocking_path_agree(self, tmp_path) -> None:
-        """Capability rows run on the gateway loop; the blocking paths must too."""
-        acme = _LoopBound()
-        _install(stt=(acme,), tts=(acme,))
-        clip = tmp_path / "clip.wav"
-        clip.write_bytes(b"RIFF")
-        cfg = SttConfig(provider="acme")
-
-        async def gateway() -> None:
-            (row,) = await speech_providers.registered_entries(
-                (acme,), lambda provider: SttConfig()
-            )
-            assert (row["available"], row["error"]) == (True, False)
-            assert await asyncio.to_thread(transcribe.is_available, cfg) is True
-            assert await asyncio.to_thread(voice_reply.is_available, "acme") is True
-            assert await transcribe.transcribe_audio(str(clip), cfg) == "bound"
-            assert acme.loop is asyncio.get_running_loop()
-
-        asyncio.run(gateway())
-
-    def test_a_blocking_caller_first_still_shares_one_loop(self) -> None:
-        """With no gateway loop yet, the private loop owns the registry."""
-        acme = _LoopBound()
-        _install(stt=(acme,))
-        cfg = SttConfig(provider="acme")
-        assert transcribe.is_available(cfg) is True
-        assert transcribe.is_available(cfg) is True
-
-        async def later() -> dict:
-            (row,) = await speech_providers.registered_entries(
-                (acme,), lambda provider: SttConfig()
-            )
-            return row
-
-        assert asyncio.run(later())["available"] is True
-
+class TestCheckIsBounded:
     def test_a_blocking_check_returns_at_the_timeout(self, monkeypatch) -> None:
         """The wait is bounded even while the provider's own thread is stuck."""
         import threading
@@ -682,6 +638,7 @@ class TestOneLoopForEveryCheck:
                 return ProviderStatus(True)
 
         monkeypatch.setattr(speech_providers, "CHECK_TIMEOUT_SECS", 0.05)
+        monkeypatch.setattr(speech_providers, "_SYNC_GRACE_SECS", 0.05)
         try:
             status = speech_providers.check_status_sync(_Stuck(), SttConfig())
             returned_while_stuck = not finished.is_set()
@@ -689,6 +646,39 @@ class TestOneLoopForEveryCheck:
             release.set()
         assert returned_while_stuck
         assert (status.available, status.error) == (False, True)
+
+    def test_a_blocking_check_that_answers_in_time_keeps_its_answer(self, monkeypatch) -> None:
+        """An answer is kept even while the check's own probe thread is still busy."""
+        import threading
+
+        release, probe_done = threading.Event(), threading.Event()
+
+        def slow_probe() -> None:
+            release.wait(30)  # flake-ok: released right after the call returns
+            probe_done.set()
+
+        class _Answers(_AcmeStt):
+            async def check(self, stt_config):
+                probe = asyncio.ensure_future(asyncio.to_thread(slow_probe))
+                await asyncio.sleep(0)
+                probe.cancel()
+                return ProviderStatus(False, "server unreachable")
+
+        monkeypatch.setattr(speech_providers, "CHECK_TIMEOUT_SECS", 0.5)
+        monkeypatch.setattr(speech_providers, "_SYNC_GRACE_SECS", 0.1)
+        try:
+            status = speech_providers.check_status_sync(_Answers(), SttConfig())
+            returned_while_probe_busy = not probe_done.is_set()
+        finally:
+            release.set()
+        # The answer comes back while the check's own probe still holds the
+        # loop's executor, so asyncio.run has not returned yet.
+        assert returned_while_probe_busy
+        assert (status.available, status.reason, status.error) == (
+            False,
+            "server unreachable",
+            False,
+        )
 
     def test_an_async_check_that_ignores_cancel_still_times_out(self, monkeypatch) -> None:
         """``asyncio.wait`` bounds the caller even when the provider swallows cancel."""
@@ -720,76 +710,51 @@ class TestOneLoopForEveryCheck:
         assert still_running
         assert (row["available"], row["error"]) == (False, True)
 
-    def test_synthesis_after_a_blocking_check_uses_the_same_loop(self) -> None:
-        acme = _LoopBound()
-        _install(tts=(acme,))
-        assert voice_reply.is_available("acme") is True  # the private loop owns it now
-        path = asyncio.run(voice_reply.synthesize_speech("hello", provider="acme"))
-        assert path is not None
-        Path(path).unlink()
+    def test_a_check_that_cancels_itself_is_a_failure(self) -> None:
+        class _SelfCancel(_AcmeStt):
+            async def check(self, stt_config):
+                raise asyncio.CancelledError
 
-    @pytest.mark.asyncio
-    async def test_streaming_after_a_blocking_check_uses_the_same_loop(self, monkeypatch) -> None:
-        acme = _LoopBoundStreaming()
-        _install(stt=(acme,))
-        assert await asyncio.to_thread(transcribe.is_available, SttConfig(provider="acme"))
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.stt_stream.KiroCrewConfig.load",
-            classmethod(lambda cls: _cfg(provider="acme")),
-        )
-        monkeypatch.setattr("kiro_crew.dashboard.stt_stream.check_origin", lambda r, require: True)
-        async with TestClient(TestServer(_make_app())) as client:
-            ws = await client.ws_connect("/api/ws/stt")
-            assert (await _recv_json(ws))["type"] == "ready"
-            await ws.send_bytes(b"\x00\x01" * 8)
-            assert await _recv_json(ws) == {"type": "final", "text": "heard 16 bytes"}
-            await ws.send_json({"type": "stop"})
-            await ws.close()
+        status = asyncio.run(speech_providers.check_status(_SelfCancel(), SttConfig()))
+        assert (status.available, status.error) == (False, True)
 
-    @pytest.mark.parametrize("failure", ["factory", "cancelled", "endless"])
-    def test_a_cross_loop_synthesis_never_hangs(self, failure, monkeypatch) -> None:
-        """Owner on the private loop: a raise, a stray cancel or no end all return."""
-        from kiro_crew import voice_reply_registered
+    def test_a_cancelled_caller_cancels_the_check(self) -> None:
+        seen: dict = {}
 
-        class _Bad(_LoopBound):
-            def synthesize(self, text, voice_config):
-                if failure == "factory":
-                    raise RuntimeError("cannot start")
-                return self._stream()
+        class _Slow(_AcmeStt):
+            async def check(self, stt_config):
+                seen["started"].set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    seen["cancelled"] = True
+                    raise
+                return ProviderStatus(True)
 
-            async def _stream(self):
-                self._client()
-                if failure == "cancelled":
-                    raise asyncio.CancelledError
-                while True:
-                    yield AudioChunk(b"\x00" * 1024, "audio/mpeg")
+        async def caller() -> None:
+            seen["started"] = asyncio.Event()
+            task = asyncio.create_task(speech_providers.check_status(_Slow(), SttConfig()))
+            await await_until(seen["started"], what="the check to start")
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await asyncio.sleep(0)
 
-        monkeypatch.setattr(voice_reply_registered, "_MAX_REGISTERED_AUDIO_BYTES", 8 * 1024)
-        acme = _Bad()
-        _install(tts=(acme,))
-        assert voice_reply.is_available("acme") is True  # the private loop owns it now
-        assert asyncio.run(voice_reply.synthesize_speech("hello", provider="acme")) is None
+        asyncio.run(caller())
+        assert seen.get("cancelled") is True
 
-    def test_a_claimed_private_loop_is_never_replaced(self, monkeypatch) -> None:
-        """Even before its thread runs it, the private loop keeps the registry."""
-        started = []
-        real_start = speech_providers._start_private_loop
+    @pytest.mark.parametrize("failure", ["raises", "not_async"])
+    def test_a_failed_blocking_check_reports_an_error(self, failure) -> None:
+        class _Broken(_AcmeStt):
+            if failure == "raises":
 
-        def slow_start() -> asyncio.AbstractEventLoop:
-            loop = asyncio.new_event_loop()  # not running yet
-            started.append(loop)
-            return loop
+                async def check(self, stt_config):
+                    raise RuntimeError("down")
 
-        monkeypatch.setattr(speech_providers, "_start_private_loop", slow_start)
-        private = speech_providers.owner_loop()
+            else:
 
-        async def gateway() -> asyncio.AbstractEventLoop:
-            return speech_providers.owner_loop(asyncio.get_running_loop())
+                def check(self, stt_config):  # type: ignore[override]
+                    return ProviderStatus(True)
 
-        try:
-            assert asyncio.run(gateway()) is private
-        finally:
-            monkeypatch.setattr(speech_providers, "_start_private_loop", real_start)
-            speech_providers._reset_owner_loop()
-            for loop in started:
-                loop.close()
+        status = speech_providers.check_status_sync(_Broken(), SttConfig())
+        assert (status.available, status.error) == (False, True)

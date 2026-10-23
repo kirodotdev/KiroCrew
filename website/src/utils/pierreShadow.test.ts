@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
-import { codePassagePosition, codeShadowRoots, matchRanges, searchRuns, shadowSelectionRange, watchText } from './pierreShadow'
+import { codePassagePosition, codeQuoteRange, codeShadowRoots, matchRanges, searchRuns, shadowSelectionRange, watchText } from './pierreShadow'
 import { codeBlock, codeBlockUnit, diffFence, multiFileDiffFence, page, para, parked, plainCopy } from '../test/pierreDom'
 import { stubManualFrames } from '../test/manualFrames'
 
@@ -739,5 +739,72 @@ describe('watchText', () => {
     frames.runFrame()
     expect(frames.pending.size).toBe(0)
     expect(onChange).not.toHaveBeenCalled()
+  })
+})
+
+describe('codeQuoteRange', () => {
+  const fence = (state: 'plain' | 'parked' | 'shown' = 'shown') => codeBlockUnit([['mycli', ' rm', ' NAME'], ['  mycli', ' rm', ' OTHER']], state)
+  /** The packed position of characters `start`.. of the `lineIndex`th line of `host` under `root`. */
+  function positionAt(root: Element, host: HTMLElement, lineIndex: number, start: number): number {
+    const line = host.shadowRoot!.querySelectorAll('[data-line]')[lineIndex]
+    const range = document.createRange()
+    const node = line.querySelector('span')!.firstChild as Text
+    range.setStart(node, start)
+    range.setEnd(node, node.length)
+    return codePassagePosition(root, range)!
+  }
+
+  it('places the quote at its position in the block it was selected in, not the first block with it', () => {
+    const first = fence()
+    const second = fence()
+    const root = page(para('mycli rm NAME'), first.wrapper, second.wrapper)
+    const range = codeQuoteRange(root, 'mycli rm NAME', positionAt(root, second.host, 0, 0))
+    expect(range?.toString()).toBe('mycli rm NAME')
+    expect(range?.startContainer.getRootNode()).toBe(second.host.shadowRoot)
+  })
+
+  it('places a quote that runs onto the next line across both lines', () => {
+    const block = fence()
+    const root = page(block.wrapper)
+    const range = codeQuoteRange(root, 'NAME\n  mycli rm', positionAt(root, block.host, 0, 0) + 'mycli rm '.length)
+    expect(range?.toString()).toBe('NAME  mycli rm')
+  })
+
+  it('places nothing while the positioned block shows only its plain or parked copy', () => {
+    const shown = fence()
+    const position = positionAt(page(shown.wrapper), shown.host, 0, 0)
+    document.body.replaceChildren()
+    expect(codeQuoteRange(page(fence('plain').wrapper, fence().wrapper), 'mycli rm NAME', position)).toBeNull()
+    expect(codeQuoteRange(page(fence('parked').wrapper, fence().wrapper), 'mycli rm NAME', position)).toBeNull()
+  })
+
+  it('without a position, places a quote found once in the code and never in the prose', () => {
+    const block = fence()
+    const root = page(para('rm OTHER'), block.wrapper)
+    expect(codeQuoteRange(root, 'rm OTHER')?.startContainer.getRootNode()).toBe(block.host.shadowRoot)
+  })
+
+  it('without a position, places nothing for a quote in two blocks, a plain copy counting as one', () => {
+    expect(codeQuoteRange(page(fence().wrapper, fence().wrapper), 'rm NAME')).toBeNull()
+    document.body.replaceChildren()
+    expect(codeQuoteRange(page(fence().wrapper, fence('plain').wrapper), 'rm NAME')).toBeNull()
+  })
+
+  it('does not use a column past the named row when the remaining quote is ambiguous', () => {
+    const block = codeBlockUnit([['echo hello'], ['hello'], ['hello']])
+    const root = page(block.wrapper)
+    const position = positionAt(root, block.host, 0, 5)
+    expect(codeQuoteRange(root, 'hello', position)?.startContainer)
+      .toBe(block.host.shadowRoot!.querySelector('[data-line] span')!.firstChild)
+
+    const first = block.host.shadowRoot!.querySelector('[data-line] span')!.firstChild as Text
+    first.data = 'true'
+    expect(codeQuoteRange(root, 'hello', position)).toBeNull()
+  })
+
+  it('falls back to the unique match when the text at the position has changed', () => {
+    const block = fence()
+    const root = page(block.wrapper)
+    expect(codeQuoteRange(root, 'rm OTHER', positionAt(root, block.host, 0, 0))?.toString()).toBe('rm OTHER')
   })
 })

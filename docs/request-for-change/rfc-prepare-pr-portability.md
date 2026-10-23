@@ -428,8 +428,8 @@ Built-in and portable are **not** in conflict:
 
 ## 7. Proposed layout after refactor
 
-The shipped skill directory is `kirocrew-prepare-pr/`, and `scripts/` holds 12
-scripts; the layout below is the proposal's core subset.
+The shipped skill directory is `kirocrew-prepare-pr/`, and `scripts/` holds its entry
+scripts and the owner modules they load; the layout below is the proposal's core subset.
 
 ```
 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/

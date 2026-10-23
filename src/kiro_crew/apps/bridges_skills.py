@@ -48,9 +48,14 @@ def _register_skills(
 ) -> list[str]:
     """Symlink app skill directories into ~/.kiro/crew/skills/.
 
-    Creates both a namespaced link (``skills/{app_name}/{skill_name}``) and a
-    flat link (``skills/{skill_name}``) so the skill scanner finds the skill
-    regardless of whether it walks subdirectories or only checks the top level.
+    Always creates a namespaced link (``skills/{app_name}/{skill_name}``), and
+    usually a flat link (``skills/{skill_name}``) too, so the skill scanner finds
+    the skill whether it walks subdirectories or only checks the top level. The
+    flat link is skipped when the skill has the app's own name (the flat path IS
+    the namespaced directory), when the name is in ``_RESERVED_SKILL_DIRS``, and
+    when a real directory of that name already exists; an existing flat link is
+    repointed, so it belongs to whichever app registered last. Only the
+    namespaced path is safe to name in a ``skill://`` mapping.
 
     ``io_failures``, when supplied, collects the skills skipped because the path
     screen could not check them, which a later registration can still link.

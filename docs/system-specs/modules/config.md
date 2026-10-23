@@ -43,7 +43,7 @@ the test trees patch through the loader to reaching every owner that binds it.
 | `config/sections_agent_env.py` | The environment an agent process receives: the `agent.env` name policy and its refusals, `agent.child_env_defaults` and `agent.deepseek_env`. |
 | `config/sections_agent_fields.py` | Field coercion for `agent` and the crew records: model pins, role maps, effort, the context-token map, approval modes, the avatar record and bot-name filter, the jail, ACP-backend, YOLO-duration and completion-keep readers, and the KAS bundle url. |
 | `config/sections_agent.py` | `AgentConfig`, and the readers that resolve against its declared defaults. |
-| `config/sections_session.py` | `session`, the crew record `KiroCrewAgentConfig`, `workspaces` and a session's `ResolvedBindings`. |
+| `config/sections_session.py` | `session`, the crew record `KiroCrewAgentConfig`, `workspaces`, `session_environments` (its DTOs; validation lives in `config/session_environments.py`) and a session's `ResolvedBindings`. |
 | `config/sections_limits.py` | The bounds constants the loader's clamps and the dashboard's write gate share, and `resource_limits`. |
 | `config/sections_tailnet.py`, `config/sections_dashboard.py`, `config/sections_dashboard_hosts.py` | `dashboard`: `TailscaleConfig` and its parser; the DTO with its Jira and link-rule records; the host-list and link-pattern coercers. |
 | `config/sections_slack.py`, `config/sections_telegram.py`, `config/sections_channels.py` | The messaging channels: Slack with its per-channel records and the activation modes; Telegram; and the others with the coercers they share. |
@@ -131,6 +131,11 @@ Three seams behave differently from the one-module loader:
 
 New section constants, including local speech's automatic-language default, are
 read from `config.sections` directly; they do not expand that historical facade.
+
+The loader reads `_sections.SessionEnvironmentsConfig` without expanding the
+frozen compatibility reexports; schema-property tests resolve each annotation
+with `typing.get_type_hints` on its defining class and traverse every child. Its
+live applier is `GatewayOrchestrator.session_environments`.
 
 New work goes to the owner of its responsibility, not to a facade: a field to
 the module that owns its section's DTO, a new section's DTO to the `sections_*`,
@@ -3458,6 +3463,42 @@ equal that set); the dashboard's `_EDITABLE_CONFIG` exposes only the limits
 the same `*_LIMIT` ceiling the MCP tool schemas enforce, so a hand-edited
 `config.json` cannot ask for an unbounded accessibility walk or a full-resolution
 screenshot.
+
+### Session Environments: configuration only
+
+`session_environments` (`SessionEnvironmentsConfig` in `config/sections.py`)
+persists what the Settings UI needs to offer remote session environments, and
+nothing else: `coder_url`, `profiles`, and the optional `stop_on_shutdown`.
+`config/session_environments.py` owns
+every rule: its strict `validate_*` functions back the dashboard write gate (a
+400, nothing written) and its lenient `load_session_environments` backs
+`SessionEnvironmentsConfig.from_raw`, which keeps every valid part of a
+hand-edited section (an invalid `coder_url` loads as `""`; each invalid,
+duplicate or over-cap profile is dropped with a warning).
+
+- `coder_url`: `""` (not configured) or an `http`/`https` URL with a hostname and
+  no username, password, query or fragment.
+- `profiles`: at most 20 `{id, name, template, workdir}` records plus the
+  optional boolean `compute_survives_stop` (default `true`; `false` marks a
+  template whose stop destroys its compute and files, so Kiro Crew never stops
+  that workspace, see [providers](providers.md)). `id` is an ASCII letter or
+  digit then letters, digits, `_` or `-` (64 max, unique); `name` is 1-128
+  characters, `template` 1-255, `workdir` an absolute POSIX path of at most
+  1024. Text is whitespace-stripped and may not hold control characters.
+- `stop_on_shutdown`: a boolean, default `true`.
+
+There is no `enabled` field (the opt-in is the per-device preview flag) and no
+credential field, so the masked GET returns the whole section; unknown keys are
+refused. An absent or non-object section loads with every key at its default,
+and an unmodelled key inside it is preserved by `save()` and omitted from the
+GET.
+
+`PATCH /api/config/kirocrew` accepts `session_environments` and each of its five
+keys as paths, all through the `"normalized"` spec type. Whole-section saves
+require the Coder keys; an omitted `SECTION_OPTIONAL_KEYS` key keeps its saved
+value under the config lock. A write goes through `update_config_locked`,
+preserves unrelated config and is hot-applied. Saving registers no provider,
+checks no connection and provisions nothing.
 
 ### Security-Bounded Config Clamp
 

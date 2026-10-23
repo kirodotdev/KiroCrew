@@ -6,7 +6,8 @@ what boot ran. ``_register_config_appliers`` subscribes the channel restart and
 Slack's hot fields to config changes, and ``_start_channel_transports`` starts
 every non-Slack transport the ``channels`` scope allows.
 
-Orchestrator fields read: ``_SLACK_APPLIER_PREFIXES``, ``_cfg``.
+Orchestrator fields read: ``_SLACK_APPLIER_PREFIXES``, ``_cfg``,
+``_session_environments_ready``, ``_test_mode``.
 Orchestrator fields written: ``_channel_handles``, ``_channel_transports_started``,
 ``_config_subs``, ``_discord_allowed_channel_ids``, ``_discord_allowed_thread_ids``,
 ``_discord_allowed_user_ids``, ``_discord_auto_thread``, ``_discord_bot_token``,
@@ -47,10 +48,12 @@ if TYPE_CHECKING:
         CRED_WECOM_SECRET,
         CRED_WEIXIN_TOKEN,
         ChannelDescriptor,
+        ConfigChange,
         GatewayOrchestrator,
         KiroCrewConfig,
         Mapping,
         _channel_transport_permitted,
+        _start_coder_retention,
         builtin_channel_descriptors,
         live,
         logger,
@@ -211,6 +214,11 @@ def _hoist_teams(self: GatewayOrchestrator, cfg: KiroCrewConfig, creds: Mapping[
 _SLACK_APPLIER_PREFIXES: tuple[str, ...] = ("slack", "messaging")
 
 
+def _on_session_environment_config_change(self: GatewayOrchestrator, change: ConfigChange) -> None:
+    if self._session_environments_ready and not self._test_mode:
+        _start_coder_retention(change.new)
+
+
 def _register_config_appliers(self: GatewayOrchestrator) -> None:
     """Subscribe this orchestrator's config appliers on the process watcher.
 
@@ -223,6 +231,11 @@ def _register_config_appliers(self: GatewayOrchestrator) -> None:
         d.channel_type for d in registry.bootable(builtin_channel_descriptors())
     )
     self._config_subs = [
+        live.subscribe(
+            "session_environments.coder_url",
+            callback=self._on_session_environment_config_change,
+            name="GatewayOrchestrator.session_environments",
+        ),
         live.subscribe(
             *channel_prefixes,
             callback=self._on_channel_config_change,

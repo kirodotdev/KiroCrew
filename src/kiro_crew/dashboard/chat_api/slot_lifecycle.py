@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         _switch_target_busy,
         _sync_dashboard_slots,
         _unblock_pending_waits,
+        body_int,
         deny_app_slot_access,
         effective_session_key,
         logger,
@@ -574,8 +575,8 @@ async def _close_slot(
     from kiro_crew.dashboard.warm_task_brief import cancel_warm_task_brief
 
     cancel_warm_task_brief(state, name)
-    state._warm_task_brief_away.pop(name, None)
-    state._warm_task_brief_slot_generation.pop(name, None)
+    state._warm_task_brief_not_before.pop(name, None)
+    state._warm_task_brief_last_seen.pop(name, None)
     # Synchronous tombstone, BEFORE any await: a channel-slot reconcile pass
     # whose snapshot predates this close reads these after its last await, so
     # it cannot re-surface the tab this handler is dismissing (see
@@ -968,6 +969,12 @@ async def _close_slot(
     # it unless the key is still ours.
     if _slot_still_ours(state, name, slot):
         await state.sessions.remove(_history_key_for(name))
+        # Stop the archived session's remote workspace and keep it for retention:
+        # background, best effort, a no-op without one. Inside the identity check,
+        # so a replacement's is never touched.
+        from kiro_crew.coder.retention import feed_notifier, schedule_archived
+
+        schedule_archived((_history_key_for(name), closing_key), feed_notifier(state))
     _release_closed_execution(state, slot, closing_key, closing_execution)
     _sync_dashboard_slots(state)
     state.push_slot_removed(name)
@@ -1024,7 +1031,10 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     max_days = 3
     try:
-        max_days = max(1, int(body.get("max_inactive_days", 3)))
+        # Capped at 100 years: any cap past the epoch archives nothing, the same
+        # answer a larger value gives, and a JSON integer too large for a float
+        # would otherwise raise OverflowError in the cutoff arithmetic below.
+        max_days = max(1, min(body_int(body.get("max_inactive_days", 3)), 36500))
     except (ValueError, TypeError):
         pass
     active_slot = body.get("active_slot", "")
@@ -1275,6 +1285,10 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             logger.warning("Cleanup: session remove failed for %s", name, exc_info=True)
         else:
             _release_closed_execution(state, removed, closing_key, closing_execution)
+        # Same retention as a single archive (see _close_slot).
+        from kiro_crew.coder.retention import feed_notifier, schedule_archived
+
+        schedule_archived((_history_key_for(name), closing_key), feed_notifier(state))
         archived.append(name)
         # Collect running tasks for concurrent cancellation after the loop
         if removed.running and removed.task is not None:

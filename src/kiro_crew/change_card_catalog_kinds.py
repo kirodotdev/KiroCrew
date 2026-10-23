@@ -33,6 +33,8 @@ KIND_CREWMATE_CAPABILITIES = "crewmate.capabilities"
 KIND_CREWMATE_GOAL = "crewmate.goal"
 KIND_CREWMATE_KEY_RESULTS = "crewmate.key_results"
 KIND_CREWMATE_CHECK_INS = "crewmate.check_ins"
+#: A crewmate's one offer to write its own Dashboard page (``change_card_dashboard_page``).
+KIND_CREWMATE_DASHBOARD_PAGE = "crewmate.dashboard_page"
 KIND_TEMPLATE_UPDATE = "template.update"
 KIND_MCP_INSTALL = "mcp.install"
 KIND_MCP_ADD_CUSTOM = "mcp.add_custom"
@@ -51,6 +53,9 @@ KIND_CREWMATE_IMPORT = "crewmate.import"
 #: its identity-checked Undo (delete that crewmate) and its state reads.
 CREWMATE_CREATING_KINDS = (KIND_CREWMATE_CREATE, KIND_CREWMATE_IMPORT)
 APP_ONLY_KINDS = frozenset({KIND_CREWMATE_IMPORT})
+#: Kinds only a crewmate raises about itself (``member_self.SELF_PROPOSALS``), never
+#: through ``propose_change``: :func:`list_kinds` leaves them out.
+SELF_ONLY_KINDS = frozenset({KIND_CREWMATE_DASHBOARD_PAGE})
 #: The ``.crewmate`` ``formatVersion`` values this version reads. Any added
 #: field bumps the version, so a newer file is refused rather than guessed at.
 CREWMATE_FORMAT_VERSIONS = (1,)
@@ -477,6 +482,13 @@ KINDS: dict[str, KindDef] = {
             ),
         ),
         KindDef(
+            KIND_CREWMATE_DASHBOARD_PAGE,
+            "One crewmate offers, once, to write its own Dashboard page around its goal "
+            "(the crewmate's own offer_dashboard_page).",
+            _obj({"member": _STR}, ["member"]),
+            (),
+        ),
+        KindDef(
             KIND_TEMPLATE_UPDATE,
             "Change an agent template's tools, allowedTools, skills or model. Affects "
             "every member built from it. A list field is replaced whole; to empty one, "
@@ -603,7 +615,7 @@ def list_kinds() -> list[dict[str, Any]]:
             "editable": list(k.editable),
         }
         for k in KINDS.values()
-        if k.id not in APP_ONLY_KINDS
+        if k.id not in APP_ONLY_KINDS and k.id not in SELF_ONLY_KINDS
     ]
 
 
@@ -995,6 +1007,9 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
         if len(out_ci) == 1:
             raise _fail("invalid_param", "give at least one check-in or its timing")
         return out_ci
+    if kind == KIND_CREWMATE_DASHBOARD_PAGE:
+        _only(p, {"member"})
+        return {"member": _member_name(p, "member")}
     if kind == KIND_TEMPLATE_UPDATE:
         _only(p, {"template", "fields", "clear"})
         template = _clean_str(p, "template", pattern=_TEMPLATE_NAME_RE)

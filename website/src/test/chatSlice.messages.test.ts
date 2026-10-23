@@ -630,6 +630,15 @@ describe('sseSideResult — side conversation reducer', () => {
     expect(state.slotSide['slot-1'].lastRunId).toBe('r1')
   })
 
+  it('replaces a non-prefix streamed tail with the complete final answer', () => {
+    let state = reducer(initial, sseSideResult({ slot: 'slot-1', run_id: 'r1', role: 'assistant', content: 'tail' }))
+    state = reducer(state, sseSideResult({
+      slot: 'slot-1', run_id: 'r1', role: 'assistant', content: 'head tail', final: true, message_id: 'a1',
+    }))
+    expect(state.slotSide['slot-1'].messages).toHaveLength(1)
+    expect(state.slotSide['slot-1'].messages[0]).toMatchObject({ content: 'head tail', id: 'a1' })
+  })
+
   it('new run_id starts a fresh assistant message', () => {
     let state = reducer(initial, sseSideResult({ slot: 'slot-1', run_id: 'r1', role: 'assistant', content: 'first' }))
     state = reducer(state, sseSideResult({ slot: 'slot-1', run_id: 'r2', role: 'user', content: 'q2' }))

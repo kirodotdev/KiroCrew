@@ -72,7 +72,7 @@ def loader(tmp_path: Path, opened) -> SkillsLoader:
     **``config`` is passed explicitly, and the fixture is function-scoped.**
     ``SkillsLoader(config=None)`` falls back to ``KiroCrewConfig.load()``, which
     resolves ``config_dir()`` — and that CREATES the operator's real data home as
-    a side effect (see ``_isolate_kirocrew_home`` in the rootdir ``conftest.py``),
+    a side effect (see ``_isolate_kirocrew_home`` in ``test/conftest_floor_home.py``),
     which ``no-test-side-effects`` forbids. A module-scoped fixture is built
     BEFORE that function-scoped autouse isolation applies, so the scope is load
     bearing here, not a performance choice.

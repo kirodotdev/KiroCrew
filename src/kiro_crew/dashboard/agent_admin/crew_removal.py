@@ -206,6 +206,17 @@ def _reclaim_deleted_member_dashboard_lock(name: str, cfg: KiroCrewConfig) -> No
         return
     if removed:
         logger.info("crew delete: removed the dashboard lock of %r", slug)
+    try:
+        from kiro_crew.dashboard import page_offer
+
+        # The asked-once page offer sits beside the lock in ``crew-panels``: kept, a
+        # later crewmate on the same slug would never be offered its own page.
+        if not _member_slug_is_claimed(slug):
+            page_offer.forget_asked(slug)
+    except Exception:
+        logger.warning(
+            "crew delete: could not remove the page offer record of %r", name, exc_info=True
+        )
 
 
 def _prune_private_copy_of_deleted_crew(crew: str, bound_template: str) -> bool:

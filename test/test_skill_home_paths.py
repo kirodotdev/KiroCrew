@@ -142,7 +142,7 @@ def test_agent_instruction_surfaces_do_not_name_the_legacy_home() -> None:
 
     ``config/prompt.md`` is the concrete case this exists for: it instructed
     every agent that cron scripts "must live under ``~/.kirocrew/crons/``" while
-    ``cron_script.py`` enforces ``config_dir()/crons``, so an obedient agent
+    ``cron_script_paths.py`` enforces ``config_dir()/crons``, so an obedient agent
     created the abandoned directory and then had its registration refused.
     """
     scanned = 0

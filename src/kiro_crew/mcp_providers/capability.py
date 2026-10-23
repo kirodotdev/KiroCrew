@@ -36,10 +36,10 @@ _LIST_LIMIT_GUARD = 500
 """Upper bound on registry entries this provider hands on per call — a
 misbehaving edition manager can't flood the fan-out with an unbounded list.
 
-It caps MATCHES, not rows scanned: the client-side filter runs over every row
-the manager returns, and the cap applies to what matched, so a row late in the
-manager's order stays searchable. An entry whose id equals the query is always
-kept, even past the cap.
+It caps MATCHES, not rows scanned: the client-side filter runs before the cap,
+and the cap applies to what matched, so a row late in the manager's order stays
+searchable. The first entry whose id equals the stripped query, ignoring case,
+is always kept, even past the cap.
 
 :meth:`CapabilityProvider.search` also passes the query DOWN to the manager (see
 :func:`registry_accepts_query`) so an edition that can filter server-side does
@@ -82,8 +82,8 @@ def _matches(entry: dict[str, str | bool], needle: str) -> bool:
     search would have accepted but this rejects is a row search can never see.
     ``fetch_detail`` passes a server id, which is part of the haystack, so the
     row it wants passes this filter — and :meth:`CapabilityProvider._list_entries`
-    keeps an exact-id match even when earlier substring matches exhaust its cap,
-    so that row cannot be crowded out either.
+    keeps the first entry whose id equals the needle, ignoring case, even when
+    earlier substring matches exhaust its cap.
     """
     return needle in f"{entry['id']} {entry['title']} {entry['description']}".lower()
 
@@ -114,15 +114,19 @@ class CapabilityProvider:
         """Registry rows, optionally asking the manager to filter first.
 
         ``query`` is a HINT, not a contract: a manager may filter server-side,
-        narrow its own truncation, or ignore it entirely. Callers must still
-        filter the result themselves.
+        narrow its own truncation, or ignore it entirely. So the match runs
+        here too: with a non-blank query, every entry returned has passed
+        :func:`_matches`, whatever the manager did with the hint.
 
         The guard caps MATCHES rather than rows scanned. The rows are already
         materialized — the manager returned the whole list before this
-        coroutine resumed — so every row is normalized and filtered, and only
-        matches count toward the cap. That bounds what this provider hands on
-        without narrowing the search window, and an exact-id match displaces
-        the last capped entry so :meth:`fetch_detail` can still resolve it.
+        coroutine resumed — so rows are normalized and matched in order, and
+        only matches count toward the cap. That bounds what this provider
+        hands on without narrowing the search window. Once the cap is full the
+        scan stops at the next match, unless the query is non-blank and no
+        kept entry's id equals the stripped query, ignoring case: then it keeps
+        looking, and the first such entry it finds displaces the last capped
+        entry so :meth:`fetch_detail` can still resolve it.
         """
         mgr = self._manager_factory()
         if not mgr.available():

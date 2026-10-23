@@ -88,8 +88,8 @@ def test_non_numeric_elapsed_cannot_break_serialization(junk):
 # surface MUST be added here deliberately, which is the point: the counts make
 # an unnoticed drift fail loudly instead of silently recording zeros.
 EXPECTED_SITES = {
-    "dashboard/chat_runner.py": 2,  # EVENT_COMPLETE + the abnormal-end seam
-    # (_persist_abnormal_turn_usage), both passing elapsed_ms to the row write.
+    "dashboard/chat_runner.py": 1,  # the abnormal-end seam
+    # (_persist_abnormal_turn_usage); it and _on_complete below pass elapsed_ms to the row write.
     # BOTH persists opt out with emit_metric=False: EVENT_COMPLETE emits its
     # sample SEPARATELY (keyed on the effective session_key so a linked-channel
     # turn is attributed to its channel surface, and surviving the
@@ -97,6 +97,7 @@ EXPECTED_SITES = {
     # abnormal-turn sampling is out of this change's scope, and letting its
     # persist emit (default True) would mis-file a linked-channel turn under the
     # slot's `dashboard` key.
+    "dashboard/chat_turn/turn_stats.py": 1,  # EVENT_COMPLETE (_on_complete)
     "dashboard/handlers/hooks.py": 1,
     "dashboard/handlers/hooks_scripts.py": 0,
     "dashboard/handlers/hooks_webhook_intake.py": 0,

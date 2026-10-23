@@ -2,8 +2,8 @@
  * Coverage pass over Settings ▸ Voice (`pages/settings/VoicePanel.tsx`).
  *
  * Nothing mounted this panel before, so every branch was unexecuted: the load
- * error + retry arm, the skeleton arm, both provider field sets (Piper and
- * Amazon Polly), the optimistic `voice-config-changed` broadcast, the rollback
+ * error + retry arm, the skeleton arm, both provider field sets (the built-in
+ * engine and Amazon Polly), the optimistic `voice-config-changed` broadcast, the rollback
  * on a failed save, the engine-compatibility fold when a voice changes, and the
  * live Polly catalogue vs. the offline fallback list.
  *
@@ -52,17 +52,13 @@ type VoiceConfig = Awaited<ReturnType<typeof api.voiceConfig>>
 function config(over: Record<string, unknown> = {}) {
   return {
     enabled: false,
-    provider: 'piper',
+    provider: 'system',
     voice: 'Ruth',
     engine: 'generative',
     rate: '100%',
     autoSpeak: false,
     aws_profile: '',
     region: '',
-    piper_binary: '',
-    piper_model: '',
-    piper_model_config: '',
-    piper_length_scale: 1.0,
     system_voice: '',
     ...over,
   } as VoiceConfig
@@ -166,67 +162,6 @@ describe('VoicePanel load states', () => {
   })
 })
 
-/* ── Piper (default provider) ─────────────────────────────────────────────── */
-
-describe('VoicePanel piper fields', () => {
-  it('renders the piper field set and no Polly-only fields', async () => {
-    seed({ piper_model: '/m.onnx', piper_binary: '/usr/bin/piper' })
-    await field('Piper Model')
-    await field('Piper Binary')
-    expect(select(/^Speed$/)).toBeTruthy()
-    expect(screen.queryByRole('combobox', { name: /^Voice$/ })).toBeNull()
-    expect(screen.queryByRole('combobox', { name: /^Engine$/ })).toBeNull()
-    expect(screen.queryByText('AWS Profile (Amazon Polly)')).toBeNull()
-  })
-
-  it('does not fetch the Polly catalogue for a piper user', async () => {
-    const { voices } = seed()
-    await field('Piper Model')
-    expect(voices).not.toHaveBeenCalled()
-  })
-
-  it('seeds the local input state from the loaded config', async () => {
-    seed({ piper_model: '/models/en.onnx', piper_binary: '/opt/piper' })
-    await field('Piper Model')
-    await waitFor(() => {
-      expect((screen.getByDisplayValue('/models/en.onnx') as HTMLInputElement).tagName).toBe('INPUT')
-    })
-    expect(screen.getByDisplayValue('/opt/piper')).toBeTruthy()
-  })
-
-  it('saves a trimmed piper model path on blur', async () => {
-    const { save } = seed()
-    await field('Piper Model')
-    const input = screen.getByPlaceholderText('~/piper/en_US-lessac-medium.onnx')
-    fireEvent.change(input, { target: { value: '  /models/new.onnx  ' } })
-    fireEvent.blur(input)
-    await waitFor(() => expect(save).toHaveBeenCalledWith({ piper_model: '/models/new.onnx' }))
-  })
-
-  it('saves a trimmed piper binary path on blur', async () => {
-    const { save } = seed()
-    await field('Piper Binary')
-    const input = screen.getByPlaceholderText('(auto-detect)')
-    fireEvent.change(input, { target: { value: ' /usr/local/bin/piper ' } })
-    fireEvent.blur(input)
-    await waitFor(() => expect(save).toHaveBeenCalledWith({ piper_binary: '/usr/local/bin/piper' }))
-  })
-
-  it('writes the numeric length_scale behind the friendly speed label', async () => {
-    const { save } = seed()
-    await field('Piper Model')
-    await pick(/^Speed$/, 'Fastest')
-    await waitFor(() => expect(save).toHaveBeenCalledWith({ piper_length_scale: 0.7 }))
-  })
-
-  it('switches provider to Amazon Polly from the dropdown', async () => {
-    const { save } = seed()
-    await field('Piper Model')
-    await pick(/^Provider$/, 'Amazon Polly (cloud)')
-    await waitFor(() => expect(save).toHaveBeenCalledWith({ provider: 'polly' }))
-  })
-})
-
 /* ── System (built-in engine, the default provider) ───────────────────────── */
 
 describe('VoicePanel system fields', () => {
@@ -234,8 +169,6 @@ describe('VoicePanel system fields', () => {
     seed({ provider: 'system' })
     expect(await screen.findByRole('combobox', { name: /^Voice$/ })).toBeTruthy()
     expect(select(/^Speed$/)).toBeTruthy()
-    expect(screen.queryByText('Piper Model')).toBeNull()
-    expect(screen.queryByText('Piper Binary')).toBeNull()
     expect(screen.queryByRole('combobox', { name: /^Engine$/ })).toBeNull()
     expect(screen.queryByText('AWS Profile (Amazon Polly)')).toBeNull()
   })
@@ -247,8 +180,8 @@ describe('VoicePanel system fields', () => {
   })
 
   it('does not probe the host engine while another provider is selected', async () => {
-    const { systemVoices } = seed({ provider: 'piper' })
-    await field('Piper Model')
+    const { systemVoices } = seed({ provider: 'polly' })
+    await field('AWS Profile (Amazon Polly)')
     expect(systemVoices).not.toHaveBeenCalled()
   })
 
@@ -330,11 +263,21 @@ describe('VoicePanel system fields', () => {
     await waitFor(() => expect(systemVoices.mock.calls.length).toBeGreaterThan(calls))
   })
 
-  it('switches provider to Piper from the dropdown', async () => {
+  it('switches provider to Amazon Polly from the dropdown', async () => {
     const { save } = seed({ provider: 'system' })
     await screen.findByRole('combobox', { name: /^Voice$/ })
-    await pick(/^Provider$/, 'Piper (local, offline)')
-    await waitFor(() => expect(save).toHaveBeenCalledWith({ provider: 'piper' }))
+    await pick(/^Provider$/, 'Amazon Polly (cloud)')
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ provider: 'polly' }))
+  })
+
+  it('offers only the built-in engine and Amazon Polly', async () => {
+    // Piper was removed (#23154); the dropdown must not offer a provider the
+    // gateway no longer accepts.
+    seed({ provider: 'system' })
+    await screen.findByRole('combobox', { name: /^Voice$/ })
+    fireEvent.click(select(/^Provider$/))
+    const options = await screen.findAllByRole('option', undefined, { timeout: 5_000 })
+    expect(options.map(o => o.textContent)).toEqual(['System (built-in)', 'Amazon Polly (cloud)'])
   })
 })
 
@@ -381,7 +324,6 @@ describe('VoicePanel polly fields', () => {
     expect(select(/^Voice$/)).toBeTruthy()
     expect(select(/^Engine$/)).toBeTruthy()
     await waitFor(() => expect(voices).toHaveBeenCalled())
-    expect(screen.queryByText('Piper Model')).toBeNull()
   })
 
   it('labels catalogue voices as name (locale gender-initial)', async () => {

@@ -1,0 +1,178 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "authStatus": {}
+      },
+      "auth": {
+        "logout": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "acp": false,
+        "http": true,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "providers": {},
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "list": {},
+        "resume": {},
+        "subagents": {}
+      }
+    },
+    "agent_version": "2.2.2",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "action": "skip",
+    "frame": "_auth/status_update",
+    "params": {
+      "authStatus": {
+        "detail": "stub",
+        "kind": "gateway",
+        "label": "Custom model gateway"
+      }
+    }
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "agent",
+        "description": "Approval and sandboxing preset for the session",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Only ask for actions detected as potentially unsafe",
+            "name": "Auto review",
+            "value": "agent"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "collaboration_mode",
+        "currentValue": "default",
+        "description": "How Codex collaborates for subsequent turns",
+        "id": "collaboration_mode",
+        "name": "Collaboration mode",
+        "options": [
+          {
+            "name": "Default",
+            "value": "default"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "gpt-5-codex",
+        "description": "Model Codex uses for the session",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": null,
+            "name": "5 Codex",
+            "value": "gpt-5-codex"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "agent",
+      "ids": [
+        "read-only",
+        "workspace-write",
+        "agent",
+        "agent-full-access"
+      ]
+    },
+    "session_id": "codex-session-1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Warning: Model metadata for `gpt-5-codex` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\n\n"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Warning: Model metadata for `gpt-5-codex` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\n\n",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "frame": "response",
+    "id": 4
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      105,
+      258400
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      105,
+      258400
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      200,
+      10,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

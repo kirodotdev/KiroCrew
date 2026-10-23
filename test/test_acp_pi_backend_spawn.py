@@ -147,11 +147,19 @@ def test_the_adapter_is_told_to_run_the_launcher(monkeypatch, tmp_path) -> None:
     assert re.fullmatch(r"[0-9a-f]{32}", nonce), "no nonce was recorded on the session"
     handoff, _payload = rig.client._pi_mcp_handoff
     assert handoff.endswith(f"_mcp_{nonce}.json")
+    # The steer channel is the session's own, bound to the same nonce, and its key is
+    # a fresh one, not the handoff's.
+    steer = rig.client._pi_steer_channel
+    assert steer is rig.adapter._steer and steer.nonce == nonce
+    assert steer._stem().endswith(f"_steer_{nonce}_")
+    assert len(steer.key) == 32 and steer.key != rig.adapter._mcp_key
     assert env == {
         "PI_ACP_PI_COMMAND": rig.LAUNCHER,
         "KIROCREW_PI_GATE_SESSION": nonce,
         "KIROCREW_PI_MCP_HANDOFF": handoff,
         "KIROCREW_PI_MCP_KEY": rig.adapter._mcp_key.hex(),
+        "KIROCREW_PI_STEER": steer._stem(),
+        "KIROCREW_PI_STEER_KEY": steer.key.hex(),
     }
     assert len(rig.adapter._mcp_key) == 32
 

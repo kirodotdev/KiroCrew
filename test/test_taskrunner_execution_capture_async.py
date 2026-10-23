@@ -13,6 +13,7 @@ from kiro_crew.dashboard.handlers import taskrunner as handlers
 from kiro_crew.execution_context import bind_session_execution, read_session_execution
 from kiro_crew.history import ConversationLog
 from kiro_crew.task_models import Project, Task
+from kiro_crew.testing.wait import await_until
 
 ORIGIN = "capture-source"
 
@@ -86,7 +87,7 @@ async def test_http_capture_reads_off_loop_and_survives_body_await(
     loop_thread = threading.get_ident()
     response = await getattr(handlers, f"api_taskrunner_{entry}")(request)
     if state._refine_task:
-        await asyncio.wait_for(state._refine_task, timeout=5)
+        await await_until(state._refine_task, what="the refine task finishing")
     assert response.status == 200
     assert len(captured) == 1
     assert captured[0] == alpha
@@ -155,7 +156,9 @@ async def test_runner_capture_off_loop_or_supplied_unchanged(
         task_id = await runner.start_background(
             tmp_path / "spec.md", input_content="synthetic task", **kwargs
         )
-        await asyncio.wait_for(asyncio.gather(*runner._tasks.values()), timeout=5)
+        await await_until(
+            asyncio.gather(*runner._tasks.values()), what="the background run finishing"
+        )
         run = runner._runs[task_id]
     if live == "persistent":
         assert run.execution_context is (alpha if supplied else captured[0])

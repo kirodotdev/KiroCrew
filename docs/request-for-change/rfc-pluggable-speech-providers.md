@@ -87,6 +87,8 @@ class SpeechProviderRegistry(Protocol):
 
 `SttStreamSession` and `AudioChunk` reuse the shapes `stt_stream.py` and `chat_voice.py` already produce, so the existing partial/final events and chunked WAV/MP3 output need no new wire format.
 
+Provider rule: core may call any provider method from any event loop (the gateway's, a channel's, or a short-lived loop for a blocking caller). A provider must not keep a loop-bound client, such as an aiohttp or httpx session, across calls. It creates one per call or keeps one per loop. Core bounds every `check()` with a timeout and cancels a check that overruns.
+
 ### How core reads it
 
 - `_VALID_STT_PROVIDERS` and `VALID_PROVIDERS` become the built-in set unioned with registered names, read through `current_context()`.

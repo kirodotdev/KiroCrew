@@ -955,6 +955,63 @@ class TestBulkCleanup:
             assert data["archived"] == 0
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999", '"soon"'])
+    async def test_cleanup_falls_back_to_3_days_on_an_unparsable_value(
+        self, tmp_path, monkeypatch, raw
+    ):
+        """JSON reads ``1e999`` as an infinite float, which ``int`` cannot convert.
+
+        It takes the same 3-day fallback as a non-numeric string: a slot idle for
+        2 days stays and one idle for 4 days is archived.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        for name, days in (("two-days", 2), ("four-days", 4)):
+            slot = state.get_or_create_slot(name)
+            slot.append("user", "hi", ts=(now - timedelta(days=days)).isoformat())
+            slot.drain()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/cleanup",
+                data='{"max_inactive_days": %s}' % raw,
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["archived"] == 1
+        assert state.get_slot("two-days") is not None
+        assert state.get_slot("four-days") is None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_with_a_huge_integer_archives_nothing(self, tmp_path, monkeypatch):
+        """A JSON integer too large for a float: no slot is that old, so nothing is
+        archived, and the cutoff arithmetic does not raise."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        from datetime import datetime, timedelta, timezone
+
+        slot = state.get_or_create_slot("ten-years")
+        slot.append(
+            "user", "hi", ts=(datetime.now(timezone.utc) - timedelta(days=3650)).isoformat()
+        )
+        slot.drain()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/cleanup",
+                data='{"max_inactive_days": 1%s}' % ("0" * 400),
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["archived"] == 0
+        assert state.get_slot("ten-years") is not None
+
+    @pytest.mark.asyncio
     async def test_cleanup_empty_slots_uses_created_at(self, tmp_path, monkeypatch):
         """Slots with no messages use created_at for staleness."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)

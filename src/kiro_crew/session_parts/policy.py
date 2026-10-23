@@ -99,6 +99,7 @@ POOL_DECISIONS: frozenset[str] = frozenset(
         "bypass_cwd",
         "bypass_env",
         "bypass_shared_scratch",
+        "bypass_remote_environment",
         "bypass_backend_override",
         "bypass_effort",
         "disabled",

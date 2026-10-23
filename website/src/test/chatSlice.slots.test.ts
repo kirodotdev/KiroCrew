@@ -570,7 +570,7 @@ describe('create activation tracking — which create activated which slot', () 
 
     it('asks the sidebar to reveal an activated create filed into the default folder', () => {
       const state = reducer({ ...initial, activeSlot: 'A' }, filed('A'))
-      expect(state.revealRequest).toEqual({ kind: 'session', target: 'new-slot', nonce: initial.revealNonce + 1, openFoldersOnly: true })
+      expect(state.revealRequest).toEqual({ kind: 'session', target: 'new-slot', nonce: initial.revealNonce + 1, openFoldersOnly: true, folderId: 'f-default' })
       expect(state.revealNonce).toBe(initial.revealNonce + 1)
     })
 

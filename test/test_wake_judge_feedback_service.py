@@ -274,10 +274,13 @@ class TestTurnCompleteLabelling:
         gate = facts["nudge_turn"]
         assert isinstance(gate, ast.BoolOp)
         assert isinstance(gate.op, ast.And)
-        assert [part.id for part in gate.values if isinstance(part, ast.Name)] == [
-            "_directive_self_wake",
-            "_turn_landed",
-        ]
+        # A flag a phase sets is read through the turn (``turn._turn_landed``).
+        assert [
+            part.id if isinstance(part, ast.Name) else part.attr
+            for part in gate.values
+            if isinstance(part, ast.Name)
+            or (isinstance(part, ast.Attribute) and getattr(part.value, "id", None) == "turn")
+        ] == ["_directive_self_wake", "_turn_landed"]
         assert isinstance(facts["reply_flushed"], ast.Name)
         assert facts["reply_flushed"].id == "_turn_flushed_visible_text"
         calls = [

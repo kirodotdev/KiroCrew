@@ -12,8 +12,9 @@ import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
 import type { LineAnnotation, SelectedLineRange } from '@pierre/diffs'
 
 interface CapturedProps {
-  options?: { enableLineSelection?: boolean; onLineSelected?: (r: SelectedLineRange | null) => void; enableGutterUtility?: boolean }
+  options?: { enableLineSelection?: boolean; onLineSelected?: (r: SelectedLineRange | null) => void; onLineSelectionChange?: (r: SelectedLineRange | null) => void; enableGutterUtility?: boolean }
   lineAnnotations?: LineAnnotation<unknown>[]
+  selectedLines?: SelectedLineRange | null
   renderAnnotation?: (a: LineAnnotation<unknown>) => React.ReactNode
   renderGutterUtility?: (getHoveredLine: () => { lineNumber: number } | undefined) => React.ReactNode
 }
@@ -124,6 +125,53 @@ describe('CodeBlock commenting wiring', () => {
     // No frozen rect: the popover looks the chip up live (codeAnchorElement),
     // so it follows the chip when the page scrolls.
     expect(ctx.onActivate).toHaveBeenCalledWith('c9')
+  })
+
+  it('says in the chip label why it is filled: unread, selected, or neither', () => {
+    mount(ctxValue({ annotations: [{ id: 'u', line: 1, count: 2, unread: true }] }), 3)
+    expect(screen.getByRole('button', { name: 'Comment thread (2, unread)' })).toBeTruthy()
+    cleanup()
+    mount(ctxValue({ activeId: 'a', annotations: [{ id: 'a', line: 1, count: 1, unread: false }] }), 3)
+    expect(screen.getByRole('button', { name: 'Comment thread (1, selected)' })).toBeTruthy()
+    cleanup()
+    mount(ctxValue({ annotations: [{ id: 'r', line: 1, count: 4, unread: false }] }), 3)
+    expect(screen.getByRole('button', { name: 'Comment thread (4)' })).toBeTruthy()
+  })
+
+  it('names the selected range on the gutter button', () => {
+    mount(ctxValue(), 3)
+    act(() => hoisted.captured.at(-1)!.options!.onLineSelected!({ start: 1, end: 3 } as SelectedLineRange))
+    const btn = screen.getByRole('button', { name: 'Add comment' })
+    fireEvent.pointerEnter(btn)
+    expect(btn.getAttribute('aria-label')).toBe('Comment on lines 1–3')
+    expect(btn.getAttribute('title')).toBe('Comment on lines 1–3')
+  })
+
+  it('controls Pierre\u2019s selection and clears it once a comment posts on this block', () => {
+    const ctx = ctxValue()
+    const { rerender } = mount(ctx, 3)
+    expect(hoisted.captured.at(-1)!.selectedLines).toBeNull()
+    act(() => hoisted.captured.at(-1)!.options!.onLineSelectionChange!({ start: 1, end: 2 } as SelectedLineRange))
+    expect(hoisted.captured.at(-1)!.selectedLines).toEqual({ start: 1, end: 2 })
+    // A post on ANOTHER block, or on other lines of this one, leaves this range alone.
+    rerender(
+      <CodeCommentContext.Provider value={{ ...ctx, postedFor: { blockStartLine: 99, start: 1, end: 2, seq: 1 } }}>
+        <CodeBlock code={CODE} lang="ts" complete sourceStartLine={3} />
+      </CodeCommentContext.Provider>,
+    )
+    expect(hoisted.captured.at(-1)!.selectedLines).toEqual({ start: 1, end: 2 })
+    rerender(
+      <CodeCommentContext.Provider value={{ ...ctx, postedFor: { blockStartLine: 3, start: 3, end: 3, seq: 2 } }}>
+        <CodeBlock code={CODE} lang="ts" complete sourceStartLine={3} />
+      </CodeCommentContext.Provider>,
+    )
+    expect(hoisted.captured.at(-1)!.selectedLines).toEqual({ start: 1, end: 2 })
+    rerender(
+      <CodeCommentContext.Provider value={{ ...ctx, postedFor: { blockStartLine: 3, start: 1, end: 2, seq: 3 } }}>
+        <CodeBlock code={CODE} lang="ts" complete sourceStartLine={3} />
+      </CodeCommentContext.Provider>,
+    )
+    expect(hoisted.captured.at(-1)!.selectedLines).toBeNull()
   })
 
   it('registers its chip as the thread live anchor, and releases it on unmount', () => {

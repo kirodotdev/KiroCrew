@@ -870,6 +870,7 @@ if _typing.TYPE_CHECKING:
         _read_clone_failure,
         _read_pinned_sidecar,
         _read_unobtainable_art,
+        _retrieve_batch_cancellation,
         _servable_art_path,
         _slim_prewarm_row,
         _store_art_cache_path,

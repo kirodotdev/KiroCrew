@@ -74,9 +74,10 @@ export function runFirstConnect(ws: WebSocket, ctx: CatchUpContext): void {
   // this too; the two paths must stay symmetric.
   if (socket.logCbRef.current) ws.send(JSON.stringify({ type: 'subscribe_logs' }))
   // Announce only a visible mounted transcript. A hidden first connect has no
-  // return edge; visibilitychange will send the later visible frame.
+  // return edge; visibilitychange will send the later visible frame. The
+  // `announce` mark lets the gateway tell a connect from a return.
   if (!document.hidden) {
-    ws.send(JSON.stringify({ type: 'slot_focused', slot: ctx.focusedSlot() }))
+    ws.send(JSON.stringify({ type: 'slot_focused', slot: ctx.focusedSlot(), announce: true }))
   }
 }
 
@@ -183,6 +184,6 @@ export function runReconnectCatchUp(ws: WebSocket, ctx: CatchUpContext): void {
   // Re-announce only while visible. Reconnect itself is never a return edge;
   // a hidden reconnect waits for visibilitychange.
   if (!document.hidden) {
-    ws.send(JSON.stringify({ type: 'slot_focused', slot: ctx.focusedSlot() }))
+    ws.send(JSON.stringify({ type: 'slot_focused', slot: ctx.focusedSlot(), announce: true }))
   }
 }

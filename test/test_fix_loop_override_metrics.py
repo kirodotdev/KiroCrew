@@ -229,7 +229,9 @@ class TestTheWeeklyReportCarriesThem:
 
         monkeypatch.setattr(mod, "run", fake_run)
         monkeypatch.setattr(mod, "deferral_metrics", lambda repo: _DEFERRALS)
-        monkeypatch.setattr(mod, "harvest_metrics", lambda repo, since: _HARVEST)
+        # main fetches the merged-PR list once and hands it to the harvest.
+        monkeypatch.setattr(mod, "merged_prs_since", lambda repo, since: [])
+        monkeypatch.setattr(mod, "harvest_metrics", lambda repo, since, prs: _HARVEST)
         out, summary = tmp_path / "m.json", tmp_path / "m.md"
         monkeypatch.setattr(
             "sys.argv",

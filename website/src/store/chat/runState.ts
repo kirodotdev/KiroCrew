@@ -191,7 +191,8 @@ export const settleEndedActiveTurn = (
 }
 
 /** THE way `activeSlot` moves to `target`: hands the outgoing slot's run
- *  mirror back to its keyed entry, assigns, and records the entry epoch.
+ *  mirror back to its keyed entry, assigns, and records the entry epoch. A
+ *  change of chat also sets the chat a held-off side panel reopens.
  *  Fused into one setter so a future `activeSlot` writer cannot skip the
  *  hand-back -- the same structural shape `setRunState` gives the tick bump.
  *
@@ -223,7 +224,11 @@ export const settleEndedActiveTurn = (
  *  slot worth handing back to: `deleteSlot.fulfilled` (the outgoing slot was
  *  just evicted; a hand-back would recreate its entry) and the
  *  `switchSlot.rejected` origin restore (the slot being left is the 404'd
- *  target, which has no entry and never will). */
+ *  target, which has no entry and never will). Neither sets the side panel's
+ *  reopen the way a chat change here does. The restore puts back the value
+ *  `switchSlot.pending` saved in `slotSwitchOrigin`. A delete can leave the
+ *  evicted chat's key, which matches nothing while `activeSlot` is null, and
+ *  the next entry here replaces it. */
 export function enterActiveSlot(state: ChatState, target: string | null, automatic = false): void {
   const outgoing = state.activeSlot
   if (outgoing !== null && outgoing !== target && !isUnsafeKey(outgoing)) {
@@ -237,6 +242,11 @@ export function enterActiveSlot(state: ChatState, target: string | null, automat
   }
   if (outgoing !== target && automatic) state.activeSlotAutoMoves = (state.activeSlotAutoMoves ?? 0) + 1
   else if (outgoing !== target) state.activeSlotMoves = (state.activeSlotMoves ?? 0) + 1
+  // A chat entered while a phone or an embedded chat holds Keep side panel
+  // open off opens its panel when the hold lifts, because without the hold it
+  // would have entered open. Any other chat change leaves nothing to reopen
+  // (see `sidePanelReopenSlot`).
+  if (outgoing !== target) state.sidePanelReopenSlot = state.sidePanelAlwaysOpenSetting === true && !state.sidePanelAlwaysOpen ? target : null
   state.activeSlot = target
   state.activeRunEpochAtEntry = target !== null && !isUnsafeKey(target) ? (state.runEpoch?.[safeKey(target)] ?? 0) : 0
 }
@@ -255,6 +265,12 @@ export const runStateReducers = {
     if (state.activeSlot !== null) parkActiveTranscript(state)
     enterActiveSlot(state, null, true); state.slotState = 'idle'; state.pendingTurnSlot = null
   },
+  /** A fork that may open its child started (`pendingForkOpens`). Every
+   *  caller pairs it with exactly one `forkOpenSettled`, after its own
+   *  switch to the child, so the count stays raised from the click until
+   *  the child is active. */
+  forkOpenStarted(state: ChatState) { state.pendingForkOpens = (state.pendingForkOpens ?? 0) + 1 },
+  forkOpenSettled(state: ChatState) { state.pendingForkOpens = Math.max(0, (state.pendingForkOpens ?? 0) - 1) },
   clearSlotState(state: ChatState) {
     state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'changes'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; setPagingCursor(state, false, 0); state.loadingOlder = false; state.lastChunkSeq = undefined; state.lastChunkGen = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]
     // This clears only the active mirror, not the slot's cached identity. Keep

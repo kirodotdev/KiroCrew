@@ -1037,9 +1037,11 @@ def test_a_substitute_bound_is_cleared_wherever_its_real_counter_is():
             # The module that DEFINES the pair, not a consumer of it. The string
             # check this replaced counted its own `def` lines as a clear.
             continue
+        # The runner's turn runtime is the runner and the chat_turn owners composed into it.
+        unit = "chat_runner.py" if path.parent.name == "chat_turn" else path.name
         src = path.read_text(encoding="utf-8")
         if "note_shared_death" in src:
-            counts.append(path.name)
+            counts.append(unit)
         if "clear_shared_deaths" not in src:
             continue
         for block in (_direct(b) for b in _blocks(ast.parse(src))):
@@ -1047,7 +1049,7 @@ def test_a_substitute_bound_is_cleared_wherever_its_real_counter_is():
                 continue
             if "reset" in _calls_in(block) or _block_assigns_attr(block, "consecutive_failures"):
                 continue  # a hand-over's own clear, not a success clear
-            clears.append(path.name)
+            clears.append(unit)
             break
     assert len(counts) >= 4, f"only {counts} count a streak -- scan is broken"
     assert clears, "no success-path clear found anywhere -- the scan is broken"

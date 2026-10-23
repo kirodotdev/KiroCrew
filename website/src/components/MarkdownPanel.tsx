@@ -23,7 +23,7 @@ import { downloadFileName } from '../utils/fileReadUrl'
 import { dropDeliveredComments, loadCommentDrafts, persistFileComments } from '../utils/commentDrafts'
 import { copyToClipboard } from '../utils/clipboard'
 import { anchorFromRange } from '../utils/selectionAnchor'
-import { shadowSelectionRange } from '../utils/pierreShadow'
+import { codePassagePosition, codeQuoteRange, shadowSelectionRange, watchText } from '../utils/pierreShadow'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { FileHeaderBreadcrumb, OverflowMenu, FileArtifactActionButton, KnowledgeToggleIconButton, barIconBtn } from './MarkdownPanelHeader'
 import { useFileKnowledgeState, useFileArtifactState, type ReportError } from './useMarkdownPanelFileState'
@@ -47,6 +47,8 @@ interface SelectionInfo {
   startOffset?: number
   /** Selected inside a code block (see `InlineComment.inCode`). */
   inCode?: boolean
+  /** Where in the preview's code blocks (see `InlineComment.codePosition`). */
+  codePosition?: number
 }
 
 interface Props {
@@ -321,7 +323,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // while the DOM selection was still live (focus in the input collapses it).
   // A ref, not state: it is read only by the submit handler, and nothing renders
   // from it.
-  const pendingAnchorRef = useRef<{ anchor: string; line?: number; column?: number; startOffset?: number; inCode?: boolean } | null>(null)
+  const pendingAnchorRef = useRef<{ anchor: string; line?: number; column?: number; startOffset?: number; inCode?: boolean; codePosition?: number } | null>(null)
   // Whether the annotation box is open — read by the panel's document-level
   // Escape handler so it yields the key to the box instead of closing the panel.
   const composerOpenRef = useRef(false)
@@ -524,7 +526,8 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       const raw = sel.toString()
       const anchor = raw.trim()
       const coords = findUniqueCoords(content, raw)
-      return { anchor, rect: inCode.getBoundingClientRect(), range: inCode.cloneRange(), line: coords?.line, column: coords?.column, inCode: true }
+      const codePosition = codePassagePosition(root, inCode) ?? undefined
+      return { anchor, rect: inCode.getBoundingClientRect(), range: inCode.cloneRange(), line: coords?.line, column: coords?.column, inCode: true, codePosition }
     }
     // Try live selection first
     if (sel && !sel.isCollapsed && sel.anchorNode && root.contains(sel.anchorNode)) {
@@ -599,7 +602,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     if (info) {
       if (info.range) applyHighlightMarks(info.range)
       else clearHighlightMarks()
-      pendingAnchorRef.current = { anchor: info.anchor, line: info.line, column: info.column, startOffset: info.startOffset, inCode: info.inCode }
+      pendingAnchorRef.current = { anchor: info.anchor, line: info.line, column: info.column, startOffset: info.startOffset, inCode: info.inCode, codePosition: info.codePosition }
     } else {
       // No DOM selection to map — anchor on the text the toolbar captured.
       clearHighlightMarks()
@@ -626,7 +629,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
 
   const handleComposerSubmit = useCallback((comment: string, text: string) => {
     const info = pendingAnchorRef.current ?? { anchor: text }
-    const newComment: InlineComment = { id: Math.random().toString(36).substring(2), anchor: info.anchor, text: comment, line: info.line, column: info.column, startOffset: info.startOffset, inCode: info.inCode }
+    const newComment: InlineComment = { id: Math.random().toString(36).substring(2), anchor: info.anchor, text: comment, line: info.line, column: info.column, startOffset: info.startOffset, inCode: info.inCode, codePosition: info.codePosition }
     setComments(prev => [...prev, newComment])
     composerOpenRef.current = false
     composerDraftRef.current = false
@@ -847,7 +850,13 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       const ranges: Range[] = []
       const hits: { range: Range; comment: InlineComment }[] = []
       for (const comment of comments) {
-        if (!comment.anchor || comment.inCode) continue
+        if (!comment.anchor) continue
+        if (comment.inCode) {
+          // Placed in its own block by position; its quote is never looked up in the prose.
+          const r = codeQuoteRange(textRoot, comment.anchor, comment.codePosition)
+          if (r) { ranges.push(r); hits.push({ range: r, comment }) }
+          continue
+        }
         const bestIdx = findBestOccurrence(fullText, comment.anchor, comment.startOffset)
         if (bestIdx < 0) continue
         const s = locate(bestIdx)
@@ -875,13 +884,20 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       timer = window.setTimeout(apply, 60)
     })
     observer.observe(scrollRoot, { childList: true, subtree: true, characterData: true })
+    // The tree observer does not see a code block's shadow root fill; this does.
+    const stopWatchingCode = watchText(scrollRoot, apply)
 
     // Hit-test the pointer against the comment ranges (no DOM elements exist).
     const hitAt = (x: number, y: number): { range: Range; comment: InlineComment } | null => {
       const caret = (document as unknown as { caretRangeFromPoint?: (x: number, y: number) => Range | null }).caretRangeFromPoint?.(x, y)
-      if (!caret) return null
       for (const h of activeHits) {
-        try { if (h.range.comparePoint(caret.startContainer, caret.startOffset) === 0) return h } catch { /* */ }
+        try { if (caret && h.range.comparePoint(caret.startContainer, caret.startOffset) === 0) return h } catch { /* */ }
+      }
+      // A caret may stop at a code block's host instead of entering its shadow root,
+      // so a code comment is also hit by the boxes its text is drawn in.
+      for (const h of activeHits) {
+        if (!h.comment.inCode) continue
+        for (const box of h.range.getClientRects()) if (x >= box.left && x <= box.right && y >= box.top && y <= box.bottom) return h
       }
       return null
     }
@@ -912,6 +928,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     const onClick = (ev: MouseEvent) => {
       const hit = hitAt(ev.clientX, ev.clientY)
       if (!hit) return
+      if (hit.comment.inCode && window.getSelection()?.toString().trim()) return
       ev.preventDefault(); ev.stopPropagation()
       window.getSelection()?.removeAllRanges()
       removeCommentTooltip()
@@ -928,6 +945,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       cancelAnimationFrame(raf2)
       clearTimeout(timer)
       observer.disconnect()
+      stopWatchingCode()
       scrollRoot.style.cursor = ''
       scrollRoot.removeEventListener('mousemove', onMove)
       scrollRoot.removeEventListener('mouseleave', onLeave)

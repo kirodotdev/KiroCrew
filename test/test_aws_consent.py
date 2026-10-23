@@ -1097,11 +1097,11 @@ class TestDescribeVoicesEndpoint:
 
     def test_non_polly_provider_returns_empty_without_calling_aws(self, home):
         from kiro_crew.dashboard import chat_voice
-        from kiro_crew.voice_reply import PROVIDER_PIPER
+        from kiro_crew.voice_reply import PROVIDER_SYSTEM
 
         chat_voice._voices_cache = None
         with (
-            patch.object(chat_voice._vc, "provider", PROVIDER_PIPER),
+            patch.object(chat_voice._vc, "provider", PROVIDER_SYSTEM),
             patch("asyncio.create_subprocess_exec") as spawn,
         ):
             resp = asyncio.run(chat_voice.api_voice_voices(self._request()))

@@ -232,6 +232,12 @@ def _commit_credential_and_config(cp: Path, serialized: str, token: str) -> None
                     exc_info=True,
                 )
             raise
+        # ``load_credentials()`` lets ``os.environ`` win over ``.env``, and boot
+        # copied the previous token there: left alone, the channel restart and
+        # an in-app re-exec would both keep the replaced token. A scrubbed
+        # environ holds no credential to go stale and must not regain one.
+        if not os.environ.get("_KIROCREW_CREDS_SCRUBBED"):
+            os.environ[CRED_WEIXIN_TOKEN] = token
     finally:
         platform_compat.release_lock(lock_fd)
         os.close(lock_fd)

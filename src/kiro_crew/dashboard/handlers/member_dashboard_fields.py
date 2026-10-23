@@ -555,9 +555,9 @@ _STAGED: Final[str] = "(staged)"
 
 
 def authored_html(package: Mapping[str, Any]) -> str | None:
-    """The page an agent wrote as ``view.html``, or ``None`` for a block layout.
+    """The page an agent wrote as ``view.html``, or ``None`` when *package* has none.
 
-    A block layout has no script of its own, so there is nothing to run.
+    A canonical package always has one; ``None`` answers a view that is not a page.
     """
     view = package.get("view")
     html = view.get("html") if isinstance(view, Mapping) else None
@@ -573,7 +573,7 @@ def verify_package_page(
 ) -> dict[str, Any] | None:
     """Run an authored page once over a SYNTHETIC copy of *crew*'s read; the result in wire form.
 
-    ``None`` when the package draws from blocks. Otherwise the wire form of a
+    ``None`` when the package holds no page. Otherwise the wire form of a
     :class:`~kiro_crew.dashboard_verify.Verification`, which says ``passed``, ``failed``
     with each error and where it was thrown, ``timed_out`` or ``skipped`` with the reason.
 

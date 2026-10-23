@@ -20,7 +20,6 @@ import os
 import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -33,6 +32,7 @@ from security_conductor_scripts_helpers import SCRIPTS, file_finding, out_json, 
 from skill_script_helpers import load_skill_script
 
 from kiro_crew import platform_compat
+from kiro_crew.testing.wait import wait_until
 
 
 @pytest.fixture
@@ -1171,20 +1171,17 @@ def test_a_fork_outliving_a_SUCCEEDING_proof_is_still_reaped(
     forked_start_id = platform_compat.get_process_start_id(forked)
     reaped = False
     try:
-        # flake-ok: pre-existing 10 s real-time deadline on the poll for the fork's exit, which fails loudly, moved verbatim; tracked for a de-flake pass
-        give_up_at = time.monotonic() + 10.0
-        while True:
-            # Liveness through the repo's own probe (AGENTS.md "Cross-platform"),
-            # not a raw ``os.kill(pid, 0)``: that TERMINATES the target on Windows,
-            # and the sweep's caller filter recognises only the sanctioned helper.
-            if not platform_compat.pid_exists(forked):
-                reaped = True
-                return
-            assert (
-                time.monotonic() < give_up_at
-            ), f"fork {forked} outlived a SUCCEEDING proof -- the group was never swept"
-            # flake-ok: pre-existing 50 ms pacing of the bounded poll for the fork's exit, moved verbatim; tracked for a de-flake pass
-            time.sleep(0.05)
+        # Liveness through the repo's own probe (AGENTS.md "Cross-platform"),
+        # not a raw ``os.kill(pid, 0)``: that TERMINATES the target on Windows,
+        # and the sweep's caller filter recognises only the sanctioned helper.
+        wait_until(
+            lambda: not platform_compat.pid_exists(forked),
+            timeout=10.0,
+            describe=lambda: (
+                f"fork {forked} outlived a SUCCEEDING proof -- the group was never swept"
+            ),
+        )
+        reaped = True
     finally:
         # Same rule as the sibling test: never signal a pid whose death this test
         # already proved, because that number is free to be reassigned.
@@ -1263,18 +1260,15 @@ def test_a_wedged_grandchild_does_not_outlive_the_deadline(
     try:
         # Generous, and only reached when the property is broken: a killpg is
         # immediate, so this bound exists to fail by name rather than be waited on.
-        # flake-ok: pre-existing 10 s real-time deadline on the poll for the grandchild's exit, which fails loudly, moved verbatim; tracked for a de-flake pass
-        give_up_at = time.monotonic() + 10.0
-        while True:
-            # Liveness through the repo's own probe, as in the sibling test above.
-            if not platform_compat.pid_exists(grandchild):
-                reaped = True
-                return
-            assert (
-                time.monotonic() < give_up_at
-            ), f"grandchild {grandchild} outlived the reap -- the kill did not reach the group"
-            # flake-ok: pre-existing 50 ms pacing of the bounded poll for the grandchild's exit, moved verbatim; tracked for a de-flake pass
-            time.sleep(0.05)
+        # Liveness through the repo's own probe, as in the sibling test above.
+        wait_until(
+            lambda: not platform_compat.pid_exists(grandchild),
+            timeout=10.0,
+            describe=lambda: (
+                f"grandchild {grandchild} outlived the reap -- the kill did not reach the group"
+            ),
+        )
+        reaped = True
     finally:
         # Only when the poll did NOT prove it dead. A pid is free for the kernel to
         # reassign the moment it exits, so signalling one whose death this test just

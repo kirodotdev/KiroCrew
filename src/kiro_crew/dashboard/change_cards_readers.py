@@ -531,6 +531,77 @@ def _template_state_with_skills(params: dict[str, Any], state: Any) -> dict[str,
     }
 
 
+def _crewmate_identity(member: str) -> dict[str, Any]:
+    """``{exists, slug, member_id}`` of *member*, the identity a page-offer card compares."""
+    from kiro_crew import members as members_mod
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    cfg = KiroCrewConfig.load()
+    agent = cfg.agents.get(member)
+    if agent is None:
+        return {"exists": False}
+    return {
+        "exists": True,
+        "slug": members_mod.member_slug(member, cfg),
+        "member_id": getattr(agent, "member_id", "") or "",
+    }
+
+
+def _page_offer_snapshot(member: str) -> dict[str, Any]:
+    """The crewmate's identity and the page its offer would replace.
+
+    The page is part of what a yes is compared against, so a template the person
+    adopts after the card was raised refuses the yes instead of being replaced.
+    """
+    ident = _crewmate_identity(member)
+    if not ident.get("exists") or not ident.get("slug"):
+        return ident
+    from kiro_crew import dashboard_agentic
+
+    return {**ident, "page": dashboard_agentic.page_offer_target(str(ident["slug"]))}
+
+
+def _page_offer_context(member: str, before: dict[str, Any]) -> dict[str, Any]:
+    """What a page-offer card shows, refusing one the crewmate may not raise.
+
+    Refused when the crewmate has no goal and confirmed milestones yet (``not_ready``),
+    or is not on a template page (``not_on_a_template``: nothing on its tab, where it
+    writes its page with no card, or a page of its own). Otherwise the goal the page
+    is built around and the template it would replace. Asked-once is checked where
+    the card is raised (``member_self._page_offer_claim``), not here: a re-preview of
+    the card that wrote the record must not be refused by it.
+    """
+    from kiro_crew import dashboard_agentic, member_goals
+    from kiro_crew.dashboard import goal_reminder
+
+    slug = str(before.get("slug") or "")
+    if not slug:
+        return {"label": _crewmate_label(member)}
+    try:
+        rec = member_goals.read_goals(slug, member)
+    except member_goals.GoalsUnreadable:
+        raise catalog.CardCatalogError(
+            "goals_unreadable", "this crewmate's goal record cannot be read"
+        ) from None
+    if not goal_reminder.knows_its_page(rec):
+        raise catalog.CardCatalogError(
+            "not_ready", "offer a Dashboard page once you have a goal and confirmed milestones"
+        )
+    target = dashboard_agentic.page_offer_target(slug)
+    if target is None or not target.get("replaces"):
+        raise catalog.CardCatalogError(
+            "not_on_a_template",
+            "this offer is for a crewmate on a template page; with nothing on your tab, "
+            "write your page directly, and with a page of your own, you already have one",
+        )
+    goals = rec.get("goals") or []
+    return {
+        "label": _crewmate_label(member),
+        "goal": member_goals.scrub_text(goals[0]["text"]) if goals else "",
+        "replaces": target.get("replaces", ""),
+    }
+
+
 def _goal_state(member: str, kind: str) -> dict[str, Any]:
     """The crewmate's slug and the part of its goal a goal card replaces.
 
@@ -631,6 +702,8 @@ def _sync_read_state(
         catalog.KIND_CREWMATE_CHECK_INS,
     ):
         return _goal_state(p["member"], kind)
+    if kind == catalog.KIND_CREWMATE_DASHBOARD_PAGE:
+        return _page_offer_snapshot(p["member"])
     if kind == catalog.KIND_TEMPLATE_UPDATE:
         from kiro_crew.dashboard.handlers.agents import _agent_detail_candidates
 
@@ -976,6 +1049,8 @@ async def read_context(
     p = params
     if kind == catalog.KIND_CREWMATE_UPDATE:
         return {"label": await asyncio.to_thread(_crewmate_label, p["name"])}
+    if kind == catalog.KIND_CREWMATE_DASHBOARD_PAGE:
+        return await asyncio.to_thread(_page_offer_context, p["member"], before)
     if kind in (
         catalog.KIND_CREWMATE_GOAL,
         catalog.KIND_CREWMATE_KEY_RESULTS,

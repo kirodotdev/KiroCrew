@@ -50,10 +50,11 @@ from kiro_crew.agent_sdk.backends import (
 #   tool exists there for an allow rule to pre-approve. ``default`` mode runs
 #   Read, Grep and Glob inside the session's cwd without asking; the ``ask``
 #   rules override that, and a denied sensitive path is refused by claude
-#   before it asks. Captured on claude-agent-acp 0.93.0
-#   (``test/fixtures/claude_side_read_ask``): without the file-read rules four
-#   in-cwd reads ran with no permission request, and with them all five reads
-#   asked. claude's routing (``Routing.SEEDED_SETTINGS``) is declared but not
+#   before it asks. Captured on claude-agent-acp 0.94.0
+#   (``test/fixtures/acp_frames/claude/side-read-no-ask-live.jsonl`` and
+#   ``test/fixtures/acp_frames/claude/side-read-ask-live.jsonl``): without the
+#   file-read rules four in-cwd reads ran with no permission request, and with
+#   them all five reads asked. claude's routing (``Routing.SEEDED_SETTINGS``) is declared but not
 #   enforced by this core.
 # * goose: its pre-approval store is ``permission.yaml`` in its config directory,
 #   which in ``approve`` mode runs a ``user.always_allow`` tool without asking.

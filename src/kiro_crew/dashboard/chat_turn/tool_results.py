@@ -106,7 +106,6 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
     # redacted form, so the comparison must use the redacted form
     # too — see the `_tool_meta` docstring for the convention.
     _tcid = _redact_tool_field(event.tool_call_id) if event.tool_call_id else ""
-    turn._tcid = _tcid
     # Whether that value still NAMES one call. It cannot be answered by
     # re-redacting: _run_chat's stream-loop preamble already replaced
     # `event.tool_call_id` with the redacted form for every event, so
@@ -174,7 +173,6 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
         # its result records no source rather than borrowing another
         # call's input and shell status.
         for _row in reversed(slot.messages):
-            turn._row = _row
             if _row.get("role") == "tool" and _row.get("meta", {}).get("tool_call_id") == _tcid:
                 slot.credential_evidence.record(
                     str(_row["meta"].get("input") or ""),
@@ -750,7 +748,6 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
     # tool_call_id, and both pills should reflect the same output.
     if _tcid:
         for m in slot.messages:
-            turn.m = m
             if m.get("role") == "tool" and m.get("meta", {}).get("tool_call_id") == _tcid:
                 _meta = m.setdefault("meta", {})
                 _meta["done"] = True

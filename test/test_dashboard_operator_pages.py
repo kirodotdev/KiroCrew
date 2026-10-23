@@ -278,7 +278,11 @@ def test_the_served_page_is_framed_exactly_like_a_built_in_one() -> None:
     frame = (REPO / "website/src/pages/members/CrewDynamicDashboard.tsx").read_text(
         encoding="utf-8"
     )
-    assert "export const CREW_DASHBOARD_SANDBOX = 'allow-scripts'" in frame
+    # The grant is defined once, in lib/crewDashboardSandbox.ts, and the frame
+    # imports exactly that definition.
+    grant = (REPO / "website/src/lib/crewDashboardSandbox.ts").read_text(encoding="utf-8")
+    assert "export const CREW_DASHBOARD_SANDBOX = 'allow-scripts'" in grant
+    assert "import { CREW_DASHBOARD_SANDBOX } from '../../lib/crewDashboardSandbox'" in frame
     assert "export const CREW_DASHBOARD_SANDBOX_STATIC = ''" in frame
     # ONE function wraps every page. A mount that named anything else -- a constant, a
     # local, a ternary of its own -- could wrap an operator page differently from a

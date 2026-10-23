@@ -41,7 +41,6 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 import uuid
 from pathlib import Path
 
@@ -53,6 +52,7 @@ from kiro_crew.pod import windows as win
 from kiro_crew.pod.config import PodConfig
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.testing.harness import fake_acp_backend_launcher
+from kiro_crew.testing.wait import wait_until
 
 # The whole module is win32-only (there is no Task Scheduler to drive elsewhere)
 # AND opt-in: it registers a real scheduled task and boots a real gateway, which
@@ -385,18 +385,23 @@ def test_a_real_pod_boots_under_task_scheduler_and_leaves_nothing_behind(plane, 
         # off its first-preference slot, and the recorded claim is the authority.
         port = int(payload["port"])
 
-        deadline = time.monotonic() + HEALTH_TIMEOUT_SECS
         code = 0
-        while time.monotonic() < deadline:
+
+        def _serving() -> bool:
+            nonlocal code
             code = _probe_health(port)
             # 401/403 mean serving but gated, which still proves it is up.
-            if code in (200, 401, 403):
-                break
-            time.sleep(2)
-        assert code in (200, 401, 403), (
-            f"the pod never answered /api/health on 127.0.0.1:{port} within "
-            f"{HEALTH_TIMEOUT_SECS:.0f}s (last status {code}). Its own log:\n"
-            f"{win.recent_journal(cfg, name, 80)}"
+            return code in (200, 401, 403)
+
+        wait_until(
+            _serving,
+            timeout=HEALTH_TIMEOUT_SECS,
+            interval=2.0,
+            describe=lambda: (
+                f"the pod never answered /api/health on 127.0.0.1:{port} within "
+                f"{HEALTH_TIMEOUT_SECS:.0f}s (last status {code}). Its own log:\n"
+                f"{win.recent_journal(cfg, name, 80)}"
+            ),
         )
 
         # The service manager's own view: a task really exists for this pod.
@@ -514,11 +519,7 @@ def test_a_real_task_round_trips_through_create_run_and_delete(cfg):
         assert created.returncode == 0, created.stderr or created.stdout
         assert win.task_exists(cfg, name) is True
         assert win.schtasks("/Run", "/TN", tn).returncode == 0
-        deadline = 30
-        while deadline and not marker.exists():
-            time.sleep(1)
-            deadline -= 1
-        assert marker.exists(), "the task never ran its action"
+        wait_until(marker.exists, timeout=30, describe=lambda: "the task never ran its action")
     finally:
         win.schtasks("/Delete", "/TN", tn, "/F")
     assert win.task_exists(cfg, name) is False

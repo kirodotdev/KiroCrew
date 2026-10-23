@@ -833,6 +833,16 @@ def stop(
     """
     try:
         record = runs.read(cfg, name)
+        if (
+            record is not None
+            and record["state"] != "retired"
+            and "rebooted" not in record
+            and runs.earlier_boot(record)
+        ):
+            # Windows restarted since the record was stamped, which ended every
+            # process it names. Their pids may now belong to unrelated processes,
+            # so none of them is opened; the receipt alone authorizes cleanup.
+            record = runs.rebooted(cfg, name, record)
         if record is None:
             if _stop_state_path(cfg, name) is not None or task_exists(cfg, name):
                 raise OSError("legacy or unrecorded runtime has no boot-contained Job proof")
@@ -847,7 +857,7 @@ def stop(
             )
         elif record["state"] in runs.UNSPAWNED_STATES:
             _retire_unspawned(cfg, name, record, timeout=timeout)
-        elif record["state"] == "retired":
+        elif record["state"] == "retired" or "rebooted" in record:
             pass  # The producer is already proven gone; only cleanup remains.
         else:
             publisher_pid, publisher_token = record["publisher"]
@@ -1215,6 +1225,34 @@ def is_active(cfg: PodConfig, name: str) -> bool:
     where teardown deletes a live pod's HOME.
     """
     return supervised_pid(cfg, name) is not None
+
+
+def unsupervised_reason(cfg: PodConfig, name: str) -> str | None:
+    """Why a live gateway of pod *name* must not be adopted, or None when it may.
+
+    A serving gateway is adoptable only while the `ready` run that contains it
+    still names a live supervisor. Once that supervisor is gone the job name died
+    with its handle, so `stop` cannot drain the gateway, and a token minted for it
+    would hand out a credential to a process nothing contains. A missing,
+    unreadable or non-`ready` record, or a publisher identity that cannot be
+    queried, is not proof of a supervisor either.
+    """
+    try:
+        record = runs.read(cfg, name)
+        if record is None or record["state"] != "ready":
+            return "no published run names a live supervisor for it"
+        publisher_pid, publisher_token = record["publisher"]
+        handle = jobs.open_identity(publisher_pid, publisher_token)
+        if handle is None:
+            return f"its supervisor (pid {publisher_pid}) is gone"
+        try:
+            if jobs.wait_identity(handle, timeout=0):
+                return f"its supervisor (pid {publisher_pid}) has exited"
+        finally:
+            jobs.close_identity(handle)
+    except (OSError, ValueError) as exc:
+        return f"its supervisor cannot be verified ({exc})"
+    return None
 
 
 def main_pid(cfg: PodConfig, name: str) -> int | None:

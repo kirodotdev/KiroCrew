@@ -17,15 +17,14 @@ from voice_reply_helpers import _no_argv_prefixers  # noqa: F401
 from voice_reply_helpers import _polly_consented_fixture  # noqa: F401
 from voice_reply_helpers import (
     _capture_mkstemp,
-    _make_executable,
     _mock_subprocess,
     _patch_aws_on_path,
 )
 
 from kiro_crew.voice_reply import (
-    PROVIDER_PIPER,
     PROVIDER_POLLY,
     PROVIDER_SYSTEM,
+    SYSTEM_ENGINE_ESPEAK,
     _synthesize_polly,
     stitch_mp3s,
     synthesize_speech,
@@ -46,31 +45,14 @@ class TestSynthesizeSpeechDispatcher:
                 new=AsyncMock(return_value="/tmp/out.mp3"),
             ) as mock_polly,
             patch(
-                "kiro_crew.voice_reply._synthesize_piper",
+                "kiro_crew.voice_reply._synthesize_system",
                 new=AsyncMock(return_value="/tmp/out.wav"),
-            ) as mock_piper,
+            ) as mock_system,
         ):
             out = await synthesize_speech("hello world", provider=PROVIDER_POLLY)
         assert out == "/tmp/out.mp3"
         mock_polly.assert_awaited_once()
-        mock_piper.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_piper_dispatch(self) -> None:
-        with (
-            patch(
-                "kiro_crew.voice_reply._synthesize_polly",
-                new=AsyncMock(return_value="/tmp/out.mp3"),
-            ) as mock_polly,
-            patch(
-                "kiro_crew.voice_reply._synthesize_piper",
-                new=AsyncMock(return_value="/tmp/out.wav"),
-            ) as mock_piper,
-        ):
-            out = await synthesize_speech("hello world", provider=PROVIDER_PIPER)
-        assert out == "/tmp/out.wav"
-        mock_piper.assert_awaited_once()
-        mock_polly.assert_not_awaited()
+        mock_system.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_system_dispatch(self) -> None:
@@ -79,10 +61,6 @@ class TestSynthesizeSpeechDispatcher:
                 "kiro_crew.voice_reply._synthesize_polly",
                 new=AsyncMock(return_value="/tmp/out.mp3"),
             ) as mock_polly,
-            patch(
-                "kiro_crew.voice_reply._synthesize_piper",
-                new=AsyncMock(return_value="/tmp/piper.wav"),
-            ) as mock_piper,
             patch(
                 "kiro_crew.voice_reply._synthesize_system",
                 new=AsyncMock(return_value="/tmp/system.wav"),
@@ -96,7 +74,6 @@ class TestSynthesizeSpeechDispatcher:
             )
         assert out == "/tmp/system.wav"
         mock_polly.assert_not_awaited()
-        mock_piper.assert_not_awaited()
         # Markdown is stripped before it reaches an engine that speaks it
         # literally, and the speed knob is the shared `rate` percentage.
         mock_system.assert_awaited_once_with("hello world", voice="Alex", rate="120%")
@@ -124,16 +101,6 @@ class TestSynthesizeSpeechDispatcher:
             out = await synthesize_speech("", provider=PROVIDER_POLLY)
         assert out is None
         mock_polly.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_piper_empty_plain_returns_none(self) -> None:
-        with patch(
-            "kiro_crew.voice_reply._synthesize_piper",
-            new=AsyncMock(return_value=None),
-        ) as mock_piper:
-            out = await synthesize_speech("   ", provider=PROVIDER_PIPER)
-        assert out is None
-        mock_piper.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_redacts_credentials_before_synthesis(self) -> None:
@@ -228,8 +195,7 @@ class TestVoiceReplyEndToEnd:
                 "C1",
                 "t1",
                 "hello",
-                provider=PROVIDER_PIPER,
-                piper_model="/fake/model.onnx",
+                provider=PROVIDER_SYSTEM,
             )
         assert ok is True
         # Temp file should have been unlinked after successful upload.
@@ -702,15 +668,11 @@ class TestSynthesizeSpeechDoesNotSwallowARefusal:
     """
 
     @pytest.mark.asyncio
-    async def test_piper_refusal_travels_through_synthesize_speech(self, tmp_path, monkeypatch):
+    async def test_system_refusal_travels_through_synthesize_speech(self, monkeypatch):
         from kiro_crew.sandbox import SandboxUnavailableError
         from kiro_crew.voice_reply import synthesize_speech
 
         prose = "SEAM-SENTINEL: the sandbox refused"
-        bin_path = tmp_path / "piper"
-        _make_executable(str(bin_path))
-        model = tmp_path / "voice.onnx"
-        model.write_bytes(b"m")
 
         # Patch the seam the spawn actually goes through. Reaching the real
         # sandbox layer here would make the test pass for the wrong reason on a
@@ -720,11 +682,12 @@ class TestSynthesizeSpeechDoesNotSwallowARefusal:
 
         monkeypatch.setattr("kiro_crew.voice_reply.sandboxed_spawn_argv_async", refuse)
         monkeypatch.setattr(
-            "kiro_crew.voice_reply._resolve_piper_binary", lambda *a, **k: str(bin_path)
+            "kiro_crew.voice_reply.resolve_system_tts",
+            lambda: (SYSTEM_ENGINE_ESPEAK, "/usr/bin/espeak-ng"),
         )
 
         with pytest.raises(SandboxUnavailableError) as caught:
-            await synthesize_speech("hello", provider="piper", piper_model=str(model))
+            await synthesize_speech("hello", provider=PROVIDER_SYSTEM)
         assert prose in str(caught.value)
 
     @pytest.mark.asyncio

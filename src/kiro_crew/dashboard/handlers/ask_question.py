@@ -45,6 +45,7 @@ import uuid
 from aiohttp import web
 
 from kiro_crew.agent_sdk import fits_tool_result
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState
@@ -219,7 +220,7 @@ async def api_ask_question(request: web.Request) -> web.Response:
         )
 
     try:
-        timeout_secs = int(body.get("timeout_secs") or state._QUESTION_TIMEOUT_DEFAULT)
+        timeout_secs = body_int(body.get("timeout_secs") or state._QUESTION_TIMEOUT_DEFAULT)
     except (TypeError, ValueError):
         return web.json_response(
             {"error": "timeout_secs must be an integer", "code": "invalid_field_type"},

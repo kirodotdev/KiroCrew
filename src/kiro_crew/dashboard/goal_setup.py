@@ -69,9 +69,9 @@ def kickoff_prompt(
     Names the goal *goal_id* that was just added or changed (``None`` when it is
     gone by the time the turn would run) and shows the whole list. Without the
     ``kirocrew-mate`` tools (*has_mate_tools*) the milestones are written in
-    the chat for the user to add on the Goals tab. *dashboard_line* is the
-    gateway's build-your-page line (``goal_reminder.dashboard_line``), added last
-    while the crewmate has no Dashboard page of its own.
+    the chat for the user to add on the Goals tab. *dashboard_line* is
+    ``goal_reminder.dashboard_line`` (the build line on an empty tab, or the one-time
+    page offer on a template page), added last.
     """
     numbers = member_goals.goal_numbers(rec)
     if goal_id not in numbers:
@@ -184,7 +184,10 @@ def _goal_prompt(goal_id: str, slug: str = "") -> Build:
         from kiro_crew.dashboard.goal_reminder import dashboard_line
 
         return kickoff_prompt(
-            rec, goal_id, has_mate_tools=tools, dashboard_line=dashboard_line(slug, rec)
+            rec,
+            goal_id,
+            has_mate_tools=tools,
+            dashboard_line=dashboard_line(slug, rec, has_mate_tools=tools),
         )
 
     return build
@@ -206,8 +209,9 @@ def milestones_prompt(
 
     Without the ``kirocrew-mate`` tools (*has_mate_tools*) the check-ins are
     described and left to the user's Goals tab instead of ``set_check_ins``.
-    *dashboard_line* is ``goal_reminder.dashboard_line``, added last: confirming the
-    milestones is the moment a crewmate with no page first knows what one is about.
+    *dashboard_line* is ``goal_reminder.dashboard_line`` (the build line or the
+    one-time page offer), added last: confirming the milestones is the moment a crewmate first knows what
+    its page would be about.
     """
     krs = rec.get("key_results") or []
     if not krs:
@@ -259,7 +263,17 @@ def _schedule(
     member: str,
     build: Build,
     what: str,
+    on_dropped: "Callable[[str], None] | None" = None,
+    on_started: "Callable[[], None] | None" = None,
 ) -> None:
+    """Send *build*'s turn to *member* once its thread is idle, one waiting per *key*.
+
+    *on_dropped*, when given, runs off the loop with the outcome when the turn was
+    never started (the wait timed out, the thread closed, the read failed), so a
+    caller that promised a wake can take that promise back. *on_started*, when
+    given, runs off the loop once the turn was started, so a caller that kept a
+    durable mark of the promise can clear it.
+    """
     if state is None:
         return
     tasks = _tasks(state)
@@ -271,6 +285,11 @@ def _schedule(
         try:
             outcome = await _wait_and_send(state, slug, member, build)
             logger.info("%s nudge for %s: %s", what, slug, outcome)
+            if outcome == "started":
+                if on_started is not None:
+                    await asyncio.to_thread(on_started)
+            elif on_dropped is not None:
+                await asyncio.to_thread(on_dropped, outcome)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -309,7 +328,9 @@ def _milestones_build(slug: str) -> Build:
         from kiro_crew.dashboard.goal_reminder import dashboard_line
 
         return milestones_prompt(
-            rec, has_mate_tools=tools, dashboard_line=dashboard_line(slug, rec)
+            rec,
+            has_mate_tools=tools,
+            dashboard_line=dashboard_line(slug, rec, has_mate_tools=tools),
         )
 
     return build

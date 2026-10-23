@@ -2,7 +2,7 @@
 
 A dashboard turn linked to a Slack thread flushes its answer to a finalized
 transcript row at every tool boundary and resets ``turn.assistant_text``
-(``_on_tool_call``). The reply-publication block in ``chat_runner.py`` must
+(``_on_tool_call``). The reply-publication block (``_turn_stop_hook``) must
 mirror the turn's full answer, not ``turn.assistant_text`` alone: a turn that
 answers BEFORE its last tool call keeps only the trailing fragment (or nothing)
 in that accumulator, so mirroring it would drop the rest of the reply while the

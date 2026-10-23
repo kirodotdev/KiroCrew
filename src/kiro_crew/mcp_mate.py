@@ -342,6 +342,22 @@ def _tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "offer_dashboard_page",
+            "description": (
+                "Offer, once, to build a Dashboard page around your goal: this raises one "
+                "card and writes nothing. Call it only when a Kiro Crew note in your turn "
+                "says you can offer one. If the user says yes you are woken to write the "
+                "page; if they say no, or let the card expire, nothing changes and you do "
+                "not ask again. A page the user asks for in chat needs no card: write it. "
+                + _CARD_NOTE
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"reason": {"type": "string", "maxLength": 500}},
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "key_result_progress",
             "description": (
                 "Record a fresh reading for one key result by its id: current is what you "
@@ -367,8 +383,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "name": "save_goal_report",
             "description": (
                 "Save your weekly report or monthly review as a report the user can "
-                "open: kind weekly or monthly, a short title, and the report in "
-                "Markdown. It is filed under Crewmates/<your name>/Reports and the user "
+                "open: kind weekly or monthly, a short title, and the report itself as "
+                "one of two formats -- html, a whole self-contained page laid out as a "
+                "printable document (the check-in prompt's 'How the report looks' "
+                "describes it), or markdown for a plain one. Send one of the two. "
+                "It is filed under Crewmates/<your name>/Reports and the user "
                 "gets a notification linking it. After saving, reply in the chat with "
                 "one short line that points at it; the report itself stays out of the "
                 "chat."
@@ -387,8 +406,14 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "minLength": 1,
                         "maxLength": _goals.REPORT_MAX_CHARS,
                     },
+                    "html": {
+                        "type": "string",
+                        "minLength": 1,
+                        # The server holds the real cap, in bytes of UTF-8.
+                        "maxLength": _goals.REPORT_HTML_MAX_BYTES,
+                    },
                 },
-                "required": ["kind", "title", "markdown"],
+                "required": ["kind", "title"],
                 "additionalProperties": False,
             },
         },
@@ -469,6 +494,7 @@ _PROPOSALS = {
     "set_goal": "goal",
     "set_key_results": "key_results",
     "set_check_ins": "check_ins",
+    "offer_dashboard_page": "dashboard_page",
 }
 
 
@@ -491,7 +517,7 @@ def _goal_call(name: str, args: dict[str, Any], sk: str) -> str:
     if name == "save_goal_report":
         d = _post(
             "/api/member/self/goals/report",
-            {k: args.get(k, "") for k in ("kind", "title", "markdown")},
+            {k: args.get(k, "") for k in ("kind", "title", "markdown", "html")},
             session_key=sk,
         )
         refused = _error_for(name, d)

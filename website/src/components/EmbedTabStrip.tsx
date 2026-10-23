@@ -7,6 +7,7 @@ import { X, Plus } from 'lucide-react'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { safeSetSessionItem } from '../utils/safeStorage'
+import { isUntitledSession, sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import {
   TAB_STATUS_COLOR,
@@ -415,7 +416,16 @@ export default function EmbedTabStrip() {
 
   const getTitle = (slug: string, _index: number) => {
     if (!slug) return i18nT('components.embedTabStrip.sessions')
-    return slots.find(s => s.key === slug)?.title || slug
+    // A slug with no slot row has an unknown title, so it shows the slug
+    // rather than claiming the session is untitled.
+    const slot = slots.find(s => s.key === slug)
+    return slot ? sessionDisplayTitle(slot) : slug
+  }
+  // An untitled tab's hover keeps its key, so two untitled tabs stay tellable
+  // apart; the label itself never shows the key.
+  const getHoverTitle = (slug: string, title: string) => {
+    const slot = slug ? slots.find(s => s.key === slug) : undefined
+    return slot && isUntitledSession(slot) ? `${title} · ${slug}` : title
   }
 
   // Status dot color per tab
@@ -458,6 +468,7 @@ export default function EmbedTabStrip() {
               role="tab"
               tabIndex={0}
               aria-selected={active}
+              title={getHoverTitle(tab.slug, title)}
               onPointerDown={e => onPointerDown(e, i)}
               onClick={() => { if (!dragRef.current?.active) selectTab(i) }}
               onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectTab(i) } }}

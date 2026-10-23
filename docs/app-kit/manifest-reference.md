@@ -88,6 +88,16 @@ installed against:
 - **A command carrying a path** (absolute or relative) is never rewritten. If it
   does not point at a runnable file at registration time, a warning naming the
   app, server, and command is logged — the entry is still written.
+- **An app's own `.py` launcher** (a stdio server whose `command` is a bare
+  `python`, `python3` or `py`, and whose launch target is a relative path ending in
+  `.py`, given in `args` and relative to the app root) is resolved to its absolute
+  path under the app root, so a staged app whose package is not pip-installed can
+  start. A `command` carrying a path, such as `.venv/bin/python`, is not covered:
+  its launcher operand is left as written. Only that one operand is touched; `-m`, `-c`, and every
+  argument after the script are left as written. The rewrite applies only when the
+  operand resolves (links followed) to an existing file inside the app root; an
+  absolute path, or a relative one that is not such a file, is left as written. A
+  relative path in `command` itself is still never rewritten.
 - The host CLI name `kirocrew` is pinned to the running gateway before any of
   the above applies.
 
@@ -1304,8 +1314,10 @@ before it runs your command, which is the same silent failure:
   and `..` traversal are rejected (canonical resolve + containment when the app dir
   is known). `backend.hooks.*` are format-checked (`module.path:callable`, which
   cannot express traversal) and containment-checked again at load time.
-  `mcpServers` entries use `command`/`args`/`url`/`env` (not app-relative file paths)
-  and are not path-checked.
+  `mcpServers` entries use `command`/`args`/`url`/`env`. They are not path-checked at
+  manifest load; at registration, when `command` is a bare `python`, `python3` or
+  `py`, a relative `.py` launch target is resolved against the app root when it is
+  a file inside it (see "An app's own `.py` launcher" above).
 - All required fields must be non-empty strings
 - `config_keys` must be an array of at most 200 non-empty strings, each at most
   200 characters long

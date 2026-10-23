@@ -259,18 +259,28 @@ class SlotProjection:
         options: list[str] = []
         prompt_preview = ""
         last_conv_role = ""
+        # When the session last moved: the newest durable row of any role that is
+        # not a system notice (a reload card is not activity). The scan runs
+        # newest-first, so the first match IS the newest row by position; no
+        # timestamp text is compared (rows mix naive and offset-aware formats).
         last_activity_ts = ""
+        # When the AGENT last acted: the newest assistant / tool row. Kept apart
+        # for readers that ask "did the agent act after X", which a user prompt
+        # must not answer (the artifact freshness nudge).
+        last_agent_ts = ""
         found_conv = False
         for message in reversed(rows):
             role = message.get("role")
             msg_meta = message.get("meta") or {}
             notice = is_system_notice(role, msg_meta)
+            if not last_activity_ts and role not in transient_roles and not notice:
+                last_activity_ts = message.get("ts") or ""
             if (
-                not last_activity_ts
+                not last_agent_ts
                 and role in ("tool_call", "tool_result", "assistant")
                 and not notice
             ):
-                last_activity_ts = message.get("ts") or ""
+                last_agent_ts = message.get("ts") or ""
             if role in ("user", "assistant") and not notice:
                 text = message.get("content") or ""
                 if text:
@@ -291,8 +301,20 @@ class SlotProjection:
                         # before redacting so markdown cannot split a credential
                         # signature and then rejoin it on the wire.
                         last_msg = last_message_preview(text)
-            if found_conv and last_msg and last_activity_ts:
+            # An agent row is durable and not a notice, so once `last_agent_ts`
+            # is set `last_activity_ts` is too.
+            if found_conv and last_msg and last_agent_ts:
                 break
+
+        # A send queued behind a busy turn is user input with no transcript row
+        # yet. The dashboard bumps `last_activity_ts` on `queue_push`, so the
+        # snapshot folds the same instant in, or the next frame would undo it.
+        # `latest_transcript_ts` compares instants, not text.
+        queued_activity_ts = slot._last_enqueue_ts if slot._queue else ""
+        if queued_activity_ts:
+            last_activity_ts = (
+                latest_transcript_ts(last_activity_ts, queued_activity_ts) or last_activity_ts
+            )
 
         slot_pending = any(not future.done() for future in slot._approval_futures.values())
         pending_approval = slot_pending or bool(coordinator_pending)
@@ -465,6 +487,7 @@ class SlotProjection:
             "pending_approval": pending_approval,
             "pending_approval_info": pending_approval_info,
             "last_activity_ts": last_activity_ts,
+            "last_agent_ts": last_agent_ts,
             "waiting_for_input": waiting_for_input,
             "needs_input": needs_input,
             "interrupted": interrupted,

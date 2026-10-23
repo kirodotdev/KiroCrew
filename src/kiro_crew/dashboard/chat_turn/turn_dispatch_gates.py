@@ -518,13 +518,13 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     turn._stop_class = _stop_class
     # Cleared at turn START so post-turn consumers never read the PREVIOUS
     # turn's value: a turn that dies before EVENT_COMPLETE (ACP crash, auth
-    # expiry, transport drop) never reaches the assignment in _run_chat's stream loop, and a
+    # expiry, transport drop) never reaches the assignment in _on_complete (turn_stats), and a
     # stale "end_turn" from the last successful turn would make the failed
     # turn look cleanly finished (e.g. to the session-summary gate).
     slot._last_stop_reason = ""
     # Tool-stall metadata forwarded by the ACP watchdog on its terminal
     # event (title / redacted command / evidence) — feeds the dedicated
-    # tool-stall recovery nudge after _run_chat's stream loop.
+    # tool-stall recovery nudge in _turn_stop_recovery (stop_recovery).
     _stall_tool_title = ""
     turn._stall_tool_title = _stall_tool_title
     _stall_command = ""
@@ -534,8 +534,8 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     _stall_status: StructuredStatus | None = None
     turn._stall_status = _stall_status
     # Structured refusal forwarded on the terminal (``AcpEvent.refusal``).
-    # ``None`` unless the turn ended in a model-side refusal; read by
-    # _run_chat's refusal card, which renders the same shape for every harness.
+    # ``None`` unless the turn ended in a model-side refusal; read by the refusal card of
+    # _turn_settle_answer (segment_flush), which renders the same shape for every harness.
     _turn_refusal: RefusalInfo | None = None
     turn._turn_refusal = _turn_refusal
 

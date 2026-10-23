@@ -266,6 +266,28 @@ describe('native app-menu navigation leave guard', () => {
   })
 })
 
+describe('native history step relayed from a macOS swipe', () => {
+  // The desktop shell relays a swipe (how a mouse's Back/Forward buttons reach
+  // the macOS app under Logitech's Options software) as one history step. The
+  // step's own behaviour is pinned in nativeHistoryStep.test; this pins that
+  // the dashboard actually listens, for as long as it is mounted.
+  afterEach(() => {
+    delete (window as unknown as { electronAPI?: unknown }).electronAPI
+    vi.restoreAllMocks(); cleanup()
+  })
+
+  it('subscribes once the dashboard mounts and lets go on unmount', async () => {
+    const unsubscribe = vi.fn()
+    const onHistoryStep = vi.fn(() => unsubscribe)
+    ;(window as unknown as { electronAPI?: unknown }).electronAPI = { onHistoryStep }
+    const { unmount } = renderDashboard()
+    await paneReady()
+    expect(onHistoryStep).toHaveBeenCalled()
+    unmount()
+    expect(unsubscribe).toHaveBeenCalledTimes(onHistoryStep.mock.calls.length)
+  })
+})
+
 describe('popout hand-off to the session already on screen', () => {
   beforeEach(() => { localStorage.clear(); sessionStorage.clear() })
   afterEach(() => { vi.restoreAllMocks(); cleanup() })

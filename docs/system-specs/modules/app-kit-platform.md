@@ -48,6 +48,28 @@ distribution-metadata I/O, including after config cache invalidation. Discovery
 or registry failures degrade to the core fallback and never make validation
 raise.
 
+## Embedded chat `hide`
+
+`ChatEmbed`'s `hide` prop takes `ChatEmbedHideKey` values (`header`, `attach`,
+`stop`, `queue`, `toolDetails`, `followUps`), a closed union exported from the
+SDK, so an unknown key is a type error. Each key gates the one place its part
+mounts in `ChatEmbed.tsx`, and a hidden part is not mounted. Hiding only
+removes:
+
+- `attach` passes through `useEmbedAttachments` as an ungranted host, so a
+  paste or drop is refused with the existing notice and never uploads, and the
+  upload grant check still decides the visible case.
+- `stop` removes Stop and its press hints; Send keeps its place and its
+  disabled-when-empty and queue-while-running rules.
+- `toolDetails` reaches `ChatMessageList`'s `toolDetails` prop and the render
+  context, so built-in tool rows draw `ToolCallPill` with `expandable={false}`:
+  no toggle, and an open panel closes. A host `renderTool` row is its own.
+- `header`, `queue` and `followUps` gate their strips; the sent message, the
+  queue and the options themselves are unchanged.
+
+No key grants a capability, and voice stays off. `ChatEmbed.hide.test.tsx`
+checks each key both ways and compiles the union against an unknown key.
+
 ## Scoped frontend HTTP transport
 
 `useAppApi()` exposes `raw(path, RequestInit)`, `request(path, RequestInit)` and
@@ -1049,8 +1071,15 @@ written **flavour-explicitly** rather than via the running host's `os.path`
 
 ### 5.2 App skills are linked with a junction on Windows, not a symlink
 
-`_register_skills` links each declared skill directory into the skills tree twice
-(namespaced `skills/<app>/<skill>` plus a flat `skills/<skill>`). The link is a
+`_register_skills` links each declared skill directory at the namespaced
+`skills/<app>/<skill>`, which always exists, and usually also at a flat
+`skills/<skill>`. The flat link is skipped when the skill has the same name as
+its app (the flat path is the namespaced directory itself), when the name is
+reserved (`_RESERVED_SKILL_DIRS`, i.e. `auto`), and when a real directory of that
+name already exists; an existing flat link is repointed, so when two apps ship a
+same-named skill it resolves to the one registered last. A `skill://` mapping of
+an app skill therefore names the namespaced path, as
+`src/kiro_crew/docs/agent-spec-fields.md` (Resources) documents. Each link is a
 symlink on POSIX and a **directory junction** on Windows, via
 `platform_compat.symlink_or_junction`.
 
@@ -3014,6 +3043,99 @@ Writers: `apps/registry_pipeline/sources.py` (`_effective_registries`,
 (`anonymous_git_env`), `platform/interfaces_structural.py`
 (`AppsLoader.default_registries`), `config/loader.py`
 (`ExternalRegistryConfig.trust`), `apps/routes_registry.py` (`handle_registries`).
+
+### 15.1 Registry default installs
+
+A registry can ship an app already installed, the way `_DEFAULT_ON_BUILTINS`
+ships a builtin already enabled. Two switches, held by two owners, must both be on:
+
+| Switch | Where | Owner |
+|---|---|---|
+| `"allowDefaultInstall": true` | the registry's `AppsLoader.default_registries()` row | the build |
+| `"defaultInstall": true` | the app's row in that registry's `app-registry.json` | the registry's reviewers |
+
+`"defaultEnabled": false` on the app row installs it disabled. Only a literal
+`true` turns either switch on. After the dashboard listener serves,
+`apps/default_installs.py::reconcile_default_installs` runs as a tracked
+background task. For each opted-in registry it fetches the index fresh, then
+installs each marked app whose name is not yet in
+`agent.apps_default_installs_applied`: `install_from_registry`, then activation
+the way `kirocrew app enable` does it. The pass calls `enable_app` (the guarded
+transition that applies the `apps` governance ceiling and the admission policy)
+and registers resources and starts the backend only when it succeeds. Like the
+CLI enable it runs no `onEnable` and leaves hook loading to the hook reconciler.
+The default-install path creates every new record disabled (`start_disabled`),
+including self-managed records, and only a successful `enable_app` enables it.
+A crash, cancellation or failure before that transition therefore leaves a
+disabled record, which the next boot hands off as installed: fail closed, with
+the owner able to enable it. For `defaultEnabled: false`, pending session-approval
+consent, or a refused enable, the record stays disabled and is marked handled,
+because the owner's decision is not an install failure. An app awaiting
+session-approval consent also stays suspended. An install failure is returned
+unchanged and leaves the attempt unmarked; the pass keeps its grant if the
+record landed, and the next boot hands that record off without enabling it.
+
+Installing registry code needs an execution grant, so the pass records one on the
+operator's behalf. Every rule below exists because of that:
+
+- **The build opts a registry in, never `config.json`.** The registry must be
+  build-pinned, in force (not contested by an operator row) and at the `owner`
+  tier. `trust: owner` alone is not enough, because an edition may pin a
+  community registry at `owner` too (§15): `owner` says the index is under change
+  control, not that its listings may install themselves.
+- **The flag is read from a fresh fetch** (`_fetch_and_cache_external_registry`),
+  never from the index cache, which is agent-writable. A failed fetch installs
+  nothing from that registry and retries next boot.
+- **Install acts on the fresh row.** The row `get_registry_app` resolves must
+  carry that registry's `_registry` tag and the fresh row's exact clone
+  coordinates (`_install_coordinates`), so a same-named seed, catalog or operator
+  row that resolves first is refused, not installed. The install then receives the
+  fresh row itself (`install_from_registry(..., resolved_entry=...)`) instead of
+  looking the name up again, so nothing it executes (`detectInstalled`, the clone
+  coordinates) can be swapped in the cache between the check and the use.
+- **The grant is the consent dialog's grant.** `apps_trusted` plus
+  `apps_trusted_repositories[name]` bound to the normalized repository, so a later
+  repository change is refused at install and re-prompts like any other grant. A
+  builtin name is refused (a grant on it would be inherited by a later third-party
+  app of that name). An existing grant bound to a different repository is never
+  overwritten. When `config.local.json` owns a trust key a base grant would be
+  inert, so the grant writer (`_mutate_agent_config`) refuses up front with
+  `TrustSettingOverlayOwned`, nothing is written, and the pass returns
+  `grant_refused` for that app.
+- **One success, then hand off.** The name is added to
+  `agent.apps_default_installs_applied` after a successful install, or straight
+  away when the app is already installed (its enabled state and grant untouched).
+  A marked name is never handled again, so uninstalling or disabling sticks, and
+  removing `defaultInstall` later stops new installs without removing old ones. A
+  failed or cancelled install withdraws only what the pass added (the repository
+  binding, the name grant unless the operator already held a legacy one, and it
+  puts back a local-source marker the grant removed) when no record landed. It
+  leaves the name unmarked so the next boot retries. If a record landed, failure
+  or cancellation keeps its grant and the next boot hands it off as installed.
+  Cancellation shields that grant cleanup before the task ends. The
+  per-boot cap of 32 counts only names not yet handled. The marker is not a
+  trust key, so it is written outside the trust-overlay refusal (same config
+  lock, file lock, corrupt-file refusal and cache invalidation): an operator
+  who keeps a grant in `config.local.json` still gets the app handed off.
+- **A corrupt `config.json` installs nothing.** The loader reads a corrupt file as
+  defaults, so the applied list looks empty. The grant write goes through
+  `update_config_locked`, which refuses a corrupt file, and install runs only after
+  that write.
+
+The marker lives in `config.json` rather than a new data-home file because it sits
+beside the grants it guards and inherits their disposition: sealed read-only
+against an in-sandbox shell (`sandbox._CREW_READONLY_LEAVES`), written only by the
+settings surfaces outside the seal. The field is read at point of use, so it needs
+no live applier. Completed, failed and refused installs are SEL-audited as
+`app_default_install`.
+
+Writers: `apps/default_installs.py`, `apps/registry_pipeline/install.py`
+(`install_from_registry`'s `resolved_entry` and `start_disabled`),
+`apps/manager_external.py` (`register_external_app`'s `start_disabled`),
+`platform/interfaces_structural.py`
+(`AppsLoader.default_registries`, the `allowDefaultInstall` key),
+`config/sections_agent.py` (`apps_default_installs_applied`),
+`dashboard/server_runtime/app_platform.py` (`_kick_default_app_installs`).
 
 ## 16. Store guidance and product screenshots are manifest-owned
 

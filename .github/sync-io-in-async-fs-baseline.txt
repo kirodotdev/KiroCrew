@@ -76,4 +76,4 @@
 1 src/kiro_crew/stt/models.py
 1 src/kiro_crew/taskrunner_parts/plan_mode.py
 1 src/kiro_crew/taskrunner_parts/run_lifecycle.py
-3 src/kiro_crew/voice_reply.py
+2 src/kiro_crew/voice_reply.py

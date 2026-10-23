@@ -74,7 +74,7 @@ vi.mock('../pages/developer/KasBundleCard', () => ({
 }))
 
 import { AgentBackendTab } from '../pages/developer/AgentBackendTab'
-import { DEFAULT_ACP_BACKEND } from '../api/acpBackend'
+import { acpBackendName, DEFAULT_ACP_BACKEND } from '../api/acpBackend'
 import {
   schemaWith,
   card,
@@ -119,7 +119,7 @@ describe('AgentBackendTab list', () => {
     wrap()
     expect(await screen.findByRole('radio', { name: 'Kiro CLI' })).toBeInTheDocument()
     expect(row('Claude Code')).toBeInTheDocument()
-    expect(row('KAS (kiro-agent)')).toBeInTheDocument()
+    expect(row('Kiro Agent')).toBeInTheDocument()
   })
 
   it('puts KAS first, Kiro CLI second, and sorts adapters after', async () => {
@@ -129,7 +129,7 @@ describe('AgentBackendTab list', () => {
     schemaMock.mockReturnValue(schemaWith(['kiro', 'claude', 'kas', 'zephyr']))
     wrap()
     await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(4))
-    expect(rows()).toEqual(['KAS (kiro-agent)', 'Kiro CLI', 'Claude Code', 'zephyr'])
+    expect(rows()).toEqual(['Kiro Agent', 'Kiro CLI', 'Claude Code', 'zephyr'])
   })
 
   it('marks the configured backend as the current one', async () => {
@@ -142,14 +142,14 @@ describe('AgentBackendTab list', () => {
   it('treats a missing acp_backend as the KAS default', async () => {
     kirocrewConfigMock.mockResolvedValue({})
     wrap()
-    await waitFor(() => expect(row('KAS (kiro-agent)')).toHaveAttribute('aria-current', 'true'))
+    await waitFor(() => expect(row('Kiro Agent')).toHaveAttribute('aria-current', 'true'))
   })
 
   it('opens on the current backend detail', async () => {
     // The useful default and the one id the row list always contains.
     kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'kas' } })
     wrap()
-    await waitFor(() => expect(row('KAS (kiro-agent)')).toBeChecked())
+    await waitFor(() => expect(row('Kiro Agent')).toBeChecked())
     expect(row('Kiro CLI')).not.toBeChecked()
   })
 
@@ -160,7 +160,7 @@ describe('AgentBackendTab list', () => {
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
     expect(screen.queryByRole('radio', { name: 'Claude Code' })).toBeNull()
-    expect(screen.queryByRole('radio', { name: 'KAS (kiro-agent)' })).toBeNull()
+    expect(screen.queryByRole('radio', { name: 'Kiro Agent' })).toBeNull()
   })
 
   it('keeps the current backend listed even if it reads as unselectable', async () => {
@@ -177,6 +177,35 @@ describe('AgentBackendTab list', () => {
     schemaMock.mockReturnValue(schemaWith(['kiro', 'claude', 'kas', 'future-agent']))
     wrap()
     await waitFor(() => expect(row('future-agent')).toBeInTheDocument())
+  })
+
+  it('draws each harness its own brand mark, and an unknown one the generic glyph', async () => {
+    // The marks themselves are pinned in HarnessLogo.test.tsx; this pins that the
+    // ROW renders them, decoratively, beside a name that stays the accessible one.
+    const ids = ['kiro', 'kas', 'claude', 'codex', 'zephyr']
+    acpBackendsMock.mockResolvedValue({ backends: ids.map(id => probeRow(id)) })
+    schemaMock.mockReturnValue(schemaWith(ids))
+    wrap()
+    await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(ids.length))
+    const markIn = (name: string) => {
+      const label = rowLabel(name)
+      return {
+        brand: (id: string) => within(label).queryByTestId(`harness-logo-${id}`),
+        ghost: within(label).queryByTestId('kiro-ghost-mark'),
+        generic: within(label).queryByTestId('harness-logo-fallback'),
+      }
+    }
+    expect(markIn('Kiro CLI').ghost).toBeInTheDocument()
+    expect(markIn('Kiro Agent').ghost).toBeInTheDocument()
+    expect(markIn('Claude Code').brand('claude')).toBeInTheDocument()
+    expect(markIn(acpBackendName({ id: 'codex' })).brand('codex')).toBeInTheDocument()
+    const unknown = markIn('zephyr')
+    expect(unknown.generic).toBeInTheDocument()
+    expect(unknown.ghost).toBeNull()
+    // Decorative: the mark adds nothing to the radio's accessible name.
+    expect(row('Claude Code')).toHaveAccessibleName('Claude Code')
+    expect(within(rowLabel('Claude Code')).getByTestId('harness-logo-claude').closest('[aria-hidden="true"]'))
+      .not.toBeNull()
   })
 
   it('lists an agent this frontend has no name for, under its policy id', async () => {
@@ -212,7 +241,7 @@ describe('AgentBackendTab list', () => {
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
     expect(row('Claude Code')).toBeInTheDocument()
-    expect(row('KAS (kiro-agent)')).toBeInTheDocument()
+    expect(row('Kiro Agent')).toBeInTheDocument()
   })
 
   it('offers a retry instead of a false current backend when the config read fails', async () => {
@@ -260,8 +289,8 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     // property of the component, not of which handler happens to be wired.
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
-    fireEvent.click(row('KAS (kiro-agent)'))
-    expect(row('KAS (kiro-agent)')).toBeChecked()
+    fireEvent.click(row('Kiro Agent'))
+    expect(row('Kiro Agent')).toBeChecked()
     expect(row('Kiro CLI')).not.toBeChecked()
     expect(row('Kiro CLI')).toHaveAttribute('aria-current', 'true')
     expect(patchConfigMock).not.toHaveBeenCalled()
@@ -339,15 +368,15 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro', 'kas']))
     wrap()
-    await waitFor(() => expect(row('KAS (kiro-agent)')).toBeInTheDocument())
+    await waitFor(() => expect(row('Kiro Agent')).toBeInTheDocument())
     // The name is the name -- the row also carries a badge, and neither of them is
     // the row's accessible NAME.
-    expect(row('KAS (kiro-agent)')).toHaveAccessibleName('KAS (kiro-agent)')
-    expect(rowLabel('KAS (kiro-agent)').querySelector('span.truncate')?.textContent).toBe(
-      'KAS (kiro-agent)',
+    expect(row('Kiro Agent')).toHaveAccessibleName('Kiro Agent')
+    expect(rowLabel('Kiro Agent').querySelector('span.truncate')?.textContent).toBe(
+      'Kiro Agent',
     )
     // The state is the description.
-    const describedBy = row('KAS (kiro-agent)').getAttribute('aria-describedby')
+    const describedBy = row('Kiro Agent').getAttribute('aria-describedby')
     expect(describedBy).toBeTruthy()
     expect(document.getElementById(describedBy as string)?.textContent).toContain(
       'Missing on this machine: kiro-cli',
@@ -447,9 +476,9 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     acpBackendsMock.mockResolvedValue({
       backends: [probeRow('kiro', card()), probeRow('kas', card())],
     })
-    highlight('KAS (kiro-agent)')
-    await waitFor(() => expect(useButton('KAS (kiro-agent)')).toBeEnabled())
-    expect(useButton('KAS (kiro-agent)').className).toContain('bg-accent')
+    highlight('Kiro Agent')
+    await waitFor(() => expect(useButton('Kiro Agent')).toBeEnabled())
+    expect(useButton('Kiro Agent').className).toContain('bg-accent')
   })
 
   it('gives the in-use word a hover title as well', async () => {
@@ -498,12 +527,12 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
   })
 
   it('shows the full harness name, never truncated by a fixed row width', async () => {
-    // The old strip capped each row at 11rem and truncated "KAS (kiro-agent)" to
+    // The old strip capped each row at 11rem and truncated "Kiro Agent" to
     // "KAS (kiro-..." at ordinary widths. A row now spans the list, so the name has
     // the row's width and the badge yields its own space.
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
-    for (const name of ['Kiro CLI', 'Claude Code', 'KAS (kiro-agent)']) {
+    for (const name of ['Kiro CLI', 'Claude Code', 'Kiro Agent']) {
       const label = rowLabel(name)
       expect(label.className.split(/\s+/)).not.toEqual(expect.arrayContaining([expect.stringMatching(/^max-w-/)]))
       expect(label.querySelector('span.truncate')?.textContent).toBe(name)
@@ -582,7 +611,7 @@ describe('AgentBackendTab switching', () => {
   it('stores an explicit Kiro CLI choice even though KAS is the default', async () => {
     kirocrewConfigMock.mockResolvedValue({})
     wrap()
-    await waitFor(() => expect(row('KAS (kiro-agent)')).toHaveAttribute('aria-current', 'true'))
+    await waitFor(() => expect(row('Kiro Agent')).toHaveAttribute('aria-current', 'true'))
     highlight('Kiro CLI')
     fireEvent.click(useButton('Kiro CLI'))
     // "kiro", never "": on disk an empty value means "no choice", which is KAS.
@@ -592,7 +621,7 @@ describe('AgentBackendTab switching', () => {
   it('reads a stored empty harness as no choice: KAS is in use, not Kiro CLI', async () => {
     kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: '' } })
     wrap()
-    await waitFor(() => expect(row('KAS (kiro-agent)')).toHaveAttribute('aria-current', 'true'))
+    await waitFor(() => expect(row('Kiro Agent')).toHaveAttribute('aria-current', 'true'))
     expect(row('Kiro CLI')).not.toHaveAttribute('aria-current')
     expect(screen.queryByRole('radio', { name: '' })).toBeNull()
   })
@@ -766,7 +795,7 @@ describe('AgentBackendTab status strip', () => {
     // supported. Those claims were not measured anywhere and were wrong.
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
-    highlight('KAS (kiro-agent)')
+    highlight('Kiro Agent')
     expect(detail().textContent).toContain('Default.')
     highlight('Claude Code')
     expect(detail().textContent).toContain('Experimental')
@@ -780,10 +809,10 @@ describe('AgentBackendTab status strip', () => {
       backends: [probeRow('kiro', card()), probeRow('kas', card()), probeRow('claude', card())],
     })
     wrap()
-    await waitFor(() => expect(row('KAS (kiro-agent)')).toBeInTheDocument())
+    await waitFor(() => expect(row('Kiro Agent')).toBeInTheDocument())
     expect(DEFAULT_ACP_BACKEND).toBe('kas')
 
-    highlight('KAS (kiro-agent)')
+    highlight('Kiro Agent')
     await waitFor(() => expect(detail().textContent).toContain('Default.'))
     expect(panel().queryByText('Experimental')).toBeNull()
     expect(document.getElementById('agent-backend-row-status-kas')?.textContent).toBe('Default.')
@@ -1311,7 +1340,7 @@ describe('AgentBackendTab shared probe eligibility', () => {
       backends: [probeRow('kiro'), probeRow('claude', { selectable: false }), probeRow('kas')],
     })
     wrap()
-    await waitFor(() => expect(row('KAS (kiro-agent)')).toBeInTheDocument())
+    await waitFor(() => expect(row('Kiro Agent')).toBeInTheDocument())
     expect(screen.queryByRole('radio', { name: 'Claude Code' })).toBeNull()
   })
 })

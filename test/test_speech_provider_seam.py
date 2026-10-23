@@ -99,7 +99,7 @@ _STANDALONE_STT_WARNING = (
     "'kirocrew config defaults --adopt stt.provider' to drop the stored value."
 )
 _STANDALONE_TTS_WARNING = (
-    "voice_reply.provider 'ploly' not in ['piper', 'polly', 'system'], defaulting to 'system'"
+    "voice_reply.provider 'ploly' not in ['polly', 'system'], defaulting to 'system'"
 )
 
 
@@ -114,7 +114,7 @@ class TestStandaloneIsUnchanged:
     def test_valid_sets_are_the_builtins(self, standalone) -> None:
         assert sections_stt.valid_stt_providers() == ("local", "apple", "transcribe", "off")
         assert sections_stt.valid_stt_providers() is sections_stt._VALID_STT_PROVIDERS
-        assert voice_reply.valid_providers() == frozenset({"polly", "piper", "system"})
+        assert voice_reply.valid_providers() == frozenset({"polly", "system"})
         assert voice_reply.valid_providers() is voice_reply.VALID_PROVIDERS
 
     def test_defaults_are_the_builtins(self, standalone) -> None:
@@ -201,7 +201,7 @@ class TestEditionDefault:
     def test_a_stored_stt_value_wins(self, tmp_path, stored) -> None:
         assert _load_stt(tmp_path, {"provider": stored}) == stored
 
-    @pytest.mark.parametrize("stored", ["polly", "piper", "system"])
+    @pytest.mark.parametrize("stored", ["polly", "system"])
     def test_a_stored_tts_value_wins(self, stored) -> None:
         assert voice_reply.resolve_configured_provider({"provider": stored}) == stored
 
@@ -237,8 +237,11 @@ class TestEditionDefault:
         with unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path):
             assert KiroCrewConfig.load().stt.provider == "acme"
 
-    def test_an_existing_piper_install_keeps_piper(self) -> None:
-        assert voice_reply.resolve_configured_provider({"piper_model": "/m/en.onnx"}) == "piper"
+    def test_a_stale_piper_model_resolves_like_an_absent_provider(self) -> None:
+        assert voice_reply.resolve_configured_provider({"piper_model": "/m/en.onnx"}) == "acme"
+
+    def test_the_removed_piper_value_keeps_the_builtin_default(self) -> None:
+        assert voice_reply.resolve_configured_provider({"provider": "piper"}) == "system"
 
     def test_a_builtin_edition_default_needs_no_registration(self, tmp_path) -> None:
         _install(_Registry(default_stt="transcribe", default_tts="polly"))
@@ -313,6 +316,7 @@ class TestBootRefusesShadowing:
             (_Registry(stt=("whisper",)), "'whisper'"),
             (_Registry(tts=("polly",)), "'polly'"),
             (_Registry(tts=("system",)), "'system'"),
+            (_Registry(tts=("piper",)), "'piper'"),
             (_Registry(stt=("acme", "acme")), "registered twice"),
             (_Registry(stt=("",)), "no usable name"),
             (_Registry(tts=(" acme",)), "no usable name"),
@@ -385,7 +389,11 @@ def test_the_dashboard_has_no_sentence_for_the_unavailable_code() -> None:
     """So it renders the backend ``detail`` instead of a canned Off sentence."""
     from kiro_crew import transcribe
 
-    mapping = (Path(__file__).resolve().parents[1] / "website/src/lib/sttProviders.ts").read_text(
+    source = (Path(__file__).resolve().parents[1] / "website/src/lib/sttProviders.ts").read_text(
         encoding="utf-8"
     )
-    assert transcribe.CODE_PROVIDER_UNAVAILABLE not in mapping
+    # The code may be named elsewhere (the Status badge reads it), but it must
+    # not have a catalog sentence: ``unavailableMessage`` then shows ``detail``.
+    catalog = source.split("export const UNAVAILABLE_CODE_KEY", 1)[1].split("\n}\n", 1)[0]
+    assert "stt_provider_off" in catalog
+    assert transcribe.CODE_PROVIDER_UNAVAILABLE not in catalog

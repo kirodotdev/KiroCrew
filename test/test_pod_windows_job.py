@@ -462,6 +462,7 @@ def test_native_prototypes_preserve_pointer_sized_handles(monkeypatch):
         "TerminateProcess",
         "CloseHandle",
         "LocalFree",
+        "GetTickCount64",
     )
     kernel = SimpleNamespace(**{name: SimpleNamespace() for name in kernel_names})
     advapi = SimpleNamespace(ConvertStringSecurityDescriptorToSecurityDescriptorW=SimpleNamespace())
@@ -474,6 +475,8 @@ def test_native_prototypes_preserve_pointer_sized_handles(monkeypatch):
     assert kernel.OpenJobObjectW.restype is C.c_void_p
     assert kernel.AssignProcessToJobObject.argtypes == [C.c_void_p, C.c_void_p]
     assert kernel.QueryInformationJobObject.argtypes[-1] == C.POINTER(jobs._DWORD)
+    # The default int restype would truncate the 64-bit uptime the boot proof compares.
+    assert kernel.GetTickCount64.restype is C.c_uint64
     assert all(hasattr(getattr(kernel, name), "restype") for name in kernel_names)
 
 

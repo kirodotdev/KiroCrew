@@ -60,6 +60,7 @@ from auto_research_handlers_coverage_helpers import (
 )
 
 from kiro_crew.apps.builtins.auto_research import handlers as h
+from kiro_crew.testing.wait import async_wait_until
 
 # --- helpers ----------------------------------------------------------------
 
@@ -120,12 +121,9 @@ def polls(monkeypatch: pytest.MonkeyPatch) -> dict:
 
 
 async def _await_until(predicate, timeout: float = 10.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        await asyncio.sleep(0.01)
-    return False
+    """True once ``predicate()`` holds; a wait that never does fails by name."""
+    await async_wait_until(predicate, timeout=timeout)
+    return True
 
 
 # --- workflow_run.json accessors -------------------------------------------
@@ -743,17 +741,12 @@ class TestStreamHandler:
 
         task = asyncio.ensure_future(h._handle_stream(req))
         try:
-            for _ in range(200):
-                await asyncio.sleep(0.005)
-                if h._sse_queues:
-                    break
-            assert h._sse_queues, "handler never registered its queue"
+            await async_wait_until(
+                lambda: h._sse_queues, describe=lambda: "handler never registered its queue"
+            )
             h._emit_sse({"type": "new_finding", "campaign_id": "otherone"})
             h._emit_sse({"type": "complete", "campaign_id": cid})
-            for _ in range(200):
-                await asyncio.sleep(0.005)
-                if writes:
-                    break
+            await async_wait_until(lambda: writes, describe=lambda: "the stream wrote nothing")
         finally:
             task.cancel()
             try:

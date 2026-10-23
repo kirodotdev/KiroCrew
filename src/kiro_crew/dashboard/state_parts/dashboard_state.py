@@ -26,6 +26,7 @@ from kiro_crew.dashboard.state_parts import own_methods
 from kiro_crew.dashboard.state_parts import session_events as _session_events
 from kiro_crew.dashboard.state_parts import sidebar_stores as _sidebar_stores
 from kiro_crew.dashboard.state_parts import slot_directory as _slot_directory
+from kiro_crew.dashboard.state_parts import slot_list_hold as _slot_list_hold
 from kiro_crew.dashboard.state_parts import slots_frame as _slots_frame
 from kiro_crew.dashboard.state_parts import slots_push as _slots_push
 from kiro_crew.dashboard.state_parts import source_links as _source_links
@@ -142,6 +143,15 @@ class DashboardState:
     # restore stays in merge mode, so its writes are never suppressed — see
     # _persist_open_slots / _persist_context_snapshots.
     open_slots_restored: bool = False
+    # True while startup is still discovering the complete slot set: lists carry
+    # ``slotsPartial``. The hold fields below belong to state_parts/slot_list_hold.py.
+    slot_list_rebuilding: bool = False
+    _slot_list_channel_held_keys: "frozenset[str] | set[str]" = frozenset()
+    _slot_list_released_keys: "frozenset[str] | set[str]" = frozenset()
+    _slot_list_hold_channels: bool = False
+    _slot_list_rebuild_finish_requested: bool = False
+    _slot_list_rebuild_began: float = 0.0
+    _slot_list_rebuild_deadline: "asyncio.TimerHandle | None" = None
 
     # push_slots_update() coalescing state, on that same read path. The lock
     # defaults to None rather than to a shared Lock(): a None lock means "no
@@ -529,19 +539,23 @@ class DashboardState:
         # ``len(_slots)`` alone undercounts by however many imports are in flight,
         # and each concurrent import would then be waved past a full-slot cap.
         self._slots_under_construction: set[str] = set()
+        self._slot_list_channel_held_keys: set[str] = set()
+        self._slot_list_released_keys: set[str] = set()
+        self._slot_list_hold_channels = False
         # The slot each connected owner dashboard reports in the foreground, by
         # connection (``slot_retention.note_foreground``). The idle sweep never
         # archives a slot someone is looking at.
         self._foreground_slots: dict[int, str] = {}
-        # Return-triggered warm task briefs keep only presence episodes and live
-        # generation tasks in memory. The durable claim itself lives beside the
-        # transcript, so a gateway restart can deduplicate but can never infer a
-        # leave that this process did not observe.
-        self._warm_task_brief_away: dict[str, tuple[float, int]] = {}
-        self._warm_task_brief_generation = 0
-        self._warm_task_brief_slot_generation: dict[str, int] = {}
+        # Return-triggered warm task briefs: when each thread was last on screen
+        # in an owner view (wall time, this process only), a read-saving "not
+        # eligible before" cache, and the live tasks. The claim and the durable
+        # away fallback live in the transcript.
+        self._warm_task_brief_last_seen: dict[str, float] = {}
+        self._warm_task_brief_not_before: dict[str, float] = {}
         self._warm_task_brief_tasks: dict[str, asyncio.Task[Any]] = {}
         self._warm_task_brief_model_active: set[str] = set()
+        # Threads whose in-flight model call was left behind by a departure.
+        self._warm_task_brief_abandoned: set[str] = set()
         self._slack_to_slot: dict[str, str] = {}  # Slack session_key → slot name
         # Live OPTIONS controls, keyed by the SESSION KEY that owns them.
         #
@@ -1183,6 +1197,18 @@ class DashboardState:
     unsubscribe_subagents = _slots_push.unsubscribe_subagents
     broadcast_ws_subagent_subscribers = _slots_push.broadcast_ws_subagent_subscribers
     close_all_ws = _slots_push.close_all_ws
+
+    # The partial slot-list hold state machine (state_parts/slot_list_hold.py).
+    begin_slot_list_rebuild = _slot_list_hold.begin_slot_list_rebuild
+    replace_channel_slot_holds = _slot_list_hold.replace_channel_slot_holds
+    slot_list_held_keys = _slot_list_hold.slot_list_held_keys
+    release_deleted_slot_keys = _slot_list_hold.release_deleted_slot_keys
+    slot_list_hold_channels = _slot_list_hold.slot_list_hold_channels
+    arm_slot_list_rebuild_deadline = _slot_list_hold.arm_slot_list_rebuild_deadline
+    _expire_slot_list_rebuild = _slot_list_hold._expire_slot_list_rebuild
+    _persistent_slot_list_hold = _slot_list_hold._persistent_slot_list_hold
+    _complete_slot_list_rebuild_if_ready = _slot_list_hold._complete_slot_list_rebuild_if_ready
+    finish_slot_list_rebuild = _slot_list_hold.finish_slot_list_rebuild
 
 
 own_methods(DashboardState)

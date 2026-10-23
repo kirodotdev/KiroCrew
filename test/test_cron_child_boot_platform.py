@@ -10,7 +10,7 @@ Every test here drives the REAL launcher through ``run_script_sandboxed``.
 Hand-written child scripts that call ``boot_platform`` themselves would only
 re-prove library behavior already pinned by
 ``test_platform_context.py`` / ``test_cpp_wiring_standalone.py`` /
-``test_security.py`` and passed with the production change reverted, so they
+``test_security_token_params.py`` / ``test_security_exfil_urls.py`` and passed with the production change reverted, so they
 guarded nothing. The two cases below are mutation-verified against the three
 preamble lines this module exists to protect.
 

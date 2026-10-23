@@ -536,6 +536,9 @@ class SubagentInfo:
     # on the _shared_provider directly.
     _session_sharing: bool = False
     _shared_provider: Any = None  # AcpSessionProvider when _session_sharing=True
+    # True when the run inherited a remote session environment: its cost samples
+    # go to the ``@remote`` bucket.
+    _remote_workspace: bool = False
     # ── Turn-resilience state (subagent parity with the main-agent guards) ──
     # True when the user explicitly stopped this agent (DELETE /api/spawn/{id}).
     # Renders as a neutral "stopped" terminal state (not an error) and

@@ -324,6 +324,11 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/members/{slug}/goals/schedules",
         _deferred("member_goals", "api_member_goals_schedules"),
     )
+    # The ``crewmate.dashboard_page`` card's yes: it wakes the crewmate to write its page.
+    app.router.add_post(
+        "/api/members/{slug}/dashboard/page-offer",
+        _deferred("member_page_offer", "api_member_page_offer"),
+    )
     # Change cards. Same split as the guide: the agent half is MCP-only under the
     # strict "/api/cards/agent" prefix, the browser half is owner-only cookie auth.
     # The paths are duplicated from ``change_cards.register_change_card_routes``,

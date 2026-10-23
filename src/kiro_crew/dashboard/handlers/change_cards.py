@@ -477,6 +477,10 @@ async def api_cards_agent_propose(request: web.Request) -> web.Response:
             raise CardError(400, "invalid_body", f"unknown field '{unknown[0][:64]}'")
     except CardError as exc:
         return _refusal(exc)
+    if str(body.get("kind") or "") in catalog.SELF_ONLY_KINDS:
+        # A crewmate raises its own page offer through its kirocrew-mate tool, so the
+        # asked-once record is kept; propose_change never raises it.
+        return _refusal(CardError(403, "self_only", "only the crewmate itself can offer this"))
     return await propose_for_caller(
         request,
         slot_key,
@@ -495,6 +499,7 @@ async def propose_for_caller(
     kind: str,
     params: Any,
     reason: Any,
+    claim: Callable[[], Awaitable[Callable[[], Awaitable[None]]]] | None = None,
 ) -> web.Response:
     """Propose one card of *kind* in the verified caller's slot. The route body.
 
@@ -503,6 +508,12 @@ async def propose_for_caller(
     so a crewmate's request for its own goal, model or tools becomes exactly
     the card ``propose_change`` would have made: same validation, same
     preview, same store, same row in the conversation.
+
+    *claim*, when given, persists what the card's existence must leave behind (the
+    page offer's asked-once record). It runs after the card is built and before it
+    is stored or shown; a :class:`CardError` from it refuses the card. It returns
+    the undo, run when the card is then not published, so nothing is claimed for a
+    card nobody saw.
     """
     try:
         # An app's kind and an app's card key are never a chat caller's: see
@@ -516,6 +527,12 @@ async def propose_for_caller(
         state = request.app["state"]
         preview, before, context = await cards.build(kind, params, state=state, app=request.app)
         await _settle(request)
+    except (CardError, catalog.CardCatalogError) as exc:
+        return _refusal(exc)
+    undo_claim: Callable[[], Awaitable[None]] | None = None
+    try:
+        if claim is not None:
+            undo_claim = await claim()
         rec = _store(request).propose(
             slot_key=slot_key,
             session_key=sk,
@@ -527,6 +544,8 @@ async def propose_for_caller(
             context=context,
         )
     except (CardError, catalog.CardCatalogError) as exc:
+        if undo_claim is not None:
+            await undo_claim()
         return _refusal(exc)
     store = _store(request)
     try:
@@ -534,6 +553,8 @@ async def propose_for_caller(
     except CardError as exc:
         # Never shown, never in the transcript: the proposal did not happen.
         store.discard(rec["id"])
+        if undo_claim is not None:
+            await undo_claim()
         return _refusal(CardError(exc.status, exc.code, "the change card could not be saved"))
     public = store.public(rec)
     # The card is part of the conversation from here on: its row lands at this
@@ -991,6 +1012,20 @@ def _arm_card_undo_cron_guard(
             # The user just confirmed the crewmate's milestones: the route
             # tells the crewmate so (:func:`goal_setup.schedule_milestones_nudge`).
             request[REQ_CARD_KEY_RESULTS_APPLY] = True
+        elif kind == catalog.KIND_CREWMATE_DASHBOARD_PAGE:
+            # The person said yes on the page offer: only this step may start the
+            # crewmate's write-and-apply wake (``member_page_offer``).
+            from kiro_crew.dashboard.handlers.member_page_offer import (
+                REQ_CARD_PAGE_OFFER_APPLY,
+                REQ_CARD_PAGE_OFFER_PAGE,
+            )
+
+            request[REQ_CARD_PAGE_OFFER_APPLY] = True
+            # The page the person said yes over, as the card last previewed it: a
+            # refreshed card names the template in force at the refresh.
+            before = rec.get("before")
+            page = before.get("page") if isinstance(before, dict) else None
+            request[REQ_CARD_PAGE_OFFER_PAGE] = page if isinstance(page, dict) else None
         return
     if kind in (catalog.KIND_CREWMATE_GOAL, catalog.KIND_CREWMATE_KEY_RESULTS):
         before = rec.get("before")

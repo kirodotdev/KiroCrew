@@ -185,6 +185,7 @@ second time.
 
 | Endpoint | Method | Path | Effect |
 |----------|--------|------|--------|
+| state | GET | `/api/chat/slots/{slot}/side` | The side conversation the gateway holds in memory, `{open, created_at, last_run_id, running, messages, queue}`, which a reloaded panel restores from. Each row carries the `id` its frame announced and its `run_id`; every text is redacted as the frames redact it. Owner-only for every caller (`chat.side_state`), the audience the side frames reach, so an app is refused even on a slot it owns; an app on a slot it does not own gets the uniform 404 |
 | open | POST | `/api/chat/slots/{slot}/side/open` | Initialise sidecar (idempotent) |
 | turn | POST | `/api/chat/slots/{slot}/side/turn` | Submit question; starts a turn, steers the running one, or queues. A dashboard-user caller must be the owner (`chat.side_turn`); app tokens keep slot scoping |
 | queue cancel | DELETE | `/api/chat/slots/{slot}/side/queue/{queue_id}` | Drop a queued entry; echoes its text back for the composer |
@@ -200,14 +201,62 @@ row. The queue is held, not drained, until the next submit. The panel's Stop
 control (`SideChat`) calls this route; `website/src/test/SideChat.stop.test.tsx`
 pins it.
 
+**Reload.** A page reload empties the panel, but the sidecar lives on the slot
+until it is closed or the gateway restarts, and the next question joins it. So
+the panel reads `GET .../side` once per page per slot, on mount, and merges the
+result in (`restoreSideConversation` in `store/chatSlice.ts`, which dispatches
+`sideRestore` from `store/chat/side.ts`). Every way of asking waits for that read
+before the turn is sent: the panel's send, within the send's own deadline
+(`SEND_ABORT_MS`), and the `/side` command; one read in flight serves them all. A
+404 is nothing to restore (the slot is gone, or the gateway predates the route).
+Any other failure, or a read that outruns the deadline, sends nothing, because the
+question would join a conversation the panel cannot show: the panel hands the text
+back with a line saying the conversation has not loaded (not a connection error),
+and a failed read also shows a notice with **Retry**. `/side` is refused with
+composer wording that names no Retry button, since none is on screen there, and
+the command stays in the composer.
+The draft stays in memory only (`sideChatDrafts`).
+The read and the frames travel separately, so either can be ahead:
+
+- A row the sidecar stored arrives under one id on both the read and its frame
+  (`message_id`), and is drawn once; a frame for a row the panel already holds
+  changes nothing, busy state included.
+- A row the sidecar never stores (an error notice) or had not stored yet (a later
+  turn) exists only in the tab, and is kept beside the rows of its run.
+- A turn running at the read: a tab that saw it begin keeps its streamed answer;
+  otherwise the deltas began part-way through, so the panel shows the turn as
+  thinking until the final frame, which carries the whole text
+  (`SideState.awaitingFinalRunId`).
+- A frame for a turn that has given way to a later one adds its row but leaves
+  the later turn's busy state alone.
+- A question asked while the read is in flight cannot be in it, because every
+  send waits for the read, so the panel keeps it as its own row until its queued
+  receipt, its user frame, or a receipt that hands the text back settles it.
+- The queue keeps the sidecar's order, with an entry the tab saw pushed to the front
+  ahead of it and other entries the tab saw pushed at the end; an entry the tab saw
+  leave stays out, even one it never had a card for. Restored entries are redacted,
+  so, like another tab's cards, they drain but cannot be edited or cancelled here.
+- A close in this tab marks the slot settled (`slotSideRestored`), so a read still
+  in flight cannot bring the closed conversation back.
+- The context banner of a restored conversation counts the parent turns newer
+  than its `created_at` (`SideState.countsTurnsSinceCreated`), at render, since the
+  parent transcript can load after the restore.
+
+An interrupted turn (`PromptBusyExhaustedError`) stores what streamed and then
+its notice, broadcasts the partial answer as its own final frame before the notice's
+final frame, and carries each stored row's id, so a restored panel draws it as the
+live one did. The other error notices a turn can end with are not stored, so after
+a reload such a turn shows its question without the notice, which is also what
+the model holds.
+
 ## Wire Protocol
 
 Event name: `chat.side_result`  
 Kind field: `"side"` (translated from upstream `"btw"`)
 
 Payload shape (broadcast per chunk and per final response, built by
-`dashboard/ws.py`, which owns the wire). `final` and `steer` are optional, and
-`is_error` is present only when true:
+`dashboard/ws.py`, which owns the wire). `final`, `steer` and `message_id` are
+optional, and `is_error` is present only when true:
 
 ```json
 {
@@ -221,10 +270,16 @@ Payload shape (broadcast per chunk and per final response, built by
     "ts": <unix-float | null>,
     "is_error": true,
     "final": true,
-    "steer": true
+    "steer": true,
+    "message_id": "<sidecar row id>"
   }
 }
 ```
+
+`message_id` names the `SideState.messages` row the frame announces: a question,
+a consumed steer, a final answer or the stop row. Streaming deltas, and the error
+notices the sidecar does not store, carry none. It is what lets a panel restored
+from `GET .../side` recognise a frame for a row it already holds.
 
 Run-ID isolation: the frontend routes `chat.side_result` frames to the chat
 state's `slotSide` map via a dedicated reducer (`sseSideResult`, owned by
@@ -251,10 +306,13 @@ a parent-slot turn.
 `binding` (the `(derived agent, cwd, spec digest)` the live session was created
 under), `task` (the running side turn's asyncio task handle, so `/side/stop` can
 cancel it; `None` when idle) and `is_stopping` (the stop-in-progress busy flag).
-Helpers: `append_user` (with a `steer` marker), `append_assistant`, `clear`,
-`queue_append` / `queue_insert_front` / `queue_pop` / `queue_remove` /
+Helpers: `append_user` (with a `steer` marker), `append_assistant` (with an
+`is_error` marker, set on the stop row so a restored panel draws it as a notice),
+`clear`, `queue_append` / `queue_insert_front` / `queue_pop` / `queue_remove` /
 `queue_edit`, `steer_can_accept`, and the ledger's `steer_register` /
-`steer_state` / `steer_mark` / `steer_pending` / `steer_settle`.
+`steer_state` / `steer_mark` / `steer_pending` / `steer_settle`. Both append
+helpers stamp the row with an `id`, and with the `run_id` they are given, and
+return the id for the frame that announces the row.
 
 ### `dashboard/steer_settle.py`
 
@@ -319,8 +377,8 @@ Four prompt constants, two lifted from the upstream protocol:
 
 ### `dashboard/handlers/side.py`
 
-Seven aiohttp route handlers (`api_side_open`, `api_side_turn`, `api_side_stop`,
-`api_side_queue_cancel`, `api_side_queue_edit`, `api_side_close`,
+Eight aiohttp route handlers (`api_side_state`, `api_side_open`, `api_side_turn`,
+`api_side_stop`, `api_side_queue_cancel`, `api_side_queue_edit`, `api_side_close`,
 `api_side_tools`) + the `_run_side_turn` background driver.
 `_run_side_turn` resolves the slot's agent, confines the side session for the
 selected harness — on kiro-cli it publishes the derived read-only spec (below)
@@ -523,8 +581,9 @@ session confined (`AcpClient._claude_session_meta`):
 
 In `default` mode Claude Code runs Read, Grep and Glob inside the work dir
 without asking; the `ask` rules above override that, so each such call reaches
-the gate and gets an SEL row (captured on claude-agent-acp 0.93.0,
-`test/fixtures/claude_side_read_ask`). A call under a denied path is refused
+the gate and gets an SEL row (captured on claude-agent-acp 0.94.0,
+`test/fixtures/acp_frames/claude/side-read-ask-live.jsonl` and
+`side-read-no-ask-live.jsonl`). A call under a denied path is refused
 by claude before it asks. A call that reaches the gate is proven read-only by `harness_builtin_tool`: the kiro-cli
 built-in that the tool name claude-agent-acp stamped on the call's `tool_call`
 frame (`_meta.claudeCode.toolName`) maps to, never the title or the permission
@@ -737,7 +796,9 @@ MessageCircleQuestionMark}`. Renders `<SideChat slot={slot} />` when active.
 
 ### `SideChat.tsx`
 
-Reads from `state.chat.slotSide[slot]`. Calls `api.sideOpen` at submit time,
+Reads from `state.chat.slotSide[slot]`. On mount it restores the slot with
+`restoreSideConversation` (`GET .../side`) once per page (see **Reload**). Calls
+`api.sideOpen` at submit time,
 inside the send mutation (and from the `/side` interceptor), then `api.sideTurn`. Local optimistic buffer for pre-redux rendering — for
 a turn this submit STARTS only: a steer's bubble must land above the streaming
 answer and a queued one is a card, so both are placed by the server frame.
@@ -826,7 +887,10 @@ action types stay `chat/<name>` and every consumer keeps importing them from
 - `sseSideResult` reducer: user frames append, assistant frames accumulate
   (delta-append within same run_id), error frames always start new entry, and a
   `steer` user frame is spliced in ABOVE a streaming assistant row of the same
-  run.
+  run. A frame whose `message_id` the panel already holds is dropped, and so is a
+  delta for a settled answer or for a run waiting on its final frame.
+- `sideRestore` reducer: merges `GET .../side` into the slot once per page (see
+  **Reload** above).
 - `sseSideQueue` reducer: `push` appends, or head-inserts on `front`
   (replay-safe — a redelivered id is ignored, never rewritten, so a redacted
   duplicate cannot overwrite the raw text), `edit` rewrites, `cancel`/`drain`
@@ -899,9 +963,18 @@ be dead at runtime while all of them stayed green.
 Frontend invariants are covered in KiroCrewWebsite under `src/test/`:
 `SideChat.close.test.tsx`, `SideChat.multiturn.test.tsx`,
 `SideChat.refresh.test.tsx`, `SideChat.thinking.test.tsx`,
-`SideChat.steerQueue.test.tsx`, `SideSlashCommand.test.tsx`,
+`SideChat.steerQueue.test.tsx`, `SideChat.restore.test.tsx` (the reload merge, a
+late frame drawn once, a joined turn held for its final frame, a read landing
+after a close, a resent question kept apart from the running turn it repeats, the
+banner count, the failed-read hold and Retry, a send that waits for a read in
+flight, a 404), `SideChat.restoreFailed.test.tsx` (what a send held back by the
+read tells the user), `SideSlashCommand.test.tsx` (including `/side`
+reading before it asks and holding the question when the read fails),
 `SideSlashCommand.steer.test.tsx` (command interception wins over mid-turn
 steer routing), and the `sseSideResult` block in `chatSlice.messages.test.ts`.
+The read route itself is pinned in `test/test_side_state_route.py` (rows under
+their frames' ids, the queue, `running`, an interrupted turn read back with its
+notice, redaction, owner-only).
 
 Nothing enforces invariant 2 (separate envelope) mechanically. It is a
 review-time rule, held by the backend and frontend suites above plus the

@@ -112,7 +112,7 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
     api.agentCatalog(sessionKey).then(d => {
       if (cancelled) return
       // Stamped here, once, so every picker that renders these rows shows the
-      // same "KAS only" pill: the catalog was asked for THIS chat, so its
+      // same "Kiro Agent only" pill: the catalog was asked for THIS chat, so its
       // `session_backend` is the harness this chat runs.
       const rows = withMarkdownBlocks(d.agents || [], d)
       setChoices(rows)

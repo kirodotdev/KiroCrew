@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, fireEvent, screen } from '@testing-library/react'
+import i18next from 'i18next'
+import '../i18n/all'
 
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { ClosedSessionCtx, type ClosedSessionActions } from '../components/markdown/contexts'
@@ -49,6 +51,25 @@ describe('closed-session chip', () => {
     await vi.waitFor(() => expect(link.getAttribute('title')).toContain('Earlier work'))
     fireEvent.click(link)
     await vi.waitFor(() => expect(open).toHaveBeenCalledWith({ key: STEM, title: 'Earlier work' }))
+  })
+
+  it('an untitled closed session is named "Untitled session" in the current language, from a raw cached row (#23084)', async () => {
+    lookup.mockImplementation(async (key: string) => (key === CLOSED ? { key: STEM, title: '' } : null))
+    const first = renderWith(`See [the old run](/chat?sid=${CLOSED}).`)
+    const link = () => screen.getByText('the old run').closest('a')!
+    await vi.waitFor(() => expect(link().getAttribute('title')).toContain('Untitled session'))
+    first.unmount()
+    try {
+      // The probe answer outlives the mount; a remount in another language
+      // must name it in that language, not the one it was first rendered in.
+      await i18next.changeLanguage('zh-CN')
+      renderWith(`See [the old run](/chat?sid=${CLOSED}).`)
+      await vi.waitFor(() => expect(link().getAttribute('title')).toContain('未命名会话'))
+      expect(link().getAttribute('title')).not.toContain('Untitled session')
+      expect(lookup).toHaveBeenCalledTimes(1)
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('an open session still switches through the roster, with no probe', () => {

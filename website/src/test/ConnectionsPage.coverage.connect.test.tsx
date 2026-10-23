@@ -6,7 +6,8 @@
 // copied from it word for word; the shared fixtures are in
 // ConnectionsPage.coverageTestUtils.tsx.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
+import { replaceMessages } from '../store/chatSlice'
 
 const mcpServers = vi.fn()
 const mcpProbe = vi.fn()
@@ -558,6 +559,40 @@ describe('the authorization status feed', () => {
     expect(connectionsDisconnect).not.toHaveBeenCalled()
   })
 
+  it('leaves the waiting card when an older chat banner was holding it open', async () => {
+    // The reported bug: no attempt from this tab, just an installed entry the
+    // probe has no verdict on and a stale chat Authorize banner with a URL.
+    // Cancel cleared nothing that mattered, so the card never changed.
+    mcpServers.mockResolvedValue([server({ status: 'unknown' })])
+    mount({ chat: { messages: [banner('notion', { oauth_url: 'https://notion.example/authorize?x=1' })] } })
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'waiting-for-approval'))
+
+    fireEvent.click(within(card('notion')).getByRole('button', { name: /Cancel/ }))
+
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'not-verified'))
+    expect(within(card('notion')).queryByRole('link', { name: /Re-open approval/ })).not.toBeInTheDocument()
+    // Nothing this tab started, so nothing to uninstall.
+    expect(mcpApply).not.toHaveBeenCalled()
+  })
+
+  it('shows connected when consent completes on the chat banner after Cancel', async () => {
+    // The chat Authorize link stays clickable after Cancel. Completing consent
+    // there patches the SAME banner in place (same ts) to completed, so the
+    // Cancel fence must not swallow its terminal state.
+    mcpServers.mockResolvedValue([server({ status: 'unknown' })])
+    const { store } = mount({ chat: { messages: [banner('notion', { oauth_url: 'https://notion.example/authorize?x=1' })] } })
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'waiting-for-approval'))
+
+    fireEvent.click(within(card('notion')).getByRole('button', { name: /Cancel/ }))
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'not-verified'))
+
+    act(() => {
+      store.dispatch(replaceMessages([banner('notion', { oauth_url: 'https://notion.example/authorize?x=1', completed: true })]))
+    })
+
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'connected'))
+  })
+
   it('a failed dispose never blocks the local cancel', async () => {
     connectionsCancel.mockRejectedValue(new Error('gateway down'))
     mcpServers.mockResolvedValue([server({ status: 'error', enabled: true })])
@@ -755,6 +790,39 @@ describe('the authorization status feed', () => {
     await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'not-verified'))
     // ...and the authorization feed re-fetched rather than waiting out the poll.
     await waitFor(() => expect(connectionsStatus).toHaveBeenCalled())
+  })
+
+  it('keeps the approval link of a flow a sibling tab starts after this tab cancelled', async () => {
+    // Cancel fences the chat banner it dismissed, never the mint feed: a later
+    // flow from another tab is live, and this tab must still offer its URL.
+    mcpServers.mockResolvedValue([server({ status: 'needs_auth' })])
+    mcpProbe.mockResolvedValue([server({ status: 'needs_auth' })])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'awaiting_consent', grantPresent: false }],
+    })
+    const { queryClient } = mount()
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'waiting-for-approval'))
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'not_connected', grantPresent: false }],
+    })
+    fireEvent.click(within(card('notion')).getByRole('button', { name: /Cancel/ }))
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'not-verified'))
+
+    // Another tab starts a fresh flow: the backend reports it in flight again
+    // and the mint row carries a new token and URL.
+    connectionsMintState.mockResolvedValue({
+      slug: 'notion', state: 'waiting', token: 'tok-sibling', oauth_url: 'https://notion.example/authorize?sibling=1',
+    })
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'awaiting_consent', grantPresent: false }],
+    })
+    await queryClient.invalidateQueries({ queryKey: ['connections-status'] })
+
+    const link = await waitFor(() => within(card('notion')).getByRole('link', { name: /Re-open approval/ }))
+    expect(link).toHaveAttribute('href', 'https://notion.example/authorize?sibling=1')
   })
 
   it('a stale in-flight status fetch cannot re-render waiting after cancel', async () => {

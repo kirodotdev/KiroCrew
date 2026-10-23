@@ -12,6 +12,7 @@ and board rows, and binds ``_session_tools`` so it reads and patches as
 
 from __future__ import annotations
 
+from kiro_crew.config.sections import AUTOCOMPACT_PCT_MAX, AUTOCOMPACT_PCT_MIN
 from kiro_crew.mcp_dashboard_session_runs import (
     _run_session_adopt,
     _run_session_broadcast,
@@ -123,6 +124,20 @@ def _session_tools() -> tuple[Tool, ...]:
                             "child gets a copy of the profile's worker effort (or the "
                             "crewmate's own), made at creation; anyone else's child keeps "
                             "the model's default."
+                        ),
+                    },
+                    "autocompact_pct": {
+                        "type": "number",
+                        "minimum": AUTOCOMPACT_PCT_MIN,
+                        "maximum": AUTOCOMPACT_PCT_MAX,
+                        "description": (
+                            "Context-usage percent at which the NEW session auto-compacts, "
+                            "set as that session's own override exactly as if the person "
+                            "had set 'Auto-compact at' in its context meter. Only the new "
+                            "session gets it: the global session.autocompact_pct and every "
+                            "other session, including yours, are unchanged. Omit to follow "
+                            "the agent's own default, else the global value. The person can "
+                            "still change or reset it later."
                         ),
                     },
                 },

@@ -20,6 +20,7 @@ from kiro_crew.acp import runtime_host_requests as _rt_host
 from kiro_crew.acp import runtime_liveness as _rt_liveness
 from kiro_crew.acp import runtime_mode_activation as _rt_mode
 from kiro_crew.acp import runtime_reader_loop as _rt_reader
+from kiro_crew.acp import runtime_remote_workspace as _rt_remote
 from kiro_crew.acp import runtime_session_create as _rt_create
 from kiro_crew.acp import runtime_session_load as _rt_load
 from kiro_crew.acp import runtime_session_registry as _rt_registry
@@ -57,6 +58,7 @@ _MEMBER_OWNERS = frozenset(
         "kiro_crew.acp.runtime_host_requests",
         "kiro_crew.acp.runtime_frame_accounting",
         "kiro_crew.acp.runtime_reader_loop",
+        "kiro_crew.acp.runtime_remote_workspace",
     }
 )
 
@@ -250,6 +252,13 @@ class AcpRuntime:
     # The single stdout reader: ``kiro_crew.acp.runtime_reader_loop``.
     _reader_loop = _rt_reader._reader_loop
     _notification_aliases = _rt_reader._notification_aliases
+    # A remote session's workspace: ``kiro_crew.acp.runtime_remote_workspace``.
+    _close_remote_workspace = _rt_remote._close_remote_workspace
+    set_remote_workspace = _rt_remote.set_remote_workspace
+    check_remote_workspace_supported = _rt_remote.check_remote_workspace_supported
+    _write_remote_token = _rt_remote._write_remote_token
+    _remote_session_servers = _rt_remote._remote_session_servers
+    _remote_workspace_agents = _rt_remote._remote_workspace_agents
 
     #: See ``__init__``. Set on the class too, so a runtime built without
     #: ``__init__`` (a test double, a restored instance) reads as having none.
@@ -322,6 +331,8 @@ class AcpRuntime:
         # declared ``secretStorage`` (``agent.kas_persist_mcp_sign_in``); None
         # otherwise, and those requests then get -32601. Set at each handshake.
         self._mcp_secret_server: kas_secret_storage.SecretStorageServer | None = None
+        # Set for a remote session: built-in file/shell tools give way to the workspace server.
+        self._remote_workspace: Any = None
         # First answered credential callback per runtime is logged at INFO as a
         # positive "the engine is drawing its credential from Crew" signal; later
         # ones (the engine refreshes ahead of expiry) drop to DEBUG.

@@ -216,6 +216,10 @@ A mate's **Goals** tab (Profile card) holds what it works toward:
   The weekly report and the monthly review cover the readings and the tasks the
   mate finished in the period, and are saved as reports under
   `Crewmates/<name>/Reports` in Artifacts, with a notification linking each.
+  A report reads like a printed document: A4 pages with a header, numbered
+  sections and a footer, the conclusion first, and charts drawn from the
+  readings. To keep a PDF, choose **Download** in the report's **More actions**
+  menu, open the file in your browser and print it.
 - **Heartbeat.** A fourth switch, off by default and only available once a goal
   is set, shown as a full-width row under the three check-ins. While it is on,
   the mate wakes in its own chat every 30 minutes, hour (the default),

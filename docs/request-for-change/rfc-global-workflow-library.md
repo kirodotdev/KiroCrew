@@ -338,8 +338,8 @@ Resolves `debug-login-flow`, starts its exact current source, and supplies
 `"reproduce with user 123"` as `ctx.args["input"]`.
 
 The dashboard dispatches the command locally before acquiring or forwarding to
-a harness (`src/kiro_crew/dashboard/chat_runner.py:4965-5003` in the implementation
-worktree). This is the critical harness-neutrality boundary: Kiro and KAS cannot
+a harness (`_handle_workflow_command` in `src/kiro_crew/dashboard/chat_turn/slash_commands.py`,
+called from `_turn_slash_gate`). This is the critical harness-neutrality boundary: Kiro and KAS cannot
 assign different meanings to the same saved name.
 
 One namespace command is preferred over registering each definition as its own

@@ -27,10 +27,20 @@ from kiro_crew.apps.builtins.dev_fleet import fleet_state as fleet_state_mod
 from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 from kiro_crew.apps.builtins.dev_fleet import worktree_ops as worktree_ops_mod
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 # --- SEL audit on mutations (Codex R17) ---
+async def _run_settled(rid: str) -> None:
+    """Wait for run *rid* to leave ``running``; a run that never does fails by name."""
+
+    async def _settled() -> bool:
+        async with mod._RUNS_LOCK:
+            return mod._RUNS.get(rid, {}).get("status") != "running"
+
+    await async_wait_until(_settled, describe=lambda: f"run {rid!r} is still running")
+
+
 def _fake_sel_capture(events):
     class _FakeSel:
         def log_tool_invocation(self, **kw):
@@ -198,12 +208,7 @@ async def test_run_record_includes_started():
     assert rec["started"] >= before - 1
     assert rec["started"] <= time.time() + 1
     # let the trivial subprocess worker finish before the loop closes
-    for _ in range(50):
-        async with mod._RUNS_LOCK:
-            if mod._RUNS[rid]["status"] != "running":
-                break
-        # flake-ok: pre-existing bounded 50 ms drain of the trivial run before the loop closes, moved verbatim; it asserts nothing
-        await asyncio.sleep(0.05)
+    await _run_settled(rid)
 
 
 # --- escalation cleanup symlink guard (Codex R19) ---
@@ -621,12 +626,7 @@ async def test_completed_runs_are_evicted_beyond_cap():
             assert len(completed) <= mod._RUNS_MAX_COMPLETED
             assert "active" in mod._RUNS  # running never evicted
             assert "old0" not in mod._RUNS  # oldest completed evicted first
-        for _ in range(50):
-            async with mod._RUNS_LOCK:
-                if mod._RUNS.get(rid, {}).get("status") != "running":
-                    break
-            # flake-ok: pre-existing bounded 50 ms drain of the eviction run before the state restore, moved verbatim; it asserts nothing
-            await asyncio.sleep(0.05)
+        await _run_settled(rid)
     finally:
         async with mod._RUNS_LOCK:
             mod._RUNS.clear()
@@ -886,12 +886,7 @@ async def test_start_run_readline_overrun_kills_process_tree(monkeypatch):
     # would be resolved (and rejected) before fake_exec is ever reached. The
     # command itself is irrelevant to this test.
     rid = await mod._start_run("overrun-test", ["/usr/bin/whatever"])
-    for _ in range(100):
-        async with mod._RUNS_LOCK:
-            if mod._RUNS[rid]["status"] != "running":
-                break
-        # flake-ok: pre-existing bounded 20 ms poll of the run status, moved verbatim; on expiry the test reads the record as it stands and its assertions fail
-        await asyncio.sleep(0.02)
+    await _run_settled(rid)
     async with mod._RUNS_LOCK:
         rec = dict(mod._RUNS[rid])
     assert rec["status"] == "done" and rec["exit_code"] == -1

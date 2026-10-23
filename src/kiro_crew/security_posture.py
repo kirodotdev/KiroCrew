@@ -2348,11 +2348,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/session_control_parts/model_switch.py",
         "dashboard/session_control_parts/session_create.py",
         # The owners composed into dashboard/chat_runner.py: the redactor calls of the runner's
-        # helpers, _run_chat's closures, its prologue phases and its tool and permission arms,
-        # unchanged (deny rows, eager-spawn errors, file-change snapshots, the MCP sign-in banner,
-        # the fallback model id, native cards, prompt and skill mentions, the queued-turn drain, the
-        # admission and permission logs, the stream redactors, cross-surface legs, the segment
-        # flush, tool rows and results, directive tool-call ids, the partial reply and stream
+        # helpers, _run_chat's closures and its phases, unchanged (deny rows, eager-spawn errors,
+        # file-change snapshots, the MCP sign-in banner, the fallback model id, native cards, prompt
+        # and skill mentions, the queue drain, admission and permission logs, stream redactors,
+        # cross-surface legs, the segment flush, tool rows and results, directive tool-call ids, the
+        # agent-switch name, the /compact summary and failure reason, the partial reply and stream
         # flushes, spec-hook notices, the stats footer). Their output reaches the runner's surfaces.
         "dashboard/chat_turn/deny_chokepoints.py",
         "dashboard/chat_turn/eager_spawn.py",
@@ -2365,6 +2365,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_turn/queue_drain.py",
         "dashboard/chat_turn/recipient.py",
         "dashboard/chat_turn/segment_flush.py",
+        "dashboard/chat_turn/session_events.py",
+        "dashboard/chat_turn/slash_commands.py",
         "dashboard/chat_turn/tool_approval.py",
         "dashboard/chat_turn/tool_results.py",
         "dashboard/chat_turn/tool_rows.py",
@@ -2660,6 +2662,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # through metrics/schema.py's redactor.
         "apps/install_receipt.py",
         "cron_script.py",
+        "cron_script_context.py",
+        "cron_script_mcp.py",
+        "cron_script_redaction.py",
         "eval/runner.py",
         # The owners composed into kiro_prerequisite.py that call a redactor, in the
         # same class as that facade.

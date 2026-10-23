@@ -17,6 +17,7 @@ from slack_gateway_coverage_helpers import _make_orchestrator, _mock_dashboard_s
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.slack import gateway as gw
+from kiro_crew.testing.wait import await_until, finished
 
 # ═════════════════════════════════════════════════════════════════════════
 # MCP-gateway control plane
@@ -461,7 +462,7 @@ class TestMcpBrokerRefreshPrefetchAndPersistArms:
                 orch._schedule_mcp_launch_approval_persist(MagicMock())
                 (task,) = orch._background_tasks
                 orch._mcp_launch_approval_ready.set()
-                await asyncio.wait_for(task, timeout=5)
+                await await_until(task, what="the approval persist task finishing")
                 # flake-ok: pre-existing zero yield that lets the finished persist task's done-callback leave the background set; moved verbatim, tracked for a de-flake pass
                 await asyncio.sleep(0)
         assert "could not persist the approval store" in caplog.text
@@ -482,6 +483,6 @@ class TestMcpBrokerRefreshPrefetchAndPersistArms:
         # flake-ok: pre-existing unbounded wait for the stubbed install to start; the task sets started on its first step; moved verbatim, tracked for a de-flake pass
         await started.wait()
         orch._mcp_resolve_prefetch = task
-        await asyncio.wait_for(orch._stop_mcp_broker(), timeout=5)
+        await finished(orch._stop_mcp_broker(), "the broker stop cancelling the prefetch")
         assert task.cancelled()
         assert orch._mcp_resolve_prefetch is None

@@ -35,6 +35,7 @@ import { SEND_ABORT_MS } from '../chat-core/transport/sendTurn'
 
 vi.mock('../api/client', () => ({
   api: {
+    sideState: vi.fn().mockResolvedValue({ open: false }),
     sideOpen: vi.fn().mockResolvedValue({ ok: true, open: true, messages: 0, last_run_id: '', created_at: '2026-01-01T00:00:00.000Z' }),
     sideTurn: vi.fn().mockResolvedValue({ ok: true, run_id: 'r1', messages: 1 }),
     sideClose: vi.fn().mockResolvedValue({ ok: true, was_open: true }),

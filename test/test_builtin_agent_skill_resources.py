@@ -61,11 +61,11 @@ _STEERING_GLOB = "file://.kiro/steering/**/*.md"
 AGENTS: dict[str, tuple[object, tuple[str, ...]]] = {
     "kirocrew-conductor": (
         conductor_agents._install_conductor_agent,
-        ("goal-conductor", "dashboard"),
+        ("goal-conductor", "dashboard", "widgets", "living-ui", "artifacts"),
     ),
     "kirocrew-ledger-conductor": (
         conductor_agents._install_ledger_conductor_agent,
-        ("goal-conductor", "dashboard"),
+        ("goal-conductor", "dashboard", "widgets", "living-ui", "artifacts"),
     ),
     "kirocrew-pipeline-conductor": (
         conductor_agents._install_pipeline_conductor_agent,

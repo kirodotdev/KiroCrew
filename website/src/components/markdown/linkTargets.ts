@@ -2,6 +2,7 @@ import { useContext, useEffect, useState } from 'react'
 import type { Element as HastElement } from 'hast'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { classifyShortName, sessionKeyFrom } from '../../utils/sessionKeys'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { ClosedSessionCtx, LinkUnfurlCtx, type SessionActions, type SidebarFolderActions } from './contexts'
 
 /**
@@ -163,7 +164,11 @@ export function classifySessionLink(raw: string, actions: SessionActions): Sessi
   return short!.kind === 'no-match' ? { kind: 'not-open' } : { kind: 'unresolved' }
 }
 
+/** A probed row as the gateway has it: `title` is raw, '' when untitled. */
 type ClosedRow = { key: string; title: string }
+/** The row under the name the reader sees, worked out at render or click, so
+ *  a language switch re-localizes "Untitled session"; the cache stays raw. */
+const namedRow = (row: ClosedRow): ClosedRow => ({ key: row.key, title: sessionDisplayTitle(row) })
 /** A probe's answer: the row, a definite "no such session", or a failed request. */
 type ClosedAnswer = ClosedRow | null | 'failed'
 
@@ -220,8 +225,9 @@ export type ClosedSessionFailure = {
 
 export type SessionChipTarget = {
   key: string
-  /** The session as the reader should see it named: its title when a probe has
-   *  one, else the caller's visible label for it, else the raw key. */
+  /** The session as the reader should see it named: a probed row's title
+   *  ("Untitled session" when it has none), else the caller's visible label
+   *  for it, else the raw key. */
   title: string
   open: (key: string) => void
   /** Present only while the closed session's check is failing. */
@@ -309,10 +315,16 @@ export function useSessionChip(raw: string | null, actions: SessionActions, labe
       }
     })
   }
-  if (value !== 'failed') return { key, title: value.title, open: () => openRow(value) }
-  // Named for the reader: the title a probe found (a click-time check can fail
+  // `open` gets the reader's name only for its "was deleted" notice; the page
+  // resumes from the row it fetches again, never from this name.
+  if (value !== 'failed') {
+    const named = namedRow(value)
+    return { key, title: named.title, open: () => openRow(named) }
+  }
+  // Named for the reader: the row a probe found (a click-time check can fail
   // after the background probe answered), else the visible label, else the key.
-  const title = closedAnswers.get(key)?.title ?? (label?.trim() || key)
+  const cached = closedAnswers.get(key)
+  const title = cached ? sessionDisplayTitle(cached) : (label?.trim() || key)
   const shown = notice?.for === key
   const failure: ClosedSessionFailure = {
     shown,
@@ -328,7 +340,7 @@ export function useSessionChip(raw: string | null, actions: SessionActions, labe
         // Dropping here silently would leave Try again answered by nothing.
         if (next === null) { openRow({ key, title }); return }
         settle(next)
-        openRow(next)
+        openRow(namedRow(next))
       })
     },
   }

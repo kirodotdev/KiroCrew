@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Collection
 
 from kiro_crew import sel as sel_module
-from kiro_crew.acp import transport_framing
+from kiro_crew.acp import pi_steer_turn, transport_framing
 from kiro_crew.acp.client_claude_session import (
     CLAUDE_ACP_STEERING_MIN_VERSION,
     _adapter_version_at_least,
@@ -49,6 +49,7 @@ from kiro_crew.acp.transport_errors import AcpError, AcpProcessDied, AcpTimeoutE
 from kiro_crew.acp.transport_framing import write_notification_best_effort
 from kiro_crew.acp.types import (
     ACP_BACKEND_GOOSE,
+    ACP_BACKEND_PI,
     ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
     ACP_BACKENDS_STEERING_REQUEST,
     EVENT_COMPLETE,
@@ -71,6 +72,11 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
     steering_outcome,
+)
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_LAUNCH,
+    ACP_BACKEND_NODE_ADAPTER_PACKAGES,
 )
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -112,6 +118,48 @@ def steering_advertised(init_resp: object) -> bool:
     meta = init_resp.get("_meta") if isinstance(init_resp, dict) else None
     steering = meta.get("steering") if isinstance(meta, dict) else None
     return isinstance(steering, dict) and steering.get("supported") is True
+
+
+#: The oldest goose that serves ``_goose/unstable/session/steer`` as Crew sends it:
+#: 1.38.0 ("Steering messages with ACP", block/goose#9560) added the request with
+#: ``expectedRunId``, the ``{runId, messageId}`` answer, ``activeRunId`` on
+#: ``session_info_update`` and the ``_meta.goose.steer`` echo. 1.37.0 has none of
+#: them, so its answer is ``-32601`` and every steer queues.
+GOOSE_STEER_MIN_VERSION = (1, 38, 0)
+
+#: The release each adapter needs before the card's ``mid_turn_steer`` line is true,
+#: with the command that updates it. Below it the session still runs and a steer
+#: queues, so a new chat gets one notice naming the upgrade instead of a refusal.
+_STEER_MIN_VERSIONS: dict[str, tuple[tuple[int, int, int], str]] = {
+    ACP_BACKEND_CLAUDE: (
+        CLAUDE_ACP_STEERING_MIN_VERSION,
+        f"npm i -g {ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_CLAUDE]}",
+    ),
+    ACP_BACKEND_GOOSE: (
+        GOOSE_STEER_MIN_VERSION,
+        ACP_BACKEND_LAUNCH[ACP_BACKEND_GOOSE].install_command,
+    ),
+}
+
+
+def steer_version_issue(backend: str, agent_version: str) -> str:
+    """The upgrade notice for *agent_version* of *backend*, or ``""`` when it is not
+    known to be too old to steer. An absent or unreadable version gets none, as for
+    pi. Compared by :func:`_adapter_version_at_least`, the parser the steer gate
+    itself reads, so the notice cannot disagree with whether the session steers."""
+    floor_and_fix = _STEER_MIN_VERSIONS.get(backend)
+    # Readable means it parses at all: every readable version is at least 0.0.0.
+    if floor_and_fix is None or not _adapter_version_at_least(agent_version, (0, 0, 0)):
+        return ""
+    floor, fix = floor_and_fix
+    if _adapter_version_at_least(agent_version, floor):
+        return ""
+    minimum = ".".join(str(part) for part in floor)
+    return (
+        f"{backend} {agent_version} is older than {minimum}, so a message you send "
+        f"while it works waits until it finishes. "
+        f"Update it: run '{fix}', then start a new chat."
+    )
 
 
 def format_command_result(result: dict) -> str:
@@ -392,6 +440,8 @@ async def steer(self: AcpClient, message: str) -> bool:
     A backend in ``ACP_BACKENDS_STEERING_REQUEST`` is delivered by a request
     whose answer the read loop hands over instead: goose by
     :meth:`_steer_via_request`, claude by :meth:`_steer_via_steering_request`.
+    pi takes no request at all: the steer is written for Crew's gate extension
+    inside pi (:mod:`kiro_crew.acp.pi_steer_turn`).
 
     A backend in ``ACP_BACKENDS_STEER_CONCURRENT_PROMPT`` takes the steer as
     a second ``session/prompt`` instead (:meth:`_steer_via_concurrent_prompt`),
@@ -400,6 +450,8 @@ async def steer(self: AcpClient, message: str) -> bool:
     text = (message or "").strip()
     if not text or not self._session_id:
         return False
+    if self.backend == ACP_BACKEND_PI:
+        return await pi_steer_turn.steer(self, text)
     if self._speaks_steering_request:
         return await self._steer_via_request(_CLIENT_STEERING_REQUEST_METHODS[self.backend], text)
     if self.backend in ACP_BACKENDS_STEERING_REQUEST:
@@ -418,7 +470,11 @@ def _steering_request_ready(self: AcpClient) -> bool:
     sends it: advertised at the handshake, and claude-agent-acp at or above
     :data:`CLAUDE_ACP_STEERING_MIN_VERSION`. The floor is that adapter's own
     release history, and claude is the only member this client sends
-    ``_session/steering`` to, so any other member fails closed here."""
+    ``_session/steering`` to, so any other member fails closed here -- except pi,
+    which is sent no request: it is ready once its launch minted the steer channel
+    to Crew's gate extension (:mod:`kiro_crew.acp.pi_steer_turn`)."""
+    if self.backend == ACP_BACKEND_PI:
+        return pi_steer_turn.ready(self)
     if self._is_claude and getattr(self, "_steering_advertised", False) is True:
         return _adapter_version_at_least(
             getattr(self, "_agent_version", ""), CLAUDE_ACP_STEERING_MIN_VERSION
@@ -827,6 +883,7 @@ async def _dispatch_prompt_events(
     self._turn_permission_denied = False
     turn = _ConcurrentSteerTurn()
     self._steer_turn = turn
+    pi_steer_turn.open_turn(self, req_id)
     try:
         async with aclosing(self._dispatch_events(req_id, timeout)) as events:
             async for event in events:
@@ -838,6 +895,11 @@ async def _dispatch_prompt_events(
                 ):
                     for consumed in await self._settle_concurrent_steers(turn, event):
                         yield AcpEvent(kind=EVENT_STEER_CONSUMED, text=consumed)
+                if event.kind == EVENT_COMPLETE:
+                    # pi's steer files go with their turn, at its terminal: a
+                    # consumer that stops reading here never resumes this
+                    # generator, so the finally below may run much later.
+                    await pi_steer_turn.close_turn(self, req_id)
                 yield event
     finally:
         # Idempotent beside the settle's own close: whichever runs first records
@@ -845,6 +907,9 @@ async def _dispatch_prompt_events(
         self._close_steer_turn(turn)
         if self._steer_turn is turn:
             self._steer_turn = None
+        # pi's steer files go with their turn, so none is read into a later one;
+        # already done at a terminal, and here for every other exit.
+        await pi_steer_turn.close_turn(self, req_id)
 
 
 def _close_steer_turn(self: AcpClient, turn: "_ConcurrentSteerTurn") -> None:

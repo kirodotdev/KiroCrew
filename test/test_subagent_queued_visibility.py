@@ -82,12 +82,17 @@ async def test_a_deferred_spawn_is_readable_until_it_starts(monkeypatch) -> None
         free["gb"] = 32.0
         mgr._taskq_admit_wait_secs = 0.05
         await mgr._taskq.run(mgr._taskq.defer, info.id, wait=-1.0, reason="test: eligible now")
-        for _ in range(250):
-            if started.is_set():
-                break
-            mgr._drain_queue()
-            await asyncio.sleep(0.02)
-        assert started.is_set(), "the deferred row never started"
+
+        def _drained_and_started() -> bool:
+            if not started.is_set():
+                mgr._drain_queue()
+            return started.is_set()
+
+        await async_wait_until(
+            _drained_and_started,
+            interval=0.02,
+            describe=lambda: "the deferred row never started",
+        )
         assert mgr.get(info.id) is not None
         assert await mgr.queued_run_async(info.id) is None
         assert (await mgr.queued_runs_async("dash:vis")).runs == ()
@@ -96,7 +101,11 @@ async def test_a_deferred_spawn_is_readable_until_it_starts(monkeypatch) -> None
         tasks = [task for task in mgr._tasks.values() if not task.done()]
         for task in tasks:
             task.cancel()
-        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+        await await_until(
+            asyncio.gather(*tasks, return_exceptions=True),
+            what="the cancelled runs settling in teardown",
+            timeout=5,
+        )
         mgr._taskq.close()
 
 

@@ -586,7 +586,8 @@ class TestPushGuardContracts:
         # The manual '/' path-assembly rule, as the gate's grep spells it.
         assert "Manual '/' path assembly" in workflow, "the gate's rule moved; re-pin it here"
         joins = r"""\.(split|join|rsplit)\(["']/["']\)|\+\s*["']/["']\s*\+"""
-        for script in ("push_guard.py", "preflight.py"):
+        owners = sorted(path.name for path in PUSH_GUARD_DIR.glob("push_guard_*.py"))
+        for script in ("push_guard.py", "preflight.py", *owners):
             code = [
                 line
                 for line in (PUSH_GUARD_DIR / script).read_text(encoding="utf-8").splitlines()

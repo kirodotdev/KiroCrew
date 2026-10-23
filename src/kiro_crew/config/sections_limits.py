@@ -122,6 +122,42 @@ MAX_SUBAGENTS_FIXED_FLOOR = 3
 AUTOCOMPACT_PCT_MIN = 5.0
 AUTOCOMPACT_PCT_MAX = 90.0
 
+
+class AutocompactPctError(ValueError):
+    """A per-session threshold refused by :func:`parse_autocompact_pct`.
+
+    ``code`` is ``pct_not_finite`` or ``pct_out_of_range``, the codes both
+    routes that set a session's override answer with.
+    """
+
+    def __init__(self, message: str, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def parse_autocompact_pct(value: int | float, *, name: str = "pct") -> float:
+    """``value`` as a per-session threshold, or :class:`AutocompactPctError`.
+
+    The one finite and range check shared by the slot's "Auto-compact at" route
+    and ``session_create``. The caller has already refused a non-number (and a
+    bool) with its own code. Refused rather than clamped: a caller that asked
+    for 95 learns it instead of silently running at 90.
+    """
+    try:
+        pct = float(value)
+    except OverflowError:
+        # An int too large for a float; out of range by definition.
+        raise AutocompactPctError(f"{name} must be a finite number", "pct_not_finite") from None
+    if pct != pct:  # NaN fails every comparison below
+        raise AutocompactPctError(f"{name} must be a finite number", "pct_not_finite")
+    if not (AUTOCOMPACT_PCT_MIN <= pct <= AUTOCOMPACT_PCT_MAX):
+        raise AutocompactPctError(
+            f"{name} must be between {AUTOCOMPACT_PCT_MIN:g} and {AUTOCOMPACT_PCT_MAX:g}",
+            "pct_out_of_range",
+        )
+    return pct
+
+
 # ``session.compact_wait_secs``: 0 is the sentinel for "use the built-in
 # budget"; any positive value is lifted to at least ``COMPACT_WAIT_SECS_MIN``
 # and capped at ``COMPACT_WAIT_SECS_MAX`` so a hand-edited typo cannot arm a

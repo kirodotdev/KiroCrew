@@ -79,6 +79,7 @@ export type {
   SessionLaneKey,
   TagColumn,
   ChatMessage,
+  SideSnapshot,
   ChatSlotDetailResponse,
   SubagentActivity,
   ToolPayloadCut,

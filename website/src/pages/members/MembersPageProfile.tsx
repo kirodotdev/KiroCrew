@@ -18,8 +18,14 @@
  */
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction, type RefObject } from 'react'
 import { type NavigateFunction } from 'react-router-dom'
-import { ChevronRight, Circle } from 'lucide-react'
+import { ArrowRight, ChevronRight, Circle } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+// Brand mascot art for the Sessions tab's empty state: a plain <img> URL import,
+// never inline path data, which is what `use-lucide-icons` requires of a
+// mascot (GhostPoses.tsx explains the exemption).
+import workersLeadPose from '../../assets/ghost-poses/pose-7.svg'
+import workerPoseA from '../../assets/ghost-poses/pose-4.svg'
+import workerPoseB from '../../assets/ghost-poses/pose-6.svg'
 import { api, type MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
 import { useQuery } from '@tanstack/react-query'
@@ -575,8 +581,21 @@ export function MembersPageProfileCard({
           <div className="h-12 rounded-2xl bg-bg-hover animate-pulse" />
         </div>
       ) : drivingSessions.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-border-strong bg-bg px-4 py-8 text-center text-[13px] text-muted" data-testid="crew-profile-sessions-empty">
-          {t('pages.membersPage.driving_none')}
+        // A first-time reader has no model for why a crewmate would open
+        // sessions at all, so the empty box explains the mechanism in plain
+        // words (workers), with the crewmate's own face and two
+        // faded ghost poses standing in for the workers that are not here
+        // yet. The poses are the fixed-palette brand assets, so the fade is
+        // an opacity on the <img>, never a recolour (see GhostPoses.tsx).
+        <div className="rounded-2xl border border-dashed border-border-strong bg-bg px-4 py-7 text-center text-[13px] text-muted leading-relaxed" data-testid="crew-profile-sessions-empty">
+          <div className="flex items-center justify-center gap-2.5 mb-4" aria-hidden="true">
+            <img src={workersLeadPose} alt="" draggable={false} className="h-16 w-16 object-contain select-none" />
+            <ArrowRight size={18} className="text-accent shrink-0" />
+            <img src={workerPoseA} alt="" draggable={false} className="h-[60px] w-[52px] object-contain select-none opacity-30 translate-y-1" />
+            <img src={workerPoseB} alt="" draggable={false} className="h-12 w-11 object-contain select-none opacity-30 translate-y-2.5 -ml-1" />
+          </div>
+          <p className="m-0 font-semibold text-text">{t('pages.membersPage.driving_empty_lead', { name: crewDisplayName(active) })}</p>
+          <p className="m-0 mt-0.5">{t('pages.membersPage.driving_empty_body')}</p>
         </div>
       ) : (
         <ul className="list-none m-0 p-0 rounded-2xl border border-border bg-bg overflow-hidden" data-testid="crew-profile-driving">

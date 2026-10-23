@@ -205,6 +205,9 @@ def _trust_grant_would_stay_local(name: str) -> bool:
 async def install_from_registry(
     name: str,
     log_lines: list[str] | None = None,
+    *,
+    resolved_entry: dict[str, Any] | None = None,
+    start_disabled: bool = False,
 ) -> dict[str, Any]:
     """Clone an app from its git repo and install it.
 
@@ -224,6 +227,17 @@ async def install_from_registry(
             :class:`StreamingLogLines` instance to stream logs in real-time
             via the SSE install endpoint.  If *None*, a plain ``list`` is used
             (original behaviour).
+        resolved_entry: The registry row to act on, already resolved by a caller
+            that fetched it fresh (the default-install pass). It replaces the
+            lookup, whose answer may come from the agent-writable index cache, so
+            no field the install executes (``detectInstalled``, the clone
+            coordinates) can change between the caller's check and this use.
+            Every later gate still runs on it. Refused for an app that is already
+            installed, whose source pin it would otherwise skip. *None* resolves
+            as before.
+        start_disabled: Create new self-managed records disabled for a caller
+            that performs the guarded enable separately. Managed installs already
+            start disabled. Existing records keep their enabled state.
 
     Steps:
     1. Validate the app exists in the trusted registry JSON
@@ -260,7 +274,19 @@ async def install_from_registry(
             outcome_early["code"] = RESERVED_APP_NAME_CODE
         return outcome_early
 
-    entry, pin_error = await asyncio.to_thread(_resolve_install_entry, name)
+    entry: dict[str, Any] | None
+    if resolved_entry is not None:
+        # Fresh installs only. An installed app is pinned to its recorded source
+        # (``_resolve_install_entry``), and a caller-supplied row must not skip that.
+        if await asyncio.to_thread(get_app, name) is not None:
+            return {
+                "ok": False,
+                "name": name,
+                "error": f"app {name!r} is already installed; a resolved entry is for fresh installs",
+            }
+        entry, pin_error = dict(resolved_entry), ""
+    else:
+        entry, pin_error = await asyncio.to_thread(_resolve_install_entry, name)
     if pin_error:
         try:
             sel().log_api_access(
@@ -1201,6 +1227,7 @@ async def install_from_registry(
                 manifest_data=manifest_data,
                 origin="registry",
                 source_repository=persisted_git_url,
+                start_disabled=start_disabled,
             )
             if not reg_result.ok:
                 # A refused registration leaves the prior record as it was, so the

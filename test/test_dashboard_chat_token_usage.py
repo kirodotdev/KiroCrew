@@ -17,7 +17,7 @@ from kiro_crew.dashboard.state import _ChatSlot
 
 class TestTokenPersistenceBackfill:
     """Regression tests for the late-backfill of slot.model before
-    persist_token_record is called from _run_chat.
+    persist_token_record is called from _on_complete (chat_turn/turn_stats.py).
 
     Background: Claude Code reports its model only after the prompt is
     dispatched (via the `init` system event). The original eager backfill

@@ -256,6 +256,7 @@ _OWNERS = (
     "kiro_crew.acp.runtime_host_requests",
     "kiro_crew.acp.runtime_frame_accounting",
     "kiro_crew.acp.runtime_reader_loop",
+    "kiro_crew.acp.runtime_remote_workspace",
     "kiro_crew.acp.runtime_class",
 )
 

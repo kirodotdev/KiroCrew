@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         sel,
         send_channel_parts,
         slack_mirror_is_paused,
+        split_options_trailer,
         verify_mirror_admission,
     )
 
@@ -600,6 +601,27 @@ async def _deliver_linked_slack_message(
         await slack_client.post_message(channel_id, message, thread_ts)
     except Exception:
         logger.debug("Failed to deliver a message to the linked Slack thread", exc_info=True)
+
+
+def _cross_surface_reply_text(segments: list[str], trailing: str) -> str:
+    """The text :func:`_deliver_cross_surface_reply` mirrors for a completed turn.
+
+    *segments* are the turn's own reply rows in window order, and the result joins
+    all of them, as the transcript shows the answer. *trailing* is
+    ``turn.assistant_text``: a tool boundary flushes it to a row and resets it, so a
+    turn that answers before its last tool call holds only the fragment after that
+    call in it, or nothing. It is used only when no row is named.
+
+    Only the FINAL segment keeps its ``[OPTIONS:]`` trailer, which the egress leg
+    renders as numbered choices. An earlier segment's trailer asked a question the
+    turn has since moved past, so it is stripped rather than offered: an answer to
+    it would arrive as a reply to a superseded ask. The Slack leg follows the same
+    rule.
+    """
+    if not segments:
+        return trailing
+    earlier = [split_options_trailer(s)[0] for s in segments[:-1]]
+    return "\n\n".join([*(e for e in earlier if e), segments[-1]])
 
 
 async def _deliver_cross_surface_reply(

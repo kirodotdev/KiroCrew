@@ -90,6 +90,7 @@ def _load() -> tuple[Any, Any]:
         "TerminateProcess": ([_HANDLE, _DWORD], _BOOL),
         "CloseHandle": ([_HANDLE], _BOOL),
         "LocalFree": ([C.c_void_p], C.c_void_p),
+        "GetTickCount64": ([], C.c_uint64),
     }
     for name, (args, result) in signatures.items():
         function = getattr(kernel, name)
@@ -255,6 +256,20 @@ class PodJob:
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
+
+
+def uptime_ms() -> int:
+    """Milliseconds since this boot session began, from the kernel's tick counter.
+
+    The counter never runs backwards within a boot session: it keeps counting
+    through sleep, hibernation and a Fast Startup shutdown (which resumes the
+    hibernated kernel) and restarts from zero only at a full boot. A reading
+    LOWER than one taken earlier therefore proves a boot in between. A wall-clock
+    boot time derived from it (now minus uptime) is no such proof: it moves with
+    every clock correction, so two readings in the same boot session can differ.
+    """
+    kernel, _advapi = _load()
+    return int(kernel.GetTickCount64())
 
 
 def open_identity(pid: int, token: str) -> int | None:

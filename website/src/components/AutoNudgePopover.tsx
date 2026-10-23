@@ -704,10 +704,10 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             data-testid="auto-nudge-status"
             className={`mb-2 rounded-md border px-2 py-1.5 text-[11px] leading-relaxed ${
               runsNow && !waitingOnPerson
-                ? writeDisabled ? 'border-border bg-bg text-muted' : 'border-ok/30 bg-ok-subtle text-ok-fg'
+                ? writeDisabled ? 'border-border bg-bg text-muted' : 'border-ok/30 bg-ok-subtle text-ok-text'
                 : finished
                   ? 'border-info/30 bg-info-subtle text-info-text'
-                  : 'border-warn/30 bg-warn-subtle text-warn-fg'
+                  : 'border-warn/30 bg-warn-subtle text-warn-text'
             }`}
           >
             {doneLine?.check && <Check size={12} className="lucide-inline mr-1" aria-hidden data-testid="auto-nudge-done-check" />}
@@ -740,7 +740,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                 every reader now lands on, this sentence is the only cost cue
                 the surface carries, and dropping its colour weakened that cue
                 in the same change that made the surface the default. */}
-            <p role="note" className="mb-2 rounded-md border border-warn/30 bg-warn-subtle px-2 py-1.5 text-[11px] text-warn-fg">
+            <p role="note" className="mb-2 rounded-md border border-warn/30 bg-warn-subtle px-2 py-1.5 text-[11px] text-warn-text">
               {i18nT('components.sessionAutomationPopover.legacy_notice')}
             </p>
           </>

@@ -10,6 +10,7 @@ import pytest
 
 from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef, bind_session_execution
 from kiro_crew.history import ConversationLog
+from kiro_crew.testing.wait import await_until
 from kiro_crew.workflow_memory import WorkflowScope
 from kiro_crew.workflows.service import SOURCE_FORMAT_TASK_PLAN, WorkflowService
 from kiro_crew.workflows.store import WorkflowRunStore
@@ -272,11 +273,11 @@ async def test_admission_snapshots_live_restriction_before_capture_yields(
 
     pending = asyncio.create_task(invoke())
     try:
-        await asyncio.wait_for(started.wait(), timeout=5)
+        await await_until(started, what="the capture parking in its read")
         state._slots.clear()
     finally:
         release.set()
-        await asyncio.wait_for(pending, timeout=5)
+        await await_until(pending, what="the workflow entry finishing")
     assert carried == [replace(execution, memory_mode=live)]
 
 

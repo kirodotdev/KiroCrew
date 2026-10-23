@@ -1100,6 +1100,10 @@ Before generation, authoring searches the saved global definition library and
 supplies up to three relevant local examples. The model may adapt one and declare
 its exact `id@revision` in `META["adapted_from"]`; otherwise it authors from
 scratch. A named saved workflow is never re-authored or reinterpreted.
+Each example's source is untrusted: it sits between an open and a close line that
+carry a fresh random token per prompt, is scrubbed by `neutralize_untrusted_text`,
+and the prompt says the fenced text is reference data, never instructions, so a
+saved source cannot close its own fence or forge another reference.
 
 Authoring runs in a **fresh, isolated, ephemeral** session (`wf-author:<id>`).
 `wf-author:` is a stateless SessionManager prefix, so acquisition never consults

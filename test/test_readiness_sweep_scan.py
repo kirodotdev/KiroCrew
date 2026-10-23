@@ -538,8 +538,8 @@ def test_the_workflow_runs_this_script_from_a_sparse_checkout() -> None:
     steps = doc["jobs"]["sweep"]["steps"]
     checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@"))
     # The scan script, the withheld-verdict republisher, and the
-    # disposition gate the republisher shells out to plus the two sibling
-    # modules pr_status.py loads. All are required at run time, so a dropped
+    # disposition gate the republisher shells out to plus the sibling
+    # modules pr_status.py and its owners load. All are required at run time, so a dropped
     # entry here is a run-time ImportError the sweep would only hit in
     # production.
     sparse = {
@@ -553,6 +553,8 @@ def test_the_workflow_runs_this_script_from_a_sparse_checkout() -> None:
         "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status.py",
         "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/_review_contract.py",
         "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/green_age.py",
+        "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status_issue_links.py",
+        "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status_verdict.py",
     }
     assert checkout["with"]["sparse-checkout-cone-mode"] is False
     assert checkout["with"]["persist-credentials"] is False

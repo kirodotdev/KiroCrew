@@ -338,7 +338,7 @@ harness for crew-member DM sessions, reads the same values.
 | `dashboard.title_refresh_every_turns` | Re-examine an auto-generated session title every N user turns (N, 2N, 3N, ...) and rename the session when the topic moved. `0` keeps the built-in schedule (turns 8 and 24 only); either way, a title that began as a bare link or ticket key also gets one refresh after the first turn. 1-3 is raised to 4; ceiling 1000. Each refresh is one background LLM call. Turns are counted over the messages held for the session. A session reloaded by a gateway restart or reopened from History holds its latest 500 plus the new ones, and the cadence continues from the restored count; if the reload keeps fewer user turns than the latest built-in turn the session had already reached (the first turn, 8 or 24), the cadence resumes after that turn instead. Once 10,000 are held, the oldest drop off as new ones arrive, so refreshes slow down or stop until the next reload. A title renamed by hand is never refreshed. Also set in Settings → Chat → Sessions → **Auto-title refresh interval (turns)**, a stepper whose readout shows "Default" for `0` | `0` |
 | `dashboard.title_ticket_prefix` | Lead an auto-generated session title with the ticket key the opening message names: a tracker key such as `PROJ-1234` (upper-case project key, at least two digits) or a GitHub `#123`, as `PROJ-1234: Increase regression shards`. The model still writes only the summary; the key is copied from the message. The first key in the opening message is used, a title that already names the key is left alone, and a refresh keeps the key the title already leads with. Off by default because standard names like `SHA-256` have the same shape. A title renamed by hand is never changed | `false` |
 | `dashboard.link_previews` | Fetch and render HTTP(S) link metadata in assistant messages. Off by default because each linked site receives a request from this machine | `false` |
-| `dashboard.feature_videos_enabled` | Play a short intro clip for a feature this install has not used yet. Instance-wide kill switch; see [Feature Videos](feature-videos.md). Off until real clips ship | `false` |
+| `dashboard.feature_videos_enabled` | Play a short intro clip for a feature this install has not used yet. Off turns off every clip except the built-in Meet your Mates intro (a dialog the dashboard draws, not a clip); set `dashboard.crewmates_onboarded: true` to turn that one off. See [Feature Videos](feature-videos.md). Off until real clips ship | `false` |
 | `dashboard.link_patterns` | Rewrite matching plain text in transcripts into links at display time, through the same autolink rule engine editions register vocabulary on. Each rule pairs a JavaScript regex with an absolute http(s) URL template in which `{match}` inserts the matched text percent-encoded (no userinfo, placeholder outside the host), e.g. `{"pattern": "\\bPROJ-\\d+\\b", "url": "https://tracker.example.com/browse/{match}"}`. Code blocks and existing links are never rewritten; an inline code span whose whole text matches becomes a link chip. At most 50 rules with distinct patterns, each carrying at most one wide quantifier (`*`, `+`, `{n,}` or a wide `{n,m}`; narrow ranges may accompany it), scanning at most 2000 characters per text block | `[]` |
 | `dashboard.feature_videos_cache_max_mb` | Disk budget for downloaded clips. Whole release folders are removed oldest-first to fit; the release you are running is never removed. `0` = no cap | `500` |
 | `dashboard.crewmates_in_agent_picker` | List mates in the chat composer's agent picker beside the agent templates. Off: the picker lists templates plus any mate no listed template already covers; the default agent stays even when covered, unless a template shares its name. Takes effect when the dashboard is reloaded; no gateway restart | `false` |
@@ -432,7 +432,7 @@ AWS client are the optional `voice` extra, installed as its own dependencies
   environments use a system FFmpeg from the fixed platform paths — never an
   executable inside an agent-writable project venv — and where the host packages
   none, **Settings > Voice offers a one-click decoder download** that fetches the
-  same pinned upstream bytes into `<data home>/models/ffmpeg/` and verifies them
+  same pinned bytes into `<data home>/models/ffmpeg/` and verifies them
   against a built-in SHA-256 digest before anything is executed. The digest is the
   trust anchor, so `~/.local/bin` is still not a place a decoder can be installed
   for Kiro Crew's use. If that download fails, the page offers to hand the failure
@@ -454,10 +454,10 @@ still present, so there is nothing you have to remove by hand.
 ### Voice replies
 
 Spoken replies live in the `voice_reply` block of `config.json`: `enabled`,
-`auto_speak`, `provider` (`system`, the default host speech engine, `polly`, or
-`piper`), `voice_id`, `engine`, `rate`, `pitch`, `aws_profile`, `region`,
-`piper_binary`, `piper_model`, `piper_model_config`, `piper_length_scale` and
-`system_voice`. **Settings > Voice** is the writer for this block. It is not in
+`auto_speak`, `provider` (`system`, the default host speech engine, or `polly`),
+`voice_id`, `engine`, `rate`, `pitch`, `aws_profile`, `region` and `system_voice`.
+The `piper` provider was removed; a saved `piper` value speaks with `system` and
+logs one warning, and its `piper_*` keys are ignored. **Settings > Voice** is the writer for this block. It is not in
 the config schema, so `kirocrew config set voice_reply.<key>` answers
 `Unknown key`.
 
@@ -493,7 +493,7 @@ request is a grant an automated caller can take.
 
 Both local defaults (`system` for TTS, `local` for STT) need no AWS account and no
 confirmation. `system` additionally needs nothing installed on macOS and Windows,
-which is why it is the TTS default rather than `piper`.
+which is why it is the TTS default.
 
 ### An AWS profile per project
 

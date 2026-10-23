@@ -452,7 +452,25 @@ def _url_payload_command(n: int) -> str:
 #: cache stores output computed under exactly the set its key names. Fourteen lines:
 #: the keyword on both signatures, a two-branch read and the docstrings saying why.
 #: No rule widened or narrowed; the default path is the live read.
-_PACKAGE_LINE_BUDGET = 32_125
+#:
+#: Raised again, from 32,125, for ``redaction._SRI_INTEGRITY_RE``: pass 3 skips a run
+#: that is the whole digest of a Subresource Integrity value (``sha256-<43>=``,
+#: ``sha384-<64>``, ``sha512-<86>==``), because a digest is random base64 and a window
+#: inside it clears every gate. The shape is closed: the lowercase algorithm name after
+#: a non-run character, exactly that algorithm's digest length, exactly its padding,
+#: and nothing glued after. One regex of three fixed-width alternatives, a helper that
+#: returns the digest spans, their comment, and the one clause beside the document-link
+#: exemption. No pass widened, no threshold moved, and the exfil URL scan is unchanged.
+#: Six more for its ``keep_sri_digests=False`` switch: a streamed segment whose delta
+#: boundary split an SRI value saves main's verdict on the digest, not the notice.
+#:
+#: Raised again, from 32,188, for the ``self-protection-skills-authority-retire`` floor,
+#: which denies the operator-only ``kirocrew skills authority-retire`` recovery
+#: through an agent shell: one argv matcher in ``argv_floor_self``, its facade
+#: manifest line, its rule id and reason in ``denied_rules_tables``, its ``deny_gate``
+#: registration, its facade export, and its name in the ungated-floor comment. No pass
+#: widened and no threshold moved.
+_PACKAGE_LINE_BUDGET = 32_206
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

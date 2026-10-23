@@ -39,7 +39,7 @@ from kiro_crew.agent_sdk.backends import (
 #: the array is the only channel CREW has onto the session's MCP surface (the harness
 #: mounts what its own user- and project-scope ``mcpServers`` and plugins declare
 #: beside it): an empty one means the harness works while every Crew tool is
-#: silently absent. The round trip is recorded live on claude-agent-acp 0.93.0
+#: silently absent. The round trip is recorded live on claude-agent-acp 0.94.0
 #: (``test/fixtures/acp_frames/claude/mcp-stdio-mount-live.jsonl``): one element
 #: shaped by ``_acp_server_entry`` mounted, and its tool ran as
 #: ``mcp__crew-probe__crew_probe_echo`` after a ``session/request_permission``.

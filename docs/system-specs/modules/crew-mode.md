@@ -49,7 +49,7 @@ which restates what a member's DM session carries in its context.
 | `website/src/components/crew/crewEditorSections.ts` | The `CrewPaneKey` names and section facts `useCrewEditor` keeps for its deep links and dirty tracking. No dashboard editor renders a Routing, template or Capabilities pane from it, so `triggers` has no editing surface |
 | `website/src/components/CrewWakeSection.tsx` | "What wakes this agent" — schedules, deliberately distinct from `triggers` |
 | `website/src/components/chat/crewmateBubbles.ts` | A mate's chat: what the transcript draws (`filterCrewmateChat`) and the run / corner rule for its bubbles (`crewmateRunPosition`, `crewmateBubbleClass`) |
-| `src/kiro_crew/dashboard/warm_task_brief.py` | Owner-return presence, 30-minute in-memory away episodes, durable task-fingerprint claims, two ordinary mate summary messages, one bounded background call, and stale-result suppression |
+| `src/kiro_crew/dashboard/warm_task_brief.py` | Owner-return trigger, 30-minute away time from the in-memory last-on-screen time with a durable chat-history fallback, durable task-fingerprint claims, two ordinary mate summary messages, one bounded background call, and stale-result suppression |
 | `website/src/pages/chat/CrewmateMessage.tsx` | One mate message in its chat: the bubble alone, placed by its run position (no author line, no avatar gutter) |
 
 Crew creation reports `409 agent_exists` for both an existing name and a
@@ -2059,7 +2059,18 @@ contract: it focuses Side Chat and returns true while the Profile draft remains
 mounted.
 
 **Sessions** lists only live dashboard sessions whose `created_by` is the
-mate's DM slot. Rows use the shared status precedence (approval, question,
+mate's DM slot. The tab keeps its name (a recorded decision), but its empty
+box speaks the reader's words, not the mechanism's: a first-time user has no
+model for why a mate would "drive sessions", so the box says session, chat or
+driving nowhere. The
+empty box (`crew-profile-sessions-empty`, the testid keeps the internal noun)
+explains the mechanism in those words — a lead naming the mate ("When a
+big job comes in, {{name}} brings in a few workers to share it.") and one
+line saying the list fills here and is empty now — under an illustration
+built only from the brand mascot assets (`ghost-poses` pose-7 as the
+mate, an accent `ArrowRight`, pose-4 and pose-6 at 30% opacity as the
+workers not here yet). The poses are fixed-palette `<img>` assets, so the fade
+is an opacity, never a recolour, and reads on both palettes (#23003). Rows use the shared status precedence (approval, question,
 running, idle), link to that session through the page's guarded session exit,
 preserve stable ordering while the set is unchanged, and fold after five rows.
 Child subagent runs remain presence for the roster but are not dashboard
@@ -2237,10 +2248,9 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   (`dashboard_agentic.bound_package`) and the suggestions page
   (`dashboard_agentic.tab_shows_suggestions`, the answer `turn_block` and the
   read route give) -- so a template page the person picked, or the page named
-  for the mate, is never replaced on a wake; and only once the goal record
-  holds a goal and confirmed milestones (`goal_reminder.knows_its_page`:
-  `member_goals.has_goal` and a stored key result, which exists only after the
-  person confirms it), so the page has something to be about. Then the Daily
+  for the mate, is never replaced on a wake. No goal or milestone is needed: a
+  mate's progress goes on its Dashboard page, not in chat, so its first page is
+  built when it has something to report. Then the Daily
   Goal Reminder, the goal-setup nudge (`goal_setup.kickoff_prompt`) and the
   `[Milestones confirmed]` turn (`goal_setup.milestones_prompt`), each built off
   the loop, end with `goal_reminder.DASHBOARD_BUILD_LINE`: write your own HTML page
@@ -2263,12 +2273,73 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   Dashboard tab (no preview, no card) -- the one message a gateway wake posts about
   the page. There is no default page: the line stops on the first wake after the
   mate's own `dashboard_apply` (the package is then on screen), so there is no
-  second message. The
-  `[DASHBOARD]` block for a tab still on the suggestions page
-  (`dashboard_agentic.SUGGESTIONS_LINE`) says the same: a `dashboard_write`
-  lands on a page nobody sees, so write the page and save and apply it; the
-  member protocol's page item names the three parts `dashboard_save` takes as
-  fields, `view.html` and theme.
+  second message. A mate with no goal gets none of those wakes, so the
+  `[DASHBOARD]` block that rides every turn carries the rule for a tab still on
+  the suggestions page (`dashboard_agentic.SUGGESTIONS_LINE`): its progress
+  belongs on a page of its own, not in chat, and when it has work to report it
+  builds that page with the dashboard skill (`dashboard_save`, then
+  `dashboard_apply`) instead of posting it -- conditioned on having work to
+  report, never an order on every turn. A locked tab gets the lock's refusal
+  instead, and with `agent.crew_panel` off (or unreadable) the block states only
+  where the tab stands (`dashboard_agentic.SUGGESTIONS_STATE`), since there is no
+  `dashboard_save` to build with. The member protocol's page item says the same
+  (progress on the page; the first report is when the page is built) and names
+  the three parts `dashboard_save` takes as fields, `view.html` and theme; its
+  front-desk item says the thread is read once or twice a day, so it gets few
+  reports, each one message covering several things, never a stream of small
+  updates. The Daily Goal Reminder puts where things stand on the page and
+  writes in the thread only when something changed the user should know, once;
+  it also carries `goal_reminder.DAILY_PAGE_REVIEW`, a review of the mate's own
+  page in three steps, each its own sentence so a later step (a look at a
+  screenshot of the page) slots in before the check: read the page
+  (`dashboard_fields` for each field's source and value, `dashboard_types` for
+  the folds and paths behind it) against the latest data; check the page as a
+  whole still makes sense (it answers what the person would ask today, its
+  sections and words match the current work, nothing contradicts the folds);
+  update what is stale (a field with `dashboard_write`, the page with
+  `dashboard_save` then `dashboard_apply` when a section no longer fits), and
+  leave a current page as it is; then make one improvement (clearer, better
+  made, nicer looking, by the dashboard skill's design guidance): one small,
+  steady improvement a day, not a redesign, every number still from a fold and
+  none invented. Weekly and monthly reports do not carry it. Both the page-first
+  wording and the review ride only while `agent.crew_panel` mounts the page tools
+  (`goal_reminder._page_tools_on`, off when unreadable); without them the daily
+  reminder keeps its readings-led chat message, since there is no page to put
+  them on.
+- the **`crewmate.dashboard_page` card** (`offer_dashboard_page`): the one way a
+  crewmate on a TEMPLATE page -- one the person adopted, or the page named for it
+  -- comes to replace it. `goal_reminder.dashboard_line` gives such a crewmate, in
+  place of the build line and only once the goal record holds a goal and
+  confirmed milestones (`goal_reminder.knows_its_page`), since the card offers a
+  page built around the goal, `page_offer.OFFER_LINE` naming the template, until it has been
+  asked once. The crewmate calls `offer_dashboard_page` in that same wake, so the
+  offer adds no turn of its own; the card (`change_card_dashboard_page.TITLE`,
+  "Want me to build a Dashboard page around your goal?", with a row naming the
+  template it replaces) writes nothing. Its one apply step is
+  `POST /api/members/{slug}/dashboard/page-offer` (`handlers/member_page_offer.py`),
+  owner-only and refused unless the card hook set `REQ_CARD_PAGE_OFFER_APPLY`; it
+  records the yes and wakes the crewmate once (`page_offer.write_prompt`, through
+  `goal_setup._schedule`) to write its page, `dashboard_save` it and
+  `dashboard_apply` it with no second card, then post the same one ready
+  message. A locked layout refuses that apply as it does any other, and the
+  crewmate says so once and stops; one `dashboard_rollback` brings the template
+  back. A no, or the card expiring, writes nothing. Asked-once is
+  `crew-panels/<slug>.page-offer.json` (`page_offer.record_path`, beyond the
+  crewmate's own shell), written when the card is raised, so a yes, a no and an
+  expiry all count. The one exception is a yes whose wake never started: the yes
+  marks the record `pending` with the gateway process's boot id (`boot_id.current_boot_id`)
+  (`record_yes`, called off the event loop by the route) and the wake clears it when it starts (`record_started`, through
+  `goal_setup._schedule`'s `on_started`), so a mark naming an earlier process -- a
+  gateway that exited while the wake waited for an idle thread -- is read as not
+  asked (`was_asked`) and the next wake offers the page again. Otherwise the line
+  stops and the card's preview refuses a second offer
+  (`already_asked`), and also refuses a crewmate with nothing on its tab or a
+  page of its own (`not_on_a_template`) or with no goal and milestones yet
+  (`not_ready`). The kind is `catalog.SELF_ONLY_KINDS`: `list_change_kinds` leaves it
+  out and `propose_change` refuses it (`self_only`); it offers no Undo
+  (`offers_no_undo`). The card and the prompt lines make an offer of what the page
+  is for, never of what writing it takes. A person can still ask for a page in
+  chat at any time, and the crewmate writes it with no card.
 - the **`crewmate.check_ins` card** (`set_check_ins`): turns the Daily Goal
   Reminder, Weekly report, Monthly review and Heartbeat on or off and sets
   `weekday`, `month_day`, `time` and the heartbeat's `interval` (its rows read
@@ -2300,8 +2371,30 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   also compares against the complete schedule values that write returned, so
   rollback cannot erase a later schedule edit.
   A switch turned on with no goal is refused (`no_goal`). Weekly and monthly reports are saved with
-  `save_goal_report` as Markdown artifacts under `Crewmates/<name>/Reports`, the
+  `save_goal_report` as artifacts under `Crewmates/<name>/Reports`, the
   user gets one notification linking it, and the thread carries one short line.
+  A report is `markdown` or `html` (one whole self-contained page), one of the
+  two: both or neither is refused (`report_format_ambiguous`, `empty_report`),
+  Markdown is capped at `REPORT_MAX_CHARS` and a page at the crewmate Dashboard
+  page's own ceiling (`REPORT_HTML_MAX_BYTES` = `dashboard_frame.MAX_PAGE_BYTES`,
+  in bytes, `report_too_large`), and either is scrubbed like every goal string.
+  A page takes the plain goal-string scrub on save and the ordinary artifact
+  redaction on read, exactly as any other artifact: it draws its charts as inline
+  SVG and embeds no raster image (no `<img>`, no `data:image`), so the scrub costs
+  it nothing.
+  Both formats get the same folder, tags, notification and goal-record entry, and
+  the artifact carries `goal_report: true` (set only by `goal_reminder.save_report`),
+  so the viewer opens it in the crewmate Dashboard page's sandbox (see
+  [artifacts](artifacts.md)). The weekly and monthly prompts share one
+  `goal_reminder.REPORT_LOOK` piece, which `save_goal_report`'s description
+  points at: a printable document on A4 sheets with a header band, numbered
+  sections and a footer, conclusion first, each section shaped by its content,
+  static with charts in inline SVG, type from the CSS generic families only (no
+  named typeface; `--font-sans` / `--font-serif` / `--font-mono` on the page's
+  own `:root`), two families at most with mono only for code, ids and aligned
+  figures, plain words that agree with the readings, and the user's stated style
+  over the crewmate's own. Written as principles; prompt-only, with no save-time
+  look check on reports.
   A check-in that fires with the thread not open or busy does nothing that time;
   the weekly and monthly ones check again after reading the work ledger, so a
   turn that started meanwhile never carries the review mark.
@@ -2886,7 +2979,7 @@ card's counters already show the return). Runtime `notice` rows and
 compaction status cards are hidden rather than removed from history. When the
 filter leaves NOTHING to draw although the transcript is not empty (a patroller
 that has never spoken), the pane's empty hint is the mate's — "<name> hasn't
-said anything to you yet." plus a verb-first second line pointing at where its visible work is ("See the sessions it is driving."). That second
+said anything to you yet." plus a verb-first second line pointing at where its visible work is ("See what it is working on." — neutral about whether any worker exists yet, since the tab it opens may be the empty box, and never "sessions"). That second
 line is a link when the host passes `onOpenCrewWorkLog` (the Members page does:
 it opens Profile on Sessions), plain text otherwise — words that read as a
 destination must be one. Never the fresh-thread "Session ready" line, which

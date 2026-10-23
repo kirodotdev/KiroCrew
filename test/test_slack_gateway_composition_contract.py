@@ -742,6 +742,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "method",
             "(self, cfg: 'KiroCrewConfig', creds: 'Mapping[str, str]') -> 'None'",
         ),
+        (
+            "_on_session_environment_config_change",
+            "method",
+            "(self, change: 'ConfigChange') -> 'None'",
+        ),
         ("_register_config_appliers", "method", "(self) -> 'None'"),
         (
             "_start_channel_transports",

@@ -264,6 +264,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.security import redact_credentials  # noqa: F401
     from kiro_crew.security import redact_exfiltration_urls  # noqa: F401
     from kiro_crew.skill_trust import is_project_trusted as _is_project_trusted  # noqa: F401
+    from kiro_crew.skills import _matches_any  # noqa: F401
     from kiro_crew.skills import _trusted_skill_roots  # noqa: F401
     from kiro_crew.skills import _with_canonical_globs  # noqa: F401
     from kiro_crew.skills import skills_dir  # noqa: F401

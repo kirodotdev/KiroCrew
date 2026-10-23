@@ -1231,6 +1231,16 @@ def deploy_artifact(name: str, args: dict[str, Any]) -> str:
         return "Error: provide exactly one of artifact_slug or local_dir"
     if not has_slug and not has_dir:
         return "Error: provide artifact_slug or local_dir"
+    if has_dir:
+        from kiro_crew.session_environment import session_runs_remotely
+
+        if session_runs_remotely(mcp_core._resolve_session_key()):
+            # local_dir names a directory on this machine, not the remote workspace.
+            return (
+                "Error: local_dir is not available in this session: it runs in a remote "
+                "workspace, and local_dir would deploy a directory on the gateway machine. "
+                "Deploy an artifact_slug instead."
+            )
     deploy_body: dict[str, Any] = {"site_id": args["site_id"]}
     if args.get("artifact_slug"):
         deploy_body["artifact_slug"] = args["artifact_slug"]

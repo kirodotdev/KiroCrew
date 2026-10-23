@@ -30,6 +30,7 @@ from kiro_crew.shell_audit_log import (
     rotate_shell_audit_log,
     shell_audit_log_path,
 )
+from kiro_crew.testing.wait import finished
 
 # One record in the shape the bundled hook writes: a single line -- a UTC stamp,
 # then " BASH: ", then the hook-event payload kiro-cli hands the hook on stdin
@@ -322,7 +323,7 @@ async def test_every_cleanup_tick_rotates_the_audit_log_off_the_loop() -> None:
             patch.object(SessionCleanup, "_adopt_idle_policy", adopt),
             patch.multiple(SessionCleanup, **{name: AsyncMock() for name in _OTHER_TICK_STEPS}),
         ):
-            await asyncio.wait_for(service._run_cleanup_ticks(0.01), timeout=10)
+            await finished(service._run_cleanup_ticks(0.01), "the tick loop stopping on shutdown")
     finally:
         pool.shutdown(wait=True)
 
@@ -355,7 +356,7 @@ async def test_a_rotation_that_raises_does_not_end_the_tick() -> None:
             patch.object(SessionCleanup, "_adopt_idle_policy", adopt),
             patch.multiple(SessionCleanup, **{name: AsyncMock() for name in _OTHER_TICK_STEPS}),
         ):
-            await asyncio.wait_for(service._run_cleanup_ticks(0.01), timeout=10)
+            await finished(service._run_cleanup_ticks(0.01), "the tick loop stopping on shutdown")
     finally:
         pool.shutdown(wait=True)
 

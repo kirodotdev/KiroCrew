@@ -55,7 +55,7 @@ _BASE_NAMES = frozenset("""
     DENY_CAUSE_POLICY EVENT_COMPLETE EVENT_PERMISSION_REQUEST EVENT_TEXT_CHUNK
     EVENT_THINKING_CHUNK EVENT_TOOL_CALL HOOK_REPLY HUMAN_TURN_META_KEY HistoryConsolidator
     InboundRoute Iterator KiroCrewConfig LLMEvent LLMProvider MessageContext
-    OUTCOME_REJECTED_TRANSPORT_FLOOR PROVIDER_PIPER PROVIDER_SYSTEM Path PostedOptions
+    OUTCOME_REJECTED_TRANSPORT_FLOOR PROVIDER_SYSTEM Path PostedOptions
     SESSIONS_INCLUDE_ENDED_ARGS SLACK_MSG_LIMIT STEER_NOTICE_BOUND_SECS
     STOP_DECLINED_COMPACTING_TEXT STOP_REASON_CANCELLED STOP_REASON_COMPACTION_FAILED
     STOP_REASON_END_TURN SafetyOverride SensitiveAgentSpecPathError SessionClosingError
@@ -93,7 +93,7 @@ _BASE_NAMES = frozenset("""
     _shared_trusted_sessions _should_auto_approve_spawn _steer_host_deny _str_or_default
     _thread_agents _thread_incognito _thread_projects _thread_temporary _titled_threads
     _tool_to_phase _tracking_channels _trusted_sessions _tts_available
-    _validate_length_scale _vc _voice_reply_fn add_trusted_session admit_inbound_callback
+    _vc _voice_reply_fn add_trusted_session admit_inbound_callback
     adopt_slack_config agent_spec_stems annotations append_and_surface
     apply_config_duration auto_title await_replay_gap build_cancelled_turn_preamble
     build_session_replay build_timing_footer build_working_blocks cancel_background_tasks
@@ -304,7 +304,7 @@ def _run_child(tmp_path: Path, script: str, *args: str) -> None:
 
 
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
-    assert len(_BASE_NAMES) == 323
+    assert len(_BASE_NAMES) == 321
     assert sorted(name for name in _BASE_NAMES if not hasattr(handler, name)) == []
 
 

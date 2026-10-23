@@ -22,6 +22,7 @@ from kiro_crew.dashboard.stall_enrichment import (
     collect_stall_enrichment,
     describe_loop_thread,
 )
+from kiro_crew.testing.wait import wait_until
 
 
 def test_decode_proc_addr_ipv4() -> None:
@@ -108,13 +109,16 @@ def loop_thread() -> Iterator[tuple[asyncio.AbstractEventLoop, int]]:
 
 def wait_until_inside_handle(thread_id: int) -> None:
     """Block until the loop thread's innermost frame is asyncio's ``Handle._run``."""
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
+
+    def _inside_handle() -> bool:
         frame = sys._current_frames().get(thread_id)
-        if frame is not None and frame.f_code is _HANDLE_RUN:
-            return
-        time.sleep(0.005)
-    raise AssertionError("the loop thread never entered the scheduled callback")
+        return frame is not None and frame.f_code is _HANDLE_RUN
+
+    wait_until(
+        _inside_handle,
+        timeout=5.0,
+        describe=lambda: "the loop thread never entered the scheduled callback",
+    )
 
 
 def test_loop_thread_capture_names_a_native_callback() -> None:
@@ -150,13 +154,14 @@ def test_loop_thread_capture_shows_a_python_callback_frame() -> None:
     with loop_thread() as (loop, thread_id):
         loop.call_soon_threadsafe(hold)
         try:
-            deadline = time.monotonic() + 5.0
             lines: list[str] = []
-            while time.monotonic() < deadline:
+
+            def _in_hold() -> bool:
+                nonlocal lines
                 lines = describe_loop_thread(thread_id)
-                if lines[0].endswith("):hold"):
-                    break
-                time.sleep(0.005)
+                return lines[0].endswith("):hold")
+
+            wait_until(_in_hold, timeout=5.0, describe=lambda: lines)
         finally:
             gate.release()
 

@@ -21,7 +21,6 @@ from collections.abc import Collection, Iterable, Sized
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.agent_sdk.mcp_refs import RESERVED_TOOL_NAMESPACES
 from kiro_crew.atomic_write import atomic_write, open_access_control_source
 from kiro_crew.config.paths import kiro_home
 from kiro_crew.user_json import loads_user_json
@@ -569,6 +568,12 @@ def prune_dangling_tool_refs(
     servers = config.get("mcpServers")
     if not isinstance(servers, dict):
         return []
+    # Imported lazily so a module-level ``from kiro_crew.mcp_cleanup import ...``
+    # (e.g. in the per-session MCP stub) does not drag in ``agent_sdk`` and its
+    # subtree just to reach this one function. ``RESERVED_TOOL_NAMESPACES`` has
+    # no other reader in this module.
+    from kiro_crew.agent_sdk.mcp_refs import RESERVED_TOOL_NAMESPACES
+
     _base = set(servers) | RESERVED_TOOL_NAMESPACES
     known = {
         "tools": _base | set(declared),

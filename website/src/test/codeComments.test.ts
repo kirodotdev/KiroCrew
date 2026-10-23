@@ -9,7 +9,7 @@
  * and CodeBlock are thin glue over them.
  */
 import { describe, it, expect } from 'vitest'
-import { codeFenceSpans, routeCodeComments, buildCodeCommentAnchor, proseOverlayComments } from '../components/codeComments'
+import { codeFenceSpans, routeCodeComments, buildCodeCommentAnchor, proseOverlayComments, postedCodeRange } from '../components/codeComments'
 import type { ArtifactComment, CommentAnchor } from '../types'
 
 const DOC = [
@@ -322,5 +322,18 @@ describe('proseOverlayComments', () => {
     const prose = [comment('p1', { quote: 'Intro', start_offset: 0, end_offset: 5 })]
     expect(proseOverlayComments(DOC, prose)).toBe(prose)
     expect(proseOverlayComments('no fences here', prose)).toBe(prose)
+  })
+})
+
+describe('postedCodeRange', () => {
+  const spans = codeFenceSpans(DOC)
+  const at = DOC.indexOf('  int x;')
+  it('names the fence and content lines a code post was made on', () => {
+    expect(postedCodeRange(DOC, spans, { startOffset: at, quote: '  int x;\n}', seq: 3 }))
+      .toEqual({ blockStartLine: 4, start: 2, end: 3, seq: 3 })
+  })
+  it('is null for a post whose offset does not slice the source to its quote in a fence', () => {
+    expect(postedCodeRange(DOC, spans, { startOffset: 0, quote: 'Intro', seq: 1 })).toBeNull()
+    expect(postedCodeRange(DOC, spans, { startOffset: at, quote: 'nope', seq: 1 })).toBeNull()
   })
 })

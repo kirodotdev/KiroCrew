@@ -19,6 +19,7 @@ from kiro_crew.learn import LessonStore
 from kiro_crew.member_essential_context import documents_for_member
 from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.testing.wait import await_until
 
 env = _essential_env
 
@@ -155,7 +156,7 @@ async def test_cancelled_init_closes_after_worker_finishes(tmp_path, monkeypatch
         assert await asyncio.to_thread(started.wait, 5)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 5)
+            await await_until(task, what="the cancelled vector build finishing")
         assert not closed.is_set()
     finally:
         release.set()
@@ -305,7 +306,7 @@ async def test_cancelled_real_store_releases_lock_fd(env, monkeypatch):
             assert not platform_compat.try_acquire_lock(contender, exclusive=True)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 5)
+            await await_until(task, what="the cancelled lock holder finishing")
         assert stores[0]._store_use_lock_fd == fds[0]
         release.set()
         await asyncio.get_running_loop().shutdown_default_executor()

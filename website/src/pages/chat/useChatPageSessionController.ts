@@ -40,6 +40,11 @@ export function closeHoldForUrl<T>(closing: Record<string, T>, key: string | nul
 // the banner false — but it no longer proves the user is waiting for that link,
 // so it may only retire the notice, never move them.
 const SID_RECOVERY_WINDOW_MS = 30_000
+/** How long the chat page, having lost its chat, waits for this window's own
+ *  pending create or fork to open one before it auto-picks as usual. Every
+ *  measured create and fork answered within 3.5 s; a request still open after
+ *  this is treated as hung for the page's purposes and keeps running. */
+export const PENDING_OPEN_LEASE_MS = 10_000
 
 /** The key of the history entry the browser stands on, which can be ahead of
  *  the rendered `location.key` while a router transition is uncommitted. The
@@ -1141,6 +1146,23 @@ export function useChatPageSessionController({
   // The hub's record of this pane's last chat (#16009), used for the first
   // pick only. A soft hint, unlike ?sid=: a chat that is gone falls through.
   const slotHintRef = useRef(embedded ? null : searchParams.get(PANE_SLOT_HINT_PARAM))
+  // A create or fork started here that will open its own chat when it lands.
+  const openPending = useAppSelector(s => s.chat.foregroundCreateId != null || (s.chat.pendingForkOpens ?? 0) > 0)
+  // The wait is a lease, not a promise: create and fork POSTs carry no
+  // deadline, so a request the connection never settles would otherwise keep
+  // the page empty for good. The lease starts when the page loses its chat
+  // with a request pending and lapses after PENDING_OPEN_LEASE_MS; the pick
+  // below then runs as if nothing were pending. It never touches the pending
+  // count or foregroundCreateId, so a late settlement still lowers exactly
+  // its own share, and a late success still opens its chat (the pick was an
+  // automatic move, which `forkMayOpen` lets it undo).
+  const waitingForOpen = !activeSlot && openPending
+  const [openWaitLapsed, setOpenWaitLapsed] = useState(false)
+  useEffect(() => {
+    if (!waitingForOpen) return
+    const lease = setTimeout(() => setOpenWaitLapsed(true), PENDING_OPEN_LEASE_MS)
+    return () => { clearTimeout(lease); setOpenWaitLapsed(false) }
+  }, [waitingForOpen])
   useEffect(() => {
     if (activeSlot) {
       hadActiveSlotRef.current = true
@@ -1148,6 +1170,11 @@ export function useChatPageSessionController({
       slotHintRef.current = null
       return
     }
+    // The user asked for a new chat and it is on its way. Opening another
+    // session now would show one nobody picked until the request lands. A
+    // request that fails or does not open its chat ends the wait, and the
+    // pick below runs then, as it does once the lease lapses.
+    if (openPending && !openWaitLapsed) return
     // Don't auto-select/auto-create while the challenge-redirect token effect
     // is still creating + slack-linking its session; otherwise we'd switch to
     // a different slot and orphan the linked one (breaking Slack mirroring).
@@ -1186,7 +1213,7 @@ export function useChatPageSessionController({
       // never the default crewmate alias.
       dispatch(createSlot({ mode }))
     }
-  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, mode, newSlotFailed, newSessionRef, tokenConsumingRef, popout])
+  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, mode, newSlotFailed, newSessionRef, tokenConsumingRef, popout, openPending, openWaitLapsed])
 
   // Slot switch: the virtualizer (keyed on sessionId = activeSlot) owns entry
   // placement — it force-pins to the bottom (arming follow) or restores a

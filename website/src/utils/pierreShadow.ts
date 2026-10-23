@@ -93,16 +93,22 @@ function firstVisibleCodePosition(
 }
 
 /**
+ * The code units under `root`, in document order. Each producer-marked unit remains present whether its
+ * body is plain, parked, or shown. A code fence contributes one `.code-block`; a diff fence contributes
+ * one section per file; a bare host contributes itself. A unit's index is the ordinal in a code position.
+ */
+function codeUnits(root: Element): Element[] {
+  return [...root.querySelectorAll(`${CODE_UNIT}, ${CODE_HOST}`)]
+    .filter(unit => unit.matches(CODE_UNIT) || !unit.closest(CODE_UNIT))
+}
+
+/**
  * Position of the first visible character of `range`, encoded by its code-block ordinal,
  * absolute source line and column. Null when the range starts outside a shown source line
  * or plain code-fence fallback, its line number is invalid, or its block is not under `root`.
  */
 export function codePassagePosition(root: Element, range: Range): number | null {
-  // Each producer-marked unit remains present whether its body is plain, parked, or shown. A code fence
-  // contributes one `.code-block`; a diff fence contributes one section per file; a bare host contributes itself.
-  const units = [...root.querySelectorAll(`${CODE_UNIT}, ${CODE_HOST}`)]
-    .filter(unit => unit.matches(CODE_UNIT) || !unit.closest(CODE_UNIT))
-
+  const units = codeUnits(root)
   const plain = plainCodeFenceAtRangeStart(range)
   const plainWrapper = plain?.closest(CODE_BLOCK)
   if (plain && plainWrapper) {
@@ -206,6 +212,77 @@ export function matchRanges(runs: Text[][], re: RegExp): Range[] {
     }
   }
   return ranges
+}
+
+/** A shown block's source lines: their text nodes, `data-line` numbers, and offsets in `text`, which joins them with `\n`. */
+interface ShownBlock { rows: Text[][]; lines: number[]; starts: number[]; text: string }
+
+/** The shown (not parked) code block of `unit`, or null while only its plain copy is up. */
+function shownBlock(unit: Element, root: Element): ShownBlock | null {
+  const hosts = unit.localName === CODE_HOST ? [unit] : [...unit.querySelectorAll(CODE_HOST)]
+  const shadowRoot = hosts.find(host => host.shadowRoot && !isParked(host, root))?.shadowRoot
+  if (!shadowRoot) return null
+  const rowElements = [...shadowRoot.querySelectorAll(CODE_LINE)]
+  const rows = rowElements.map(textNodesOf)
+  const texts = rows.map(nodes => nodes.map(n => n.data).join(''))
+  const starts: number[] = []
+  let from = 0
+  for (const text of texts) { starts.push(from); from += text.length + 1 }
+  return { rows, lines: rowElements.map(row => Number(row.getAttribute('data-line'))), starts, text: texts.join('\n') }
+}
+
+/** A Range over characters `start`..`start + length` of `block.text`; a start sits on the row it begins, an end on the row it finishes. */
+function blockRange(block: ShownBlock, start: number, length: number): Range | null {
+  const point = (offset: number, isEnd: boolean): [Text, number] | null => {
+    for (let i = 0; i < block.rows.length; i += 1) {
+      const from = block.starts[i]
+      const to = from + block.rows[i].reduce((n, node) => n + node.data.length, 0)
+      const inside = isEnd ? offset > from && offset <= to : offset >= from && offset < to
+      if (inside && block.rows[i].length) return boundary(block.rows[i], offset - from, isEnd)
+    }
+    return null
+  }
+  const s = point(start, false)
+  const e = point(start + length, true)
+  if (!s || !e) return null
+  const range = document.createRange()
+  range.setStart(...s)
+  range.setEnd(...e)
+  return range
+}
+
+/**
+ * The range a comment's `quote` covers in a shown code block under `root`, or null. Prose is never searched.
+ *
+ * `position` (from `codePassagePosition` on the same root) names the block, line and column the quote was
+ * selected at. While that block shows only its plain copy, nothing is placed: the swap to the highlighted
+ * copy is the moment to look again. Without a position, or when the text there no longer starts with the
+ * quote, the quote is placed only if it occurs once across every code block, plain copies included.
+ */
+export function codeQuoteRange(root: Element, quote: string, position?: number): Range | null {
+  if (!quote) return null
+  const units = codeUnits(root)
+  if (position != null && Number.isSafeInteger(position) && position >= 0) {
+    const unit = units[Math.floor(position / CODE_BLOCK_SPAN)]
+    const block = unit ? shownBlock(unit, root) : null
+    if (unit && !block) return null
+    const row = block ? block.lines.indexOf(Math.floor((position % CODE_BLOCK_SPAN) / CODE_LINE_SPAN)) : -1
+    const column = position % CODE_LINE_SPAN
+    const rowLength = block && row >= 0 ? block.rows[row].reduce((n, node) => n + node.data.length, 0) : 0
+    const start = block && row >= 0 && column < rowLength ? block.starts[row] + column : -1
+    if (block && start >= 0 && block.text.startsWith(quote, start)) return blockRange(block, start, quote.length)
+  }
+  let found: { block: ShownBlock; start: number } | null = null
+  let count = 0
+  for (const unit of units) {
+    const block = shownBlock(unit, root)
+    const text = block?.text ?? unit.querySelector('pre')?.textContent ?? ''
+    for (let i = text.indexOf(quote); i >= 0; i = text.indexOf(quote, i + 1)) {
+      count += 1
+      if (block) found = { block, start: i }
+    }
+  }
+  return count === 1 && found ? blockRange(found.block, found.start, quote.length) : null
 }
 
 /**

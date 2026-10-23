@@ -1002,6 +1002,32 @@ def tab_shows_suggestions(slug: str) -> bool:
     return shows_suggestions(slug, record, package_slug=package_slug)
 
 
+def page_offer_target(slug: str) -> dict[str, str] | None:
+    """What a page crewmate *slug* writes for itself would replace, or ``None``.
+
+    ``{"replaces": <title>, "template_id": <id>}`` while a template page is in force,
+    whether the person adopted it or it is the page named for the crewmate. ``None``
+    for the suggestions page (that crewmate writes its page with no card), once the
+    crewmate has a page of its own (a package on screen, or one bound to it), or when
+    the tab cannot be read. The read route's own answers, so the card
+    names the page the person actually sees. TOTAL. Blocking IO.
+    """
+    try:
+        if bound_package(slug):
+            return None
+        record, manifest, _locked = _read_page(slug)
+        if record is None:
+            return None
+        if manifest is None:
+            return None
+        if manifest.id == _package_manifest_id() or str(getattr(record, "package_slug", "")):
+            return None
+        return {"replaces": str(manifest.title or manifest.id), "template_id": str(manifest.id)}
+    except Exception:
+        logger.debug("dashboard: %r's page offer target is unreadable", slug, exc_info=True)
+        return None
+
+
 #: The block for a crewmate whose tab shows the suggestions page. No fields and no
 #: upkeep pointer: with no page in force there is nothing to write.
 #: What a crewmate's turn says while its tab shows the suggestions page. It rides EVERY
@@ -1014,8 +1040,22 @@ SUGGESTIONS_STATE: str = (
     "sees."
 )
 SUGGESTIONS_LINE: str = (
-    SUGGESTIONS_STATE + " The dashboard skill covers building one when the user asks."
+    SUGGESTIONS_STATE + " Your progress belongs on a page of your own, not in chat: when "
+    "you have work to report, build your page with the dashboard skill "
+    "(dashboard_save, then dashboard_apply) instead of posting it here."
 )
+
+
+def _crew_panel_on() -> bool:
+    """Whether member sessions mount ``kirocrew-panel``; ``False`` on any read failure,
+    so a block that cannot tell asks for no page. TOTAL."""
+    try:
+        from kiro_crew.members import crew_panel_enabled
+
+        return bool(crew_panel_enabled())
+    except Exception:
+        logger.debug("dashboard: the crew panel switch is unreadable", exc_info=True)
+        return False
 
 
 def turn_block(slug: str) -> str:
@@ -1042,6 +1082,10 @@ def turn_block(slug: str) -> str:
                 # Locked: the store's own refusal is the whole instruction, so no line
                 # here can read as "write one".
                 return f"[DASHBOARD]\n{SUGGESTIONS_STATE}\n{locked_line}"
+            if not _crew_panel_on():
+                # ``agent.crew_panel`` off: no kirocrew-panel, so no dashboard_save to
+                # build a page with. Where the tab stands, and nothing to act on.
+                return "[DASHBOARD]\n" + SUGGESTIONS_STATE
             return "[DASHBOARD]\n" + SUGGESTIONS_LINE
         if package_slug:
             # An older record's bound page, which the tab draws: named from the Model

@@ -410,7 +410,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # this withholds the trailing credential-class run until it is confirmed safe
     # so raw fragments never reach WS/SSE consumers. assistant_text and the
     # slot's raw segment copy (what _flush_segment redacts as one text and
-    # saves) are accumulated independently and are unaffected. Reset per segment via _flush_text_stream / _wsred.reset().
+    # saves) are accumulated independently and are unaffected. Flushed where the
+    # reply's text ends (_flush_text_stream) and dropped with an abandoned segment
+    # (_drop_wire_tail); a tool call or approval prompt inside the reply does
+    # neither, see _cut_segment.
     # Deliberately NOT an owner-view seam: this wire stream fans to every
     # connected dashboard client, owner or not, and the finalized text is
     # redacted before it is appended, so the owner's credential-redaction switch
@@ -418,6 +421,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # viewer only -- see ``security.redaction_switch``).
     _wsred = StreamRedactor()
     turn._wsred = _wsred
+    # The runs _wsred holds across a tool call or approval prompt, one per cut
+    # crossed before its next output (see _cut_segment / _settle_held).
+    turn._held_runs = []
     # Set once the end-of-turn flush has saved ``assistant_text`` as the reply.
     turn._reply_flushed = False
     # The reply rows this turn appended, snapshotted before _flush_file_changes
@@ -444,11 +450,11 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # even though its answer is on screen. Kept separate from
     # `_produced_visible_output`, whose narrower meaning (only the paths that
     # reset the buffer WITHOUT a tool boundary — steer cut, compaction, clear,
-    # agent switch) is load-bearing for _run_chat's promise-only guard.
+    # agent switch) is load-bearing for the promise-only guard in _turn_ending_chain.
     _turn_flushed_visible_text = False
     turn._turn_flushed_visible_text = _turn_flushed_visible_text
     # ── Content-free turn-end diagnostics (empty-response verdict) ──
-    # Booleans only, by contract. _run_chat's empty-response branch reaches its
+    # Booleans only, by contract. _turn_settle_answer's empty-response branch reaches its
     # verdict from these, and a WARNING names the cause it derived; every field
     # is safe to log because none of them can carry a prompt, a response, a tool
     # argument, a path, an identity, a token count or a cost. What the incident
@@ -462,8 +468,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # records is added here.
     _saw_terminal_event = False
     turn._saw_terminal_event = _saw_terminal_event
-    # Retained past _run_chat's EVENT_COMPLETE arm on purpose: the verdict is reached
-    # in its post-stream chain, which does not have the event.
+    # Retained past the EVENT_COMPLETE phase (_on_complete) on purpose: the verdict is
+    # reached in _turn_settle_answer after the stream loop, which does not have the event.
     _terminal_synthetic = False
     turn._terminal_synthetic = _terminal_synthetic
     _saw_text_chunk = False
@@ -485,7 +491,7 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # backend error -- re-queues the prompt itself, and reports nothing.
     #
     # RETRACTABLE for one case only: the FIRST empty response re-queues this exact
-    # message verbatim (see _run_chat's empty-response branch), so the announce is
+    # message verbatim (see _turn_settle_answer's empty-response branch), so the announce is
     # going to be delivered again and the report must be taken back. That decision
     # is only known after the stream ends, which is why this is a retraction rather
     # than a later report. The second empty re-queues a continuation instead, and
@@ -717,7 +723,7 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     turn._auth_required = _auth_required
     saw_compaction = False
     turn.saw_compaction = saw_compaction
-    # True once a compaction STARTED notice landed this turn, so _run_chat's
+    # True once a compaction STARTED notice landed this turn, so _turn_settle_answer's
     # terminal branch can tell "the backend compacted in the middle of this turn" from
     # "no compaction happened". kiro-cli sends started/completed/failed and the
     # claude backend's notices are normalized into the same vocabulary by
@@ -796,7 +802,7 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # Set when the context was compacted mid-turn, the turn then ended without
     # finishing the request, and we injected one continuation. Same un-landed
     # semantics as _recovering_promise — and load-bearing for termination: the
-    # budget-reset block in _run_chat would otherwise zero
+    # budget-reset block in _turn_persist_and_settle would otherwise zero
     # `_compaction_continue_retries` on this very turn, un-spending the one-shot
     # and letting a continuation that overflows again recover forever.
     _recovering_compaction = False
@@ -853,7 +859,7 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     turn._turn_landed = _turn_landed
     # Turn-scoped so _run_chat's ``finally`` first-turn-history settle (which keys on the
     # TERMINAL itself: ``_stop_reason == STOP_REASON_END_TURN``) never raises
-    # UnboundLocalError. _run_chat's stream loop only assigns ``_stop_reason`` on
+    # UnboundLocalError. ``_on_complete`` (turn_stats) assigns ``_stop_reason`` only on
     # EVENT_COMPLETE, but config / memory-prep / stop-before-stream paths exit to
     # teardown before that, so it must be bound up front.
     _stop_reason = ""

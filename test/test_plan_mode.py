@@ -11,6 +11,7 @@ import pytest
 
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.taskrunner import Step, StepStatus, TaskRun, TaskRunner
+from kiro_crew.testing.wait import await_until
 
 
 def _make_mock_sessions() -> MagicMock:
@@ -373,7 +374,7 @@ class TestExecutePlan:
             # Wait for completion
             task = runner._tasks.get("plan_test")
             if task:
-                await asyncio.wait_for(task, timeout=10)
+                await await_until(task, what="the plan run completing")
         run = runner._runs["plan_test"]
         assert run.status == "completed"
         assert all(s.status == StepStatus.PASSED for s in run.tasks)
@@ -409,7 +410,7 @@ class TestExecutePlan:
             await runner.execute_plan("plan_test")
             task = runner._tasks.get("plan_test")
             if task:
-                await asyncio.wait_for(task, timeout=10)
+                await await_until(task, what="the retried plan run completing")
         run = runner._runs["plan_test"]
         assert run.tasks[0].attempts >= 2
         assert run.tasks[0].status == StepStatus.PASSED

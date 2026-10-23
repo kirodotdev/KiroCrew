@@ -61,6 +61,7 @@ _MATE_AUTO_GRANTS = (
     f"@{_MATE_SERVER}/set_goal",
     f"@{_MATE_SERVER}/set_key_results",
     f"@{_MATE_SERVER}/set_check_ins",
+    f"@{_MATE_SERVER}/offer_dashboard_page",
     f"@{_MATE_SERVER}/key_result_progress",
     f"@{_MATE_SERVER}/save_goal_report",
 )

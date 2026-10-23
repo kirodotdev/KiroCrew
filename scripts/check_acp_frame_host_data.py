@@ -77,19 +77,6 @@ PATTERNS: Tuple[Tuple[str, str], ...] = (
 #: re-recording that fixture through the capture script with the field pruned, then
 #: deleting its line -- and the gate will then hold it clean.
 BASELINE: dict = {
-    "test/fixtures/acp_frames/claude/session.expected.json": (
-        "a scratch run id",
-        "a run or request uuid",
-    ),
-    "test/fixtures/acp_frames/claude/session.jsonl": (
-        "a scratch run id",
-        "a run or request uuid",
-    ),
-    "test/fixtures/acp_frames/codex/session-live.expected.json": ("a run or request uuid",),
-    "test/fixtures/acp_frames/codex/session-live.jsonl": (
-        "a run or request uuid",
-        "the harness's own command inventory",
-    ),
     "test/fixtures/acp_frames/kas/session.expected.json": ("a run or request uuid",),
     "test/fixtures/acp_frames/kas/session.jsonl": (
         "a scratch run id",

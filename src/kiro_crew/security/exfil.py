@@ -981,20 +981,20 @@ def current_scoped_exempt_hosts() -> frozenset[str]:
 
 
 # Markerless 40-character values collide with OAuth entropy only for these
-# authorization-request fields. ``code_verifier`` is intentionally absent: it
-# is sent to the token endpoint, not on this front channel.
-_OAUTH_ENTROPY_QUERY_PARAMS = frozenset({"code_challenge", "nonce", "state"})
+# authorization-request fields (``code_verifier`` goes to the token endpoint;
+# a dynamically registered public ``client_id`` may be 43-char base64url).
+_OAUTH_ENTROPY_QUERY_PARAMS = frozenset({"client_id", "code_challenge", "nonce", "state"})
 
 # The exemption is bounded to shapes the protocol itself can emit, so an
 # AWS-secret-shaped run cannot ride a front-channel parameter into the blanked
-# set. base64url (RFC 4648 s5) emits `-`/`_` and never `+`/`/`, and an S256
-# challenge is base64url of a 32-byte digest -- exactly 43 characters.
+# set. base64url (RFC 4648 s5) emits `-`/`_` and never `+`/`/`; an S256
+# challenge and a dynamic client id must be exactly 43 base64url characters.
 _OAUTH_S256_CHALLENGE_RE = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 
 
 def _oauth_entropy_form_is_protocol_shaped(key: str, form: str) -> bool:
     """Return True when ONE decoded form of a value keeps a protocol shape."""
-    if key == "code_challenge":
+    if key in {"client_id", "code_challenge"}:
         return bool(_OAUTH_S256_CHALLENGE_RE.fullmatch(form))
     return "+" not in form and "/" not in form
 
@@ -1034,7 +1034,7 @@ def _oauth_credential_scan_target(
 
     Fixed credential signatures are checked against the raw and decoded URL
     before this target is built. At an exact approved endpoint, only the
-    code-owned state, nonce, and PKCE challenge fields are omitted from the
+    code-owned state, nonce, PKCE challenge and client_id fields are omitted from the
     markerless bare-secret heuristic, and only when the value carries a shape
     the protocol can emit (see
     :func:`_oauth_entropy_value_is_protocol_shaped`). Other recognized values,

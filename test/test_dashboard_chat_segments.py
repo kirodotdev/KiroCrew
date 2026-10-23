@@ -490,9 +490,16 @@ class TestRunChatSegmentFlush:
         assert assistant_msgs[0]["content"] == "Just text"
 
     @pytest.mark.asyncio
-    async def test_chunk_seq_monotonically_increasing_across_segments(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        ("second", "streamed", "given_back"),
+        [("b ", "ab cd", []), ("b", "cd", ["ab"])],
+        ids=["run-ended-before-the-tool", "run-held-over-the-tool"],
+    )
+    async def test_chunk_seq_monotonically_increasing_across_segments(
+        self, tmp_path, monkeypatch, second, streamed, given_back
+    ):
         """chunk_seq values in broadcast calls are monotonically increasing
-        across segments.
+        across segments, and no streamed text is lost at the tool boundary.
 
         Validates: Requirements 7.1
         """
@@ -505,7 +512,7 @@ class TestRunChatSegmentFlush:
 
         events = [
             LLMEvent(kind=EVENT_TEXT_CHUNK, text="a"),
-            LLMEvent(kind=EVENT_TEXT_CHUNK, text="b"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text=second),
             LLMEvent(kind=EVENT_TOOL_CALL, title="read_file", tool_kind="read"),
             LLMEvent(kind=EVENT_TEXT_CHUNK, text="c"),
             LLMEvent(kind=EVENT_TEXT_CHUNK, text="d"),
@@ -525,20 +532,27 @@ class TestRunChatSegmentFlush:
         # Collect all seq values + content from chat_chunk broadcasts
         seq_values: list[int] = []
         contents: list[str] = []
+        patches: list[str] = []
         for call in state.broadcast_ws.call_args_list:
             if call.args[0] == "chat_chunk":
                 seq_values.append(call.args[1]["seq"])
                 contents.append(call.args[1]["content"])
+            elif call.args[0] == "chat_message_update" and "tool_call_id" not in call.args[1]:
+                patches.append(call.args[1]["content"])
 
         # The streaming redaction buffer (issue 3) withholds trailing
         # credential-class runs, so contiguous chars ("a"+"b", "c"+"d") are
-        # coalesced and flushed at the segment boundary rather than emitted
-        # one-per-input-chunk. What must hold: seq is strictly monotonic and no
+        # coalesced rather than emitted one-per-input-chunk. A run still held at
+        # the tool call waits for the text after it (the two could be halves of
+        # one credential); once that text shows it is a word of its own it goes
+        # back on the row it was cut from as a content patch, not as a chunk of
+        # the next segment. What must hold: seq is strictly monotonic and no
         # content is lost across the buffering.
         assert seq_values, "no chat_chunk broadcasts"
         for i in range(1, len(seq_values)):
             assert seq_values[i] > seq_values[i - 1], f"seq not monotonic: {seq_values}"
-        assert "".join(contents) == "abcd", f"content lost in stream buffer: {contents}"
+        assert "".join(contents) == streamed, f"content lost in stream buffer: {contents}"
+        assert patches == given_back, f"held run not given back to its row: {patches}"
 
     @pytest.mark.asyncio
     async def test_chunk_seq_continues_across_turns(self, tmp_path, monkeypatch):

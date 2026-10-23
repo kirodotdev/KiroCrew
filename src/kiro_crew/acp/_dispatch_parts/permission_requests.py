@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import posixpath
 import re
 from collections.abc import Iterable
 from typing import Any, cast
@@ -48,9 +49,53 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_PI,
 )
 from kiro_crew.mcp_gateway.tool_surface import mcp_identity_name, mcp_identity_unreadable
+from kiro_crew.session_environment import WORKSPACE_DENY_ALIASES, WORKSPACE_TOOL_KINDS
 
 # Logs under the facade's name, which operators and tests filter on.
 logger = logging.getLogger("kiro_crew.acp._dispatch")
+
+
+#: The workspace tool arguments that name a guest path (``cwd`` is ``run_command``'s).
+_WORKSPACE_PATH_ARGUMENTS = ("path", "cwd")
+
+
+def _anchored_in_workspace(params: dict | None, root: str) -> dict | None:
+    """``params`` with each relative workspace path joined to the guest ``root``, as
+    the guest tool server resolves it; an absolute one is left as stated."""
+    if not params:
+        return params
+    anchored = dict(params)
+    for key in _WORKSPACE_PATH_ARGUMENTS:
+        value = anchored.get(key)
+        if isinstance(value, str) and not posixpath.isabs(value):
+            anchored[key] = posixpath.normpath(posixpath.join(root, value or "."))
+    return anchored
+
+
+def _workspace_call_arguments(
+    params: dict | None, server: str, tool: str
+) -> tuple[dict | None, bool]:
+    """``(arguments the guest receives, readable)`` for a workspace call.
+
+    A Tool Search deferred call reaches the server through the backend's
+    ``tool_call`` meta-tool, so its input is ``{"tool_id": "<server>::<tool>",
+    "arguments": {...}}`` while the server gets only ``{...}``
+    (``session_directive`` measured the same envelope on KAS). The inner
+    arguments are judged, and only when ``tool_id`` names the very call the
+    trusted identity resolved to and the envelope carries nothing else besides
+    ``_meta``. Any other input naming a ``tool_id`` is unreadable: no workspace
+    tool takes that argument, so it can only be an envelope for some other call.
+    """
+    if not isinstance(params, dict) or "tool_id" not in params:
+        return params, True
+    inner = params.get("arguments")
+    if (
+        set(params) - {"_meta"} == {"tool_id", "arguments"}
+        and params.get("tool_id") == f"{server}::{tool}"
+        and isinstance(inner, dict)
+    ):
+        return inner, True
+    return params, False
 
 
 def reject_option_id(params: dict) -> str | None:
@@ -383,6 +428,8 @@ def build_permission_event(
     harness_mcp_servers: tuple[str, ...] = (),
     side_read_only: bool = False,
     deepseek_read_only_issue: str = "the harness composition was not read back",
+    remote_workspace_server: str = "",
+    remote_workspace_root: str = "",
 ) -> tuple[AcpEvent | None, dict[str, str] | None]:
     """Build an ``EVENT_PERMISSION_REQUEST`` from a ``session/request_permission``.
 
@@ -816,7 +863,7 @@ def build_permission_event(
         _harness_builtin_tool = CLAUDE_READ_ONLY_BUILTINS.get(
             harness_tool_name_cache.get(_ck, ""), ""
         )
-        # claude states ``search`` for Grep and Glob (captured live, 0.93.0),
+        # claude states ``search`` for Grep and Glob (captured live, 0.94.0),
         # a kind the READ_ONLY gate does not take. The stamped name proves the
         # call is that search, so the kind is read as ``read`` for those two
         # alone; every other kind is kept as stated.
@@ -847,6 +894,37 @@ def build_permission_event(
             # goose does state is kept, and a non-read one still refuses the call.
             if tool_kind in ("", "other"):
                 tool_kind = "read"
+
+    # A remote workspace's tools stand in for the engine built-ins Crew unmounted
+    # for that session, so they are read as those built-ins, as the claude and
+    # goose names are above: the built-in's kind, the shell signal and command for
+    # ``run_command`` (titled with the command, as KAS titles its own shell), and
+    # the replaced built-in's name, so a deny written for it binds. Only on a runtime
+    # that attached the workspace server (``remote_workspace_server``) in a known
+    # guest workdir (``remote_workspace_root``), only for a trusted identity, and the
+    # server stays named, so nothing reads as local. A relative path argument is
+    # anchored at that workdir, where the guest resolves it, so a filesystem rule
+    # reads the guest's path and not one under this gateway's working directory.
+    if (
+        remote_workspace_server
+        and posixpath.isabs(remote_workspace_root)
+        and _mcp_identity_trusted
+        and _mcp_server_name == remote_workspace_server
+        and _tool_name in WORKSPACE_TOOL_KINDS
+    ):
+        tool_kind = WORKSPACE_TOOL_KINDS[_tool_name]
+        _harness_builtin_tool = WORKSPACE_DENY_ALIASES[_tool_name][0]
+        _resolved_raw_params, _readable = _workspace_call_arguments(
+            _resolved_raw_params, _mcp_server_name, _tool_name
+        )
+        # An envelope for another call: refused before any consumer judges it.
+        _mcp_identity_unreadable = _mcp_identity_unreadable or not _readable
+        _resolved_raw_params = _anchored_in_workspace(_resolved_raw_params, remote_workspace_root)
+        _command = (_resolved_raw_params or {}).get("command")
+        _runs_shell = tool_kind == "execute"
+        is_shell = is_shell or _runs_shell
+        if _runs_shell and isinstance(_command, str) and _command:
+            title = _redact(_command)
 
     # dsh's permission frame names only the toolCallId, so which dsh tool a
     # request is for comes only from the name its preceding tool_call frame

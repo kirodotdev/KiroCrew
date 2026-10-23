@@ -78,6 +78,50 @@ def test_mcp_server_module_skips_gateway_stack(module: str, tmp_path: Path) -> N
     assert not loaded & set(HEAVY), sorted(loaded & set(HEAVY))
 
 
+#: Application subsystems a started-but-uncalled ``mcp-dashboard`` must not load.
+#: A Codex thread launches the server from the operator's own config and may
+#: never call it, so whatever the start imports is paid by every such helper.
+DASHBOARD_START_UNUSED = (
+    "kiro_crew.mcp_core",
+    "kiro_crew.history",
+    "kiro_crew.knowledge",
+    "kiro_crew.skills",
+    "kiro_crew.messaging",
+    "kiro_crew.session",
+    "kiro_crew.cron",
+    "kiro_crew.apps.bridges",
+)
+
+
+def test_dashboard_start_skips_unused_application_subsystems(tmp_path: Path) -> None:
+    """The real start-up path, ``slim_server(["mcp-dashboard"])``, in a fresh interpreter.
+
+    It runs every import the server makes before it reads stdin, including the
+    installed-app config-key scan. The first tool call imports ``mcp_core``.
+    """
+    (tmp_path / "home").mkdir()
+    out = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, sys\n"
+            "from kiro_crew.mcp_entry import slim_server\n"
+            "assert slim_server(['mcp-dashboard']) is not None\n"
+            "print(json.dumps(sorted(sys.modules)))",
+        ],
+        env=_child_env(tmp_path, KIROCREW_PROJECT_DIR=str(tmp_path)),
+        cwd=str(tmp_path),
+        capture_output=True,
+        **UTF8_TEXT,
+        timeout=120,
+        check=False,
+    )
+    assert out.returncode == 0, out.stderr
+    loaded = set(json.loads(out.stdout.strip().splitlines()[-1]))
+    assert "kiro_crew.mcp_dashboard" in loaded
+    assert not loaded & set(DASHBOARD_START_UNUSED), sorted(loaded & set(DASHBOARD_START_UNUSED))
+
+
 def test_slim_entry_module_scope_imports_nothing_from_the_package(tmp_path: Path) -> None:
     # Only the package root (whose __init__ is stdlib-only) may be present.
     probe = _loaded_after(

@@ -203,11 +203,11 @@ class TestBroadcastCompactionResultBackoff:
 
 
 class TestRunChatCompactDeferredWait:
-    """The deferred-compaction wait at the end of _run_chat is a kiro-cli-only
-    protocol step. claude-agent-acp performs /compact synchronously inside
-    session/prompt and never emits ``_kiro.dev/compaction/status``, so the
-    handler must skip ``wait_for_compaction`` for that backend or it sits
-    blocked for 30 minutes and finally surfaces "Compaction timed out."
+    """The deferred-compaction wait in ``_turn_compact_command`` (slash_commands) is a
+    kiro-cli-only protocol step. claude-agent-acp performs /compact synchronously inside
+    session/prompt and never emits ``_kiro.dev/compaction/status``, so the handler must
+    skip ``wait_for_compaction`` for that backend or it sits blocked for 30 minutes and
+    finally surfaces "Compaction timed out."
     """
 
     @staticmethod
@@ -252,8 +252,8 @@ class TestRunChatCompactDeferredWait:
         client = self._make_mock_client(events)
         # The claude backend finishes compaction inside the prompt turn, so the
         # double carries that backend's capability record. Set on the client, not
-        # patched at module scope: ``capabilities_of`` serves three call sites in
-        # ``_run_chat`` and patching it would answer for all three.
+        # patched at module scope: ``capabilities_of`` serves several call sites in the turn
+        # (``_on_complete``, ``_turn_compact_command``), and patching it would answer for all.
         client.capabilities = capabilities_for(ACP_BACKEND_CLAUDE)
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
 

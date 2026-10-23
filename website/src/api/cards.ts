@@ -26,6 +26,7 @@ export const CARD_KINDS = [
   'crewmate.goal',
   'crewmate.key_results',
   'crewmate.check_ins',
+  'crewmate.dashboard_page',
   'template.update',
   'mcp.install',
   'mcp.add_custom',

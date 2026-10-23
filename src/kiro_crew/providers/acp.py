@@ -360,6 +360,18 @@ class AcpProvider(LLMProvider):
         value = self._client.model_pin_partial
         return value if isinstance(value, str) else ""
 
+    def settings_withheld_cause(self) -> str:
+        """Forward the client's live answer (see ``AcpClient.settings_withheld_cause``).
+
+        Only the claude shape (a raw ``AcpClient``) seeds the settings file; any
+        other client shape, or a non-string answer, reads as ``""``.
+        """
+        read = getattr(self._client, "settings_withheld_cause", None)
+        if not callable(read):
+            return ""
+        value = read()
+        return value if isinstance(value, str) else ""
+
     @property
     def served_model(self) -> str:
         """Model id the live session resolved (public — see LLMProvider).
@@ -412,6 +424,19 @@ class AcpProvider(LLMProvider):
         attribute, so one read covers them.
         """
         return str(getattr(self._client, "agent_version", "") or "")
+
+    @property
+    def steer_upgrade_notice(self) -> str:
+        """The upgrade notice when this session's adapter is too old to steer, else ``""``.
+
+        Read off :attr:`agent_version`, so ``""`` before the handshake and for an
+        adapter that reported no readable version.
+        """
+        from kiro_crew.acp.client_turn_control import steer_version_issue
+
+        return steer_version_issue(
+            str(getattr(self._client, "backend", "") or ""), self.agent_version
+        )
 
     @property
     def cwd(self) -> str:

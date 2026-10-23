@@ -32,6 +32,10 @@
  * (`chat-core/composer/pickers.ts`), reading through the app's scoped client
  * and shown only when the host app declared their endpoints
  * (`useEmbedPickers`).
+ *
+ * `hide` lets a host remove parts (`ChatEmbedHideKey`). Each key gates the one
+ * place its part mounts, and a hidden part is not mounted at all. Hiding never
+ * adds: every grant check still applies to what stays.
  */
 import { useRef, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -72,6 +76,7 @@ import { drainEmbedRecovery, stashEmbedRecovery, subscribeEmbedRecovery, type Pe
 import { retireSendTail, sendTailProof, hostProofBaseline, calmLineHolds, isOwnUserRow, rowKey, type HostSendProof, type SendTail } from './embedSendTails'
 import { embedReadPath, isEmbedCursor, mergeEmbedRead, type EmbedCursor } from './embedIncrementalRead'
 import type { ChatMessage } from '../types'
+import type { ChatEmbedHideKey } from './chatEmbedHide'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from '../components/QueueStack'
 import { hydrateQueuedBubbles, normalizeQueueEntries } from '../store/chatSlice'
@@ -162,6 +167,13 @@ export interface ChatEmbedProps {
    * `ChatMessageList`. Omitted, artifact links follow their href as before.
    */
   onArtifactOpen?: (slug: string) => void
+  /**
+   * Parts of the embed to remove, e.g. `hide={['header', 'stop']}`. A hidden
+   * part is not mounted. Hiding only removes: it never shows a part the host
+   * lacks the grant for (attach still needs the upload path), and voice input
+   * stays off either way. Omitted, every part shows as before.
+   */
+  hide?: readonly ChatEmbedHideKey[]
 }
 
 /** Stable empty transcript. A fresh `[]` fallback would be a new identity on every
@@ -335,8 +347,10 @@ function ChatEmbed({
   composerMaxHeight,
   onFileOpen,
   onArtifactOpen,
+  hide,
 }: ChatEmbedProps) {
   const api = useAppApi()
+  const hidden = (key: ChatEmbedHideKey) => hide?.includes(key) === true
   // The parking scope for receipts that outlive this instance: this app's
   // embeds for this slot (see embedSendRecovery).
   const appName = useAppInfo().name
@@ -573,7 +587,7 @@ function ChatEmbed({
    *  send's proof can still retire its notice and take the restored copy
    *  back instead of stranding it in the composer for a duplicate resend. */
   const [sendTails, setSendTails] = useState<SendTail[]>([])
-  const attachments = useEmbedAttachments(api, slotKey)
+  const attachments = useEmbedAttachments(api, slotKey, hidden('attach'))
   const { restore: restoreFiles, removeFile } = attachments
   /** Set before every change the user makes to the draft (typing, a chip
    *  delete or expand, a picker insert), so the undo history records it even
@@ -994,7 +1008,9 @@ function ChatEmbed({
   })
   // Staged files count as a draft, as in the main composer's
   // `composerHasDraft`: Stop must not take the place of sending them.
-  const showStop = running && !draft.trim() && attachments.files.length === 0
+  // A hidden Stop leaves Send in place: an empty draft cannot send, and a
+  // typed one queues, exactly as it does beside a visible Stop.
+  const showStop = !hidden('stop') && running && !draft.trim() && attachments.files.length === 0
   // Says what Stop does now, not "again": the warning also shows to a reader
   // who opened or returned to the embed after someone else's press.
   const stopResetHint = (
@@ -1099,7 +1115,7 @@ function ChatEmbed({
       className={`flex flex-col h-full min-h-0 overflow-hidden ${frameless ? '' : 'border border-border rounded-lg bg-bg'}`}
       style={{ '--mc-message-font-size': `${messageFontSize}px` } as React.CSSProperties}
     >
-      {!frameless && (
+      {!frameless && !hidden('header') && (
         <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-card shrink-0">
           {/* Muted while stalled: the idle accent would say the session is fine.
               Danger while a stop is under way, so the dot agrees with the
@@ -1132,6 +1148,7 @@ function ChatEmbed({
         onApprove={approve}
         onApproveBatch={approveBatch}
         canTrust
+        toolDetails={!hidden('toolDetails')}
         onFileOpen={onFileOpen}
         onArtifactOpen={onArtifactOpen}
         // No hand-off: the embed's composer draft is unsaved local state that
@@ -1212,14 +1229,14 @@ function ChatEmbed({
       {/* fuseBelow off: the embed's input row is a flat strip, not the
           dock's glass the front card slides under, so the stack stands as
           whole cards above it. */}
-      {(queuedMessages.length > 0 || systemDeliveryCount > 0) && (
+      {!hidden('queue') && (queuedMessages.length > 0 || systemDeliveryCount > 0) && (
         <div className="shrink-0 pt-1 pb-1" data-testid="chat-embed-queue">
           <SubagentDeliveryProgress count={systemDeliveryCount} />
           <QueueStack messages={queuedMessages} fuseBelow={false} />
         </div>
       )}
 
-      {followUpOptions.length > 0 && (
+      {!hidden('followUps') && followUpOptions.length > 0 && (
         <div className={`shrink-0 px-3 ${frameless ? '' : 'bg-bg-accent'}`}>
           <FollowUpBar
             options={followUpOptions}

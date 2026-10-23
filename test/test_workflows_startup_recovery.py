@@ -9,6 +9,7 @@ import pytest
 
 from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 from kiro_crew.taskrunner import TaskRunner
+from kiro_crew.testing.wait import await_until
 from kiro_crew.workflows.service import WorkflowService
 from kiro_crew.workflows.store import WorkflowRunStore
 
@@ -42,11 +43,11 @@ async def test_service_restore_yields_until_complete(tmp_path, monkeypatch):
 
     startup = asyncio.create_task(create())
     try:
-        await asyncio.wait_for(entered.wait(), 3)
+        await await_until(entered, what="the restore entering its slow load")
         assert not startup.done(), "Service was published before the loop could run during restore"
     finally:
         release.set()
-        service = await asyncio.wait_for(startup, 3)
+        service = await await_until(startup, what="the service finishing its startup")
     assert observed == [True], "Disk recovery blocked the event loop"
     assert {row["run_id"] for row in service.list_runs()} == {"wf_000001", "wf_000002"}
     assert await service._new_run_id() == "wf_000003"

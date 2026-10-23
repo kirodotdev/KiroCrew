@@ -71,7 +71,7 @@ _CLAUDE_GATE_ESCAPING_MODES = frozenset({"bypassPermissions", "auto"})
 #: allow would pre-approve it, so each gets a READ_ONLY decision and an SEL row.
 #: Without the file-read rules, ``default`` mode runs Read, Grep and Glob inside
 #: the session's cwd with no ``session/request_permission`` at all (captured on
-#: claude-agent-acp 0.93.0, ``test/fixtures/claude_side_read_ask``).
+#: claude-agent-acp 0.94.0, ``test/fixtures/acp_frames/claude/side-read-no-ask-live.jsonl``).
 _CLAUDE_SIDE_READ_ONLY_ASK_RULES: tuple[str, ...] = (
     "Read",
     "Grep",

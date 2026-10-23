@@ -140,6 +140,10 @@ REVIEW_CONTRACT_SCRIPT = SCRIPT.with_name("_review_contract.py")
 # pr_status.py imports this sibling too, so a bundle missing it is a bundle that
 # cannot start. The whole kirocrew-prepare-pr/ directory is the supported copy unit.
 GREEN_AGE_SCRIPT = SCRIPT.with_name("green_age.py")
+# The owner modules pr_status.py loads the same way.
+STATUS_OWNERS = tuple(
+    SCRIPT.with_name(n) for n in ("pr_status_issue_links.py", "pr_status_verdict.py")
+)
 
 _HEAD = "f" * 40
 _OLD = "a" * 40
@@ -156,7 +160,7 @@ def test_entrypoint_runs_from_an_arbitrary_cwd_without_pythonpath(
     """The installed skill bundle resolves its sibling without cwd or PYTHONPATH help."""
     scripts_dir = tmp_path / "installed-skill" / "scripts"
     scripts_dir.mkdir(parents=True)
-    for source in (SCRIPT, STATUS_SCRIPT, REVIEW_CONTRACT_SCRIPT, GREEN_AGE_SCRIPT):
+    for source in (SCRIPT, STATUS_SCRIPT, REVIEW_CONTRACT_SCRIPT, GREEN_AGE_SCRIPT, *STATUS_OWNERS):
         shutil.copy2(source, scripts_dir / source.name)
 
     target_repo = tmp_path / "target-repo"
@@ -194,7 +198,7 @@ def test_entrypoint_ignores_stale_review_contract_bytecode(
     """Existing bytecode beside the installed skill must not override source."""
     scripts_dir = tmp_path / "installed-skill" / "scripts"
     scripts_dir.mkdir(parents=True)
-    for source in (SCRIPT, STATUS_SCRIPT, GREEN_AGE_SCRIPT):
+    for source in (SCRIPT, STATUS_SCRIPT, GREEN_AGE_SCRIPT, *STATUS_OWNERS):
         shutil.copy2(source, scripts_dir / source.name)
     contract_path = scripts_dir / "_review_contract.py"
     contract_path.write_text(

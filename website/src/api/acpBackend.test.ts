@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, configuredAcpBackend, DEFAULT_ACP_BACKEND, isKiroBackend, mcpServerDeny, mcpWholeServerDeny, reportsCredits, isKiroHarness } from './acpBackend'
+import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpBackendShortName, configuredAcpBackend, DEFAULT_ACP_BACKEND, isKiroBackend, mcpServerDeny, mcpWholeServerDeny, reportsCredits, isKiroHarness } from './acpBackend'
 import type { AcpBackendProbe } from './client/config'
 
 describe('isKiroBackend', () => {
@@ -143,5 +143,15 @@ describe('isKiroHarness', () => {
     for (const id of ['claude', 'codex', 'opencode', 'goose', 'pi', 'deepseek']) {
       expect(isKiroHarness({ agent: { acp_backend: id } })).toBe(false)
     }
+  })
+})
+
+describe('acpBackendName / acpBackendShortName', () => {
+  it('calls the KAS harness "Kiro Agent" everywhere, badges included, without renaming its id', () => {
+    // A display rename only: the id the config stores and the gateway reads stays `kas`.
+    expect(ACP_BACKEND_KAS).toBe('kas')
+    expect(acpBackendName({ id: ACP_BACKEND_KAS })).toBe('Kiro Agent')
+    expect(acpBackendShortName(ACP_BACKEND_KAS)).toBe('Kiro Agent')
+    expect(acpBackendName({ id: ACP_BACKEND_KIRO })).toBe('Kiro CLI')
   })
 })

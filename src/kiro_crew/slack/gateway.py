@@ -525,7 +525,9 @@ from kiro_crew.slack.gateway_runtime.process_entry import (
     _live_session_agents,
     _live_session_work_dirs,
     _run_signing_key_preflight_bounded,
+    _start_coder_retention,
     _start_kas_cli_floor,
+    _stop_session_environments,
     _sweep_predecessor_session_work_dirs,
     run_gateway,
     signing_key_preflight,
@@ -701,6 +703,7 @@ class GatewayOrchestrator:
     _channel_transports_started: bool
     _channel_restart_tasks: set[asyncio.Task[None]]
     _channel_restart_gen: dict[str, int]
+    _session_environments_ready: bool
     _config_subs: list[Subscription]
     slack: RealSlackClient | None
     sessions: SessionManager | None
@@ -1101,6 +1104,7 @@ class GatewayOrchestrator:
     _hoist_imessage = _channel_boot._hoist_imessage
     _hoist_teams = _channel_boot._hoist_teams
     _SLACK_APPLIER_PREFIXES = _channel_boot._SLACK_APPLIER_PREFIXES
+    _on_session_environment_config_change = _channel_boot._on_session_environment_config_change
     _register_config_appliers = _channel_boot._register_config_appliers
     _start_channel_transports = _channel_boot._start_channel_transports
 
@@ -1181,3 +1185,5 @@ _AGENTS_JANITOR_TASK: "asyncio.Task[None] | None" = None
 _AGENT_SCRATCH_SWEEP_TASK: "asyncio.Task[None] | None" = None
 #: Strong ref for the kiro-cli log cap loop.
 _KIRO_CLI_LOG_CAP_TASK: "asyncio.Task[None] | None" = None
+#: Strong ref for the archived-session workspace retention sweeper.
+_CODER_RETENTION_TASK: "asyncio.Task[None] | None" = None

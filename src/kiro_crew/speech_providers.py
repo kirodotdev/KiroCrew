@@ -22,15 +22,13 @@ readers below never see a colliding or duplicate name from a booted context.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
-import contextlib
 import logging
 import re
 import threading
 from typing import TYPE_CHECKING, Any, Callable, Optional, Tuple
 
 from kiro_crew.platform.context import PlatformCompositionError, installed_context
-from kiro_crew.platform.interfaces_runtime import (
+from kiro_crew.platform.interfaces import (
     PROVIDER_ACTION_LOGIN,
     ProviderAction,
     ProviderStatus,
@@ -152,7 +150,7 @@ def validate_speech_registry(registry: "SpeechProviderRegistry") -> None:
     # Imported here: this module is imported by the config loader, and both the
     # STT section and ``voice_reply`` sit above it.
     from kiro_crew.config.sections_stt import _RETIRED_STT_PROVIDERS, _VALID_STT_PROVIDERS
-    from kiro_crew.voice_reply import VALID_PROVIDERS
+    from kiro_crew.voice_reply import REMOVED_PROVIDERS, VALID_PROVIDERS
 
     try:
         stt = tuple(registry.stt_providers() or ())
@@ -170,7 +168,12 @@ def validate_speech_registry(registry: "SpeechProviderRegistry") -> None:
         frozenset(_VALID_STT_PROVIDERS) | frozenset(_RETIRED_STT_PROVIDERS),
         "is a built-in, retired or 'off' STT provider",
     )
-    tts_names = _checked_names(tts, "TTS", frozenset(VALID_PROVIDERS), "is a built-in TTS provider")
+    tts_names = _checked_names(
+        tts,
+        "TTS",
+        frozenset(VALID_PROVIDERS) | frozenset(REMOVED_PROVIDERS),
+        "is a built-in or removed TTS provider",
+    )
 
     if default_stt is not None and default_stt not in (*_VALID_STT_PROVIDERS, *stt_names):
         raise _refuse(f"default_stt() names {default_stt!r}, which is not an STT provider")
@@ -235,9 +238,9 @@ def stt_provider(name: object) -> "Optional[SttProvider]":
 
 def tts_provider(name: object) -> "Optional[TtsProvider]":
     """The edition's TTS provider called *name*; ``None`` for a built-in or unknown name."""
-    from kiro_crew.voice_reply import VALID_PROVIDERS
+    from kiro_crew.voice_reply import REMOVED_PROVIDERS, VALID_PROVIDERS
 
-    return _registered("tts_providers", name, VALID_PROVIDERS)
+    return _registered("tts_providers", name, VALID_PROVIDERS | REMOVED_PROVIDERS)
 
 
 def registered_stt_providers() -> "Tuple[SttProvider, ...]":
@@ -302,170 +305,39 @@ def _coerce_status(status: object) -> ProviderStatus:
     )
 
 
-# ── the one loop every provider coroutine runs on ──
+# ── calling a provider ──
 #
-# A provider may cache a loop-bound client (an aiohttp or httpx session) the
-# first time it runs. So every ``check()`` and ``transcribe_file()`` runs on ONE
-# loop: the first running loop that dispatches to the registry (the gateway's),
-# or, when a blocking caller arrives before any loop has, a private loop on a
-# daemon thread. A caller on another loop or thread submits to it.
+# Core calls a provider on whatever event loop runs the caller: the gateway's,
+# a channel's, or a short-lived loop for a blocking caller. The provider
+# contract forbids keeping a loop-bound client (an aiohttp or httpx session)
+# across calls, so no call needs a particular loop.
 
-_owner_lock = threading.Lock()
-_owner_loop: "Optional[asyncio.AbstractEventLoop]" = None
-_private_loop: "Optional[asyncio.AbstractEventLoop]" = None
-
-
-def _start_private_loop() -> asyncio.AbstractEventLoop:
-    """A new loop on a daemon thread, returned once it is running."""
-    loop = asyncio.new_event_loop()
-    running = threading.Event()
-    loop.call_soon(running.set)
-    threading.Thread(target=loop.run_forever, name="speech-provider-loop", daemon=True).start()
-    running.wait(CHECK_TIMEOUT_SECS)
-    return loop
+#: Extra time a blocking caller waits past :data:`CHECK_TIMEOUT_SECS` for the
+#: check's own loop to finish cancelling a provider that timed out.
+_SYNC_GRACE_SECS = 1.0
 
 
-def _live(loop: "Optional[asyncio.AbstractEventLoop]") -> bool:
-    return loop is not None and loop.is_running() and not loop.is_closed()
-
-
-def owner_loop(current: "Optional[asyncio.AbstractEventLoop]" = None) -> asyncio.AbstractEventLoop:
-    """The loop provider coroutines run on; *current* claims it when none is live."""
-    global _owner_loop, _private_loop
-    with _owner_lock:
-        # The private loop stays the owner until it is closed, even in the
-        # moment before its thread starts running it: a loop that claimed the
-        # registry must never lose it to a second claimant.
-        if _owner_loop is not None and (
-            _live(_owner_loop) or (_owner_loop is _private_loop and not _owner_loop.is_closed())
-        ):
-            return _owner_loop
-        if current is None:
-            if _private_loop is None or not _live(_private_loop):
-                _private_loop = _start_private_loop()
-            current = _private_loop
-        _owner_loop = current
-        return current
-
-
-def _reset_owner_loop() -> None:
-    """Forget the owner and stop the private loop. For tests."""
-    global _owner_loop, _private_loop
-    with _owner_lock:
-        private, _owner_loop, _private_loop = _private_loop, None, None
-    if private is not None and not private.is_closed():
-        private.call_soon_threadsafe(private.stop)
-
-
-async def run_on_owner(make: "Callable[[], Any]", timeout: Optional[float] = None) -> Any:
-    """Await ``make()`` on the owner loop, from any loop. *timeout* bounds the wait.
+async def _bounded(make: "Callable[[], Any]", timeout: float) -> Any:
+    """Await ``make()`` on this loop for at most *timeout* seconds.
 
     The wait is ``asyncio.wait``, not ``wait_for``: on a timeout the provider's
     task is cancelled and the caller gets :class:`asyncio.TimeoutError` at once,
     even when the provider ignores or delays the cancellation.
     """
-    current = asyncio.get_running_loop()
-    loop = owner_loop(current)
-    if loop is current:
-        waiter: "asyncio.Future[Any]" = asyncio.ensure_future(make())
-        cancel: Callable[[], Any] = waiter.cancel
-    else:
-        future = asyncio.run_coroutine_threadsafe(make(), loop)
-        waiter, cancel = asyncio.wrap_future(future), future.cancel
+    task: "asyncio.Future[Any]" = asyncio.ensure_future(make())
     try:
-        done, _ = await asyncio.wait({waiter}, timeout=timeout)
+        done, _ = await asyncio.wait({task}, timeout=timeout)
     except BaseException:
-        cancel()
+        task.cancel()
         raise
     if not done:
-        cancel()
+        task.cancel()
         raise asyncio.TimeoutError
-    if waiter.cancelled():
+    if task.cancelled():
         # The provider cancelled itself; the caller was not cancelled, so this is
         # a failure of the call, not a cancel to pass on.
         raise RuntimeError("the speech provider's call was cancelled")
-    return waiter.result()
-
-
-async def iterate_on_owner(make: "Callable[[], Any]") -> Any:
-    """Iterate the async iterator ``make()`` on the owner loop, from any loop.
-
-    On another loop each item is pulled with its own :func:`run_on_owner` call,
-    so the caller sets the pace (a size bound it enforces stops the provider),
-    and every error, ``StopAsyncIteration`` and cancel crosses back. Closing
-    this iterator closes the provider's, on the owner loop.
-    """
-    current = asyncio.get_running_loop()
-    loop = owner_loop(current)
-    if loop is current:
-        source = make()
-        try:
-            async for item in source:
-                yield item
-        finally:
-            aclose = getattr(source, "aclose", None)
-            if aclose is not None:
-                await aclose()
-        return
-
-    async def _open() -> Any:
-        return make()
-
-    source = await run_on_owner(_open)
-
-    async def _step() -> Any:
-        return await source.__anext__()
-
-    try:
-        while True:
-            try:
-                item = await run_on_owner(_step)
-            except StopAsyncIteration:
-                return
-            yield item
-    finally:
-        aclose = getattr(source, "aclose", None)
-        if aclose is not None:
-
-            async def _close() -> None:
-                await aclose()
-
-            with contextlib.suppress(Exception):
-                await run_on_owner(_close, CHECK_TIMEOUT_SECS)
-
-
-class _OwnerLoopSession:
-    """An ``SttStreamSession`` opened on the owner loop, driven from another loop."""
-
-    def __init__(self, session: Any) -> None:
-        self._session = session
-
-    async def start(self) -> Any:
-        return await run_on_owner(self._session.start)
-
-    async def feed(self, pcm: bytes) -> Any:
-        return await run_on_owner(lambda: self._session.feed(pcm))
-
-    def events(self) -> Any:
-        return iterate_on_owner(self._session.events)
-
-    async def finish(self) -> Any:
-        return await run_on_owner(self._session.finish)
-
-    async def close(self) -> Any:
-        return await run_on_owner(self._session.close)
-
-
-async def open_stream_on_owner(provider: Any, stt_config: Any) -> Any:
-    """Call ``provider.open_stream()`` on the owner loop; drive it from this one."""
-
-    async def _open() -> Any:
-        return provider.open_stream(stt_config)
-
-    session = await run_on_owner(_open)
-    if owner_loop(asyncio.get_running_loop()) is asyncio.get_running_loop():
-        return session
-    return _OwnerLoopSession(session)
+    return task.result()
 
 
 def _failed(name: object, timed_out: bool) -> ProviderStatus:
@@ -479,13 +351,13 @@ def _failed(name: object, timed_out: bool) -> ProviderStatus:
 async def check_status(provider: Any, config: Any) -> ProviderStatus:
     """Ask *provider* whether it can run, bounded and fail-closed. Never raises.
 
-    Runs on the owner loop. A check that times out or raises reports the
+    Runs on the caller's loop. A check that times out or raises reports the
     provider unavailable once, with ``error`` set; core does not retry it. An
     answered "not available" keeps ``error`` false.
     """
     name = getattr(provider, "name", "?")
     try:
-        status = await run_on_owner(lambda: provider.check(config), CHECK_TIMEOUT_SECS)
+        status = await _bounded(lambda: provider.check(config), CHECK_TIMEOUT_SECS)
     except asyncio.TimeoutError:
         return _failed(name, True)
     except Exception:
@@ -496,33 +368,30 @@ async def check_status(provider: Any, config: Any) -> ProviderStatus:
 def check_status_sync(provider: Any, config: Any) -> ProviderStatus:
     """:func:`check_status` for a BLOCKING caller (a worker thread or the CLI).
 
-    Submits the check to the owner loop and waits at most
-    :data:`CHECK_TIMEOUT_SECS`; on a timeout it cancels the check and returns at
-    once, never waiting for the provider's own threads to finish. Called on the
-    owner loop's own thread it would deadlock that loop, so it refuses instead.
+    Runs the check on a fresh loop in a daemon thread and waits at most
+    :data:`CHECK_TIMEOUT_SECS` plus a short grace. A provider that ignores its
+    cancellation keeps only that thread, never the caller. The answer is handed
+    back from inside the coroutine, so ``asyncio.run`` waiting afterwards for
+    the check's leftover tasks or threads never delays it or turns it into a
+    timeout.
     """
     name = getattr(provider, "name", "?")
-    try:
-        running: "Optional[asyncio.AbstractEventLoop]" = asyncio.get_running_loop()
-    except RuntimeError:
-        running = None
-    loop = owner_loop()
-    if running is loop:
-        logger.warning(
-            "speech provider %r was checked from its own loop; reporting it unavailable", name
-        )
-        return ProviderStatus(False, "the provider cannot be checked here", error=True)
-    future: "Optional[concurrent.futures.Future[Any]]" = None
-    try:
-        future = asyncio.run_coroutine_threadsafe(provider.check(config), loop)
-        status = future.result(timeout=CHECK_TIMEOUT_SECS)
-    except concurrent.futures.TimeoutError:
-        if future is not None:
-            future.cancel()
+    result: "list[ProviderStatus]" = []
+    answered = threading.Event()
+
+    async def _ask() -> None:
+        result.append(await check_status(provider, config))
+        answered.set()
+
+    def _run() -> None:
+        asyncio.run(_ask())
+
+    worker = threading.Thread(target=_run, name="speech-provider-check", daemon=True)
+    worker.start()
+    # check_status never raises, so no answer means the wait ran out.
+    if not answered.wait(CHECK_TIMEOUT_SECS + _SYNC_GRACE_SECS):
         return _failed(name, True)
-    except Exception:
-        return _failed(name, False)
-    return _coerce_status(status)
+    return result[0]
 
 
 def provider_entry(

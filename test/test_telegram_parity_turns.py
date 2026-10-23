@@ -366,7 +366,7 @@ class TestVoiceOut:
         d, client, _ = _dispatcher({1})
 
         async def _boom(*_a: Any, **_k: Any) -> bool:
-            raise RuntimeError("piper not installed")
+            raise RuntimeError("speech engine not installed")
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(td, "synthesize_and_deliver", _boom)
@@ -375,7 +375,7 @@ class TestVoiceOut:
 
     def test_ogg_takes_the_native_voice_note_and_wav_does_not(self) -> None:
         # sendVoice REJECTS anything but OGG/Opus with a 400 rather than degrading,
-        # and Piper emits WAV — so the split is a Bot API constraint, not taste.
+        # and the system engine emits WAV — so the split is a Bot API constraint, not taste.
         from kiro_crew.telegram.client import TELEGRAM_VOICE_MIMES
         from kiro_crew.telegram.transport_dispatch import _audio_mime
 
@@ -431,7 +431,6 @@ class TestVoiceOut:
 
         assert synthesis_settings(None)["provider"] == DEFAULT_PROVIDER
         assert synthesis_settings({"provider": "ploly"})["provider"] == DEFAULT_PROVIDER
-        assert synthesis_settings({"piper_length_scale": float("inf")})["length_scale"] > 0
 
 
 class TestAutoTitle:
@@ -842,7 +841,7 @@ class TestVoiceReplyCharacterization:
             "kiro_crew.telegram.transport_dispatch.synthesize_and_deliver", self._synth(seen, [])
         )
         d, _client = self._voice_dispatcher()
-        section = {"provider": "piper", "piper_binary": "pb"}
+        section = {"provider": "polly", "voice_id": "Joanna"}
         for raw, expected in (
             ({"voice_reply": section}, synthesis_settings(section)),
             ("junk", synthesis_settings(None)),

@@ -45,6 +45,7 @@ from kiro_crew.subagent import (
 )
 from kiro_crew.subagent_manager import run as run_mod
 from kiro_crew.task_models import Project, Task
+from kiro_crew.testing.wait import await_until
 from kiro_crew.tool_permission import (
     GATE_GRANT,
     NO_GATE,
@@ -942,7 +943,7 @@ async def test_a_cancel_mid_steer_still_answers_the_request():
     refusing = asyncio.ensure_future(
         wire.refuse(Ask(_event(), wire, "k"), Notice(DENY_CAUSE_POLICY, "denied"))
     )
-    await asyncio.wait_for(client.parked.wait(), 10)
+    await await_until(client.parked, what="the steer parking")
     refusing.cancel()
     with pytest.raises(asyncio.CancelledError):
         await refusing
@@ -1159,7 +1160,7 @@ async def test_a_cancelled_wait_closes_as_a_host_decline_and_leaves_the_wire_alo
     settling = asyncio.ensure_future(
         settle(Ask(_event(), wire, "k"), _policy(log, responders=(responder,)))
     )
-    await asyncio.wait_for(entered.wait(), 10)
+    await await_until(entered, what="the callback responder entering its wait")
     settling.cancel()
     with pytest.raises(asyncio.CancelledError):
         await settling

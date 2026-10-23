@@ -133,6 +133,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("focus-mode:toggle", handler);
     return () => ipcRenderer.removeListener("focus-mode:toggle", handler);
   },
+  // A macOS swipe main.js relays as one route-history step: -1 Back, 1 Forward
+  // (see swipe-history.js). The SPA takes it through its guarded history step.
+  onHistoryStep: (cb) => {
+    const handler = (_e, delta) => cb(delta);
+    ipcRenderer.on("history:step", handler);
+    return () => ipcRenderer.removeListener("history:step", handler);
+  },
   // Second argument: whether the macOS menu bar can slide over the window.
   // Only an explicit `menuBarOverlap: false` from main turns it off, so a
   // missing or malformed payload keeps the renderer's menu-bar band.

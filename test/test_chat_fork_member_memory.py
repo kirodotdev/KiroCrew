@@ -19,6 +19,7 @@ from kiro_crew.dashboard import chat_fork, chat_persistence
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.history import ConversationLog
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.fixture
@@ -215,7 +216,7 @@ async def test_cancelled_private_fork_drains_binding_and_keeps_landed_proof(
     )
     task = asyncio.create_task(chat_fork.api_chat_slot_fork(request))
     try:
-        await asyncio.wait_for(entered.wait(), 10)
+        await await_until(entered, what="the fork entering the blocked bind")
         assert task.cancel()
         # The cancelled await runs before this queued checkpoint. It must keep
         # draining the worker, rather than remove a child the worker still owns.
@@ -226,10 +227,12 @@ async def test_cancelled_private_fork_drains_binding_and_keeps_landed_proof(
         assert not completed.is_set()
         released.set()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 10)
+            await await_until(task, what="the cancelled fork finishing")
     finally:
         released.set()
-        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 10)
+        await await_until(
+            asyncio.gather(task, return_exceptions=True), what="the fork task settling"
+        )
 
     assert completed.is_set()
     assert len(attempted) == 1

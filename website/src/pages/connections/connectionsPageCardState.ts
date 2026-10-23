@@ -98,6 +98,31 @@ export function effectiveOAuth(
   return oauth
 }
 
+/** Drop a chat banner the user already dismissed with Cancel.
+ *
+ *  Cancel clears this tab's wait and disposes the backend mint, but an older
+ *  chat Authorize card for the same server still carries an `oauthUrl`, and
+ *  that alone holds the card in waiting-for-approval -- a Cancel that appears
+ *  to do nothing. `dismissedTs` is a snapshot of the newest banner timestamp at
+ *  the click (same gateway clock domain as `effectiveOAuth`), so only a banner
+ *  raised AFTER the cancel can bring the waiting card back.
+ *
+ *  Only a still-open banner is fenced. The chat Authorize link stays clickable
+ *  after Cancel, and completing consent there patches that SAME banner in place
+ *  (same timestamp) to `completed` or `failed`. That terminal verdict must reach
+ *  the card, or it shows Authorize after the grant succeeded. */
+export function undismissedOAuth(
+  oauth: OAuthState | undefined,
+  dismissedTs: number | undefined,
+): OAuthState | undefined {
+  if (
+    oauth && dismissedTs !== undefined
+    && !oauth.completed && !oauth.failed
+    && oauth.timestamp <= dismissedTs
+  ) return undefined
+  return oauth
+}
+
 /** Fold a minted approval URL into the card's OAuth view.
  *
  * Applied AFTER `effectiveOAuth`, so a minted URL never passes through the
@@ -294,6 +319,7 @@ export function connectionStateFor(
   grantPresent?: boolean,
   awaitingConsent = false,
   needsClientConfig = false,
+  dismissed = false,
 ): ConnectionCardState {
   // The backend sets `needsClientConfig` only while no grant exists, so this
   // cannot hide a connected card; it outranks the not-connected fold below
@@ -352,7 +378,10 @@ export function connectionStateFor(
     return probeIndicatesConnected(server.status, grantPresent) ? 'connected' : 'not-verified'
   }
   if (server.status === 'error' || server.status === 'disabled') return 'needs-attention'
-  return 'waiting-for-approval'
+  // No verdict yet. Before a Cancel this reads as a flow still settling; after
+  // one there is no flow left, so the waiting card (whose only action is the
+  // Cancel just pressed) would strand the user. Offer Authorize instead.
+  return dismissed ? 'not-verified' : 'waiting-for-approval'
 }
 
 /**

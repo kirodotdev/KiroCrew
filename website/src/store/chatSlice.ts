@@ -20,8 +20,9 @@ import { releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold,
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { isNoteRow } from '../lib/noteContract'
 import { gcSessionStorage } from '../utils/storageGc'
+import { isUntitledSession } from '../utils/sessionDisplayTitle'
 import type { RootState } from './index'
-import type { ChatMessage, TurnIdentityFields } from '../types'
+import type { ChatMessage, SideSnapshot, TurnIdentityFields } from '../types'
 import { SOFT_STOP_DEBOUNCE_MS } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { initialState, type ChatState } from './chat/state'
@@ -644,9 +645,22 @@ export const deleteSlot = createAsyncThunk<
       const prev = (landing !== key ? landing : null)
         || root.chat.slotHistory.filter(k => k !== key && sameSurface.has(k)).pop()
         || root.dashboard.slots.filter(s => s.key !== key && sameSurface.has(s.key)).map(s => s.key)[0]
-      dispatch({ type: 'chat/setActiveSlot', payload: null })
+      // Closing a chat is not choosing the landing: the page picks it. Both
+      // moves count as automatic, so a create or fork still pending from
+      // before the close opens its new session when it resolves, while a
+      // session the user opened during that request still wins (`forkMayOpen`).
+      dispatch({ type: 'chat/dropActiveSlot' })
       if (prev) {
-        navigation = dispatch(switchSlot(prev)).unwrap().catch(() => dispatch({ type: 'chat/clearSlotState' }))
+        // A pending create or fork can open its chat before this landing's
+        // fetch settles. A failure then belongs to a view the user has left,
+        // so it clears the pane only while this landing still owns it.
+        const landingSwitch = dispatch(switchSlot({ key: prev, automatic: true }))
+        navigation = landingSwitch.unwrap().catch(() => {
+          const chat = (getState() as RootState).chat
+          if (chat.activeSlot === prev && chat.slotSwitchLatestRequestId === landingSwitch.requestId) {
+            dispatch({ type: 'chat/clearSlotState' })
+          }
+        })
       } else {
         dispatch({ type: 'chat/clearSlotState' })
       }
@@ -690,9 +704,12 @@ export const deleteSlot = createAsyncThunk<
       dispatch(fetchSlots())
       // The row is about to come back; say why, whichever path pressed close.
       // The title is read from before the optimistic removal took the row away.
+      // An untitled row stores null, not the localized label: the notice outlives
+      // a language switch, so the sidebar localizes it at render.
+      const refusedTitle = deletedSlot ? (isUntitledSession({ key, title: deletedSlot.title }) ? null : deletedSlot.title!) : key
       dispatch({
         type: 'chat/setCloseRefused',
-        payload: { key, title: deletedSlot?.title || key, reason: closeRefusalIsHistoryWrite(err) ? 'historyWrite' : 'failed' },
+        payload: { key, title: refusedTitle, reason: closeRefusalIsHistoryWrite(err) ? 'historyWrite' : 'failed' },
       })
       throw new Error('save failed')
     } finally {
@@ -880,11 +897,20 @@ const chatSlice = createSlice({
      *  folders, scroll it into view, flash it). Consumed and cleared by
      *  ChatSidebar once it is mounted and ready — see `revealRequest`. */
     requestSlotReveal(state, action: PayloadAction<string>) { state.revealNonce += 1; state.revealRequest = { kind: 'session', target: action.payload, nonce: state.revealNonce } },
-    /** Ask the sidebar only to open a session row's folder path, keeping the
-     *  user's search and filters (see `revealRequest.openFoldersOnly`). Set by
-     *  the header New tab gesture that opens the new chat in the foreground,
-     *  which creates with `activate: false` and so skips createSlot's own request. */
-    requestSlotFolderOpen(state, action: PayloadAction<string>) { state.revealNonce += 1; state.revealRequest = { kind: 'session', target: action.payload, nonce: state.revealNonce, openFoldersOnly: true } },
+    /** Ask the sidebar only to open the folder path of a session the user just
+     *  opened, keeping their search and filters (see `revealRequest.openFoldersOnly`).
+     *  `folder_id` comes from the create or fork response, not from the listed row,
+     *  which can lag it. Set by every fork entry that opens its child (a fork child
+     *  inherits its source's folder, which can be collapsed or inside a collapsed
+     *  parent) and by the header New tab gesture that opens the new chat in the
+     *  foreground, which creates with `activate: false` and so skips createSlot's
+     *  own request. No-op for a session filed at the top level. */
+    requestSlotFolderOpen(state, action: PayloadAction<{ key: string; folder_id?: string | null }>) {
+      const { key, folder_id: folderId } = action.payload
+      if (!folderId) return
+      state.revealNonce += 1
+      state.revealRequest = { kind: 'session', target: key, nonce: state.revealNonce, openFoldersOnly: true, folderId }
+    },
     clearSlotReveal(state) { state.revealRequest = null },
     /** Ask the sidebar to reveal a FOLDER row: make it visible, expand it and every
      *  collapsed ancestor, scroll it into view, flash it. Set by the command
@@ -988,16 +1014,16 @@ const chatSlice = createSlice({
 
 export const {
   setCloseRefused,
-  setActiveSlot, dropActiveSlot, clearSlotState, setPendingInput, stageToMainComposer, setAgentSwitchNotice, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, clearQuestionCard, setQuestionDraft, setQuestionNotice, setQuestionRequestInFlight, markQuestionSettled, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
+  setActiveSlot, dropActiveSlot, forkOpenStarted, forkOpenSettled, clearSlotState, setPendingInput, stageToMainComposer, setAgentSwitchNotice, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, clearQuestionCard, setQuestionDraft, setQuestionNotice, setQuestionRequestInFlight, markQuestionSettled, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, confirmOptimisticSend, markSendUnconfirmed, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, startServerTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoicePreparing, setVoiceAudio,
-  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, requestSlotFolderOpen, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, markSubagentApprovalGone, reconcileSubagentApprovalGone, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued, reconcileSubagentQueuedFromSlots,
+  toggleActivity, openActivityToTab, openActivityPanel, setSidePanelAlwaysOpen, openActivityToTool, clearFocusToolCallId, requestSlotReveal, requestSlotFolderOpen, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, markSubagentApprovalGone, reconcileSubagentApprovalGone, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued, reconcileSubagentQueuedFromSlots,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
   setAutomations, sseAutomation, removeAutomation,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
   sseMcpAppRender,
   sseWorkflowEvent, clearWorkflowRun, reconcileWorkflowRuns,
-  sseSideResult, sseSideQueue, sideSendStatus, sideReleaseConsumed, sideClose, sideOptimisticAppend, sideOptimisticRollback,
+  sseSideResult, sseSideQueue, sideSendStatus, sideReleaseConsumed, sideClose, sideRestore, sideOptimisticAppend, sideOptimisticRollback,
 } = chatSlice.actions
 
 /** The `GET /api/spawn` read in flight, shared by every gone card that asks
@@ -1017,6 +1043,35 @@ export const reconcileGoneSubagent = createAsyncThunk<void, { slot: string; id: 
     const response = await readSpawnInventory()
     const agent = (response.agents ?? []).find(a => a.id === id) ?? null
     dispatch(reconcileSubagentApprovalGone({ slot, id, approval_id, agent }))
+  },
+)
+
+/** The `GET .../side` read in flight per slot, shared by the panel and the
+ *  `/side` command so one reload costs one read. */
+const sideRestoreReads = new Map<string, Promise<SideSnapshot>>()
+
+/**
+ * Settle a slot's Side Chat against the gateway's copy of its side conversation,
+ * once per page (`sideRestore`). A 404 is nothing to restore: the slot is gone, or
+ * the gateway predates the read. Any other failure rejects and settles nothing, so
+ * the caller can hold a question back instead of sending it into a conversation
+ * the panel cannot show.
+ */
+export const restoreSideConversation = createAsyncThunk<void, string, { state: RootState }>(
+  'chat/restoreSideConversation',
+  async (slot, { dispatch, getState }) => {
+    if (getState().chat.slotSideRestored?.[slot]) return
+    let read = sideRestoreReads.get(slot)
+    if (!read) {
+      read = api.sideState(slot)
+        .catch((e: unknown): SideSnapshot => {
+          if (isNotFoundError(e)) return { open: false }
+          throw e
+        })
+        .finally(() => { sideRestoreReads.delete(slot) })
+      sideRestoreReads.set(slot, read)
+    }
+    dispatch(sideRestore({ slot, snapshot: await read }))
   },
 )
 

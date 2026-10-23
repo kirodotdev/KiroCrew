@@ -1315,13 +1315,15 @@ the page's shape in the canonicaliser:
   WRITER's half; the binding TARGET's eligibility is a separate question, asked
   at the HTTP layer and described below.
 - **`view.html` is an agent-written page, and its shape is checked while its
-  author is still there.** Exactly one of `view.html` or `view.blocks`, never
-  both and never neither. A package bound to a crewmate (`bound_to` of
-  `crewmate:<slug>`) is `view.html` only: the gate refuses its `view.blocks` and
-  names the `view.html` shape to send instead
-  (`dashboard_package._require_html_for_a_crewmate`), because the crewmate
-  Dashboard tab draws a page and has no block renderer. A package bound to a
-  session may still be written as blocks. The page is drawn wearing its
+  author is still there.** The view is `view.html`, one page, for every
+  binding; there is no block catalog. A stored `view.blocks` is migrated one
+  way on read (`dashboard_package._blocks_as_html`): each block
+  becomes a `section` with its title and one row per field it read (the field's
+  label and an empty `data-dashboard-field` cell), the block's type is dropped,
+  and the result is checked like any page. Every write stores the page, so a
+  package that held blocks holds `view.html` from its next write on, and a
+  version restored from history comes back as its page. A view holding both
+  `html` and `blocks`, or neither, is refused. The page is drawn wearing its
   `theme`: `member_dashboard_fields.render_package_page` puts one `<style>`
   ahead of the page, after the host's own stylesheet, holding the tokens on
   `:root` and then `theme.css` (`dashboard_package.theme_stylesheet`, which runs
@@ -1542,8 +1544,7 @@ bounded read, on the check's thread. The run has one hard limit (`RUN_TIMEOUT_SE
 counted from the save: at it the browser's whole process group is killed and the result is
 `timed_out`. The read of the record cannot be interrupted, so a read that outlasts the
 limit starts no browser, and the save route waits at most `REPLY_SECONDS` for the check
-whatever it is doing. A block layout has no script and
-returns `verification: null`. The page stays saved, and not live, whatever the run finds.
+whatever it is doing. The page stays saved, and not live, whatever the run finds.
 
 **Save stores the page; apply puts it live, with no preview step** (rfc-crewmate-dynamic-dashboard, amendment 2026-10-15, decision 1). A person cannot judge a page's script by looking at it, so a preview step would add a click and no safety. `dashboard_save` runs the store's own write gate (`canonical_package_content`), then creates the caller's package or updates the one already bound to it (a fenced `update` naming the `content_token` it read); the page in force does not move. `dashboard_apply` with no `template_id` re-gates that package's current bytes and commits an instance version through `instance.apply_package`, which pins a gateway-owned snapshot of them. A root session's save or package apply is refused `session_package_unsupported`, because the hosted-page reader resolves a mate's binding only. The person's lock refuses the apply with `dashboard_locked`.
 
@@ -1644,7 +1645,37 @@ to this kind would store content no reader can parse.
   parent's port, from a validly-signed token claim) and each is re-validated
   against a strict origin form, so a malformed or inexpressible source — a
   bracketed IPv6 literal is not a valid CSP host-source — cannot reach the header.
-  See `dashboard/handlers/sandbox_doc.py`. No `dangerouslySetInnerHTML` without
+  See `dashboard/handlers/sandbox_doc.py`. A crewmate's weekly report or monthly
+  review carries `goal_report: true` on its record, set only by
+  `dashboard/goal_reminder.save_report` and kept across every later write,
+  including a content edit through the artifact API, so an edited report stays
+  in the tighter frame; such
+  an artifact opens, on its detail page, its side panel and its gallery
+  thumbnail, in the same sandbox as the crewmate Dashboard page: grants
+  `allow-scripts` only and a document CSP without the CDN script origins
+  (`buildSrcdoc`'s `offlineScripts`), with in-frame links left as they are
+  (`website/src/lib/artifactFrame.ts`, the grant from
+  `website/src/lib/crewDashboardSandbox.ts`, the one definition both frames use). Every other artifact keeps the frame
+  above. A report's own scripts never run: its CSP drops `'unsafe-inline'` for a
+  nonce minted per document (`buildSrcdoc`'s `pageScripts: false`), which only the
+  host's injected scripts carry, so the height reporter and comment bridge run and
+  a page script, inline handler or `javascript:` URL is refused whatever the
+  crewmate's egress rules allow. Nothing else moves the frame either: host
+  listeners cancel every click and auxclick, so no link navigates, and the
+  finished document is re-parsed as the frame will parse it, dropping each `meta`,
+  `link`, `noscript` and declarative shadow root (`template[shadowrootmode]`) in
+  its body until a parse finds none (three rounds, then only the host's scripts
+  are kept). Only a click whose path holds an `a` or `area` loses its default, so
+  a `<details>` still opens. A report published or synced to a destination is sent
+  as one `iframe` with an EMPTY `sandbox`, the page escaped into its `srcdoc`
+  (`publish_sync._static_report_document`): no script and no refresh `meta` runs
+  there, and no page markup is live in the outer document. Its links stay
+  clickable: each `a` and `area` with an href and no `title` gets `title` set to
+  that href (`publish_sync._link_titles`), so a hover shows the full URL, as a
+  link in a session does. Inside,
+  `publish_sync.STATIC_REPORT_PREFIX` (a `meta` policy of `default-src 'none'`
+  with inline styles and `data:` images) precedes every page byte. `WidgetThumb` takes `goalReport` as a required prop, so every
+  thumbnail, the Drive library's included, names the frame it opens in. No `dangerouslySetInnerHTML` without
   DOMPurify; no inline event handlers.
 - **The detail frame is sized to its document, and promoted to its own
   compositing layer.** Both are corrections to shapes that only misbehave on iOS

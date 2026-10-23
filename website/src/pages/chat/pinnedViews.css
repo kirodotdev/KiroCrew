@@ -1,0 +1,10 @@
+/* Pin Summary (usePinnedViews) puts a fourth chip in the side panel's pinned
+   block, and four labels need about 100px more strip than three. So the
+   narrow-strip rule in index.css, which drops an INACTIVE pinned chip to its
+   icon below 400px, applies below 520px while Summary is pinned. The active
+   chip keeps its word; every chip keeps its aria-label and tooltip. */
+@container (max-width:520px){
+  .side-panel-strip-summary-pinned .side-tab-pinned-idle{width:2rem;max-width:none;justify-content:center;padding-left:0;padding-right:0}
+  .side-panel-strip-summary-pinned .side-tab-pinned-idle .side-tab-label,
+  .side-panel-strip-summary-pinned .side-tab-pinned-idle .side-tab-badge{display:none}
+}

@@ -46,10 +46,9 @@ if TYPE_CHECKING:
         cross_surface_withheld,
         slack_publication_withheld,
     )
-    from kiro_crew.dashboard.chat_turn.segment_flush import _flush_segment
     from kiro_crew.dashboard.chat_turn.turn_ledgers import _report_consumed
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
-    from kiro_crew.dashboard.chat_turn.turn_reply_seams import _flush_text_stream
+    from kiro_crew.dashboard.chat_turn.turn_reply_seams import _cut_segment
 
 
 async def _persist_tool_result_rows(state: Any, slot: Any) -> Any:
@@ -248,7 +247,6 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
             # key is withheld as ambiguous rather than misreported as
             # a cap drop.
             _wt_key = _tcid_identity_key(event.tool_call_id)
-            turn._wt_key = _wt_key
             if _wt_key and _wt_key in _tcid_first_source and _wt_key not in _tcid_collapsed:
                 _wt_pending_coding.add(_wt_key)
             elif _wt_key and _wt_key not in _tcid_first_source:
@@ -264,10 +262,10 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
     )
     # Flush pre-tool text silently (no broadcast) so it persists,
     # but keep the streaming message in place for correct tool ordering.
-    _flush_text_stream(turn)
+    # The call does not end the reply, so the run the wire redactor
+    # still withholds waits for the text after it (_cut_segment).
     if not in_tool_group and turn.assistant_text:
         _open_construct = open_construct_at_end(turn.assistant_text)
-        turn._open_construct = _open_construct
         if _open_construct:
             _deferred_cut_text = turn.assistant_text
             turn._deferred_cut_text = _deferred_cut_text
@@ -277,8 +275,7 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
                 _open_construct,
             )
         else:
-            _flush_segment(state, slot, turn.assistant_text, broadcast=False)
-            turn.assistant_text = ""
+            _cut_segment(turn, broadcast=False)
             _turn_flushed_visible_text = True
             turn._turn_flushed_visible_text = _turn_flushed_visible_text
     # AFTER the flush, because seq is the order a reader folds on and
@@ -573,7 +570,6 @@ async def _on_tool_call_update(turn: _ChatTurn, event) -> None:
             _refined_writer = _tcid_identity_key(event.tool_call_id)
             if _refined_writer in _failed_write_calls and _refined_writer not in _tcid_collapsed:
                 for _held in _failed_write_entries(slot, _refined_writer):
-                    turn._held = _held
                     _held["unverified_write"] = True
         # Refresh the toolLog entry (sseToolActivity merges by id).
         state.broadcast_ws(
@@ -640,7 +636,6 @@ async def _on_tool_call_update(turn: _ChatTurn, event) -> None:
         _patched = False
         _patched_content: str | None = None
         for m in reversed(slot.messages):
-            turn.m = m
             if m.get("role") != "tool":
                 continue
             if m.get("meta", {}).get("tool_call_id") != _tcid_upd:

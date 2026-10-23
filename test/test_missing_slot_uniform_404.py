@@ -48,9 +48,10 @@ def _shape(resp: Any) -> tuple[int, bytes, str]:
         (chat_folders.api_chat_slot_mutes_opened, "PATCH", "/api/chat/slots/nope/mutes-opened"),
         (chat_slack.api_chat_slot_slack_pause, "POST", "/api/chat/slots/nope/slack-pause"),
         (side.api_side_stop, "POST", "/api/chat/slots/nope/side/stop"),
+        (side.api_side_state, "GET", "/api/chat/slots/nope/side"),
         (chat_fork.api_chat_slot_fork, "POST", "/api/chat/slots/nope/fork"),
     ],
-    ids=["muted", "mutes-opened", "slack-pause", "side-stop", "fork"],
+    ids=["muted", "mutes-opened", "slack-pause", "side-stop", "side-state", "fork"],
 )
 async def test_an_unknown_slot_gets_the_shared_not_found(
     handler: Handler, method: str, path: str

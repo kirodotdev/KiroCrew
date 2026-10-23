@@ -22,7 +22,7 @@ Orchestrator fields written: ``_adaptive_controller``, ``_allowed_users``,
 ``_open_channels``, ``_owner_id``, ``_pending_queue``, ``_pending_update_mandatory``,
 ``_pending_update_mandatory_key``, ``_pending_update_respawn``, ``_port_override``,
 ``_profile_watch_task``, ``_runner_admission``, ``_runner_admission_adopted``,
-``_running_script_ids``, ``_session_tasks``, ``_sign_in_refresher_task``,
+``_running_script_ids``, ``_session_environments_ready``, ``_session_tasks``, ``_sign_in_refresher_task``,
 ``_slack_enabled``, ``_socket_client``, ``_subagent_coalescer_inst``, ``_test_mode``,
 ``_tracking_channels``, ``_update_apply_deferred``, ``_update_check_task``,
 ``_wecom_client``, ``_wheel_update_noticed``, ``autonudge_svc``, ``channel_history``,
@@ -124,6 +124,7 @@ def __init__(
     self._channel_transports_started = False
     self._channel_restart_tasks = set()
     self._channel_restart_gen = {}
+    self._session_environments_ready = False
     self._config_subs = []
     self._register_config_appliers()
 

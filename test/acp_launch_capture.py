@@ -94,6 +94,10 @@ VOLATILE_ENV = {
     "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
     "KIROCREW_PI_GATE_SESSION": "<nonce>",
     "KIROCREW_DSH_GATE_SESSION": "<nonce>",
+    # The pi steer channel: a stem naming the gateway's pid and the launch nonce, and
+    # a key minted per launch (``acp.harness.pi_steer``).
+    "KIROCREW_PI_STEER": "<steer-stem>",
+    "KIROCREW_PI_STEER_KEY": "<steer-key>",
     # Minted from ``secrets`` on every client, so it can never match a golden twice.
     # That a one-session client's child RECEIVES it is the fact being pinned: it is
     # how a control-plane MCP server on that child resolves its own session.

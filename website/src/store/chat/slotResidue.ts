@@ -3,8 +3,9 @@
  *  `fetchSlots.fulfilled`) run through, and the per-key eviction a
  *  `sseSlotPatch` frame applies to the keys it names as removed. */
 import type { ActionReducerMapBuilder } from '@reduxjs/toolkit'
-import { fetchSlots, sseConnected, sseSlotPatch, sseSlots } from '../dashboardSlice'
+import { fetchSlots, sseConnected, sseSlotListHolds, sseSlotPatch, sseSlots, sseSlotsPartial } from '../dashboardSlice'
 import type { ChatState } from './state'
+import { slotListHoldTest } from '../../utils/slotListHold'
 import { safeKey } from './wire'
 import { MCP_APP_KEY_SEP, evictMcpApps } from './mcpApps'
 import { clearFiledFolderSuggestions } from './composerCards'
@@ -30,7 +31,7 @@ import {
  *  `evictMcpApps`. */
 const slotKeyedMaps = (state: ChatState) => [
   state.slotMessages, state.slotActivity, state.slotRun, state.slotHydrated,
-  state.slotSide, state.slotSideClosed, state.slotStatusDetail,
+  state.slotSide, state.slotSideClosed, state.slotSideRestored ?? {}, state.slotStatusDetail,
   state.slotContextPct, state.slotContextTokens, state.stopPressedAt,
   state.endedTurn,
   state.followups, state.folderSuggestions, state.restoredQuestionNotices,
@@ -65,14 +66,22 @@ const slotKeysWithResidue = (state: ChatState): Set<string> => new Set([
  *  through here, so neither can drift from the other. The active slot is never
  *  pruned: its live `messages`/optimistic state must not be dropped out from
  *  under the open pane. */
-const reconcileSlotResidue = (state: ChatState, payload: readonly { key: string }[]): void => {
+const reconcileSlotResidue = (
+  state: ChatState,
+  payload: readonly { key: string }[],
+): void => {
   const live = new Set(payload.map(s => s.key))
+  const holds = slotListHoldTest({
+    partial: state.slotListPartial,
+    heldKeys: state.slotListHeldKeys ?? [],
+    holdChannels: state.slotListHoldChannels,
+  })
   if (state.activeSlot) live.add(state.activeSlot)
   // A live slot is protected under either spelling, since some writers store it
   // rewritten by safeKey().
   for (const key of [...live]) live.add(safeKey(key))
   for (const key of slotKeysWithResidue(state)) {
-    if (live.has(key)) continue
+    if (live.has(key) || holds(key)) continue
     evictSlotState(state, key)
   }
 }
@@ -108,6 +117,16 @@ export function addSlotListCases(builder: ActionReducerMapBuilder<ChatState>): v
      *  bit without resetting it is what made this a defect. */
     .addCase(sseConnected, (state) => {
       state.slotsSnapshotSeen = false
+      state.slotListPartial = true
+      state.slotListHeldKeys = []
+      state.slotListHoldChannels = false
+    })
+    .addCase(sseSlotsPartial, (state, action) => {
+      state.slotListPartial = action.payload
+    })
+    .addCase(sseSlotListHolds, (state, action) => {
+      state.slotListHeldKeys = action.payload.heldKeys
+      state.slotListHoldChannels = action.payload.holdChannels
     })
     /** Reconcile per-slot caches against the authoritative slots list.
      *  Sessions that close/archive/delete vanish from the SSE `slots` REPLACE;
@@ -170,6 +189,8 @@ export function addSlotListCases(builder: ActionReducerMapBuilder<ChatState>): v
      *  no fresher state to destroy; after it the live frame owns teardown. */
     .addCase(fetchSlots.fulfilled, (state, action) => {
       if (state.slotsSnapshotSeen === true) return
+      // A reply started while the gateway is still rebuilding its list can omit
+      // slots it has not restored yet; the first complete frame tears down instead.
       reconcileSlotResidue(state, action.payload)
       // Gated behind the snapshot bit like the residue reconcile above, and
       // for the same staleness reason: an HTTP reply can be OLDER than the WS

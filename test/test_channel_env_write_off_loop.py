@@ -34,6 +34,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 import kiro_crew.config.loader as loader
 import kiro_crew.dashboard.handlers.messaging as mod
+from kiro_crew.testing.wait import await_until
 
 # Shapes each validator accepts. Real-looking because the handlers reject on
 # format before they ever reach the write, and a rejected body would make this
@@ -186,7 +187,7 @@ def test_cancelling_a_save_drains_the_env_write_before_releasing_the_lock(
             await first
         except asyncio.CancelledError:
             pass
-        await asyncio.wait_for(second, timeout=10)
+        await await_until(second, what="the second writer finishing")
         return early, order
 
     early, seen = asyncio.run(_run())
@@ -220,11 +221,6 @@ def test_every_saver_writes_env_through_the_shared_rollback_step(owner: str) -> 
     assert source.count("await _write_env_or_roll_back(") == 1
     assert "_write_env_off_loop(" not in source
     assert "asyncio.shield(" not in source
-
-
-#: How long a wait the test itself unblocks may take before the run counts as
-#: lost: the bound this module's other self-released waits already use.
-_LOST_RUN_CEILING_SECS = 10.0
 
 
 def _rollback_probe() -> tuple[list[str], object]:
@@ -269,7 +265,7 @@ def test_a_cancelled_save_rolls_back_only_when_the_write_failed(
     release = asyncio.Event()
 
     async def _parked(_updates):
-        await asyncio.wait_for(release.wait(), timeout=_LOST_RUN_CEILING_SECS)
+        await await_until(release, what="the test releasing the parked write")
         if write_fails:
             raise OSError(5, "I/O error")
 
@@ -285,7 +281,7 @@ def test_a_cancelled_save_rolls_back_only_when_the_write_failed(
             await asyncio.sleep(0)
         release.set()
         try:
-            await asyncio.wait_for(save, timeout=_LOST_RUN_CEILING_SECS)
+            await await_until(save, what="the cancelled save settling")
         except asyncio.CancelledError:
             return True
         return False

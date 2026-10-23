@@ -560,7 +560,9 @@ describe("first-download installer design contract", () => {
     // The recogniser, compressed-audio decoder, and every Python/runtime
     // dependency are installer payload. The gate executes a hash-authenticated,
     // immutable view of the decoder, so pip metadata alone cannot make a release pass.
-    assert.match(buildScript, /imageio-ffmpeg==0\.6\.0/);
+    assert.match(buildScript, /-m kiro_crew\.stt\.decoder \\\n\s+--install-into "\$2\/kirocrew_ffmpeg\/bin"/);
+    assert.match(windowsBuilder, /install_desktop_decoder "\$out\/python\.exe" "\$sp"/);
+    assert.doesNotMatch(buildScript, /imageio-ffmpeg/);
     assert.match(buildScript, /ERROR: no prebuilt speech recogniser for supported target/);
     assert.match(buildScript, /macOS Intel[^\n]+legacy backend unsupported/);
     assert.doesNotMatch(buildScript, /bundling without it/);

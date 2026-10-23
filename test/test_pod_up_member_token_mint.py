@@ -399,6 +399,8 @@ def test_pod_up_no_token_skips_the_mint_and_emits_empty_token(monkeypatch, capsy
     # An already-active pod is a restart: keeps the derived port and skips
     # allocation, so the boot path needs no port-probe stubbing.
     monkeypatch.setattr(rt, "is_active", lambda c, n: True)
+    # On a Windows host that restart is adopted only under a live supervisor.
+    monkeypatch.setattr(rt.win_backend, "unsupervised_reason", lambda c, n: None)
     monkeypatch.setattr(pod_cli, "_home_holds_state", lambda c, n: True)
     monkeypatch.setattr(rt, "write_env_file", lambda *a, **k: None)
     monkeypatch.setattr(rt, "read_env_file", lambda *a, **k: {})

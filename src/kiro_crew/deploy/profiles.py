@@ -139,23 +139,29 @@ def locked_registry() -> Generator[dict[str, Any], None, None]:
             reg = load_registry()
             yield reg
             # Persist on clean exit (exceptions skip save, lock still releases)
-            tmp_fd = tempfile.NamedTemporaryFile(
-                mode="w", dir=str(_data_dir()), suffix=".json.tmp",
-                delete=False, encoding="utf-8",
-            )
-            try:
-                tmp_fd.write(json.dumps(reg, indent=2))
-                tmp_fd.flush()
-                os.fsync(tmp_fd.fileno())
-                tmp_fd.close()
-                replace_with_retry(tmp_fd.name, _registry_path())
-            except BaseException:
-                tmp_fd.close()
-                try:
-                    os.unlink(tmp_fd.name)
-                except OSError:
-                    pass
-                raise
+            _write_registry_file(reg)
+
+
+def _write_registry_file(reg: dict[str, Any]) -> None:
+    """Replace the registry file with ``reg`` through a fsynced temp file in the
+    same directory. The caller holds the registry lock."""
+    tmp_fd = tempfile.NamedTemporaryFile(
+        mode="w", dir=str(_data_dir()), suffix=".json.tmp",
+        delete=False, encoding="utf-8",
+    )
+    try:
+        tmp_fd.write(json.dumps(reg, indent=2))
+        tmp_fd.flush()
+        os.fsync(tmp_fd.fileno())
+        tmp_fd.close()
+        replace_with_retry(tmp_fd.name, _registry_path())
+    except BaseException:
+        tmp_fd.close()
+        try:
+            os.unlink(tmp_fd.name)
+        except OSError:
+            pass
+        raise
 
 
 def make_entry(name: str, region: str, *, account: str = "", verified_at: str = "",
@@ -284,23 +290,7 @@ def save_registry(reg: dict[str, Any]) -> dict[str, Any]:
     # open_lock_file: writable but non-truncating; see locked_registry above.
     with open_lock_file(lock_path) as fd:
         with file_lock(fd, exclusive=True, required=True):
-            tmp_fd = tempfile.NamedTemporaryFile(
-                mode="w", dir=str(_data_dir()), suffix=".json.tmp",
-                delete=False, encoding="utf-8",
-            )
-            try:
-                tmp_fd.write(json.dumps(reg, indent=2))
-                tmp_fd.flush()
-                os.fsync(tmp_fd.fileno())
-                tmp_fd.close()
-                replace_with_retry(tmp_fd.name, _registry_path())
-            except BaseException:
-                tmp_fd.close()
-                try:
-                    os.unlink(tmp_fd.name)
-                except OSError:
-                    pass
-                raise
+            _write_registry_file(reg)
     return reg
 
 
@@ -393,9 +383,9 @@ def create_aws_profile(name: str, region: str, *, account: str = "",
     credentials come from however the user otherwise configures it).
     Returns an error string, or None on success.
     """
-    # Reject Windows BEFORE any AWS call — engine.run_aws uses
-    # subprocess preexec_fn (unsupported on nt); reaching it mid-way could
-    # leave a partially-written profile (region set, credentials not).
+    # Reject Windows BEFORE any AWS call — deploy features are POSIX-only, and
+    # refusing any later than this could leave a partially-written profile
+    # (region set, credentials not).
     if os.name == "nt":
         return "deploy features are not supported on Windows"
 
@@ -423,12 +413,6 @@ def create_aws_profile(name: str, region: str, *, account: str = "",
         # aws via subprocess (argv list, no shell pipe) so there is only ONE
         # level of quoting -- outer single quotes for shlex, double quotes
         # inside. Nested bash -c quoting is fragile and breaks silently.
-        if os.name == "nt":
-            return (
-                "credential_process is not supported on Windows. "
-                "Please configure AWS credentials manually via `aws configure` "
-                "or environment variables."
-            )
         python_bin = sys.executable or "python3"
         # Deliberately a bare "aws" (NOT the deploy engine's absolute resolver):
         # this command is persisted into ~/.aws/config and later run by

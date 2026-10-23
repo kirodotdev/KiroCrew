@@ -132,14 +132,14 @@ async def test_reapply_repairs_closed_already_restamped_databases(rebuild_home, 
     before = await asyncio.to_thread(vector_blobs, home.late[0])
     for store in home.late:
         await asyncio.to_thread(store.close)
-    await asyncio.wait_for(
+    await finished(
         asyncio.to_thread(
             memory._apply_embedding_model,
             home.global_store,
             str(home.model),
             asyncio.get_running_loop(),
         ),
-        10,
+        "the embedding model apply",
     )
     assert emb.reembed_progress().snapshot()["step"] == "done"
     assert await asyncio.to_thread(vector_blobs, home.global_store) == [struct.pack("2f", 0, 1)] * 2
@@ -202,7 +202,7 @@ def test_episode_backfill_does_not_attach_old_body_vector(rebuild_home, monkeypa
             )
         finally:
             release.set()
-        future.result(timeout=5)
+        future.result(timeout=default_timeout())
     assert store.get_episodic_list()[0]["text"] == new_text
     assert store.db.execute("SELECT embedding FROM episodic_memories").fetchone()[0] is None
     store.backfill_missing_embeddings(pace=False)
@@ -532,14 +532,14 @@ async def test_apply_reports_per_batch_progress_within_a_single_store(rebuild_ho
         return original(self, progress=spy, **kwargs)
 
     monkeypatch.setattr(VectorMemoryStore, "backfill_missing_embeddings", observed)
-    await asyncio.wait_for(
+    await finished(
         asyncio.to_thread(
             memory._apply_embedding_model,
             home.global_store,
             str(home.model),
             asyncio.get_running_loop(),
         ),
-        10,
+        "the embedding model apply",
     )
     final = emb.reembed_progress().snapshot()
     assert final["step"] == "done"

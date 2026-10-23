@@ -19,6 +19,8 @@ export interface InlineComment {
   startOffset?: number
   /** The anchor was selected inside a code block, whose text is not in that space: no offset exists and the first match elsewhere would be the wrong passage. */
   inCode?: boolean
+  /** For an `inCode` anchor: its block, source line and column, packed by `codePassagePosition`. Absent when it could not be packed. */
+  codePosition?: number
 }
 
 /** Single comment row with inline edit support. */

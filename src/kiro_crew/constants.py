@@ -78,6 +78,11 @@ ENV_TRUTHY = frozenset({"1", "true", "yes", "on"})
 # ``crew_log_enabled``.
 ENV_FALSY = frozenset({"0", "false", "no", "off"})
 
+# Longest prefix a generated Coder workspace name may carry: names are at most 32
+# characters and the registry adds two separators and an 8-character binding id,
+# so 21 leaves one owner character. Homed here so every boundary refuses at one number.
+CODER_WORKSPACE_PREFIX_MAX_CHARS = 21
+
 
 # Minimum supported Node.js version (major, minor, patch), shared by the startup
 # probe in ``cli.py`` and ``kirocrew doctor``. Below it, doctor fails and the

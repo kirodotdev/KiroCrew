@@ -321,8 +321,8 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # Mid-turn steers handed to the backend but not yet confirmed consumed
     # (no steering_consumed / EVENT_STEER_CONSUMED echo yet). Appended by
     # the dashboard steer handler BEFORE the steer RPC's await (so a turn
-    # dying mid-write still sees it), settled by _run_chat when the
-    # consumed echo arrives (matched against the echo's snapshot text),
+    # dying mid-write still sees it), settled by _on_steer_consumed (steer_queue)
+    # when the consumed echo arrives (matched against the echo's snapshot text),
     # and — the point of the mechanism — REQUEUED as ordinary queue cards
     # by _run_chat's finally when the turn dies first (stall-cancel, user
     # STOP, error). Without this, a steer swallowed by a dying turn

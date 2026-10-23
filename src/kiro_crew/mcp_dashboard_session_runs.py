@@ -191,6 +191,10 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         payload["reasoning_effort"] = args["reasoning_effort"]
     if args.get("agent_kind"):
         payload["agent_kind"] = args["agent_kind"]
+    if args.get("autocompact_pct") is not None:
+        # Set before the folder preflight below, so its dry-run probe carries the
+        # value and a refused threshold creates no folder.
+        payload["autocompact_pct"] = args["autocompact_pct"]
 
     def _refused(refused: DashboardError, suffix: str) -> str:
         return redact(
@@ -244,6 +248,8 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
             " (your crewmate profile's worker model is not usable here, so the "
             "session starts on the default model; fix the profile or pass `model`)"
         )
+    if resp.get("autocompact_pct") is not None:
+        on_model += f", auto-compacting at {resp['autocompact_pct']:g}%"
     return redact(
         f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "
         "It is empty and waiting in the user's sidebar; watch it with "

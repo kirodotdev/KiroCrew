@@ -146,6 +146,7 @@ def test_the_disposition_rule_is_mechanically_enforced() -> None:
     contract = (SCRIPTS / "_review_contract.py").read_text(encoding="utf-8")
     status = (SCRIPTS / "pr_status.py").read_text(encoding="utf-8")
     findings = (SCRIPTS / "pr_findings.py").read_text(encoding="utf-8")
+    verdict = (SCRIPTS / "pr_status_verdict.py").read_text(encoding="utf-8")
 
     assert (
         "ai-review-disposition" in contract
@@ -163,8 +164,8 @@ def test_the_disposition_rule_is_mechanically_enforced() -> None:
         assert "disposition_violations = _review_contract.disposition_violations" in source, (
             f"{name} no longer directly exports disposition enforcement from " "_review_contract.py"
         )
-    assert "disposition_eval" in status, (
-        "pr_status.py's decide() no longer consumes the disposition evaluation, "
+    assert "disposition_eval" in verdict, (
+        "pr_status_verdict.py's decide() no longer consumes the disposition evaluation, "
         "so a violating record cannot block readiness"
     )
 

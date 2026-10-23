@@ -59,6 +59,7 @@ from kiro_crew.sandbox import (
     _PinScanCoverage,
     cleanup_stale_sandbox_profiles,
 )
+from kiro_crew.testing.wait import wait_until
 
 program = sandbox_launcher_program
 
@@ -622,18 +623,22 @@ class TestMountPinnedSourceNames:
         """
         child = subprocess.Popen(["/bin/true"])  # noqa: S603 - fixed argv, no shell
         try:
-            deadline = time.time() + 5.0
             state = ""
-            while time.time() < deadline:
+
+            def _zombie() -> bool:
+                nonlocal state
                 try:
                     with open(f"/proc/{child.pid}/stat") as fh:
                         state = fh.read().rsplit(") ", 1)[1][0]
                 except OSError:  # pragma: no cover - raced the reap
-                    break
-                if state == "Z":
-                    break
-                time.sleep(0.01)
-            if state != "Z":  # pragma: no cover - scheduler-dependent
+                    return True  # nothing left to observe; the state check below skips
+                return state == "Z"
+
+            try:
+                wait_until(_zombie, timeout=5.0, describe=lambda: f"child state {state!r}")
+            except AssertionError:  # pragma: no cover - scheduler-dependent
+                pytest.skip("child did not reach the zombie state in time")
+            if state != "Z":  # pragma: no cover - raced the reap
                 pytest.skip("child did not reach the zombie state in time")
 
             with pytest.raises(OSError) as caught:
@@ -754,18 +759,22 @@ class TestMountPinnedSourceNames:
         )
         child = subprocess.Popen([sys.executable, "-c", program])  # noqa: S603
         try:
-            deadline = time.time() + 10.0
             state = ""
-            while time.time() < deadline:
+
+            def _zombie() -> bool:
+                nonlocal state
                 try:
                     with open("/proc/%d/stat" % child.pid) as fh:
                         state = fh.read().rsplit(") ", 1)[1][0]
                 except OSError:  # pragma: no cover - raced the exit
-                    break
-                if state == "Z":
-                    break
-                time.sleep(0.02)
-            if state != "Z":  # pragma: no cover - platform/scheduler dependent
+                    return True  # nothing left to observe; the state check below skips
+                return state == "Z"
+
+            try:
+                wait_until(_zombie, timeout=10.0, describe=lambda: f"leader state {state!r}")
+            except AssertionError:  # pragma: no cover - platform/scheduler dependent
+                pytest.skip("leader did not become a zombie while a thread lived")
+            if state != "Z":  # pragma: no cover - raced the exit
                 pytest.skip("leader did not become a zombie while a thread lived")
 
             with pytest.raises(OSError) as caught:

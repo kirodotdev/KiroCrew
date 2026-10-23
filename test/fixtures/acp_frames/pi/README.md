@@ -12,6 +12,7 @@ the corpus does and does not prove.
 | `mcp-stdio-mount-live.jsonl` | live | the initialize and `session/new` responses, a `tool_call` for `mcp__probe_server__echo`, the `session/request_permission` the adapter forwarded from Kiro Crew's gate extension, the updates through `completed` carrying the server's own result, and the result |
 | `member-panel-mount-live.jsonl` | live | the initialize and `session/new` responses for a crew member session, a `tool_call` for `mcp__kirocrew_panel__panel_publish`, the `session/request_permission` forwarded from the gate extension, the update through `completed` carrying the panel server's own answer, and the result |
 | `zero-tools-refused-live.jsonl` | live | four turns on an agent spec declaring `"tools": []`: a `write`, a `bash` and an `mcp__probe_server__echo` call, each with the `session/request_permission` the gate extension raised and the `tool_call_update` that ended it `failed`, and a `frobnicate` call pi failed itself with no permission frame |
+| `steering-live.jsonl` | live | the initialize, `session/new` and set-model responses, a `tool_call` for a `bash` sleep, the `session/request_permission` forwarded from Kiro Crew's gate extension, the updates through `completed`, the extension's consumed-steer notification (an `agent_message_chunk` carrying `_meta.piAcp.notify`), the model's answer to the steer, `usage_update`, and the `end_turn` result |
 
 Captured off `pi-acp` 0.0.33 spawning `pi` 0.85.1 and driving a locally
 served model configured in pi's own `models.json`, with agent-to-client lines
@@ -133,3 +134,23 @@ terminal id, and the `completed` update carries `_meta.terminal_exit` with the e
 code and nothing else -- the output is meant to be read through the ACP
 `terminal/*` methods, which Kiro Crew does not implement. The model saw the output
 (its reply reports it); the transcript's tool pill does not.
+
+## What the steering capture establishes
+
+`steering-live.jsonl` is the evidence `ACP_BACKENDS_STEERING_REQUEST` holds pi to.
+Taken off `pi-acp` 0.0.34 spawning `pi` 1.3.0, both installed into a scratch npm
+prefix, through Kiro Crew's own `AcpClient` and `PiLaunch`: the gate extension sealed
+and read back, the launcher, and this launch's steer channel
+(`acp.harness.pi_steer`). The recording host has no sandbox backend (no user
+namespaces), so the capture driver ran the session with the sandbox off and the
+floor that refuses an unsandboxed pi neutered, in the driver only. The scripted model
+on the loopback interface called `bash` with a four-second sleep; one second into it
+the client steered, which writes a sealed file rather than a frame, so the steer
+itself is not on the wire. After the tool result the extension queued the steer with
+`pi.sendMessage(message, {deliverAs: "steer"})` at `turn_end`; when pi started that
+message it notified the consumed envelope (the `kiro-crew-steer` marker, the gate
+nonce in `_meta.gate_envelope_nonce`, sequence 1), which `AcpClient` reports as
+`EVENT_STEER_CONSUMED` and never shows as text. The model's next request carried the
+steer as its latest user message, its answer named the steered word, and the same
+`session/prompt` ended `end_turn`. The client removed the steer file at that
+terminal. `test_pi_steer.py` replays the turn through the client's real read loop.

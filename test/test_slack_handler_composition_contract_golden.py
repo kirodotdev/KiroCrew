@@ -36,6 +36,7 @@ from kiro_crew.acp.types import STOP_REASON_COMPACTION_FAILED
 from kiro_crew.config.loader import ACTIVATION_REVIEW
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.slack import handler
+from kiro_crew.testing.wait import async_wait_until
 
 # ── golden scenarios ──────────────────────────────────────────────────────────
 
@@ -148,11 +149,10 @@ async def _interactive(log, action_id, *, channel="D1", click=True, answer="afte
             approval_mode=handler.APPROVAL_INTERACTIVE,
         )
     )
-    for _ in range(1000):
-        if handler._pending_approvals or turn.done():
-            break
-        # flake-ok: pre-existing 10 ms poll while a scenario waits for the handler to park its approval, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: handler._pending_approvals or turn.done(),
+        describe=lambda: f"pending={sorted(handler._pending_approvals)} turn_done={turn.done()}",
+    )
     keys = sorted(handler._pending_approvals)
     log.add("pending", keys=keys)
     if click and keys:
@@ -800,11 +800,10 @@ async def _scenario_tool_then_rejected_while_streaming(log):
             approval_mode=handler.APPROVAL_INTERACTIVE,
         )
     )
-    for _ in range(1000):
-        if handler._pending_approvals or turn.done():
-            break
-        # flake-ok: pre-existing 10 ms poll while a scenario waits for the handler to park its approval, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: handler._pending_approvals or turn.done(),
+        describe=lambda: f"pending={sorted(handler._pending_approvals)} turn_done={turn.done()}",
+    )
     key = sorted(handler._pending_approvals)[0]
     await handler.handle_interaction(
         "C1", key.split(":", 1)[1], handler._ACTION_REJECT, user_id="UOWNER", sessions=sessions
@@ -1061,7 +1060,7 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "turn_with_history": "bcc140758baf11312bd9e0bd2ec299c92cc4f51802eb5d8afb0e376d29799583",
     "unstreamed_long_reply": "a338e70172346e12ef9c1d2a7cc155041dfdb54d5e155bd5fb3aa56a58601a94",
     "unstreamed_tool_and_auto_approval": "a771de255da501fa0a5a7a2636fd02cfa115f6bd75e5fd0a058b891bf890acf8",
-    "voice_reply_requested": "c7447016937c719eb3bbb1d9e0dc753256f7c4b910cdc450aa01efe6fbbb5f5c",
+    "voice_reply_requested": "bd69ab9912c71fa6225deec2acc4d2a49be5f7d39dabb89bc22f5dfe4cb2af1a",
     "wait_tool_seals_stream": "da9e4d35f2fb9f1460b361a5b82cfe66096dbc4e4e5243163b984a3df434a037",
 }
 

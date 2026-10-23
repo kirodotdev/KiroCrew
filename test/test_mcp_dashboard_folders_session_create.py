@@ -150,6 +150,68 @@ class TestSessionCreateAgentKind:
         assert all(r.path != "/api/chat/folders" for r in _writes(dash))
 
 
+class TestSessionCreateAutocompact:
+    """`session_create.autocompact_pct` — the new session's own compaction threshold."""
+
+    def test_autocompact_pct_rides_the_create_payload(self) -> None:
+        created = {"target": "chat-9-900", "title": "worker", "autocompact_pct": 85.0}
+        out, dash = _call(
+            "session_create",
+            {"title": "worker", "autocompact_pct": 85},
+            {"POST /api/session-control/create": created},
+        )
+        (post,) = dash.requests
+        assert post.path == "/api/session-control/create"
+        assert post.body["autocompact_pct"] == 85
+        assert "auto-compacting at 85%" in out
+
+    def test_omitted_autocompact_pct_sends_no_key(self) -> None:
+        out, dash = _call(
+            "session_create",
+            {"title": "w"},
+            {"POST /api/session-control/create": {"target": "chat-9-900", "title": "w"}},
+        )
+        assert "autocompact_pct" not in dash.requests[-1].body
+        assert "auto-compacting" not in out
+
+    @pytest.mark.parametrize(("pct", "bound"), [(95, "<= 90"), (4, ">= 5")])
+    def test_an_out_of_range_autocompact_pct_is_refused_before_any_call(
+        self, pct: int, bound: str
+    ) -> None:
+        out, dash = _call("session_create", {"title": "w", "autocompact_pct": pct}, {})
+        assert out.startswith("Error: autocompact_pct:")
+        # The RANGE refused it, not an unknown-field refusal.
+        assert bound in out
+        assert dash.requests == []
+
+    def test_the_folder_preflight_probe_carries_the_threshold(self) -> None:
+        """The dry-run probe must ask about the SAME create, threshold included.
+
+        A probe without it would pass a create the real call then refuses, after
+        the tool had already created the missing folder segments.
+        """
+        made = {"id": "dddddddddddd", "name": "fresh", "parent_id": "aaaaaaaaaaaa"}
+        _, dash = _call(
+            "session_create",
+            {"title": "worker", "folder": "kirocrew/fresh", "autocompact_pct": 85},
+            {
+                **_reads(),
+                "POST /api/session-control/create": lambda req: (
+                    {"ok": True}
+                    if req.body.get("dry_run")
+                    else {"target": "chat-9-900", "title": "worker", "autocompact_pct": 85.0}
+                ),
+                "POST /api/chat/folders": made,
+            },
+        )
+        creates = [r for r in _writes(dash) if r.path == "/api/session-control/create"]
+        probe, real = creates[0], creates[-1]
+        assert probe.body.get("dry_run") is True
+        assert probe.body["autocompact_pct"] == 85
+        assert real.body["autocompact_pct"] == 85
+        assert "dry_run" not in real.body
+
+
 class TestSessionCreateFolder:
     """`session_create.folder` — filing atomic with creation.
 

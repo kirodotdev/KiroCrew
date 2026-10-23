@@ -651,17 +651,15 @@ async def _handle_restart(
         logger.debug("Skill-usage flush before restart failed", exc_info=True)
     # Flush the SEL audit queue: logging is async (background writer thread +
     # atexit flush) and os._exit() runs neither atexit handlers nor finalizers,
-    # so the approved-restart audit event above would be lost. flush() is a
-    # synchronous blocking drain, so offload it to an executor bounded by
-    # wait_for — a wedged writer (disk full, unreachable sink) must not block
-    # the loop indefinitely and prevent os._exit(1) from being reached.
-    try:
-        await asyncio.wait_for(
-            asyncio.get_running_loop().run_in_executor(subprocess_executor(), sel().flush),
-            timeout=3.0,
-        )
-    except Exception:
-        logger.debug("SEL flush before restart failed", exc_info=True)
+    # so the approved-restart audit event above would be lost. The shared
+    # flush_audit_queue_before_hard_exit helper offloads the blocking drain to
+    # the teardown pool under an outer deadline, so a wedged writer (disk full,
+    # unreachable sink) cannot block the loop indefinitely and prevent
+    # os._exit(1) from being reached. It drains only an existing singleton, so
+    # it never creates a trust root on the way out.
+    from kiro_crew.sel import flush_audit_queue_before_hard_exit
+
+    await flush_audit_queue_before_hard_exit()
     # Same reason, same shape, for the OTHER async log sink: gateway.log runs
     # through a QueueListener thread, so its queued tail -- the restart
     # decision and everything logged during the teardown above -- dies with

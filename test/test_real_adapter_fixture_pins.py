@@ -40,15 +40,28 @@ ROOT = Path(__file__).resolve().parent.parent
 PINNED_FIXTURE_ADAPTERS: dict[str, tuple[str, str]] = {
     "codex": (CODEX_ACP_PACKAGE, "@agentclientprotocol/codex-acp"),
     "opencode": (OPENCODE_PACKAGE, "OpenCode"),
+    "claude": ("@agentclientprotocol/claude-agent-acp", "@agentclientprotocol/claude-agent-acp"),
 }
+
+#: Adapters held to a measured release written here instead of the lane manifest.
+#: No lane test drives claude-agent-acp yet, so the lane does not install it; the
+#: claude captures are held to the release they were taken on, and the pin moves
+#: into ``test/real_adapters/package.json`` when a lane test needs the install.
+MEASURED_NOT_INSTALLED: dict[str, str] = {
+    "@agentclientprotocol/claude-agent-acp": "0.94.0",
+}
+
+
+def _pin(package: str) -> str:
+    """The release *package*'s live fixtures must carry."""
+    return MEASURED_NOT_INSTALLED.get(package) or pinned_version(package)
+
 
 _RECAPTURE = "stale, re-capture pending"
 
 #: ``<dir>/<file>`` -> (fixture's agent_version, pin it was stale against, why).
 #: Shrink-only. Do not add to it to land a bump: re-capture instead.
-_STALE: dict[str, tuple[str, str, str]] = {
-    "codex/session-live.jsonl": ("1.11.0", "2.2.2", _RECAPTURE),
-}
+_STALE: dict[str, tuple[str, str, str]] = {}
 
 #: ``_STALE`` as it started, written out so that editing an entry above (its pin
 #: above all) does not widen this too. ``_STALE`` may lose entries; every one it
@@ -69,7 +82,7 @@ def _pinned_live_fixtures() -> list[tuple[str, str, str]]:
     """``(key, fixture version, pin)`` for every live fixture of a pinned adapter."""
     found = []
     for directory, (package, agent_name) in sorted(PINNED_FIXTURE_ADAPTERS.items()):
-        pin = pinned_version(package)
+        pin = _pin(package)
         for path in sorted((CORPUS / directory).glob("*.jsonl")):
             meta, _frames = read_fixture(path)
             if meta.get("recorded") != "live":
@@ -174,3 +187,16 @@ def test_the_gate_runs_in_the_real_adapter_lane() -> None:
     # After the contract tests, so a bump PR still measures the new release.
     contract = next(i for i, line in enumerate(lane.splitlines()) if "-m real_adapter" in line)
     assert runs[0] > contract, "the pin gate must run after the contract tests, not skip them"
+
+
+def test_a_measured_only_pin_is_not_also_in_the_lane_manifest() -> None:
+    """One pin per adapter: an install in the manifest retires the constant."""
+    import json
+
+    from real_adapter_gate import MANIFEST
+
+    installed = json.loads(MANIFEST.read_text(encoding="utf-8"))["dependencies"]
+    assert not set(MEASURED_NOT_INSTALLED) & set(installed), (
+        "move the pin into test/real_adapters/package.json and drop it from "
+        "MEASURED_NOT_INSTALLED"
+    )

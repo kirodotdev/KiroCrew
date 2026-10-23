@@ -414,7 +414,7 @@ def _route_request(
 ) -> Any:
     """A DELETE request carrying *user*'s dashboard claims and an optional JSON body.
 
-    The state mirrors ``test_handlers_memory_coverage._make_state``: a readable,
+    The state mirrors ``handlers_memory_coverage_helpers._make_state``: a readable,
     unbound Global V1 session whose vector store is *store*.
     """
     state = MagicMock()

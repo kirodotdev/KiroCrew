@@ -144,7 +144,7 @@ class TestSigningKeyHealth:
         cgroup) the key is masked, so the caller passes ``confined=True`` and
         leaves ``require_denied_open`` false. The Linux mask falls back to a
         READABLE empty 0600 stand-in when its private-tmpfs mount fails
-        (sandbox_launcher_program: "the caller falls back to the readable empty
+        (sandbox_launcher_parts/mask_stages.py: "the caller falls back to the readable empty
         mask"), so masking must be honoured regardless of readability — reading
         this as "short" would hand an operator a remedy that deletes a healthy
         key by hand. Fails on 2e82af0711, where masked wrongly required the open

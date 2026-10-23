@@ -17,7 +17,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import push_guard_helpers
@@ -34,6 +33,7 @@ from push_guard_helpers import (
 )
 
 from kiro_crew import platform_compat
+from kiro_crew.testing.wait import wait_until
 
 # pytest resolves a fixture in the requesting test's module, so each shared
 # fixture this module uses is bound here by name.
@@ -1008,12 +1008,11 @@ class TestPushGuardChildren:
 
     @staticmethod
     def _gone(pid: int) -> bool:
-        for _ in range(100):
-            if not platform_compat.pid_exists(pid):
-                return True
-            # flake-ok: 0.1 s poll step of a wait bounded at 100 steps for the pid to exit
-            time.sleep(0.1)
-        return False
+        return wait_until(
+            lambda: not platform_compat.pid_exists(pid),
+            timeout=10,
+            describe=lambda: f"pid {pid} still exists",
+        )
 
     @pytest.mark.parametrize("how", ["SIGKILL-the-group", "SIGHUP"])
     def test_the_child_dies_with_the_guard(self, repo_pair, tmp_path, how):
@@ -1029,12 +1028,13 @@ class TestPushGuardChildren:
         )
         child = 0
         try:
-            for _ in range(300):
-                if pid_file.exists() and pid_file.read_text():
-                    break
-                # flake-ok: 0.1 s poll step of a wait bounded at 300 steps for the pid file
-                time.sleep(0.1)
-            child = int(pid_file.read_text())
+            child = int(
+                wait_until(
+                    lambda: pid_file.exists() and pid_file.read_text(),
+                    timeout=30,
+                    describe=lambda: f"pid file {pid_file} not written yet",
+                )
+            )
             if how == "SIGHUP":
                 os.kill(proc.pid, getattr(signal, "SIGHUP"))
             else:

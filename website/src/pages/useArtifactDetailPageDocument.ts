@@ -16,6 +16,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTheme } from '../hooks/useTheme'
 import { useAppDispatch } from '../store'
 import { buildSrcdoc, readThemeVars } from '../lib/widgetSrcdoc'
+import { artifactFrame } from '../lib/artifactFrame'
 import { api } from '../api/client'
 import { useConfirm } from '../components/ConfirmDialog'
 import { useReadingWidth } from '../hooks/useReadingWidth'
@@ -270,11 +271,13 @@ export function useArtifactDetailPageDocument({
   // HTML/widget artifacts own a full-width iframe surface. Reading width only
   // constrains native document bodies.
   const contentWidthStyle = usesIframe ? undefined : mdPreviewStyle
+  // A downloaded report keeps the CSP it opens with (lib/artifactFrame.ts).
+  const { offlineScripts, pageScripts } = artifactFrame(artifact)
   const exportSrcdoc = useMemo(
     () => artifact?.content && usesIframe
-      ? buildSrcdoc({ html: artifact.content, themeVars, mode: theme })
+      ? buildSrcdoc({ html: artifact.content, themeVars, mode: theme, offlineScripts, pageScripts })
       : null,
-    [artifact?.content, themeVars, theme, usesIframe],
+    [artifact?.content, themeVars, theme, usesIframe, offlineScripts, pageScripts],
   )
 
   return {

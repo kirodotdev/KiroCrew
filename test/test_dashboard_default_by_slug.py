@@ -331,9 +331,9 @@ class TestTheShippedRegistry:
 
 class TestTheBuildYourPageLineNeverReplacesAPage:
     """`goal_reminder.dashboard_line` asks a crewmate to write a page only while its tab
-    shows nothing of its own and it has a goal and confirmed milestones, so a template
-    page the person picked, or the page named for the crewmate, is never replaced on a
-    wake."""
+    shows nothing of its own, so a template page the person picked, or the page named
+    for the crewmate, is never replaced on a wake. No goal is needed: a crewmate's
+    progress goes on its page."""
 
     GOAL = {"id": "g00000001", "text": "Keep the docs current"}
     KR = {"id": "k00000001", "text": "Pages reviewed", "target": "5", "goal_ids": ["g00000001"]}
@@ -350,22 +350,47 @@ class TestTheBuildYourPageLineNeverReplacesAPage:
         assert dashboard_agentic.tab_shows_suggestions("mate") is True
         assert self._line("mate") == goal_reminder.DASHBOARD_BUILD_LINE
 
-    def test_a_goal_without_milestones_gets_no_line(self, builtin: Path) -> None:
-        assert self._line("mate", krs=False) == ""
-
-    def test_no_goal_gets_no_line(self, builtin: Path) -> None:
+    def test_a_goal_without_milestones_still_gets_the_line(self, builtin: Path) -> None:
         from kiro_crew.dashboard import goal_reminder
 
-        assert goal_reminder.dashboard_line("mate", {"goals": [], "key_results": [self.KR]}) == ""
+        assert self._line("mate", krs=False) == goal_reminder.DASHBOARD_BUILD_LINE
 
-    def test_a_template_page_in_force_gets_no_line(self, builtin: Path) -> None:
+    def test_no_goal_still_gets_the_line(self, builtin: Path) -> None:
+        from kiro_crew.dashboard import goal_reminder
+
+        line = goal_reminder.dashboard_line("mate", {"goals": [], "key_results": []})
+        assert line == goal_reminder.DASHBOARD_BUILD_LINE
+
+    def test_a_template_page_in_force_is_offered_never_rebuilt(self, builtin: Path) -> None:
+        """A template the person adopted is never replaced on a wake: the crewmate only
+        offers its own page, once, naming the template it would replace."""
+        from kiro_crew.dashboard import goal_reminder, page_offer
+
         instance.adopt("mate", "fixture-other")
         assert dashboard_agentic.tab_shows_suggestions("mate") is False
-        assert self._line("mate") == ""
+        line = self._line("mate")
+        assert line != goal_reminder.DASHBOARD_BUILD_LINE
+        assert "offer_dashboard_page" in line and "fixture-other template" in line
+        assert line == page_offer.OFFER_LINE.format(
+            replaces=", in place of the fixture-other template on your Dashboard tab"
+        )
 
-    def test_the_page_named_for_the_crewmate_gets_no_line(self, builtin: Path) -> None:
+    def test_the_page_named_for_the_crewmate_is_offered_never_rebuilt(self, builtin: Path) -> None:
+        from kiro_crew.dashboard import goal_reminder
+
         assert dashboard_agentic.tab_shows_suggestions(SLUG) is False
-        assert self._line(SLUG) == ""
+        line = self._line(SLUG)
+        assert line != goal_reminder.DASHBOARD_BUILD_LINE and "offer_dashboard_page" in line
+
+    def test_a_template_crewmate_asked_once_gets_no_line_again(self, builtin: Path) -> None:
+        from kiro_crew.dashboard import page_offer
+
+        instance.adopt("mate", "fixture-other")
+        assert self._line("mate") != ""
+        page_offer.record_asked("mate", "fixture-other")
+        assert self._line("mate") == ""
+        # A no or an expiry leaves the same record, so it counts the same.
+        assert page_offer.read_record("mate") == {"replaces": "fixture-other"}
 
     def test_a_bound_package_gets_no_line(self, builtin: Path) -> None:
         with patch.object(dashboard_agentic, "bound_package", return_value="my-pkg"):
@@ -402,27 +427,31 @@ class TestTheBuildYourPageLineNeverReplacesAPage:
             assert self._line("mate") == ""
 
 
-class TestTheTurnBlockNeverAsksForAPage:
-    """The ``[DASHBOARD]`` block rides EVERY crewmate turn, unrelated ones included, so
-    it states where the page stands and never tells the crewmate to build or apply one:
-    that is the gated build line's job (``goal_reminder.dashboard_line``), or the
-    user's. A locked tab gets the lock's own refusal and nothing that reads as "write
-    one"."""
+class TestTheTurnBlockPutsProgressOnThePage:
+    """The ``[DASHBOARD]`` block rides EVERY crewmate turn, so it is how a crewmate with
+    no goal (and so no goal-loop wake) learns its progress goes on a page: on the
+    suggestions page it says so, and to build the page when it has work to report,
+    never unconditionally. A locked tab gets the lock's own refusal and nothing that
+    reads as "write one"."""
 
-    def test_an_unrelated_turn_on_the_suggestions_page_is_not_told_to_build(
-        self, builtin: Path
-    ) -> None:
+    def test_the_suggestions_page_sends_progress_to_a_page_not_chat(self, builtin: Path) -> None:
         block = dashboard_agentic.turn_block("mate")
         assert dashboard_agentic.SUGGESTIONS_STATE in block
-        assert "dashboard_apply it" not in block and "dashboard_save it" not in block
-        assert "covers building one when the user asks" in block
-        for order in ("Write ", "dashboard_save", "dashboard_apply"):
-            assert order not in block, order
+        low = " ".join(block.split())
+        assert "progress belongs on a page of your own, not in chat" in low
+        # Conditioned on having something to report, not an order on every turn.
+        assert "when you have work to report, build your page" in low
+        assert "dashboard_save, then dashboard_apply" in low
 
-    def test_the_gated_first_build_still_fires_with_save_and_apply(self, builtin: Path) -> None:
-        """The agreed product behaviour: once a crewmate knows its page (a goal and
-        confirmed milestones) and its tab is empty, the gated wake builds AND applies
-        the first page. Only the every-turn duplicate was removed."""
+    def test_with_the_crew_panel_off_the_block_asks_for_no_page(self, builtin: Path) -> None:
+        from kiro_crew import members
+
+        with patch.object(members, "crew_panel_enabled", return_value=False):
+            block = dashboard_agentic.turn_block("mate")
+        assert dashboard_agentic.SUGGESTIONS_STATE in block
+        assert "dashboard_save" not in block and "build your page" not in block
+
+    def test_a_goal_wake_still_carries_the_build_line(self, builtin: Path) -> None:
         from kiro_crew.dashboard import goal_reminder
 
         rec = {
@@ -432,14 +461,12 @@ class TestTheTurnBlockNeverAsksForAPage:
         line = goal_reminder.dashboard_line("mate", rec)
         assert line == goal_reminder.DASHBOARD_BUILD_LINE
         assert "dashboard_save" in line and "dashboard_apply" in line
-        # The every-turn block on the same tab carries neither.
-        block = dashboard_agentic.turn_block("mate")
-        assert "dashboard_save" not in block and "dashboard_apply" not in block
+        assert "progress belongs on it rather than in chat" in " ".join(line.split())
 
     def test_a_locked_tab_gets_the_lock_and_no_build_instruction(self, builtin: Path) -> None:
         instance.set_structure_lock("mate", True)
         block = dashboard_agentic.turn_block("mate")
         assert instance.LOCKED_REFUSAL in block
         assert dashboard_agentic.SUGGESTIONS_LINE not in block
-        for hint in ("dashboard skill covers", "dashboard_save", "Write "):
+        for hint in ("build your page", "dashboard_save", "Write "):
             assert hint not in block, hint

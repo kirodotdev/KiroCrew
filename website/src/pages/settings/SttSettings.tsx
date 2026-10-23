@@ -1237,8 +1237,14 @@ export default function SttSettings({ cardIndex }: {
             `lib/sttProviders.unavailableMessage`. */}
         {/* Not when a provider notice is shown: it carries the same reason, from
             the same check, right under the picker. */}
+        {/* A recogniser that is installed but failed to load is a failure, so it
+            goes through ErrorNotice with the hand-off (off while an AWS draft is
+            unsaved, as for the other notices here). A missing prerequisite or a
+            disabled state is status text. */}
         {!available && unavailableText && !providerNotice && (
-          <p className="text-[12px] text-muted -mt-1 mb-1">{unavailableText}</p>
+          INSTALLED_BUT_REFUSED_CODES.has(status?.code ?? '')
+            ? <ErrorNotice variant="inline" className="-mt-1 mb-1" message={unavailableText} askAgent={awsDraftsSaved} testId="stt-unavailable-error" />
+            : <p className="text-[12px] text-muted -mt-1 mb-1">{unavailableText}</p>
         )}
         {/* The probe itself failed: the badge above is then showing the config's
             plain boolean, not a verdict, and the model catalog is absent. Status

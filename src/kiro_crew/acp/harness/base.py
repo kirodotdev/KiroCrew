@@ -142,6 +142,7 @@ class ProcessSession(Protocol):
     _pi_gate_nonce: str
     _pi_mcp_handoff: tuple[str, bytes]
     _pi_mcp_server_names: tuple[str, ...]
+    _pi_steer_channel: Any
     _deepseek_gate_nonce: str
     _deepseek_read_only_issue: str
 

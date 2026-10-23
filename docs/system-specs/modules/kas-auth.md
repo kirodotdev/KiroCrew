@@ -413,7 +413,7 @@ access token.
   SettingsPage mounts; the card's older home, `/developer?tab=agent-backend`,
   is forwarded there by DeveloperPage with the `highlight` kept) and from the KAS remedy
   strings in `agent_sdk/host_auth.py`. Its intro sentence names the backend
-  ("Used only by the KAS (kiro-agent) backend") and says Kiro CLI keeps its own
+  ("Used only by the Kiro Agent backend") and says Kiro CLI keeps its own
   kiro-cli login, because the card sits under a switch that also lists Kiro
   CLI. It is deliberately NOT on Settings > Overview and not indexed into
   Settings search: a provider chooser on the landing page read as a required

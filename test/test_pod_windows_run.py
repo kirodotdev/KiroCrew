@@ -1190,3 +1190,294 @@ def test_windows_down_refusal_names_the_manual_procedure_once(startup, monkeypat
     err = capsys.readouterr().err
     assert refusal in err
     assert err.count(win.MANUAL_RETIREMENT_POINTER) == 1
+
+
+@pytest.fixture
+def clock(startup, monkeypatch):
+    """A modelled kernel uptime; a value of None makes the counter unreadable."""
+    cfg, state = startup
+    state.uptime = 5_000_000
+
+    def uptime_ms():
+        if state.uptime is None:
+            raise OSError("tick counter unavailable")
+        return state.uptime
+
+    monkeypatch.setattr(runs.jobs, "uptime_ms", uptime_ms)
+    return cfg, state
+
+
+def _no_identity_probe(monkeypatch):
+    """After a restart the recorded pids may name unrelated processes: never open one."""
+    for attr in ("open_identity", "retire_identity", "wait_identity"):
+        monkeypatch.setattr(
+            win.jobs, attr, lambda *_a, _n=attr, **_kw: pytest.fail(f"{_n} after a restart")
+        )
+
+
+def _seed_run(cfg, state, shape):
+    """A run left behind in *shape*, with gateway evidence where that shape has it."""
+    win.task_script_path(cfg, "demo").write_text("rem wrapper", encoding="utf-8")
+    state.task_exists = True
+    if shape in {"reserved", "cancelled"}:
+        record = runs.reserve(cfg, "demo")
+        if shape == "cancelled":
+            runs.publish(cfg, "demo", {**record, "state": "cancelled"})
+        win.record_result(cfg, "demo", 3)
+        return
+    if shape in {"ready", "drained"}:
+        contained(cfg)
+        win.record_supervised_pid(cfg, "demo", 4242)
+        win.handoff_marker_path(cfg, "demo").write_text("777\n100\n", encoding="utf-8")
+        if shape == "drained":
+            runs.publish(cfg, "demo", {**runs.read(cfg, "demo"), "state": "drained"})
+    else:
+        _unspawned(cfg, state="finished" if shape == "finished" else "preparing")
+    cfg.home_dir("demo").mkdir(parents=True)
+    (cfg.home_dir("demo") / "state").write_text("owned", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "shape", ["reserved", "cancelled", "preparing", "finished", "ready", "drained"]
+)
+def test_run_from_an_earlier_boot_session_is_recovered_by_down(clock, monkeypatch, shape):
+    """A restart ends every process a record can name, so `down` reclaims any shape.
+
+    This covers what the same boot session must refuse: a reservation nobody
+    claimed, a producer that died mid-provision with a HOME, and a `ready` run
+    whose supervisor died with the Job's name. No recorded pid is opened, since
+    after a restart it may belong to any process, and `up` then admits a fresh run.
+    """
+    cfg, state = clock
+    _seed_run(cfg, state, shape)
+    generation = runs.read(cfg, "demo")["generation"]
+    state.uptime = 1_000  # Windows restarted: the counter began again from zero.
+    _no_identity_probe(monkeypatch)
+    monkeypatch.setattr(
+        win.jobs.PodJob, "open_existing", lambda *_a: pytest.fail("job after a restart")
+    )
+    real_finish = runs.finish
+
+    def finish(config, name):
+        receipt = runs.read(config, name)
+        assert receipt["generation"] == generation and receipt["rebooted"] == 1_000
+        assert receipt["state"] == ("drained" if shape in {"ready", "drained"} else "retired")
+        real_finish(config, name)
+
+    monkeypatch.setattr(runs, "finish", finish)
+    stopped = rt.stop_pod(cfg, "demo")
+    assert stopped.returncode == 0, stopped.stderr
+    assert runs.read(cfg, "demo") is None and not cfg.home_dir("demo").exists()
+    assert not state.task_exists and not win.task_script_path(cfg, "demo").exists()
+    assert not win.pid_record_path(cfg, "demo").exists()
+    assert not win.handoff_marker_path(cfg, "demo").exists()
+    assert win.last_result(cfg, "demo") is None
+    assert win.start(cfg, "demo").returncode == 0
+    fresh = runs.read(cfg, "demo")
+    assert fresh["state"] == "reserved" and fresh["generation"] != generation
+    assert fresh["uptime"] == 1_000
+
+
+@pytest.mark.parametrize("shape", ["reserved", "preparing", "ready"])
+@pytest.mark.parametrize("uptime", ["later", "equal", "unreadable", "legacy"])
+def test_same_or_unknown_boot_session_keeps_refusing(clock, monkeypatch, shape, uptime):
+    """Only a LOWER uptime proves a restart; sleep and hibernation keep counting.
+
+    A later or equal reading is the same boot session, an unreadable counter is
+    unknown, and a record written before this field existed carries no proof.
+    Each keeps the refusal that shape already has.
+    """
+    cfg, state = clock
+    _seed_run(cfg, state, shape)
+    if uptime == "legacy":
+        record = runs.read(cfg, "demo")
+        runs.publish(cfg, "demo", {k: v for k, v in record.items() if k != "uptime"})
+        state.uptime = 1_000
+    else:
+        state.uptime = {"later": 9_000_000, "equal": 5_000_000, "unreadable": None}[uptime]
+    if shape == "ready":
+        state.job_missing = True  # Case A: the supervisor died with the Job's name.
+    else:
+        monkeypatch.setattr(win.jobs, "open_identity", lambda *_a: None)
+    before = runs.path(cfg, "demo").read_bytes()
+    monkeypatch.setattr(rt, "cleanup_home", lambda *_a: pytest.fail("no reclamation authority"))
+    stopped = rt.stop_pod(cfg, "demo")
+    assert stopped.returncode == 1
+    assert runs.path(cfg, "demo").read_bytes() == before
+    assert state.task_exists and "/Delete" not in state.events
+    assert cfg.home_dir("demo").exists() == (shape != "reserved")
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        {"uptime": "5000000"},
+        {"uptime": -1},
+        {"uptime": True},
+        {"uptime": 2**64},
+        {"rebooted": 1_000},
+        {"state": "drained", "rebooted": 6_000_000},
+        {"state": "drained", "rebooted": "1000"},
+    ],
+)
+def test_malformed_boot_session_fields_refuse(clock, monkeypatch, corrupt):
+    """A bad uptime or restart receipt is malformed evidence, never a restart proof."""
+    cfg, state = clock
+    _seed_run(cfg, state, "ready")
+    runs.publish(cfg, "demo", {**runs.read(cfg, "demo"), **corrupt})
+    state.uptime = 1_000
+    _no_identity_probe(monkeypatch)
+    with pytest.raises(OSError, match="malformed"):
+        runs.read(cfg, "demo")
+    assert rt.stop_pod(cfg, "demo").returncode == 1
+    assert cfg.home_dir("demo").exists() and state.task_exists
+
+
+def test_restart_receipt_for_a_claimed_run_must_name_its_publisher(clock):
+    """Only a never-claimed run may carry a restart receipt without a publisher."""
+    cfg, state = clock
+    record = _unspawned(cfg)
+    receipt = {k: v for k, v in record.items() if k != "publisher"}
+    runs.publish(cfg, "demo", {**receipt, "state": "drained", "rebooted": 1_000})
+    with pytest.raises(OSError, match="malformed"):
+        runs.read(cfg, "demo")
+    runs.publish(cfg, "demo", {**receipt, "state": "retired", "rebooted": 1_000, "job": "x"})
+    with pytest.raises(OSError, match="malformed"):
+        runs.read(cfg, "demo")
+
+
+def test_claim_restamps_the_reservation_uptime(clock):
+    """The claim starts this boot session's writers, so its uptime replaces the reservation's.
+
+    A reservation left by an earlier boot session and then claimed in this one
+    must not keep the older, higher uptime: that would read as a restart while
+    the producer that just claimed it is alive. If the counter cannot be read at
+    the claim, the record carries no uptime at all rather than the stale one.
+    """
+    cfg, state = clock
+    runs.reserve(cfg, "demo")
+    state.uptime = 1_000
+    claimed = runs.claim(cfg, "demo")
+    assert claimed["uptime"] == 1_000 and runs.read(cfg, "demo") == claimed
+    assert not runs.earlier_boot(claimed)
+    runs.path(cfg, "demo").unlink()
+    state.uptime = 5_000_000
+    runs.reserve(cfg, "demo")
+    state.uptime = None
+    claimed = runs.claim(cfg, "demo")
+    assert "uptime" not in claimed
+    state.uptime = 1_000
+    assert not runs.earlier_boot(claimed)
+
+
+def test_restart_receipt_is_a_compare_and_swap(clock):
+    """A record that moved on, or one not proven older than this boot, is not retired."""
+    cfg, state = clock
+    record = _unspawned(cfg)
+    state.uptime = 1_000
+    moved = {**record, "state": "finished", "exit": 3}
+    runs.publish(cfg, "demo", moved)
+    with pytest.raises(OSError, match="changed while retiring"):
+        runs.rebooted(cfg, "demo", record)
+    assert runs.read(cfg, "demo") == moved
+    state.uptime = 6_000_000
+    with pytest.raises(OSError, match="not proven"):
+        runs.rebooted(cfg, "demo", moved)
+    state.uptime = None
+    with pytest.raises(OSError, match="not proven"):
+        runs.rebooted(cfg, "demo", moved)
+    assert runs.read(cfg, "demo") == moved
+
+
+def test_uptime_negative_control_detects_an_inverted_comparison(clock, monkeypatch):
+    """Treating a HIGHER uptime as a restart must reclaim a live run's HOME."""
+    cfg, state = clock
+    _seed_run(cfg, state, "preparing")
+    state.uptime = 9_000_000  # Same boot session: the counter only moved forward.
+
+    def inverted(config, name, record):
+        result = {**record, "state": "retired", "rebooted": 1_000}
+        runs.publish(config, name, result)
+        return result
+
+    monkeypatch.setattr(runs, "earlier_boot", lambda record: record["uptime"] < state.uptime)
+    monkeypatch.setattr(runs, "rebooted", inverted)
+    assert rt.stop_pod(cfg, "demo").returncode == 0
+    assert not cfg.home_dir("demo").exists()
+
+
+@pytest.mark.parametrize(
+    "publisher", ["alive", "gone", "exited", "query", "preparing", "missing", "malformed"]
+)
+def test_only_a_live_supervisor_makes_a_serving_gateway_adoptable(model, monkeypatch, publisher):
+    cfg, state = model
+    contained(cfg)
+    if publisher == "gone":
+        monkeypatch.setattr(win.jobs, "open_identity", lambda *_a: None)
+    elif publisher == "exited":
+        state.exited = True
+    elif publisher == "query":
+        monkeypatch.setattr(
+            win.jobs, "open_identity", lambda *_a: (_ for _ in ()).throw(OSError(5, "denied"))
+        )
+    elif publisher == "preparing":
+        _unspawned_record = runs.read(cfg, "demo")
+        runs.publish(
+            cfg,
+            "demo",
+            {
+                k: v
+                for k, v in {**_unspawned_record, "state": "preparing"}.items()
+                if k not in {"root", "job"}
+            },
+        )
+    elif publisher == "missing":
+        runs.path(cfg, "demo").unlink()
+    elif publisher == "malformed":
+        runs.path(cfg, "demo").write_text("{}", encoding="utf-8")
+    reason = win.unsupervised_reason(cfg, "demo")
+    if publisher == "alive":
+        assert reason is None
+        assert state.waits == [0]
+    else:
+        assert reason
+    if publisher in {"alive", "exited"}:
+        assert state.events.count("close_identity") == 1
+
+
+@pytest.mark.parametrize("supervised", [False, True])
+def test_up_refuses_to_adopt_a_gateway_whose_supervisor_is_gone(
+    model, monkeypatch, capsys, supervised
+):
+    """Case A: the supervisor died, the gateway still serves. `up` issues no token."""
+    cfg, state = model
+    contained(cfg)
+    win.record_supervised_pid(cfg, "demo", 4242)
+    monkeypatch.setattr(win, "pid_exists", lambda pid: True)
+    if not supervised:
+        monkeypatch.setattr(win.jobs, "open_identity", lambda *_a: None)
+    minted = []
+    monkeypatch.setattr(pod_cli, "_resolve_or_die", lambda *_a: Path("checkout"))
+    monkeypatch.setattr(pod_cli, "_audit", lambda *_a, **_kw: None)
+    monkeypatch.setattr(pod_cli.prov, "has_venv", lambda *_a: True)
+    monkeypatch.setattr(pod_cli.prov, "has_dist", lambda *_a: True)
+    monkeypatch.setattr(rt, "pin_checkout", lambda *_a: None)
+    monkeypatch.setattr(rt, "derive_port", lambda *_a: 8611)
+    monkeypatch.setattr(pod_cli, "_wait_healthy", lambda *_a, **_kw: 200)
+    monkeypatch.setattr(rt, "mint_token", lambda *_a: minted.append(1) or "test-token")
+    args = argparse.Namespace(
+        pod_action="up", name="demo", seed=None, ttl=1, json=True, provision=False
+    )
+    if supervised:
+        with contextlib.suppress(SystemExit):
+            pod_cli.dispatch(args)
+        assert minted, capsys.readouterr().err
+        return
+    with pytest.raises(SystemExit) as exited:
+        pod_cli.dispatch(args)
+    assert exited.value.code == 1
+    err = capsys.readouterr().err
+    assert "supervisor (pid 777) is gone" in err and "no token was issued" in err
+    assert err.count(win.MANUAL_RETIREMENT_POINTER) == 1
+    assert minted == [] and "/Run" not in state.events
+    assert runs.read(cfg, "demo")["state"] == "ready"

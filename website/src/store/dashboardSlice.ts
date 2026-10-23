@@ -1,4 +1,4 @@
-import { safeSetItem, safeSetSessionItem } from '../utils/safeStorage'
+import { safeSetItem } from '../utils/safeStorage'
 import { newerTs } from '../lib/slotReadRelay'
 import { jsonEqual } from '../utils/structuralEqual'
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
@@ -8,6 +8,8 @@ import { sanitizeLlmOutput, isUnsafeKey } from '../utils/sanitize'
 import type { StatusData, ChatSlot, TodoList, McpSessionReport } from '../types'
 import type { SessionColorMode, PaletteName, DefaultColorSetting, IntensityName } from '../utils/sessionColors'
 import { isChatPageSurface } from '../utils/channelOrigin'
+import { slotListHoldTest } from '../utils/slotListHold'
+import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, drainUnreadKeys, hasUnreadRelayHold, heldOrphanTest, persistManualSentinels, persistSharedUnread, readCovers, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince } from './dashboard/unread'
 
 export interface SubagentDetail {
   id: string; task: string; agent: string; turns: number; last_tool: string; startedAt: number
@@ -42,7 +44,7 @@ export type MuteFlag = 'mutes_opened' | 'muted'
 /** The `slotMuteFlagError` key for one flag on one slot. */
 export const muteFlagErrorKey = (flag: MuteFlag, slotKey: string) => `${flag}:${slotKey}`
 
-interface DashboardState {
+export interface DashboardState {
   status: StatusData | null
   /** The ad-hoc auto-approve duration this tab last saved in Settings, or
    *  undefined when it has saved none. Applied over every status write: the
@@ -136,12 +138,23 @@ interface DashboardState {
    *  cannot dispatch, so the frame handler sends the read through
    *  `readUnlistedMembers`. */
   slotMemberReadWanted?: boolean
-  /** Per in-flight `fetchSlots` requestId, the value of `slotWriteSeq` when the
-   *  request was dispatched. The server serialized its reply after that instant,
-   *  so any key whose `slotWrittenAt` is HIGHER was written locally while the
-   *  reply travelled and the reply is older than the screen for that key.
-   *  Entries leave when the request settles. */
-  slotFetchWriteMark: Record<string, number>
+  /** Per in-flight `fetchSlots` requestId, the write sequence and unread-drain
+   *  hold state when the request was dispatched. The server serialized its reply
+   *  after that instant, so any key whose `slotWrittenAt` is HIGHER was written
+   *  locally while the reply travelled and the reply is older than the screen for
+   *  that key. A reply started under the unread hold cannot become safe to drain
+   *  merely because a complete WebSocket frame arrives before it: the reply may
+   *  predate that frame and omit a session it lists. Once such a frame HAS
+   *  arrived, its key set (`completeKeys`) is the authority the reply's drain
+   *  defers to, so the reply drains only what both lists omit. Entries leave
+   *  when the request settles. */
+  slotFetchWriteMark: Record<string, {
+    writeSeq: number
+    unreadDrainHeld: boolean
+    heldKeys: string[]
+    holdChannels: boolean
+    completeKeys: string[] | null
+  }>
   // Slot keys in the order the session sidebar actually DISPLAYS them
   // (pinned-first + the user's sort, flat-view aware). Published by
   // ChatSidebar; consumed by the chat-jump / chat-cycle keyboard shortcuts and
@@ -168,6 +181,22 @@ interface DashboardState {
    *  as ONE shared record entry written atomically, so the pair can never
    *  tear apart and there are no orphans to reconcile at boot. */
   unreadSince: Record<string, string>
+  /** While true, `reconcileSlots` keeps every unread entry whose key the slot
+   *  list omits instead of draining it. True from boot and from every
+   *  disconnect or `sseConnected` until a `slots` frame arrives without
+   *  `slotsPartial`: a gateway mid-restart labels the lists it pushes while sessions are still
+   *  being restored, and draining against one of those would clear the badge
+   *  of a session that merely has not been listed yet. Only the drain is
+   *  held; the list itself renders and evicts as usual. */
+  unreadDrainHeld: boolean
+  /** The last `slots` frame carried `slotsPartial: true`. Unlike
+   *  `unreadDrainHeld`, false until the gateway says so: it is what the unread
+   *  counts read to leave out sessions a restoring gateway has not listed yet. */
+  slotsListPartial: boolean
+  /** Known omitted keys that remain unsafe to drain after the global hold clears. */
+  slotsHeldKeys: string[]
+  /** Hold every channel-origin key when the gateway could not list channel sessions. */
+  slotsHoldChannels: boolean
   slotsLoaded: boolean
   /** Every slot-list fetch in flight has failed and no list has landed yet, so
    *  `selectSlotListPending` stops waiting and the pane falls back to its empty
@@ -189,157 +218,7 @@ interface DashboardState {
 }
 
 const safeGet = (key: string, fallback: string) => { try { return localStorage.getItem(key) ?? fallback } catch { return fallback } }
-/** unreadSince sentinel for a manual mark-as-unread. It parses as an invalid
- *  instant, so the conservative comparison below can never treat any relayed
- *  read watermark as covering it. A bare non-letter char, never rendered —
- *  the constant name carries the meaning. */
-export const MANUAL_UNREAD = '\uffff'
-
-/** True when `read` chronologically covers `since`. Timestamps are parsed as
- *  instants — mixed-offset server strings make lexical order lie about time
- *  order — and ANY unparseable side answers false, so an invalid watermark
- *  can never clear a badge (and the manual sentinel never parses). */
-const readCovers = (read: string | undefined, since: string): boolean => {
-  if (read === undefined) return false
-  const r = Date.parse(read)
-  const s = Date.parse(since)
-  return Number.isFinite(r) && Number.isFinite(s) && r >= s
-}
-
-
-/** THE shared unread record ('mc-unread-shared' in localStorage): slot ->
- *  message watermark, or '' for a badge no watermark guards (any relayed
- *  read clears it). Badge presence and watermark are one key in one JSON
- *  document written by ONE setItem, so a sibling tab can never observe a
- *  badge without its watermark or a watermark without its badge — there is
- *  no torn state to reconcile at boot. That guarantee is single-WRITE
- *  atomicity only: localStorage has no cross-process transaction, so two
- *  windows' simultaneous RMWs race last-writer-wins on the whole document.
- *  Per-slot deltas keep any lost update slot-local, and it self-heals on
- *  that slot's next arrival or relay. Writes are per-slot DELTAS with
- *  newest-parseable-ts-wins: two windows writing the same slot settle on
- *  the newest instant, keys this window never touched pass through, and a
- *  ''-arrival never demotes a real watermark. MANUAL_UNREAD sentinels are
- *  deliberately NOT here: the reminder answers only to its own window, so
- *  sentinels persist to per-tab sessionStorage via persistManualSentinels.
- *  'mc-unread-slots' is kept as a write-only PROJECTION of the record's
- *  keys — the pre-existing hub relay (safeSet) and tabs still running
- *  older code read it; nothing in this file does. */
-const persistSharedUnread = (add: Record<string, string>, remove: readonly string[]): void => {
-  try {
-    let stored: Record<string, string>
-    try { stored = JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string> } catch { stored = {} }
-    for (const k of remove) delete stored[k]
-    for (const [k, v] of Object.entries(add)) {
-      if (v === MANUAL_UNREAD) continue  // sentinels never publish
-      const prev = stored[k]
-      if (prev === undefined) { stored[k] = v; continue }
-      if (v === '') continue  // presence already recorded; never demote a watermark
-      stored[k] = prev === '' ? v : (newerTs(prev, v) ?? prev)
-    }
-    // safeSetItem, not a raw setItem: this write runs on the websocket
-    // onmessage -> dispatch -> re-render path, so a QuotaExceededError here
-    // would escape a React ErrorBoundary and white-screen the app. The helper
-    // reclaims a disposable tier and retries, so the record survives a full
-    // quota instead of being dropped beside reclaimable cache.
-    //
-    // The return value is load-bearing, and it is the one thing a plain
-    // conversion from the old raw call loses. The raw setItem THREW on a full
-    // quota, so the surrounding catch swallowed it and the projection write
-    // below never ran. A helper that reports the same failure by returning
-    // false does not stop the function, and the projection is strictly smaller
-    // than the record (keys only, no timestamps) — so on a quota it can free
-    // space and succeed where the record just failed, leaving the two persisted
-    // records disagreeing. restoreUnreadSince trusts the record; older tabs and
-    // the hub relay read the projection. Bail out before that can happen.
-    if (!safeSetItem('mc-unread-shared', JSON.stringify(stored))) return
-    // Projection write bypasses safeSet's hub relay: the shared keys omit
-    // this window's manual sentinels, so relaying their count would under-
-    // report the hub switcher chip. The reducers relay the window's own
-    // unreadSlots count after every unread mutation instead.
-    safeSetItem('mc-unread-slots', JSON.stringify(Object.keys(stored)))
-  } catch { /* SecurityError / quota */ }
-}
-/** Clear one slot's SHARED unread record only when `readTs` covers the
- *  watermark CURRENTLY PERSISTED — the live stored value, read inside this
- *  call, never this window's in-memory view, which can be stale across a
- *  reconnect gap. A ''-record (badge, no watermark) accepts any read.
- *  Returns undefined when the record was cleared; returns the surviving
- *  watermark when a sibling advanced it past this read — the caller then
- *  keeps the badge and adopts that watermark instead of erasing a newer
- *  window's state. */
-const clearSharedUnreadIfCovered = (slot: string, readTs: string | undefined): string | undefined => {
-  let sharedW: string | undefined
-  try {
-    sharedW = (JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>)[slot]
-  } catch { sharedW = undefined }
-  if (sharedW !== undefined && sharedW !== '' && !readCovers(readTs, sharedW)) return sharedW
-  persistSharedUnread({}, [slot])
-  return undefined
-}
-/** This window's manual reminders, per-tab (sessionStorage): a deliberate
- *  mark-as-unread answers only to the window that made it, so a shared key
- *  would clobber siblings' reminder sets. */
-const persistManualSentinels = (unreadSince: Record<string, string>): void => {
-  const manual = Object.fromEntries(Object.entries(unreadSince).filter(([, v]) => v === MANUAL_UNREAD))
-  safeSetSessionItem('mc-unread-since', JSON.stringify(manual))
-}
-/** Boot restore for unreadSince (exported for tests): message watermarks
- *  from the ONE shared record, joined with this window's per-tab manual
- *  sentinels. A ''-entry is a badge no watermark guards — it restores the
- *  badge (restoreUnreadBadges below) but records no watermark, so any
- *  relayed read clears it. An ABSENT record beside a legacy
- *  'mc-unread-slots' list means older code persisted badges before the
- *  record existed: each seeds once as '' so no badge is lost on upgrade.
- *  Sentinels: no other window's read may clear the deliberate reminder,
- *  and neither reload nor the shared record may demote it — the sentinel
- *  wins a key collision, and restoreUnreadBadges() re-seeds its badge
- *  without writing shared state. */
-export const restoreUnreadSince = (): Record<string, string> => {
-  try {
-    const raw = localStorage.getItem('mc-unread-shared')
-    let record: Record<string, string>
-    try { record = JSON.parse(raw ?? '{}') as Record<string, string> } catch { record = {} }
-    if (raw === null) {
-      let legacy: string[]
-      try { legacy = JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]') as string[] } catch { legacy = [] }
-      for (const k of legacy) record[k] = ''
-      if (legacy.length > 0) safeSetItem('mc-unread-shared', JSON.stringify(record))
-    }
-    const since: Record<string, string> = {}
-    for (const [k, v] of Object.entries(record)) if (v !== '') since[k] = v
-    let manual: Record<string, string>
-    try { manual = JSON.parse(sessionStorage.getItem('mc-unread-since') ?? '{}') as Record<string, string> } catch { manual = {} }
-    for (const [k, v] of Object.entries(manual)) if (v === MANUAL_UNREAD) since[k] = MANUAL_UNREAD
-    return since
-  } catch { return {} }
-}
-/** Boot restore for unreadSlots: every key of the shared record (badge
- *  presence IS record membership), plus this window's manual reminders —
- *  the reminder answers only to this window, so its badge comes back here
- *  without writing shared state. */
-export const restoreUnreadBadges = (since: Record<string, string>): string[] => {
-  let badges: string[]
-  try { badges = Object.keys(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>) } catch { badges = [] }
-  for (const [k, v] of Object.entries(since)) {
-    if (v === MANUAL_UNREAD && !badges.includes(k)) badges.push(k)
-  }
-  return badges
-}
-// When running embedded inside the Instances hub (an iframe), relay unread-count
-// changes to the parent so it can badge this instance's switcher chip (§5.3).
-// Only the count (a non-secret number) is sent; the parent validates event.origin
-// against its known tunnel origins before trusting it (§5.4). Posting to the
-// referrer's origin (the hub) when known, else '*', avoids broadcasting widely.
-const _relayUnreadToParent = (slotsJson: string): void => {
-  try {
-    if (typeof window === 'undefined' || window.parent === window) return
-    const count = (JSON.parse(slotsJson) as string[]).length
-    let target = '*'
-    try { if (document.referrer) target = new URL(document.referrer).origin } catch { /* keep '*' */ }
-    window.parent.postMessage({ source: 'kirocrew', type: 'mc-unread-slots', count }, target)
-  } catch { /* never let the relay break a state update */ }
-}
+export { MANUAL_UNREAD, restoreUnreadBadges, restoreUnreadSince } from './dashboard/unread'
 const safeSet = (key: string, value: string) => {
   try { safeSetItem(key, value) } catch { /* QuotaExceededError / SecurityError */ }
   if (key === 'mc-unread-slots') _relayUnreadToParent(value)
@@ -371,6 +250,10 @@ const initialState: DashboardState = {
   channelTrusted: false,
   refreshTrigger: 0,
   ...(() => { const since = restoreUnreadSince(); return { unreadSlots: restoreUnreadBadges(since), unreadSince: since } })(),
+  unreadDrainHeld: true,
+  slotsListPartial: false,
+  slotsHeldKeys: [],
+  slotsHoldChannels: false,
   slotsLoaded: false,
   slotsFetchFailed: false,
   updateProgress: null,
@@ -443,28 +326,27 @@ export const changeApprovalMode = createAsyncThunk<
  *  through here, so the two cannot drift apart the way the eviction lists this
  *  PR unified once did. `unreadSlots` is written back only when it actually
  *  shrank, since the live-frame writer runs on every slots frame. */
-const reconcileSlots = (state: DashboardState, liveKeys: Set<string>, evictStale = true): void => {
+const reconcileSlots = (
+  state: DashboardState,
+  liveKeys: Set<string>,
+  evictStale = true,
+  unreadDrainHeld = state.unreadDrainHeld,
+  heldKeys = state.slotsHeldKeys,
+  holdChannels = state.slotsHoldChannels,
+): void => {
   // `countUnreadByMode` deliberately keeps orphan unread keys contributing to
   // the badge, on the premise that a reconcile drains them shortly. Draining on
   // both writers is what keeps that premise true. Always run: a wrongly drained
   // badge self-heals on the next unread event, and the refetch is the documented
   // route by which a remotely deleted slot's badge is cleared.
-  const unread = state.unreadSlots ?? []
-  const drained = unread.filter(k => liveKeys.has(k))
-  if (drained.length !== unread.length) {
-    // unreadSince tolerates partial preloaded test state, like `?? []` above.
-    if (state.unreadSince) {
-      let droppedManual = false
-      for (const k of unread) if (!liveKeys.has(k)) {
-        if (state.unreadSince[k] === MANUAL_UNREAD) droppedManual = true
-        delete state.unreadSince[k]
-      }
-      if (droppedManual) persistManualSentinels(state.unreadSince)
-    }
-    state.unreadSlots = drained
-    persistSharedUnread({}, unread.filter(k => !liveKeys.has(k)))
-    _relayUnreadToParent(JSON.stringify(state.unreadSlots))
-  }
+  //
+  // The one exception is a list the gateway labelled partial (`unreadDrainHeld`):
+  // a session it has not restored yet is absent from that list without having
+  // been deleted, and a drain here would be the lossy direction. The hold covers
+  // a GET reply too, since it goes through this same path. Deferring the drain
+  // is safe: the next complete list drains whatever is genuinely gone.
+  const holds = slotListHoldTest({ partial: unreadDrainHeld, heldKeys: heldKeys ?? [], holdChannels })
+  drainUnreadKeys(state, new Set((state.unreadSlots ?? []).filter(key => !liveKeys.has(key) && !holds(key))))
   // Eviction is NOT recoverable, so it is skipped when the caller cannot vouch
   // for the list's freshness: an HTTP reply in flight can be older than the live
   // frames that arrived while it travelled, and would then delete a slot the
@@ -780,7 +662,7 @@ const retainUnlistedMembers = (state: DashboardState, rows: ChatSlot[]): ChatSlo
  *  frame. Runs before `settleSlotFetch`, which drops the mark. */
 const settleUnlistedMembers = (state: DashboardState, requestId: string | undefined, listed: Set<string> | null): void => {
   const unlisted = state.slotMemberUnlisted
-  const mark = requestId === undefined ? undefined : state.slotFetchWriteMark?.[requestId]
+  const mark = requestId === undefined ? undefined : state.slotFetchWriteMark?.[requestId]?.writeSeq
   if (!unlisted || mark === undefined) return
   for (const stamped of Object.keys(unlisted)) {
     if (unlisted[stamped].seq > mark) continue
@@ -890,7 +772,7 @@ const patchSlotRowsWhere = (state: DashboardState, patch: RowPatch): void => {
 const localWritesOutranking = (state: DashboardState, requestId: string | undefined): Set<string> => {
   const outranked = new Set<string>()
   if (requestId === undefined) return outranked
-  const mark = state.slotFetchWriteMark?.[requestId]
+  const mark = state.slotFetchWriteMark?.[requestId]?.writeSeq
   if (mark === undefined) return outranked
   const writtenAt = state.slotWrittenAt ?? {}
   for (const stamped of Object.keys(writtenAt)) {
@@ -915,7 +797,7 @@ const localWritesOutranking = (state: DashboardState, requestId: string | undefi
 const membersOutranking = (state: DashboardState, requestId: string | undefined): Set<string> => {
   const added = new Set<string>()
   if (requestId === undefined) return added
-  const mark = state.slotFetchWriteMark?.[requestId]
+  const mark = state.slotFetchWriteMark?.[requestId]?.writeSeq
   if (mark === undefined) return added
   const memberAt = state.slotMemberAt ?? {}
   for (const stamped of Object.keys(memberAt)) {
@@ -1065,7 +947,11 @@ const applySlots = (state: DashboardState, rawRows: ChatSlot[]): void => {
     if (reused !== prev[i]) changed = true
     return reused
   })
-  if (changed) state.slots = merged
+  if (changed) {
+    state.slots = merged
+    // A listed slot can turn a held orphan back into a counted session.
+    relayUnreadIfHolding(state)
+  }
 }
 
 const dashboardSlice = createSlice({
@@ -1122,9 +1008,57 @@ const dashboardSlice = createSlice({
       state.savedYoloDuration = action.payload
       if (state.status) state.status.yolo_duration = action.payload
     },
-    sseConnected(state) { state.connected = true; state.slotsLoaded = false; state.subagentRunning = {}; state.subagentDetails = {}; state.subagentText = {} },
-    sseDisconnected(state) { state.connected = false },
+    sseConnected(state) {
+      const hadUnreadRelayHold = hasUnreadRelayHold(state)
+      state.connected = true
+      state.slotsLoaded = false
+      state.unreadDrainHeld = true
+      state.slotsListPartial = false
+      state.slotsHeldKeys = []
+      state.slotsHoldChannels = false
+      state.subagentRunning = {}
+      state.subagentDetails = {}
+      state.subagentText = {}
+      relayUnreadIfHolding(state, hadUnreadRelayHold)
+    },
+    sseDisconnected(state) { state.connected = false; state.unreadDrainHeld = true },
+    /** The `slotsPartial` label on a `slots` frame (see `unreadDrainHeld`).
+     *  Dispatched for every frame, before its list: an absent field is an
+     *  older gateway and reads as complete. */
+    sseSlotsPartial(state, action: PayloadAction<boolean>) {
+      state.unreadDrainHeld = action.payload
+      if (state.slotsListPartial === action.payload) return
+      state.slotsListPartial = action.payload
+      _relayUnreadToParent(JSON.stringify(relayedUnreadKeys(state)))
+    },
+    sseSlotListHolds(
+      state,
+      action: PayloadAction<{ heldKeys: string[]; holdChannels: boolean }>,
+    ) {
+      // Assigned only on a real change: this runs for every slots frame, and a
+      // fresh array each time would break the unread-count selectors' memo.
+      const { heldKeys, holdChannels } = action.payload
+      const current = state.slotsHeldKeys ?? []
+      const keysChanged = heldKeys.length !== current.length || heldKeys.some((key, i) => key !== current[i])
+      if (!keysChanged && holdChannels === state.slotsHoldChannels) return
+      if (keysChanged) state.slotsHeldKeys = heldKeys
+      state.slotsHoldChannels = holdChannels
+      _relayUnreadToParent(JSON.stringify(relayedUnreadKeys(state)))
+    },
     sseSlots(state, action: PayloadAction<ChatSlot[]>) {
+      // A frame the gateway labelled complete (`sseSlotsPartial` ran first) is
+      // the authority every GET reply still in flight defers to for its unread
+      // drain, so its key set is recorded on each of them. Recorded before the
+      // empty-frame return below: a complete empty list is exactly the case
+      // where the reply must drain, and that return applies nothing itself.
+      // A frame the socket drops as an exact repeat never reaches here, so the
+      // mark keeps its hold until the next differing frame; that errs toward
+      // keeping a dot.
+      if (!state.unreadDrainHeld) {
+        for (const mark of Object.values(state.slotFetchWriteMark ?? {})) {
+          mark.completeKeys = action.payload.map(s => s.key)
+        }
+      }
       // Read before `slotsLoaded` is set: an empty frame is ambiguous, and this
       // is what disambiguates it. Not yet loaded means a reconnect delivered it
       // before the first real snapshot, so treating it as authoritative would
@@ -1183,8 +1117,19 @@ const dashboardSlice = createSlice({
       patchSlotRow(state, key, slot => {
         const t = Date.parse(ts)
         let moved = false
-        if (!slot.last_ts || Date.parse(slot.last_ts) <= t) { slot.last_ts = ts; moved = true }
+        const lastTsMoved = !slot.last_ts || Date.parse(slot.last_ts) <= t
+        if (lastTsMoved) { slot.last_ts = ts; moved = true }
         if (settled && (!slot.last_turn_ts || Date.parse(slot.last_turn_ts) <= t)) { slot.last_turn_ts = ts; moved = true }
+        // Advance last_activity_ts only for settled events (user-sent prompts):
+        // unsettled bumps are streamed tool calls on a running session, and
+        // advancing on every one would re-rank running sessions mid-turn in the
+        // session grid — the same problem that last_turn_ts avoids.
+        if (settled && lastTsMoved) {
+          const prevActivity = slot.last_activity_ts ? Date.parse(slot.last_activity_ts) : NaN
+          if (!slot.last_activity_ts || !Number.isFinite(prevActivity) || t > prevActivity) {
+            slot.last_activity_ts = ts
+          }
+        }
         // A bump both guards rejected changed nothing, so it is not a write and
         // must not outrank a reply: stamping it would withhold a server row on
         // the strength of a no-op.
@@ -1235,8 +1180,12 @@ const dashboardSlice = createSlice({
           Object.assign(slot, fields)
         })
       }
-      if (removed?.length && state.slotsLoaded) {
-        const gone = new Set(removed)
+      const gone = new Set((removed ?? []).filter(key => !isUnsafeKey(key)))
+      // A removal names a slot the server has durably deleted. Unlike a key
+      // merely absent from a partial list, it is safe to drain during restart
+      // and before the first complete snapshot.
+      drainUnreadKeys(state, gone)
+      if (gone.size && state.slotsLoaded) {
         for (const key of gone) {
           if (!isUnsafeKey(key) && !state.closingSlots?.[key]) {
             markStaleSlotFetches(state, key, [...(state.slotFetchesInFlight ?? [])])
@@ -1281,6 +1230,7 @@ const dashboardSlice = createSlice({
       }
       if (!state.slots.find(s => s.key === action.payload.key)) { // row-read: membership test, adds a row rather than changing one
         state.slots.push(action.payload)
+        relayUnreadIfHolding(state)
       }
       // Every add site routes through this reducer (resume, fork, companion
       // chat, Papyrus), so stamping membership here covers them all by
@@ -1349,7 +1299,7 @@ const dashboardSlice = createSlice({
         if (wasManual) persistManualSentinels(state.unreadSince)
       }
       persistSharedUnread({}, [action.payload])
-      _relayUnreadToParent(JSON.stringify(state.unreadSlots))
+      _relayUnreadToParent(JSON.stringify(relayedUnreadKeys(state)))
     },
     updateSlot(state, action: PayloadAction<Partial<ChatSlot> & { key: string }>) {
       patchSlotRow(state, action.payload.key, slot => { Object.assign(slot, action.payload) })
@@ -1561,7 +1511,7 @@ const dashboardSlice = createSlice({
         state.unreadSince[slot] = MANUAL_UNREAD
         persistManualSentinels(state.unreadSince)
       }
-      _relayUnreadToParent(JSON.stringify(state.unreadSlots))
+      _relayUnreadToParent(JSON.stringify(relayedUnreadKeys(state)))
     },
     markSlotRead(state, action: PayloadAction<string>) {
       if (state.unreadSince?.[action.payload] !== undefined) {
@@ -1582,7 +1532,7 @@ const dashboardSlice = createSlice({
       // reboots instead of being silently erased.
       const _readTs = state.slots?.find(sl => sl.key === action.payload)?.last_ts // row-read: reads a watermark, writes only unread state
       clearSharedUnreadIfCovered(action.payload, _readTs)
-      _relayUnreadToParent(JSON.stringify(state.unreadSlots))
+      _relayUnreadToParent(JSON.stringify(relayedUnreadKeys(state)))
     },
     /** A read relayed from ANOTHER window: honors the watermark. Clears only
      *  when the relay's `readTs` covers everything that lit the badge here —
@@ -1605,7 +1555,7 @@ const dashboardSlice = createSlice({
         if (!state.unreadSince) state.unreadSince = {}
         state.unreadSince[slot] = survivor
         if (!state.unreadSlots.includes(slot)) state.unreadSlots.push(slot)
-        _relayUnreadToParent(JSON.stringify(state.unreadSlots))
+        _relayUnreadToParent(JSON.stringify(relayedUnreadKeys(state)))
         return
       }
       if (state.unreadSince?.[slot] !== undefined) {
@@ -1615,7 +1565,7 @@ const dashboardSlice = createSlice({
       }
       if (!state.unreadSlots.includes(slot)) return
       state.unreadSlots = state.unreadSlots.filter(k => k !== slot)
-      _relayUnreadToParent(JSON.stringify(state.unreadSlots))
+      _relayUnreadToParent(JSON.stringify(relayedUnreadKeys(state)))
     },
     setUpdateProgress(state, action: PayloadAction<{ step: string; detail: string } | null>) {
       state.updateProgress = action.payload
@@ -1698,7 +1648,13 @@ const dashboardSlice = createSlice({
         // The reply cannot describe anything that happens from here on, so this
         // is the instant every later single-slot write outranks it from.
         if (!state.slotFetchWriteMark) state.slotFetchWriteMark = {}
-        state.slotFetchWriteMark[action.meta.requestId] = state.slotWriteSeq ?? 0
+        state.slotFetchWriteMark[action.meta.requestId] = {
+          writeSeq: state.slotWriteSeq ?? 0,
+          unreadDrainHeld: state.unreadDrainHeld,
+          heldKeys: [...(state.slotsHeldKeys ?? [])],
+          holdChannels: state.slotsHoldChannels,
+          completeKeys: null,
+        }
         // This request is newer than every add tracked so far, so it is the
         // read a kept session was waiting for.
         state.slotMemberReadWanted = false
@@ -1717,6 +1673,7 @@ const dashboardSlice = createSlice({
         // one stale row.
         // `meta` is optional-chained for the hand-built actions in older tests.
         const requestId = action.meta?.requestId
+        const requestMark = requestId ? state.slotFetchWriteMark?.[requestId] : undefined
         const staleKeys = requestId ? staleKeysForSlotFetch(state, requestId) : new Set<string>()
         // Keys a single-slot writer touched while this request was in flight.
         // The server serialized the reply before that write existed, so for
@@ -1802,7 +1759,21 @@ const dashboardSlice = createSlice({
         applySlots(state, rows)
         state.slotsGeneration = (state.slotsGeneration ?? 0) + 1
         state.slotsLoaded = true
-        reconcileSlots(state, new Set(rows.map((s: { key: string }) => s.key)), fresh)
+        // A complete frame that arrived while this request was in flight is the
+        // newer, labelled list; the reply is older and carries no label. The drain
+        // then runs against the union: a key the frame lists is live however
+        // stale the reply, and a key both omit is genuinely gone. That is what
+        // releases the hold this request was dispatched under. A key deleted
+        // after the frame lingers until the next frame, which drains it.
+        const completeKeys = requestMark?.completeKeys ?? null
+        reconcileSlots(
+          state,
+          completeKeys ? new Set([...replyKeys, ...completeKeys]) : replyKeys,
+          fresh,
+          state.unreadDrainHeld || (requestMark?.unreadDrainHeld === true && completeKeys === null),
+          [...(requestMark?.heldKeys ?? []), ...(state.slotsHeldKeys ?? [])],
+          state.slotsHoldChannels || requestMark?.holdChannels === true,
+        )
         settleUnlistedMembers(state, requestId, replyKeys)
         settleSlotFetch(state, requestId)
       })
@@ -1831,6 +1802,7 @@ const dashboardSlice = createSlice({
           }
           if (!state.slots.find(s => s.key === action.payload.key)) { // row-read: membership test, adds a row rather than changing one
             state.slots.push(action.payload)
+            relayUnreadIfHolding(state)
           }
           // A create is a single-slot MEMBERSHIP write, so stamp it as one (see
           // `stampSlotMember`): a `fetchSlots` reply already in flight was
@@ -1891,7 +1863,7 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
+export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, sseSlotsPartial, sseSlotListHolds, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
   setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink, dropSlotLinks, setPinRanks, setPendingPinOrder, setPinOrderError, setManualRanks, setPendingManualOrder, setManualOrderError } = dashboardSlice.actions
 
 /**
@@ -1934,15 +1906,30 @@ export function slotIsRemoteBound(slot: { executor?: string } | null | undefined
  * display them regardless), whereas this one keeps them so the badge stays
  * stable across the brief race between `removeSlotOptimistic` and
  * `fetchSlots.fulfilled`.
+ *
+ * The exception is an orphan no reconcile will drain: any orphan while the
+ * gateway labels its lists partial, or one the gateway holds (`slotsHeldKeys`, or a
+ * channel key under `slotsHoldChannels`). The premise above does not hold for it. Its unread entry is kept so the dot returns with the tab, but
+ * it is left out of the badge, which would otherwise count a session the
+ * sidebar cannot show.
  */
-function countUnreadByMode(slots: ChatSlot[], unread: string[], mode: string): number {
+function countUnreadByMode(
+  slots: ChatSlot[],
+  unread: string[],
+  mode: string,
+  heldKeys: readonly string[] = [],
+  holdChannels = false,
+  listPartial = false,
+): number {
   if (unread.length === 0) return 0
   const surfaceByKey = new Map(slots.map(s => [s.key, slotSurfaceKey(s)]))
+  const isHeldOrphan = heldOrphanTest(new Set(surfaceByKey.keys()), heldKeys, holdChannels, listPartial)
   // The chat surface ('') counts every slot the chat page renders, legacy
   // Autopilot slots included (see `isChatPageSurface`).
   const isChatSurface = mode === ''
   let count = 0
   for (const k of unread) {
+    if (isHeldOrphan(k)) continue
     const sk = surfaceByKey.get(k) ?? ''
     if (isChatSurface ? isChatPageSurface(sk) : sk === mode) count++
   }
@@ -1964,7 +1951,11 @@ export function selectUnreadByMode(mode: string): UnreadByModeSelector {
     sel = createSelector(
       (state: { dashboard: DashboardState }) => state.dashboard.slots,
       (state: { dashboard: DashboardState }) => state.dashboard.unreadSlots,
-      (slots, unread) => countUnreadByMode(slots, unread, mode),
+      (state: { dashboard: DashboardState }) => state.dashboard.slotsHeldKeys,
+      (state: { dashboard: DashboardState }) => state.dashboard.slotsHoldChannels,
+      (state: { dashboard: DashboardState }) => state.dashboard.slotsListPartial,
+      (slots, unread, heldKeys, holdChannels, listPartial) =>
+        countUnreadByMode(slots, unread, mode, heldKeys ?? [], holdChannels === true, listPartial === true),
     )
     _unreadByModeCache.set(mode, sel)
   }

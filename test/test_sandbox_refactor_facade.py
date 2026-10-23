@@ -1379,13 +1379,29 @@ def _imported_modules(module: ModuleType) -> set[str]:
     return found
 
 
-#: The layers under the facade: the plan and the launcher program import the standard
-#: library and nothing else, and the two renderers import the plan and nothing else of
-#: the package. So the plan stays pure, the program stays runnable as a stdlib script,
-#: and neither renderer can reach back into ``kiro_crew.sandbox`` for a rule.
+#: The layers under the facade: the plan imports the standard library and nothing else,
+#: the launcher program's module imports only its parts and the compose helper below the
+#: program text it renders, each part imports at most that module (for the type checker),
+#: and the two renderers import the plan and nothing else of the package. So the plan
+#: stays pure, the program stays runnable as a stdlib script, and neither renderer can
+#: reach back into ``kiro_crew.sandbox`` for a rule.
 _LAYERED: dict[str, frozenset[str]] = {
     "kiro_crew.sandbox_plan": frozenset(),
-    "kiro_crew.sandbox_launcher_program": frozenset(),
+    "kiro_crew.sandbox_launcher_program": frozenset(
+        {
+            "kiro_crew._facade_compose",
+            "kiro_crew.sandbox_launcher_parts.exec_lockdown",
+            "kiro_crew.sandbox_launcher_parts.mask_stages",
+            "kiro_crew.sandbox_launcher_parts.pinned_mounts",
+        }
+    ),
+    "kiro_crew.sandbox_launcher_parts.pinned_mounts": frozenset(
+        {"kiro_crew.sandbox_launcher_program"}
+    ),
+    "kiro_crew.sandbox_launcher_parts.mask_stages": frozenset(
+        {"kiro_crew.sandbox_launcher_program"}
+    ),
+    "kiro_crew.sandbox_launcher_parts.exec_lockdown": frozenset(),
     "kiro_crew.sandbox_launcher": frozenset({"kiro_crew.sandbox_plan"}),
     "kiro_crew.sandbox_seatbelt": frozenset({"kiro_crew.sandbox_plan"}),
 }

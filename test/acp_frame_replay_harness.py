@@ -36,6 +36,7 @@ from kiro_crew.acp._dispatch import (
     parse_usage_cost,
     parse_usage_update,
 )
+from kiro_crew.acp.harness.pi_steer import steer_echo_seq
 from kiro_crew.acp.types import AcpEvent, JsonRpcMessage
 from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
 
@@ -295,6 +296,14 @@ def _replay(
                     notice = parse_claude_compaction_notice(text)
                     if notice is not None:
                         entry["compaction_notice"] = list(notice)
+                    # pi's gate extension reports a consumed steer as a pi-acp NOTIFY
+                    # chunk; ``acp.pi_steer_turn.echo_event`` reads it with the
+                    # same nonce the permission builder is handed.
+                    pi_acp = (update.get("_meta") or {}).get("piAcp")
+                    if gate_envelope_nonce and isinstance(pi_acp, dict) and "notify" in pi_acp:
+                        seq = steer_echo_seq(text, gate_envelope_nonce)
+                        if seq is not None:
+                            entry["pi_steer_consumed"] = seq
             if discriminant == "usage_update":
                 entry["usage"] = list(parse_usage_update(update))
                 entry["usage_cost"] = parse_usage_cost(update)

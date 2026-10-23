@@ -34,6 +34,7 @@ from kiro_crew._sqlite_compat import fts5_available
 from kiro_crew.history import ConversationLog
 from kiro_crew.history_index import INDEX_FILENAME, SessionSearchIndex
 from kiro_crew.history_index_worker import SessionIndexWorkerSupervisor
+from kiro_crew.testing.wait import wait_until
 
 pytestmark = pytest.mark.skipif(not fts5_available(), reason="SQLite built without FTS5")
 
@@ -126,13 +127,8 @@ def _indexed_keys(sessions):
 
 
 def _wait_until(predicate, timeout_secs=_SPAWN_TIMEOUT_SECS):
-    deadline = time.monotonic() + timeout_secs
-    while time.monotonic() < deadline:
-        value = predicate()
-        if value:
-            return value
-        time.sleep(_POLL_SECS)
-    return None
+    """``predicate()``'s first truthy value; one that never comes fails by name."""
+    return wait_until(predicate, timeout=timeout_secs, interval=_POLL_SECS)
 
 
 def _supervisor(sessions):
@@ -848,7 +844,9 @@ def test_the_child_honours_the_cross_process_session_lock(tmp_path):
                     "the child indexed a session whose cross-process lock was held "
                     "elsewhere -- the delete-vs-reindex ordering is not closed"
                 )
-                time.sleep(_POLL_SECS)
+                time.sleep(
+                    _POLL_SECS
+                )  # flake-ok: holds the absence over several child passes; a lock skip emits no signal to await
 
         # Released: the same child must now pick it up, which also proves the
         # first half was a lock and not simply a child that never got there.
@@ -878,7 +876,9 @@ def test_a_deleted_session_does_not_come_back_while_the_child_runs(tmp_path):
             assert "alpha" not in _indexed_keys(
                 sessions
             ), "a deleted session's indexed text came back"
-            time.sleep(_POLL_SECS)
+            time.sleep(
+                _POLL_SECS
+            )  # flake-ok: holds the absence over several child passes; a stale-text return emits no signal to await
 
         # The sibling is untouched: the lock is per session, not a global stall.
         assert "beta" in _indexed_keys(sessions)

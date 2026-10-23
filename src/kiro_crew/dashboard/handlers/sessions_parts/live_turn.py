@@ -18,6 +18,7 @@ from aiohttp import web
 
 from kiro_crew import session_directive
 from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers._shared import guard_owner_surface_routes, internal_memory_scope
 from kiro_crew.dashboard.handlers.sessions_parts.app_scope import (
     _STATE_APPROVALS_NOT_APP_VISIBLE,
@@ -254,7 +255,7 @@ async def api_session_directive(request: web.Request) -> web.Response:
     # Lazy on purpose: mcp_core is the MCP server module and imports every tool
     # handler; no dashboard module loads it at import time, and this route is
     # the only one that needs it.
-    from kiro_crew import mcp_core
+    from kiro_crew import mcp_core, session_environment
 
     tool = str(body.get("tool") or "").strip()
     raw_args = body.get("raw_args")
@@ -284,7 +285,14 @@ async def api_session_directive(request: web.Request) -> web.Response:
             },
             status=400,
         )
-    derived = mcp_core.derive_directive(tool, raw_args, session_key)
+    if tool in session_environment.LOCAL_ONLY_CORE_TOOLS:
+        # The replay's remote-workspace guard would read the choices store on this
+        # loop; look it up in a thread and hand the replay the answer.
+        remote = await asyncio.to_thread(session_environment.session_runs_remotely, session_key)
+        with session_environment.known_placement(session_key, remote):
+            derived = mcp_core.derive_directive(tool, raw_args, session_key)
+    else:
+        derived = mcp_core.derive_directive(tool, raw_args, session_key)
     if derived is None:
         logger.warning(
             "session-directive REFUSED (not_derivable) for session_key=%r tool=%r: "
@@ -529,8 +537,8 @@ def _service_wait_ping(
         # killed MCP process, a hard stop). Safe to hand the slot to this one.
     if not prev or prev.get("wait_id") != wait_id:
         try:
-            remaining = max(0, min(1800, int(body.get("remaining") or 0)))
-            total = max(0, min(1800, int(body.get("seconds") or 0)))
+            remaining = max(0, min(1800, body_int(body.get("remaining") or 0)))
+            total = max(0, min(1800, body_int(body.get("seconds") or 0)))
         except (TypeError, ValueError):
             remaining, total = 0, 0
         slot._wait_state = {

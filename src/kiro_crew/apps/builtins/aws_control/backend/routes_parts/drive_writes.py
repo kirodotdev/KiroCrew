@@ -36,6 +36,7 @@ from kiro_crew.apps.builtins.aws_control.backend.routes_parts.common import (
     logger,
 )
 from kiro_crew.apps.builtins.aws_control.backend.routes_parts.drive import _require_drive
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.deploy.engine import AWSError
 
 
@@ -380,7 +381,7 @@ async def _handle_drive_share(request: web.Request) -> web.Response:
     if err:
         return _bad_request(err, "invalid_key")
     try:
-        expires = int(body.get("expiresSecs", 24 * 3600))
+        expires = body_int(body.get("expiresSecs", 24 * 3600))
     except (TypeError, ValueError):
         return _bad_request("expiresSecs must be a number", "invalid_expiry")
     expires = max(60, min(expires, storage_mod.PRESIGN_MAX_SECS))

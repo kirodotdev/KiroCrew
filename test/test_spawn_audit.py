@@ -300,9 +300,8 @@ FIRST_PARTY_SPAWNS: frozenset[str] = frozenset(
         # carve-out is inert anyway.
         "voice_reply.py::_synthesize_system",
         # The shared local-TTS runner. It DECIDES nothing: it forwards its own
-        # parameter to the chokepoint, and its only caller passing a non-default
-        # value is the reviewed ``_synthesize_system`` entry above (piper's call
-        # omits it and takes the False default). Listed rather than excluded
+        # parameter to the chokepoint, and its only caller is the reviewed
+        # ``_synthesize_system`` entry above. Listed rather than excluded
         # because the scan is deliberately value-blind, so a future caller
         # passing True here would still have to be reviewed as its own entry.
         "voice_reply.py::_run_tts_subprocess",

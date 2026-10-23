@@ -28,7 +28,7 @@
         "subagents": {}
       }
     },
-    "agent_version": "1.11.0",
+    "agent_version": "2.2.2",
     "frame": "response",
     "id": 1,
     "protocol_version": 1
@@ -38,7 +38,7 @@
     "frame": "_auth/status_update",
     "params": {
       "authStatus": {
-        "detail": "ollama",
+        "detail": "stub",
         "kind": "gateway",
         "label": "Custom model gateway"
       }
@@ -54,28 +54,9 @@
         "name": "Mode",
         "options": [
           {
-            "_meta": {
-              "kind": "standard"
-            },
-            "description": "Always ask to edit external files and use the internet",
-            "name": "Ask for approval",
-            "value": "read-only"
-          },
-          {
-            "_meta": {
-              "kind": "auto_review"
-            },
             "description": "Only ask for actions detected as potentially unsafe",
-            "name": "Approve for me",
+            "name": "Auto review",
             "value": "agent"
-          },
-          {
-            "_meta": {
-              "kind": "full_access"
-            },
-            "description": "Unrestricted access to the internet and any file on your computer",
-            "name": "Full access",
-            "value": "agent-full-access"
           }
         ],
         "type": "select"
@@ -90,22 +71,23 @@
           {
             "name": "Default",
             "value": "default"
-          },
-          {
-            "description": "Plan before making changes",
-            "name": "Plan",
-            "value": "plan"
           }
         ],
         "type": "select"
       },
       {
         "category": "model",
-        "currentValue": "",
+        "currentValue": "gpt-5-codex",
         "description": "Model Codex uses for the session",
         "id": "model",
         "name": "Model",
-        "options": [],
+        "options": [
+          {
+            "description": null,
+            "name": "5 Codex",
+            "value": "gpt-5-codex"
+          }
+        ],
         "type": "select"
       }
     ],
@@ -116,30 +98,29 @@
       "current": "agent",
       "ids": [
         "read-only",
+        "workspace-write",
         "agent",
         "agent-full-access"
       ]
     },
-    "session_id": "01a09463-c776-7020-8aeb-2939368590f1"
+    "session_id": "codex-session-1"
   },
   {
-    "action": "update",
-    "events": [],
-    "frame": "session/update",
-    "session_update": "available_commands_update"
+    "frame": "response",
+    "id": 3
   },
   {
     "action": "update",
     "events": [
       {
         "kind": "text_chunk",
-        "text": "Warning: Model metadata for `llama32-32k:latest` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\n\n"
+        "text": "Warning: Model metadata for `gpt-5-codex` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\n\n"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "Warning: Model metadata for `llama32-32k:latest` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\n\n",
+      "text": "Warning: Model metadata for `gpt-5-codex` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\n\n",
       "thinking": false
     }
   },
@@ -153,9 +134,94 @@
     "action": "update",
     "events": [],
     "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "echo hello-from-corpus",
+          "cwd": "~/work"
+        },
+        "title": "echo hello-from-corpus",
+        "tool_call_id": "call_0",
+        "tool_input": "{\n  \"command\": \"echo hello-from-corpus\",\n  \"cwd\": \"~/work\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "echo hello-from-corpus"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Yes, proceed"
+          },
+          {
+            "id": "accept_execpolicy_amendment",
+            "label": "Yes, and don't ask again for commands that start with `echo hello-from-corpus`"
+          },
+          {
+            "id": "cancel",
+            "label": "No, and tell Codex what to do differently"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "echo hello-from-corpus",
+          "cwd": "~/work"
+        },
+        "shell_classified": true,
+        "title": "Run command",
+        "tool_call_id": "call_0",
+        "tool_input": "{\n  \"command\": \"echo hello-from-corpus\",\n  \"cwd\": \"~/work\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "accept_execpolicy_amendment",
+      "once": "allow_once",
+      "reject": "cancel"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_0",
+        "tool_final": true,
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      5520,
+      105,
       258400
     ],
     "usage_cost": null
@@ -165,62 +231,14 @@
     "events": [
       {
         "kind": "text_chunk",
-        "message_id": "msg_76381",
-        "text": "P"
+        "message_id": "msg_1",
+        "text": "hello-from-corpus"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "P",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "message_id": "msg_76381",
-        "text": "reamble"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "reamble",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "message_id": "msg_76381",
-        "text": ":\n"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": ":\n",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "message_id": "msg_76381",
-        "text": "```"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "```",
+      "text": "hello-from-corpus",
       "thinking": false
     }
   },
@@ -230,7 +248,7 @@
     "frame": "session/update",
     "session_update": "usage_update",
     "usage": [
-      4096,
+      105,
       258400
     ],
     "usage_cost": null
@@ -249,10 +267,10 @@
   },
   {
     "frame": "response",
-    "id": 3,
+    "id": 4,
     "prompt_tokens": [
-      4060,
-      36,
+      200,
+      10,
       0,
       0
     ],

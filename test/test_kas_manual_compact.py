@@ -38,6 +38,7 @@ from kiro_crew.acp_backends import (
 )
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.session_compaction import _compact_unsupported_backend, _harness_managed_backend
+from kiro_crew.testing.wait import finished
 
 _REQ_ID = 11
 
@@ -208,7 +209,9 @@ async def test_compact_then_wait_returns_the_turns_outcome() -> None:
     ``_kiro.dev/metadata`` frame KAS never sends."""
     handle, _ = _make(result={"success": True}, updates=[_summarization_completed("done")])
     await handle.compact()
-    result = await asyncio.wait_for(handle.wait_for_compaction(timeout=30.0), timeout=2.0)
+    result = await finished(
+        handle.wait_for_compaction(timeout=30.0), "the cached compaction outcome", timeout=2.0
+    )
     assert result == {"type": "completed", "summary": "done"}
 
 
@@ -216,7 +219,9 @@ async def test_compact_then_wait_returns_the_turns_outcome() -> None:
 async def test_compact_then_wait_returns_a_refusal() -> None:
     handle, _ = _make(result={"success": False})
     await handle.compact()
-    result = await asyncio.wait_for(handle.wait_for_compaction(timeout=30.0), timeout=2.0)
+    result = await finished(
+        handle.wait_for_compaction(timeout=30.0), "the cached compaction outcome", timeout=2.0
+    )
     assert result["type"] == "failed"
 
 
@@ -241,7 +246,9 @@ async def test_an_engine_without_the_verb_fails_without_sending(caps) -> None:
     assert "no compaction command" in statuses[0][1]
     assert events[-1].kind == EVENT_COMPLETE
     await handle.compact()
-    result = await asyncio.wait_for(handle.wait_for_compaction(timeout=30.0), timeout=2.0)
+    result = await finished(
+        handle.wait_for_compaction(timeout=30.0), "the cached compaction outcome", timeout=2.0
+    )
     assert result["type"] == "failed"
 
 

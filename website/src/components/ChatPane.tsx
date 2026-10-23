@@ -52,6 +52,7 @@ import { api } from '../api/client'
 import { slotMessagesQueryKey } from '../api/slotMessagesQuery'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../chat-core/composer/Composer'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
+import { isUntitledSession, sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { isComposerSendHeld } from '../utils/composerSendHolds'
 import { i18nT } from '../i18n/t'
 import { answerRejectedMessage } from '../utils/questionAnswers'
@@ -233,9 +234,16 @@ export default function ChatPane({
   // Parent link for the "↳ fork of <parent>" tag. forked_from is the parent's
   // history key (dashboard:<slot>); strip the prefix to match the bare slot key.
   const parentKey = paneSlot?.forked_from ? paneSlot.forked_from.replace(/^dashboard:/, '') : null
-  const parentTitle = useAppSelector((s) =>
-    parentKey ? s.dashboard.slots.find((x) => x.key === parentKey)?.title : undefined,
+  const parentSlot = useAppSelector((s) =>
+    parentKey ? s.dashboard.slots.find((x) => x.key === parentKey) : undefined,
   )
+  // An untitled parent reads "Untitled session", never its slot key; the tag's
+  // hover keeps the key so two untitled parents stay tellable apart. A parent
+  // missing from the slot list (closed) has an unknown title, so it keeps its key.
+  const parentTitle = parentSlot ? sessionDisplayTitle(parentSlot) : (parentKey ?? '')
+  const parentHoverName = parentSlot && isUntitledSession(parentSlot)
+    ? `${parentTitle} · ${parentKey}`
+    : parentTitle
   const approvalMode = useAppSelector((s) => s.dashboard.approvalMode)
   const title = paneSlot?.title || slotKey
   const displayMode = slotApprovalMode(approvalMode, paneSlot)
@@ -634,9 +642,9 @@ export default function ChatPane({
           {parentKey && (
             <span
               className="shrink-0 text-[10px] text-accent bg-accent/10 rounded-full px-1.5 py-0.5 truncate max-w-[38%]"
-              title={i18nT('components.chatPane.forked_from', { name: parentTitle || parentKey })}
+              title={i18nT('components.chatPane.forked_from', { name: parentHoverName })}
             >
-              ↳ {parentTitle || parentKey}
+              ↳ {parentTitle}
             </span>
           )}
           <span className="flex-1" />

@@ -68,6 +68,9 @@ export default function CrewDashboardEmpty({ member, displayName, avatar, onAct 
             <p className="mt-1 text-[13px] leading-relaxed text-text">
               {t('pages.membersPage.dashboard_empty_bubble_body')}
             </p>
+            <p className="mt-1 text-[13px] leading-relaxed text-text">
+              {t('pages.membersPage.dashboard_empty_bubble_own_page')}
+            </p>
           </div>
           {/* The bubble's tail, pointing at the face: a rotated square whose two
               visible edges continue the bubble's border. */}
@@ -82,23 +85,30 @@ export default function CrewDashboardEmpty({ member, displayName, avatar, onAct 
             {/* THE VOICE CHANGES HERE. The bubble above is the crewmate's "I"; the
                 prompts below are the PERSON's, written for them to send. A visible
                 heading naming who they are addressed to, and drafts drawn as the
-                person's own chat bubbles (right-aligned, a plain solid border: a dash
-                read as "the one you picked" in UX review), keep
-                a first-time reader from taking a prompt's "I" for the crewmate. */}
-            <p className="mb-1 text-right text-[13px] font-semibold text-text-strong">
+                person's own chat bubbles (a plain solid border: a dash read as "the
+                one you picked" in UX review), keep a first-time reader from taking
+                a prompt's "I" for the crewmate. The whole block sits on the SAME
+                centre axis as the bubble and the face above it: heading, lead and
+                cards are all centred. The cards fill nearly the whole column, so
+                pushing the block to one side only ever shows as two ragged lines
+                of prose, which reads as a layout slip rather than as "your side of
+                the chat". The person's voice is carried by the heading and the
+                solid-bordered card style alone, so the cards carry no chat-tail
+                corner either. */}
+            <p className="mb-1 text-center text-[13px] font-semibold text-text-strong">
               {t('pages.membersPage.dashboard_empty_prompts_heading', { name: displayName || member })}
             </p>
-            <p id={leadId} className="mb-2 text-right text-[12px] text-muted">
+            <p id={leadId} className="mb-2 text-center text-[12px] text-muted">
               {t('pages.membersPage.dashboard_empty_prompts_lead')}
             </p>
-            <ul className="m-0 flex list-none flex-col items-end gap-2 p-0">
+            <ul className="m-0 flex list-none flex-col items-center gap-2 p-0">
               {PROMPTS.map(({ key, Icon }) => {
                 const text = t(key)
                 return (
-                  <li key={key} className="max-w-[92%]">
+                  <li key={key} className="w-[92%]">
                     <Btn
                       type="button"
-                      className="user-bubble w-full items-start gap-2.5 rounded-xl rounded-br-sm border-border-strong bg-card px-3 py-2.5 text-left leading-relaxed text-card-fg hover:border-accent hover:bg-card focus-visible:outline-2 focus-visible:outline-accent"
+                      className="user-bubble w-full items-start gap-2.5 rounded-xl border-border-strong bg-card px-3 py-2.5 text-left leading-relaxed text-card-fg hover:border-accent hover:bg-card focus-visible:outline-2 focus-visible:outline-accent"
                       onClick={() => onAct(text)}
                       aria-describedby={leadId}
                       data-testid="crew-dashboard-suggestion"

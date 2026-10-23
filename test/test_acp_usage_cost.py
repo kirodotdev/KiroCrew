@@ -372,8 +372,8 @@ class TestPersistGateFires:
         stats.apply_prompt_token_usage(100, 50, 30, 20)
         u = stats.to_turn_usage()
 
-        # The chat-runner persist gate (chat_runner.py) drops an all-zero row, so
-        # the claude seam must produce a nonzero field for the row to be written.
+        # The chat-runner persist gate (_on_complete in chat_turn/turn_stats.py) drops an
+        # all-zero row, so the claude seam must produce a nonzero field for the row to be written.
         assert u.input_tokens or u.output_tokens or u.credits
 
         usage_mod.persist_token_record("slot-1", "test-model", u, "acp")

@@ -614,6 +614,11 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
             )
             else section.default("apps_trusted_repositories")
         ),
+        apps_default_installs_applied=(
+            [a for a in _applied if isinstance(a, str) and a]
+            if isinstance(_applied := section.get("apps_default_installs_applied"), list)
+            else section.default("apps_default_installs_applied")
+        ),
         apps_ui_stream_timeout_secs=section.read("apps_ui_stream_timeout_secs", _safe_int, 5, 600),
         jail=_normalize_jail(section.get("jail")),
         dangerously_skip_permissions=_read_skip_permissions(agent_data),
@@ -1035,6 +1040,8 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         session_grid=section.get("session_grid"),
         mcp_app_panel=section.get("mcp_app_panel"),
         auto_open_git_panel=section.read("auto_open_git_panel", _safe_bool),
+        side_panel_always_open=section.read("side_panel_always_open", _safe_bool),
+        side_panel_pin_summary=section.read("side_panel_pin_summary", _safe_bool),
         session_card_source_links=section.read("session_card_source_links", _safe_bool),
         default_memory_mode=_default_memory_mode_from(section.get("default_memory_mode")),
         widget_density=section.get("widget_density"),

@@ -47,6 +47,15 @@ export interface FeatureVideo {
    *  that from `FeatureVideoStatus`, and a second copy on the clip had no
    *  reader. */
   source?: 'local' | 'remote'
+  /** In-dashboard route for "Try now" (e.g. `/members?member=mate`). When set,
+   *  the footer is "Not now" / "Try now" with no header close, and "Not now"
+   *  hands a "New" tag to the rail item for that route. Absent on older
+   *  gateways and on intros with no call to action. */
+  cta_route?: string
+  /** The dashboard component that IS this intro, in place of a clip: `src` and
+   *  `poster` are empty and nothing is fetched. `"crewmates"` is the
+   *  "Meet your Mates." dialog. Absent on older gateways and on every clip. */
+  component?: string
 }
 
 /** GET /api/feature-videos/next.
@@ -125,8 +134,9 @@ export function createFeatureDiscoveryEndpoints({ get, post, j, jfetch: fetch, j
     // thing left standing between a session that keeps nothing and a PERMANENT verdict
     // is the dashboard's client-side gate. Same cooperative-honesty contract as
     // `mobileLoginLink` (`./remoteAccess`).
-    featureVideoNext: (sessionKey?: string) =>
-      get('/api/feature-videos/next', sessionKey).then(j) as Promise<FeatureVideoNext>,
+    featureVideoNext: (sessionKey?: string, blockedRoutes: string[] = []) =>
+      get('/api/feature-videos/next' + (blockedRoutes.length ? '?blocked_routes=' + encodeURIComponent(blockedRoutes.join(',')) : ''), sessionKey)
+        .then(j) as Promise<FeatureVideoNext>,
     /** Permanent per-video verdict, not a snooze: `seen` retires the clip on
      *  completion or an explicit acknowledgement, `dismissed` retires it on a
      *  close, and the backend never offers that video again after either. */

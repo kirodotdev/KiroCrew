@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         CHAT_TURN_TIMEOUT_MIN,
         COLOR_HEX_RE,
         MAX_COLOR_INDEX,
+        AutocompactPctError,
         DashboardState,
         KiroCrewConfig,
         _autocompact_txn_locks,
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
         deny_app_slot_session_access,
         effective_session_key,
         logger,
+        parse_autocompact_pct,
         published_autocompact_pct,
         read_bounded_json,
         redact_credentials,
@@ -106,27 +108,9 @@ async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
                 {"error": "pct must be a number or null", "code": "pct_not_a_number"}, status=400
             )
         try:
-            pct = float(pct)
-        except OverflowError:
-            # An int too large for a float; out of range by definition.
-            return web.json_response(
-                {"error": "pct must be a finite number", "code": "pct_not_finite"}, status=400
-            )
-        if pct != pct:  # NaN
-            return web.json_response(
-                {"error": "pct must be a finite number", "code": "pct_not_finite"}, status=400
-            )
-        if not (AUTOCOMPACT_PCT_MIN <= pct <= AUTOCOMPACT_PCT_MAX):
-            return web.json_response(
-                {
-                    "error": (
-                        f"pct must be between {AUTOCOMPACT_PCT_MIN:g} "
-                        f"and {AUTOCOMPACT_PCT_MAX:g}"
-                    ),
-                    "code": "pct_out_of_range",
-                },
-                status=400,
-            )
+            pct = parse_autocompact_pct(pct)
+        except AutocompactPctError as exc:
+            return web.json_response({"error": str(exc), "code": exc.code}, status=400)
     # Persist via the same forced-save mechanism every other slot-metadata
     # route uses (tags / folders / pin: save_slot_off_loop(force=True) -- the
     # empty-window merge for message-less slots, the full save otherwise;

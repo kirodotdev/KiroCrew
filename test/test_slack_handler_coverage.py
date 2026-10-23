@@ -40,6 +40,7 @@ from kiro_crew.messaging import commands as mc
 from kiro_crew.slack import handler as h
 from kiro_crew.task_models import Project, Task, TaskStatus
 from kiro_crew.task_reporter import build_status
+from kiro_crew.testing.wait import await_until
 
 
 class _LiveTask:
@@ -1142,7 +1143,7 @@ class TestThreadOverrideHydration:
             h._hydrate_thread_overrides("t1", _metadata_log(lambda _key: {}))
         )
         try:
-            await asyncio.wait_for(started.wait(), 5)
+            await await_until(started, what="the metadata read starting")
             assert "t1" not in h._hydrated_sessions
             if clear:
                 h._thread_agents.pop("t1")
@@ -1152,7 +1153,7 @@ class TestThreadOverrideHydration:
                 h._thread_projects["t1"] = "new-project"
         finally:
             release.set()
-            await asyncio.wait_for(task, 5)
+            await await_until(task, what="the hydration finishing")
         assert h._thread_agents.get("t1") == (None if clear else "new-agent")
         assert h._thread_projects.get("t1") == (None if clear else "new-project")
 

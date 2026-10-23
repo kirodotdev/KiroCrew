@@ -154,10 +154,9 @@ def test_the_kickoff_ends_with_the_build_your_page_line_while_there_is_no_page(
     monkeypatch.setattr(dashboard_agentic, "tab_shows_suggestions", lambda _slug: True)
     text = goal_setup._goal_prompt(GOAL_A["id"], "scout")(rec, True)
     assert text is not None and text.endswith(goal_reminder.DASHBOARD_BUILD_LINE)
-    # A goal with no confirmed milestones yet: the page has nothing to be about.
+    # A goal with no confirmed milestones yet: progress goes on the page all the same.
     bare = goal_setup._goal_prompt(GOAL_A["id"], "scout")({**rec, "key_results": []}, True)
-    assert bare is not None and goal_reminder.DASHBOARD_BUILD_LINE not in bare
-    # Confirming the milestones is the first wake that knows what the page is about.
+    assert bare is not None and bare.endswith(goal_reminder.DASHBOARD_BUILD_LINE)
     confirmed = goal_setup._milestones_build("scout")(rec, True)
     assert confirmed is not None and confirmed.endswith(goal_reminder.DASHBOARD_BUILD_LINE)
     monkeypatch.setattr(dashboard_agentic, "bound_package", lambda _slug: "page")

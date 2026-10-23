@@ -191,7 +191,7 @@ class TestPruneConcurrency:
                     operation=f"concurrent_{i}",
                     outcome="ok",
                 ))
-                time.sleep(0.001)
+                time.sleep(0.001)  # flake-ok: paces the appends so the prune interleaves with them; not a wait
 
         t_prune = threading.Thread(target=do_prune)
         t_append = threading.Thread(target=do_appends)
@@ -257,7 +257,7 @@ class TestPruneConcurrency:
                     ))
                 except Exception as e:
                     errors.append(f"append {i}: {e}")
-                time.sleep(0.001)
+                time.sleep(0.001)  # flake-ok: paces the appends so the prune interleaves with them; not a wait
 
         t_prune = threading.Thread(target=do_prune)
         t_append = threading.Thread(target=do_appends)

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import urllib.parse
 from typing import Any
 
@@ -32,8 +31,6 @@ from kiro_crew.mcp_providers.base import (
     McpServerDetail,
     ProviderUnavailableError,
 )
-
-logger = logging.getLogger(__name__)
 
 # Official registry API base (no trailing slash).
 _API_BASE = "https://registry.modelcontextprotocol.io"

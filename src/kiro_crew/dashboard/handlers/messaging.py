@@ -69,6 +69,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     remember_slack_options,
     run_to_completion,
     slack_options_owner_key,
+    slot_history_key,
     subagent_event_slot,
 )
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
@@ -185,6 +186,7 @@ from kiro_crew.dashboard.messaging_api.proactive_send import (  # noqa: F401
     _deliver_send_message_fallback,
     _post_send_message_to_slack,
     _proactive_source_line,
+    _publishing_session_meta,
     _read_send_message,
     _redact_all,
     _resolve_session_link_url,

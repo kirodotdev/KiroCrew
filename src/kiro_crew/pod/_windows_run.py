@@ -12,6 +12,13 @@ immutable until a terminal drain
 receipt; only a retired publisher or the publisher's final action may write
 that receipt. `stop` publishes `retired` once it has proven an unspawned
 generation's producer gone, and `finish` consumes either terminal receipt.
+
+Every record also carries the kernel uptime at which it was reserved and then
+claimed. A current uptime below that value proves Windows restarted since, and
+a restart ends every process the record can name, so `stop` may publish a
+terminal receipt marked `rebooted` for any unfinished state. A record without
+an uptime, or one taken in the current boot session, proves nothing about a
+restart and keeps every other rule.
 """
 
 from __future__ import annotations
@@ -68,6 +75,39 @@ def _valid_identity(value: Any) -> bool:
     )
 
 
+def _valid_uptime(value: Any) -> bool:
+    return type(value) is int and 0 <= value <= 0xFFFFFFFFFFFFFFFF
+
+
+def _uptime() -> int | None:
+    """The current kernel uptime, or None when it cannot be read (never a guess)."""
+    try:
+        value = jobs.uptime_ms()
+    except OSError:
+        return None
+    return value if _valid_uptime(value) else None
+
+
+def _stamped(record: dict[str, Any]) -> dict[str, Any]:
+    """*record* with this boot session's uptime, or with none when unreadable."""
+    stamped = {key: value for key, value in record.items() if key != "uptime"}
+    uptime = _uptime()
+    if uptime is not None:
+        stamped["uptime"] = uptime
+    return stamped
+
+
+def earlier_boot(record: dict[str, Any]) -> bool:
+    """Whether Windows has restarted since *record* was last stamped.
+
+    True only on positive proof: the record carries an uptime and the current
+    uptime is lower. A missing or unreadable uptime is unknown, never a restart.
+    """
+    recorded = record.get("uptime")
+    current = _uptime()
+    return recorded is not None and current is not None and current < recorded
+
+
 def read(cfg: PodConfig, name: str) -> dict[str, Any] | None:
     """Validate a bounded record. Only ENOENT returns None; all other faults raise."""
     try:
@@ -91,7 +131,20 @@ def read(cfg: PodConfig, name: str) -> dict[str, Any] | None:
         )
         if not valid:
             raise ValueError("invalid run identity")
-        if record["state"] in {"reserved", "cancelled"}:
+        if "uptime" in record and not _valid_uptime(record["uptime"]):
+            raise ValueError("invalid boot-session uptime")
+        if "rebooted" in record and (
+            record["state"] not in TERMINAL_STATES
+            or not _valid_uptime(record["rebooted"])
+            or "uptime" not in record
+            or record["rebooted"] >= record["uptime"]
+        ):
+            raise ValueError("invalid restart receipt")
+        # A restart receipt for a never-claimed run has no publisher to name.
+        unclaimed = record["state"] in {"reserved", "cancelled"} or (
+            record["state"] == "retired" and "rebooted" in record and "publisher" not in record
+        )
+        if unclaimed:
             if any(key in record for key in ("publisher", "root", "job")):
                 raise ValueError("unclaimed run carries runtime evidence")
         elif not _valid_identity(record.get("publisher")):
@@ -122,13 +175,15 @@ def reserve(cfg: PodConfig, name: str) -> dict[str, Any]:
     with claim_lock(cfg, name):
         if read(cfg, name) is not None:
             raise OSError("an unresolved Windows pod run must be retired before another start")
-        record = {
-            "version": _VERSION,
-            "plane": _plane(cfg),
-            "name": name,
-            "generation": uuid.uuid4().hex,
-            "state": "reserved",
-        }
+        record = _stamped(
+            {
+                "version": _VERSION,
+                "plane": _plane(cfg),
+                "name": name,
+                "generation": uuid.uuid4().hex,
+                "state": "reserved",
+            }
+        )
         publish(cfg, name, record)
         return record
 
@@ -159,7 +214,8 @@ def claim(cfg: PodConfig, name: str) -> dict[str, Any]:
         token = pc.process_start_time(os.getpid())
         if not token:
             raise OSError("Windows pod publisher identity is unavailable")
-        record.update(state="preparing", publisher=[os.getpid(), token])
+        # Re-stamped: the claim, not the reservation, starts this boot session's writers.
+        record = _stamped({**record, "state": "preparing", "publisher": [os.getpid(), token]})
         publish(cfg, name, record)
         return record
 
@@ -199,6 +255,29 @@ def retired(cfg: PodConfig, name: str, record: dict[str, Any]) -> dict[str, Any]
         if current != record or record["state"] not in UNSPAWNED_STATES:
             raise OSError("Windows pod run changed while retiring its producer")
         result = {**record, "state": "retired"}
+        publish(cfg, name, result)
+        return result
+
+
+def rebooted(cfg: PodConfig, name: str, record: dict[str, Any]) -> dict[str, Any]:
+    """Retire an unfinished generation whose boot session has ended.
+
+    Written by `stop` once :func:`earlier_boot` holds. A restart ends the
+    publisher, the gateway and every descendant either could have started, so no
+    process from that session can write again. Ready and drained runs become
+    `drained`, the rest `retired`; the current uptime is kept as `rebooted`. A
+    `retired` run already names no live writer and is left alone. Under the claim
+    lock, so a boot started in this session cannot claim the run afterwards.
+    """
+    with claim_lock(cfg, name):
+        current = read(cfg, name)
+        if current != record or record["state"] == "retired" or "rebooted" in record:
+            raise OSError("Windows pod run changed while retiring it after a restart")
+        now = _uptime()
+        if now is None or "uptime" not in record or now >= record["uptime"]:
+            raise OSError("Windows pod run is not proven to predate a restart")
+        state = "drained" if record["state"] in {"ready", "drained"} else "retired"
+        result = {**record, "state": state, "rebooted": now}
         publish(cfg, name, result)
         return result
 

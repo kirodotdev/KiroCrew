@@ -28,6 +28,7 @@ from session_pool_helpers import (  # noqa: F401 -- the autouse fixture register
 )
 
 from kiro_crew import platform_compat
+from kiro_crew.testing.wait import async_wait_until, finished
 
 # ---------------------------------------------------------------------------
 # _pool_health_loop
@@ -357,8 +358,8 @@ class TestDiscardReaping:
         # cannot be cancelled — so a sibling test holding those threads (a wedged
         # PTY close, a real `taskkill` on Windows) makes this offload queue behind
         # them. That queue wait is unbounded and is NOT covered by
-        # `_POOL_DISCARD_TIMEOUT`, so it could consume the 5s budget below and
-        # fail with a TimeoutError naming the wedged shutdown — the one thing this
+        # `_POOL_DISCARD_TIMEOUT`, so it could consume the bounded wait below and
+        # fail naming the wedged shutdown — the one thing this
         # test had already bounded, to 0.05s. A dedicated executor keeps the
         # assertion about escalation ordering instead of about the shared pool's
         # spare capacity.
@@ -367,7 +368,7 @@ class TestDiscardReaping:
             patch("kiro_crew.session._sync_kill_provider") as mock_kill,
             patch("kiro_crew.session.subprocess_executor", return_value=private_executor),
         ):
-            pooled = await asyncio.wait_for(mgr._drain_and_claim("kirocrew"), timeout=5)
+            pooled = await finished(mgr._drain_and_claim("kirocrew"), "the drain and claim")
 
         assert pooled is None
         mock_kill.assert_called_once_with(wedged)
@@ -473,11 +474,10 @@ class TestDiscardReaping:
 
             await mgr._drain_and_claim("kirocrew")
 
-            deadline = time.monotonic() + 5
-            # flake-ok: pre-existing 5 s poll for the real child's exit, moved verbatim; tracked for a de-flake pass
-            while proc.poll() is None and time.monotonic() < deadline:
-                await asyncio.sleep(0.05)
-            assert proc.poll() is not None, "survivor leaked behind lying bookkeeping"
+            await async_wait_until(
+                lambda: proc.poll() is not None,
+                describe=lambda: "survivor leaked behind lying bookkeeping",
+            )
         finally:
             if proc.poll() is None:
                 proc.kill()
@@ -510,11 +510,10 @@ class TestDiscardReaping:
             pooled = await mgr._drain_and_claim("kirocrew")
             assert pooled is None
 
-            deadline = time.monotonic() + 5
-            # flake-ok: pre-existing 5 s poll for the real child's exit, moved verbatim; tracked for a de-flake pass
-            while proc.poll() is None and time.monotonic() < deadline:
-                await asyncio.sleep(0.05)
-            assert proc.poll() is not None, "discarded provider process leaked"
+            await async_wait_until(
+                lambda: proc.poll() is not None,
+                describe=lambda: "discarded provider process leaked",
+            )
         finally:
             if proc.poll() is None:
                 proc.kill()

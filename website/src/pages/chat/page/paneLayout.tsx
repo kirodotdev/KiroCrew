@@ -2,8 +2,9 @@ import { useEffect, useState, useRef, useMemo, useCallback, type Dispatch, type 
 import type { HoverIntent } from '../../../hooks/useHoverIntent'
 import type { AppDispatch } from '../../../store'
 import type { ChatSlot, ChatFolder } from '../../../types'
-import { openActivityPanel, createSlot, deleteSlot } from '../../../store/chatSlice'
+import { openActivityPanel, createSlot, deleteSlot, setSidePanelAlwaysOpen } from '../../../store/chatSlice'
 import { safeSetItem } from '../../../utils/safeStorage'
+import { notePanelShown } from '../../../hooks/usePanelTabs'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import type { useComposerChips } from './composerChips'
 import type { MemoryMode } from '../../../components/MemoryModeChip'
@@ -37,6 +38,13 @@ interface PaneLayoutStateOptions {
   _slotProject: string
   projectGit: ReturnType<typeof useComposerChips>['projectGit']
   projectGitError: boolean
+  embedded?: boolean
+  /** A popped-out chat window: rendered `embedded`, but a full chat page in its own window. */
+  popout?: boolean
+  isMobile: boolean
+  sidePanelAlwaysOpen: boolean
+  sidePanelAlwaysOpenKnown: boolean
+  activityOpen: boolean
 }
 
 /**
@@ -48,8 +56,43 @@ interface PaneLayoutStateOptions {
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
 export function usePaneLayoutState({
-  embedMode, dispatch, slots, activeSlot, autoOpenGitPanel, autoOpenGitPanelKnown, setSplitMode, splitMode, setSplitAnchor, tabsCtl, splitFeatureEnabled, _slotProject, projectGit, projectGitError,
+  embedMode, dispatch, slots, activeSlot, autoOpenGitPanel, autoOpenGitPanelKnown, setSplitMode, splitMode, setSplitAnchor, tabsCtl, splitFeatureEnabled, _slotProject, projectGit, projectGitError, embedded, popout, isMobile, sidePanelAlwaysOpen, sidePanelAlwaysOpenKnown, activityOpen,
 }: PaneLayoutStateOptions) {
+  // Keep side panel open (dashboard.side_panel_always_open). The full chat page
+  // and a popped-out chat window turn it on. An embedded companion chat (an
+  // artifact's or an app's companion column) turns it off, so the chats it
+  // enters keep their own saved panel choice in a column too narrow for the
+  // panel. A popout renders `embedded` too, but it is a whole chat page in its
+  // own window. Off on a phone as well, where the panel covers the chat.
+  // The store opens the current chat's panel when the setting itself turns on,
+  // and reopens a panel a phone or embed flip closed when that flip turns back
+  // on. It does not reopen a panel the user closed. The store keeps its
+  // own copy of `setting`, because the setting turns on in Settings, a route
+  // that unmounts this page, and the page mounts again with the new value
+  // already in its config cache. A companion chat sends no `setting`: a
+  // companion column opened on the way back from Settings must not use up a
+  // turn-on the full chat page has not seen yet.
+  const companionEmbed = !!embedded && !popout
+  useEffect(() => {
+    // Nothing to report until the dashboard config read has returned data. A
+    // pending or failed read reads the setting as off, and the store would keep
+    // that off as the user's setting: the read's later answer would then look
+    // like a turn-on and open a panel the user closed meanwhile. With no report,
+    // a toggle made first still keeps that answer from opening the panel (see
+    // `sidePanelAlwaysOpenSetting`).
+    if (!sidePanelAlwaysOpenKnown) return
+    dispatch(setSidePanelAlwaysOpen({ on: !companionEmbed && sidePanelAlwaysOpen && !isMobile, setting: companionEmbed ? undefined : sidePanelAlwaysOpen }))
+  }, [dispatch, companionEmbed, sidePanelAlwaysOpen, isMobile, sidePanelAlwaysOpenKnown])
+  // Report the chat whose strip the side panel shows (null: none), so a show
+  // ends when the panel closes or its chat changes. The report comes from this
+  // page, not from the panel's own mount, so a panel remount (the find pane
+  // closing, a resize across the phone breakpoint) is not a new show and does
+  // not move Pin Summary's tab. usePanelTabs keeps the last report (see
+  // notePanelShown), so this page mounting again on the same chat ends nothing,
+  // and a chat change made while it was unmounted ends the old chat's show.
+  useEffect(() => {
+    notePanelShown(activityOpen && activeSlot ? activeSlot : null)
+  }, [activityOpen, activeSlot])
   // Auto-open the Git panel when the slot has a project dir that is a git repo.
   // OPT-IN (dashboard.auto_open_git_panel, default off) because the marker below
   // cannot make this the once-per-project nudge it reads like: a new slot inherits
@@ -70,7 +113,10 @@ export function usePaneLayoutState({
     // (after reclaiming a disposable tier if the quota was full), so the guard
     // is the return value rather than a caught throw.
     if (!safeSetItem(key, '1')) return
-    tabsCtl.openView('git')
+    // Without the Auto-Open Git setting the tab is only created for discovery,
+    // so it is automatic: it neither stops Pin Summary's landing nor takes the
+    // focus from a Summary the landing chose.
+    tabsCtl.openView('git', { automatic: !autoOpenGitPanel })
     if (autoOpenGitPanel) dispatch(openActivityPanel())
   }, [activeSlot, _slotProject, projectGit?.repo, projectGitError, tabsCtl, dispatch, autoOpenGitPanel, autoOpenGitPanelKnown])
 

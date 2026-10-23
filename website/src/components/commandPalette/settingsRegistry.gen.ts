@@ -1121,6 +1121,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.keep-side-panel-open",
+    "label": "Keep Side Panel Open",
+    "labelKey": "pages.settings.chatPanel.side_panel_always_open",
+    "hint": "Opens the side panel in every chat, including new chats and after a reload. Closing it hides it until you switch chats. This setting does not apply on a phone.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sidepanel"
+    },
+    "configKey": "dashboard.side_panel_always_open"
+  },
+  {
     "id": "chat.link-previews",
     "label": "Link Previews",
     "labelKey": "pages.settings.chatPanel.link_previews",
@@ -1205,6 +1218,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "sub": "sessions"
     }
+  },
+  {
+    "id": "chat.pin-summary-in-side-panel",
+    "label": "Pin Summary in Side Panel",
+    "labelKey": "pages.settings.chatPanel.side_panel_pin_summary",
+    "hint": "Shows Summary as the first side panel tab. Whenever the panel opens, it shows Summary. Opening a file or another item still shows that item. Needs Session summaries on.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sidepanel"
+    },
+    "configKey": "dashboard.side_panel_pin_summary"
   },
   {
     "id": "chat.pin-the-latest-turn",
@@ -2720,24 +2746,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "stt.model"
   },
   {
-    "id": "voice.piper-binary",
-    "label": "Piper Binary",
-    "labelKey": "pages.settings.voicePanel.piper_binary",
-    "description": "Path to the piper executable. Leave blank to auto-detect on PATH or in a ~/piper-venv install",
-    "tab": "voice",
-    "type": "input",
-    "occurrence": 1
-  },
-  {
-    "id": "voice.piper-model",
-    "label": "Piper Model",
-    "labelKey": "pages.settings.voicePanel.piper_model",
-    "description": "Path to the Piper voice model (.onnx). Required — download from huggingface.co/rhasspy/piper-voices",
-    "tab": "voice",
-    "type": "input",
-    "occurrence": 1
-  },
-  {
     "id": "voice.provider",
     "label": "Provider",
     "labelKey": "pages.settings.sttSettings.provider",
@@ -2751,7 +2759,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.provider-2",
     "label": "Provider",
     "labelKey": "pages.settings.voicePanel.provider",
-    "description": "The built-in engine needs no setup; Piper is offline with better quality; Amazon Polly uses AWS credentials + network",
+    "description": "The built-in engine needs no setup; Amazon Polly uses AWS credentials + network",
     "tab": "voice",
     "type": "select",
     "occurrence": 2,
@@ -2792,15 +2800,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "tab": "voice",
     "type": "select",
     "occurrence": 2
-  },
-  {
-    "id": "voice.speed-3",
-    "label": "Speed",
-    "labelKey": "pages.settings.voicePanel.speed",
-    "hint": "Piper speech speed (length scale)",
-    "tab": "voice",
-    "type": "select",
-    "occurrence": 3
   },
   {
     "id": "voice.streaming",

@@ -435,8 +435,8 @@ class TestLaunchersPassSafePath:
             rel = path.relative_to(_SRC).as_posix()
             text = path.read_text(encoding="utf-8")
             for m in pattern.finditer(text):
-                # Look back to the start of the same argv call (piper_runtime
-                # comments each flag on its own line), else a short window for
+                # Look back to the start of the same argv call (a launcher may
+                # comment each flag on its own line), else a short window for
                 # a bare tuple such as BACKEND_LAUNCHER.
                 call = text.rfind("isolated_python_argv(", 0, m.start())
                 window = text[call if call != -1 else max(0, m.start() - 120) : m.start()]

@@ -5,7 +5,7 @@
  */
 import type { ComponentType } from 'react'
 import { AlarmClock,
-  CalendarClock, Cog, FolderCog, Goal, Gauge, KeyRound, Link2, Plug, Power, ShieldCheck, ShieldOff, UserPlus, UserCog, Wrench, LayoutTemplate, PackagePlus, PackageOpen,
+  CalendarClock, Cog, FolderCog, Goal, Gauge, KeyRound, LayoutDashboard, Link2, Plug, Power, ShieldCheck, ShieldOff, UserPlus, UserCog, Wrench, LayoutTemplate, PackagePlus, PackageOpen,
   type LucideIcon,
 } from 'lucide-react'
 import { i18nT } from '../i18n/t'
@@ -66,6 +66,10 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
   'crewmate.check_ins': {
     icon: AlarmClock, label: () => i18nT('components.changeCards.kind_crewmate_check_ins'),
     primary: () => i18nT('components.changeCards.primary_crewmate_check_ins'), Body: OneCrewmateBody,
+  },
+  'crewmate.dashboard_page': {
+    icon: LayoutDashboard, label: () => i18nT('components.changeCards.kind_crewmate_dashboard_page'),
+    primary: () => i18nT('components.changeCards.primary_crewmate_dashboard_page'), Body: OneCrewmateBody,
   },
   'template.update': {
     icon: LayoutTemplate, label: () => i18nT('components.changeCards.kind_template_update'),

@@ -52,7 +52,15 @@ jobs:
     # Skip while the PR is a draft; `ready_for_review` above runs it once the
     # PR is ready. Non-PR events have no pull_request, so they always run.
     if: github.event.pull_request.draft != true
-    runs-on: ubuntu-latest
+    # Larger-runner group `kirocrew-runners` (currently `kirocrew-linux-4-core`).
+    # Targets the GROUP, not the runner label: this definition has already been
+    # renamed once, and a group reference survives a rename where every label
+    # reference would break at once. Same 4 vCPU / 16 GB as a public-repo
+    # `ubuntu-latest`, with roughly ten times the disk, but drawn from the
+    # separate larger-runner concurrency ceiling instead of the shared standard
+    # pool this repository saturates.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -208,7 +216,12 @@ jobs:
     # Skip while the PR is a draft; `ready_for_review` above runs it once the
     # PR is ready. Non-PR events have no pull_request, so they always run.
     if: github.event.pull_request.draft != true
-    runs-on: ubuntu-latest
+    # Larger-runner group `kirocrew-runners` (currently `kirocrew-linux-4-core`),
+    # same reasoning as the `smoke` job above. The arm64 cross-build is the
+    # disk-hungriest job in this file, so it is also the one that benefits most
+    # from the larger image.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

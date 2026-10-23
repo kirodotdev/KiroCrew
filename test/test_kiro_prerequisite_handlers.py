@@ -44,6 +44,7 @@ from kiro_crew.kiro_prerequisite import (
     ProcessResult,
     _run_process,
 )
+from kiro_crew.testing.wait import await_until, finished
 
 
 class TestKiroPrerequisiteHandlers:
@@ -947,16 +948,16 @@ class TestKiroCrewNeverSetsUpKiroCli:
         clock["now"] += prerequisite_module._FORCED_PROBE_FLOOR_SECS + 1
         slow["active"] = True
         in_flight = asyncio.create_task(service.snapshot(force=True, coalesce=True))
-        await asyncio.wait_for(probe_entered.wait(), timeout=2)
+        await await_until(probe_entered, what="the slow probe entering whoami")
 
         # Machine polls answer promptly from the latch, spawning nothing.
         spawns_before = len(calls)
-        polled = await asyncio.wait_for(service.snapshot(force=True, coalesce=True), timeout=1)
+        polled = await finished(service.snapshot(force=True, coalesce=True), "the latched poll")
         assert polled["ready"] is True
         assert len(calls) == spawns_before
 
         release_probe.set()
-        await asyncio.wait_for(in_flight, timeout=2)
+        await await_until(in_flight, what="the released probe finishing")
 
     @pytest.mark.asyncio
     async def test_auto_poll_is_coalesced_but_check_again_always_probes(

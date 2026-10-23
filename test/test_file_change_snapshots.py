@@ -47,8 +47,8 @@ from kiro_crew.dashboard.chat_runner import (
     _MAX_SNAPSHOT,
     _flush_file_changes,
     _note_reply_row,
+    _on_clear_status,
     _record_turn_snapshot,
-    _run_chat,
     _safe_read_snapshot,
     _snapshot_write_target,
     _truncate_snapshot,
@@ -441,15 +441,8 @@ class TestFlushFileChanges:
         covers the reset that IS observable). What is left is code intent, so it
         stays a narrow AST check, counted in ``test_source_pin_budget.py``.
         """
-        tree = ast.parse(inspect.getsource(_run_chat))
-        [clear] = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.If)
-            and isinstance(node.test, ast.Compare)
-            and isinstance(node.test.comparators[0], ast.Name)
-            and node.test.comparators[0].id == "EVENT_CLEAR_STATUS"
-        ]
+        # The EVENT_CLEAR_STATUS arm's body is the clear phase's, ``_on_clear_status``.
+        [clear] = ast.parse(inspect.getsource(_on_clear_status)).body
         resets = {
             target.id
             for stmt in clear.body

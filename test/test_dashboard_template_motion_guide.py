@@ -16,7 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / "src/kiro_crew/builtin_skills/kirocrew-dev/dashboard-template/SKILL.md"
 REFERENCE = ROOT / "src/kiro_crew/dashboard_templates/builtin/goal-board/template.html"
 BRIDGE = ROOT / "website/src/hooks/useFrameOpenLink.ts"
-DASHBOARD_HOST = ROOT / "website/src/pages/members/CrewDynamicDashboard.tsx"
+#: Where the crewmate Dashboard page's grant is defined; the page re-exports it.
+DASHBOARD_HOST = ROOT / "website/src/lib/crewDashboardSandbox.ts"
 
 _REDUCED = re.compile(r"@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{(.*?)\}\s*\}", re.DOTALL)
 

@@ -813,12 +813,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_discovery_remote import (  # noqa: F401
         _CHALLENGE_PARAM_RE,
         _MAX_CHALLENGE_LEN,
+        _MAX_REDIRECT_TARGET_LEN,
         _expand_header_placeholders,
         _header_reference_unresolved,
         _is_bearer_challenge,
         _needs_authorization,
         _probe_remote,
         _read_jsonrpc_response,
+        _redirect_error,
         _runtime_grant_present,
     )
     from kiro_crew.mcp_discovery_server_info import (  # noqa: F401

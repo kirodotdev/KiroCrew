@@ -8,8 +8,10 @@
  * to the bare `key` restores the defect (same-tick tool pills expand together)
  * while every helper-level test stays green — so the wiring needs its own pin.
  *
- * Arrangement note: two tool rows are used on purpose. Since #23017 they wrap
- * as a turn; the test reads the two pills directly and needs no fold expansion.
+ * Arrangement note: two tool rows and no answer, so the completed turn wraps
+ * and folds every row behind "Worked through 2 steps" (a folded row is
+ * aria-hidden, which hides its pill from the role query). The test opens that
+ * fold first, then reads the two pills.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, waitFor, fireEvent } from '@testing-library/react'
@@ -139,6 +141,8 @@ describe('ChatPage tool-row disclosure identity (#8204 render site)', { timeout:
       { role: 'tool', content: '🔧 Running: bravo', cls: '', ts: 'tick', meta: { tool_call_id: 'tc2', purpose: 'second' } },
     ])
 
+    const fold = await screen.findByRole('button', { name: 'Worked through 2 steps' })
+    fireEvent.click(fold)
     await waitFor(() => expect(pills().length).toBe(2))
     const [a, b] = pills()
     expect(a.getAttribute('aria-expanded')).toBe('false')

@@ -8,6 +8,7 @@ import logging
 
 from aiohttp import web
 
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_delivery import queued_text_for_display
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
@@ -296,7 +297,7 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     try:
-        idx = int(body.get("index"))  # type: ignore[arg-type]
+        idx = body_int(body.get("index"))
     except (TypeError, ValueError):
         return web.json_response({"error": "invalid index", "code": "index_invalid"}, status=400)
 

@@ -395,10 +395,22 @@ async def _run_inner_impl(
     # below still applies, because a record can be pruned or released between the
     # two runs; it is one of two things standing between a shared-arm run and its
     # follow-up rather than the only one.
+    # ── Remote session environment: the child works where the parent does ──
+    # Bound and fenced like the parent, on the dedicated arm: the shared runtime's
+    # workspace server is the parent's and the companion is local. A failed bind
+    # refuses the run.
+    from kiro_crew.coder.session_launch import inherit_environment_for_subagent
+
+    inherits_remote = bool(info.parent_session_key) and (
+        await inherit_environment_for_subagent(info.parent_session_key, session_key)
+    )
+    info._remote_workspace = inherits_remote
     if info.keep:
         self._manager._sessions.mark_continuable(session_key)
         self._manager._conversations[session_key] = time.monotonic()
-    use_session_sharing = plan.shared
+    # The parent's shared runtime carries its workspace server, so a remote
+    # child gets its own; a start priced shared takes the top-up below.
+    use_session_sharing = plan.shared and not inherits_remote
     if use_session_sharing:
         # Local import: this module's ``*_impl`` bodies resolve globals through
         # ``kiro_crew.subagent``, which does not export this name.

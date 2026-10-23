@@ -281,8 +281,8 @@ How the verdicts reach the merge gate:
   (line 1148), says in its docstring that it is "LOCAL ONLY": the server-side
   required status deliberately does not stop on CONCERNS.
 - The verdict words are parsed by one regex in the same file (lines 927-929,
-  `PASS|CONCERNS|BLOCK`) and read in `pr_status.py` (lines 1341-1345, 2329,
-  2391-2504).
+  `PASS|CONCERNS|BLOCK`) and read in `pr_status.py` (`evaluate_reviewer_markers`
+  and `main`).
 - A BLOCK leaves a pull request by a new head or by
   `/ai-review override <lane> <sha>: <reason>`. The handler checks that the
   actor is a repository writer, the sha is the current head, and the reason is

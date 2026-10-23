@@ -257,6 +257,7 @@ def push_slots_update(self: DashboardState, *, legacy_only: bool = False) -> Non
     broadcast. An ordinary call absorbed into the same window widens the
     broadcast back to everyone.
     """
+    self._complete_slot_list_rebuild_if_ready()
     lock = self._slots_broadcast_lock
     if lock is not None:
         with lock:
@@ -475,6 +476,8 @@ def _do_slots_broadcast(self: DashboardState) -> None:
     # integer reads. The profiles directory re-stat lives in poll_profiles_fresh,
     # which only the async watcher calls, and only off the event loop.
     answer_generation = governance_answer_generation()
+    held_keys = self.slot_list_held_keys()
+    hold_channels = self.slot_list_hold_channels()
     # Piggyback the allowlist generation so clients invalidate the cached
     # ['dashboardConfig'] query only when the GitLab-hosts allowlist actually
     # changed -- an event-driven refresh that replaces a constant 30s poll
@@ -504,6 +507,9 @@ def _do_slots_broadcast(self: DashboardState) -> None:
             "slots": slots_json,
             "channelTrusted": ch_trusted,
             "gitlabHostsGeneration": gitlab_hosts_generation(),
+            "slotsPartial": self.slot_list_rebuilding,
+            **({"slotsHeldKeys": held_keys} if held_keys else {}),
+            **({"slotsHoldChannels": True} if hold_channels else {}),
             # getattr, not self._folders: this read path runs on EVERY slots
             # push, including on a __new__-built DashboardState that seeded only
             # the push essentials and never ran __init__ (several endpoint
@@ -543,6 +549,9 @@ def _do_slots_broadcast(self: DashboardState) -> None:
                 folders=_safe_folder_tree(getattr(self, "_folders", None)),
                 folders_gen=self.folders_generation(),
                 governance_gen=answer_generation,
+                slots_partial=self.slot_list_rebuilding,
+                slots_held_keys=held_keys,
+                slots_hold_channels=hold_channels,
             ),
             **({"skip_slot_patch_clients": True} if legacy_only else {}),
         )
@@ -865,6 +874,9 @@ def _broadcast(self: DashboardState, note: dict[str, Any]) -> None:
                 "slots": slots_list,
                 "yolo": note.get("_yolo", False),
                 "channelTrusted": note.get("channelTrusted", False),
+                "slotsPartial": note.get("slotsPartial", False),
+                "slotsHeldKeys": note.get("slotsHeldKeys", ()),
+                "slotsHoldChannels": note.get("slotsHoldChannels", False),
                 # Consumed by ``_send_ws_all``; never serialized to a client.
                 "_legacy_only": bool(note.get("_legacy_only", False)),
             }
@@ -879,6 +891,9 @@ def _broadcast(self: DashboardState, note: dict[str, Any]) -> None:
                 folders=note.get("folders"),
                 folders_gen=note.get("foldersGeneration"),
                 governance_gen=note.get("governanceGeneration"),
+                slots_partial=bool(ws_data["slotsPartial"]),
+                slots_held_keys=ws_data["slotsHeldKeys"],
+                slots_hold_channels=bool(ws_data["slotsHoldChannels"]),
             )
         elif msg_type == "slot_title":
             ws_data = {"key": note["key"], "title": note["title"]}

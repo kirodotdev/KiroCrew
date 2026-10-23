@@ -160,7 +160,7 @@ def signing_key_health(
         # this leaf, so the size seen here says nothing about the real key — honour
         # that regardless of readability, because the Linux mask falls back to a
         # READABLE empty stand-in when its private-tmpfs mount fails
-        # (sandbox_launcher_program: "the caller falls back to the readable empty
+        # (sandbox_launcher_parts/mask_stages.py: "the caller falls back to the readable empty
         # mask"). When the ONLY confinement signal is the macOS Seatbelt verdict,
         # the caller sets require_denied_open=True: that verdict is true for ANY
         # Seatbelt profile, including a sandbox Kiro Crew did not create that can

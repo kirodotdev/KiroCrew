@@ -274,14 +274,14 @@ describe('useWebSocket chat_done native toast', () => {
     }
   })
 
-  it('falls back to the slot key when the session has no title', () => {
+  it('names an untitled session "Untitled session", never its slot key (#23084)', () => {
     saveChatCompleteNotify(true)
     const ws = mountOpened()
     seedSlot('slot-b')
 
     act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-b' } }) })
 
-    expect(CONSTRUCTED.map(c => c.title)).toEqual(['slot-b'])
+    expect(CONSTRUCTED.map(c => c.title)).toEqual(['Untitled session'])
   })
 
   it.each([

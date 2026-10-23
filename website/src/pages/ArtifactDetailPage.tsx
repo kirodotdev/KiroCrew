@@ -273,14 +273,19 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     const boundSlotResolved = bound
     if (addressMsg) writePrefill(boundSlotResolved.key, addressMsg)
     setPanel('chat')
-    // Resume freshness nudge: if the artifact moved past the session's last
-    // activity, inject a fresh short-lived context entry so the agent doesn't act
-    // on stale-version assumptions. Best-effort — ISO timestamps compare
-    // lexicographically; a miss just means the agent re-reads via artifact_get.
+    // Resume freshness nudge: if the artifact moved past the AGENT's last action,
+    // inject a fresh short-lived context entry so the agent doesn't act on
+    // stale-version assumptions. `last_agent_ts`, not `last_activity_ts`: the
+    // latter moves on a user prompt, and a prompt sent after the edit does not
+    // tell the agent the artifact changed. An older gateway that does not send
+    // `last_agent_ts` falls back to `last_activity_ts`. Best-effort — ISO
+    // timestamps compare lexicographically; a miss just means the agent re-reads
+    // via artifact_get.
     const injected = injectedVersionRef.current.get(boundSlotResolved.key)
+    const agentActedTs = boundSlotResolved.last_agent_ts ?? boundSlotResolved.last_activity_ts
     const artifactIsStale = Boolean(
-      boundSlotResolved.last_activity_ts && artifact.updated_at &&
-      artifact.updated_at > boundSlotResolved.last_activity_ts
+      agentActedTs && artifact.updated_at &&
+      artifact.updated_at > agentActedTs
     )
     // A reload empties the memory-only claim, so NO CLAIM cannot be told from NEVER
     // INJECTED, and re-sending on that ambiguity delivers one entry twice.

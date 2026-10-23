@@ -55,6 +55,7 @@ from kiro_crew.dashboard.session_transfer import (
     build_transfer_bundle_async,
     local_instance_label,
 )
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # ── bundle construction ──────────────────────────────────────────────────
 
@@ -1422,18 +1423,17 @@ async def test_a_cancel_after_the_prefix_landed_removes_it(monkeypatch, tmp_path
     state.conversation_log = log
     big = [{"role": "assistant", "content": f"row-{i}", "ts": ""} for i in range(900)]
     task = asyncio.create_task(st.api_chat_slot_import(_make_request(state, _valid(messages=big))))
-    await asyncio.wait_for(saving.wait(), 10)
+    await await_until(saving, what="the save reaching its parked write")
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     assert seen[0].exists(), "the transcript was removed while its save still ran"
 
     release.set()
-    for _ in range(50):
-        await asyncio.sleep(0.01)
-        if not seen[0].exists():
-            break
-    assert not seen[0].exists(), "the finished save left a rolled-back transcript"
+    await async_wait_until(
+        lambda: not seen[0].exists(),
+        describe=lambda: "the finished save left a rolled-back transcript",
+    )
 
 
 def test_the_import_prefix_is_streamed_not_joined(tmp_path):

@@ -6,7 +6,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { usePanelTabs, openPanelView, __resetPanelTabs, useAnyLiveAppTab, useAllAppTabs, evictDocumentBodies, purgeDocumentBodiesForRedactionChange, documentBodyEpochNow } from '../hooks/usePanelTabs'
+import { usePanelTabs, openPanelView, __resetPanelTabs, useAnyLiveAppTab, useAllAppTabs, evictDocumentBodies, purgeDocumentBodiesForRedactionChange, documentBodyEpochNow, takePlainPanelShow, notePanelStoppedShowing, notePanelShown } from '../hooks/usePanelTabs'
+import * as panelTabsModule from '../hooks/usePanelTabs'
 import { shouldMountSidePanel, isSidePanelHidden } from '../pages/chat/sidePanelMount'
 
 // App-contributed tab descriptors are an ARGUMENT to `usePanelTabs`, not something
@@ -733,6 +734,132 @@ describe('usePanelTabs — per-slot isolation', () => {
     // Emptying content removes only the pinned view; dynamic tabs untouched.
     act(() => result.current.syncPinned([]))
     expect(result.current.tabs.map(t => t.id)).toEqual(['logs', 'side'])
+  })
+
+  it('syncPinned pins leading views ahead of the block, and keeps one that leaves as an ordinary tab', () => {
+    const { result } = renderHook(() => usePanelTabs(null, mock.descriptors))
+    act(() => result.current.openView('logs'))
+    act(() => result.current.syncPinned(['changes', 'artifacts', 'files'], ['summary']))
+    expect(result.current.tabs.map(t => t.id)).toEqual(['summary', 'changes', 'artifacts', 'files', 'logs'])
+    act(() => result.current.syncPinned(['changes', 'artifacts', 'files']))
+    expect(result.current.tabs.map(t => t.id)).toEqual(['changes', 'artifacts', 'files', 'summary', 'logs'])
+  })
+
+  it('takes a plain show once, and a stop re-arms it', () => {
+    renderHook(() => usePanelTabs('plain-slot', mock.descriptors))
+    // Never shown in this page session: a plain open (a reload).
+    expect(takePlainPanelShow('plain-slot')).toBe(true)
+    // Once per show: a remount of the same show lands nothing.
+    expect(takePlainPanelShow('plain-slot')).toBe(false)
+    notePanelStoppedShowing('plain-slot')
+    expect(takePlainPanelShow('plain-slot')).toBe(true)
+  })
+
+  it('ends a show when the panel reports another chat\'s strip', () => {
+    notePanelShown('plain-slot')
+    expect(takePlainPanelShow('plain-slot')).toBe(true)
+    notePanelShown('other-slot')
+    expect(takePlainPanelShow('plain-slot')).toBe(true)
+  })
+
+  it('ends nothing when the panel reports the same strip again', () => {
+    notePanelShown('plain-slot')
+    expect(takePlainPanelShow('plain-slot')).toBe(true)
+    notePanelShown('plain-slot')
+    expect(takePlainPanelShow('plain-slot')).toBe(false)
+  })
+
+  it('ends a show when the panel reports no strip, as when it closes', () => {
+    notePanelShown('plain-slot')
+    expect(takePlainPanelShow('plain-slot')).toBe(true)
+    notePanelShown(null)
+    expect(takePlainPanelShow('plain-slot')).toBe(true)
+  })
+
+  it('ends a show when the first report after the chat page was away names another chat', () => {
+    // The page's last report before it unmounted.
+    notePanelShown('plain-slot')
+    expect(takePlainPanelShow('plain-slot')).toBe(true)
+    // The chat changed with no page mounted, so nothing reported in between:
+    // the page mounts again on the other chat and reports it first.
+    notePanelShown('other-slot')
+    expect(takePlainPanelShow('other-slot')).toBe(true)
+    // Back to the first chat on the page: a new show, so it lands.
+    notePanelShown('plain-slot')
+    expect(takePlainPanelShow('plain-slot')).toBe(true)
+  })
+
+  it('forgets the shown strip on reset', () => {
+    notePanelShown('plain-slot')
+    __resetPanelTabs()
+    expect(takePlainPanelShow('plain-slot')).toBe(true)
+    // Nothing is shown after the reset, so this report ends no show.
+    notePanelShown('other-slot')
+    expect(takePlainPanelShow('plain-slot')).toBe(false)
+  })
+
+  it('counts asked-for tabs, the one already shown included, but not store writes or automatic opens', () => {
+    const { result } = renderHook(() => usePanelTabs('plain-slot', mock.descriptors))
+    // syncPinned writes a fresh strip's focus on its own: that is no choice.
+    act(() => result.current.syncPinned(['changes', 'artifacts', 'files']))
+    expect(result.current.activeId).toBe('changes')
+    // A discovery tab (Git, Changes or Issues for a new link) is not a choice either.
+    act(() => result.current.openView('git', { automatic: true }))
+    act(() => result.current.openView('issues', { automatic: true }))
+    expect(takePlainPanelShow('plain-slot')).toBe(true)
+    // Asking again for the tab already shown still decides the tab.
+    notePanelStoppedShowing('plain-slot')
+    act(() => result.current.setActive('issues'))
+    expect(result.current.activeId).toBe('issues')
+    expect(takePlainPanelShow('plain-slot')).toBe(false)
+    notePanelStoppedShowing('plain-slot')
+    act(() => result.current.openView('logs'))
+    expect(takePlainPanelShow('plain-slot')).toBe(false)
+    // A view opened by slot (a session row's chip, a first pin) is a choice too.
+    notePanelStoppedShowing('plain-slot')
+    act(() => openPanelView('plain-slot', 'changes'))
+    expect(takePlainPanelShow('plain-slot')).toBe(false)
+  })
+
+  /** One call of each tab opener on 'choice-slot': the hook's `open*` callbacks
+   *  and the module's `open*` exports. Every one opens a tab someone asked for,
+   *  so it must count as a tab choice (see `takePlainPanelShow`). */
+  const OPENER_CALLS: Record<string, (tabs: ReturnType<typeof usePanelTabs>) => unknown> = {
+    openView: t => t.openView('logs'),
+    openPanelTab: t => t.openPanelTab(demoTab),
+    openTerminal: t => t.openTerminal(),
+    openFile: t => t.openFile('/repo/a.md', '# a'),
+    openWorkingTreeDiff: t => t.openWorkingTreeDiff('/repo/a.md', '# a'),
+    openDiff: t => t.openDiff('/repo/a.md', '# b', '# a'),
+    openArtifact: t => t.openArtifact({ slug: 'doc', kind: 'markdown' }, '# doc'),
+    openFolder: t => t.openFolder('/repo/src'),
+    openApp: t => t.openApp('tool-call-1', 'App'),
+    openPanelView: () => openPanelView('choice-slot', 'issues'),
+  }
+
+  it('counts every exported tab opener as a tab choice', () => {
+    const { result } = renderHook(() => usePanelTabs('choice-slot', mock.descriptors))
+    const names = [...Object.entries(result.current), ...Object.entries(panelTabsModule)]
+      .filter(([name, value]) => name.startsWith('open') && typeof value === 'function')
+      .map(([name]) => name)
+    expect(names.filter(name => !(name in OPENER_CALLS)),
+      'usePanelTabs exports tab openers this test does not classify. Add each one to OPENER_CALLS, '
+      + 'so this test checks that it counts as a tab choice. An opener that must not count needs its own case here.',
+    ).toEqual([])
+    expect(Object.keys(OPENER_CALLS).filter(name => !names.includes(name)),
+      'OPENER_CALLS lists openers that usePanelTabs no longer exports: remove them.',
+    ).toEqual([])
+    // An automatic open (a tab created for discovery) is not a choice, so a
+    // stopped show stays plain.
+    notePanelStoppedShowing('choice-slot')
+    act(() => result.current.openView('git', { automatic: true }))
+    expect(result.current.activeId).toBe('git')
+    expect(takePlainPanelShow('choice-slot')).toBe(true)
+    for (const name of names) {
+      notePanelStoppedShowing('choice-slot')
+      act(() => { OPENER_CALLS[name](result.current) })
+      expect.soft(takePlainPanelShow('choice-slot'), `${name} must count as a tab choice`).toBe(false)
+    }
   })
 
   it('openView("git") creates a singleton tab titled "Git"', () => {

@@ -425,6 +425,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
             ? { hasMore: state.slotHasMore, nextBefore: state.slotOldestIndex, olderError: state.slotOlderError }
             : null,
           run: { state: state.slotState, running: state.slotRunning, stopping: state.slotStopping },
+          sidePanelReopenSlot: state.sidePanelReopenSlot,
         }
       }
       // Cache the outgoing slot's messages before the switch fields below are
@@ -790,6 +791,17 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
         state.slotHistory = state.slotHistory.filter(k => k !== origin.key)
         // Swap the origin's cached activity back in (pending loaded the target's).
         loadSlotActivity(state, origin.key)
+        // The held-off side panel's reopen: `enterActiveSlot` moved it to the
+        // gone target. If the field still names the target, the origin's value
+        // from before the switch comes back. If the hold lifted during the
+        // read, the lift used that reopen on the gone target, so the origin's
+        // saved reopen opens the origin's panel now. A toggle or the setting
+        // turning off during the read cleared the saved value (see
+        // `toggleActivity` and `setSidePanelAlwaysOpen`). Not covered: a hold
+        // that starts, or lifts and comes back, during the read can leave the
+        // origin's panel closed when the hold lifts. It never opens a panel.
+        if (state.sidePanelReopenSlot === target) state.sidePanelReopenSlot = origin.sidePanelReopenSlot
+        else if (state.sidePanelAlwaysOpen && origin.sidePanelReopenSlot === origin.key) state.activityOpen = true
         // Run mirror: the snapshot applies verbatim. It was captured at
         // pending and kept CURRENT by `syncOriginRun` at every non-active
         // run write, so a transition mid-flight is already in it -- and a

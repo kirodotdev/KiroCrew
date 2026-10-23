@@ -7,7 +7,7 @@ import type { ChatMessage } from '../../types'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
-import { deduplicateByMid, finalizeAllStreaming, finalizeTrailingStreaming, floorForGen, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, raiseChunkSeq, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
+import { deduplicateByMid, finalizeAllStreaming, finalizeTrailingStreaming, floorForGen, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, raiseChunkSeq, reuseUnchangedRows, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
 import { PANE_HYDRATE_LIMIT, REFRESH_LIMIT_CEILING, SLOT_DETAIL_MAX_LIMIT, countMatchedFetchLimit, pagingCursorAfterKeptHead, slotCoverageShortfall } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans } from './thinking'
 import {
@@ -354,6 +354,12 @@ export const warmSlotCache = createAsyncThunk(
   },
 )
 
+/** A transcript array as the store held it when the reducer started: the
+ *  draft's base when Immer drafted it, which is what `reuseUnchangedRows` must
+ *  hand back to keep row identity. */
+const plainRows = (rows: ChatMessage[] | undefined): readonly ChatMessage[] =>
+  (rows && isDraft(rows) ? original(rows) : rows) ?? []
+
 export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>): void {
   builder
     .addCase(refreshSlot.fulfilled, (state, action) => {
@@ -387,6 +393,9 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       const endedTurnHistory = reportedRunning && !running
       if (endedTurnHistory) return
       if (!reportedRunning) recordEndedTurn(state, key, action.payload)
+      // The rows on screen before this refresh, as plain store objects, so the
+      // rebuilt transcript can hand back the ones the page repeats unchanged.
+      const rowsBeforeRefresh = plainRows(state.messages)
       retainServerTotal(state, key, action.payload.total, running, undefined, action.payload.boundedRead)
       // Merge permission messages: prefer state perms (have frontend resolved flags)
       // but include API perms for any we don't have locally (e.g. arrived while disconnected)
@@ -496,6 +505,11 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
         state.slotStopping = false
         finalizeTrailingStreaming(state.messages)
       }
+      // Last write to `messages` in this reducer: every helper above may copy or
+      // edit rows in place, and a reused row is frozen store state. Most turn
+      // ends repeat every row but the last turn's, so the turn grouper and the
+      // memoised rows re-render that turn alone.
+      state.messages = reuseUnchangedRows(rowsBeforeRefresh, state.messages)
       state.pendingTurnSlot = null
       // Same seeding as switchSlot: this refresh is the reconnect recovery,
       // and the frames that raced it are exactly the ones it must not let
@@ -704,7 +718,9 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       const cacheUnchanged = (isDraft(cacheAtFulfil) ? original(cacheAtFulfil) : cacheAtFulfil)
         === action.payload.cacheAtDispatch
       if (!walkUnanchored || cacheUnchanged) {
-        writeSlotPage(state, key, revived, warmIsPrefix ? hasMore : undefined,
+        // Row reuse keeps every position, so `boundedLen` still indexes the
+        // page's last row in the array written.
+        writeSlotPage(state, key, reuseUnchangedRows(plainRows(cacheAtFulfil), revived), warmIsPrefix ? hasMore : undefined,
           warmIsPrefix && hasMore ? boundedLen : undefined,
           action.payload.nextBefore)
       }

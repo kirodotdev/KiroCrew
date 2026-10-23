@@ -660,6 +660,16 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
                     _die(f"starting pod {name} failed: {(cp.stderr or '').strip()}")
                 started_here = True
         else:
+            # A Windows gateway whose supervisor died is serving outside any
+            # drainable Job; adopting it would mint a credential `down` cannot revoke.
+            orphaned = rt.win_backend.unsupervised_reason(cfg, name) if rt.IS_WINDOWS else None
+            if orphaned is not None:
+                _audit("pod.up", "denied", f"name={name}", error="unsupervised gateway")
+                _die(
+                    f"refusing: pod {name!r} is serving, but {orphaned}, so nothing "
+                    "contains its gateway and no token was issued. "
+                    f"{rt.win_backend.MANUAL_RETIREMENT_POINTER}"
+                )
             # Re-resolve INSIDE the lock. `port` above was read before we held it,
             # so a concurrent same-name `up` that pinned a fallback in the meantime
             # would leave us holding the OLD port -- and the health wait below

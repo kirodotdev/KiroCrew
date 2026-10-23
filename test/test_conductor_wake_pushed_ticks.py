@@ -18,6 +18,7 @@ from conductor_wake_helpers import _isolated_home  # noqa: F401
 from conductor_wake_helpers import CONDUCTOR, WORKER, WORKER_B, _bind, _fire, _item, _service
 
 from kiro_crew import conductor_wake, work_ledger
+from kiro_crew.testing.wait import await_until
 
 # ── a push the service cannot take now is not lost ───────────────────────────
 
@@ -115,8 +116,9 @@ def _restored_service_ticks(
         try:
             await svc.start()
             assert arms[:1] == [(loop_id, 0.0)], "start() arms a work-ledger loop at once"
-            # flake-ok: pre-existing 10 s literal bound, which fails loudly, on the shielded wait for the restarted service's boot tick, moved verbatim; tracked for a de-flake pass
-            await asyncio.wait_for(asyncio.shield(svc._timers[loop_id]), timeout=10)
+            await await_until(
+                asyncio.shield(svc._timers[loop_id]), what="the restarted service's boot tick"
+            )
         finally:
             svc.stop()
 
@@ -236,8 +238,7 @@ async def _push_and_settle(svc, loop_id: str, worker: str) -> None:
         if loop_id not in svc._pushed_ticks and loop_id not in svc._pushed_running:
             # Only an armed deadline tick is left, hours away: nothing more to settle.
             return
-        # flake-ok: pre-existing 10 s literal bound, which fails loudly, on the shielded wait for a pushed tick to settle, moved verbatim; tracked for a de-flake pass
-        await asyncio.wait_for(asyncio.shield(task), timeout=10)
+        await await_until(asyncio.shield(task), what="the pushed tick settling")
 
 
 def test_a_close_after_a_done_wake_buys_no_second_turn(tmp_path, monkeypatch):
@@ -382,8 +383,7 @@ def _storm_during_a_turn(tmp_path, monkeypatch, *, news: bool) -> "list[int]":
                 task = svc._timers.get(loop.id)
                 if task is None or task.done() or loop.id not in svc._pushed_ticks:
                     break
-                # flake-ok: pre-existing 10 s literal bound, which fails loudly, on the shielded wait for the deferred pull-forward tick, moved verbatim; tracked for a de-flake pass
-                await asyncio.wait_for(asyncio.shield(task), timeout=10)
+                await await_until(asyncio.shield(task), what="the deferred pull-forward tick")
             return list(delivered)
         finally:
             svc.stop()

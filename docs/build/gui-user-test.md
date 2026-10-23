@@ -225,7 +225,13 @@ runs on), and the other seeded chats stay project-less on purpose, so
 the whole root, sample project included.
 
 One boot also means one roster: every scenario meets the members `GUI_MEMBERS` seeded
-plus whatever an earlier scenario created, so a flow that exists only for an EMPTY
+plus whatever an earlier scenario created. A seeded member has an empty DM thread, and
+the Mates page lists a mate unasked only once its thread holds a message or the
+user starred it (`docs/request-for-change/rfc-session-template-vs-crewmate.md`, rule 3);
+until then the roster search is the one door to it. A scenario that opens a seeded
+member's card therefore tells the tester to type its name into the search box first,
+exactly as a person reaches an unused mate; the seed does not pretend the user
+already chatted with it. So a flow that exists only for an EMPTY
 roster -- the empty Mates page's hero, shown while `config.agents` holds
 nothing beyond `default` -- cannot be reached in this lane and has no scenario;
 `seed_home.py` also sets the legacy `dashboard.crewmates_onboarded` flag, which

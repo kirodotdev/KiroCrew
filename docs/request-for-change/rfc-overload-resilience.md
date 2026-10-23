@@ -1199,7 +1199,7 @@ branched on `STOP_REASON_TOOL_STALL` and ran its own continuation bounded by
 
 `classify_stop_reason(event) -> (state, retryable, reason)` lives in
 `acp/types.py`; the sub-agent run (`subagent_manager/run_turn.py`, `run_yields.py`),
-`chat_runner.py`, workflow agents and TaskRunner call
+the main chat (`_on_complete` in `dashboard/chat_turn/turn_stats.py`), workflow agents and TaskRunner call
 it instead of reading `stop_reason` ad hoc. Recovery continues from the stored
 result and checkpoint, never by re-submitting the original task text.
 

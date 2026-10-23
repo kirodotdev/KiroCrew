@@ -1,7 +1,7 @@
 """claude memberships read off live captures rather than off construction.
 
 Each test reads one committed capture in ``test/fixtures/acp_frames/claude/`` (taken
-on claude-agent-acp 0.93.0) and pins the membership that capture is the evidence for.
+on claude-agent-acp 0.94.0) and pins the membership that capture is the evidence for.
 The replay snapshot beside each capture pins the event shape; these pin the facts the
 membership comments in ``agent_sdk/backends_turns.py``, ``backends_mcp.py`` and
 ``backends_members.py`` quote.

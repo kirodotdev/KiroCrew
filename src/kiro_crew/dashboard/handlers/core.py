@@ -686,7 +686,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _stt_positive_int,
     )
     from kiro_crew.dashboard.handlers.core_stt_settings import (
-        _STT_BUILTIN_LABELS,
         _STT_LANGUAGE_CODES,
         _STT_MODEL_SIZES,
         _STT_THREAD_LADDER,

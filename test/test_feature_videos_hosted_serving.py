@@ -45,6 +45,20 @@ def _served_body(request: web.Request) -> bytes:
     return b"".join(call.args[0] for call in request._payload_writer.write.call_args_list)
 
 
+@pytest.fixture(autouse=True)
+def _default_on_intro_already_retired(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Take the bundled default-on intro out of the pool.
+
+    A bundled ``default_on`` entry (the Mates intro) joins the pool beside a
+    hosted manifest by design, and it ships no media, so the asset gate does
+    not withhold it in a test tree with no ``static/dist``. This module is
+    about hosted clips, so the intro is retired the way it would be on a
+    machine that already saw it; ``test_feature_videos.py`` covers the intro
+    riding beside a manifest.
+    """
+    _floor_monkeypatch.setitem(fv._PROBES, "crewmates_onboarded", lambda: True)
+
+
 class TestServingRoute:
     @pytest.mark.skipif(sys.platform.startswith("win"), reason="symlink creation needs privilege")
     def test_a_symlinked_cache_root_serves_nothing(self, tmp_path: Path) -> None:

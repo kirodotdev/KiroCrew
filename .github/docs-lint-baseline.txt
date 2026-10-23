@@ -100,7 +100,6 @@ dead-identifier	docs/reference/kiro-cli/mcp/oauth-token-storage.md	ascii_seriali
 dead-identifier	docs/reference/kiro-cli/steering.md	totallyBogusMode
 dead-identifier	docs/system-specs/common/code-style.md	max_line_length
 dead-identifier	docs/system-specs/common/testing-conventions.md	LoadGroupScheduling
-dead-identifier	docs/system-specs/common/testing-conventions.md	catching_logs
 dead-identifier	docs/system-specs/modules/acp-client.md	AgentExecutionUserMessageCleared
 dead-identifier	docs/system-specs/modules/acp-client.md	PermissionOption
 dead-identifier	docs/system-specs/modules/acp-client.md	node_binary
@@ -191,7 +190,6 @@ dead-identifier	website/docs/testing.md	webServer
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	acp/types.py:177-181
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	acp/worker_pool.py:49
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	chat_runner.py:867
-line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	dashboard/chat_runner.py:6624
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	knowledge/llm_pool.py:325
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	messaging/driver.py:468
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	platform/bootstrap.py:220-229
@@ -233,7 +231,6 @@ line-ref	docs/request-for-change/rfc-everything-is-an-app.md	src/kiro_crew/secur
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	website/src/pages/OverviewPage.tsx:193-198
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	website/src/pages/overviewStatCards.tsx:32
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	website/src/pages/settings/OverviewPanel.tsx:1-4
-line-ref	docs/request-for-change/rfc-global-workflow-library.md	src/kiro_crew/dashboard/chat_runner.py:4965-5003
 line-ref	docs/request-for-change/rfc-global-workflow-library.md	src/kiro_crew/workflows/store.py:1-17
 line-ref	docs/request-for-change/rfc-i18n-measurement.md	src/kiro_crew/dashboard/handlers/core.py:299-307,377
 line-ref	docs/request-for-change/rfc-i18n-measurement.md	website/package.json:108

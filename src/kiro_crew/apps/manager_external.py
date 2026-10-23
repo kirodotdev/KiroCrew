@@ -70,6 +70,7 @@ def register_external_app(
     resources: str = "app",
     lifecycle: str = "app",
     source_repository: str = "",
+    start_disabled: bool = False,
 ) -> AppResult:
     """Register a self-managed app with Kiro Crew's app system.
 
@@ -90,6 +91,8 @@ def register_external_app(
         source_repository: Server-resolved repository coordinate for a registry
             install/update. An empty value on an existing repository-owned record
             is a metadata refresh, not permission to erase its provenance.
+        start_disabled: Create a new record disabled until an explicit enable.
+            Existing records retain their enabled state, subject to consent.
 
     Returns:
         AppResult indicating success or failure.
@@ -363,10 +366,9 @@ def register_external_app(
             name=name,
             version=version,
             displayName=display_name,
-            # Self-managed apps are "enabled" by default; a manifest that asks for
-            # session control is the one exception, since that grant needs a
-            # consent moment the self-registration path cannot provide.
-            enabled=not widened_session_approval,
+            # Callers that guard activation separately need the first durable
+            # record disabled, just as a new session-control grant needs consent.
+            enabled=not (widened_session_approval or start_disabled),
             sessionApprovalConsentPending=widened_session_approval,
             installedAt=_now_iso(),
             source=source,

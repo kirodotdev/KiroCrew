@@ -150,6 +150,30 @@ describe('EmbedTabStrip — initial tab resolution', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/embed/chat/chat-3?sid=chat-3', { replace: true })
   })
 
+  it('labels an untitled tab "Untitled session" and keeps its key only in the hover (#23084)', () => {
+    // The stored title of an untitled session can equal its key.
+    tabsWindow.__kirocrewTabs = ['chat-u', 'chat-2']
+    tabsWindow.__kirocrewActiveTabIndex = 0
+    wrap(makeStore({
+      activeSlot: null,
+      slots: [{ key: 'chat-u', title: 'chat-u' }, { key: 'chat-2', title: 'Second Chat' }] as unknown as Slots,
+    }))
+    expect(tabTitles()).toEqual(['Untitled session', 'Second Chat'])
+    const [untitled, titled] = screen.getAllByRole('tab')
+    expect(untitled.getAttribute('title')).toBe('Untitled session · chat-u')
+    expect(titled.getAttribute('title')).toBe('Second Chat')
+  })
+
+  it('shows the slug of a tab with no slot row, not "Untitled session" (#23084)', () => {
+    // A missing row means the title is unknown, not that the session has none.
+    // Before the slot list hydrates every restored tab is in that state.
+    tabsWindow.__kirocrewTabs = ['chat-gone']
+    tabsWindow.__kirocrewActiveTabIndex = 0
+    wrap(makeStore({ activeSlot: null, slots: [] as unknown as Slots }))
+    expect(tabTitles()).toEqual(['chat-gone'])
+    expect(screen.getByRole('tab').getAttribute('title')).toBe('chat-gone')
+  })
+
   it('ignores malformed stored state and falls back to the active slot', () => {
     sessionStorage.setItem(STORAGE_KEY, 'not-json')
     wrap(makeStore({ activeSlot: 'chat-2' }))

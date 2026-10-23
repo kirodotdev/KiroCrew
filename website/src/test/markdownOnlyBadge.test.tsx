@@ -80,17 +80,17 @@ describe('the chat agent pop-up', () => {
     { name: 'md-probe', source: 'builtin', description: 'Markdown probe', markdown_block: { backend: 'kiro', capable: ['kas'] } },
   ]
 
-  it('shows a compact "KAS only" pill with the reason on hover', () => {
+  it('shows a compact "Kiro Agent only" pill with the reason on hover', () => {
     render(<AgentDropdownList agents={agents} activeAgent="" defaultAgent="" onSelect={() => {}} />)
     const badges = screen.getAllByTestId('markdown-only-badge')
     expect(badges).toHaveLength(1)
-    expect(badges[0].firstChild?.textContent).toBe('KAS only')
+    expect(badges[0].firstChild?.textContent).toBe('Kiro Agent only')
     // The reason also rides in the option's accessible text, hidden on screen.
     const hidden = badges[0].querySelector('.sr-only')
     expect(hidden?.textContent?.trim()).toBe(badges[0].getAttribute('title'))
     expect(badges[0].closest('[role="option"]')?.textContent).toContain("This agent won't start here.")
     expect(badges[0].getAttribute('title')).toBe(
-      "This agent won't start here. It's defined in markdown, and Kiro CLI runs JSON agents only. Use KAS, or add a JSON file for it.",
+      "This agent won't start here. It's defined in markdown, and Kiro CLI runs JSON agents only. Use Kiro Agent, or add a JSON file for it.",
     )
   })
 

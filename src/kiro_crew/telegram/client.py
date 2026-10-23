@@ -91,8 +91,8 @@ TELEGRAM_MAX_AUDIO_BYTES = 50 * 1024 * 1024
 
 #: Mime types ``sendVoice`` accepts. Anything else has to go via ``sendAudio``:
 #: sendVoice renders the native push-to-listen bubble but the Bot API requires
-#: OGG/Opus, and handing it a WAV produces a 400 rather than a fallback. Piper
-#: emits WAV and Polly emits MP3, so today's synthesizers take the sendAudio
+#: OGG/Opus, and handing it a WAV produces a 400 rather than a fallback. The
+#: system engine emits WAV and Polly emits MP3, so today's synthesizers take the sendAudio
 #: path; the branch exists so an OGG-capable provider gets the better bubble
 #: without another change here.
 TELEGRAM_VOICE_MIMES = frozenset({"audio/ogg", "audio/opus", "audio/ogg; codecs=opus"})
@@ -1031,7 +1031,7 @@ class TelegramClient:
         Routes to ``sendVoice`` for OGG/Opus — the native push-to-listen bubble —
         and to ``sendAudio`` otherwise. The split is a Bot API constraint, not a
         preference: ``sendVoice`` rejects anything but OGG/Opus with a 400 rather
-        than degrading, and the shipped synthesizers emit WAV (Piper) and MP3
+        than degrading, and the shipped synthesizers emit WAV (system) and MP3
         (Polly). ``sendAudio`` accepts both and renders a player, which is a worse
         bubble than a voice note and a much better one than an error.
 

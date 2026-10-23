@@ -712,7 +712,7 @@ def stream_pinned_payload(
 ) -> None:
     """Stream *url* into *write*, refusing anything but the pinned payload.
 
-    Shared by the whisper weights and by the ffmpeg decoder wheel
+    Shared by the whisper weights and by the ffmpeg decoder executable
     (:mod:`kiro_crew.stt.decoder`), because every property below is a property of
     "fetching a sha256-pinned artifact over the network" rather than of either
     artifact: the https floor, the per-socket stall timeout, the digest computed

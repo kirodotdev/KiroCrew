@@ -153,6 +153,13 @@ from kiro_crew.acp.runtime_reader_loop import (
     _oversize_frame_request_id,
     _runtime_rpc_exception,
 )
+from kiro_crew.acp.runtime_remote_workspace import (  # noqa: F401
+    _WORKSPACE_TOOLS_BY_BUILTIN,
+    _WORKSPACE_TOOLS_BY_KAS_TOOL,
+    _restricts_replaced_builtins,
+    _without_local_only_grants,
+    _workspace_grants,
+)
 from kiro_crew.acp.runtime_session_create import (
     _ENTITLEMENT_PROBE_TIMEOUT,
     _ENTITLEMENT_PROBE_TTL_SECS,
@@ -535,6 +542,7 @@ _RUNTIME_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.runtime_host_requests",
     "kiro_crew.acp.runtime_frame_accounting",
     "kiro_crew.acp.runtime_reader_loop",
+    "kiro_crew.acp.runtime_remote_workspace",
     "kiro_crew.acp.runtime_class",
 )
 _MIRROR = _facade_mirror.install(

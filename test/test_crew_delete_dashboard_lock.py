@@ -268,3 +268,35 @@ async def test_the_delete_route_removes_the_lock_under_the_namespace_lock(tmp_pa
     assert held == [True]
     assert not gone.exists()
     assert live.is_file()
+
+
+# --- the asked-once page offer beside the lock ---------------------------------
+
+
+def test_delete_removes_the_departed_crewmates_page_offer_record(tmp_path):
+    """Kept, a later crewmate on the same slug would never be offered its own page."""
+    from kiro_crew.dashboard import page_offer
+
+    home = tmp_path / "home"
+    _write_roster(home, **{GONE: {}})
+    page_offer.record_asked(GONE, "Goal board", "goal-board")
+    captured = KiroCrewConfig.load()
+    _write_roster(home)
+
+    agents_mod._reclaim_deleted_member_dashboard_lock(GONE, captured)
+
+    assert page_offer.was_asked(GONE) is False
+
+
+def test_a_recreated_namesake_keeps_its_page_offer_record(tmp_path):
+    from kiro_crew.dashboard import page_offer
+
+    home = tmp_path / "home"
+    _write_roster(home, **{GONE: {}})
+    page_offer.record_asked(GONE, "Goal board", "goal-board")
+    captured = KiroCrewConfig.load()
+    _write_roster(home, **{GONE: {}})
+
+    agents_mod._reclaim_deleted_member_dashboard_lock(GONE, captured)
+
+    assert page_offer.was_asked(GONE) is True

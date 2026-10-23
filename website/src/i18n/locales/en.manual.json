@@ -1543,6 +1543,12 @@
     "agentLabel": {
       "builtin_conductor": "Conductor"
     },
+    "warmBriefCard": {
+      "asked": "You asked",
+      "label": "Catch-up",
+      "needs_you": "Needs you",
+      "next": "Next"
+    },
     "filePathMenu": {
       "open_in_side_panel": "Open in side panel",
       "show_folder_in_side_panel": "Show folder in side panel"
@@ -1737,14 +1743,25 @@
       "reject_all": "Reject all — refuse the rest without asking",
       "reject_once": "Reject once — keep asking about the rest"
     },
+    "meetYourMatesIntro": {
+      "sample_line_1": "I found a flaky test overnight and fixed it.",
+      "sample_line_2": "The PR is ready. Want me to merge it?",
+      "sample_merge": "Merge it",
+      "sample_show_first": "Show me first"
+    },
     "startupVideoModal": {
       "close": "Close",
+      "crewmates_description": "They find the work, do it, and ask only when they need you.",
+      "crewmates_title": "Meet your Mates.",
       "got_it": "Got it",
       "media_failed": "Feature video could not be loaded",
+      "new_tag": "New",
+      "not_now": "Not now",
       "share": "Share",
       "share_description": "Turn this feature video into a share card you can post anywhere.",
       "share_include_title": "Include the video title",
-      "streaming": "Plays online"
+      "streaming": "Plays online",
+      "try_now": "Try now"
     },
     "tailnetMobile": {
       "automatic_https": "After HTTPS is enabled for this tailnet, Tailscale creates and renews the private certificate automatically.",
@@ -2145,7 +2162,7 @@
     },
     "chatPane": {
       "crewmate_quiet": "{{name}} hasn't said anything to you yet.",
-      "crewmate_quiet_where": "See the sessions it is driving.",
+      "crewmate_quiet_where": "See what it is working on.",
       "earlier_messages_load_failed": "Couldn't load earlier messages. Scroll to the top of the session to try again.",
       "earlier_messages_open_session": "Earlier messages — open full session (closes split)",
       "earlier_messages_unavailable": "Earlier messages are no longer available in this session's history.",
@@ -2179,7 +2196,10 @@
     },
     "codeBlock": {
       "add_comment": "Add comment",
+      "comment_on_lines": "Comment on lines {{start}}–{{end}}",
       "comment_thread": "Comment thread ({{count}})",
+      "comment_thread_selected": "Comment thread ({{count}}, selected)",
+      "comment_thread_unread": "Comment thread ({{count}}, unread)",
       "copied": "Copied!",
       "copy": "Copy"
     },
@@ -2633,7 +2653,7 @@
       "loopback_slow_hint": "Taking a while? If the sign-in page can't reach this computer, switch to a code — it works from any device.",
       "loopback_fell_back": "The sign-in couldn't come back to this computer directly, so here's a code instead.",
       "cancel_unsettled": "Couldn’t cancel the sign-in. It is still active — press the same option again to retry.",
-      "card_intro": "Used only by the KAS (kiro-agent) backend: its agents run as this Kiro account. Kiro CLI keeps its own kiro-cli login, so signing in here does not change it.",
+      "card_intro": "Used only by the Kiro Agent backend: its agents run as this Kiro account. Kiro CLI keeps its own kiro-cli login, so signing in here does not change it.",
       "previous_sign_in_not_removed": "Signed in, but the previous sign-in could not be removed",
       "previous_sign_in_not_removed_body": "The new account is stored, but the one you were switching away from is still there and takes precedence. Sign out of it, then check the sign-in shown here."
     },
@@ -4198,6 +4218,8 @@
       "kind_crewmate_key_results": "Milestones",
       "primary_crewmate_key_results": "Use these milestones",
       "kind_crewmate_check_ins": "Check-ins",
+      "kind_crewmate_dashboard_page": "Dashboard page",
+      "primary_crewmate_dashboard_page": "Yes, build my page",
       "primary_crewmate_check_ins": "Turn on these check-ins",
       "field_key_results": "Milestones"
     },
@@ -5001,6 +5023,10 @@
         "question_too_long_with_paste": "Question too long — reduce to under ~{{max}} characters (yours: {{current}}, counting the collapsed paste). Select the paste pill and press Backspace to remove it, or paste a shorter excerpt.",
         "queue_cancel_failed": "Could not cancel that queued question",
         "queue_edit_failed": "Could not update that queued question",
+        "restore_failed": "Couldn't load this side conversation. Retry before asking. A question sent now comes back to the composer instead.",
+        "restore_failed_command": "Couldn't load this side conversation, so the command was not run. Your message is still in the composer. Send it again.",
+        "restore_retry": "Retry",
+        "send_blocked_not_loaded": "this side conversation hasn't loaded yet",
         "steer_demoted_to_queue": "The turn ended — queued instead",
         "stop_failed": "Could not stop the side turn — try again"
       },
@@ -5861,6 +5887,7 @@
       "sort_sessions_by": "Sort sessions by",
       "clear_named_filter": "Clear {{filter}} filter",
       "pause_all_filters": "Pause all filters",
+      "pinned_always_shown": "Pinned · always shown",
       "resume_all_filters": "Resume all filters",
       "collapse_source_links": "Show fewer",
       "source_links_expand_failed": "Could not load the rest. Click to retry.",
@@ -7491,6 +7518,12 @@
         "update_error_stage_invalidated": "This update was withdrawn or superseded. Check for updates to get the latest version.",
         "in_app_update_intro": "The new version installs beside the current one and switches over atomically. Applying takes one approval command on the gateway host.",
         "or_update_manually": "Or re-run the installer manually",
+        "armed_version_changed": "This installs v{{version}} — a newer version was found just now, so it replaces the v{{offered}} shown before.",
+        "armed_version_changed_channel_move": "This switches to v{{version}} — the channel you chose now serves that instead of the v{{offered}} shown before.",
+        "armed_installs_version": "This installs v{{version}}.",
+        "armed_switches_to_version": "This switches to v{{version}} — the release on the channel you chose.",
+        "arm_no_longer_offered": "This update is no longer offered — you're already up to date.",
+        "arm_offer_withdrawn": "This update is no longer offered — your channel now offers a different version, which will appear here in a moment.",
         "armed_run_on_host": "Approve and apply by running this command on the gateway host.",
         "armed_expires_in": "Approval window closes in {{time}}",
         "armed_waiting_note": "Waiting for approval — once approved, progress appears here and the gateway restarts itself.",
@@ -8344,16 +8377,9 @@
         "amazon_polly_cloud": "Amazon Polly (cloud)",
         "could_not_read_the_hosts_voice_list_only_the_operat": "Could not read the host's voice list. Only the operating system default is offered.",
         "failed_to_save_voice_config": "Failed to save voice config",
-        "faster": "Faster",
-        "fastest": "Fastest",
-        "normal": "Normal",
         "os_default_voice": "Operating system default",
-        "piper_local_offline": "Piper (local, offline)",
-        "slow": "Slow",
-        "slower": "Slower",
-        "slowest": "Slowest",
         "system_built_in": "System (built-in)",
-        "the_built_in_engine_needs_no_setup_piper_is_offlin": "The built-in engine needs no setup; Piper is offline with better quality; Amazon Polly uses AWS credentials + network",
+        "the_built_in_engine_needs_no_setup_amazon_polly_uses": "The built-in engine needs no setup; Amazon Polly uses AWS credentials + network",
         "this_host_has_no_built_in_speech_engine_install_es": "This host has no built-in speech engine. Install espeak-ng (for example: sudo apt install espeak-ng), or pick another provider.",
         "voice_catalogue_unavailable": "Could not load the Polly voice list. The picker shows a built-in fallback list.",
         "voice_from_the_hosts_built_in_speech_engine": "Voice from the host's built-in speech engine",

@@ -25,7 +25,7 @@ from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 from kiro_crew.taskrunner import Step, TaskRun
 
 # A URL whose oversized query payload trips the (domain-agnostic) exfiltration
-# scanner — see test_security.py::test_long_query_redacted_domain_agnostic.
+# scanner — see test_security_exfil_urls.py::test_long_query_redacted_domain_agnostic.
 _EXFIL_URL = "https://collector.example.com/ingest?data=" + "A" * 250
 
 # ── Fixtures / helpers ──

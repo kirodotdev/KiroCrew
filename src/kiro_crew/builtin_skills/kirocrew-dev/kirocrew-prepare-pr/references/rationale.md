@@ -677,3 +677,25 @@ has `setup[]`, `gates[]`, `reviewers[]` (each
 readiness by itself. #12925 merged over its own red shard 2 and reddened that shard
 on every open PR, so SKILL.md's *Review-ready* treats a red run on the current head
 as a concern to fix or to show red on main.
+
+## Why `pr_status.py` and `push_guard.py` load their owners by path
+
+Both entry points are split by responsibility, so neither grows past the repository's
+2,000-line cap, and each stays the one path its callers run and its tests patch. A
+skill's scripts are synced out of the package, so each owner module is loaded from
+the script's own directory by path, never imported: nothing lands on `sys.path` or in
+`sys.modules`, and no bytecode is written.
+
+- `pr_status.py` re-exports every name its owners define: `pr_status_issue_links.py`
+  reads a body's issue references, and `pr_status_verdict.py` classifies the check rows
+  and decides readiness. Every name a test replaces, and every reader of one, stays in
+  `pr_status.py`.
+- `push_guard.py` rebinds every function its owners define onto its own globals through
+  a local twin of `kiro_crew._facade_compose.rebind`, which differs from it in one
+  statement, reading `__type_params__` with a default. Its owners hold functions only:
+  `push_guard_index.py` (the shared index), `push_guard_record.py` (the build record),
+  `push_guard_history.py` (the history checks), `push_guard_squash.py` (`--squash`) and
+  `push_guard_commit.py` (`--commit`, `--amend`).
+
+New work goes to the owner whose docstring names it, and a new responsibility gets an
+owner of its own. Copy the whole `scripts/` directory, never one file.

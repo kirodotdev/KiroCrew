@@ -16,6 +16,7 @@ from kiro_crew.history import ConversationLog
 from kiro_crew.task_models import PROGRESS_FILE, Project, Task
 from kiro_crew.task_reporter import save_progress
 from kiro_crew.taskrunner import TaskRunner
+from kiro_crew.testing.wait import await_until
 
 
 def member_execution(member="alpha", mode="persistent"):
@@ -49,7 +50,7 @@ async def test_plan_captures_member_before_admission_and_survives_parent_change(
     await runner._start_lock.acquire()
     pending = asyncio.create_task(runner.plan("a plan", session_key="source-chat"))
     try:
-        await asyncio.wait_for(captured.wait(), timeout=5)
+        await await_until(captured, what="the plan capturing its execution context")
         await asyncio.to_thread(
             bind_session_execution,
             "source-chat",
@@ -62,7 +63,7 @@ async def test_plan_captures_member_before_admission_and_survives_parent_change(
         raise
     finally:
         runner._start_lock.release()
-    run = await asyncio.wait_for(pending, timeout=5)
+    run = await await_until(pending, what="the plan finishing")
     assert run.execution_context == alpha
     assert read_session_execution(f"taskrunner:{run.task_id}:runtime") == alpha
     persisted = json.loads(runner._runs_path().read_text(encoding="utf-8"))

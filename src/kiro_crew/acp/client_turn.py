@@ -32,6 +32,7 @@ import time
 from contextlib import aclosing
 from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator
 
+from kiro_crew.acp import pi_steer_turn
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
     MAX_ACTIVE_TOOL_CALLS,
@@ -929,6 +930,13 @@ async def _dispatch_events(
         elif action == "update":
             self._track_usage_update(msg)
             self._note_background_launch(msg)
+            # pi's consumed notification for a steer is the gate extension's own
+            # frame, never text of the turn (``acp.pi_steer_turn``).
+            _pi_echo = pi_steer_turn.echo_event(self, msg)
+            if _pi_echo is not False:
+                if isinstance(_pi_echo, AcpEvent):
+                    yield _pi_echo
+                continue
             _steer_echo = self._steer_echo_event(msg)
             if _steer_echo is not None:
                 yield _steer_echo

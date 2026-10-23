@@ -33,6 +33,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.testing.wait import finished
 
 _DEAD_URL = "https://auth.example.com/authorize?state=passive"
 _LIVE_URL = "https://auth.example.com/authorize?state=explicit"
@@ -401,7 +402,7 @@ async def _first_event(handle: AcpSessionHandle) -> AcpEvent | None:
     gen = handle.prompt("hi", timeout=0.2)
     event = None
     with contextlib.suppress(StopAsyncIteration, asyncio.TimeoutError):
-        event = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+        event = await finished(gen.__anext__(), "the turn's first event")
     await gen.aclose()
     return event
 
@@ -502,7 +503,7 @@ async def _events(handle: AcpSessionHandle, limit: int = 8) -> list[AcpEvent]:
     events: list[AcpEvent] = []
     with contextlib.suppress(StopAsyncIteration, asyncio.TimeoutError):
         while len(events) < limit:
-            events.append(await asyncio.wait_for(gen.__anext__(), timeout=1.0))
+            events.append(await finished(gen.__anext__(), "the turn's next event"))
     await gen.aclose()
     return events
 

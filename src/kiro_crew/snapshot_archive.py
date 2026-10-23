@@ -112,8 +112,9 @@ def _rejection_recording_filter(
 def _data_filter(info: tarfile.TarInfo, _dest: str = "") -> tarfile.TarInfo | None:
     """Equivalent to tarfile ``"data"`` filter (Python 3.12+), with 3.10 fallback.
 
-    Also rejects path traversal, symlinks, and hardlinks to eliminate TOCTOU
-    race between pre-scan and extraction.
+    Also rejects path traversal, symlinks, hardlinks, and special files
+    (FIFO and device members) to eliminate TOCTOU race between pre-scan
+    and extraction.
     Excludes sel_hmac.key (must be regenerated on restore, not shipped).
     Security-sensitive files get 0o600 permissions.
     """
@@ -144,6 +145,14 @@ def _data_filter(info: tarfile.TarInfo, _dest: str = "") -> tarfile.TarInfo | No
     # Reject symlinks and hardlinks
     if info.issym() or info.islnk():
         print(f"⚠️  Rejecting symlink/hardlink entry: {_safe_name(info.name)}")
+        return None
+    # Reject special files (FIFO, character/block device). The "data" filter
+    # this claims equivalence with refuses them, and the sibling tar filters
+    # in this repo (papyrus tectonic, pptx_maker engine_source) refuse them
+    # too. A staged FIFO blocks any later pass that opens it for reading,
+    # and bundle content is only ever regular files and directories.
+    if not (info.isreg() or info.isdir()):
+        print(f"⚠️  Rejecting special file entry: {_safe_name(info.name)}")
         return None
     # Never ship these — each must be regenerated on the restoring host, or is that
     # host's own runtime state (the host-local half of ``memory_stores/``).

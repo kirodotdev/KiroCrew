@@ -51,6 +51,7 @@ from kiro_crew.change_card_catalog_kinds import (
     KIND_CREWMATE_CAPABILITIES,
     KIND_CREWMATE_CHECK_INS,
     KIND_CREWMATE_CREATE,
+    KIND_CREWMATE_DASHBOARD_PAGE,
     KIND_CREWMATE_GOAL,
     KIND_CREWMATE_KEY_RESULTS,
     KIND_CREWMATE_UPDATE,
@@ -398,6 +399,11 @@ def result_summary(
 
     *failed_step* is the apply step a ``partial`` card stopped at, when known.
     """
+    if kind == KIND_CREWMATE_DASHBOARD_PAGE and status in ("applied", "cancelled", "expired"):
+        name = params.get("member")
+        if status == "applied":
+            return f"Yes: “{name}” is building its Dashboard page"
+        return f"Not now: “{name}” keeps its current Dashboard page"
     if status == "applied":
         return f"Done: {title}"
     if status == "partial":
@@ -558,6 +564,7 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("PUT", "/api/members/{slug}/goals/long-term"),
         ("PUT", "/api/members/{slug}/goals/key-results"),
         ("PUT", "/api/members/{slug}/goals/schedules"),
+        ("POST", "/api/members/{slug}/dashboard/page-offer"),
         ("POST", "/api/mcp/discover/install"),
         ("POST", "/api/mcp/custom"),
         ("POST", "/api/mcp/remove"),
@@ -584,6 +591,7 @@ MEMORY_ROUTES: frozenset[tuple[str, str]] = HOOKED_ROUTES - {
     ("POST", "/api/agents/{name}/capabilities/preview"),
     ("GET", "/api/connections/mint"),
     ("PATCH", "/api/chat/folders/{id}"),
+    ("POST", "/api/members/{slug}/dashboard/page-offer"),
 }
 
 
@@ -637,6 +645,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         RISK_NORMAL,
         RISK_TIGHTEN,
         RISK_WIDEN,
+        SELF_ONLY_KINDS,
         CardCatalogError,
         KindDef,
         _check_mcp_spec_shapes,

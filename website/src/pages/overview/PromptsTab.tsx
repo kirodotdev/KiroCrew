@@ -13,6 +13,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import ListDetailBack from '../../components/ListDetailBack'
 import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
 import { parseErrorCode, findReport, type ErrorReport } from '../../utils/errorReport'
+import { isUntitledSession, sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { useListDetailView } from '../../hooks/useListDetailView'
 import { useProvider } from '../../providers'
 
@@ -60,12 +61,21 @@ function SlotPicker({ prompt, onClose }: { prompt: Prompt; onClose: () => void }
     <div ref={ref} className="absolute right-0 top-full mt-1 z-50 bg-bg-elevated border border-border rounded-lg shadow-lg min-w-[220px] max-h-[240px] overflow-y-auto py-1 animate-slide-in-left">
       <div className="px-3 py-1.5 text-[11px] text-muted uppercase tracking-wider font-semibold">{i18nT('pages.overview.promptsTab.send_to')}</div>
       <div role="button" tabIndex={0} className="px-2 py-1 mx-1 rounded-md cursor-pointer text-[13px] text-accent font-medium hover:bg-bg-hover transition-colors" onClick={() => send()} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); send() } }}>{i18nT('pages.overview.promptsTab.new_chat')}</div>
-      {slots.map(s => (
-        <div key={s.key} role="button" tabIndex={0} className="px-2 py-1.5 mx-1 rounded-md cursor-pointer text-[13px] hover:bg-bg-hover transition-colors flex items-center gap-2" onClick={() => send(s.key)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); send(s.key) } }}>
-          {s.running && <span className="w-1.5 h-1.5 rounded-full bg-ok shrink-0" />}
-          <span className="truncate">{s.title && s.title !== s.key ? s.title : s.agent || s.key}</span>
-        </div>
-      ))}
+      {slots.map(s => {
+        // Two untitled sessions can show the same row text, so the key that
+        // tells them apart leads a muted second line, and the hover repeats it.
+        const untitled = isUntitledSession(s)
+        const shown = untitled ? s.agent || sessionDisplayTitle(s) : s.title
+        return (
+          <div key={s.key} role="button" tabIndex={0} title={untitled ? `${shown} · ${s.key}` : shown} className="px-2 py-1.5 mx-1 rounded-md cursor-pointer text-[13px] hover:bg-bg-hover transition-colors flex items-center gap-2" onClick={() => send(s.key)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); send(s.key) } }}>
+            {s.running && <span className="w-1.5 h-1.5 rounded-full bg-ok shrink-0" />}
+            <div className="flex-1 min-w-0">
+              <div className="truncate">{shown}</div>
+              {untitled && <div data-testid="slot-key-hint" className="text-[11px] text-muted font-mono mt-0.5 truncate">{s.key}</div>}
+            </div>
+          </div>
+        )
+      })}
       {slots.length === 0 && <div className="px-3 py-1.5 text-[12px] text-muted italic">{i18nT('pages.overview.promptsTab.no_active_chats')}</div>}
     </div>
   )

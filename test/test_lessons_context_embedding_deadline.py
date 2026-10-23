@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,6 +15,7 @@ from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.testing.wait import finished, wait_until
 from kiro_crew.vector_memory import VectorMemoryStore
 
 
@@ -30,7 +30,7 @@ async def test_slow_v1_query_embeds_fall_back_without_holding_prompt_build(monke
     store.write_lesson("never discard unrelated release evidence")
 
     # An embed with no carried deadline blocks until the test lets it go, so a
-    # build that waits for it never returns and ``wait_for`` below trips. The
+    # build that waits for it never returns and the bounded wait below fails. The
     # good path never opens this gate before the build is back.
     no_deadline_release = threading.Event()
 
@@ -39,8 +39,7 @@ async def test_slow_v1_query_embeds_fall_back_without_holding_prompt_build(monke
         if work is None:
             no_deadline_release.wait()
             return None
-        while not work.expired():
-            time.sleep(0.005)
+        wait_until(work.expired, interval=0.005)
         return None
 
     store.embed_fn = slow_queued_embed
@@ -69,17 +68,19 @@ async def test_slow_v1_query_embeds_fall_back_without_holding_prompt_build(monke
         nonlocal ticks
         while not done.is_set():
             ticks += 1
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(
+                0.01
+            )  # flake-ok: measures free-loop ticks while the build runs, not a wait for a signal
 
     ticker_task = asyncio.create_task(ticker())
     try:
-        rendered, _ = await asyncio.wait_for(
+        rendered, _ = await finished(
             run_in_embed_pool(
                 builder.build_message,
                 "orchid deployment",
                 True,
             ),
-            timeout=1.0,
+            "the prompt build returning",
         )
     finally:
         done.set()

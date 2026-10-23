@@ -41,6 +41,7 @@ from kiro_crew.history import (
     HistoryConsolidator,
 )
 from kiro_crew.session import BACKGROUND_KEY
+from kiro_crew.testing.wait import await_until
 from kiro_crew.vector_memory import SemanticRejectCode
 
 
@@ -171,7 +172,7 @@ class TestOffLoopWrappers:
         with caplog.at_level(logging.WARNING, logger="kiro_crew.history"):
             with patch.object(loop, "run_in_executor", _spy):
                 H.append_off_loop(log, "k", "user", "hi")
-            await asyncio.wait_for(done.wait(), timeout=5)
+            await await_until(done, what="the offloaded append finishing")
             await asyncio.sleep(0)
         assert "offloaded append failed" in caplog.text
         assert captured["fut"].done()
@@ -192,7 +193,7 @@ class TestOffLoopWrappers:
         with patch.object(loop, "run_in_executor", _spy):
             H.update_metadata_off_loop(log, "k", {"title": "later"})
         assert futures, "update_metadata_off_loop must dispatch to an executor"
-        await asyncio.wait_for(asyncio.shield(futures[0]), timeout=5)
+        await await_until(asyncio.shield(futures[0]), what="the executor future finishing")
         assert _log(tmp_path).get_metadata("k")["title"] == "later"
 
     @pytest.mark.asyncio
@@ -210,7 +211,7 @@ class TestOffLoopWrappers:
         with patch.object(loop, "run_in_executor", _spy):
             H.append_if_absent_off_loop(log, "k", "user", "durable")
         assert futures, "append_if_absent_off_loop must dispatch to an executor"
-        await asyncio.wait_for(asyncio.shield(futures[0]), timeout=5)
+        await await_until(asyncio.shield(futures[0]), what="the executor future finishing")
         assert [m["content"] for m in _log(tmp_path)._read_messages("k")] == ["durable"]
 
 

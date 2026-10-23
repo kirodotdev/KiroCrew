@@ -231,9 +231,13 @@ class TestNoNewBareLoopbackSender:
         assert src.is_dir(), f"source tree not found at {src}"
 
         offenders: list[str] = []
+        # cron_script.py and its cron_script_*.py owners send the header as one module.
+        family = sorted(src.glob("cron_script*.py"))
+        family_text = "".join(p.read_text(encoding="utf-8", errors="replace") for p in family)
         for path in src.rglob("*.py"):
             text = path.read_text(encoding="utf-8", errors="replace")
-            if not any(h in text for h in self.SECRET_HEADERS):
+            gate = family_text if path in family else text
+            if not any(h in gate for h in self.SECRET_HEADERS):
                 continue
             lines = text.splitlines()
             for i, line in enumerate(lines):

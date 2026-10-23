@@ -552,8 +552,9 @@ export function PrereqRow({
       <div className="min-w-0 flex-1">
         <div className="text-[13px] font-medium text-text-strong">{title}</div>
         {failure ? (
-          // askAgent ON: the launch form on this tab persists its size and
-          // account, so the navigation loses nothing. showIcon OFF: the row's
+          // askAgent ON: the launch form on this tab keeps every entry the
+          // reader has not launched with (size, account, subnet, sign-in), so
+          // the navigation loses nothing. showIcon OFF: the row's
           // warning circle already marks the failed check.
           <div className="mt-0.5">
             {failureDetail ? (
@@ -614,8 +615,9 @@ export function PrereqRow({
         )}
         {/* Its own line under the action row, not inside it: the notice carries
             the hand-off button, and Copy + Re-check already fill the row's
-            two-action budget. askAgent ON: the launch form on this tab persists
-            its size and account, so the navigation loses nothing. */}
+            two-action budget. askAgent ON: the launch form on this tab keeps
+            every entry the reader has not launched with, so the navigation
+            loses nothing. */}
         <ErrorNotice variant="inline" className="mt-1.5" message={error} askAgent />
       </div>
     </li>

@@ -38,6 +38,7 @@ import { useMotionValue, useTransform } from 'framer-motion'
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from '../hooks/useDrawerSwipe'
 import { useTopbarCollapse } from '../lib/useTopbarCollapse'
 import { subscribeNativeNavigate, useMacFullscreen } from './platform/electronBridge'
+import { useNativeHistoryStep } from './platform/nativeHistoryStep'
 import AppIcon from '../components/AppIcon'
 import { useUpdateFlow } from './updates/updateFlow'
 import { useUpdateSubscription } from '../hooks/useUpdateSubscription'
@@ -726,6 +727,8 @@ export function useAppShell() {
       navigate(path)
     })
   }, [navigate, dispatch, mayLeaveForNavigation])
+  // A mouse's Back/Forward buttons on macOS, relayed by the shell as a swipe.
+  useNativeHistoryStep(isMobile)
 
   useEffect(() => {
     dispatch(fetchSlots()).then(action => {

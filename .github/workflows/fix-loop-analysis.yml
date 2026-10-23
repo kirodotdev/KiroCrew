@@ -40,6 +40,16 @@ on:
       window_days:
         description: "Analysis window in days"
         default: "7"
+      ci_waste:
+        description: "Run the CI-waste census (M1 to M3). Opt-in: spends API calls, up to the cap below"
+        type: boolean
+        default: false
+      ci_waste_sample:
+        description: "Census the newest N merged PRs of the window"
+        default: "100"
+      ci_waste_max_calls:
+        description: "HARD cap on census API calls for this run"
+        default: "1000"
 
 permissions:
   contents: read
@@ -55,6 +65,11 @@ permissions:
   # 403ing -- so a missing grant publishes a clean-looking false zero
   # rather than failing.
   pull-requests: read
+  # The opt-in CI-waste census reads `commits/<sha>/check-runs`, which the
+  # GITHUB_TOKEN serves only with `checks: read`. Read-only, and unused until
+  # the census is switched on. `test_fix_loop_discipline.py` pins that every
+  # endpoint the script names has its grant in every block of this file.
+  checks: read
   # No `id-token` here: the OIDC grant for Bedrock is job-scoped to `analyze`
   # below, so the git-history job never holds a credential it does not use.
 
@@ -83,6 +98,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           WINDOW_DAYS: ${{ github.event.inputs.window_days || '7' }}
+          # The CI-waste census (D8, M1 to M3) is OPT-IN and spends API calls.
+          # A dispatch input wins; a scheduled run reads the repository
+          # variables, which are unset by default, so the schedule does not run
+          # it until someone sets FIX_LOOP_CI_WASTE=true. The cap is hard (see
+          # docs/ci/ci-and-reviews.md, "The weekly fix-loop report").
+          CI_WASTE: ${{ github.event.inputs.ci_waste || vars.FIX_LOOP_CI_WASTE || 'false' }}
+          CI_WASTE_SAMPLE: ${{ github.event.inputs.ci_waste_sample || vars.FIX_LOOP_CI_WASTE_SAMPLE || '100' }}
+          CI_WASTE_MAX_CALLS: ${{ github.event.inputs.ci_waste_max_calls || vars.FIX_LOOP_CI_WASTE_MAX_CALLS || '1000' }}
+          # Comma-separated agent logins for the agent rows of M1 to M3. Unset on
+          # purpose: who is an agent is configuration, not a guess.
+          AGENT_LOGINS: ${{ vars.FIX_LOOP_AGENT_LOGINS }}
         run: |
           set -euo pipefail
           SINCE_ISO="$(date -u -d "$WINDOW_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ)"
@@ -94,6 +120,10 @@ jobs:
             --since-iso "$SINCE_ISO" \
             --repo "$GITHUB_REPOSITORY" \
             --max-fixes 600 \
+            --ci-waste "$CI_WASTE" \
+            --ci-waste-sample "$CI_WASTE_SAMPLE" \
+            --ci-waste-max-calls "$CI_WASTE_MAX_CALLS" \
+            --agent-logins "$AGENT_LOGINS" \
             --out fix-loop-metrics.json \
             --summary fix-loop-metrics.md \
             --bodies-out fix-loop-commits.txt
@@ -161,6 +191,7 @@ jobs:
       issues: write
       actions: read
       pull-requests: read
+      checks: read
       id-token: write
     steps:
       # The model reads staged files only; a shallow checkout gives the action

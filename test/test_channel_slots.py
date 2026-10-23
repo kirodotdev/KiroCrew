@@ -25,6 +25,7 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.dashboard import channel_slots
 from kiro_crew.history import _safe_key
+from kiro_crew.history_projection import METADATA_LINE_READABLE
 from kiro_crew.messaging.link import (
     channel_namespace_of,
     is_channel_session_key,
@@ -577,9 +578,20 @@ class _FakeLog:
     def list_sessions(self) -> list[dict[str, Any]]:
         return list(self._sessions)
 
+    def list_sessions_status(self) -> tuple[list[dict[str, Any]], bool]:
+        # Routed through list_sessions so a test that patches it on the instance
+        # still drives the reconciler's listing.
+        return self.list_sessions(), True
+
     def get_metadata(self, key: str) -> dict[str, Any]:
         self.meta_reads.append(key)
         return dict(self._meta.get(key, {}))
+
+    def get_metadata_status(self, key: str) -> tuple[dict[str, Any], bool]:
+        return self.get_metadata(key), True
+
+    def metadata_line_state(self, key: str) -> str:
+        return METADATA_LINE_READABLE
 
     def mtime_of(self, key: str) -> float | None:
         return self.mtimes.get(key)
@@ -1199,11 +1211,13 @@ class TestReconcileMore:
 
     def test_list_sessions_failure_is_swallowed(self, dashboard_state: Any) -> None:
         class Boom:
-            def list_sessions(self) -> list[dict[str, Any]]:
+            def list_sessions_status(self) -> tuple[list[dict[str, Any]], bool]:
                 raise OSError("disk gone")
 
         dashboard_state.conversation_log = Boom()
         assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 0
+        assert dashboard_state._slot_list_hold_channels is True
+        assert dashboard_state.slot_list_held_keys() == []
 
     def test_one_bad_session_does_not_block_the_others(
         self, dashboard_state: Any, monkeypatch: pytest.MonkeyPatch
@@ -1222,6 +1236,48 @@ class TestReconcileMore:
         monkeypatch.setattr(channel_slots, "surface_channel_session", flaky)
         assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
         assert "slack_2.2" in dashboard_state._slots
+
+    def test_a_refused_surface_keeps_the_reconcile_incomplete(
+        self, dashboard_state: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dashboard_state.conversation_log = _FakeLog([_session("slack:1.1")], {})
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        monkeypatch.setattr(channel_slots, "surface_channel_session", lambda *_args, **_kwargs: None)
+
+        surfaced, complete = asyncio.run(channel_slots._reconcile_with_status(dashboard_state, 30))
+
+        assert surfaced == 0
+        assert complete is False
+        assert "slack_1.1" not in dashboard_state._slots
+        assert dashboard_state.slot_list_held_keys() == ["slack_1.1"]
+
+    def test_a_crashed_pass_holds_every_channel_key_until_one_completes(
+        self, dashboard_state: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pass that dies on an unexpected exception knows no more about the
+        sessions it missed than one whose listing was unreadable, so it holds
+        every channel key. Without that, the partial-label deadline clears with
+        no hold at all and the next complete-labelled list drains the unread
+        entries and question drafts of every channel session no pass surfaced.
+        """
+        dashboard_state.conversation_log = _FakeLog([_session("slack:1.1")], {})
+        pushes: list[int] = []
+        dashboard_state.push_slots_update = lambda: pushes.append(1)  # type: ignore[method-assign]
+        real = channel_slots._reconcile_channel_slots_locked
+
+        async def boom(state: Any, window_minutes: int) -> tuple[int, bool]:
+            raise RuntimeError("executor gone")
+
+        monkeypatch.setattr(channel_slots, "_reconcile_channel_slots_locked", boom)
+
+        assert asyncio.run(channel_slots._reconcile_pass(dashboard_state, 30)) is False
+        assert dashboard_state._slot_list_hold_channels is True
+        assert pushes == [1], "the hold must reach the dashboard, not only state"
+
+        monkeypatch.setattr(channel_slots, "_reconcile_channel_slots_locked", real)
+        assert asyncio.run(channel_slots._reconcile_pass(dashboard_state, 30)) is True
+        assert dashboard_state._slot_list_hold_channels is False
+        assert dashboard_state.slot_list_held_keys() == []
 
 
 class TestReconcileClockCoherence:
@@ -1350,8 +1406,8 @@ class TestFailedTranscriptReadDefers:
     async def test_a_failed_read_defers_surfacing(self, dashboard_state: Any) -> None:
         state = dashboard_state
         _map_stems(state, "slack:1.1")
-        state.conversation_log.list_sessions = lambda: [_session("slack_1.1")]
-        state.conversation_log.get_metadata = lambda key: {}
+        state.conversation_log.list_sessions_status = lambda: ([_session("slack_1.1")], True)
+        state.conversation_log.get_metadata_status = lambda key: ({}, True)
 
         def _boom(key: str) -> Any:
             raise OSError("transient read failure")
@@ -1366,11 +1422,28 @@ class TestFailedTranscriptReadDefers:
     ) -> None:
         state = dashboard_state
         _map_stems(state, "slack:1.1")
-        state.conversation_log.list_sessions = lambda: [_session("slack_1.1")]
-        state.conversation_log.get_metadata = lambda key: {}
+        state.conversation_log.list_sessions_status = lambda: ([_session("slack_1.1")], True)
+        state.conversation_log.get_metadata_status = lambda key: ({}, True)
         state.conversation_log.read_messages = lambda key: []
         assert await channel_slots.reconcile_channel_slots(state, 60) == 1
         assert "slack_1.1" in state._slots
+
+    @pytest.mark.asyncio
+    async def test_a_listing_that_skipped_one_file_still_surfaces_the_rest(
+        self, dashboard_state: Any
+    ) -> None:
+        state = dashboard_state
+        _map_stems(state, "slack:1.1")
+        # complete=False: one unrelated session file could not be stat'ed.
+        state.conversation_log.list_sessions_status = lambda: ([_session("slack_1.1")], False)
+        state.conversation_log.get_metadata_status = lambda key: ({}, True)
+        state.conversation_log.read_messages = lambda key: []
+        surfaced, complete = await channel_slots._reconcile_with_status(state, 60)
+        assert surfaced == 1
+        assert "slack_1.1" in state._slots
+        # The pass still cannot name the session it skipped, so every channel key stays held.
+        assert complete is False
+        assert state.slot_list_hold_channels() is True
 
 
 @pytest.mark.usefixtures("frozen_clock")
@@ -1406,12 +1479,15 @@ class TestReconcileKeepsMarkedEffort:
         monkeypatch.setattr(chat_persistence, "_has_validated_effort_marker", fake_marker)
         state = dashboard_state
         _map_stems(state, "slack:1.1", "slack:1.2")
-        state.conversation_log.list_sessions = lambda: [
-            _session("slack_1.1"),
-            _session("slack_1.2"),
-        ]
+        state.conversation_log.list_sessions_status = lambda: (
+            [_session("slack_1.1"), _session("slack_1.2")],
+            True,
+        )
         efforts = {"slack_1.1": "minimal", "slack_1.2": "turbo"}
-        state.conversation_log.get_metadata = lambda key: {"reasoning_effort": efforts[key]}
+        state.conversation_log.get_metadata_status = lambda key: (
+            {"reasoning_effort": efforts[key]},
+            True,
+        )
         state.conversation_log.read_messages = lambda key: []
 
         assert await channel_slots.reconcile_channel_slots(state, 60) == 2
@@ -1419,3 +1495,40 @@ class TestReconcileKeepsMarkedEffort:
         # Marked level is kept; an unmarked unknown level is still rejected.
         assert state._slots["slack_1.1"].reasoning_effort == "minimal"
         assert state._slots["slack_1.2"].reasoning_effort == ""
+
+
+def test_an_incomplete_pass_still_pushes_a_channel_turn_ending(tmp_path: Any) -> None:
+    """A pass whose listing fails still pushes when a channel tab's turn ends.
+
+    The flip comes from the tab's turn lease, not from the listing, so the push
+    must not wait for the next complete pass.
+    """
+    from unittest.mock import MagicMock
+
+    state = _make_state(tmp_path)
+    state.sessions.channel_key_for_stem = lambda stem: ""
+    busy = {"slack:1.1"}
+    state.sessions.is_busy = lambda key: key in busy
+    slot = channel_slots.surface_channel_session(
+        state,
+        {"key": "slack:1.1", "title": "Slack thread", "modified": 0},
+        {},
+        [{"role": "user", "content": "ask", "ts": "2026-10-20T21:00:16+00:00"}],
+        session_key="slack:1.1",
+    )
+    assert slot is not None and slot.linked_session_key == "slack:1.1"
+
+    def _unreadable() -> Any:
+        raise OSError("session folder unreadable")
+
+    state.conversation_log = SimpleNamespace(list_sessions_status=_unreadable)
+    state.push_slots_update = MagicMock()
+
+    assert asyncio.run(channel_slots._reconcile_with_status(state, 30)) == (0, False)
+    pushes = state.push_slots_update.call_count
+    assert asyncio.run(channel_slots._reconcile_with_status(state, 30)) == (0, False)
+    assert state.push_slots_update.call_count == pushes, "no flip and no new hold, no push"
+
+    busy.discard("slack:1.1")
+    assert asyncio.run(channel_slots._reconcile_with_status(state, 30)) == (0, False)
+    assert state.push_slots_update.call_count == pushes + 1, "turn end pushed"

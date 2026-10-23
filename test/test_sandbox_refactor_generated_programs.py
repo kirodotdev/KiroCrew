@@ -10,7 +10,7 @@ added to a real table leaves these goldens alone.
 
 * The launcher's golden is the PLAN DATA it carries -- its one substitution -- for a
   spawn that passes every kind of extra path and identity. The program text around it
-  is the ``kiro_crew.sandbox_launcher_program`` module itself, which
+  is the ``kiro_crew.sandbox_launcher_program`` module and its parts, which
   ``test_sandbox_launcher_program.py`` drives stage by stage.
 * The profile's golden is its full text for a spawn with private windows.
 * Every host reader and table the live host plans from is read off
@@ -34,9 +34,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from test_sandbox_launcher_program import rendered_payload
+from test_sandbox_launcher_program import program_on_disk, rendered_payload
 
-from kiro_crew import sandbox, sandbox_launcher, sandbox_launcher_program, sandbox_plan
+from kiro_crew import sandbox, sandbox_launcher, sandbox_plan
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
@@ -669,9 +669,9 @@ def test_the_launcher_carries_the_golden_plan(
 
 
 def test_the_launcher_is_the_program_module_plus_the_plan(host: _Host) -> None:
-    """One substitution: the program module's own source, with the plan's data in it."""
+    """One substitution: the program module's source and its parts', with the plan's data in it."""
     plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "strict", **_everything(host))
-    source = Path(sandbox_launcher_program.__file__).read_text(encoding="utf-8")
+    source = program_on_disk()
     line = "_PLAN = %s\n" % json.dumps(sandbox_plan.namespace_payload(plan))
     assert sandbox_launcher.render_namespace_launcher(plan) == source.replace(
         sandbox_launcher.PLAN_PLACEHOLDER, line

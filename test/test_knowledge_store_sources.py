@@ -20,6 +20,7 @@ from knowledge_helpers import store_fixture  # noqa: F401
 
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.knowledge.sync import SyncScheduler
+from kiro_crew.testing.wait import await_until, finished
 
 # ---------------------------------------------------------------------------
 # 7. KnowledgeStore -- additional coverage
@@ -1111,7 +1112,7 @@ class TestWatcherRunLoop:
             await w.stop()
 
         w._scan = _scan  # type: ignore[method-assign]
-        await asyncio.wait_for(w.start(), timeout=5)
+        await finished(w.start(), "the watcher loop stopping itself from the second sweep")
         assert len(calls) >= 2, "the loop did not survive the failing sweep"
 
     @pytest.mark.asyncio
@@ -1120,10 +1121,10 @@ class TestWatcherRunLoop:
         w = self._watcher(store, interval=3600)
         w._scan = AsyncMock()  # type: ignore[method-assign]
         task = asyncio.create_task(w.start())
-        # flake-ok: pre-existing one-tick yield before the stop, which the bounded wait_for below covers; moved verbatim, tracked for a de-flake pass
+        # flake-ok: pre-existing one-tick yield before the stop, which the bounded wait below covers; moved verbatim, tracked for a de-flake pass
         await asyncio.sleep(0)  # let the first sweep run and enter the wait
         await w.stop()
-        await asyncio.wait_for(task, timeout=5)
+        await await_until(task, what="the stopped watcher loop returning")
         w._scan.assert_awaited()
 
 

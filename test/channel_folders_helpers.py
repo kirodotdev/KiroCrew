@@ -14,6 +14,7 @@ import pytest
 from chat_test_helpers import _make_state
 
 from kiro_crew.config.loader import config_path
+from kiro_crew.history_projection import METADATA_LINE_READABLE
 
 
 @pytest.fixture(name="dashboard_state")
@@ -43,8 +44,19 @@ class _FakeLog:
     def list_sessions(self) -> list[dict[str, Any]]:
         return [{"key": k, "title": "", "modified": 0.0} for k in self._keys]
 
+    def list_sessions_status(self) -> tuple[list[dict[str, Any]], bool]:
+        # Routed through list_sessions so the subclass override below still
+        # drives the reconciler's listing.
+        return self.list_sessions(), True
+
     def get_metadata(self, key: str) -> dict[str, Any]:
         return dict(self._meta.get(key, {}))
+
+    def get_metadata_status(self, key: str) -> tuple[dict[str, Any], bool]:
+        return self.get_metadata(key), True
+
+    def metadata_line_state(self, key: str) -> str:
+        return METADATA_LINE_READABLE
 
     def update_metadata(self, key: str, fields: dict[str, Any]) -> None:
         self._meta.setdefault(key, {}).update(fields)

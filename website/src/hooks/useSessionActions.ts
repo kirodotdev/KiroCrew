@@ -4,7 +4,7 @@ import { api, ApiError } from '../api/client'
 import { apiErrorCode, isSlotCapError } from '../api/apiError'
 import { store, useAppDispatch } from '../store'
 import type { MuteFlag } from '../store/dashboardSlice'
-import { captureForkOrigin, deleteSlot, forkMayOpen, listForkedSlot, switchSlot } from '../store/chatSlice'
+import { captureForkOrigin, deleteSlot, forkMayOpen, forkOpenSettled, forkOpenStarted, listForkedSlot, requestSlotFolderOpen, switchSlot } from '../store/chatSlice'
 import { updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, markSlotRead, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
 import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
@@ -15,6 +15,7 @@ import { i18nT } from '../i18n/t'
 import { forkFailureNoticeOffsite } from '../utils/forkFailure'
 import type { ForkFailureNotice } from '../utils/forkFailure'
 import { errMessage } from '../utils/thunkError'
+import { sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import type { ChatSlot } from '../types'
 
 interface PinMutationEntry {
@@ -241,7 +242,10 @@ export function useSessionActions(mode?: string, opts?: {
   const forkingSlotsRef = useRef(new Set<string>())
   const forkMutation = useMutation({
     mutationFn: (slot: string) => api.forkChatSlot(slot),
-    onMutate: () => ({ origin: captureForkOrigin(store.getState()) }),
+    // The fork is pending until onSettled, which runs after onSuccess has
+    // switched to the child, so the chat page does not open another session
+    // if its own leaves the list meanwhile.
+    onMutate: () => { dispatch(forkOpenStarted()); return { origin: captureForkOrigin(store.getState()) } },
     onSuccess: (data, _slot, started) => {
       if (data?.ok && data.key) {
         // A refusal describes a condition that no longer holds: leaving it under the row
@@ -256,6 +260,10 @@ export function useSessionActions(mode?: string, opts?: {
         // listed, and the view and its chrome (Split View) stay as they are.
         if (!forkMayOpen(store.getState(), started.origin)) return
         dispatch(switchSlot(data.key))
+        // The child inherits the source's folder, which can be collapsed (the
+        // source row sits in the pinned group or a board lane, or another tab
+        // collapsed the folder meanwhile): open that path so the active row shows.
+        dispatch(requestSlotFolderOpen({ key: data.key, folder_id: data.folder_id }))
         // switchSlot.pending has already made the fork the active slot.
         onOpenedRef.current?.(data.key)
       }
@@ -292,7 +300,12 @@ export function useSessionActions(mode?: string, opts?: {
           // Compact and named: the panel is the narrowest surface, and the notice renders at
           // its root rather than beside the pressed row, so the copy must say which session.
           true,
-          store.getState().dashboard.slots.find(s => s.key === slotKey)?.title || slotKey,
+          // A session missing from the slot list has an unknown title, not
+          // none: it keeps its key rather than reading "Untitled session".
+          (() => {
+            const forkSlot = store.getState().dashboard.slots.find(s => s.key === slotKey)
+            return forkSlot ? sessionDisplayTitle(forkSlot) : slotKey
+          })(),
         )
         setForkError({ ...notice, slotKey })
         return
@@ -310,8 +323,13 @@ export function useSessionActions(mode?: string, opts?: {
     },
     // Mutation-level, not a per-call `mutate` option: TanStack fires per-call
     // callbacks only for the latest call, so a fork of A followed by a fork of B
-    // would leave A marked in flight for good.
-    onSettled: (_data, _err, slotKey) => { forkingSlotsRef.current.delete(slotKey) },
+    // would leave A marked in flight for good. It also ends the fork's pending
+    // open (see onMutate). One callback: a second onSettled key would replace
+    // this one.
+    onSettled: (_data, _err, slotKey) => {
+      forkingSlotsRef.current.delete(slotKey)
+      dispatch(forkOpenSettled())
+    },
   })
 
   // One optimistic toggle for both user-owned mute flags, serialized per flag

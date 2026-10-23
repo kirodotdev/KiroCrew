@@ -6,7 +6,7 @@
  * look/behavior of code and diff rendering is decided.
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useSyncExternalStore } from 'react'
-import type { FileContents, LineAnnotation, SupportedLanguages } from '@pierre/diffs'
+import type { FileContents, LineAnnotation, SelectedLineRange, SupportedLanguages } from '@pierre/diffs'
 import { EXTENSION_TO_FILE_FORMAT, parsePatchFiles, registerCustomLanguage, setCustomExtension } from '@pierre/diffs'
 import { File, FileDiff, MultiFileDiff, Virtualizer, WorkerPoolContext } from '@pierre/diffs/react'
 import type { FileOptions } from '@pierre/diffs/react'
@@ -586,7 +586,7 @@ export function PierreShell({ pool, generation, children }: {
   return <WorkerPoolContext.Provider key={generation} value={pool ?? undefined}>{children}</WorkerPoolContext.Provider>
 }
 
-export function PierreCodeImpl({ file, options, className, langHint, scrollClassName, lineAnnotations, renderAnnotation, renderGutterUtility }: {
+export function PierreCodeImpl({ file, options, className, langHint, scrollClassName, lineAnnotations, selectedLines, renderAnnotation, renderGutterUtility }: {
   file: FileContents
   /** Full `FileOptions` surface: interaction options (line selection, gutter
    *  utility, hover callbacks) ride alongside the base code options and are
@@ -606,6 +606,8 @@ export function PierreCodeImpl({ file, options, className, langHint, scrollClass
   /** Line-pinned annotation rows + their renderer — passed through to the
    *  React `File` top-level props (they are NOT options; see FileProps). */
   lineAnnotations?: LineAnnotation<unknown>[]
+  /** Controlled line selection (null clears); undefined leaves it to Pierre. */
+  selectedLines?: SelectedLineRange | null
   renderAnnotation?: (annotation: LineAnnotation<unknown>) => React.ReactNode
   renderGutterUtility?: (getHoveredLine: () => { lineNumber: number } | undefined) => React.ReactNode
 }) {
@@ -639,6 +641,7 @@ export function PierreCodeImpl({ file, options, className, langHint, scrollClass
       file={resolvedFile}
       options={resolved}
       lineAnnotations={lineAnnotations}
+      selectedLines={selectedLines}
       renderAnnotation={renderAnnotation}
       renderGutterUtility={renderGutterUtility}
     />

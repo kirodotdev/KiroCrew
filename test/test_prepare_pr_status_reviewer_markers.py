@@ -360,6 +360,58 @@ def test_present_pull_request_run_for_head_stays_clean() -> None:
     assert module.main(["pr_status.py", "42"]) == 0
 
 
+def _check_row_of_a_run_started_by(event: str) -> dict[str, str]:
+    return {
+        "name": "tests",
+        "status": "COMPLETED",
+        "conclusion": "SUCCESS",
+        "workflowName": "CI",
+        "workflowRunEvent": event,
+    }
+
+
+def test_a_head_row_naming_a_pull_request_run_outweighs_an_empty_listing(capsys) -> None:
+    """The run listing is a filtered search, and it has answered no runs for a
+    head whose own check rows named its pull_request runs. The rows come off this
+    head's commit, so they prove the run and the PR is not called stale."""
+    module = _load_script()
+    checks = [_check_row_of_a_run_started_by("pull_request")]
+    _install_fake_gh(module, _pr_payload(checks), head_run_events=[])
+
+    assert module.main(["pr_status.py", "42"]) == 0
+    assert "pull_request run for current head: yes" in capsys.readouterr().out
+
+
+def test_head_rows_of_other_events_read_skip_when_the_listing_is_empty(capsys) -> None:
+    """Rows proving this head ran only on other events give the answer a
+    working listing gives for that head, not a stale verdict."""
+    module = _load_script()
+    checks = [_check_row_of_a_run_started_by("pull_request_target")]
+    _install_fake_gh(module, _pr_payload(checks), head_run_events=[])
+
+    assert module.main(["pr_status.py", "42"]) == 0
+    out = capsys.readouterr().out
+    assert "pull_request run for current head: n/a (this head's CI is driven by other" in out
+
+
+def test_a_failed_listing_blocks_unless_a_head_row_names_a_pull_request_run() -> None:
+    """A row naming a pull_request run needs no listing, so the listing failing
+    cannot block that head. Rows of other events cannot vouch for one, so there
+    the failure still fails closed."""
+    module = _load_script()
+    for event, expected in (("pull_request", 0), ("pull_request_target", 20)):
+        _install_fake_gh(module, _pr_payload([_check_row_of_a_run_started_by(event)]))
+        answer_everything_else = module.run
+
+        def run_with_a_failing_listing(args, answer_everything_else=answer_everything_else):
+            if args[:2] == ["gh", "api"] and "/actions/runs" in args[2]:
+                return 1, "", "HTTP 502"
+            return answer_everything_else(args)
+
+        module.run = run_with_a_failing_listing
+        assert module.main(["pr_status.py", "42"]) == expected, event
+
+
 def test_run_assertion_skipped_when_rollup_is_not_actions_shaped() -> None:
     """A repo reporting only legacy statuses must not be held to Actions."""
     module = _load_script()

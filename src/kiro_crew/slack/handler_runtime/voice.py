@@ -15,13 +15,11 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kiro_crew.slack.handler import (
-        PROVIDER_PIPER,
         PROVIDER_POLLY,
         PROVIDER_SYSTEM,
         KiroCrewConfig,
         SlackClientOps,
         _tts_available,
-        _validate_length_scale,
         _vc,
         _voice_reply_fn,
         config_path,
@@ -92,18 +90,11 @@ def load_voice_reply_config(cfg: "KiroCrewConfig | None" = None) -> None:
     # users who turn voice on globally also get symmetric voice-in/voice-out
     # without needing to set a second flag.
     _vc.auto_reply_to_voice = bool(_vr.get("auto_reply_to_voice", _enabled))
-    # Resolution rules (validate-or-default, and keep an existing Piper install)
+    # Resolution rules (validate-or-default, and retire a removed provider)
     # live in one shared resolver so this loader, the Telegram settings path, and
     # the dashboard cannot drift apart on them.
     _vc.provider = resolve_configured_provider(_vr)
-    _vc.piper_binary = _str_or_default(_vr.get("piper_binary"))
-    _vc.piper_model = _str_or_default(_vr.get("piper_model"))
-    _vc.piper_model_config = _str_or_default(_vr.get("piper_model_config"))
     _vc.system_voice = _str_or_default(_vr.get("system_voice"))
-    # Coerce to finite/positive — a config.json with inf/NaN (JSON accepts both)
-    # would otherwise reach synthesis and be re-serialized as non-RFC JSON,
-    # breaking the dashboard's config GET.
-    _vc.piper_length_scale = _validate_length_scale(_vr.get("piper_length_scale", 1.0))
 
 
 async def _safe_voice_reply(
@@ -130,10 +121,6 @@ async def _safe_voice_reply(
             pitch=pitch,
             aws_profile=_vc.aws_profile,
             region=_vc.region,
-            piper_binary=_vc.piper_binary,
-            piper_model=_vc.piper_model,
-            piper_model_config=_vc.piper_model_config,
-            length_scale=_vc.piper_length_scale,
             system_voice=_vc.system_voice,
         )
     except Exception:
@@ -171,12 +158,7 @@ async def _reply_by_voice(
             # fuse mount would freeze every session and heartbeat sharing this
             # loop — and the same rule governs ``resolve_system_tts_async``,
             # which this reaches for the built-in provider.
-            _tts_ok = await asyncio.to_thread(
-                _tts_available,
-                provider=_vc.provider,
-                piper_binary=_vc.piper_binary,
-                piper_model=_vc.piper_model,
-            )
+            _tts_ok = await asyncio.to_thread(_tts_available, provider=_vc.provider)
             if not _tts_ok:
                 # Voice reply requested via any opt-in path (global, per-thread,
                 # or voice-auto-reply) but the configured TTS backend isn't
@@ -189,11 +171,6 @@ async def _reply_by_voice(
                     hint = (
                         "Install the host speech engine (`espeak-ng`) or pick "
                         "another provider in Voice settings."
-                    )
-                elif _vc.provider == PROVIDER_PIPER:
-                    hint = (
-                        "Install piper (`pip install piper-tts`) and set "
-                        "`voice_reply.piper_model` to your voice .onnx file."
                     )
                 elif _vc.provider != PROVIDER_POLLY:
                     # An edition-registered provider: its own check() said no,

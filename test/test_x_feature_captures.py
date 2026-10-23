@@ -35,14 +35,18 @@ def test_allowlists_stay_under_their_ceiling() -> None:
     assert all(why.strip() for why in gate.X_CAPTURE_ALLOWLIST.values())
 
 
-def test_pi_joining_steering_request_without_a_capture_fails() -> None:
-    """pi added to STEERING_REQUEST with no pi capture cited."""
+def test_pi_in_steering_request_without_its_capture_fails() -> None:
+    """pi's STEERING_REQUEST membership whose comment cites no pi capture."""
     sets = gate.live_sets()
     name = "ACP_BACKENDS_STEERING_REQUEST"
-    sets[name] = sets[name] | {"pi"}
-    gaps = gate.check_x_captures(sets, gate.set_comments())
+    assert "pi" in sets[name]
+    comments = gate.set_comments()
+    assert "acp_frames/pi/steering-live.jsonl" in comments[name]
+    comments[name] = comments[name].replace("acp_frames/pi/", "acp_frames/opencode/")
+    gaps = gate.check_x_captures(sets, comments)
     assert (name, "pi") in gaps
     assert (name, "pi") not in gate.X_CAPTURE_ALLOWLIST
+    assert (name, "pi") not in gate.check_x_captures(sets, gate.set_comments())
 
 
 def test_kas_citing_a_kiro_capture_fails() -> None:

@@ -1282,8 +1282,7 @@ async def _run_registered_session(
         if provider is None or not speech_providers.streams(provider):
             raise RuntimeError(f"STT provider {cfg.stt.provider!r} cannot stream")
         endpointer = _build_endpointer(ws, cfg, request)
-        # On the owner loop, where check() runs, so a loop-bound client works.
-        session = await speech_providers.open_stream_on_owner(provider, cfg.stt)
+        session = provider.open_stream(cfg.stt)
     await _drive_helper_session(
         ws,
         caller,

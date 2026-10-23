@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         _cost_bucket,
         _dedicated_start_price_gb,
         _inherited_member_agent,
+        _parent_runs_remotely,
         _shared_start_price_gb,
         _spawn_memory_floor_and_cost,
         _startup_memory_reserve_gb,
@@ -834,6 +835,8 @@ class _GateMixin(ManagerComponent):
         # admission charges it until it settles. Without it, a parent waiting on
         # its own child at the floor could only end at the max wait.
         nested_shared = False
+        # A remote session's child: its engine reserve only, never the gateway floor.
+        remote_child = False
         settled = self._manager._learned_settled_gb
         # The fields the sharing decision reads, shared by the prediction's probe
         # and the row registered below so the two cannot describe different runs.
@@ -862,14 +865,19 @@ class _GateMixin(ManagerComponent):
                 else claim.get(agent_id, (None, False))
             )
         elif min_mem > 0:
+            # A remote session's child works in that workspace; only its engine runs
+            # here. So it is priced from its ``@remote`` bucket and owes the engine
+            # reserve, not ``spawn_min_memory_gb``; the 0 off-switch and posture gate
+            # still apply, and it is never priced shared (``_run_inner``).
+            remote_child = _parent_runs_remotely(parent_session_key)
             candidate_price = _dedicated_start_price_gb(
-                start_cost, settled, _cost_bucket(agent, execution)
+                start_cost, settled, _cost_bucket(agent, execution, remote=remote_child)
             )
             try:
                 plan = self._manager._sharing_plan(
                     SubagentInfo(task="", agent=agent, **run_fields), cfg=loaded_cfg
                 )
-                if plan.shared is True:
+                if plan.shared is True and not remote_child:
                     candidate_price = _shared_start_price_gb(candidate_price)
                     priced_shared = True
                     nested_shared = _is_child
@@ -880,7 +888,7 @@ class _GateMixin(ManagerComponent):
             # the next controller sample: this start at its own price, and each
             # row still warming at the price it was admitted at. Memory used by
             # work a run launches later is not priced here.
-            min_mem += _startup_memory_reserve_gb(
+            min_mem = (0.0 if remote_child else min_mem) + _startup_memory_reserve_gb(
                 agents_snapshot,
                 running_count=self._manager._running_count,
                 cost_gb=start_cost,
@@ -959,6 +967,7 @@ class _GateMixin(ManagerComponent):
                 price_gb=candidate_price,
                 nested=_is_child,
                 durable=_durable,
+                remote=remote_child,
             )
             if lane_held:
                 # No reading was taken and the bar is not what holds it.

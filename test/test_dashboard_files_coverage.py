@@ -1516,6 +1516,8 @@ class TestDashboardConfigPut:
             "quick_send",
             "session_grid",
             "mcp_app_panel",
+            "side_panel_always_open",
+            "side_panel_pin_summary",
         ]
         async with TestClient(TestServer(config_client_app)) as client:
             for field in bool_fields:
@@ -1530,6 +1532,8 @@ class TestDashboardConfigPut:
             "topic_tags_enabled": "invalid_topic_tags_enabled",
             "link_previews": "invalid_link_previews",
             "mcp_app_panel": "invalid_mcp_app_panel",
+            "side_panel_always_open": "invalid_side_panel_always_open",
+            "side_panel_pin_summary": "invalid_side_panel_pin_summary",
         }
         async with TestClient(TestServer(config_client_app)) as client:
             for field, code in coded.items():
@@ -1599,6 +1603,8 @@ class TestDashboardConfigPut:
             "link_previews": True,
             "folder_suggestions_enabled": True,
             "topic_tags_enabled": True,
+            "side_panel_always_open": True,
+            "side_panel_pin_summary": True,
         }
         async with TestClient(TestServer(config_client_app)) as client:
             resp = await client.put("/api/dashboard/config", json=payload)

@@ -89,9 +89,18 @@ const releaseEarlyBootGuard = installEarlyBootGuard({
 // Carry settings across the npm name rename before electron-store opens the
 // destination. Construction writes defaults, after which the seed could no
 // longer distinguish a first launch from an existing store.
-seedRenamedStore(app.getPath("userData"), {
+//
+// Capture whether this install already existed BEFORE either the rename-seed or
+// construction can create the file: a FRESH install gets the summon hotkey
+// opted OUT (globalHotkey "") just below, while an upgrading user keeps their
+// existing null (the auto-bound platform default) untouched. The seed carrying
+// legacy settings also counts as "not fresh".
+const storeConfigFile = path.join(app.getPath("userData"), "config.json");
+const storeFileExistedBeforeBoot = fs.existsSync(storeConfigFile);
+const renameSeedCarriedSettings = seedRenamedStore(app.getPath("userData"), {
   log: (message) => glog("store migration: " + message),
 });
+const isFreshInstall = !storeFileExistedBeforeBoot && !renameSeedCarriedSettings;
 
 const store = new Store({
   defaults: {
@@ -100,7 +109,7 @@ const store = new Store({
     remoteHosts: {},
     sshTimeoutMs: 20000,
     windowState: null,
-    globalHotkey: null,
+    globalHotkey: null, // system-wide summon accelerator: null = platform default, "" = disabled, string = custom (see global-hotkey.js). A fresh install is seeded "" below so the default hotkey is opt-in; an upgrading user keeps null.
     lastNudgedVersion: "",
     themeAccent: "",
     updateChannel: "",
@@ -112,6 +121,21 @@ const store = new Store({
     gpuSoftwareFallback: null,
   },
 });
+
+// Opt the summon hotkey OUT for FRESH installs only. Before this, a null/unset
+// globalHotkey auto-bound the platform default (Cmd+Shift+K on macOS, which is
+// Slack's "compose a new message" chord) — a global accelerator is exclusive, so
+// the app swallowed it for every other program out of the box. New installs now
+// start with it disabled ("") and opt in deliberately. An UPGRADING user is left
+// at null and keeps the hotkey they already had, so nothing is yanked from under
+// them. Written once, at store creation; a later launch finds the file and skips.
+// The fresh-vs-upgrade decision is the pure planFreshInstallHotkeySeed() helper,
+// unit-tested in global-hotkey.test.js.
+const { planFreshInstallHotkeySeed } = require("./global-hotkey");
+const hotkeySeed = planFreshInstallHotkeySeed(store.get("globalHotkey"), isFreshInstall);
+if (hotkeySeed !== null) {
+  store.set("globalHotkey", hotkeySeed);
+}
 
 const KIROCREW_HOME = resolveHome();
 

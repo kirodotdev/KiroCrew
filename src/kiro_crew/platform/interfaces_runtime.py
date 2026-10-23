@@ -433,8 +433,9 @@ class SttProvider(Protocol):
     :meth:`check`, and ``/api/ws/stt`` calls :meth:`open_stream` when
     ``streaming`` is true. A built-in name never reaches any of them.
 
-    ``check()`` and ``transcribe_file()`` always run on one event loop (normally
-    the gateway's), whoever asks, so a provider may cache a loop-bound client.
+    Core may call any method from any event loop. A provider must not keep a
+    loop-bound client (an aiohttp or httpx session) across calls: it creates one
+    per call or keeps one per loop.
     """
 
     name: str
@@ -464,6 +465,8 @@ class TtsProvider(Protocol):
     ``/api/voice/synthesize`` call :meth:`synthesize`; ``voice_reply.is_available``
     and the voice capability list call :meth:`check`. Core redacts the text
     before :meth:`synthesize` sees it.
+
+    The loop rule on :class:`SttProvider` applies here too.
     """
 
     name: str

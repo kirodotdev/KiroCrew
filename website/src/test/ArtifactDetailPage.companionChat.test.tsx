@@ -340,6 +340,41 @@ describe('ArtifactDetailPage companion chat', () => {
     await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
   })
 
+  it('nudges when only a user prompt is newer than the artifact edit (#12837)', async () => {
+    // `last_activity_ts` now moves on a user prompt. A prompt sent after the edit
+    // does not tell the agent the artifact changed, so the nudge reads the agent's
+    // own last action (`last_agent_ts`), which is still older than the edit.
+    localStorage.clear()
+    sessionStorage.clear()
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({
+      key: 'chat-bound', artifact: 'cr-queue',
+      last_agent_ts: '2026-05-01T00:00:00Z',
+      last_activity_ts: '2026-06-01T00:00:00Z',
+    })])
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
+    await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
+  })
+
+  it('does not nudge when the agent acted after the artifact edit', async () => {
+    localStorage.clear()
+    sessionStorage.clear()
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({
+      key: 'chat-bound', artifact: 'cr-queue',
+      last_agent_ts: '2026-06-01T00:00:00Z',
+      last_activity_ts: '2026-06-01T00:00:00Z',
+    })])
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
+    expect(vi.mocked(api).chatSlotContext).not.toHaveBeenCalled()
+  })
+
   it('embeds ChatPage in single-session chrome with URL sync off', async () => {
     // noUrlSync is what stops the embedded page writing ?sid= and navigating the
     // host /artifacts/:slug route out from under the panel.

@@ -627,9 +627,9 @@ same way). Key details:
   fast-path (see `docs/system-specs/modules/cli.md`), so the import probe is
   the half that resolves the chain.
 - **Local dictation runtime bundled** — supported desktop builds include
-  `pywhispercpp`, the platform `imageio-ffmpeg` executable used for compressed
-  recordings, and all transitive runtime dependencies. The macOS Intel backend
-  installs no `imageio-ffmpeg`; the Intel app uses a system FFmpeg. The build
+  `pywhispercpp`, the platform's pinned audio-only FFmpeg executable
+  (`stt.decoder`) used for compressed recordings, and all transitive runtime dependencies. The macOS Intel backend
+  installs no decoder; the Intel app uses a system FFmpeg. The build
   imports the recognizer and executes the exact packaged decoder before
   publishing — and
   distinguishes a decoder that fails to AUTHENTICATE, which fails the build, from

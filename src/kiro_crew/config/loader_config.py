@@ -92,6 +92,7 @@ from kiro_crew.config.sections import (
     PublishConfig,
     ResourceLimitsConfig,
     SessionConfig,
+    SessionEnvironmentsConfig,
     SessionSummaryConfig,
     SkillsConfig,
     SlackConfig,
@@ -156,6 +157,14 @@ class KiroCrewConfig:
         metadata=_meta(
             "Session Summary",
             "Intent-level session summaries for the chat right panel. Off by default.",
+        ),
+    )
+    session_environments: SessionEnvironmentsConfig = field(
+        default_factory=SessionEnvironmentsConfig,
+        metadata=_meta(
+            "Session Environments",
+            "Coder deployment URL and workspace profiles for remote session "
+            "environments. Configuration only: saving provisions nothing.",
         ),
     )
     telemetry: TelemetryConfig = field(
@@ -672,6 +681,7 @@ class KiroCrewConfig:
             "decisions": asdict(self.decisions),
             "skills": asdict(self.skills),
             "session_summary": asdict(self.session_summary),
+            "session_environments": asdict(self.session_environments),
             "telemetry": asdict(self.telemetry),
             "snapshot_dir": self.snapshot_dir,
             "timezone": self.timezone,

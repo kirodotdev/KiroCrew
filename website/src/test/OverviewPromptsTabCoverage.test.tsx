@@ -9,7 +9,7 @@
  * and how the picker closes.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -308,17 +308,48 @@ describe('PromptsTab slot picker', () => {
     return ctx
   }
 
-  it('labels each slot by title, then agent, then key — and dots the running one', async () => {
+  it('labels each slot by title, then agent, then "Untitled session" — and dots the running one', async () => {
     await openPicker([
       slot({ key: 'a', title: 'Alpha session', running: true }),
       slot({ key: 'b', title: 'b', agent: 'researcher' }),
       slot({ key: 'c' }),
     ])
     expect(screen.getByRole('button', { name: 'Alpha session' })).toBeInTheDocument()
-    // title === key is treated as no title, so the agent name wins.
-    expect(screen.getByRole('button', { name: 'researcher' })).toBeInTheDocument()
-    // No title and no agent leaves the raw key.
-    expect(screen.getByRole('button', { name: 'c' })).toBeInTheDocument()
+    // title === key is treated as no title, so the agent name wins; the key
+    // follows it on the row's muted second line.
+    expect(screen.getByRole('button', { name: /^researcher\b/ })).toBeInTheDocument()
+    // No title and no agent reads "Untitled session", never the raw key alone (#23084).
+    expect(screen.getByRole('button', { name: /^Untitled session\b/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'c' })).toBeNull()
+  })
+
+  it('shows an untitled row its key on a visible second line so identical rows stay tellable apart', async () => {
+    await openPicker([
+      slot({ key: 'chat/u1' }),
+      slot({ key: 'chat/u2' }),
+      slot({ key: 'chat/t', title: 'Titled one' }),
+      slot({ key: 'chat/r', agent: 'researcher' }),
+    ])
+    const rowOf = (hint: HTMLElement) => hint.closest('[role="button"]') as HTMLElement
+    const hints = screen.getAllByTestId('slot-key-hint')
+    // Only the three untitled rows carry a key hint; the titled row does not.
+    expect(hints.map(h => h.textContent)).toEqual(['chat/u1', 'chat/u2', 'chat/r'])
+    const untitled = screen.getAllByText('Untitled session').map(el => el.closest('[role="button"]') as HTMLElement)
+    expect(untitled).toHaveLength(2)
+    expect(rowOf(hints[0])).toBe(untitled[0])
+    expect(rowOf(hints[1])).toBe(untitled[1])
+    // The visible text of the two untitled rows differs, not just their hover.
+    expect(untitled[0].textContent).not.toBe(untitled[1].textContent)
+    expect(untitled[0]).toHaveAttribute('title', 'Untitled session · chat/u1')
+    expect(untitled[1]).toHaveAttribute('title', 'Untitled session · chat/u2')
+    // A titled row shows and hovers its title alone; an untitled row with an
+    // agent shows that agent with its key beneath.
+    const titled = screen.getByRole('button', { name: 'Titled one' })
+    expect(titled).toHaveAttribute('title', 'Titled one')
+    expect(within(titled).queryByTestId('slot-key-hint')).toBeNull()
+    expect(titled).not.toHaveTextContent('chat/t')
+    expect(rowOf(hints[2])).toHaveAttribute('title', 'researcher · chat/r')
+    expect(rowOf(hints[2])).toHaveTextContent('researcher')
   })
 
   it('says so when there is no chat to send to', async () => {

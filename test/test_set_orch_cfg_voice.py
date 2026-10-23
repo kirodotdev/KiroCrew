@@ -124,10 +124,13 @@ def test_provider_polly_accepted(tmp_path, monkeypatch):
     assert _vc.provider == "polly"
 
 
-def test_provider_piper_accepted(tmp_path, monkeypatch):
-    _cfg_file(tmp_path, monkeypatch, {"provider": "piper"})
+def test_removed_piper_provider_loads_as_the_local_default(tmp_path, monkeypatch):
+    # A saved Piper config must keep the gateway speaking, not fail to load.
+    monkeypatch.setattr("kiro_crew.voice_reply._warned_removed_providers", set())
+    _cfg_file(tmp_path, monkeypatch, {"provider": "piper", "piper_model": "~/v.onnx"})
     set_orch_cfg(SimpleNamespace())
-    assert _vc.provider == "piper"
+    assert _vc.provider == "system"
+    assert not hasattr(_vc, "piper_model")
 
 
 def test_provider_typo_falls_back_to_local_with_warning(tmp_path, monkeypatch, caplog):
@@ -198,9 +201,6 @@ def test_non_string_path_and_voice_values_normalise_to_unset(tmp_path, monkeypat
         {
             "enabled": True,
             "system_voice": {},
-            "piper_binary": ["/usr/bin/piper"],
-            "piper_model": 42,
-            "piper_model_config": None,
             "voice_id": {},
             "engine": [],
             "rate": {"pct": 100},
@@ -212,9 +212,6 @@ def test_non_string_path_and_voice_values_normalise_to_unset(tmp_path, monkeypat
     load_voice_reply_config()
     # Fields whose "unset" is empty.
     assert _vc.system_voice == ""
-    assert _vc.piper_binary == ""
-    assert _vc.piper_model == ""
-    assert _vc.piper_model_config == ""
     assert _vc.aws_profile == ""
     assert _vc.region == ""
     # Fields with a real documented default fall back to it, not to empty: an
@@ -230,11 +227,11 @@ def test_string_path_and_voice_values_are_preserved(tmp_path, monkeypatch):
     _cfg_file(
         tmp_path,
         monkeypatch,
-        {"enabled": True, "system_voice": "Alex", "piper_binary": "/usr/bin/piper"},
+        {"enabled": True, "system_voice": "Alex", "aws_profile": "work"},
     )
     load_voice_reply_config()
     assert _vc.system_voice == "Alex"
-    assert _vc.piper_binary == "/usr/bin/piper"
+    assert _vc.aws_profile == "work"
 
 
 # ── restore without a Slack orchestrator (dashboard-only gateway) ────────

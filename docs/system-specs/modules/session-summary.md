@@ -387,6 +387,20 @@ endpoint under the same react-query key the tab uses, so it is one cheap
 read-only request per slot that doubles as the tab's prefetch, and it fails OPEN
 so a slow response can never hide a feature that is enabled.
 
+With Pin Summary in Side Panel (`dashboard.side_panel_pin_summary`) on, Summary is
+the first pinned tab instead, ahead of Changes, Artifacts and Files
+(`pages/chat/usePinnedViews.ts`), and the `+` menu leaves its row out. The pin reads
+the same flag strictly: Summary is pinned only once a read says on, since a chip
+pinned on an unknown flag would come down again when the read says off. Until a
+chat's read answers, the strip keeps the pinned block it has. A plain show of the
+panel lands on Summary once per show, after a read that says on; a panel opened for
+something specific, like a file chip, keeps that item (`takePlainPanelShow` in
+`hooks/usePanelTabs.ts`). After that landing, an automatic discovery open creates or
+updates its Git, Changes or Issues tab without moving focus while pinned Summary
+remains active. Before the landing, after another tab is chosen, with Pin Summary
+off, and for every explicit open, the opened tab takes focus as before. A host that
+withholds Summary, such as the Members page, never pins it.
+
 ### `POST /api/chat/slots/{slot}/summary` — generate on request
 
 Same path, different verb, because **reading must stay free of side effects**: the

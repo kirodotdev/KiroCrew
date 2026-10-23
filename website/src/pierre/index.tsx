@@ -13,7 +13,7 @@
  * fallback component is a real surface here rather than a loading state.
  */
 import { Suspense, createContext, forwardRef, lazy, memo, type CSSProperties, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import type { BaseCodeOptions, FileContents, LineAnnotation } from '@pierre/diffs'
+import type { BaseCodeOptions, FileContents, LineAnnotation, SelectedLineRange } from '@pierre/diffs'
 import type { FileOptions } from '@pierre/diffs/react'
 import type { PierreDiffOptions } from './config'
 import type { EditorMarker, PierreEditorHandle } from './PierreEditorImpl'
@@ -292,7 +292,7 @@ function WarmSwap({ fallback, header, heldHint = true, children, warmKey, onVisi
   )
 }
 
-export const PierreCode = memo(function PierreCode({ file, options, className, langHint, scrollClassName, lineAnnotations, renderAnnotation, renderGutterUtility }: {
+export const PierreCode = memo(function PierreCode({ file, options, className, langHint, scrollClassName, lineAnnotations, selectedLines, renderAnnotation, renderGutterUtility }: {
   file: FileContents
   /** Accepts Pierre's full `FileOptions` surface (interaction callbacks like
    *  `enableLineSelection` / `onLineSelected` / `enableGutterUtility`
@@ -311,6 +311,9 @@ export const PierreCode = memo(function PierreCode({ file, options, className, l
    *  so render-prop content must style itself inline (theme custom properties
    *  DO inherit through the boundary). */
   lineAnnotations?: LineAnnotation<unknown>[]
+  /** Controlled line selection: set it (null clears) and Pierre shows exactly
+   *  this range; leave it undefined and Pierre keeps its own. */
+  selectedLines?: SelectedLineRange | null
   renderAnnotation?: (annotation: LineAnnotation<unknown>) => React.ReactNode
   /** Hover gutter slot (e.g. a comment button). Same inline-style rule as
    *  `renderAnnotation`. */
@@ -321,7 +324,7 @@ export const PierreCode = memo(function PierreCode({ file, options, className, l
   if (scrollClassName) {
     return (
       <Suspense fallback={<div className={scrollClassName}><PlainCodeFallback text={file.contents} /></div>}>
-        <CodeImpl file={file} options={options} className={className} langHint={langHint} scrollClassName={scrollClassName} lineAnnotations={lineAnnotations} renderAnnotation={renderAnnotation} renderGutterUtility={renderGutterUtility} />
+        <CodeImpl file={file} options={options} className={className} langHint={langHint} scrollClassName={scrollClassName} lineAnnotations={lineAnnotations} selectedLines={selectedLines} renderAnnotation={renderAnnotation} renderGutterUtility={renderGutterUtility} />
       </Suspense>
     )
   }
@@ -332,7 +335,7 @@ export const PierreCode = memo(function PierreCode({ file, options, className, l
   return (
     <WarmSwap warmKey={warmKeyOf(file.contents)} fallback={fallback}>
       <StagedSuspense fallback={fallback}>
-        <CodeImpl file={file} options={options} className={className} langHint={langHint} lineAnnotations={lineAnnotations} renderAnnotation={renderAnnotation} renderGutterUtility={renderGutterUtility} />
+        <CodeImpl file={file} options={options} className={className} langHint={langHint} lineAnnotations={lineAnnotations} selectedLines={selectedLines} renderAnnotation={renderAnnotation} renderGutterUtility={renderGutterUtility} />
       </StagedSuspense>
     </WarmSwap>
   )

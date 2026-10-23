@@ -41,7 +41,7 @@ import pytest
 from test_sandbox_launcher_program import identity, launch, payload, refusal, rendered_payload
 from test_sandbox_mount_pinned_target import _Bed, _Libc, _run, _window_bed
 
-from kiro_crew import sandbox, sandbox_launcher_program
+from kiro_crew import sandbox, sandbox_launcher, sandbox_launcher_program
 
 program = sandbox_launcher_program
 
@@ -257,7 +257,7 @@ _OPEN_CALL = re.compile(r"os\.open\(\s*([^,]+),\s*([^\n]*?)\)", re.S)
 
 def _program_source() -> str:
     """The launcher program a spawn runs, minus only its one plan substitution."""
-    return Path(program.__file__).read_text(encoding="utf-8")
+    return sandbox_launcher.launcher_program_source()
 
 
 def _launcher_protected_opens(script: str) -> list[tuple[str, str]]:
@@ -278,8 +278,8 @@ def test_every_protected_name_resolution_takes_a_no_follow_first_look() -> None:
     resolves protected names through ONE helper, that helper's first look does
     not follow, and it can be handed an identity to compare against. A resolution
     added anywhere else, or a first look that starts following again, fails this
-    without anyone maintaining a list of sites. Read off the program module, which
-    is the launcher a spawn runs with its plan substituted in.
+    without anyone maintaining a list of sites. Read off the program module and its
+    parts, which is the launcher a spawn runs with its plan substituted in.
     """
     script = _program_source()
 

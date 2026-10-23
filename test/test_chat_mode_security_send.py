@@ -61,6 +61,7 @@ from kiro_crew.dashboard.slot_queue_repository import (
 )
 from kiro_crew.dashboard.state import SlotOrigin, row_mid
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.testing.wait import await_until, finished
 
 # ── app permission: explicit grant, live slot scope ──
 
@@ -870,7 +871,7 @@ async def _run_app_turn_and_successors(state, slot) -> list[tuple[str, str]]:
         successor = slot.task
         if successor is None or successor.done():
             break
-        await asyncio.wait_for(successor, timeout=10)
+        await await_until(successor, what="the successor turn finishing")
     assert slot.task is None or slot.task.done()
     return [(m["role"], m["content"]) for m in slot.drain()]
 
@@ -986,7 +987,7 @@ async def test_a_synthesis_successor_is_a_new_turn(state) -> None:
 
     with patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()):
         await chat_runner._finish_queue_cycle(state, slot)
-        await asyncio.wait_for(slot.task, timeout=10)
+        await await_until(slot.task, what="the queue cycle's task finishing")
 
     assert [m["cls"] for m in slot.drain()] == [TURN_END_WIRE_CLS]
 
@@ -1193,7 +1194,7 @@ async def test_app_sse_backstop_rejects_a_foreign_user_row_without_turn_end(
     ):
         async with _app_client(state) as client:
             resp = await client.post("/api/chat", json={"slot": "s1", "message": "own request"})
-            stream = await asyncio.wait_for(resp.text(), timeout=5)
+            stream = await finished(resp.text(), "the chat stream body")
 
     assert resp.status == 200
     assert "own request" in stream and "own reply" in stream

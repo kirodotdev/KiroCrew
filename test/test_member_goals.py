@@ -1294,6 +1294,68 @@ def test_the_reminder_fires_one_hidden_turn_in_the_crewmates_own_thread(_floor_m
     assert "short_goal" not in prompt and "next task" in prompt
 
 
+def test_the_daily_reminder_sends_progress_to_the_page_and_batches_chat() -> None:
+    """Where things stand goes on the Dashboard page; the thread gets one message, and
+    only when something changed the user should know."""
+    _seed()
+    slug = _slug(ORDINARY)
+    member_goals.set_goal(slug, ORDINARY, "Ship", by="user")
+    member_goals.set_key_results(slug, ORDINARY, [{"text": "PRs merged", "target": "8"}])
+    rec = member_goals.read_goals(slug, ORDINARY)
+    low = " ".join(goal_reminder.reminder_prompt(rec, "daily").split())
+    assert "belongs on your Dashboard page, not in a chat message" in low
+    assert "only when something changed that the user should know, and then once" in low
+    assert "Lead your message with those readings" not in low
+
+
+def test_the_daily_wake_reads_the_page_tools_from_the_crew_panel_switch(
+    _floor_monkeypatch,
+) -> None:
+    """The daily wake sends status to the page only while ``agent.crew_panel`` mounts
+    the page tools; an unreadable switch counts as off."""
+    from kiro_crew import members
+
+    _floor_monkeypatch.setattr(members, "crew_panel_enabled", lambda: True)
+    assert goal_reminder._page_tools_on() is True
+    _floor_monkeypatch.setattr(members, "crew_panel_enabled", lambda: False)
+    assert goal_reminder._page_tools_on() is False
+
+    def unreadable() -> bool:
+        raise OSError("config")
+
+    _floor_monkeypatch.setattr(members, "crew_panel_enabled", unreadable)
+    assert goal_reminder._page_tools_on() is False
+
+
+def test_the_daily_reminder_reviews_the_page_against_the_folds() -> None:
+    """Read the page against the latest data, check it still makes sense as a whole,
+    update what is stale -- three steps, in that order, so a look at a screenshot can
+    slot in before the check."""
+    _seed()
+    slug = _slug(ORDINARY)
+    member_goals.set_goal(slug, ORDINARY, "Ship", by="user")
+    rec = member_goals.read_goals(slug, ORDINARY)
+    prompt = " ".join(goal_reminder.reminder_prompt(rec, "daily").split())
+    review = " ".join(goal_reminder.DAILY_PAGE_REVIEW.split())
+    assert review in prompt
+    read = review.index("Read it:")
+    check = review.index("Check that the page as a whole still makes sense")
+    update = review.index("Update what is stale")
+    improve = review.index("Then look for one way to make the page better")
+    assert read < check < update < improve
+    assert "the dashboard skill's design guidance" in review
+    assert "not a redesign" in review and "every number still read from a fold" in review
+    assert "dashboard_fields" in review and "dashboard_types" in review
+    assert "dashboard_write" in review and "leave a page that is current as it is" in review
+    # Without the page tools (``agent.crew_panel`` off) there is no page: the readings
+    # lead the chat message, as before.
+    bare = " ".join(goal_reminder.reminder_prompt(rec, "daily", page_tools=False).split())
+    assert review not in bare and "Dashboard page" not in bare
+    assert "Lead your message with those readings" in bare
+    # Weekly and monthly reports do not carry the daily review.
+    assert review not in " ".join(goal_reminder.reminder_prompt(rec, "weekly").split())
+
+
 @pytest.mark.parametrize("has_page", [False, True], ids=["no-page", "own-page"])
 def test_the_daily_reminder_asks_for_a_page_only_while_there_is_none(
     _floor_monkeypatch, has_page: bool

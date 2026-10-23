@@ -1,31 +1,33 @@
 ---
-title: Share one crewmate — a `.crewmate` bundle app and the `propose_crewmate` owner card
+title: Share one crewmate — a `.crewmate` bundle with Export and Import in the owner's crewmate UI
 status: accepted
 author: gjjnn
 created: 2026-10-17
-last-audited: 2026-10-17
-audited-at: 8892889b91
+last-audited: 2026-10-22
+audited-at: b835fe9ca7
 doc-pr:
-implementation-prs: []
+implementation-prs: [21721]
 tracking-issues: []
 supersedes: []
 superseded-by: []
 ---
 
-# RFC: Share one crewmate — a `.crewmate` bundle app and the `propose_crewmate` owner card
+# RFC: Share one crewmate — a `.crewmate` bundle with Export and Import in the owner's crewmate UI
 
-- Status: accepted. [#21508](https://github.com/kirodotdev/KiroCrew/pull/21508) was merged on 2026-10-17 by the maintainer iamwhatever, who records the acceptance here. Nothing built. A proposal, not a description of what the code does. Every "exists" claim cites a symbol verified against `origin/main` at `8892889b91`.
+- Status: accepted. [#21508](https://github.com/kirodotdev/KiroCrew/pull/21508) was merged on 2026-10-17 by the maintainer iamwhatever, who records the acceptance here. Partly built: [#21721](https://github.com/kirodotdev/KiroCrew/pull/21721) shipped the bundle reader (`crewmate_import_params` in `crewmate_bundle.py`), the `crewmate.import` card kind (`KIND_CREWMATE_IMPORT` in `change_card_catalog_kinds.py`) and an app path (`ctx.crewmate` in `apps/crewmate_sdk.py`) held off by `PREVIEW_ENABLED = False`. No export route and no owner Import entry exist. Every "exists" claim cites a symbol verified against `origin/main` at `b835fe9ca7`.
 - Author: gjjnn
+- Amended 2026-10-18 on the product owner's ruling, and accepted with the 2026-10-22 amendment below by the maintainer iamwhatever in [this comment](https://github.com/kirodotdev/KiroCrew/pull/21746#issuecomment-6329962507): there is no Crewmate Share app. Export is a button on the crewmate's profile card and Import is an item in the crewmate dropdown, both core owner UI. The `propose_crewmate` App SDK capability, its two permissions and the `app:` card slot are dropped (§5.5). The bundle format and every security rule are unchanged.
+- Amended 2026-10-22 on review ([#21746](https://github.com/kirodotdev/KiroCrew/pull/21746)): an imported crewmate must not arrive hollow. Crons travel by default, each `script` cron with its script file. Skills the sender wrote travel as files. Lessons may travel only as a skill the owner reads and edits. A `user:` dashboard id stays home. Every added file is shown in full on the `crewmate.import` card, the way rules already are.
 - Builds on: [rfc-mate-owned-agent-config.md](rfc-mate-owned-agent-config.md) (draft). Its per-mate file `~/.kiro/mates/agents/<id>.json` is the agent part of the bundle below. That RFC lists "a shared/importable crewmate-definition format" as a non-goal (§4); this RFC is that separate effort.
-- Follows: [TENETS.md](../../TENETS.md) tenet 8, "Everything is an app", and [rfc-everything-is-an-app.md](rfc-everything-is-an-app.md).
+- Follows: [TENETS.md](../../TENETS.md) tenet 8, "Everything is an app"; §5.6 says why these two entries sit in core.
 
 ## 1. Summary
 
 A person can hand one crewmate to another person as one file, `<name>.crewmate`. The receiver opens it, sees exactly what the crewmate would do on their machine, and presses one button to create it.
 
-The feature is an App Kit app, **Crewmate Share**. The app owns the file format, the export screen and the import screen. Core gains one generic App SDK capability, `propose_crewmate`, with an import call and an export call under two permissions. It lets any app that declares it raise a change card for the owner. The card lists every part of the proposed crewmate. Only the owner's press on that card creates the crewmate. The app never creates a crewmate itself.
+Both ends are owner UI in core. **Export** is a button on the crewmate's profile card: it opens a confirm view that lists what leaves, and on the owner's press core builds the redacted bundle and the browser downloads it. **Import** is an item in the crewmate dropdown: the owner picks a file, core re-checks it and raises one `crewmate.import` change card, and only the owner's press on that card creates the crewmate.
 
-A bundle carries the crewmate's shape: name, description, avatar, rules, skill references, a model hint, goals and a dashboard template id. It never carries what is private to one machine or one person: credentials, memory, lessons, session history, approval mode and tool grants. Crons travel only paused. Import pins the safest approval mode and mints a fresh member with its own memory store and workspace.
+A bundle carries what the crewmate is and does: name, description, avatar, rules, goals, crons with their scripts, skills (a reference for an app skill, the files for one the sender wrote), a model hint and a built-in dashboard template id. It never carries what is private to one machine or one person: credentials, memory rows, session history, approval mode and tool grants. Lessons leave only as a skill whose exact text the owner read and edited. Every carried file is shown in full on the import card. Crons land paused. Import pins the safest approval mode and mints a fresh member with its own memory store and workspace.
 
 ## 2. Motivation
 
@@ -33,24 +35,26 @@ A bundle carries the crewmate's shape: name, description, avatar, rules, skill r
 
 - **There is no one-crewmate export.** `GET /api/portability/export` (`create_export_zip` in `portability_stream.py`, route in `dashboard/routes/taskrunner.py`) writes the whole install. Its Merge import installs `config.json` only when absent (`_merge_settings` in `portability.py`), so it cannot add one crewmate to a running install.
 - **Template bundling exists inside that zip and is the closest reusable piece.** `placeholder_mcp_values` (`portability_templates.py`) replaces every MCP `env`, `headers` and `oauth.clientSecret` value with a placeholder and keeps the keys. `_install_agent_templates` (`portability_templates.py`) writes each template with `O_EXCL` and runs `sanitize_agent_config_governance` (`portability_templates.py`) so `allowedTools` and `autoApprove` are cut to this host's ceiling.
-- **Apps cannot create a crewmate.** `POST /api/agents` runs `_require_owner(request, "agent.create")` (`_api_kirocrew_agents_create` in `dashboard/agent_admin/crew_records.py`). The template read `GET /api/agents/detail/{name}` is also owner-only (`api_agent_detail` in `dashboard/agent_admin/agent_detail.py`). An App Kit manifest can register namespaced agent templates, skills and crons (`docs/app-kit/manifest-reference.md`, `_register_agents` in `apps/bridges_agents.py`), never a crew record.
-- **An owner-press path for creating a crewmate already exists for agents.** The change-card kind `crewmate.create` (`KIND_CREWMATE_CREATE` in `change_card_catalog_kinds.py`) builds a plan against the owner routes `POST /api/agents` and `PUT /api/members/{slug}/goals/long-term` (`build_preview` in `change_card_catalog_plans.py`). `change_card_middleware` refuses an app token, an internal-secret caller or an agent on those routes (`dashboard/handlers/change_cards.py` module docstring; route set `HOOKED_ROUTES`, `change_card_catalog.py`). The guide action `crewmate.create` (`guide_catalog.py`) follows the same rule: "The crewmate is created only by the human's own click on the existing owner-only `POST /api/agents`."
-- **No MCP tool or App SDK call exports or imports a crewmate.**
+- **Creating a crewmate and reading its template are owner-only.** `POST /api/agents` runs `_require_owner(request, "agent.create")` (`_api_kirocrew_agents_create` in `dashboard/agent_admin/crew_records.py`). The template read `GET /api/agents/detail/{name}` is also owner-only (`api_agent_detail` in `dashboard/agent_admin/agent_detail.py`).
+- **An owner-press path for creating a crewmate already exists.** The change-card kind `crewmate.create` (`KIND_CREWMATE_CREATE` in `change_card_catalog_kinds.py`) builds a plan against the owner routes `POST /api/agents` and `PUT /api/members/{slug}/goals/long-term` (`build_preview` in `change_card_catalog_plans.py`). `change_card_middleware` refuses an app token, an internal-secret caller or an agent on those routes (`dashboard/handlers/change_cards.py` module docstring; route set `HOOKED_ROUTES`, `change_card_catalog.py`).
+- **Import is half-built and export is not built.** `crewmate_import_params` (`crewmate_bundle.py`) reads a parsed bundle into `crewmate.import` params and still refuses rules, MCP servers and skills. Its only caller is `ctx.crewmate` (`apps/crewmate_sdk.py`), held off by `PREVIEW_ENABLED = False`, which §5.5 drops. No route exports a crewmate, and no owner UI imports one.
+- **What a whole-install import already learned about crons and skills.** A `script` cron names `~/.kiro/crew/crons/<file>.py:function`, and "the export never carries the `crons/` directory, so the name resolves against whatever the target already has there" (`_sanitize_imported_crons` in `portability_vetting.py`). A skill the sender wrote lives under `~/.kiro/crew/skills/<name>/` (`skills_dir` in `skills_discovery.py`) or the member's own workspace (`member_workspace.py`); no store can supply it on another machine.
 
 ### Problems
 
 1. A person who built a good crewmate cannot give it to a teammate without hand-copying a record and a template.
 2. The whole-install zip is the wrong size: it carries every crewmate, memory and secret placeholders for all of them.
-3. An app that wanted to offer sharing has no sanctioned way to create the result. Widening `POST /api/agents` to app tokens would hand every app the power to install tool grants and MCP commands that later sessions execute (the reason `_require_owner` exists, `dashboard/handlers/agents.py`).
+3. Widening `POST /api/agents` to anyone but the owner would hand that caller the power to install tool grants and MCP commands that later sessions execute (the reason `_require_owner` exists, `dashboard/handlers/agents.py`).
 
 ## 3. Goals
 
 - One crewmate leaves as one file and arrives as one new crewmate.
 - The receiver sees every part of the incoming crewmate before anything is written.
 - Only the owner's press creates the crewmate. No app, agent or file can create one.
-- Nothing private to the sender travels by default: no credential value, no memory, no lesson, no transcript, no approval mode, no tool grant.
+- The crewmate arrives whole: its schedule and the skills its sender wrote come with it, so the receiver rebuilds nothing by hand.
+- Nothing private to the sender travels: no credential value, no memory row, no transcript, no approval mode, no tool grant. A lesson leaves only as skill text the owner read and edited.
 - The incoming crewmate starts in `normal` approval mode and gains trust only through the owner's later change cards.
-- Core gains one generic capability any app can use, not a sharing feature.
+- Both entries sit where the owner already manages a crewmate: the profile card and the crewmate dropdown.
 - The design works the same on Linux, macOS and Windows.
 
 ## 4. Non-goals
@@ -60,6 +64,7 @@ A bundle carries the crewmate's shape: name, description, avatar, rules, skill r
 - **Live updates.** An imported crewmate is a copy. It has no link back to the sender's crewmate, matching the "stamp, not a parent" rule of the mate-owned config RFC.
 - **Team bundles.** One crewmate per file. Several crewmates are several files.
 - **Moving a crewmate between two installs of the same person.** The whole-install export covers that, memory included.
+- **An app-facing share capability.** §5.5 records why it is dropped and when it may come back.
 
 ## 5. Design
 
@@ -68,14 +73,14 @@ A bundle carries the crewmate's shape: name, description, avatar, rules, skill r
 ```mermaid
 flowchart LR
   subgraph Sender
-    A[Crewmate Share app] -->|"propose_crewmate_export"| C1[Owner card: export]
-    C1 -->|owner press| X[Core builds redacted bundle]
+    A[Profile card: Export] --> C1[Confirm view: what leaves]
+    C1 -->|owner press| X["Core: POST /api/members/{slug}/export"]
     X --> F[(name.crewmate)]
   end
   F -->|any file transfer| G
   subgraph Receiver
-    G[Crewmate Share app] -->|parse + pre-check| P[propose_crewmate]
-    P --> C2[Owner card: import]
+    G[Crewmate dropdown: Import] -->|file pick| P["Core: POST /api/members/import"]
+    P -->|re-check| C2[crewmate.import card]
     C2 -->|owner press| R[Existing owner routes]
     R --> M[New member: fresh id, empty memory, own workspace]
   end
@@ -83,16 +88,17 @@ flowchart LR
 
 | Part | Lives in | Job |
 |---|---|---|
-| Crewmate Share app | an App Kit app | export screen, import screen, file read and write, format version |
-| `propose_crewmate` | App SDK, core | raise an owner change card for one incoming crewmate |
+| Export button and confirm view | profile card, core SPA | list what leaves; download the file on the owner's press |
+| `POST /api/members/{slug}/export` | core, owner-only | build the redacted bundle |
+| Import item | crewmate dropdown, core SPA | pick a file; show the card |
+| `POST /api/members/import` | core, owner-only | vet the file; raise one `crewmate.import` card |
 | Owner card `crewmate.import` | change-card catalog, core | show every part; apply through existing owner routes |
-| Re-vetting | core | re-run every governance filter on the card's parameters |
 
-The app is untrusted. Core re-checks everything the app hands it, exactly as it re-checks what an agent hands a change card.
+The file is untrusted. Core re-checks everything in it, exactly as it re-checks what an agent hands a change card.
 
 ### 5.2 The `.crewmate` file
 
-A `.crewmate` file is a zip. Its entries are flat (no directories) and fixed by name:
+A `.crewmate` file is a zip. Its top-level entries are fixed by name. Two folders are allowed, each exactly one level deep: `skills/<name>/<file>` and `crons/<file>.py`. No other path has a `/`.
 
 | Entry | Required | Holds |
 |---|---|---|
@@ -102,6 +108,8 @@ A `.crewmate` file is a zip. Its entries are flat (no directories) and fixed by 
 | `rules.json` | no | the crewmate's permanent rules, as text |
 | `goals.json` | no | long-term goal and key results |
 | `crons.json` | no | check-in cron definitions |
+| `skills/<name>/SKILL.md` and files beside it | no | one skill the sender wrote, or the lessons skill (§5.3) |
+| `crons/<file>.py` | no | the script one `script` cron in `crons.json` names |
 
 `crewmate.json`:
 
@@ -115,7 +123,10 @@ A `.crewmate` file is a zip. Its entries are flat (no directories) and fixed by 
   "modelHint": "auto",
   "reasoningEffortHint": "medium",
   "dashboardTemplate": "builtin:release-board",
-  "skills": [{ "name": "release-notes", "source": "app:release-tools" }],
+  "skills": [
+    { "name": "release-notes", "source": "app:release-tools" },
+    { "name": "branch-triage", "source": "bundled" }
+  ],
   "sender": { "label": "Ana (self-declared)" },
   "exportedAt": "2026-10-17T06:00:00Z"
 }
@@ -128,10 +139,13 @@ Rules on the file:
 - `agent.json` holds no `prompt` or `tools` content beyond defaults, because the worker base is source-defined (mate-owned config RFC §5.1).
 - Every MCP `env`, `headers` and `oauth.clientSecret` value in `agent.json` is the placeholder `placeholder_mcp_values` writes (`portability_templates.py`). Keys stay so the card can list what the receiver fills in.
 - `agent.json` carries no `allowedTools`, `autoApprove` or `permissions` grant. Export drops them; import refuses a bundle that carries one.
-- `skills` are references by name and source. A bundle carries no skill code (open question 2).
+- Each `skills` item has a `source`. An `app:` source is a reference: the card says "installed" or links to the app in the store. The source `bundled` means the skill's files are in `skills/<name>/`, and it must have a `SKILL.md` there. A `skills/` folder with no `bundled` item, or a `bundled` item with no folder, refuses the bundle.
+- Every `crons/<file>.py` entry is named by exactly one `script` cron in `crons.json`, and every `script` cron names an entry in the file. A mismatch refuses the bundle.
+- `<name>` and `<file>` match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`: no `..`, no slash, no drive letter.
 - `modelHint` is a hint. The card shows it; a model this host lacks falls back to the host default and the card says so.
-- `dashboardTemplate` is a `builtin:` or `user:` template id only. A bundle carries no page HTML, because a page from a sender is unrenderable by rule (`RENDERABLE_SOURCES` in `dashboard_templates/instance.py`).
-- Size caps: 2 MiB for the whole file, 512 KiB for the avatar, 64 KiB for each JSON entry, 16 entries. The zip is vetted with `zip_vet.vet_zip_inventory` (`zip_vet.py`) before any entry is read.
+- `dashboardTemplate` is a `builtin:` template id only. A `user:` id names a template folder on the sender's host (`RENDERABLE_SOURCES` in `dashboard_templates/instance.py`), so it would dangle on the receiver's; export drops it and import refuses it. A bundle carries no page HTML, because a page from a sender is unrenderable by rule.
+- Size caps: 8 MiB for the whole file, 512 KiB for the avatar, 64 KiB for each JSON entry, 256 KiB for each skill or script file, 1 MiB for each skill folder, 64 entries. The zip is vetted with `zip_vet.vet_zip_inventory` (`zip_vet.py`) before any entry is read.
+- `formatVersion` stays `1`: no writer of version 1 has shipped, so no file in the wild lacks these entries. Phase 1 widens `crewmate_bundle.py` to read them.
 
 What a bundle never carries:
 
@@ -139,23 +153,38 @@ What a bundle never carries:
 |---|---|
 | `.env`, `.local_secret`, keys, any `EXPORT_EXCLUDE` name (`portability_archive.py`) | credentials |
 | MCP secret values | credentials; placeholders only |
-| memory DB, lessons, briefing | memory is identity: a store is owned by one `member_id` and `memory_stores.py` fails closed on a mismatch |
+| memory DB, lesson rows, briefing | memory is identity: a store is owned by one `member_id` and `memory_stores.py` fails closed on a mismatch. Rows are also opaque to the card; the lessons skill is text the owner reads |
 | transcripts, activity log, DM bindings | private history and runtime state |
 | `approval_mode`, `allowedTools`, `autoApprove` | trust is the receiver's to grant |
 | `member_id`, `memory_store`, `workspace`, crew key | minted fresh on import |
-| custom dashboard HTML | unrenderable from a sender |
+| custom dashboard HTML, `user:` template ids | unrenderable from a sender; a `user:` id names a folder only the sender has |
 
 ### 5.3 Export
 
-Export reads a crewmate's template, which apps cannot read (`api_agent_detail` is owner-only). So export is also an owner press. The same capability exposes an export call under its own permission, `proposeCrewmateExport` (§5.5): the app asks `propose_crewmate_export(crew)`, core shows the owner a card listing what will leave, and on the press core builds the redacted bundle content and hands it to the app as JSON plus avatar bytes. The app writes the file and offers it for download.
+The profile card's Profile tab gains one row, **Export as file**, under Notes. It pushes a confirm view over the card, the same push the card already uses for About and Notes (`CrewProfilePanel.tsx`). The view lists exactly what leaves:
 
-Core does the redaction, never the app. Core builds the bundle from the crew record, the mate-owned file, the member rules and goals records, and the avatar, and runs `placeholder_mcp_values` and the grant strip on the way out. An app never sees a secret value.
+| Leaves | Shown as |
+|---|---|
+| name, description, avatar | always |
+| rules, goals | a toggle each, on |
+| crons | a toggle, on; each `script` cron with its script, shown in full |
+| app skill references, model hint | always |
+| skills the sender wrote | each skill, on, with every file shown in full |
+| lessons | a toggle, off; on, it drafts a lessons skill (below) |
+| dashboard | the `builtin:` id, or "Dashboard: not included (custom template)" |
+| MCP servers | each server with the keys whose values become placeholders |
 
-The export card lists: the name, each MCP server with the placeholder keys it hides, each skill reference, whether rules, goals, crons and an avatar are included (each a toggle the owner sets, off for crons by default), and one line: "Memory, history, credentials and approval settings are not included."
+Under the list sits one line: "Not included: memory, history, credentials and approval settings."
+
+**Lessons as a skill.** Memory rows never leave. Turning the lessons toggle on asks the crewmate, in one turn, to distill its lessons into one `SKILL.md`. The draft opens in an editor inside the view. Only the text left in that editor travels, as `skills/<slug>-lessons/SKILL.md` with source `bundled`. Export itself never reads the memory store, and the draft is never saved on the server.
+
+**What export skips, and says so.** A `script` cron whose file is gone from `~/.kiro/crew/crons/` is left out and listed "not included (script missing)". A skill folder over the §5.2 caps, or holding a file the credential checks below refuse, is left out and listed with the reason.
+
+The press sends the toggles and the edited lessons text to `POST /api/members/{slug}/export`, which runs `_require_owner(request, "crewmate.export")`. Core builds the bundle from the crew record, the mate-owned file, the member rules and goals records, the cron store, the skill folders and the avatar. On the way out it runs `placeholder_mcp_values`, strips every grant field, drops a `user:` dashboard id and never opens an `EXPORT_EXCLUDE` name. Every skill and script file passes the same credential and control-character checks `crewmate.create` runs on text (`_validate_crewmate_create` in `guide_catalog.py`). It answers with the zip bytes and `Content-Disposition: attachment; filename="<name>.crewmate"`; the browser saves the file. Core writes nothing on disk, so the export needs no change card and has nothing to undo.
 
 ### 5.4 Import
 
-The app reads the file, checks the version and caps, and calls `propose_crewmate(bundle)` with the parsed content. Core re-runs every check in §5.2 on what it receives, then raises one `crewmate.import` card.
+The crewmate dropdown (`CrewmateSwitcher.tsx`) gains one footer item, **Import from file**, under "New crewmate". It opens the system file picker filtered to `.crewmate`. The browser posts the file to `POST /api/members/import`, which runs `_require_owner(request, "crewmate.import")`, vets the zip, re-runs every check in §5.2 and raises one `crewmate.import` card. A file that fails a check raises no card; the dropdown shows the refusal. The SPA then opens the card in a dialog with the shared card component.
 
 The card shows:
 
@@ -166,21 +195,22 @@ The card shows:
 | Description | full text |
 | Model | hint, and what this host runs |
 | MCP servers | each server, its command or URL, and each placeholder the owner must fill |
-| Skills | each reference, "installed" or "missing" |
+| Skills | each app reference, "installed" or "missing"; each bundled skill with every file in full |
 | Rules | every rule, full text |
 | Goals | goal and key results |
-| Crons | each schedule, "imported paused" |
+| Crons | each schedule, "imported paused"; each script in full |
+| Dashboard | the `builtin:` template, or the default |
 | Approval | `normal`: asks before every tool |
 | Not included | memory, history, credentials, approval settings |
 
-Risk is computed from the diff, as for every card. An MCP server with a local `command` is `code_exec`, because it runs on the receiver's machine.
+Risk is computed from the diff, as for every card. An MCP server with a local `command`, a cron script and a bundled skill with any file besides `SKILL.md` are each `code_exec`, because each runs on the receiver's machine.
 
 The press applies an ordered plan through existing owner routes, the same way `crewmate.create` does (`build_preview` in `change_card_catalog_plans.py`):
 
 1. `POST /api/agents` creates the record with `approval_mode: "normal"` in the same write. The create path mints a fresh `member_id` (`memory_stores._allocate_member_id`), an empty memory store and its own workspace. The mode rides on the create because an unset mode resolves to `trust` (`MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE` in `config/sections_agent_fields.py`), and `_api_kirocrew_agents_create` takes no `approval_mode`. Phase 1 adds that one optional create field, validated against `MEMBER_APPROVAL_MODES`. No imported crewmate exists for any moment in `trust`.
 2. The mate-owned file `~/.kiro/mates/agents/<id>.json` receives the bundle's `mcpServers` and `skills` through the in-place edit path of the mate-owned config RFC (§5.4 there). `sanitize_agent_config_governance` runs on the way to disk.
-3. Rules, goals and the avatar are written through their own owner routes when present.
-4. Crons are written paused, after the same vetting `_sanitize_imported_crons` applies (`portability_vetting.py`).
+3. Rules, goals and the avatar are written through their own owner routes when present. Bundled skills are written into the new member's own workspace, under `skills/<name>/` (`member_workspace.py`), never into the shared `~/.kiro/crew/skills/`. So they reach only this crewmate and cannot replace a skill the receiver already has.
+4. Cron scripts are written into `~/.kiro/crew/crons/` with `O_EXCL`. A name already taken there gets the first free name (`<file>-2.py`), and the cron is rewritten to point at it, so an import never runs or overwrites a script the receiver had. Crons are then written paused, after the same vetting `_sanitize_imported_crons` applies (`portability_vetting.py`).
 5. The record is stamped with provenance: `imported: {format_version, sender_label, sha256, imported_at}`. Provenance rides on the crew record, not the spec, because kiro-cli refuses an agent spec with an unknown field.
 
 Name collisions: the card proposes the first free name (`Release Captain 2`) and the owner can edit it before the press. The crew key comes from `crew_id_for_display_name` in `members.py`, which slugs the name and adds `-2`, `-3` past any taken key, so two crewmates never share one folder on a case-insensitive file system.
@@ -189,54 +219,44 @@ Placeholders stay placeholders. A server whose secret is a placeholder is instal
 
 If a later step fails, the card lands `partial` and its undo removes what earlier steps wrote (the `partial --undo--> undone` path in `dashboard/change_cards.py`). The card offers that undo at once, so a half-built crewmate does not stay behind unnoticed.
 
-### 5.5 The App SDK capability
+**Where the card lives.** `ChangeCardStore.propose` takes a keyword-only `slot_key` (`dashboard/change_cards.py`). An import card uses the reserved key `owner:crewmate-import`, which no chat slot key can take, with an empty `session_key`. The dialog reads it through the existing owner-only `GET /api/cards/pending?slot=` (`api_cards_pending` in `dashboard/handlers/change_cards.py`), so a card left pending reopens from the same Import item. The press is the owner's own browser request, which `change_card_middleware` admits as it admits a press in a chat. The live-card cap (`MAX_LIVE_CARDS_PER_SLOT`) and the 24-hour expiry (`CARD_TTL_SECONDS`) apply unchanged. `_slot_is_open` never reads the key closed, so expiry is what retires a card nobody pressed. The kind is refused from every agent caller, and `list_kinds` leaves it out.
 
-Manifest:
+### 5.5 What becomes of `ctx.crewmate` and `proposeCrewmate`
 
-```json
-{ "permissions": { "proposeCrewmate": true, "proposeCrewmateExport": true } }
-```
+Dropped. This RFC adds no App SDK capability and no manifest permission. The reasons:
 
-`proposeCrewmate` grants the import card. `proposeCrewmateExport` grants the export card. They are separate so an import-only app, such as a template gallery, never gains the power to read a crewmate's rules, goals and MCP layout.
+1. No app needs it. The only planned caller was the Crewmate Share app, which the ruling removes.
+2. Every app-specific piece existed only to serve that caller: the two permissions, the `app:` slot prefix, the housekeep rule for a disabled app, and a new Pending changes view, because an app token can neither list nor press a card. Core owner UI needs none of them.
+3. The import card and the bundle checks stay in core, so a later app can reuse them unchanged. If one asks (a template gallery, an onboarding app), a separate RFC adds a generic App SDK capability that raises the same `crewmate.import` card.
 
-Backend context, present only when the manifest declares it, like `ctx.spawn` (`permissions.spawn` parsed in `apps/manifest.py`, passed by `build_app_context` in `apps/context.py`):
+[#21721](https://github.com/kirodotdev/KiroCrew/pull/21721) keeps the card kind, `crewmate_bundle.py` and the `approval_mode` create field, and drops `ctx.crewmate`, `permissions.proposeCrewmate` and the `app:` slot.
 
-```python
-card = await ctx.crewmate.propose(bundle)            # import card
-card = await ctx.crewmate.propose_export("release")  # export card; needs proposeCrewmateExport
-status = await ctx.crewmate.status(card.id)          # pending | applied | declined | expired
-```
+### 5.6 Why this is core owner UI (tenet 8)
 
-Rules:
+Tenet 8 keeps "the trust boundary" in core and moves "anything that renders or interprets" into apps. These two entries are the trust boundary:
 
-- `propose` returns a card id. It never returns a crew key until the card is `applied`, and then only the key.
-- `propose_export` returns bundle content only after the owner's press, and only to the app that asked.
-- An app's live cards are capped by the store's existing per-slot cap (`MAX_LIVE_CARDS_PER_SLOT` in `dashboard/change_cards_records.py`), counted on the app's key (§5.6).
-- A pending card expires after 24 hours, like every card (`CARD_TTL_SECONDS` in `dashboard/change_cards_records.py`).
-- The capability creates nothing and reads nothing by itself. Every effect runs through an existing owner route on the owner's press, and `change_card_middleware` refuses an app token on those routes.
-- Adding either permission in an app update disables the app until the owner enables it again, the rule `sessionApproval` follows (`docs/app-kit/manifest-reference.md`, Permissions).
-
-The capability is generic. Any app can use it: a team template gallery, an onboarding app, or a store listing that offers a ready crewmate.
-
-### 5.6 Where the card shows
-
-A change card belongs to a chat slot: `ChangeCardStore.propose` takes a keyword-only `slot_key` (`dashboard/change_cards.py`). An app card keeps that one identity model. Its `slot_key` is `app:<name>`, a reserved prefix no chat slot key can take, and its `session_key` is empty. The store rules map as follows; two rows need new code, marked **new**:
-
-| Store rule | For an app card |
-|---|---|
-| live-card cap (`MAX_LIVE_CARDS_PER_SLOT`) | counted on `app:<name>`, so per app |
-| expiry (`expires_at`, `CARD_TTL_SECONDS`) | unchanged; keyed by time, not slot |
-| `retire_closed_slots` | **new**: `_slot_is_open` in `dashboard/handlers/change_cards.py` retires a key only on positive closure evidence, so an `app:` key never reads closed. Phase 1 passes "app disabled or uninstalled" to `housekeep` as new closure evidence for `app:<name>` |
-| `partial → undo` | unchanged; addressed by card id through the owner-only browser half |
-| listing | **new**: see below |
-
-No new field is added to the card record.
-
-**Where the owner presses.** The dashboard asks for cards one chat slot at a time (`cardsApi.pending` in `website/src/api/cards.ts` sends `?slot=`), and `api_cards_pending` is owner-only, so an app panel with an app token can neither list nor press a card. Phase 1 adds one owner-authenticated surface: a **Pending changes** view in the dashboard, outside any chat slot, that lists every card whose `slot_key` starts with `app:` (`pending` filtered by that prefix) and renders each with the shared card component. The press there is the owner's own browser request, so `change_card_middleware` admits it exactly as it admits a press in a chat. The app's panel shows only the card id and its status from `ctx.crewmate.status`, with a link that opens the Pending changes view on that card. The app never renders or presses the card itself.
+- Export reads a crewmate's template, rules and MCP layout, which only the owner may read (`api_agent_detail` is owner-only). The redaction that keeps secrets home must run where the secrets are.
+- Import turns an untrusted file into a crew record with tool access. Creating one is owner-only (`_require_owner` on `POST /api/agents`), and the consent press is the approvals surface, which tenet 8 names as core.
+- Neither adds a new page. Each is one control on a core surface the owner already uses for this crewmate, so there is no surface an app could replace a whole surface at a time.
+- The app route needed more core, not less: two permissions, a reserved slot and a new owner-only listing view (§5.5).
 
 ### 5.7 Dependency on the mate-owned config RFC
 
-`agent.json` and plan step 2 use the per-mate file of [rfc-mate-owned-agent-config.md](rfc-mate-owned-agent-config.md). Plan step 2 waits on that one: until its per-mate file, or the template fallback below, is built, `propose_crewmate` refuses a bundle whose `agent.json` carries any `mcpServers` or `skills` entry, so a crewmate imported before then has neither. If that RFC is rejected, the fallback is the existing template path: `agent.json` is written as a crew-named template with `O_EXCL` and `sanitize_agent_config_governance`, exactly as `_install_agent_templates` in `portability_templates.py` writes a bundled template, and the new record's `kiro_agent` names it. The bundle format does not change under the fallback, because `agent.json` is already the custom-agent schema.
+`agent.json` and plan step 2 use the per-mate file of [rfc-mate-owned-agent-config.md](rfc-mate-owned-agent-config.md). Plan step 2 waits on that one: until its per-mate file, or the template fallback below, is built, import refuses a bundle whose `agent.json` carries any `mcpServers` or `skills` entry, so a crewmate imported before then has neither. Bundled skill files and cron scripts do not wait on it: they land in the member's workspace and the cron folder (plan steps 3 and 4), which exist once the create step runs. If that RFC is rejected, the fallback is the existing template path: `agent.json` is written as a crew-named template with `O_EXCL` and `sanitize_agent_config_governance`, exactly as `_install_agent_templates` in `portability_templates.py` writes a bundled template, and the new record's `kiro_agent` names it. The bundle format does not change under the fallback, because `agent.json` is already the custom-agent schema.
+
+### 5.8 Screens
+
+Mock screens, built from the real SPA components with the new controls added on a scratch branch. The import card is #21721's card as rendered there.
+
+![Profile card, Profile tab, with the new Export as file row under Notes](assets/crewmate-share-export-entry.png)
+
+![Export confirm view pushed over the profile card: what leaves and the not-included line. Captured before the 2026-10-22 amendment, so it shows the crons toggle off and no skill or lessons rows](assets/crewmate-share-export-confirm.png)
+
+![Crewmate dropdown with the new Import from file item under New crewmate](assets/crewmate-share-import-entry.png)
+
+![The crewmate.import card opened from the Import item](assets/crewmate-share-import-card.png)
+
+![Export confirm view in Chinese](assets/crewmate-share-export-confirm-zh.png)
 
 ## 6. Migration plan
 
@@ -247,59 +267,61 @@ Each phase is one PR.
 Exit criteria:
 - This document merges as `draft`, then moves to `accepted` on the owner's decision.
 
-### Phase 1 — `propose_crewmate` and the `crewmate.import` card in core
+### Phase 1 — Import
 
-Plan step 2 is blocked on the mate-owned config RFC step 3 (the per-mate file and its in-place edit path), because that step writes that file. Until it lands, Phase 1 ships without step 2 and refuses a bundle carrying `mcpServers` or `skills` (§5.7).
+Plan step 2 is blocked on the mate-owned config RFC step 3 (the per-mate file and its in-place edit path). Until it lands, Phase 1 ships without step 2 and refuses a bundle carrying `mcpServers` or `skills` (§5.7).
 
 Exit criteria:
-- An app without `permissions.proposeCrewmate` has no `ctx.crewmate`.
-- `ctx.crewmate.propose` with a valid bundle raises one pending card and writes nothing.
+- The crewmate dropdown shows Import from file; picking a valid file raises one pending `crewmate.import` card and writes nothing.
+- `POST /api/members/import` answers 403 to an app token, an internal-secret caller and an agent.
 - A press on the card creates exactly one member with a fresh `member_id`, an empty memory store, its own workspace and `approval_mode: "normal"`.
 - `POST /api/agents` accepts `approval_mode` and writes it in the create; a test that fails every step after the create finds the member in `normal`, never `trust`.
 - A bundle with `allowedTools`, `autoApprove`, a non-placeholder MCP secret, page HTML or an unknown key is refused before a card exists.
 - Until plan step 2 can write the agent part (§5.7), a bundle with any `mcpServers` or `skills` entry is refused before a card exists.
 - A direct call from an app token to any plan route answers 403.
 - A failed later step leaves the card `partial` with a working undo.
-- Crons land paused.
-- An app card is stored with `slot_key` `app:<name>`; a chat slot key with that prefix is refused.
-- An app card is listed in the dashboard's Pending changes view and is confirmed there by the owner's press; an app-token request to list or press it answers 403.
-- An app card expires after `CARD_TTL_SECONDS`, and its `partial` undo works from the Pending changes view.
-- Disabling or uninstalling an app cancels its pending cards through `housekeep`; a test disables the app and finds each card `cancelled`.
-- An app's live cards stop at `MAX_LIVE_CARDS_PER_SLOT`.
-- `docs/app-kit/manifest-reference.md` and `docs/app-kit/api-reference.md` document the permissions and the calls in the same PR.
+- Crons land paused. A cron script lands with `O_EXCL` under a free name and never replaces a receiver file.
+- A bundled skill lands in the new member's workspace, never in `~/.kiro/crew/skills/`, and the card shows each of its files in full.
+- A bundle with a `user:` dashboard id, a path deeper than one folder, a `script` cron without its file, or a script file no cron names is refused before a card exists.
+- An import card is stored with `slot_key` `owner:crewmate-import`; a chat slot key with that prefix is refused, and no agent caller can raise the kind.
+- The import card expires after `CARD_TTL_SECONDS` and stops at `MAX_LIVE_CARDS_PER_SLOT`.
 
-### Phase 2 — `propose_export`
+### Phase 2 — Export
 
 Exit criteria:
-- The export card lists every part that leaves and the "not included" line.
-- The returned content holds no `EXPORT_EXCLUDE` name, no MCP secret value and no grant field.
-- An app gets no content before the owner's press.
-- An app without `proposeCrewmateExport` has no `ctx.crewmate.propose_export`.
+- The profile card shows Export as file; its confirm view lists every part that leaves and the "not included" line, with crons on and lessons off by default.
+- A `user:` dashboard id is not in the file, and the view says "Dashboard: not included (custom template)".
+- A `script` cron's file is in the bundle; a missing file leaves that cron out and the view says so.
+- With lessons on, the file holds only the text left in the editor, and no memory row.
+- The downloaded file holds no `EXPORT_EXCLUDE` name, no MCP secret value and no grant field.
+- `POST /api/members/{slug}/export` answers 403 to an app token, an internal-secret caller and an agent.
+- Nothing is written on the server.
 
-### Phase 3 — the Crewmate Share app
+### Phase 3 — Round trip
 
-Blocked on: plan step 2 (mate-owned config RFC step 3, or the §5.7 template fallback), because the round trip below carries MCP server keys.
+Blocked on: plan step 2 (mate-owned config RFC step 3, or the §5.7 template fallback), because the round trip carries MCP server keys.
 
 Exit criteria:
-- Export of a crewmate and import of the file on a second install yield a crewmate with the same name, description, avatar, rules, goals and MCP server keys, and none of the sender's memory or approval settings.
+- Export of a crewmate and import of the file on a second install yield a crewmate with the same name, description, avatar, rules, goals, crons and their scripts, bundled skills and MCP server keys, and none of the sender's memory or approval settings.
 - The round trip passes on Linux, macOS and Windows.
-- The app ships with zero core changes beyond Phases 1 and 2.
 
 ## 7. Backward compatibility
 
-Compatible. Every part is added: a new manifest permission, a new card kind and a new app. No existing route, card kind or file format changes. An app that does not declare `proposeCrewmate` sees nothing new.
+Compatible. Every part is added: two owner-only routes, a new card kind and two controls. No existing route, card kind or file format changes, and no App Kit contract changes.
 
 ## 8. Security considerations
 
-- **The owner's press is the only gate.** The app, the file and any agent can only propose. The press applies through owner routes that `change_card_middleware` already guards. This keeps the trust boundary in core, where tenet 8 puts it.
+- **The owner's press is the only gate.** The file and any agent can only propose. The press applies through owner routes that `change_card_middleware` already guards. This keeps the trust boundary in core, where tenet 8 puts it.
+- **Both new routes are owner-only.** Export and import run `_require_owner`, so no app token, internal-secret caller or agent can read a bundle out or raise an import card.
 - **The bundle is untrusted, agent-writable data.** "Agent specs are agent-writable" (`docs/system-specs/modules/security.md`) holds for a received spec too. Core re-runs `sanitize_agent_config_governance` (`portability_templates.py`) on the merged result, so a bundle cannot lift a crewmate above this host's ceiling.
 - **No grant travels.** `approval_mode`, `allowedTools` and `autoApprove` are dropped on export and refused on import. The member starts pinned to `normal`, because an unset mode resolves to `trust`. More trust comes only from the owner's later `crewmate.update` or `crewmate.capabilities` card.
 - **No secret travels.** Export runs in core, applies `placeholder_mcp_values` (`portability_templates.py`), and never reads an `EXPORT_EXCLUDE` file (`portability_archive.py`). Import refuses a non-placeholder secret value, so a crafted file cannot plant a credential the receiver did not type.
 - **MCP commands run code.** A local `command` server is shown in full and marks the card `code_exec`. It installs disabled while any placeholder is unfilled.
-- **Memory is never shared by default.** A fresh store per import keeps the `owner_member_id == member_id` rule in `memory_stores.py` intact.
-- **Crons run unattended.** They land paused after the `_sanitize_imported_crons` rules (`portability_vetting.py`) and run only after the owner switches each one on.
-- **Pages from a sender never render.** Only `builtin:` and `user:` template ids travel (`RENDERABLE_SOURCES` in `dashboard_templates/instance.py`).
-- **Zip safety.** `zip_vet.vet_zip_inventory` (`zip_vet.py`) runs before any read. Flat entry names only, so no entry names a path. Caps in §5.2 bound memory use.
+- **Memory rows are never shared.** A fresh store per import keeps the `owner_member_id == member_id` rule in `memory_stores.py` intact. The lessons skill is text the owner read and edited before it left, and lands as a skill, not as rows.
+- **Crons run unattended.** They land paused after the `_sanitize_imported_crons` rules (`portability_vetting.py`) and run only after the owner switches each one on. Each script is shown in full and marks the card `code_exec`, and lands under a free name, so an import cannot point a cron at a file the receiver already had.
+- **Bundled skills are code and prompt.** Every file is shown in full on the card. A skill with any file besides `SKILL.md` marks the card `code_exec`. It lands in the new member's own workspace, so it reaches no other crewmate.
+- **Pages from a sender never render.** Only `builtin:` template ids travel; a `user:` id names a folder on the sender's host (`RENDERABLE_SOURCES` in `dashboard_templates/instance.py`).
+- **Zip safety.** `zip_vet.vet_zip_inventory` (`zip_vet.py`) runs before any read. Only `skills/<name>/<file>` and `crons/<file>.py` may hold a `/`, and each name matches the §5.2 pattern, so no entry names a path outside the bundle. Caps in §5.2 bound memory use.
 - **The sender label is not proof.** The card prints "self-declared" beside it.
 - **Prompt injection through rules or description.** Rules and description are text the crewmate reads every turn. The card shows them in full so the owner reads what the crewmate will read. Text fields run the same credential and control-character checks `crewmate.create` runs (`_validate_crewmate_create` in `guide_catalog.py`).
 
@@ -307,8 +329,8 @@ Compatible. Every part is added: a new manifest permission, a new card kind and 
 
 | Concern | Linux | macOS | Windows |
 |---|---|---|---|
-| File read | app backend, Python `zipfile` | same | same |
-| File mode | `0o600` | `0o600` | mode ignored; file sits under the user profile |
+| File read | core, Python `zipfile` | same | same |
+| File save | the browser's download | same | same |
 | Name case | case-sensitive | case-insensitive by default | case-insensitive |
 | Collision rule | slug derivation; distinct keys | same | same |
 | Text encoding | UTF-8 pinned | UTF-8 pinned | UTF-8 pinned, never the codepage |
@@ -320,14 +342,18 @@ Every file write names its encoding, because a Windows codepage read of UTF-8 co
 
 | Option | Verdict | Why |
 |---|---|---|
-| Core `.crewmate` export/import routes | rejected | a whole feature in core breaks tenet 8; the app route needs only one generic capability |
+| A Crewmate Share app over a `propose_crewmate` App SDK capability | superseded by owner ruling, 2026-10-18 | owner UI is already owner-authenticated, so no app permission, `app:` card slot or Pending changes view is needed (§5.5, §5.6) |
 | Let apps call `POST /api/agents` | rejected | gives every app the power to install tool grants and MCP commands |
-| A crewmate as a regular App Kit app with a first-run hook | rejected as primary | only authors can make one; no one-click share; still needs this capability |
+| A crewmate as a regular App Kit app with a first-run hook | rejected | only authors can make one; no one-click share |
 | Reuse the whole-install zip with a crew filter | rejected | Merge only installs `config.json` if absent (`_merge_settings` in `portability.py`); wrong unit |
+| Make export a change card too | rejected | export writes nothing on this host; a confirm view is the consent, and there is nothing to undo |
 | Carry memory by default | rejected | memory is identity and private |
+| Carry selected lessons as memory rows | rejected | rows are opaque to the card; a skill is text the owner reads in full |
+| Skill references only | rejected | a skill the sender wrote has no store to come from, so "missing" would be forever |
+| Ship crons off by default | rejected | a crewmate's schedule is part of what it does; landing paused is the safety, not leaving it out |
 
 ## 11. Open questions
 
-1. **Memory opt-in.** Should export offer an owner toggle to include selected lessons as plain text, imported into the fresh store as owner-written rows? Default answer: no in Phases 1–3; revisit with real demand.
-2. **Skills bundled or referenced.** References keep code out of the file but leave "missing" skills. Bundling needs the same vetting an app install runs. Default answer: references only; a missing skill links to its app in the store.
+1. **Memory opt-in.** Resolved 2026-10-22: lessons travel only as an owner-edited skill (§5.3), never as rows.
+2. **Skills bundled or referenced.** Resolved 2026-10-22: `app:` skills travel as references; every other skill travels as files, shown in full on the card (§5.2).
 3. **Provenance display.** Should the crewmate page show "From <sender>"? Default answer: yes, from the stamp in §5.4 step 5.

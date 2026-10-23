@@ -277,12 +277,17 @@ def registered_context_count(path: Path | None = None) -> tuple[int, bool]:
     count is unknown -- and a reader that reported 0 for both would publish a
     number that is a lie on exactly the install worth looking at.
 
-    Never raises: an unreadable file is ``(0, False)``.
+    Never raises: an unreadable file is ``(0, False)``, and says nothing. The
+    metrics probe calls this once per export interval and reports a fault once
+    itself; :func:`_read_json` warns on every failed read, which would log the
+    same corrupt file every interval.
     """
     target = path if path is not None else context_registrations_path()
     try:
-        raw = _read_json(target, {})
-    except WebhookStoreUnreadable:
+        raw = json.loads(read_bytes_with_retry(target).decode("utf-8"))
+    except FileNotFoundError:
+        return 0, True
+    except (ValueError, OSError):
         return 0, False
     if not isinstance(raw, dict):
         # A top-level non-object is not a registration map. It parses, so it is

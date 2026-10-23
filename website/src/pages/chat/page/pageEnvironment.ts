@@ -189,7 +189,7 @@ export function useChatPageEnvironment({
   // MCP Apps in the side panel (dashboard.mcp_app_panel, opt-in). When on, a new
   // render opens the panel to its own `app` tab instead of drawing inline in the
   // bubble — same auto-open path the web-preview marker uses.
-  const { data: appPanelCfg, isError: appPanelCfgError } = useQuery<{ mcp_app_panel?: boolean; auto_open_git_panel?: boolean }>({
+  const { data: appPanelCfg, isError: appPanelCfgError } = useQuery<{ mcp_app_panel?: boolean; auto_open_git_panel?: boolean; side_panel_always_open?: boolean; side_panel_pin_summary?: boolean }>({
     queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000,
   })
   const mcpAppPanel = appPanelCfg?.mcp_app_panel === true
@@ -204,11 +204,25 @@ export function useChatPageEnvironment({
   // default (off) — otherwise a config endpoint that is down would withhold the
   // Git tab itself, which the flag does not govern.
   const autoOpenGitPanelKnown = appPanelCfg !== undefined || appPanelCfgError
+  // Opt-in side panel settings (Settings → Chat → Side panel): open the panel in
+  // every chat, and pin Summary first in it. Strict reads, so a failed or
+  // pending config read leaves both off, which is what an unconfigured install
+  // gets. The page does not report that off to the store as the user's setting
+  // (see `sidePanelAlwaysOpenKnown`).
+  const sidePanelAlwaysOpen = appPanelCfg?.side_panel_always_open === true
+  const sidePanelPinSummary = appPanelCfg?.side_panel_pin_summary === true
+  // Whether the read has returned data, which is when the page reports Keep side
+  // panel open to the store. Unlike `autoOpenGitPanelKnown`, a FAILED read with
+  // no data does not count: the store would keep its off as the user's setting,
+  // so a later answer that is on would look like a turn-on and open a panel the
+  // user closed meanwhile. A failed refetch keeps the data it had, which still
+  // counts.
+  const sidePanelAlwaysOpenKnown = appPanelCfg !== undefined
   return {
     dispatch, moveSlotToFolder, navigate, navigationType, location, queryClient, provider, deleteTerminalSessionRef, searchParams, setSearchParams, isMobile, isTouch, topbarSlot, topbarTrailSlot,
     mobileNavRail, titleInTopbar, langGen, vv, keyboardInset, slots, switchSlotGone, filteredSlots, filteredSlotsRef, surfaceUnreadSlots, refreshTrigger, connected, creatingSlot, foregroundCreateId,
     foregroundCreateIdRef, lastCreatedActivationRef, unresumableResume, undeletableHistory, activeSlot, boundStore, voiceRecoverySlot, setVoiceRecoverySlot, appToolCallIds, mcpAppPanel,
-    autoOpenGitPanel, autoOpenGitPanelKnown,
+    autoOpenGitPanel, autoOpenGitPanelKnown, sidePanelAlwaysOpen, sidePanelAlwaysOpenKnown, sidePanelPinSummary,
   }
 }
 

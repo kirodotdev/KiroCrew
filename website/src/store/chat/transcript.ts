@@ -543,6 +543,54 @@ export function sameTranscript(prev: ChatMessage[], next: ChatMessage[]): boolea
   return true
 }
 
+/** `next`, with each row that is structurally equal to a row of `prior` replaced
+ *  by that prior row, or `prior` itself when every row matches in order.
+ *
+ *  A reducer that rebuilds a transcript from a fetched page gives every row a
+ *  new object even when the page repeats what the store already holds. The turn
+ *  grouper and the memoised row components compare rows by reference, so that
+ *  rebuild re-renders every mounted turn. Handing back the prior objects keeps
+ *  those bail-outs.
+ *
+ *  Equality is `jsonEqual` over the whole row, not `sameMessage`'s field list:
+ *  a reused row stands in for the new one, so a field the list does not name
+ *  (`seq`, `gen`, the decision strips) must match too. Candidates pair by
+ *  `meta.mid`, else by role and ts, and each prior row is used at most once, so
+ *  the result never holds one object twice.
+ *
+ *  `prior` must be plain store rows (the reducer's `original()` of the array),
+ *  and nothing may mutate the result's rows in place afterwards: a reused row
+ *  is frozen store state. */
+export function reuseUnchangedRows(prior: readonly ChatMessage[], next: ChatMessage[]): ChatMessage[] {
+  if (prior === next || prior.length === 0) return next
+  // A JSON-array key, as `deduplicateByMid` uses: a mid key and a role+ts key
+  // differ in length, so they cannot collide.
+  const pairKey = (m: ChatMessage): string => {
+    const mid = m.meta?.mid
+    return typeof mid === 'string' && mid ? JSON.stringify([mid]) : JSON.stringify([m.role, m.ts ?? null])
+  }
+  const candidates = new Map<string, ChatMessage[]>()
+  for (const m of prior) {
+    const k = pairKey(m)
+    const list = candidates.get(k)
+    if (list) list.push(m)
+    else candidates.set(k, [m])
+  }
+  let allPrior = prior.length === next.length
+  const out = next.map((m, i) => {
+    const list = candidates.get(pairKey(m))
+    const at = list ? list.findIndex(p => jsonEqual(p, m)) : -1
+    if (!list || at < 0) {
+      allPrior = false
+      return m
+    }
+    const [reused] = list.splice(at, 1)
+    if (reused !== prior[i]) allPrior = false
+    return reused
+  })
+  return allPrior ? (prior as ChatMessage[]) : out
+}
+
 /** The chunk-seq floor a slot snapshot vouches for: the `seq` the server folded
  *  onto the snapshot's trailing `streaming` row (chat_utils._prepare_messages),
  *  i.e. the newest chunk whose text that snapshot already contains. A live

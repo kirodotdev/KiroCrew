@@ -34,6 +34,7 @@ from kiro_crew.sandbox import (
     _voice_runtime_parent_paths,
     _voice_runtime_sandbox_paths,
 )
+from kiro_crew.sandbox_launcher import launcher_program_source
 
 # Several tests of this suite spawn real child interpreters (subprocess.run([sys.executable,
 # ...])); every part of it pins itself to the same dedicated xdist worker so concurrent
@@ -958,7 +959,7 @@ class TestBuildLauncherScript:
         naming platform_compat (why the inline os.chmod must NOT use it) does
         not false-positive: only module-qualified attribute access counts.
         """
-        tree = ast.parse(Path(launcher_program.__file__).read_text(encoding="utf-8"))
+        tree = ast.parse(launcher_program_source())
         used_modules = {
             node.value.id
             for node in ast.walk(tree)

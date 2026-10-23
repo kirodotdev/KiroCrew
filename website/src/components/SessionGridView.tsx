@@ -16,6 +16,8 @@ import { forkFailureNoticeOffsite } from '../utils/forkFailure'
 import type { ForkFailureNotice } from '../utils/forkFailure'
 import { errMessage } from '../utils/thunkError'
 import { sessionDisplayTitle } from '../utils/sessionDisplayTitle'
+import { useAppDispatch } from '../store'
+import { requestSlotFolderOpen } from '../store/chatSlice'
 type Slot = {
   key: string
   title?: string
@@ -146,7 +148,11 @@ export default function SessionGridView({
     focusedLeaf?.kind === 'session' && focusedLeaf.slot
       ? focusedLeaf.slot
       : grid.leaves.find((l) => l.kind === 'session' && l.slot)?.slot
-  const forkSourceTitle = slots.find((s) => s.key === forkSourceSlot)?.title
+  // The name the Fork tooltip and the refused-fork notice show: "Untitled
+  // session" for an untitled source, never its raw slot key. A source missing
+  // from the slot list leaves this unset, so those fall back to the key.
+  const forkSourceRow = forkSourceSlot ? slots.find((s) => s.key === forkSourceSlot) : undefined
+  const forkSourceTitle = forkSourceRow ? sessionDisplayTitle(forkSourceRow) : undefined
 
   const renderLeaf = (leaf: GridLeaf, ownsTopLeft: boolean) => {
     const paneLeading = ownsTopLeft ? leading : undefined
@@ -246,6 +252,7 @@ function PlaceholderPane({
   const [search, setSearch] = useState('')
   const [forkError, setForkError] = useState<ForkFailureNotice | null>(null)
   const queryClient = useQueryClient()
+  const dispatch = useAppDispatch()
   // Same key and shape the transcript path reads, so the two share one cache entry
   const createSession = useMutation({
     mutationFn: () => api.createChatSlot(),
@@ -256,12 +263,17 @@ function PlaceholderPane({
   })
   const forkSession = useMutation({
     mutationFn: () => api.forkChatSlot(forkSourceSlot as string),
-    onSuccess: (r: { ok?: boolean; key?: string }) => {
+    onSuccess: (r: { ok?: boolean; key?: string; folder_id?: string | null }) => {
       // The refused condition is over. The cell usually unmounts with the new pane, so
       // this matters for the case where it does not: a success that opens no tab.
       setForkError(null)
       queryClient.invalidateQueries({ queryKey: ['session-grid-slots'] })
-      if (r?.ok && r.key) onPick(r.key)
+      if (r?.ok && r.key) {
+        onPick(r.key)
+        // The pane shows the child; its sidebar row sits in the source's folder,
+        // which can be collapsed. Open that path, as the other fork entries do.
+        dispatch(requestSlotFolderOpen({ key: r.key, folder_id: r.folder_id }))
+      }
     },
     // A refused fork must not read as a no-op: the only other signal is the spinner
     // stopping, which is indistinguishable from success that opened no tab.

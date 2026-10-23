@@ -119,8 +119,8 @@ def _wav_seconds(data: bytes) -> int:
     WhatsApp draws a voice note's duration from ``AudioMessage.seconds`` and
     labels it ``0:00`` without one. neonize derives that figure by shelling out to
     ``ffmpeg``, which this channel cannot require, so the one container the
-    bundled speech synthesis emits is read from its own header instead: Piper
-    writes PCM WAV, and frames divided by the frame rate is the whole answer.
+    bundled speech synthesis emits is read from its own header instead: the
+    system engine writes PCM WAV, and frames divided by the frame rate is the whole answer.
     Any other container (a Polly MP3) answers 0, which costs the label alone.
 
     A header parse over an in-memory buffer, so it holds no descriptor and does

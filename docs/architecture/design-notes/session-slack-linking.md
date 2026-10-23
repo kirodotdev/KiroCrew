@@ -131,7 +131,9 @@ need a fresh @mention.
 
 ### Dashboard to Slack
 
-In `chat_runner._run_chat`, gated on `not is_slash and not _is_synthetic`:
+In the dashboard turn, gated on `not is_slash and not _is_synthetic` (`_turn_open` and
+`_turn_dispatch_gates` run steps 1-2, `_on_tool_call` step 3, `_turn_stop_hook` step 4 and
+`_run_chat`'s `finally` step 5):
 
 1. Read `get_slack_link(session_key)`. A dashboard session may hold its link on
    the bare key while the turn runs under the `dashboard:`-prefixed one, so the

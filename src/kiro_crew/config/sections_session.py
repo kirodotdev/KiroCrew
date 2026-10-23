@@ -427,6 +427,106 @@ def _migrate_workspaces(raw_workspaces: dict) -> dict[str, WorkspaceConfig]:
 
 
 @dataclass
+class SessionEnvironmentProfileConfig:
+    """One named remote workspace profile the Session Environments UI offers.
+
+    Configuration only: a profile names a template and a working directory, it
+    does not provision anything. Validated by
+    ``config.session_environments.validate_profile``.
+    """
+
+    id: str = field(
+        default="",
+        metadata=_meta(
+            "Profile ID",
+            "Stable identifier: an ASCII letter or digit first, then letters, "
+            "digits, '_' or '-'; at most 64 characters and unique within the list.",
+        ),
+    )
+    name: str = field(
+        default="",
+        metadata=_meta("Profile Name", "Display name shown in the picker (1-128 characters)."),
+    )
+    template: str = field(
+        default="",
+        metadata=_meta(
+            "Template", "Name of the workspace template this profile uses (1-255 characters)."
+        ),
+    )
+    workdir: str = field(
+        default="",
+        metadata=_meta(
+            "Working Directory",
+            "Absolute POSIX path sessions start in inside the workspace "
+            "(at most 1024 characters).",
+        ),
+    )
+    compute_survives_stop: bool = field(
+        default=True,
+        metadata=_meta(
+            "Files Survive A Stop",
+            "Whether the template's workspace storage survives a workspace stop. "
+            "Turn it off for a template whose stop destroys the compute and its "
+            "files (such as MicroVM): Kiro Crew then never stops that workspace "
+            "itself, and its session is not recoverable after a stop.",
+        ),
+    )
+
+
+@dataclass
+class SessionEnvironmentsConfig:
+    """Persisted Session Environments settings (configuration only).
+
+    Saving this section registers no provider, activates no remote runtime and
+    contacts nothing. It holds no credential. The UI is gated by the per-device
+    preview flag, so there is deliberately no ``enabled`` field here.
+    """
+
+    coder_url: str = field(
+        default="",
+        metadata=_meta(
+            "Coder URL",
+            "Base URL of the Coder deployment: empty, or an http(s) URL with a "
+            "hostname and no username, password, query or fragment.",
+        ),
+    )
+    profiles: list[SessionEnvironmentProfileConfig] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Profiles",
+            "Named workspace profiles (at most 20), each {id, name, template, workdir, "
+            "compute_survives_stop}.",
+        ),
+    )
+
+    stop_on_shutdown: bool = field(
+        default=True,
+        metadata=_meta(
+            "Stop On Shutdown",
+            "Stop every remote session environment when the gateway shuts down, except "
+            "one whose files do not survive a workspace stop. Off keeps them running "
+            "across a restart, which reconnects faster. Coder's own auto-stop still "
+            "applies either way.",
+        ),
+    )
+
+    @classmethod
+    def from_raw(cls, section: object) -> "SessionEnvironmentsConfig":
+        """Build from the raw section, keeping every valid part (never raises)."""
+        from kiro_crew.config.session_environments import (
+            load_session_environments,
+            load_stop_on_shutdown,
+        )
+
+        coder_url, profiles = load_session_environments(section)
+        return cls(
+            coder_url=coder_url,
+            profiles=[SessionEnvironmentProfileConfig(**p) for p in profiles],
+            stop_on_shutdown=load_stop_on_shutdown(section),
+        )
+
+
+@dataclass
 class ResolvedBindings:
     """Resolved workspace, memory store, and kiro agent for a session."""
 

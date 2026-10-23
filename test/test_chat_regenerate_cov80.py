@@ -264,6 +264,21 @@ async def test_switch_variant_rejects_a_non_integer_index(state) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("raw", ["1e999", "-1e999"])
+async def test_switch_variant_rejects_an_infinite_index(state, raw) -> None:
+    """JSON reads ``1e999`` as an infinite float, which ``int`` cannot convert."""
+    state.get_or_create_slot("s1")
+    async with _client(state) as client:
+        resp = await client.post(
+            "/api/chat/slots/s1/switch-variant",
+            data='{"index": %s}' % raw,
+            headers={"Content-Type": "application/json"},
+        )
+        assert resp.status == 400
+        assert await resp.json() == {"error": "invalid index", "code": "index_invalid"}
+
+
+@pytest.mark.asyncio
 async def test_switch_variant_needs_an_assistant_row_with_variants(state) -> None:
     slot = state.get_or_create_slot("s1")
     slot.append("user", "hi")

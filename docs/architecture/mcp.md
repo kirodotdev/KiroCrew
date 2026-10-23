@@ -520,7 +520,9 @@ Probes run from `POST /api/mcp/probe`:
   (a server on `:8443` / `:8000` / `:3000` probes) and `allow_private` (a loopback
   or LAN server, such as an app backend on `127.0.0.1`, probes, as kiro-cli itself
   connects to it). Redirects are not followed, so a server cannot hand the
-  handshake to an address the vet never checked; a redirect reports as its status.
+  handshake to an address the vet never checked; a redirect reports as its status
+  and the target it names (scheme, host, port and path only), so a server whose
+  url needs a trailing slash says which url to configure.
   The remote probe
   offers `MCP_CLIENT_PROTOCOL_VERSION` (`2025-06-18`) in `initialize`. A `-32602`
   refusal of that offer whose `data.supported` lists an older revision makes it
@@ -1813,8 +1815,9 @@ compare-and-set; a goal card adds a goal, or replaces one by `goal_id`, and the
 Undo of an added goal removes exactly that one). `goal_read`, `key_result_progress` and `save_goal_report`
 are direct reads and writes through `/api/member/self/goals/*`
 (`dashboard/handlers/member_goals.py`). `save_goal_report` files a weekly
-report or monthly review as a Markdown artifact under `Crewmates/<name>/Reports`
-and sends one notification linking it. These goal operations are deliberately
+report or monthly review under `Crewmates/<name>/Reports`, as `markdown` or as
+`html` (one self-contained printable page, one of the two), and sends one
+notification linking it. These goal operations are deliberately
 NOT in `_USER_TURN_OPERATIONS`: the check-in turns of
 `dashboard/goal_reminder.py` are gateway-authored hidden turns in the
 mate's own thread, and recording readings and filing reports is what they

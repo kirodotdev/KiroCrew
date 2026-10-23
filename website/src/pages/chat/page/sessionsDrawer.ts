@@ -244,7 +244,9 @@ export function useSessionsDrawer({
     // reader did not ask for anything yet.
     lookup: async (key: string) => {
       const row = await api.sessionMeta(key)
-      return row ? { key: row.key, title: row.title || row.key } : null
+      // The raw title ('' when untitled): the chip caches this row for the
+      // page's life, so it localizes the label at render, never here.
+      return row ? { key: row.key, title: row.title || '' } : null
     },
     // The click: ask again, because the session may have been deleted since
     // the chip appeared. A failed check is said by the chip itself, inline at
@@ -260,7 +262,8 @@ export function useSessionsDrawer({
         showActionError(i18nT('store.chatSlice.session_gone_open_failed_named', { name: title }))
         return 'gone'
       }
-      void dispatch(resumeFromHistory({ key: row.key, title: row.title || title }))
+      // The resume payload keeps its raw title (the key when untitled), never the label.
+      void dispatch(resumeFromHistory({ key: row.key, title: row.title || row.key }))
       return 'opened'
     },
   }), [dispatch, showActionError])

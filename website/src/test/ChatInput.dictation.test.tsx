@@ -327,6 +327,21 @@ describe('ChatInput — send is gated while a batch transcript is pending', () =
     expect(store.getState().chat.activeSlot).toBe('member-kirocrew')
   })
 
+  it('names an untitled mic owner "Untitled session", never by its raw key (#23084)', () => {
+    // The stored title of an untitled session can equal its key.
+    const store = createTestStore({
+      dashboard: { slots: [{ key: 'chat-untitled', title: 'chat-untitled', messages: 1, running: false }], unreadSlots: [], refreshTrigger: 0, subagentRunning: {}, subagentDetails: {}, subagentText: {} } as unknown as RootState['dashboard'],
+    })
+    renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={{ voiceBusyElsewhere: true, voiceBusyElsewhereSession: 'chat-untitled', onVoiceToggle: vi.fn() }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
+      { store },
+    )
+    expect(screen.getByTestId('voice-status-notice').textContent?.replace(/\u2060/g, '')).toBe('Microphone in use in “Untitled session”')
+    // The jump to the owning chat still works: the key stays its identity.
+    fireEvent.click(screen.getByRole('button', { name: '“\u2060Untitled session\u2060”' }))
+    expect(store.getState().chat.activeSlot).toBe('chat-untitled')
+  })
+
   it('falls back to the unnamed copy when the owning session is not a known slot', () => {
     renderWithProviders(
       <ComposerVoiceSliceOverride inputProps={{ voiceBusyElsewhere: true, voiceBusyElsewhereSession: 'gone-slot', onVoiceToggle: vi.fn() }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,

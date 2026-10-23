@@ -33,7 +33,7 @@ from kiro_crew.agent_sdk.backends import (
 # AcpRuntime path) confirm the consumed projection against the saved intent
 # (``agent_capabilities_consumed.consumed_spec_matches``) after session creation.
 # Each requires a live dedicated runtime before reporting a saved template.
-# Claude's consumed projection is captured live on claude-agent-acp 0.93.0
+# Claude's consumed projection is captured live on claude-agent-acp 0.94.0
 # (``test/fixtures/acp_frames/claude/saved-spec-projection-live.jsonl``): the
 # server the mirror projected out of a saved spec ran in the session. Codex and
 # DeepSeek rest on unit tests only.

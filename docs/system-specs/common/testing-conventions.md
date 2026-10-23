@@ -179,7 +179,10 @@ The test floor clears live session and run execution records between tests so a
 reused temporary home cannot inherit another test's routing or retention mode.
 Dispatch doubles provide a concrete `get_agent_selection()` tuple, including
 `("template", "")` for the default template. An unconstrained mock is not a
-valid member or template identity. Session context doubles implement the async
+valid member or template identity. Runtime fixtures that bypass the constructor
+with `__new__` explicitly set `_remote_workspace = None` for a local session,
+so activation exercises its real local path rather than an incomplete object.
+Session context doubles implement the async
 `memory_mode_for_session()` accessor and return a concrete retention mode.
 Session-start collector tests declare their
 MCP roster explicitly rather than inheriting the installed agent's tools.
@@ -831,9 +834,9 @@ one scope down:
   boundary, so writing back a setup-phase snapshot during teardown would drop the handler
   the teardown phase is capturing through.
 * `_restore_autonudge_singleton` puts `autonudge._INSTANCE` back to whatever the test
-  inherited. It lives in `test/conftest.py` rather than the rootdir floor, because only
-  the `test/` suites drive the service; it is listed here because its failure shape is
-  the process-global one this section is about.
+  inherited. It lives in `test/conftest_resets.py`, bound by `test/conftest.py`, rather
+  than the rootdir floor, because only the `test/` suites drive the service; it is
+  listed here because its failure shape is the process-global one this section is about.
   `AutoNudgeService.start()` publishes itself there and `stop()` clears it, so
   a test that starts the service — or drives a dashboard handler that does — leaves a live
   instance holding timer TASKS created on that test's event loop. Every later test in the
@@ -854,6 +857,28 @@ the held slot descriptors are module state.
 
 `test/conftest.py` holds the rest: suite-specific isolation (Slack thread state, the
 model-window cache, the platform context, …) and the Windows collect-ignore list.
+
+Both conftests keep most of their definitions in plain modules beside the suite, never
+collected: `test/conftest_floor_*.py` for the rootdir file and `test/conftest_*.py` for
+`test/conftest.py`. Each conftest binds every fixture and hook back into its own
+namespace, because pytest registers them from there. The rootdir file loads its parts
+by file path (`_load_floor_part`), since `test/` is off `sys.path` for the in-package
+suites. A patch on a conftest rebinds that conftest's global only, so a function that
+reads a name a test patches there stays in the conftest beside it, and so does what a
+test needs fresh each time it loads `conftest.py` by path (the audit core, the residue
+guard). `test/test_conftest_parts_reach.py` resolves the patches the test trees make on
+a conftest it can name (a by-path load, a plugin lookup, `import conftest`, a helper
+parameter every caller fills with one) and fails on a reader in a part, apart from
+listed readers the patching test never runs. It fails closed on a patch call it cannot
+resolve in a file that reaches a conftest; a plugin written as a string is listed there
+by hand. A source pin whose assertion covers every site in a conftest (absent,
+counted, listed) reads it joined with its parts. Anything else a test reads on a
+conftest is bound from its part. New isolation goes in the part whose docstring names
+its job, and a new fixture or hook is also added to its conftest's import block, or
+pytest never sees it. The local related-test selection matches the name `conftest.py`
+only, so after editing a part also run the floor's own tests
+(`test/test_host_isolation_floor*.py`, `test/test_host_service_guard.py`,
+`test/test_testing_determinism_helpers.py`, `test/test_conftest_parts_reach.py`).
 
 Host-side `PodConfig` paths do not derive from `KIROCREW_HOME`. Tests that publish
 pod state must set `pod_root`, `pods_dir` and `artifacts_dir` under `tmp_path` on
@@ -1848,7 +1873,7 @@ found these further classes. Each one passed on the host that wrote it.
   tests that meant to exercise the PEP 668 branch failed on every uv host. Pin every probe
   the function reads, not just the one the test is about.
 - **A test-only import that CREATES the data home.** `test/conftest.py` imports
-  `slack.handler`, which built `_PHASE_EMOJIS` by calling `KiroCrewConfig.load()` at import —
+  `slack.handler` (through `test/conftest_slack.py`), which built `_PHASE_EMOJIS` by calling `KiroCrewConfig.load()` at import —
   and loading resolves `config_dir()`, which `mkdir`s `~/.kiro/crew`. Import-time reads of
   the data home peek first (`peek_data_home()`) and load only when the file already exists.
 - **Bytecode written into the checkout by import-by-path.** Loading a script with
@@ -3328,7 +3353,7 @@ went red, or the fix lands in the wrong file and the leak stays.
   the number unreachable.
 - **`network`: rank the address before you file the finding.** The UDP `connect` to
   `198.51.100.1:53` / `2001:db8::1:53` in `argv_floor_hosts._own_interface_addresses` is the
-  packet-less local-IP trick over TEST-NET, a hardening item: `test_security.py` now routes
+  packet-less local-IP trick over TEST-NET, a hardening item: `test_security_denied_commands.py` now routes
   it through an inert `_InertDatagramSocket` at the module's `socket` binding (datagram
   construction only; every other socket kind passes through) that records the peer and
   answers a documentation address from `getsockname`, and asserts the peers it WOULD have
@@ -5531,7 +5556,7 @@ measured an hour earlier is not a baseline.
    # 600 trivial tests, with the real conftest vs without it
    python -c "
    for i in range(600): print(f'def test_t{i}(): assert True')" > /tmp/probe/test_p.py
-   cp test/conftest.py /tmp/probe/ && cd /tmp/probe && pytest test_p.py -n0 -q --no-cov
+   cp test/conftest.py test/conftest_*.py /tmp/probe/ && cd /tmp/probe && pytest test_p.py -n0 -q --no-cov
    ```
 
    That probe read 6.35s with the unused `tmp_path` and the repeated `mktemp` calls in
@@ -5652,7 +5677,8 @@ and it refuses to run while a file under proof carries uncommitted edits.
 
 ```bash
 python3 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/prove.py
-# 0 PROVEN · 20 NOT_PROVEN · 21 INCONCLUSIVE · 10 nothing to prove · 30 baseline red
+# 0 PROVEN · 20 NOT_PROVEN · 21 INCONCLUSIVE · 10 nothing to prove · 11 frontend tests · 30 baseline red
+# it also prints the `Proof:` line a fix PR pastes under `## Tests`
 # add --per-hunk to name the hunks no test catches
 ```
 

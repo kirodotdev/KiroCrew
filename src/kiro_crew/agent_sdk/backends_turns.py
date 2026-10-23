@@ -48,7 +48,10 @@ from kiro_crew.agent_sdk.backends import (
 # ends its turn. It takes a user's mid-turn message as a second ``session/prompt``
 # instead (``ACP_BACKENDS_STEER_CONCURRENT_PROMPT`` below).
 # pi is not a member: pi-acp's ``initialize`` result advertises ``loadSession`` and
-# ``sessionCapabilities`` of list and delete, and no steering extension.
+# ``sessionCapabilities`` of list and delete, and no steering extension. It takes a
+# user's steer through Crew's own gate extension instead, which is not a deny-notice
+# channel (``ACP_BACKENDS_STEERING_REQUEST`` below); a pi denial reaches the model as
+# the blocked call's own error result, inside the same turn, without one.
 # deepseek is not a member: it advertises close, list and resume only, and permits
 # one in-flight prompt per session, so a mid-turn steer has no verb to travel on.
 # goose is not a member: its steer is its own request, and it is not shown to
@@ -104,9 +107,10 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # ``{outcome: "startedNewTurn"}`` and the adapter runs a turn of its own that no
 # ``session/prompt`` owns; ``session/cancel`` stops that turn and the next
 # ``session/prompt`` runs normally. There is no ``steering_consumed`` echo, so the
-# request's own answer is the delivery evidence. This membership is not
-# re-measured on the Real Adapter Contract lane's pin
-# (``test/real_adapters/package.json``).
+# request's own answer is the delivery evidence. That lane run's frames, on the
+# pin in ``test/real_adapters/package.json``, are
+# ``test/fixtures/acp_frames/codex/steering-live.jsonl``: its ``initialize``
+# answers ``_meta.steering.supported: true`` and the mid-turn steer ``injected``.
 #
 # The session handle therefore AWAITS the answer (the kiro verb is
 # fire-and-forget), until it arrives or the aimed-at turn ends: ``injected``
@@ -150,8 +154,33 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # with ``end_turn``; a cancelled or failed turn queues it. claude runs one adapter per
 # session, so ``AcpClient`` speaks the request for it, and only when the handshake
 # advertised it.
+#
+# pi is a member on a LIVE capture against pi-acp 0.0.34 over pi 1.3.0, driven through
+# Crew's own ``AcpClient``: ``test/fixtures/acp_frames/pi/steering-live.jsonl``. pi-acp
+# has no steer verb, and a second ``session/prompt`` lands in its turn queue as a new
+# turn after the running one, so no request reaches the turn; the steer bypasses the
+# adapter. ``AcpClient`` writes it as a file sealed for Crew's gate extension inside
+# pi (``acp.harness.pi_steer``: owner-only directory the sandbox mounts read-only,
+# AES-256-GCM under a per-launch key bound to the gate nonce, the pi session id and a
+# strictly increasing sequence number). At each ``turn_end`` that did not abort or
+# fail, the extension puts the oldest undelivered steer on pi's steering queue with
+# ``pi.sendMessage(message, {deliverAs: "steer"})``, which queues it synchronously
+# while pi streams and which pi hands the model as a user message; pi 1.3.0's agent
+# loop reads that queue right after the boundary and before its next model call in
+# the same run (``agent-loop.js``; no ``finishTurn`` in 1.3.0 ends a run there).
+# ``pi.sendUserMessage`` is not used: it awaits pi's input handlers before it queues,
+# so its steer could miss that read and surface in a later run. When pi starts the message the extension notifies an envelope naming the
+# steer, which pi-acp forwards as an ``agent_message_chunk`` with
+# ``_meta.piAcp.notify``; that echo is reported as ``EVENT_STEER_CONSUMED``. In the
+# capture a steer written during a running ``bash`` call was echoed after the tool
+# result, the model's next request carried it as the latest user message, and its
+# answer named the steered word before that ``session/prompt`` ended ``end_turn``.
+# A steer the run settles without reading -- the turn was cancelled, or failed, or
+# the steer arrived after its last ``turn_end`` -- is retired by the extension and
+# removed by the client at the turn's terminal, never read into a later turn, and the
+# caller queues it: membership here means ``steer_needs_loss_recovery``, like goose.
 ACP_BACKENDS_STEERING_REQUEST = frozenset(
-    {ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE}
+    {ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE, ACP_BACKEND_PI}
 )
 
 # Backends that take a USER's mid-turn message as a second ``session/prompt`` sent
@@ -275,12 +304,12 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # ``contextUsagePercentage`` read 21.99 -> 30.40 -> 38.82, and the next ordinary
 # turn read 30.47. The one metadata frame right after ``completed`` read 81.03.
 #
-# claude is a member on a LIVE capture against claude-agent-acp 0.93.0:
+# claude is a member on a LIVE capture against claude-agent-acp 0.94.0:
 # ``test/fixtures/acp_frames/claude/compact-live.jsonl``. After two ordinary turns
-# (``used`` 31164), the ``/compact`` turn is one ``tool_call`` stamped
+# (``used`` 31250), the ``/compact`` turn is one ``tool_call`` stamped
 # ``_meta.claudeCode.toolName: compact``, completed inside the same
-# ``session/prompt`` with ``rawOutput`` ``preTokens`` 31164 -> ``postTokens`` 4257,
-# then ``end_turn`` with no status frame. The next ordinary turn read 25931.
+# ``session/prompt`` with ``rawOutput`` ``preTokens`` 31250 -> ``postTokens`` 4148,
+# then ``end_turn`` with no status frame. The next ordinary turn read 26171.
 #
 # deepseek is the one non-member:
 # :data:`ACP_BACKENDS_CONTEXT_RECYCLE` carries the consequence, because deepseek

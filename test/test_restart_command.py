@@ -75,14 +75,19 @@ class TestRestartSlashCommand:
         with (
             patch.dict("os.environ", {"INVOCATION_ID": "abc"}),
             patch("os._exit") as mock_exit,
+            patch(
+                "kiro_crew.sel.flush_audit_queue_before_hard_exit", new_callable=AsyncMock
+            ) as mock_flush_sel,
         ):
             await _handle_restart(orch, "U_OWNER", "", respond)
         mock_exit.assert_called_once_with(1)
         respond.assert_called_with("♻️ Restarting gateway…")
         orch.sessions.close_all.assert_awaited_once()
-        # The approved-restart audit event must be flushed synchronously before
-        # os._exit() (which skips atexit / the async SEL writer drain).
-        _mock_sel.flush.assert_called_once()
+        # The approved-restart audit event must be drained before os._exit()
+        # (which skips atexit / the async SEL writer drain). The restart path
+        # routes that drain through the shared flush_audit_queue_before_hard_exit
+        # helper, same as the gateway's other hard exits.
+        mock_flush_sel.assert_awaited_once_with()
 
     @pytest.mark.asyncio
     async def test_owner_exits_even_if_session_close_hangs(self, _mock_sel):
@@ -107,8 +112,8 @@ class TestRestartSlashCommand:
         async def _timeout_first(coro, timeout):
             # Simulate ONLY the close_all wait_for (the first bounded call)
             # timing out — cancel its pending coro the way wait_for would, then
-            # raise. Let later bounded calls (the SEL flush executor offload) run
-            # for real so the flush still executes on the exit path.
+            # raise. Let later bounded calls (the skill-usage flush executor
+            # offload) run for real so the exit path still completes.
             calls["n"] += 1
             if calls["n"] == 1:
                 task = asyncio.ensure_future(coro)
@@ -124,11 +129,14 @@ class TestRestartSlashCommand:
             patch.dict("os.environ", {"INVOCATION_ID": "abc"}),
             patch("os._exit") as mock_exit,
             patch("kiro_crew.slack.events.asyncio.wait_for", _timeout_first),
+            patch(
+                "kiro_crew.sel.flush_audit_queue_before_hard_exit", new_callable=AsyncMock
+            ) as mock_flush_sel,
         ):
             await _handle_restart(orch, "U_OWNER", "", respond)
-        # Despite the hang, the process still exits and the audit is flushed.
+        # Despite the hang, the process still exits and the audit is drained.
         mock_exit.assert_called_once_with(1)
-        _mock_sel.flush.assert_called_once()
+        mock_flush_sel.assert_awaited_once_with()
 
     @pytest.mark.asyncio
     async def test_dashboard_state_saved_before_restart(self, _mock_sel):
@@ -172,12 +180,15 @@ class TestRestartSlashCommand:
                 "kiro_crew.dashboard.chat.save_all_slots_to_history",
                 side_effect=RuntimeError("disk full"),
             ) as mock_save,
+            patch(
+                "kiro_crew.sel.flush_audit_queue_before_hard_exit", new_callable=AsyncMock
+            ) as mock_flush_sel,
         ):
             await _handle_restart(orch, "U_OWNER", "", respond)
         mock_save.assert_called_once()
         # Save blew up, but the restart still completed.
         mock_exit.assert_called_once_with(1)
-        _mock_sel.flush.assert_called_once()
+        mock_flush_sel.assert_awaited_once_with()
 
 
 class TestRestartBangAlias:

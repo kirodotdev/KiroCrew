@@ -332,11 +332,16 @@ def test_the_dashboard_page_carries_the_dashboard_tabs_csp(harness: Any) -> None
 
 
 def test_the_dashboard_frame_is_sandboxed_like_the_dashboard_tab(harness: Any) -> None:
+    # The Dashboard tab imports its grant from the one definition in lib/.
+    grant_file = WEB / "lib" / "crewDashboardSandbox.ts"
+    assert "from '../../lib/crewDashboardSandbox'" in DASHBOARD_TAB.read_text(encoding="utf-8")
     grants = re.search(
         r"export const CREW_DASHBOARD_SANDBOX = '([^']*)'",
-        DASHBOARD_TAB.read_text(encoding="utf-8"),
+        grant_file.read_text(encoding="utf-8"),
     )
-    assert grants, "CREW_DASHBOARD_SANDBOX not found in CrewDynamicDashboard.tsx; update this test"
+    assert (
+        grants
+    ), "CREW_DASHBOARD_SANDBOX not found in lib/crewDashboardSandbox.ts; update this test"
     assert harness.DASHBOARD_SANDBOX == grants.group(1)
     assert "allow-same-origin" not in harness.DASHBOARD_SANDBOX.split()
     page = harness.dashboard_page("<p>x</p>", {})

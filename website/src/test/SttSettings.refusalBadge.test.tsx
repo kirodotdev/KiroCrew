@@ -93,6 +93,21 @@ describe('Status badge for an installed-but-refused recogniser', () => {
     expect(screen.queryByText('not working')).toBeNull()
   })
 
+  it.each(['stt_import_failed', 'stt_unsupported_cpu', 'stt_load_crashed', 'stt_native_probe_crashed'])(
+    '%s shows its reason as an error notice, not muted text',
+    async (code) => {
+      mountRefused(code)
+      const notice = await screen.findByTestId('stt-unavailable-error')
+      expect(notice.getAttribute('role')).toBe('alert')
+    },
+  )
+
+  it('a missing extra keeps its reason as status text', async () => {
+    mountRefused('stt_extra_missing')
+    await screen.findByText('not installed')
+    expect(screen.queryByTestId('stt-unavailable-error')).toBeNull()
+  })
+
   it('the load-crashed reason names the product and the real remedy', async () => {
     mountRefused('stt_load_crashed')
     const line = await screen.findByText(/last attempt to load the speech model crashed/)

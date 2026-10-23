@@ -313,3 +313,31 @@ test("unregister is idempotent and safe before any register", () => {
   assert.deepStrictEqual(state.unregisterCalls, []);
   assert.strictEqual(state.unregisterAllCalls, 0);
 });
+
+// --- planFreshInstallHotkeySeed: the opt-in-for-new-installs decision --------
+// A global accelerator is exclusive, so the platform default is opt-in for new
+// installs: a fresh store is seeded "" (disabled); an upgrading user is left at
+// null and keeps the auto-bound default. These are the fresh / upgrade / rename
+// / already-chosen cases the boot path feeds the helper.
+
+test("fresh install with an untouched default (null) is seeded disabled", () => {
+  const { mod } = loadModule();
+  assert.strictEqual(mod.planFreshInstallHotkeySeed(null, true), "");
+});
+
+test("an upgrading user (not fresh) is left untouched, even at the null default", () => {
+  const { mod } = loadModule();
+  // Upgrade = store pre-existed OR the npm-rename seed carried settings, so
+  // isFreshInstall is false. null keeps meaning "platform default" for them.
+  assert.strictEqual(mod.planFreshInstallHotkeySeed(null, false), null);
+});
+
+test("a fresh install that already chose a chord is left untouched", () => {
+  const { mod } = loadModule();
+  assert.strictEqual(mod.planFreshInstallHotkeySeed("Alt+Shift+J", true), null);
+});
+
+test("a fresh install that already disabled it (\"\") is left untouched", () => {
+  const { mod } = loadModule();
+  assert.strictEqual(mod.planFreshInstallHotkeySeed("", true), null);
+});

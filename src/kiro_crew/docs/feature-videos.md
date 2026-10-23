@@ -88,8 +88,15 @@ you are about to play would just download them again.
 
 Two independent switches:
 
-- `dashboard.feature_videos_enabled: false` (the default) turns the whole feature
-  off: nothing is fetched and nothing is shown.
+- `dashboard.feature_videos_enabled: false` (the default) turns the feature off:
+  nothing is fetched and no clip is shown, except the built-in **Meet your Mates**
+  intro. That one is marked `default_on` because it stands in for a first-run step
+  that never had this switch; set `dashboard.crewmates_onboarded: true` to turn it
+  off. It is not a clip: the dashboard draws the dialog itself (the catalog entry
+  carries `component: "crewmates"` and no media), so nothing is fetched for it. Its
+  **Try now** button opens the entry's `cta_route` (`/members?member=mate`, the
+  first Mate's chat); on **Not now** Mate's avatar flies to the Mates rail item
+  and becomes a "New" tag there that opens the same chat.
 - A managed fleet can forbid the fetch itself with the
   `capabilities.feature_videos_download` policy scope. Then no manifest is requested,
   no clip is downloaded, and nothing streams from the CDN — clips already on disk

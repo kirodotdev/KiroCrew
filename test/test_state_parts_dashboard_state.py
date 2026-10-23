@@ -74,6 +74,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "bool]]', *, reason: 'str | None' = None) -> 'None'",
     ),
     "_channel_link_is_live": ("function", False, False, "(self, link: 'ChannelLink') -> 'bool'"),
+    "_complete_slot_list_rebuild_if_ready": (
+        "function",
+        False,
+        False,
+        "(self, *, deadline_reached: 'bool' = False) -> 'bool'",
+    ),
     "_count_lessons": ("function", False, False, "(self) -> 'int | None'"),
     "_deferred_slots_flush": (
         "function",
@@ -91,6 +97,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, slot: \"'_ChatSlot'\") -> 'None'",
     ),
     "_emit_member_slot_transitions": ("function", False, False, "(self) -> 'None'"),
+    "_expire_slot_list_rebuild": ("function", False, False, "(self) -> 'None'"),
     "_flush_dirty_slots": ("function", False, False, "(self) -> 'None'"),
     "_flush_loop": ("function", True, False, "(self) -> 'None'"),
     "_has_legacy_slots_audience": ("function", False, False, "(self) -> 'bool'"),
@@ -137,6 +144,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, folders: 'list[dict[str, Any]]') -> 'None'",
     ),
     "_persist_open_slots": ("function", False, False, "(self) -> 'None'"),
+    "_persistent_slot_list_hold": ("function", False, False, "(self) -> 'str | None'"),
     "_prune_source_activity": (
         "function",
         False,
@@ -237,8 +245,10 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, read: 'tuple[list[str], bool] | None') -> 'bool'",
     ),
     "approval_timeout_for": ("function", False, False, "(self, slot: \"'_ChatSlot'\") -> 'float'"),
+    "arm_slot_list_rebuild_deadline": ("function", False, False, "(self) -> 'None'"),
     "background_turn_stats": ("function", False, False, "(self) -> 'dict[str, int]'"),
     "begin_slot_construction": ("function", False, False, "(self, key: 'str') -> 'None'"),
+    "begin_slot_list_rebuild": ("function", False, False, "(self) -> 'None'"),
     "bind_serving_loop": (
         "function",
         False,
@@ -312,6 +322,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "end_slot_construction": ("function", False, False, "(self, key: 'str') -> 'None'"),
     "ensure_context_snapshots_loaded": ("function", False, False, "(self) -> 'bool'"),
     "ensure_dynamic_card_store": ("function", False, False, "(self) -> 'Any'"),
+    "finish_slot_list_rebuild": ("function", False, False, "(self) -> 'None'"),
     "flush_slot_now": ("function", False, False, "(self, slot: '_ChatSlot') -> 'None'"),
     "folder_breadcrumb": (
         "function",
@@ -501,6 +512,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, ws: 'web.WebSocketResponse', *, owner: 'bool' = False) -> 'None'",
     ),
+    "release_deleted_slot_keys": (
+        "function",
+        False,
+        False,
+        "(self, keys: 'Iterable[str]') -> 'None'",
+    ),
     "remove_chat_pins_for_slots": (
         "function",
         True,
@@ -512,6 +529,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         False,
         "(self, folder_id: 'str', name: 'str') -> 'dict | None'",
+    ),
+    "replace_channel_slot_holds": (
+        "function",
+        False,
+        False,
+        "(self, keys: 'Iterable[str]', *, hold_channels: 'bool') -> 'bool'",
     ),
     "request_approval": (
         "function",
@@ -614,6 +637,8 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "serving_loop": ("property", False, False, "(self) -> \"'asyncio.AbstractEventLoop | None'\""),
     "set_dynamic_cards_enabled": ("function", False, False, "(self, enabled: 'bool') -> 'None'"),
     "slot_exists": ("function", False, False, "(self, name: 'str') -> 'bool'"),
+    "slot_list_held_keys": ("function", False, False, "(self) -> 'list[str]'"),
+    "slot_list_hold_channels": ("function", False, False, "(self) -> 'bool'"),
     "source_link_urls": ("function", False, False, "(self) -> 'list[str]'"),
     "source_link_urls_for_slot": ("function", False, False, "(self, key: 'str') -> 'list[str]'"),
     "spend_slot_by_session": ("function", False, False, "(self) -> 'dict[str, str]'"),

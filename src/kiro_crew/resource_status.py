@@ -460,8 +460,12 @@ class ResourceStatus:
     def _load_suffix(self) -> str:
         return f", load {self.load_per_cpu}/core" if self.load_per_cpu is not None else ""
 
-    def context_line(self) -> str:
+    def context_line(self, *, remote: bool = False) -> str:
         """The compact ``[RESOURCES]`` advisory injected on a pressured turn.
+
+        ``remote`` is set for a session whose workspace is a remote session
+        environment: the line then scopes the reading to the gateway machine and
+        says the workspace is not measured, instead of advising lighter builds.
 
         Returns ``""`` when the line is disabled (``pressure_gb <= 0`` — the
         documented off switch), or when neither ceiling is near: memory is ample
@@ -478,6 +482,8 @@ class ResourceStatus:
         """
         if self.pressure_gb <= 0:
             return ""  # off switch: disables the line regardless of critical tier
+        if remote:
+            return self._remote_line()
         if not self.under_pressure:
             if self.memory_pressure_held:
                 return self._kernel_pressure_line()
@@ -518,6 +524,37 @@ class ResourceStatus:
             f"{self._pressure_clause()} Prefer the lighter path for heavy work, and call "
             "the resource_status tool to re-check."
         ) + self._tasks_clause()
+
+    def _remote_line(self) -> str:
+        """The line for a session whose workspace is a remote machine.
+
+        Only the gateway (engine and subagents) is measured, so the advice is
+        about sub-agent waves, never builds or tests; silent when it is clear.
+        """
+        # The macOS kernel pressure level describes the gateway, like the figure.
+        if not (self.under_pressure or self.memory_pressure_held):
+            if self.slice_tasks_tight:
+                tasks_line = self._tasks_only_line().removeprefix("[RESOURCES] ")
+                return "[RESOURCES] (gateway machine) " + tasks_line
+            return ""
+        if self.under_pressure:
+            level = "CRITICALLY low" if self.posture == POSTURE_CRITICAL else "tight"
+            gateway = (
+                f"The gateway machine (where this session's engine and subagents run) "
+                f"is {level} on memory (~{self.available_gb:.1f} GB free"
+                f"{self._load_suffix()}), so keep sub-agent waves small." + self._pressure_clause()
+            )
+        else:
+            gateway = (
+                "The gateway machine (where this session's engine and subagents run) "
+                "is under kernel memory pressure, so keep sub-agent waves small."
+                + self._pressure_clause()
+            )
+        workspace = (
+            "Your workspace is a separate remote machine this does not measure, so "
+            "do not narrow builds, tests or shells there for it."
+        )
+        return "[RESOURCES] " + gateway + " " + workspace + self._tasks_clause()
 
     def _tasks_clause(self) -> str:
         """Sentence appended to a memory advisory when tasks are ALSO near the cap."""

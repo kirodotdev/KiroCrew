@@ -299,8 +299,8 @@ class TestSetOrchCfgProviderValidation:
     def test_valid_provider_is_kept_and_enabled_implies_auto_reply(self, monkeypatch):
         monkeypatch.setattr(h, "_vc", h._VoiceConfig())
         monkeypatch.setattr(h, "_orch_cfg", None, raising=False)
-        h.set_orch_cfg(_Cfg({"enabled": True, "provider": "piper", "voice_id": "Amy"}))
-        assert h._vc.provider == "piper"
+        h.set_orch_cfg(_Cfg({"enabled": True, "provider": "polly", "voice_id": "Amy"}))
+        assert h._vc.provider == "polly"
         assert h._vc.global_enabled is True
         # auto_reply_to_voice defaults to the value of `enabled`.
         assert h._vc.auto_reply_to_voice is True
@@ -1344,7 +1344,7 @@ class TestVoiceReply:
 
     @pytest.mark.asyncio
     async def test_missing_tts_backend_warns_the_opted_in_user(self, monkeypatch):
-        _voice_on(monkeypatch, global_enabled=True, provider="piper")
+        _voice_on(monkeypatch, global_enabled=True, provider="system")
         monkeypatch.setattr(h, "_tts_available", lambda **kw: False)
         slack = MockSlackClient()
         provider = FakeProvider([AcpEvent(kind=EVENT_TEXT_CHUNK, text=_LONG_ANSWER)])
@@ -1352,9 +1352,9 @@ class TestVoiceReply:
 
         eph = [a[1]["text"] for a in slack.actions if a[0] == "ephemeral"]
         assert len(eph) == 1
-        assert "provider=piper" in eph[0]
-        # piper-specific remediation, not the Polly one.
-        assert "piper_model" in eph[0]
+        assert "provider=system" in eph[0]
+        # The host-engine remediation, not the Polly one.
+        assert "espeak-ng" in eph[0]
         assert "ada credentials" not in eph[0]
 
     @pytest.mark.asyncio

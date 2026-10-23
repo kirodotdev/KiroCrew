@@ -223,8 +223,7 @@ interpreters only where removing the user site cannot remove the child target.
 This contract does not apply to user-authored cron scripts, project test commands, or
 other workloads whose documented environment may include `--user` packages. The
 explicit inventory in `test/test_internal_python_isolation.py` names the internal
-boundaries. It includes resident runtime workers such as
-`piper_runtime.PiperRuntime._start`; their module launches follow the same unforced
+boundaries; any resident runtime worker's module launch follows the same unforced
 parent-policy decision. Adding one requires routing it through the helper and adding it
 to that inventory, so a later spawn cannot silently return to the user-site-dependent
 behavior.

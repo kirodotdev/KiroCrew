@@ -30,6 +30,7 @@ from session_control_helpers import (  # noqa: F401 -- the autouse fixtures regi
 
 from kiro_crew.config import loader
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.testing.wait import await_until
 
 
 def test_create_refuses_the_caller_classes_authorize_target_refuses(tmp_path):
@@ -175,10 +176,11 @@ def test_create_rechecks_caller_identity_after_delegation(
             return result
 
         monkeypatch.setattr(sc, "read_session_execution", check)
+        creating = asyncio.ensure_future(
+            sc.create_session(state, caller_session_key=_key(caller), agent="writer")
+        )
         with pytest.raises(sc.SessionControlError) as exc:
-            await asyncio.wait_for(
-                sc.create_session(state, caller_session_key=_key(caller), agent="writer"), 10
-            )
+            await await_until(creating, what="create_session refusing the changed caller")
         assert exc.value.code == "caller_memory_changed"
 
     asyncio.run(exercise())
@@ -350,7 +352,7 @@ def test_cancelled_private_birth_drains_before_returning(private_dispatch, monke
             assert not task.done(), "cancellation must not abandon the history writer"
             release.set()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 5)
+                await await_until(task, what="the cancelled history writer finishing")
             assert finished.is_set()
         finally:
             release.set()

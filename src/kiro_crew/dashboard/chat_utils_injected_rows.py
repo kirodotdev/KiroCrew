@@ -216,6 +216,12 @@ EMPTY_TURN_NOTICE_KIND = "empty_turn"
 #: notice of any kind (the "crewmate chat draws messages only" decision record).
 SPEC_HOOKS_NOTICE_KIND = "spec_hooks"
 
+#: ``meta.kind`` of the session-start notice that says Crew's tools are off in
+#: this session because a settings file Crew does not govern holds its path.
+#: Sessions draws it; crewmate chat drops it (``crewmateBubbles.isCrewmateChatRow``)
+#: for the same reason as :data:`SPEC_HOOKS_NOTICE_KIND`.
+SEED_DECLINED_NOTICE_KIND = "seed_declined"
+
 
 #: Row-level kind for the terminal `error` row a prompt-time MODEL ENTITLEMENT
 #: rejection produces ("Your account does not have access to model 'X'"), so

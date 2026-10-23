@@ -99,26 +99,44 @@ class SideState:
     #: handler clears it after recording and broadcasting the terminal row.
     is_stopping: bool = False
 
-    def append_user(self, content: str, ts: str = "", *, steer: bool = False) -> None:
-        """Append a user turn. ``steer`` marks it as injected mid-turn, which the
-        panel renders as a distinct bubble rather than a normal question."""
-        entry: dict[str, Any] = {
-            "role": "user",
-            "content": content,
-            "ts": ts or _now_iso(),
-        }
+    def append_user(
+        self, content: str, ts: str = "", *, steer: bool = False, run_id: str = ""
+    ) -> str:
+        """Append a user turn and return its id. ``steer`` marks it as injected
+        mid-turn, which the panel renders as a distinct bubble rather than a
+        normal question.
+
+        The id rides the frame that announces the row, so a panel that restored
+        this transcript (``GET .../side``) recognises a frame for a row it already
+        holds instead of drawing it twice."""
+        entry = self._entry("user", content, ts, run_id)
         if steer:
             entry["steer"] = True
         self.messages.append(entry)
+        return str(entry["id"])
 
-    def append_assistant(self, content: str, ts: str = "") -> None:
-        self.messages.append(
-            {
-                "role": "assistant",
-                "content": content,
-                "ts": ts or _now_iso(),
-            }
-        )
+    def append_assistant(
+        self, content: str, ts: str = "", *, run_id: str = "", is_error: bool = False
+    ) -> str:
+        """Append an assistant turn and return its id. ``is_error`` marks a row the
+        panel draws as a notice, the way the frame that announced it did."""
+        entry = self._entry("assistant", content, ts, run_id)
+        if is_error:
+            entry["is_error"] = True
+        self.messages.append(entry)
+        return str(entry["id"])
+
+    @staticmethod
+    def _entry(role: str, content: str, ts: str, run_id: str) -> dict[str, Any]:
+        entry: dict[str, Any] = {
+            "id": uuid.uuid4().hex[:12],
+            "role": role,
+            "content": content,
+            "ts": ts or _now_iso(),
+        }
+        if run_id:
+            entry["run_id"] = run_id
+        return entry
 
     def clear(self) -> None:
         self.messages.clear()

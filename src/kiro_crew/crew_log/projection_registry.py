@@ -531,6 +531,11 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _outline_render,
         affects=OUTLINE_TYPES,
         copy_state=_outline_copy,
+        # Bumped when the draft gained its model-call step, raw text and an
+        # unreadable-body flag, so a run given back under a row's step joins that row
+        # instead of replacing it (and does not resurrect an unreadable call's empty
+        # preview): an old savepoint describes the pre-join draft and retires cold.
+        state_version=_FOLD_STATE_VERSION_BASE + 2,
     ),
     # Keyed by one SESSION and NOT advertised, for the reason stated beside
     # :data:`INTERNAL_PROJECTION_NAMES`: its one reader is the OTel export

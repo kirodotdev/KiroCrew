@@ -45,6 +45,7 @@ from kiro_crew.acp.harness.pi_node import (
     choose_pi_node,
     node_engine_floor,
 )
+from kiro_crew.acp.harness.pi_steer import PiSteerChannel, new_pi_steer_channel
 from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable, PiGateExtensionTampered
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_NODE_ADAPTER_PACKAGES,
@@ -172,7 +173,7 @@ _PI_MCP_SERVER_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 # digest over the raw bytes would read every Windows install as tampered and refuse
 # every pi session there. ``.gitattributes`` pins the checkout LF as well; the
 # normalization here is what keeps the property from resting on a repo-config line.
-PI_GATE_EXTENSION_SHA256 = "33524636eca152b5601be722082da26f217bc58346e98643ce1580e59645a81d"
+PI_GATE_EXTENSION_SHA256 = "1b52635d276993cce27e940b8d75ba94fbb4155161dd6922fcc869ef681ba968"
 
 _pi_acp_argv_cache: tuple[list[str] | None, str] | object = launch_mod._UNRESOLVED
 
@@ -887,6 +888,8 @@ class PiLaunch(ProcessAdapter):
         # named on the child's environment and nowhere else.
         self._mcp_handoff = ""
         self._mcp_key = b""
+        # The steer channel this launch minted; its key rides the child's environment.
+        self._steer: PiSteerChannel | None = None
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
         """Resolve both components, check pi's version, then seal and verify the gate."""
@@ -975,6 +978,10 @@ class PiLaunch(ProcessAdapter):
         # The nonce the dispatch parser accepts gate envelopes under, recorded on
         # the session whose permission frames it vouches for.
         session._pi_gate_nonce = self._nonce
+        # This launch's steer channel, bound to the same nonce and sealed in the same
+        # directory as the extension that reads it (``acp.harness.pi_steer``).
+        self._steer = new_pi_steer_channel(self._nonce, os.path.dirname(extension_path))
+        session._pi_steer_channel = self._steer
         # Crew's MCP servers, handed to the extension through a file because the
         # adapter drops the session/new array. The SAME composition the wire
         # array is built from -- the member mounts, then the pooled broker stubs
@@ -1040,6 +1047,7 @@ class PiLaunch(ProcessAdapter):
         variable was already honoured by :func:`_resolve_pi_bin` and is what the
         launcher execs. The nonce reaches the pi process through the adapter, which
         spawns it with its own environment; the extension echoes it in every dialog.
+        The steer channel's stem and key ride the same route (``acp.harness.pi_steer``).
         """
         if self._launcher:
             env[_ENV_PI_ACP_PI_COMMAND] = self._launcher
@@ -1047,3 +1055,5 @@ class PiLaunch(ProcessAdapter):
             if self._mcp_handoff:
                 env[_ENV_PI_MCP_HANDOFF] = self._mcp_handoff
                 env[_ENV_PI_MCP_KEY] = self._mcp_key.hex()
+            if self._steer is not None:
+                env.update(self._steer.env())

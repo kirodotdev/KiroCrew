@@ -46,7 +46,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
-import { sseSlotTitle } from '../store/dashboardSlice'
+import { sseSlotTitle, sseSlots } from '../store/dashboardSlice'
 
 const SLOT = 'pane-1'
 const TITLE = 'Alpha session'
@@ -208,5 +208,37 @@ describe('ChatPane header — rename and regenerate controls (#9727)', () => {
     await act(async () => { release({ title: 'Generated title' }) })
     expect(await screen.findByText('Generated title')).toBeTruthy()
     expect(screen.queryByTestId('chat-pane-title-error')).toBeNull()
+  })
+})
+
+describe('ChatPane header — fork-of tag (#23084)', () => {
+  const PARENT = 'chat-parent-1'
+  it.each([
+    ['an untitled parent (title equals the key)', PARENT, 'Untitled session', `Forked from Untitled session · ${PARENT}`],
+    ['a titled parent', 'Parent notes', 'Parent notes', 'Forked from Parent notes'],
+  ])('names %s by its label; the hover keeps an untitled key', async (_case, parentTitle, shown, hover) => {
+    const { store } = renderPane()
+    act(() => {
+      store.dispatch(sseSlots([
+        { key: SLOT, title: TITLE, messages: 0, running: false, forked_from: `dashboard:${PARENT}` },
+        { key: PARENT, title: parentTitle, messages: 2, running: false },
+      ] as never))
+    })
+    const tag = await screen.findByText((_t, el) => el?.tagName === 'SPAN' && (el.textContent ?? '').startsWith('↳'))
+    expect(tag.textContent).toBe(`↳ ${shown}`)
+    expect(tag.getAttribute('title')).toBe(hover)
+  })
+
+  it('keeps the key of a parent missing from the slot list', async () => {
+    // A closed parent's title is unknown, so the tag must not call it untitled.
+    const { store } = renderPane()
+    act(() => {
+      store.dispatch(sseSlots([
+        { key: SLOT, title: TITLE, messages: 0, running: false, forked_from: `dashboard:${PARENT}` },
+      ] as never))
+    })
+    const tag = await screen.findByText((_t, el) => el?.tagName === 'SPAN' && (el.textContent ?? '').startsWith('↳'))
+    expect(tag.textContent).toBe(`↳ ${PARENT}`)
+    expect(tag.getAttribute('title')).toBe(`Forked from ${PARENT}`)
   })
 })

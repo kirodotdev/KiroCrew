@@ -395,7 +395,7 @@ describe('useWebSocket reconnect hydrates background split panes', () => {
     const ws2 = WS_INSTANCES[1]
     // The reconnect branch ran to completion past the corrupt-layout read.
     expect(ws2.send).toHaveBeenCalledWith(JSON.stringify({ type: 'subscribe_subagents' }))
-    expect(ws2.send).toHaveBeenCalledWith(JSON.stringify({ type: 'slot_focused', slot: 'chat-active' }))
+    expect(ws2.send).toHaveBeenCalledWith(JSON.stringify({ type: 'slot_focused', slot: 'chat-active', announce: true }))
 
     warnSpy.mockRestore()
     unmount()

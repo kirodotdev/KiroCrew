@@ -96,8 +96,8 @@ def _arm_queued_delivery_settlement(
     exhausted prompt-busy retries, a transient backend error and a stall by
     rendering a card and RETURNING NORMALLY, several of them after re-queueing the
     prompt itself for a later retry — so the task's outcome says nothing either way.
-    *consumed* is the evidence that does: ``_run_chat`` sets it on the provider's
-    turn-complete event for a real end-of-turn, or earlier on the first streamed token, and
+    *consumed* is the evidence that does: ``_on_complete`` (turn_stats) sets it on the provider's
+    turn-complete event for a real end-of-turn, ``_run_chat`` on the first streamed token, and
     ``_on_tool_call`` (tool_rows) on a fired tool call. Those triggers are exactly the states
     in which the announce will NOT be replayed. An EMPTY response splits: the FIRST one
     re-queues this same announce verbatim and RETRACTS the report, so the clock

@@ -59,10 +59,9 @@ async def iter_registered_chunks(
 
     total = 0
     first_mime: str | None = None
-    # On the owner loop, where check() runs, so a loop-bound client works.
-    from kiro_crew import speech_providers
-
-    stream = speech_providers.iterate_on_owner(lambda: provider.synthesize(text, voice_config))
+    # Iterated on this loop; the provider contract allows no loop-bound state
+    # across calls.
+    stream = provider.synthesize(text, voice_config)
     try:
         async for chunk in stream:
             audio = getattr(chunk, "audio", None)
@@ -81,7 +80,9 @@ async def iter_registered_chunks(
                 )
             yield chunk
     finally:
-        await stream.aclose()
+        aclose = getattr(stream, "aclose", None)
+        if aclose is not None:
+            await aclose()
 
 
 def join_audio(chunks: list[tuple[bytes, str]]) -> tuple[bytes, str] | None:

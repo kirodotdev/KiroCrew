@@ -12,6 +12,7 @@ from kiro_crew.subagent import SubagentManager
 from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
 from kiro_crew.taskq import store as store_mod
 from kiro_crew.taskq.store import TaskStore, TaskStoreUnavailable
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.mark.asyncio
@@ -36,7 +37,7 @@ async def test_manager_open_is_off_loop_and_pending_spawn_is_refused(monkeypatch
     sessions.get_agent_selection.return_value = ("template", "")
     manager = SubagentManager(sessions=sessions, ctx_builder=MagicMock())
     try:
-        await asyncio.wait_for(entered.wait(), 3)
+        await await_until(entered, what="the store open parking")
         assert manager._taskq is None
         for spawn in (manager.spawn, manager.spawn_async):
             result = spawn("before attachment", parent_session_key="web-1")
@@ -273,7 +274,7 @@ async def test_the_reaper_sweep_is_what_retries_the_store_open(monkeypatch):
         await manager.wait_taskq_ready()
         monkeypatch.setattr(SpawnAdmissionCoordinator, "taskq_reopen_if_due", counting_reopen)
         manager.start_reaper()
-        await asyncio.wait_for(asked.wait(), 10)
+        await await_until(asked, what="the reaper asking to reopen the store")
     finally:
         await manager.cancel_all()
 

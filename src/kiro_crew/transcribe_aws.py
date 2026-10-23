@@ -212,6 +212,10 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
                     *demux_args,
                     "-i",
                     audio_path,
+                    # Audio only: a Slack video/webm clip also carries a video
+                    # track, and ogg's default video encoder (theora) is not in
+                    # the audio-only decoder, so mapping it fails the remux.
+                    "-vn",
                     "-c:a",
                     "copy",
                     tmp_ogg,

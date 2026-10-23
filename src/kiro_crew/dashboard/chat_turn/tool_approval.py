@@ -58,11 +58,10 @@ if TYPE_CHECKING:
         _steer_policy_notice,
     )
     from kiro_crew.dashboard.chat_turn.native_cards import _safe_native_crew_debug_title
-    from kiro_crew.dashboard.chat_turn.segment_flush import _flush_segment
     from kiro_crew.dashboard.chat_turn.tool_rows import _tcid_identity_key, _tool_meta
     from kiro_crew.dashboard.chat_turn.turn_ledgers import _wt_note_approved
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
-    from kiro_crew.dashboard.chat_turn.turn_reply_seams import _flush_text_stream
+    from kiro_crew.dashboard.chat_turn.turn_reply_seams import _cut_segment
     from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _fire
 
 
@@ -345,10 +344,10 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
     # same open-construct deferral as the tool-call cut applies: an
     # approval-gated call (parent or child) that lands inside an
     # open options marker, fence or widget would otherwise split it
-    # and undo a deferral the tool-call site just made.
-    _flush_text_stream(turn)
+    # and undo a deferral the tool-call site just made. Like the tool
+    # call, the prompt does not end the reply: the run the wire
+    # redactor still withholds waits for the text after it.
     _open_construct = open_construct_at_end(turn.assistant_text)
-    turn._open_construct = _open_construct
     if turn.assistant_text and _open_construct:
         _deferred_cut_text = turn.assistant_text
         turn._deferred_cut_text = _deferred_cut_text
@@ -358,8 +357,7 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
             _open_construct,
         )
     elif turn.assistant_text:
-        _flush_segment(state, slot, turn.assistant_text)
-        turn.assistant_text = ""
+        _cut_segment(turn)
         _turn_flushed_visible_text = True
         turn._turn_flushed_visible_text = _turn_flushed_visible_text
     _pre_tool_hooks_fired = False
@@ -579,7 +577,6 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                     is_shell=event.is_shell,
                     canonical_name=event.tool_name,
                 )
-                turn.validated_tool = validated_tool
             except ValueError as e:
                 await _reject_invalid_tool(
                     client,
@@ -597,10 +594,8 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                 # and exit-2 BLOCKED takes precedence over auto-approve.
                 try:
                     _parsed_input = json.loads(event.tool_input) if event.tool_input else None
-                    turn._parsed_input = _parsed_input
                 except Exception:
                     _parsed_input = None
-                    turn._parsed_input = _parsed_input
                 try:
                     pre_hook_results = await _fire(
                         turn,
@@ -611,7 +606,6 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                         tool_identity=event.tool_name,
                         mcp_server=event.mcp_server_name,
                     )
-                    turn.pre_hook_results = pre_hook_results
                 except Exception as hook_exc:
                     await _reject_hook_error(
                         client,
@@ -636,7 +630,6 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                     )
                     return _Flow.CONTINUE
                 approval_sent = await client.approve_tool(event.request_id)
-                turn.approval_sent = approval_sent
                 if approval_sent is False:
                     sel().log_tool_invocation(
                         session_key=session_key,
@@ -681,7 +674,6 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                 is_shell=event.is_shell,
                 canonical_name=event.tool_name,
             )
-            turn.validated_tool = validated_tool
         except ValueError as e:
             await _reject_invalid_tool(
                 client,
@@ -696,10 +688,8 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
             return _Flow.CONTINUE
         try:
             _parsed_input = json.loads(event.tool_input) if event.tool_input else None
-            turn._parsed_input = _parsed_input
         except Exception:
             _parsed_input = None
-            turn._parsed_input = _parsed_input
         try:
             pre_hook_results = await _fire(
                 turn,
@@ -710,7 +700,6 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                 tool_identity=event.tool_name,
                 mcp_server=event.mcp_server_name,
             )
-            turn.pre_hook_results = pre_hook_results
         except Exception as hook_exc:
             await _reject_hook_error(
                 client,
@@ -749,7 +738,6 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
             event.request_id,
         )
         approval_sent = await client.approve_tool(event.request_id)
-        turn.approval_sent = approval_sent
         if approval_sent is False:
             sel().log_tool_invocation(
                 session_key=session_key,
@@ -915,7 +903,6 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                     is_shell=event.is_shell,
                     canonical_name=event.tool_name,
                 )
-                turn.validated_tool = validated_tool
             except ValueError as e:
                 await _reject_invalid_tool(
                     client,
@@ -934,7 +921,6 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                 return _Flow.CONTINUE
             if _tp_deadline is None:
                 approval_sent = await client.approve_tool(event.request_id)
-                turn.approval_sent = approval_sent
             else:
                 # A timed grant backs this approval: the transport
                 # checks its deadline again after the floor and, if it
@@ -944,10 +930,8 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                     approval_sent = await client.approve_tool(
                         event.request_id, deadline=_tp_deadline
                     )
-                    turn.approval_sent = approval_sent
                 except GrantEnded:
                     approval_sent = None
-                    turn.approval_sent = approval_sent
             if approval_sent is not None:
                 if approval_sent is False:
                     sel().log_tool_invocation(
@@ -990,7 +974,6 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
     # Trust-reads: auto-approve read-only bash commands
     # Detect bash tools by tool_input content (title is human-readable)
     cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
-    turn.cmd = cmd
     yolo_active = state.is_yolo_active()
     # Evaluated ONCE for both branches below. Two separate calls could
     # straddle a scoped grant's expiry and disagree with each other, and
@@ -1026,7 +1009,6 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                     is_shell=event.is_shell,
                     canonical_name=event.tool_name,
                 )
-                turn.validated_tool = validated_tool
             except ValueError as e:
                 await _reject_invalid_tool(
                     client,
@@ -1041,7 +1023,6 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                 )
                 return _Flow.CONTINUE
             approval_sent = await client.approve_tool(event.request_id)
-            turn.approval_sent = approval_sent
             if approval_sent is False:
                 sel().log_tool_invocation(
                     session_key=session_key,
@@ -1088,7 +1069,6 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                 is_shell=event.is_shell,
                 canonical_name=event.tool_name,
             )
-            turn.validated_tool = validated_tool
         except ValueError as e:
             await _reject_invalid_tool(
                 client,
@@ -1104,10 +1084,8 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
         if not _pre_tool_hooks_fired:
             try:
                 _parsed_input = json.loads(event.tool_input) if event.tool_input else None
-                turn._parsed_input = _parsed_input
             except Exception:
                 _parsed_input = None
-                turn._parsed_input = _parsed_input
             try:
                 pre_hook_results = await _fire(
                     turn,
@@ -1118,7 +1096,6 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                     tool_identity=event.tool_name,
                     mcp_server=event.mcp_server_name,
                 )
-                turn.pre_hook_results = pre_hook_results
             except Exception as hook_exc:
                 await _reject_hook_error(
                     client,
@@ -1145,7 +1122,6 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
         # always=False — Kiro Crew owns trust scope; per-call request_permission
         # is required for PreToolUse hooks to run on every tool invocation.
         approval_sent = await client.approve_tool(event.request_id)
-        turn.approval_sent = approval_sent
         if approval_sent is False:
             sel().log_tool_invocation(
                 session_key=session_key,

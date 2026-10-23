@@ -633,6 +633,22 @@ reasoning effort**, `CrewProfileSettings`), written through
 `PUT /api/agents/{name}` under the crew pin's own validators and shipped on
 `GET /api/members` (not on `GET /api/agents`: the crew editor never shows them).
 
+`session_create` also takes an optional `autocompact_pct`: the compaction
+threshold the child starts with, set as the same per-session override the
+context meter's "Auto-compact at" slider sets. It is checked before anything is
+allocated, and before the dry-run return, so the folder preflight refuses it too.
+The finite and range check is the slider route's own (`parse_autocompact_pct`):
+a value outside `AUTOCOMPACT_PCT_MIN` to `AUTOCOMPACT_PCT_MAX`, infinity
+included, fails the whole create with `pct_out_of_range`, NaN or an integer too
+large for a float with `pct_not_finite`, and a non-number with
+`invalid_field_type`. An accepted value is set on the slot and rides the birth
+metadata line, which restore reads to re-seed the live gate. The session
+manager's override map is seeded once that write lands, and only while the slot
+is still the live one under its key. The write and the seed both run under the
+slider's per-transcript `_autocompact_txn_lock`, so a slider move on the newborn
+orders after them. Omitted, the child follows its agent's default, else the
+global `session.autocompact_pct`.
+
 ### `session_fork`: a created child that carries a transcript
 
 `session_create` opens an empty session, and the case it cannot serve is the

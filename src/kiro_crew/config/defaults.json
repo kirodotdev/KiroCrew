@@ -58,6 +58,7 @@
     "@kirocrew-mate/set_goal",
     "@kirocrew-mate/set_key_results",
     "@kirocrew-mate/set_check_ins",
+    "@kirocrew-mate/offer_dashboard_page",
     "@kirocrew-mate/key_result_progress",
     "@kirocrew-mate/save_goal_report"
   ],

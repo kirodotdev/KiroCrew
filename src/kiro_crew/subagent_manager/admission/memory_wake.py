@@ -74,13 +74,14 @@ class _MemoryWakeMixin(ManagerComponent):
         price_gb: float | None,
         nested: bool,
         durable: bool,
+        remote: bool = False,
     ) -> None:
         """Record that *agent_id* waits for memory, or refresh its record on a re-check.
 
         *start_gb* is what the floor charges this start for itself (0 for a
         nested start that shares its parent's runtime), *price_gb* what its row
-        owes once admitted; the fit pass rebuilds the bar from them. The first
-        begin arms the sampler.
+        owes once admitted; the fit pass rebuilds the bar from them, without the
+        gateway floor for a *remote* session's child. The first begin arms the sampler.
         """
         waits = self._memory_state()
         current = waits.get(agent_id)
@@ -88,6 +89,7 @@ class _MemoryWakeMixin(ManagerComponent):
             current.start_gb = start_gb
             current.price_gb = price_gb
             current.durable = durable
+            current.remote = remote
             return
         waits[agent_id] = MemoryWait(
             lane=self.lane_for_session(parent_session_key),
@@ -97,6 +99,7 @@ class _MemoryWakeMixin(ManagerComponent):
             price_gb=price_gb,
             nested=nested,
             durable=durable,
+            remote=remote,
         )
         self._arm_memory_sampler()
 
@@ -253,7 +256,9 @@ class _MemoryWakeMixin(ManagerComponent):
             return
 
         def own(wait: MemoryWait) -> float:
-            return cost_gb if wait.start_gb is None else max(0.0, wait.start_gb)
+            # A remote session's child owes no gateway floor, as at the gate.
+            start = cost_gb if wait.start_gb is None else max(0.0, wait.start_gb)
+            return start - floor_gb if wait.remote else start
 
         lowest = self._memory_bar_base_gb(floor_gb, cost_gb) + min(
             own(wait) for wait in mgr._memory_waits.values()

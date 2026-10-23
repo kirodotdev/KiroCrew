@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -66,6 +66,10 @@ class _TestSpawnAdmissionGateHarness:
 
         sessions = MagicMock()
         sessions.get_agent_selection.return_value = ("template", "")
+        # reset is awaited by _teardown_run_session_impl; give it an AsyncMock
+        # so any admitted task that reaches teardown does not crash with a
+        # TypeError from trying to await a plain MagicMock.
+        sessions.reset = AsyncMock()
         return SubagentManager(
             sessions=sessions,
             ctx_builder=MagicMock(),

@@ -28,7 +28,7 @@ PROFILE_PATH = _SECCOMP_DIR / "kirocrew-seccomp.json"
 #: The private-window syscall set: clone the child, unshare
 #: CLONE_NEWUSER|CLONE_NEWNS, mount --bind the staging dir, then
 #: umount2(MNT_DETACH) to retire it (``_retire_stage_or_die`` in
-#: sandbox_launcher_program.py).
+#: sandbox_launcher_parts/pinned_mounts.py).
 PRIVATE_WINDOW_SYSCALLS = ("clone", "unshare", "mount", "umount2")
 
 

@@ -157,9 +157,6 @@ test/test_subagent_sizing.py::TestMacosMemoryProbe::test_nonpositive_page_size_f
 test/test_subagent_sizing.py::TestMacosMemoryProbe::test_sysconf_error_fails_open
 test/test_subagent_sizing.py::TestMacosMemoryProbe::test_zero_page_count_fails_open
 test/test_telegram_config_handlers.py::test_save_persists_token_and_config
-test/test_voice_reply.py::TestResolvePiperBinary::test_configured_expanduser
-test/test_voice_reply.py::TestResolvePiperBinary::test_configured_path_not_executable_returns_none
-test/test_voice_reply.py::TestResolvePiperBinary::test_falls_back_to_venv
 test/test_wecom_config_handlers.py::test_save_persists_credentials_and_config
 test/test_write_secret_file.py::TestWriteSecretFile::test_happy_path
 # Added when the CI deselect of this file was removed, so Windows collects it for the

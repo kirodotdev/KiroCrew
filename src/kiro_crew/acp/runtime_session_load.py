@@ -10,7 +10,8 @@ Instance fields written: ``_session_cwds``, ``_session_inits_in_flight``, ``_ses
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_initialized``,
-``_mcp_gateway_overlay``, ``_pid``, ``_pool_lookup``, ``_wire_mode_id``, ``_work_dir``.
+``_mcp_gateway_overlay``, ``_pid``, ``_pool_lookup``, ``_remote_session_servers``,
+``_remote_workspace_agents``, ``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``.
 """
 
 from __future__ import annotations
@@ -211,8 +212,9 @@ async def load_session(
     # rejected array does not just fail to add tools -- it takes them away from
     # a conversation that already had them.
     # Bound once, for the same consumers as session/new: see the note there.
-    wire_servers = self._harness.session_mcp_servers(
-        mcp_servers, agent_capabilities=self._agent_capabilities
+    await self._write_remote_token()
+    wire_servers = self._remote_session_servers(
+        self._harness.session_mcp_servers(mcp_servers, agent_capabilities=self._agent_capabilities)
     )
     load_params: dict[str, Any] = {
         "sessionId": resume_sid,
@@ -271,10 +273,13 @@ async def load_session(
         # wire_servers is what the stall diagnostic and the session report read.
         # Setting only load_params would leave both describing the pre-hoist roster
         # -- naming servers this resume did not send.
-        wire_servers = self._harness.session_mcp_servers(
-            mcp_servers, agent_capabilities=self._agent_capabilities
+        wire_servers = self._remote_session_servers(
+            self._harness.session_mcp_servers(
+                mcp_servers, agent_capabilities=self._agent_capabilities
+            )
         )
         load_params["mcpServers"] = wire_servers
+        kas_agents = self._remote_workspace_agents(kas_agents, wire_servers)
         attach_kas_custom_agents(load_params, kas_agents)
     budget = await self._session_start_budget()
     self._session_inits_in_flight += 1

@@ -37,6 +37,7 @@ from kiro_crew.heartbeat import (
     is_keep_response,
     strip_keep_sentinel,
 )
+from kiro_crew.testing.wait import await_until, finished
 
 
 @pytest.fixture()
@@ -135,7 +136,7 @@ class TestLoop:
         loop_task = asyncio.create_task(svc._loop())
         await asyncio.sleep(0)  # let the loop reach the shutdown wait
         event.set()
-        await asyncio.wait_for(loop_task, timeout=5)
+        await await_until(loop_task, what="the loop exiting on shutdown")
         assert beats == []
         assert svc._tick == 0
 
@@ -154,7 +155,7 @@ class TestLoop:
             event.set()
 
         monkeypatch.setattr(svc, "_beat", _beat)
-        await asyncio.wait_for(svc._loop(), timeout=5)
+        await finished(svc._loop(), "the heartbeat loop exiting")
         assert beats == [1]
 
     @pytest.mark.asyncio
@@ -174,7 +175,7 @@ class TestLoop:
             raise RuntimeError("zibble")
 
         monkeypatch.setattr(svc, "_beat", _beat)
-        await asyncio.wait_for(svc._loop(), timeout=5)
+        await finished(svc._loop(), "the heartbeat loop exiting")
         assert calls == [1, 2]
 
 

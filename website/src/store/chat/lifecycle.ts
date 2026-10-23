@@ -15,7 +15,7 @@ import { findReport, parseErrorCode } from '../../utils/errorReport'
 import { errMessage } from '../../utils/thunkError'
 import { writePrefill } from '../../utils/navIntent'
 import type { HistoryDeleteRefusal } from '../../utils/historyDeleteRefusal'
-import type { ChatState } from './state'
+import { entryActivityOpen, type ChatState } from './state'
 import { filterMessages, safeKey } from './wire'
 import { enterActiveSlot, pushHistory } from './runState'
 import { parkActiveTranscript, setPagingCursor } from './slotCache'
@@ -413,7 +413,7 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
       const arg = action.meta.arg
       if (typeof arg === 'object' && arg?.defaultFolder === true && action.payload.folder_id) {
         state.revealNonce += 1
-        state.revealRequest = { kind: 'session', target: action.payload.key, nonce: state.revealNonce, openFoldersOnly: true }
+        state.revealRequest = { kind: 'session', target: action.payload.key, nonce: state.revealNonce, openFoldersOnly: true, folderId: action.payload.folder_id }
       }
       // The replay floor belongs to the slot that was streaming, not to this
       // one. `state.lastChunkSeq` is the ACTIVE slot's floor, and a brand-new
@@ -428,16 +428,25 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
       state.toolLog = []
       state.subagents = {}
       state.activityTab = 'changes'
-      // A brand-new chat starts with the side panel CLOSED, like every other
-      // slot-entry path (switchSlot / resumeFromHistory read `?? false` for a
-      // slot they have no cached bucket for). Without this the panel state of
-      // the chat being left leaked into the new one — and was not persisted
-      // under the new slot's key either, so a reload silently closed it again.
-      state.activityOpen = false
+      // A brand-new chat enters like every other slot-entry path (switchSlot /
+      // resumeFromHistory, which find no cached bucket for it): closed, or open
+      // with Keep side panel open. Without this the panel state of the chat
+      // being left leaked into the new one — and was not persisted under the new
+      // slot's key either, so a reload silently closed it again.
+      state.activityOpen = entryActivityOpen(state, true, undefined)
       state.slotRunning = false
       state.slotStopping = false
       state.slotState = 'idle'
       setPagingCursor(state, false, 0)
+      // A switch still loading the chat being left, such as a close landing
+      // made while this create was pending, no longer owns the pane. Retire
+      // it: its answer is now superseded (`supersededSwitch`) and cannot
+      // write this chat's view, and the new chat has nothing to load.
+      state.slotLoading = false
+      state.slotSwitchRequestId = null
+      state.slotSwitchTarget = null
+      state.slotSwitchOrigin = null
+      state.slotSwitchLatestRequestId = action.meta.requestId
     })
     .addCase(resumeFromHistory.pending, (state, action) => {
       // A new attempt supersedes whatever the previous one narrated, and its
@@ -508,7 +517,7 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
         // Legacy cached 'tools'/'nav'/'files' values fall back to 'changes'
         // (see switchSlot for why 'files' is no longer one of these tabs).
         state.activityTab = (cached?.activityTab && !['tools', 'nav', 'files'].includes(cached.activityTab as string)) ? cached.activityTab : 'changes'
-        state.activityOpen = cached?.activityOpen ?? false
+        state.activityOpen = entryActivityOpen(state, state.activeSlot !== action.payload.key, cached)
         // Same handover switchSlot performs: the floor is per-slot, so entering
         // a slot restores ITS parked floor (undefined when it has none) instead
         // of inheriting the one belonging to the slot being left. Without this a

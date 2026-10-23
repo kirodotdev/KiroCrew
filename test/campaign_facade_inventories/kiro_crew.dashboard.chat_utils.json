@@ -44,6 +44,7 @@
   "RecoveryPayload",
   "ReplacementTightening",
   "ResetCause",
+  "SEED_DECLINED_NOTICE_KIND",
   "SESSION_START_FAILED_KIND",
   "SLASH_COMMAND_DESCRIPTIONS",
   "SLOT_DETAIL_MAX_LIMIT",

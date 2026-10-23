@@ -52,7 +52,7 @@ def _owner_write(store: Any, slug: str, **kwargs: Any) -> Any:
 
 
 BOUND = "crewmate:mate"
-#: A root session's page, the binding a block layout is still valid for.
+#: A root session's page.
 SESSION_BOUND = "session:mate-root"
 
 
@@ -64,9 +64,10 @@ def package(
     tokens: dict[str, str] | None = None,
     css: str | None = None,
 ) -> dict[str, Any]:
-    """A valid package, with each part overridable so a test changes one thing."""
-    if blocks is not None and bound_to == BOUND:
-        bound_to = SESSION_BOUND
+    """A valid package, with each part overridable so a test changes one thing.
+
+    *blocks* writes the view as a stored view of blocks; the store reads it as its page.
+    """
     out: dict[str, Any] = {
         "kind": "dashboard",
         "bound_to": bound_to,
@@ -94,8 +95,6 @@ def package(
                 }
             )
         },
-        # A crewmate's page is view.html only; a block layout is still a valid package
-        # for a ROOT SESSION's page, so a test that passes *blocks* binds one.
         "view": (
             {"blocks": blocks}
             if blocks is not None
@@ -114,7 +113,7 @@ def package(
     return out
 
 
-#: The block layout a root session's page may still use.
+#: A stored view of blocks.
 DEFAULT_BLOCKS: list[dict[str, Any]] = [
     {"id": "prs", "type": "stat", "fields": ["open_prs"], "title": "Open PRs"},
     {"id": "runs", "type": "table", "fields": ["last_run", "lane"]},
@@ -122,8 +121,7 @@ DEFAULT_BLOCKS: list[dict[str, Any]] = [
 
 
 def _as_blocks(p: dict[str, Any]) -> list[dict[str, Any]]:
-    """Turn package *p* into the block layout of a root session's page; its blocks."""
-    p["bound_to"] = SESSION_BOUND
+    """Turn package *p*'s view into a saved block layout; its blocks."""
     p["view"] = {"blocks": json.loads(json.dumps(DEFAULT_BLOCKS))}
     return p["view"]["blocks"]
 
@@ -515,18 +513,88 @@ class TestVersionOnlyOnLayoutChange:
         art = _owner_write(store, saved.slug, content=json.dumps(flipped))
         assert art.version == 2
 
-    def test_a_crewmate_page_written_as_blocks_is_refused(self, store) -> None:
-        """A crewmate's tab draws view.html only; the block layout stays a root
-        session's, and the refusal names the field-binding rule to follow."""
-        bad = package()
-        _as_blocks(bad)
-        bad["bound_to"] = BOUND
-        with pytest.raises(ArtifactValidationError, match="view.html only") as refused:
-            store.create(name="Blocks", kind="dashboard", content=json.dumps(bad))
-        assert "data-dashboard-field" in str(refused.value)
-        session = package(blocks=DEFAULT_BLOCKS)
-        assert session["bound_to"] == SESSION_BOUND
-        assert store.create(name="Session", kind="dashboard", content=json.dumps(session))
+    @pytest.mark.parametrize("bound_to", [BOUND, SESSION_BOUND])
+    def test_a_saved_block_layout_becomes_its_page(self, store, bound_to: str) -> None:
+        """One way: blocks go in, and the stored view is the page they become."""
+        blocks = package(bound_to=bound_to, blocks=DEFAULT_BLOCKS)
+        art = store.create(name="Blocks", kind="dashboard", content=json.dumps(blocks))
+        view = json.loads(art.content)["view"]
+        assert list(view) == ["html"]
+        assert view["html"] == (
+            "<section><h2>Open PRs</h2><dl><div><dt>Open PRs</dt>"
+            '<dd data-dashboard-field="open_prs"></dd></div></dl></section>'
+            '<section><dl><div><dt>Last run</dt><dd data-dashboard-field="last_run"></dd></div>'
+            '<div><dt>Lane</dt><dd data-dashboard-field="lane"></dd></div></dl></section>'
+        )
+        # Read back, the stored package is already the page: nothing turns it back.
+        assert dp.parse_package(art.content)["view"] == view
+        assert "blocks" not in art.content
+
+    def test_restoring_a_version_saved_as_blocks_restores_its_page(self) -> None:
+        live = json.dumps(package())
+        old = json.dumps(package(blocks=DEFAULT_BLOCKS))
+        view = json.loads(dp.revert_package(live, old))["view"]
+        assert list(view) == ["html"] and 'data-dashboard-field="lane"' in view["html"]
+
+    @pytest.mark.parametrize("fields", [1, [1], "open_prs", {"a": 1}])
+    def test_a_block_whose_fields_are_not_names_is_refused(self, fields: Any) -> None:
+        p = package(blocks=[{"id": "x", "type": "stat", "fields": fields}])
+        with pytest.raises(ArtifactValidationError, match=r"view\.blocks\[0\]\.fields"):
+            dp.parse_package(json.dumps(p))
+
+    def test_a_label_that_spells_a_binding_is_shown_not_bound(self) -> None:
+        """A label reading like a binding stays text, so the version still restores."""
+        p = package(blocks=[{"id": "x", "type": "stat", "fields": ["open_prs"]}])
+        p["model"]["types"]["open_prs"]["label"] = 'data-dashboard-field="open_prs"'
+        html = dp.parse_package(json.dumps(p))["view"]["html"]
+        assert html.count("data-dashboard-field") == 1
+        assert (
+            json.loads(dp.revert_package(json.dumps(package()), json.dumps(p)))["view"]["html"]
+            == html
+        )
+
+    def test_a_credential_in_a_migrated_title_or_label_is_still_redacted(self) -> None:
+        """A hyphenated secret is masked in the stored page and stays masked when read."""
+        from kiro_crew.platform.context import redact_via_context
+
+        secret = "xoxb-" + "1234567890-1234567890123-" + "a" * 24
+        p = package(blocks=[{"id": "x", "type": "stat", "fields": ["open_prs"], "title": secret}])
+        p["model"]["types"]["open_prs"]["label"] = f"see {secret}"
+        html = dp.parse_package(json.dumps(p))["view"]["html"]
+        assert secret not in html
+        assert secret not in redact_via_context(html)
+        assert "see " in html
+
+    def test_a_quoted_header_in_a_migrated_label_is_redacted_before_escaping(self) -> None:
+        """Escaping turns a quote into ``&quot;``, which the page's pass does not read."""
+        from kiro_crew.platform.context import redact_via_context
+
+        opaque = "Q" * 32
+        header = '{"Authorization": "Bearer ' + opaque + '"}'
+        assert opaque not in redact_via_context(header)
+        p = package(blocks=[{"id": "x", "type": "stat", "fields": ["open_prs"], "title": header}])
+        p["model"]["types"]["open_prs"]["label"] = header
+        html = dp.parse_package(json.dumps(p))["view"]["html"]
+        assert opaque not in html
+
+    def test_a_layout_whose_page_passes_the_cap_is_refused_while_it_is_built(
+        self, monkeypatch
+    ) -> None:
+        """Refused at the page limit before the whole page is held, not after."""
+        built: list[int] = []
+        real = dp._migrated_text
+        monkeypatch.setattr(dp, "_migrated_text", lambda t: built.append(1) or real(t))
+        monkeypatch.setattr(dp, "MAX_VIEW_HTML_BYTES", 2_000)
+        p = package(blocks=[{"id": "x", "type": "list", "fields": ["open_prs"] * 5_000}])
+        with pytest.raises(ArtifactValidationError, match="over the 2000-byte limit for a page"):
+            dp.parse_package(json.dumps(p))
+        assert len(built) < 100
+
+    def test_a_block_title_and_label_are_written_as_text(self) -> None:
+        p = package(blocks=[{"id": "x", "type": "stat", "fields": ["open_prs"], "title": "<b>&"}])
+        p["model"]["types"]["open_prs"]["label"] = "<i>PRs</i>"
+        html = dp.parse_package(json.dumps(p))["view"]["html"]
+        assert "<h2>&lt;b&gt;&amp;</h2>" in html and "<dt>&lt;i&gt;PRs&lt;/i&gt;</dt>" in html
 
     def test_a_rebind_alone_creates_no_version_but_is_stored(self, store, saved) -> None:
         # bound_to says WHERE the page hangs, not what it looks like, and a
@@ -771,26 +839,9 @@ class TestRejectInvalid:
                 id="agentic-false-is-not-a-source",
             ),
             pytest.param(
-                lambda p: _as_blocks(p)[0].update({"type": "heatmap"}),
-                "unknown block type 'heatmap'",
-                id="unknown-block-type",
-            ),
-            pytest.param(
                 lambda p: _as_blocks(p)[0].update({"fields": ["not_declared"]}),
                 "which model.types does not declare",
                 id="block-names-an-undeclared-field",
-            ),
-            pytest.param(
-                lambda p: _as_blocks(p)[0].update({"fields": ["open_prs", "lane"]}),
-                "reads between 1 and 1 fields",
-                id="block-reads-too-many-fields",
-            ),
-            pytest.param(
-                lambda p: _as_blocks(p).append(
-                    {"id": "prs", "type": "stat", "fields": ["open_prs"]}
-                ),
-                "is used by an earlier block",
-                id="duplicate-block-id",
             ),
             pytest.param(
                 lambda p: p.update({"data": {"open_prs": 4}}),
@@ -857,8 +908,8 @@ class TestRejectInvalid:
                 id="empty-model",
             ),
             pytest.param(
-                lambda p: p.update({"bound_to": SESSION_BOUND, "view": {"blocks": []}}),
-                "must place at least one block",
+                lambda p: p.update({"view": {"blocks": []}}),
+                "view.html: is empty",
                 id="empty-view",
             ),
             pytest.param(
@@ -933,8 +984,8 @@ class TestRejectInvalid:
         # back blank with nothing refused at write time.
         #
         # The cap is SET between the two forms of one layout below. The real one
-        # is sized for a page that inlines a library, which no block layout comes
-        # near, and the property asked here is which form the cap is measured on.
+        # is sized for a page that inlines a library, which this small page does not
+        # come near, and the property asked here is which form the cap is measured on.
         types = {
             f"f{i:05d}": {
                 "type": "enum",
@@ -945,11 +996,9 @@ class TestRejectInvalid:
             }
             for i in range(dp.MAX_MODEL_FIELDS)
         }
-        blocks = [
-            {"id": f"b{i:05d}", "type": "table", "fields": [f"f{i:05d}"]}
-            for i in range(dp.MAX_VIEW_BLOCKS)
-        ]
-        submitted = json.dumps(package(types=types, blocks=blocks), separators=(",", ":"))
+        p = package(types=types)
+        p["view"] = {"html": "".join(f'<p data-dashboard-field="{name}"></p>' for name in types)}
+        submitted = json.dumps(p, separators=(",", ":"))
         stored = dp.dump_package(dp.parse_package(submitted))
         monkeypatch.setattr(dp, "MAX_PACKAGE_BYTES", len(submitted.encode("utf-8")))
         # Every per-part cap is satisfied and the submitted text is at the

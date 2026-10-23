@@ -505,7 +505,13 @@ class TestPlacement:
             assert rebound <= set(vars(cp)) - set(_COMPOSED), stem
 
     def test_the_conftest_isolation_resets_names_that_live_on_the_facade(self) -> None:
-        conftest = Path(__file__).resolve().with_name("conftest.py").read_text(encoding="utf-8")
+        # test/conftest.py binds most of its fixtures from plain modules beside it.
+        here = Path(__file__).resolve()
+        floor = set(here.parent.glob("conftest_floor_*.py"))
+        parts = sorted(set(here.parent.glob("conftest_*.py")) - floor)
+        conftest = "\n".join(
+            p.read_text(encoding="utf-8") for p in (here.with_name("conftest.py"), *parts)
+        )
         reset = {
             node.attr
             for node in ast.walk(ast.parse(conftest))

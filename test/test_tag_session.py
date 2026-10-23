@@ -24,6 +24,7 @@ import pytest
 
 from kiro_crew.dashboard import chat_auto_tag
 from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
+from kiro_crew.testing.wait import await_until
 
 
 def _make_state(tags=None):
@@ -727,11 +728,11 @@ class TestTopicTags:
         first = asyncio.create_task(maybe_auto_tag(state, slot))
         try:
             # The first attempt is parked inside the model call before the second send.
-            await asyncio.wait_for(entered.wait(), timeout=5)
+            await await_until(entered, what="the first attempt entering the model call")
             await maybe_auto_tag(state, slot)
         finally:
             gate.set()
-        await asyncio.wait_for(first, timeout=5)
+        await await_until(first, what="the first attempt finishing")
 
         assert len(topic_model["calls"]) == 1
         assert _names(state, slot) == ["debugging"]
