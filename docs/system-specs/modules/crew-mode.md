@@ -3525,7 +3525,12 @@ chat, the hand-off (`_dispatching_crewmate`) and `is_conductor_execution` alike
   `mate_worker.cron_worker_execution` turns the job's captured `member`
   selection into the worker's record shape (a `template` selection on
   `kirocrew-mate-worker`; member, store, memory mode and app kept) for a
-  crewmate whose binding owns its file, read from the gateway's live config, and
+  crewmate whose binding owns its file, or claims it (`kiro_agent` is its own
+  alias) while the file is absent and the crewmate owner record names it for
+  this data home (`mate_config.crewmate_file_on_record`, written with every crewmate file and never pruned;
+  `_claimed_crewmate_file`). A self-named binding to an installed, workspace or
+  built-in agent was never on that record and keeps the member route. Read from
+  the gateway's live config, and
   `cron_fire._resolve_cron_agent` dispatches the worker in the crewmate's
   workspace with no crew alias, as a hand-off opens it. The job keeps its
   `cron:` key and principal, so the worker projection reads that crewmate's kit
@@ -3533,7 +3538,9 @@ chat, the hand-off (`_dispatching_crewmate`) and `is_conductor_execution` alike
   backend. A 1.0 job (`template_id` `kirocrew` with the member id) takes the
   same path; the record its stable key holds is rewritten once by
   `cron_service.identity.rebind_cron_session_template`, compare-and-set, with no
-  data migration. A crewmate still on a shared template, a non-crewmate job and
+  data migration. A deleted own file fails closed: the worker refuses the turn
+  (`WorkerKitUnreadable`) instead of the conductor running it without the
+  crewmate's limits. A crewmate still on a shared template, a non-crewmate job and
   a declared `agent_sequence` dispatch as before (`test_cron_crewmate_worker.py`).
   When the result CHANGED (the cron's `last_posted_hash` dedupe), the cron
   session reports to the crewmate's thread as one of its workers

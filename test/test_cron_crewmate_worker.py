@@ -67,7 +67,15 @@ async def _cron_callback(monkeypatch, cfg):
     return gw, callbacks[0]
 
 
-async def _fire(monkeypatch, *, owns_file: bool, prior_run: bool = False):
+async def _fire(
+    monkeypatch,
+    *,
+    owns_file: bool,
+    prior_run: bool = False,
+    file_present: bool = True,
+    user_spec: str = "",
+    on_record: bool = True,
+):
     write_member_home(config_dir(), "alpha")
     if owns_file:
         # A crewmate owns its file when its binding names it (``mate_file_for_member``).
@@ -79,7 +87,20 @@ async def _fire(monkeypatch, *, owns_file: bool, prior_run: bool = False):
     cfg = KiroCrewConfig.load()
     mates = paths_mod.mate_agents_dir()
     mates.mkdir(parents=True, exist_ok=True)
-    (mates / "alpha.json").write_text(json.dumps(SLACK), encoding="utf-8")
+    if file_present:
+        (mates / "alpha.json").write_text(json.dumps(SLACK), encoding="utf-8")
+    if owns_file and on_record:
+        # What every crewmate file write leaves behind, kept after a delete.
+        from kiro_crew import mate_config
+
+        mate_config._owners_path().write_text(
+            json.dumps({"alpha": mate_config._this_home()}), encoding="utf-8"
+        )
+    if user_spec:
+        # An installed agent: the user-level folder declares "alpha" under this file.
+        user = paths_mod.kiro_agents_dir()
+        user.mkdir(parents=True, exist_ok=True)
+        (user / user_spec).write_text(json.dumps({"name": "alpha", "prompt": ""}), encoding="utf-8")
     monkeypatch.setattr(mate_worker, "globally_disabled_refs", lambda names: [])
     gw, callback = await _cron_callback(monkeypatch, cfg)
     # The 1.0 capture: a member selection on the shared template.
@@ -123,6 +144,83 @@ async def test_a_cron_of_a_crewmate_without_its_own_file_is_unchanged(monkeypatc
     assert call.kwargs["agent"] != MATE_WORKER_AGENT
     assert call.kwargs["crew_agent"] == "alpha"
     assert read_session_execution("cron:hourly") == captured
+
+
+@pytest.mark.asyncio
+async def test_a_crewmate_whose_own_file_was_deleted_fails_closed_on_its_worker(monkeypatch):
+    """The binding still claims its own file but the file is gone: the turn goes to
+    the worker, which refuses, instead of the conductor running it without limits."""
+    call, captured = await _fire(monkeypatch, owns_file=True, file_present=False)
+
+    assert call.kwargs["agent"] == MATE_WORKER_AGENT
+    record = read_session_execution("cron:hourly")
+    assert mate_worker.is_own_worker_execution(record)
+    assert record.member_id == captured.member_id
+    base = {"name": MATE_WORKER_AGENT, "prompt": "base", "tools": [], "mcpServers": {}}
+    with pytest.raises(mate_worker.WorkerKitUnreadable, match="missing or shadowed"):
+        mate_worker.worker_session_spec(base, "cron:hourly")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_spec", ["alpha.json", "someapp--alpha.json"])
+async def test_an_installed_agent_named_like_its_member_keeps_its_cron(monkeypatch, user_spec):
+    """``kiro_agent`` == alias with no crewmate file is a crewmate only when no other
+    spec answers that name: an installed (or an app's namespaced) agent is not."""
+    call, captured = await _fire(
+        monkeypatch, owns_file=True, file_present=False, user_spec=user_spec, on_record=False
+    )
+
+    assert call.kwargs["agent"] != MATE_WORKER_AGENT
+    assert call.kwargs["crew_agent"] == "alpha"
+    assert read_session_execution("cron:hourly") == captured
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declared_in_workspace", [False, True])
+async def test_a_self_named_binding_that_never_had_a_crewmate_file_keeps_its_cron(
+    monkeypatch, tmp_path, declared_in_workspace
+):
+    """No user-level spec and no crewmate file on record: a built-in mode the
+    harness knows by name, or an agent only its workspace's ``.kiro/agents``
+    declares. Neither was ever a crewmate file, so the cron keeps its route."""
+    if declared_in_workspace:
+        agents = tmp_path / "project" / ".kiro" / "agents"
+        agents.mkdir(parents=True)
+        (agents / "alpha.json").write_text(json.dumps({"name": "alpha"}), encoding="utf-8")
+        monkeypatch.chdir(tmp_path / "project")
+    call, captured = await _fire(monkeypatch, owns_file=True, file_present=False, on_record=False)
+
+    assert call.kwargs["agent"] != MATE_WORKER_AGENT
+    assert read_session_execution("cron:hourly") == captured
+
+
+@pytest.mark.asyncio
+async def test_another_instances_deleted_crewmate_does_not_refuse_this_ones_cron(
+    monkeypatch, tmp_path
+):
+    """Two gateways share one Kiro home with separate data homes. The other one
+    owned a crewmate ``alpha``; this one binds ``alpha`` to an installed agent."""
+    from kiro_crew import mate_config
+
+    path = mate_config._owners_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"alpha": str(tmp_path / "other-data-home")}), encoding="utf-8")
+    call, captured = await _fire(monkeypatch, owns_file=True, file_present=False, on_record=False)
+
+    assert call.kwargs["agent"] != MATE_WORKER_AGENT
+    assert read_session_execution("cron:hourly") == captured
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_owner_record_keeps_a_self_named_binding_refused(monkeypatch):
+    from kiro_crew import mate_config
+
+    path = mate_config._owners_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+    call, _captured = await _fire(monkeypatch, owns_file=True, file_present=False, on_record=False)
+
+    assert call.kwargs["agent"] == MATE_WORKER_AGENT
 
 
 @pytest.mark.asyncio

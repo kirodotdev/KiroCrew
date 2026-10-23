@@ -72,6 +72,17 @@ def has_mate_config(mate_id: str) -> bool:
     return not is_mate_service_agent(mate_id) and mate_config_path(mate_id).is_file()
 
 
+def crewmate_file_on_record(mate_id: str) -> bool:
+    """Whether THIS instance ever wrote a crewmate file *mate_id* (``owners.json``).
+
+    Every crewmate file write records its id with the writer's data home and
+    nothing removes it, so this still answers True after the file is deleted.
+    An entry another instance sharing the Kiro home wrote is not this one's.
+    Raises :class:`MateConfigError` when the record exists but cannot be read.
+    """
+    return _read_owners().get(mate_id) == _this_home()
+
+
 def source_agents_dir(source_agent: str) -> Path:
     """The folder *source_agent*'s spec is read from: the user level, except for
     the mate conductor and worker, which Crew generates into ``mates/agents/``."""

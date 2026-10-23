@@ -547,16 +547,39 @@ def _binding_alias(member_id: str) -> str:
         return ""
 
 
-def _claimed_file(member_id: str) -> str:
+def _claimed_file(member_id: str, config: Any = None) -> str:
     """The file id *member_id*'s binding points at as its own, ``""`` when it does not."""
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.execution_context import member_config_for_id
 
     try:
-        alias, binding = member_config_for_id(KiroCrewConfig.load(), member_id)
+        alias, binding = member_config_for_id(config or KiroCrewConfig.load(), member_id)
     except Exception:  # noqa: BLE001 - an unknown or ambiguous id claims no file
         return ""
     return alias if getattr(binding, "kiro_agent", "") == alias else ""
+
+
+def _claimed_crewmate_file(member_id: str, config: Any = None) -> str:
+    """The crewmate file *member_id* had and lost, ``""`` for any other binding.
+
+    Positive identity, not a guess from what does not resolve: the binding's
+    ``kiro_agent`` is its own alias AND the crewmate owner record names that id
+    (:func:`mate_config.crewmate_file_on_record`; every crewmate file write
+    records it, and nothing removes it). A self-named binding to an installed,
+    workspace-declared or built-in agent was never a crewmate file, so it keeps
+    the member route. An owner record that cannot be read keeps a self-named
+    binding refused. Blocking file I/O.
+    """
+    from kiro_crew.mate_config import MateConfigError, crewmate_file_on_record
+
+    claimed = _claimed_file(member_id, config)
+    if not claimed:
+        return ""
+    try:
+        return claimed if crewmate_file_on_record(claimed) else ""
+    except MateConfigError:
+        logger.warning("crewmate owner record unreadable; %r stays refused", claimed)
+        return claimed
 
 
 def _revoked_or_refuse(member_id: str, file_id: str) -> list[str]:
@@ -609,14 +632,21 @@ def cron_worker_execution(execution: Any, config: Any = None) -> Any:
     """The worker execution a crewmate's scheduled agent turn runs, else ``None``.
 
     A crewmate's ``member`` cron capture runs on its worker, member, store, mode
-    and app kept. ``None`` for any other record. Blocking config read.
+    and app kept. A crewmate whose own file is gone runs on the worker too
+    (:func:`_claimed_crewmate_file`), so the worker's own refusal
+    (:func:`resolve_worker_spec`) stops it rather than the conductor running it.
+    ``None`` for any other record.
+    Blocking config read.
     """
     member_id = getattr(execution, "member_id", None)
     if (
         execution is None
         or getattr(execution, "selection_kind", "") != "member"
         or not member_id
-        or not mate_file_for_member(member_id, config=config)
+        or not (
+            mate_file_for_member(member_id, config=config)
+            or _claimed_crewmate_file(member_id, config)
+        )
     ):
         return None
     # The hand-off's own spelling (``session_create``): a template selection on
