@@ -42,6 +42,7 @@ import DashboardBootstrap from './components/DashboardBootstrap'
 import { installPageZoomSuppression } from './utils/pageZoom'
 import { installStaleShellHeal } from './lib/staleShellHeal'
 import { installScrollReveal } from './lib/scrollReveal'
+import { installSwConnectedProbe } from './lib/swConnectedProbe'
 import { captureSafeReload, reloadKeepingSafe } from './lib/safeReload'
 import {
   hasUnreconciledKeys,
@@ -92,6 +93,10 @@ installStaleShellHeal()
 // Scrollbars show only while a box is scrolling: the reveal rules in index.css
 // key on the attribute this sets. Before render, so the first scroll counts.
 installScrollReveal()
+
+// Answer the service worker's push probe from the live connection state, so a
+// push is shown as an OS banner unless this tab is actually receiving notes.
+installSwConnectedProbe(() => store.getState().dashboard.connected)
 // A crash-recovery reload must not reopen the chat that crashed it. Read (and
 // strip) `?safe=1` before the router sees the URL. See lib/safeReload.ts.
 captureSafeReload()

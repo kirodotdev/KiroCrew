@@ -16808,7 +16808,15 @@
         "custom_sound_undo": "元に戻す",
         "custom_sound_option": "{{name}}（自作）",
         "channel_member": "クルーメイトからのメッセージ",
-        "channel_apps": "アプリのアップデート"
+        "channel_apps": "アプリのアップデート",
+        "push_section": "プッシュ通知",
+        "push_toggle_label": "{{productName}} を閉じていても通知する",
+        "push_toggle_description": "上のシステム通知とは別のスイッチです。システム通知は {{productName}} を開いている間だけ届きます。",
+        "push_install_hint": "iOS では、プッシュ通知を有効にするにはまず {{productName}} をホーム画面に追加してください。",
+        "push_unsupported": "このブラウザーでは、{{productName}} を閉じている間は通知を送れません。",
+        "push_error_permission": "通知が許可されませんでした。ブラウザーに確認されたら許可してから、もう一度お試しください。",
+        "push_error_subscribe": "この端末の通知をオンにできませんでした。もう一度試すか、ページを再読み込みしてください。",
+        "push_error_unsubscribe": "この端末の通知をオフにできませんでした。もう一度試すか、ページを再読み込みしてください。"
       },
       "privacyPanel": {
         "recordMetricsDescription": "このマシンでパフォーマンスメトリクスを収集します。",

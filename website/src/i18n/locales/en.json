@@ -9571,7 +9571,15 @@
         "sound": "Sound",
         "sources": "Sources",
         "test": "Test",
-        "volume": "Volume"
+        "volume": "Volume",
+        "push_section": "Push notifications",
+        "push_toggle_label": "Notify me even when {{productName}} is closed",
+        "push_toggle_description": "A separate switch from system notifications above, which only work while {{productName}} is open.",
+        "push_install_hint": "On iOS, add {{productName}} to your home screen first to enable push notifications.",
+        "push_unsupported": "This browser can't send notifications while {{productName}} is closed.",
+        "push_error_permission": "Notifications weren't allowed. Allow them when your browser asks, then try again.",
+        "push_error_subscribe": "Couldn't turn on notifications for this device. Try again, or reload the page.",
+        "push_error_unsubscribe": "Couldn't turn off notifications for this device. Try again, or reload the page."
       },
       "postureDisclosure": {
         "more": "more",

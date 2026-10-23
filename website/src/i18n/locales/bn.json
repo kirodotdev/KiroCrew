@@ -17081,7 +17081,15 @@
         "custom_sound_undo": "পূর্বাবস্থায় ফেরাও",
         "custom_sound_option": "{{name}} (তোমার)",
         "channel_member": "সঙ্গীদের বার্তা",
-        "channel_apps": "অ্যাপ আপডেট"
+        "channel_apps": "অ্যাপ আপডেট",
+        "push_section": "পুশ বিজ্ঞপ্তি",
+        "push_toggle_label": "{{productName}} বন্ধ থাকলেও আমাকে জানাও",
+        "push_toggle_description": "এটা উপরের সিস্টেম বিজ্ঞপ্তি থেকে আলাদা সুইচ, যেগুলো শুধু {{productName}} খোলা থাকলে কাজ করে।",
+        "push_install_hint": "iOS-এ পুশ চালু করতে প্রথমে {{productName}} হোম স্ক্রিনে যোগ করো।",
+        "push_unsupported": "{{productName}} বন্ধ থাকলে এই ব্রাউজার বিজ্ঞপ্তি পাঠাতে পারে না।",
+        "push_error_permission": "বিজ্ঞপ্তির অনুমতি দেওয়া হয়নি। ব্রাউজার জানতে চাইলে অনুমতি দাও, তারপর আবার চেষ্টা করো।",
+        "push_error_subscribe": "এই ডিভাইসের জন্য বিজ্ঞপ্তি চালু করা যায়নি। আবার চেষ্টা করো বা পেজটি আবার লোড করো।",
+        "push_error_unsubscribe": "এই ডিভাইসের জন্য বিজ্ঞপ্তি বন্ধ করা যায়নি। আবার চেষ্টা করো বা পেজটি আবার লোড করো।"
       },
       "privacyPanel": {
         "recordMetricsLabel": "মেট্রিক রেকর্ড করো",

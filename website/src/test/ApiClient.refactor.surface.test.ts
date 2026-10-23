@@ -134,7 +134,7 @@ const API_KEY_ORDER = [
   'tasksSummary', 'spawnAdaptive', 'tasksList', 'taskDetail', 'taskCancel',
   'knowledgeSearch', 'notifications', 'deleteNotification', 'clearNotifications',
   'ackNotification', 'unackNotification', 'ackAllNotifications', 'notificationChannels',
-  'updateNotificationChannelSettings', 'sessions', 'sessionsSearch', 'sessionsNamed', 'instancesSearchSessions',
+  'updateNotificationChannelSettings', 'vapidPublicKey', 'subscribePush', 'unsubscribePush', 'sessions', 'sessionsSearch', 'sessionsNamed', 'instancesSearchSessions',
   'instancesCapabilities', 'instancesApprovalState', 'instancesVersions', 'instanceChatSlots', 'crewPeerGet', 'crewPeerPost', 'sessionDetail', 'sessionMeta', 'deleteSession',
   'clearSessions', 'autocomplete', 'spawnList', 'spawn',
   'spawnStatus', 'spawnDelete', 'spawnStopAll', 'spawnRetry',

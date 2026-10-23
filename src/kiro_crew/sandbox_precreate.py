@@ -535,6 +535,9 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "mcp-apps",
     "whatsapp",
     "backup",
+    # The Web Push stores, written lazily on the first subscribe or key fetch; see
+    # its entry in ``_CREW_HIDDEN_LEAVES``.
+    "web-push",
 )
 
 #: The masked md-notebook leaves materialised before a namespace spawn, and what each

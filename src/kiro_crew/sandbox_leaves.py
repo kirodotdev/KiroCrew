@@ -384,6 +384,16 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     "kas",
     "ops_mission_control_secrets.json",
     "ops_mission_control_policy.json",
+    # Web Push credential stores (``notifications/push_store.py``, ``vapid_keys.py``), owned by the
+    # gateway alone: ``vapid_keys.json`` holds the VAPID EC private key and
+    # ``subscriptions.json`` each device's ``p256dh``/``auth`` secret. Masked as a whole
+    # DIRECTORY so the ``atomic_write`` temp they publish through, which holds the same
+    # bytes, is covered at every name. No in-sandbox reader exists: the fan-out runs in
+    # the gateway loop. In ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` too, because the stores
+    # are written lazily (first subscribe, first key fetch), so on a fresh install the
+    # ``isdir`` guard would otherwise skip the mask and let an agent read the key or
+    # plant an endpoint.
+    "web-push",
     # No producer and no consumer left in the tree; masked so a backup restore that
     # resurrects a stale file cannot make it readable either.
     ".kiro_cli_binary_trust.json",

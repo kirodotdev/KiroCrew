@@ -58,7 +58,7 @@ The frontend renders these through a bell popover and a `/notifications` page (`
 
 ### Why the mobile OS model
 
-iOS and Android solved the same shape of problem: many independent producers, one aggregation surface, scarce user attention. The relevant abstractions -- channels declared by producers, per-channel user settings, priority tiers, group stacking, inline actions -- transfer directly. The abstractions that do NOT transfer (cloud push relay, lock-screen delivery, device tokens) are exactly the parts this RFC excludes: the gateway is always local and always running, so it plays the role APNs/FCM plays remotely.
+iOS and Android solved the same shape of problem: many independent producers, one aggregation surface, scarce user attention. The relevant abstractions -- channels declared by producers, per-channel user settings, priority tiers, group stacking, inline actions -- transfer directly. The abstractions that do NOT transfer (lock-screen delivery, native device tokens) are the parts this RFC excludes: the gateway is always local and always running, so it plays the role APNs/FCM plays remotely. Browser Web Push, an opt-in second sink after local delivery, is in scope (see Decisions).
 
 ## Goals
 
@@ -71,10 +71,13 @@ iOS and Android solved the same shape of problem: many independent producers, on
 
 ## Non-goals
 
-- Cloud push (APNs/FCM relay, remote delivery to phones). Slack remains the away-from-desk channel.
 - Notification scheduling or digests (possible later phase, out of scope here).
 - Rich media bodies (images, embedded widgets).
 - Cross-instance notification sync between multiple gateways.
+
+### Decisions
+
+- 2026-10-25, maintainer bolichen97: the earlier "Cloud push (APNs/FCM relay, remote delivery to phones)" non-goal is lifted. Browser Web Push delivery is in scope: opt-in per device, off by default, sent after local delivery through the browser vendor's push service. Current behaviour: `docs/system-specs/modules/app-notifications.md`.
 
 ## Design
 

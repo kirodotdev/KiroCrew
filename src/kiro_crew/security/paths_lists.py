@@ -199,6 +199,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # too. The channel's own client opens it directly rather than through this
     # gate, so pairing keeps working.
     "whatsapp",
+    # Web Push: the VAPID private key and every device's push secret, enough to raise
+    # OS banners on the owner's devices. Opened directly by the notification subsystem.
+    "web-push",
     # The Notes builtin's vault registry. It is not a secret, but it stores each
     # vault's on-disk ``localPath``, which auto-sync trusts and runs ``git
     # add``/``commit``/``push`` against. A prompt-injected agent that could

@@ -386,7 +386,14 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   binding, which the gateway writes on a person's action. Masked at the
     #:   data-home root beside ``crew-teams`` rather than under the sandbox
     #:   read-write ``trust/``, so leaf-only for the same reason.
-    EXPECTED: dict[str, int] = {"standard": 293, "cc": 300, "strict": 301}
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``web-push`` -- the Web Push VAPID key and device subscription secrets
+    #:   (``notifications/push_store.py``), masked as a whole directory so the
+    #:   ``atomic_write`` temps they publish through are hidden too. At the data-home
+    #:   root beside writable siblings, so leaf-only is the only hold.
+    EXPECTED: dict[str, int] = {"standard": 296, "cc": 303, "strict": 304}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

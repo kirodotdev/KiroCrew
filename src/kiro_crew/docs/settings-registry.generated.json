@@ -1355,6 +1355,13 @@
       "hint": "A background session is marked unread when its agent finishes or waits on your answer, instead of on every new message."
     },
     {
+      "id": "notifications.notify-me-even-when-kiro-crew-is-closed",
+      "label": "Notify me even when Kiro Crew is closed",
+      "tab": "notifications",
+      "route": "/settings/notifications/alerts?highlight=notifications.notify-me-even-when-kiro-crew-is-closed",
+      "description": "A separate switch from system notifications above, which only work while Kiro Crew is open."
+    },
+    {
       "id": "notifications.notify-when-a-background-chat-finishes",
       "label": "Notify when a background chat finishes",
       "tab": "notifications",

@@ -16820,7 +16820,15 @@
         "custom_sound_undo": "실행 취소",
         "custom_sound_option": "{{name}}(내 사운드)",
         "channel_member": "크루메이트 메시지",
-        "channel_apps": "앱 업데이트"
+        "channel_apps": "앱 업데이트",
+        "push_section": "푸시 알림",
+        "push_toggle_label": "{{productName}}이(가) 닫혀 있어도 알림 받기",
+        "push_toggle_description": "위의 시스템 알림과는 별개의 스위치입니다. 시스템 알림은 {{productName}}이(가) 열려 있을 때만 옵니다.",
+        "push_install_hint": "iOS에서는 푸시 알림을 켜려면 먼저 {{productName}}을(를) 홈 화면에 추가하세요.",
+        "push_unsupported": "이 브라우저는 {{productName}}이(가) 닫혀 있을 때 알림을 보낼 수 없습니다.",
+        "push_error_permission": "알림이 허용되지 않았습니다. 브라우저에서 물으면 허용한 다음 다시 시도하세요.",
+        "push_error_subscribe": "이 기기의 알림을 켜지 못했습니다. 다시 시도하거나 페이지를 새로 고치세요.",
+        "push_error_unsubscribe": "이 기기의 알림을 끄지 못했습니다. 다시 시도하거나 페이지를 새로 고치세요."
       },
       "postureDisclosure": {
         "filter": "{{label}} 필터",
