@@ -10474,6 +10474,14 @@
       "reason": "Ich kann das nicht ausführen, du aber schon.",
       "run_unanswered": "Das Terminal hat nicht geantwortet, also kopiere ihn in die Terminal-App auf deinem Computer.",
       "title": "Selbst ausführen"
+    },
+    "uninstalledBuiltinSkillsList": {
+      "title": "Deinstallierte integrierte Skills",
+      "hint": "Integrierte Skills, die du gelöscht hast. Sie bleiben nach Neustarts und Updates entfernt, bis du sie wiederherstellst.",
+      "load_failed": "Die deinstallierten integrierten Skills konnten nicht geladen werden.",
+      "restore": "Wiederherstellen",
+      "restoring": "Wird wiederhergestellt…",
+      "restore_failed": "Dieser Skill konnte nicht wiederhergestellt werden. Versuche es erneut."
     }
   },
   "hooks": {
