@@ -181,3 +181,55 @@ export const EARLIER_ADMISSION_LEAD_PX = 600
 
 /** Selector for the control the rule above measures. */
 export const EARLIER_BAR_SELECTOR = '[data-testid="load-earlier-messages"]'
+
+/** Cadence of the level-triggered top-parked pagination poll. Slow on purpose:
+ * it is the backstop that guarantees progress while the reader holds the top,
+ * not the fast path (the sentinel/crossing triggers still fire first). */
+export const OLDER_TOP_POLL_MS = 700
+
+/**
+ * How long after the reader's last scroll the top-of-transcript walk keeps
+ * paging. Past this they have stopped climbing, and a page landing then is
+ * movement they did not ask for.
+ */
+export const OLDER_WALK_ACTIVE_MS = 1500
+
+/** A page may LAND only after the scroller has been still this long: landing
+ * compensation writes scrollTop, and mid-momentum writes fight the fling. */
+export const OLDER_LANDING_SETTLE_MS = 400
+
+/** A transcript at least this much taller than its viewport is scrollable
+ *  in earnest: the reader can climb to ask for history, so nothing fetches
+ *  it for them. Below it, auto-fill is load-bearing (no scrollbar exists). */
+export const OLDER_FILL_SLACK_PX = 120
+
+/** How long one real gesture authorizes an automatic older-history fetch.
+ *
+ *  It is a WINDOW and not a latch because the latch was the defect. A landing's
+ *  own compensation writes scrollTop, which fires a `scroll` event, so with
+ *  permanent authorization the automatic doors ran land -> quiet -> land at a
+ *  steady beat over a reader who was not asking for any of it. Only real input
+ *  (wheel, touchmove, keydown, pointerdown on the scroller) refreshes this
+ *  stamp, and our own writes produce none of those, so the window ages out on
+ *  its own: a gesture burst buys a bounded run of pages, not the rest of the
+ *  session. */
+export const REAL_GESTURE_AUTH_MS = 20000
+
+/** Whether a top-sentinel fire may auto-fetch history for a reader who did
+ *  not climb. Exported for tests: this single predicate is what separates
+ *  the load-bearing short-transcript fill (no scrollbar exists, so nothing
+ *  else CAN load history) from the boot-transient page chain that walked
+ *  megabytes over a parked phone after every refresh.
+ *
+ *  Keyed on INPUT, not on follow: a boot that restores a saved scroll
+ *  anchor releases follow before the reader has touched anything, and a
+ *  follow-based gate read that as a climbing reader -- the replica probe
+ *  showed the walk running at one page per ~8s through that door with
+ *  zero input events. Real wheel/touch input is the only signal that a
+ *  fetch is reader-initiated; the sole inputless exception is a transcript
+ *  too short to scroll, where the fill is load-bearing (no scrollbar
+ *  exists, so nothing else could ever load its history). */
+export function shouldAutoFillOlder(g: { scrollHeight: number; clientHeight: number; sawInput: boolean }): boolean {
+  if (g.scrollHeight <= g.clientHeight + OLDER_FILL_SLACK_PX) return true
+  return g.sawInput
+}

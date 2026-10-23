@@ -5048,7 +5048,7 @@ scroll shell) and the owners under `pages/chat/page/`:
 | `followupCardActions.ts` | The follow-up and folder-suggestion cards' actions |
 | `paneLayout.tsx` | The pane's layout state (sidebar pin state / width, side panel dock, rename editor, split view) and the panel widths, phone sessions toggles and memory-mode chip |
 | `messageActions.ts` | The dock clearance, selection Quote / Ask, edit-and-resend, the search highlight context, the `toggle-pin-chat-sidebar` listener (the pin state is `paneLayout.tsx`'s), stream heat, the side panel toggle, read aloud and apply plan |
-| `transcriptPaging.ts` | The scroller refs and the virtualizer, and every door that pages older history (sentinel, earlier-messages bar, walk poll, retry); `shouldAutoFillOlder` |
+| `transcriptPaging.ts` | The scroller refs and the virtualizer, and every door that pages older history (sentinel, earlier-messages bar, walk poll, retry). Its gates and tunings (`shouldAutoFillOlder`, `REAL_GESTURE_AUTH_MS`, the poll, settle, active and fill-slack constants) live in `pages/chat/pagination.ts`, shared with the pane transcript's `chat-core/transcript/useEarlierHistoryWalk.ts`; `shouldAutoFillOlder` is re-exported here for its historical importers |
 | `transcriptPins.ts` | Turn navigation, pins, and the jumps that start inside the transcript: to a pinned, quoted or last-edited message |
 | `transcriptRendering.tsx` | The renderer registry, `renderMessage`, turn items and the measurement farm's rows |
 | `sessionsDrawer.ts` | The sessions drawer and the side panel's phone overlay, their swipes, the sidebar context actions and the hover flyout |

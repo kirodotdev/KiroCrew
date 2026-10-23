@@ -29,12 +29,18 @@ import React, {
 } from 'react'
 import { useVirtualChat } from '../../hooks/virtualizer/useVirtualChat'
 import EarlierMessagesBar from '../../pages/chat/EarlierMessagesBar'
+import { useEarlierHistoryWalk } from './useEarlierHistoryWalk'
 import TranscriptScrollShell, { useTranscriptWidth } from '../../pages/chat/TranscriptScrollShell'
 import type { DisplayItem } from '../../pages/chat/types'
 import { anchorAltIdFor, stableAnchorIdFor, uniqueRowKeys, virtualKeyFor } from './rowKeys'
 import { useStableMessageKey } from './useStableMessageKey'
 
-/** The host's earlier-history paging state, rendered as the bar above the rows. */
+/** The host's earlier-history paging state, rendered as the bar above the rows.
+ *
+ *  Supplying it also arms the automatic walk (`useEarlierHistoryWalk`): a
+ *  reader who climbs to the top gets the next page without pressing the bar,
+ *  under the main page's gates. The bar stays as the visible affordance, the
+ *  control for a scroll method the walk cannot see, and the retry on failure. */
 export interface TranscriptEarlierPaging {
   /** Older rows exist beyond what `items` holds; the bar renders only when true. */
   hasMore: boolean
@@ -99,9 +105,9 @@ export interface VirtualTranscriptProps {
   belowRows?: React.ReactNode
   earlier?: TranscriptEarlierPaging
   /** Level-triggered older-history walk: fires while the reader is parked near
-   *  the top with more history to load. An alternative to the `earlier` bar for
-   *  a host (the main page) that drives an automatic walk rather than an
-   *  explicit "Load earlier" button — supply one model, not both. */
+   *  the top with more history to load. An alternative to the `earlier` model
+   *  for a host (the main page) that drives its own walk and bar rather than
+   *  taking this component's — supply one model, not both. */
   onTopReached?: () => void
   /** Prefetch lead for the older-history walk (rows from the top at which to
    *  begin fetching). Only meaningful alongside `onTopReached`. */
@@ -192,8 +198,22 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
       prefetchStartIndex,
     })
 
-    // Two older-history models must not run on one mount: the `earlier` bar's
-    // onLoad and the level-triggered onTopReached walk would both fetch the
+    // The `earlier` model's automatic half: pages the host's onLoad in when the
+    // reader climbs to the bar, so the bar is not one click per page. Reads the
+    // virtualizer's follow and measurement state, which is why it lives here
+    // and not in each host.
+    useEarlierHistoryWalk({
+      scrollerRef,
+      sessionId,
+      earlier,
+      getFollow: virt.getFollow,
+      getMountedIndices: () => virt.virtualItems.map(v => v.index),
+      farmIsMeasured: virt.farmIsMeasured,
+      itemCount: items.length,
+    })
+
+    // Two older-history models must not run on one mount: the `earlier` model's
+    // walk and the level-triggered onTopReached walk would both fetch the
     // same older slice, racing two prepends into `items`. The prop docs say
     // "supply one model, not both"; warn a host that wired both, at author time.
     if (import.meta.env.DEV && onTopReached && earlier?.hasMore) {
