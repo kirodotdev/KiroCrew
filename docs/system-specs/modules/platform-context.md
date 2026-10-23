@@ -337,6 +337,11 @@ so plugin code never runs before the decision.
 everything (standalone unchanged). A present-but-unreadable policy fails closed
 (enforce + signature + empty allowlist = admit nothing). A rejected plugin
 raises `PluginAdmissionError` (a `PlatformCompositionError`), aborting boot.
+An ABSENT policy fails closed the same way, and because the first-run seed is
+marker-guarded a restart does not re-create it; the rejection therefore carries
+`admission.missing_policy_remedy()`: delete the seed marker
+(`.migrations/admission_policy_seeded`) to re-seed the open default when the seed
+already ran, or fix the data-home write when it never managed to write the file.
 
 Policy shape (`admission_policy.json`):
 ```json

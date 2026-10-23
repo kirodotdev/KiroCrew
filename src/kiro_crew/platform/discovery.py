@@ -18,6 +18,7 @@ from kiro_crew.platform.admission import (
     PluginManifest,
     evaluate_admission,
     load_admission_policy,
+    missing_policy_remedy,
     read_policy_trust_root,
     seed_default_policy,
 )
@@ -151,9 +152,15 @@ def discover_companion_context(
         # tampering still fails closed.
         seed_default_policy()
         policy = load_admission_policy()
+        # Read once, right after the load it explains: an absent policy is the one
+        # rejection whose cause is not the policy's own verdict.
+        remedy = missing_policy_remedy()
+    else:
+        remedy = None
     decision = evaluate_admission(ep, policy)
     if not decision.allowed:
-        logger.error("plugin %r rejected by admission policy: %s", ep.name, decision.reason)
+        reason = f"{decision.reason} ({remedy})" if remedy else decision.reason
+        logger.error("plugin %r rejected by admission policy: %s", ep.name, reason)
         # Land the DENY on the immutable audit trail, not just the app log —
         # plugin admission is an authorization-decision chokepoint (ban /
         # allowlist / invalid-signature / capability-ceiling). Mirrors the
@@ -172,9 +179,7 @@ def discover_companion_context(
             )
         except Exception:
             logger.debug("plugin-admission DENY SEL emit unavailable", exc_info=True)
-        raise PluginAdmissionError(
-            f"plugin {ep.name!r} rejected by admission policy: {decision.reason}"
-        )
+        raise PluginAdmissionError(f"plugin {ep.name!r} rejected by admission policy: {reason}")
     logger.info("plugin %r admitted: %s", ep.name, decision.reason)
     refresh_plugin_config_keys([decision.manifest] if decision.manifest is not None else [])
 

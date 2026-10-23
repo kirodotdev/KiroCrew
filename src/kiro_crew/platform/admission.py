@@ -660,6 +660,54 @@ def _verify_seed_integrity(policy_bytes: bytes) -> None:
         logger.debug("admission integrity check failed to run", exc_info=True)
 
 
+def missing_policy_remedy() -> Optional[str]:
+    """How to recover from an ABSENT admission policy, or ``None`` when one exists.
+
+    The fail-closed default this module returns for an absent policy rejects every
+    plugin with "not on the approved allowlist", which names neither the cause nor
+    a way out. The way out is not obvious either: the first-run seed is guarded by
+    a one-shot marker so that deleting the file is never silently undone, which
+    means restarting does NOT bring the file back. This names the cause and the
+    one step that does, so the refusal is actionable instead of a dead end.
+
+    Two cases, told apart by the marker:
+
+    * marker present -- the seed already ran on this home and the file was later
+      removed (or the seed ran while ``KIROCREW_ADMISSION_POLICY`` was set, which
+      stamps the marker without writing a file). Deleting the marker lets the next
+      start seed the default open policy again.
+    * marker absent -- the seed has not managed to write the file at all, so the
+      cause is the write itself (the seed's own warning names the error).
+
+    ``None`` when the env override is set or the default file exists: then the
+    policy is present, and a rejection is the policy's own verdict. Never raises.
+    """
+    try:
+        if os.environ.get(_POLICY_ENV, "").strip():
+            return None
+        default_path = _policy_default_path()
+        if default_path.exists():
+            return None
+        marker = _seed_marker_path()
+        if marker.exists():
+            return (
+                f"no admission policy at {default_path}, and the first-run seed "
+                f"already ran on this home ({marker}), so it is not re-created "
+                f"automatically. To restore the default open policy, delete {marker} "
+                f"and start Kiro Crew again. A managed fleet should restore its own "
+                f"policy file there or point {_POLICY_ENV} at it."
+            )
+        return (
+            f"no admission policy at {default_path}, and the first-run seed could "
+            f"not write it (see the 'admission policy seed failed' warning in the "
+            f"log). Check that {default_path.parent} exists and is writable by "
+            f"this user, then start Kiro Crew again."
+        )
+    except Exception:
+        logger.debug("admission remedy could not be determined", exc_info=True)
+        return None
+
+
 def load_admission_policy() -> AdmissionPolicy:
     """Load the fleet admission policy — fail-closed when it cannot be verified.
 
@@ -684,9 +732,10 @@ def load_admission_policy() -> AdmissionPolicy:
         # first-run seed (or a managed fleet) should have placed is absent —
         # fail closed rather than silently admit everything.
         logger.error(
-            "no admission policy found (env %s unset, %s absent); failing closed",
+            "no admission policy found (env %s unset, %s absent); failing closed. %s",
             _POLICY_ENV,
             default_path,
+            missing_policy_remedy() or "",
         )
         _record_admission_posture("unverified")
         _audit_admission_fail_closed("no_policy_file")
