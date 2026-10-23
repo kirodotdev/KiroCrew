@@ -1088,6 +1088,16 @@ class AgentConfig:
             "sessions it created itself.",
         ),
     )
+    session_manager_chain: bool = field(
+        default=False,
+        metadata=_meta(
+            "Session Manager Chain",
+            "Let a session reach the whole line of sessions under it, not only the "
+            "ones it manages directly. With it on, a lead that handed a worker to a "
+            "conductor can still send to, read, stop and close that worker, and "
+            "closing the conductor hands its workers to the lead. Off by default.",
+        ),
+    )
     member_dispatch: bool = field(
         default=True,
         metadata=_meta(

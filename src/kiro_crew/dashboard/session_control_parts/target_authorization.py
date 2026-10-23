@@ -16,10 +16,10 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     _app_owned_cron_refusal,
     _caller_is_ownership_fenced,
     _channel_link_of,
-    _created_by_other,
     _cron_caller,
     _member_bypass,
     _member_caller,
+    _outside_reach,
     _sel_off_loop,
     caller_slot_key,
     session_control_enabled,
@@ -671,7 +671,10 @@ def _broadcast_resolution_slots(
             continue
         if getattr(slot, "workspace", "default") != getattr(caller_slot, "workspace", "default"):
             continue
-        if ownership_fenced and _created_by_other(slot, caller_key):
+        # The same reach the delivery gate applies for ``send``: the manager, and with
+        # the chain switch on every manager above it, so a title two reachable
+        # sessions share is refused as ambiguous rather than resolved to one of them.
+        if ownership_fenced and _outside_reach(state, slot, caller_key, "send"):
             continue
         out.append(slot)
     return out
@@ -1058,10 +1061,15 @@ def authorize_target(
     # waiver an agent-created session could never release itself from a parent,
     # because its own ``_created_by`` names its creator and not itself.
     self_addressed = slot.key == caller_key
-    if ownership_fenced and not self_addressed and _created_by_other(slot, caller_key):
+    if (
+        ownership_fenced
+        and not self_addressed
+        and _outside_reach(state, slot, caller_key, operation)
+    ):
         # The fence every exempted caller class is bounded by, plus anything they
         # created. It reaches ONLY the sessions the caller made itself
-        # (`created_by` is written at birth and rehydrated on restart). Always
+        # (`created_by` is written at birth and rehydrated on restart), or, for the
+        # verbs that run a session, the sessions handed to it (`_outside_reach`). Always
         # enforced -- even when the global switch is on -- so no exemption
         # silently widens to the user's own sessions because of an unrelated
         # opt-in.

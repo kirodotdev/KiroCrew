@@ -545,6 +545,14 @@ SESSION_ADOPT_SCHEMA = ToolSchema(
     ],
 )
 
+SESSION_HANDOFF_SCHEMA = ToolSchema(
+    tool_name="session_handoff",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("to", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
 SESSION_RELEASE_SCHEMA = ToolSchema(
     tool_name="session_release",
     fields=[

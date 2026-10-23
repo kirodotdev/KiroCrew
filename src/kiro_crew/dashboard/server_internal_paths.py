@@ -245,6 +245,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/session-control/broadcast",
         "/api/session-control/status",
         "/api/session-control/adopt",
+        "/api/session-control/handoff",
         "/api/session-control/release",
         "/api/session-control/read",
         "/api/session-control/summary",

@@ -396,7 +396,11 @@ async def sweep_idle_slots(
             # Synchronous and immediately before the call: no await may separate
             # this check from close_slot retiring the slot's loop.
             still_idle()
-            await chat_handlers.close_slot(state, slot, name, pre_pop_check=still_idle)
+            # hand_back=False: an idle archive leaves the sessions it managed naming it,
+            # so reviving it brings it back to them (docs/session-control.md).
+            await chat_handlers.close_slot(
+                state, slot, name, pre_pop_check=still_idle, hand_back=False
+            )
         except chat_handlers.SlotCloseError as exc:
             logger.info("Idle slot sweep kept %s: %s", name, exc.code)
             continue

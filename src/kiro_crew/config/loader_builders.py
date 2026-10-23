@@ -695,6 +695,8 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         # true; see the normalization above the `_validate_config_data`
         # call. `_safe_bool` here is the final guard for a real bool.
         session_control=section.read("session_control", _safe_bool),
+        # Default false: a missing key and a malformed one both leave it off.
+        session_manager_chain=section.read("session_manager_chain", _safe_bool),
         # Default true preserves the zero-configuration member-dispatch
         # grant (today's behaviour) for a MISSING key. A present-but-
         # malformed value was already coerced to False upstream, BEFORE
