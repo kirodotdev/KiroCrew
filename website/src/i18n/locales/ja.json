@@ -16251,6 +16251,8 @@
         "your_role": "あなたの役割",
         "session_card_source_links": "セッションカードの PR / Issue チップ",
         "session_card_source_links_desc": "各セッションのサイドバーカードに、そのセッションで言及されたプルリクエスト、マージリクエスト、Issue ごとにチップを表示します。オフにすると、チップの状態を保つ定期的なプロバイダー呼び出しも停止します。",
+        "compact_session_cards": "タイトルのみのセッションカード",
+        "compact_session_cards_desc": "サイドバーには各セッションのタイトルのみを表示します。アクティビティのプレビューとリンクされたソースチップは非表示になります。",
         "failed_to_load_tips_preference": "ヒントの設定を読み込めませんでした。",
         "feature_videos": "機能紹介動画",
         "feature_videos_cached": "この端末に保存済み: {{total}} 件中 {{cached}} 件 · リリース {{release}}",

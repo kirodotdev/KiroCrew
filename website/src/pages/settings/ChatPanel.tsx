@@ -1030,6 +1030,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           return (
         <SettingsCard>
           <SettingsToggle label={i18nT('pages.settings.chatPanel.split_view_session_grid')} description={i18nT('pages.settings.chatPanel.opt_in_split_the_chat_into_resizable_session_pan', { mod: isMac ? '⌘' : 'Ctrl' })} checked={dashCfg.session_grid} onChange={v => setDash({ session_grid: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.compact_session_cards')} description={i18nT('pages.settings.chatPanel.compact_session_cards_desc')} checked={chatCfg.compactSessionCards} onChange={v => setChat('compactSessionCards', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.dim_inactive_panes')} description={i18nT('pages.settings.chatPanel.dim_inactive_panes_desc')} checked={chatCfg.dimInactivePanes} onChange={v => setChat('dimInactivePanes', v)} disabled={dashDisabled || !dashCfg.session_grid} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.history_expanded')} hint={i18nT('pages.settings.chatPanel.expand_history_sidebar_by_default')} checked={chatCfg.historyExpanded} onChange={v => setChat('historyExpanded', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.confirm_before_closing_session')} hint={i18nT('pages.settings.chatPanel.show_a_confirmation_dialog_when_closing_a_sessio')} checked={chatCfg.confirmCloseSession} onChange={v => setChat('confirmCloseSession', v)} />

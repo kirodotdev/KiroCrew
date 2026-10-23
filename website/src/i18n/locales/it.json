@@ -16785,6 +16785,8 @@
         "your_role": "Il tuo ruolo",
         "session_card_source_links": "Chip di PR e issue sulle schede di sessione",
         "session_card_source_links_desc": "Mostra sulla scheda di ogni sessione nella barra laterale un chip per ogni pull request, merge request e issue citata in quella sessione. Se disattivato, si fermano anche le chiamate periodiche al provider che tengono aggiornati quei chip.",
+        "compact_session_cards": "Schede di sessione con solo titolo",
+        "compact_session_cards_desc": "Mostra solo il titolo di ogni sessione nella barra laterale. Nasconde l’anteprima dell’attività e i chip delle fonti collegate.",
         "failed_to_load_tips_preference": "Impossibile caricare la preferenza dei suggerimenti.",
         "feature_videos": "Video sulle funzionalità",
         "feature_videos_cached": "Salvati su questo dispositivo: {{cached}} su {{total}} · versione {{release}}",
