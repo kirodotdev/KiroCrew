@@ -11307,6 +11307,7 @@
         "send_to_main_done": "メインチャットに追加済み"
       },
       "sidePanel": {
+        "all_tabs": "すべてのタブを一覧表示",
         "close_panel": "パネルを閉じる",
         "close_tab": "タブを閉じる",
         "dock_bottom": "パネルをチャットの下にドッキング",

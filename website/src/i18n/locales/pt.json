@@ -11639,6 +11639,7 @@
         "send_to_main_done": "Adicionado ao chat principal"
       },
       "sidePanel": {
+        "all_tabs": "Listar todas as abas",
         "close_panel": "Fechar painel",
         "close_tab": "Fechar aba",
         "dock_bottom": "Fixar o painel abaixo do chat",

@@ -3,6 +3,9 @@ import { useConfirm } from '../../components/ConfirmDialog'
 import { useState, useRef, useEffect, useCallback, useMemo, Fragment, Suspense, lazy, type ReactNode } from 'react'
 import { useDevMode } from '../../hooks/useDevMode'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
+import { AllTabsMenu } from '../../components/AllTabsMenu'
+import { useSidePanelTabNav } from './sidePanelTabNav'
+import { iconForKind } from './sidePanelTabIcons'
 import { Reorder } from 'framer-motion'
 import { Plus, MoreHorizontal, Globe, PanelRight, PanelBottom } from 'lucide-react'
 import { SidePanelDockHost, SidePanelGlyph } from '../../components/SidePanelGlyph'
@@ -394,6 +397,10 @@ export default function SidePanel({
   // groups clip independently. remeasure when the leading/pinned chips change.
   const [attachFixedEdges, fixedEdges, remeasureFixedEdges] = useScrollEdges<HTMLDivElement>()
   useEffect(() => { remeasureFixedEdges() }, [leadingTabs, pinnedTabs, remeasureFixedEdges])
+  const glyphFor = useCallback((t: PanelTab) => iconForKind(t.kind, allPanelTabDescriptors), [allPanelTabDescriptors])
+  const tabNav = useSidePanelTabNav({
+    leadingTabs, pinnedTabs, dynamicTabs, activeId, requestActive, glyphFor, attachFixedEdges, attachTabEdges, projectDir,
+  })
   // Terminal opens a NEW tab (its own PTY session) starting in the chat's
   // working dir; every other menu item is a singleton view.
   // Spawn a terminal whose cwd is the chat's project directory. Shared with the
@@ -570,7 +577,7 @@ export default function SidePanel({
             shrinkable (the group must stay shrinkable per the comment above). */}
         <div className="relative min-w-0 flex items-end">
         <div
-          ref={attachFixedEdges}
+          ref={tabNav.fixedScrollerRef}
           className="flex items-end gap-2 min-w-0 overflow-x-auto scrollbar-none -mb-px"
           data-testid="side-panel-fixed-tabs"
         >
@@ -585,6 +592,7 @@ export default function SidePanel({
               {leadingTabs.map(lt => (
                 <TabChip
                   key={lt.id}
+                  chipId={lt.id}
                   tab={{ title: lt.title }}
                   icon={lt.icon}
                   badge={lt.badge}
@@ -600,7 +608,7 @@ export default function SidePanel({
             </div>
           )}
           {pinnedTabs.map(t => (
-            <TabChip key={t.id} tab={t} active={t.id === activeId} closable={false} pinned onSelect={() => { void requestActive(t.id, activeId) }} onClose={() => {}} />
+            <TabChip key={t.id} chipId={t.id} tab={t} active={t.id === activeId} closable={false} pinned onSelect={() => { void requestActive(t.id, activeId) }} onClose={() => {}} />
           ))}
         </div>
         {/* from-bg-elevated matches the side-panel-strip surface. */}
@@ -636,7 +644,7 @@ export default function SidePanel({
             which the seam-hairline contract pins. */}
         <div className="relative min-w-0 flex items-end">
         <Reorder.Group
-          ref={attachTabEdges}
+          ref={tabNav.dynamicScrollerRef}
           axis="x"
           values={dynamicTabs}
           onReorder={(next) => setOrder([...pinnedTabs, ...next])}
@@ -744,6 +752,9 @@ export default function SidePanel({
         {/* Flexible gap: the tabs and + hug the leading edge; this absorbs the
             slack so the panel chrome sits at the trailing edge. */}
         <div aria-hidden="true" className="flex-1 min-w-0" />
+        {/* Every open tab, for the ones the scrollers clip. Fixed at the trailing
+            edge, outside both scrollers, so it never scrolls away or reads as part of +. */}
+        <AllTabsMenu groups={tabNav.groups} currentId={activeId} onSelect={tabNav.onSelect} label={i18nT('pages.chat.sidePanel.all_tabs')} />
         {/* Panel chrome, trailing edge. Collapse (frequent) stays a one-tap
             button; the rarely-used dock toggle moves into a ⋯ menu so the two
             panel-square glyphs are never adjacent look-alikes. A permanent

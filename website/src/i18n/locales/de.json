@@ -11473,6 +11473,7 @@
         "send_to_main_done": "Zum Hauptchat hinzugefügt"
       },
       "sidePanel": {
+        "all_tabs": "Alle Tabs auflisten",
         "close_panel": "Panel schließen",
         "close_tab": "Tab schließen",
         "dock_bottom": "Panel unter dem Chat andocken",

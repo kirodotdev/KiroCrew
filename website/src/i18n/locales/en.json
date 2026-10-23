@@ -6710,6 +6710,7 @@
         "refresh_blocked_busy": "Stop the running answer first — refreshing would discard it"
       },
       "sidePanel": {
+        "all_tabs": "List all tabs",
         "close_panel": "Close panel",
         "close_tab": "Close tab",
         "menu_git": "Git",

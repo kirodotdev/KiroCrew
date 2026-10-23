@@ -11307,6 +11307,7 @@
         "send_to_main_done": "메인 채팅에 추가됨"
       },
       "sidePanel": {
+        "all_tabs": "모든 탭 목록",
         "close_panel": "패널 닫기",
         "close_tab": "탭 닫기",
         "dock_bottom": "패널을 채팅 아래에 도킹",

@@ -11639,6 +11639,7 @@
         "send_to_main_done": "Ajouté au chat principal"
       },
       "sidePanel": {
+        "all_tabs": "Lister tous les onglets",
         "close_panel": "Fermer le panneau",
         "close_tab": "Fermer l'onglet",
         "dock_bottom": "Ancrer le panneau sous le chat",

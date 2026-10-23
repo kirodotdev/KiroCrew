@@ -11307,6 +11307,7 @@
         "send_to_main_done": "已添加到主聊天"
       },
       "sidePanel": {
+        "all_tabs": "列出所有标签页",
         "close_panel": "关闭面板",
         "close_tab": "关闭标签页",
         "dock_bottom": "将面板停靠到聊天下方",
