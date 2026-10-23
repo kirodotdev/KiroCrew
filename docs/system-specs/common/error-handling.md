@@ -201,7 +201,12 @@ never drift. Notable terminal (non-retryable) classes:
   (`CREDENTIAL_RELOAD_RETRY_NOTICE`), and when the fresh process fails too (the
   helper itself is broken: an expired SSO login, a revoked role) the give-up
   line carries the provider's own message (`credential_give_up_text`) instead
-  of "start a new chat", which would fail the same way.
+  of "start a new chat", which would fail the same way. That message is
+  redacted inside `credential_give_up_text` through `redact_via_context`, the
+  egress path that finds link and credential spans on the original text and
+  rewrites it once (so neither pass hides a value from the other), because the
+  dashboard row and the channel post that show it do not redact on their own,
+  and the frame's trailing `data` repr is dropped from it.
 - **Preserved-thinking binding mismatch**: `AcpConversationBindingMismatch`
   (non-transient) means the stored native conversation carries thinking bound to
   another conversation prefix. A dashboard outer turn with no reply, thought or

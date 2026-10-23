@@ -19,6 +19,7 @@ from typing import Any
 from kiro_crew.agent_sdk.drivers.acp import provider_error_client
 from kiro_crew.agent_sdk.drivers.acp_turn_vocab import AcpError, AcpPromptBusy
 from kiro_crew.credential_errors import is_credential_propagation_delay
+from kiro_crew.platform.context import redact_via_context
 
 _PROMPT_BUSY_RETRIES = 2
 _PROMPT_BUSY_DELAY = 1.5  # seconds between retries
@@ -284,17 +285,38 @@ def acp_error_needs_fresh_credentials(exc: BaseException) -> bool:
     return isinstance(exc, AcpError) and getattr(exc, "credential_reload", False) is True
 
 
+#: The frame's structured ``data`` as the ACP formatter appends it to the provider
+#: text (``...try again.: {'errorKind': 'cloud_credential_error'}``). Machine data
+#: that tells the reader nothing, so the give-up line ends on the provider's words.
+#: The match starts at the ``:`` (not at whitespace before it), so a long
+#: whitespace run in provider text cannot make the scan quadratic; the space
+#: before the ``:`` is stripped after the substitution.
+_FRAME_DATA_TAIL_RE = re.compile(
+    r""":\s*\{\s*['"]errorKind['"]\s*:\s*['"][A-Za-z0-9_]*['"]\s*\}\s*$"""
+)
+
+
 def credential_give_up_text(exc: BaseException | str) -> str:
     """The dead end of a credential failure that the fresh process drew too.
 
     The helper itself is broken (an expired SSO login, a revoked role), so no
     restart or new chat can fix it: the provider's own instruction is the only
-    actionable line, and it is carried verbatim. Each surface appends its own
-    next step.
+    actionable line. Each surface appends its own next step.
+
+    The provider text is redacted here, through the egress redaction path, so
+    every surface that shows the line gets it scrubbed: the dashboard row and the
+    channel post do not redact on their own. That path finds link and credential
+    spans on the original text and rewrites it once, so a value one pass would
+    leave once the other had rewritten its surroundings is still removed. The
+    frame's trailing ``data`` repr is dropped.
     """
+    detail, dropped = _FRAME_DATA_TAIL_RE.subn("", str(exc))
+    if dropped:
+        detail = detail.rstrip()
+    detail = redact_via_context(detail)
     return (
         "The agent still could not load its cloud credentials after a restart. "
-        f"Fix them first. The provider said: {exc}"
+        f"Fix them first. The provider said: {detail}"
     )
 
 

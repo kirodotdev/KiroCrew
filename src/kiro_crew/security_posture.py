@@ -2047,6 +2047,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # in subagent_parts/run_output.py), which are the registered sinks.
         "llm_helpers_parts/model_fallback.py",
         "llm_helpers_parts/tool_approval.py",
+        # Shared credential give-up line builder (credential_give_up_text):
+        # scrubs the provider text ONCE, centrally, through redact_via_context, so
+        # the dashboard row, the
+        # channel post and the Slack reply that carry it all get the same safe
+        # text. It owns no output; those delivering surfaces
+        # (dashboard/chat_runner.py, channel.py, and for Slack
+        # handler_runtime/delivery.py) are the registered sinks.
+        "llm_helpers_parts/backend_errors.py",
         # Shared in-band deny-notice builder: redacts the provider-authored tool
         # title ONCE, centrally, before the notice is steered back into the
         # model's own turn (not to a person). It owns no egress — the steer goes
