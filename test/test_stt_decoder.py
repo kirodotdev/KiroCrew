@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 import os
 import stat
+import threading
 from pathlib import Path
 
 import pytest
@@ -596,6 +597,54 @@ class TestRetiredDecoderMigration:
         (tmp_path / decoder.RETIRED_FILENAMES[1]).write_bytes(b"old decoder")
         calls: list[dict] = []
         _serve(monkeypatch, _PAYLOAD, calls)
+
+        first, second = await asyncio.wait_for(
+            asyncio.gather(decoder.migrate_retired_decoder(), decoder.migrate_retired_decoder()),
+            timeout=30,
+        )
+
+        assert first == second == tmp_path / artifact.filename
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_caller_whose_probe_sees_the_migrated_store_joins_the_transfer(
+        self, monkeypatch, tmp_path
+    ):
+        """The second caller's retired-file probe runs only after the first caller's
+        migration installed the pin and removed the retired file, so it finds none.
+        A migration is under way all the same, and that caller still gets its path."""
+        artifact = _artifact()
+        _pin(monkeypatch, tmp_path, artifact)
+        _allow_download(monkeypatch)
+        (tmp_path / decoder.RETIRED_FILENAMES[1]).write_bytes(b"old decoder")
+        calls: list[dict] = []
+        _serve(monkeypatch, _PAYLOAD, calls)
+
+        migrated = threading.Event()
+        probes = 0
+        probes_lock = threading.Lock()
+        real_probe = decoder.has_retired_decoder
+
+        def _probe() -> bool:
+            nonlocal probes
+            with probes_lock:
+                probes += 1
+                later = probes > 1
+            if later:
+                assert migrated.wait(timeout=10), "the first migration never finished"
+            return real_probe()
+
+        shared_store = decoder.store()
+        real_ensure = shared_store.ensure
+
+        async def _ensure() -> Path | None:
+            try:
+                return await real_ensure()
+            finally:
+                migrated.set()
+
+        monkeypatch.setattr(decoder, "has_retired_decoder", _probe)
+        monkeypatch.setattr(shared_store, "ensure", _ensure)
 
         first, second = await asyncio.wait_for(
             asyncio.gather(decoder.migrate_retired_decoder(), decoder.migrate_retired_decoder()),

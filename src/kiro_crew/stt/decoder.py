@@ -560,6 +560,19 @@ def _remove_retired() -> None:
             logger.debug("Could not remove retired decoder %s", name, exc_info=True)
 
 
+async def _join_migration(task: asyncio.Task[Path | None]) -> Path | None:
+    """Wait for the migration *task* another caller started; ``None`` when it
+    runs on a different event loop, which this caller cannot await."""
+    try:
+        same_loop = task.get_loop() is asyncio.get_running_loop()
+    except RuntimeError:
+        same_loop = False
+    if not same_loop:
+        return None
+    # Shielded: one caller giving up must not cancel the shared transfer.
+    return await asyncio.shield(task)
+
+
 async def migrate_retired_decoder() -> Path | None:
     """Fetch the current pin for an install whose store has only a retired one.
 
@@ -569,19 +582,17 @@ async def migrate_retired_decoder() -> Path | None:
     by :meth:`DecoderStore.ensure` once the current pin is installed.
     """
     global _migration_task
-    task = _migration_task
-    if task is not None:
-        try:
-            same_loop = task.get_loop() is asyncio.get_running_loop()
-        except RuntimeError:
-            same_loop = False
-        if not same_loop:
-            return None
-        # Shielded: one caller giving up must not cancel the shared transfer.
-        return await asyncio.shield(task)
+    if _migration_task is not None:
+        return await _join_migration(_migration_task)
     if bundle_carries_decoder() or artifact_for() is None:
         return None
-    if not await asyncio.to_thread(has_retired_decoder):
+    has_retired = await asyncio.to_thread(has_retired_decoder)
+    # Another caller can start the migration while this one awaits the probe, and
+    # its transfer removes the retired file, so a probe that ran after it finds
+    # none: join that transfer rather than report the decoder missing.
+    if _migration_task is not None:
+        return await _join_migration(_migration_task)
+    if not has_retired:
         return None
     # Started at most once per process: on a host that cannot reach the release,
     # every later transcode would otherwise wait out another failed fetch. The
