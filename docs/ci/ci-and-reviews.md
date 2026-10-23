@@ -4125,6 +4125,30 @@ The command contacts npm's registry/advisory service. Unit tests mock the subpro
 cover malformed output, operational failures, report resolution, schema constraints, expiry, and
 exact-match exception behavior without network access.
 
+### A new advisory: land Dependabot's bump with a maintainer push
+
+An advisory published against a version main already pins turns the gate red on the next nightly,
+although no pull request changed anything. Dependabot usually opens the bump the same day, but a run
+Dependabot triggers gets the Dependabot secret set, which holds neither `KIRO_RELEASE_GATE_ROLE_ARN`
+nor `KIRO_RELEASE_GATE_BUCKET`. The Internal Content Scan then reaches no verdict ("This run has no
+credentials for the ruleset") and the pull request cannot go green on its own.
+
+To land it, a maintainer pushes an empty commit to the Dependabot branch:
+
+```bash
+git fetch origin <dependabot-branch>
+git switch -c <dependabot-branch> FETCH_HEAD
+git commit --allow-empty -m "chore: re-trigger checks as a maintainer"
+git push origin <dependabot-branch>
+```
+
+The runs that push starts have the maintainer as their actor, so they get the repository's Actions
+secrets: the scan job's log reads `Secret source: Actions` instead of `Dependabot`, and the scan
+reaches a verdict (checked on #23126). Once someone else has committed to it, Dependabot stops
+rebasing that pull request, so rebase it yourself if main moves first. Exempting Dependabot from
+the scan is not the fix: the scan is a gate, and the push is the deliberate maintainer step it asks
+for.
+
 ## AI-review human overrides: the authorization rules
 
 The command grammar and the marker contract are in [Human override](#human-override); this section states the authorization and freshness rules the handler enforces.
