@@ -61,7 +61,11 @@ jobs:
       (github.event_name != 'pull_request' ||
        (!github.event.pull_request.draft &&
         github.event.pull_request.head.repo.full_name == github.repository))
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the fork review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 60
     permissions:
       actions: read

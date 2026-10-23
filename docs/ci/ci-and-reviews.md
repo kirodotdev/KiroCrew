@@ -1002,6 +1002,84 @@ label. Boot-matrix rollback restores `runs-on: ${{ matrix.os }}`. Keep the test
 arguments and coverage unchanged. A rejected webhook leaves a job queued before
 its timeout starts; diagnose or roll back rather than raising that timeout.
 
+### Larger runners for the fork review lanes and CodeQL
+
+Nine `runs-on` sites draw on the `kirocrew-runners` larger-runner group rather
+than `ubuntu-latest`: the six fork review lanes (`fork-opus-review`,
+`fork-gpt-review`, `fork-first-principles-review`, `fork-design-review`,
+`fork-ux-review`, and all three jobs of `fork-security-scope-review`), plus
+`codeql.yml`.
+
+**Why the fork lanes.** They are the largest block of hosted Linux load with no
+CodeBuild path, and the obstruction is structural rather than unfinished work.
+Registering a CodeBuild-hosted runner requires a GitHub App installation
+credential carrying `Administration:write`, so no CodeBuild runner project can
+hold a truly zero-permission role; and the `workflow_job` webhook payload
+carries no fork indicator at all -- its fields are `head_branch` and `head_sha`,
+never `head_repository` -- so the AWS side cannot filter fork work out and falls
+back to an actor allowlist. The repository-side `runs-on` expressions therefore
+send every fork pull request to a hosted runner. Fork work is permanently hosted
+load, which makes a larger runner the only capacity source that can take it.
+
+A larger runner satisfies these lanes' isolation requirement the same way
+`ubuntu-latest` does. It is GitHub-managed and ephemeral, holds no
+CodeConnections connection, no App installation credential and no AWS role, and
+reaches neither the signing keys, the CDN bucket nor the Bedrock review roles.
+
+**Why CodeQL.** It is the largest single editable `runs-on` in the repository,
+it already excludes forks through the `Analyze` job's own `if`, and it is not a
+required check, so a runner misconfiguration cannot wedge a merge on it. Its
+load is also permanent for an unrelated reason: GitHub's CodeQL default setup,
+which this workflow replaced, is off, so there is no second scan to fall back
+to.
+
+**Nothing gets faster.** A public-repository `ubuntu-latest` is already 4 vCPU
+and 16 GB, and `kirocrew-linux-4-core` is the same CPU and memory with roughly
+ten times the disk. Job durations should not move; only queue position does.
+Larger-runner minutes are also billed even on a public repository, where
+standard runners are free and unlimited, so this trades a free-but-queued
+resource for a paid-but-unqueued one. What it buys is that these minutes leave
+the standard pool this repository saturates at roughly 44% of all GitHub-funded
+runner hours across the enterprise, and draw on the separate larger-runner
+ceiling instead.
+
+Each site targets the **group**, not the `kirocrew-linux-4-core` workflow label.
+Both forms work, since a larger runner is automatically assigned a label
+matching its name, but this definition has already been renamed once (from
+`kirocrew-release-4-core`) and a group reference survives a rename where every
+label reference would break simultaneously. The group must stay Linux-only:
+group targeting dispatches to any available runner in the group, so adding a
+Windows definition to `kirocrew-runners` would make every one of these jobs
+eligible to land on Windows. A Windows definition belongs in its own group.
+
+**What is deliberately still on `ubuntu-latest`.** The five same-repo review
+lanes (`codex-review`, `claude-review`, `first-principles-review`,
+`design-review`, `ux-review`) are about 18 average concurrent slots and are
+being evaluated for a low-permission CodeBuild project, which would make paid
+capacity for them redundant; they wait on that answer. `security-scope-review.yml`
+is itself on that lane's own scope surface, so a diff touching it sets
+`in_scope=true` while giving the model no shell, flow or cron surface to propose
+candidates for, and `scope_candidates.py validate` refuses the resulting empty
+`candidates.json` as `CandidateError`, exit 2, by design -- which reds a lane
+`PR Readiness` watches, so moving it needs its own pull request and a
+`/ai-review override scope <head-sha>: <reason>`. And
+`ai-review-human-override.yml` is the mechanism that clears such a red, so it
+does not move in a change that could need it.
+
+**Capacity.** The definition is capped at `maximum_runners: 100`, a per-runner
+limit established when the runner is created; raising it goes through GitHub
+Support rather than the organization settings page. These nine sites are about
+28 average concurrent slots, so they fit that cap with headroom at the 2.0x to
+2.4x peak-to-mean observed across the pool. Measure this definition's own peak
+before adding more, because a subset's burst pattern need not match the
+aggregate's.
+
+Rollback is per site and needs no AWS or runner-group change: restore
+`runs-on: ubuntu-latest` on the affected line. A job dispatched to a group that
+does not admit this repository stays queued for up to 24 hours before
+auto-cancelling, so cancel the run and fix the group's repository access rather
+than waiting out the timeout.
+
 ### macOS is not a pull-request gate any more
 
 A macOS pytest job on the pull-request path waits hours for a hosted `macos-15`
