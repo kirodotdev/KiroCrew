@@ -747,7 +747,12 @@ def _clean(value: object, cap: int) -> str:
 
 
 def _clean_items(value: object) -> tuple[str, ...]:
-    raw = [value] if isinstance(value, str) else value if isinstance(value, list) else []
+    if isinstance(value, str):
+        raw: list[object] = [value]
+    elif isinstance(value, list):
+        raw = value
+    else:
+        raw = []
     items = [_clean(item, _MAX_ITEM_CHARS) for item in raw]
     return tuple(item for item in items if item)[:_MAX_ITEMS]
 

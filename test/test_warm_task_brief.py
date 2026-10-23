@@ -984,6 +984,18 @@ def test_over_long_fields_and_lists_are_capped():
     assert brief.next == ("d", "e", "f")
 
 
+def test_a_list_field_sent_as_one_string_is_one_item_and_an_object_gives_no_items():
+    brief = warm_task_brief._parse_result(
+        json.dumps(
+            {"now": "Ready.", "needs_you": "Approve the push", "next": {"Rerun CI": "Push the fix"}}
+        )
+    )
+    assert brief is not None
+    assert brief.needs_you == ("Approve the push",)
+    # Neither the object's keys nor its values become items.
+    assert brief.next == ()
+
+
 def test_empty_needs_you_leaves_the_section_out_of_the_text():
     brief = warm_task_brief._parse_result('{"asked":"x","now":"Done soon.","needs_you":[]}')
     assert brief is not None and brief.needs_you == ()
