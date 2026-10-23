@@ -140,6 +140,7 @@ from kiro_crew.config.sections import _AVATAR_IMAGE_EXTS as _LOADER_AVATAR_IMAGE
 from kiro_crew.config.sections import (  # noqa: F401
     _safe_avatar,
 )
+from kiro_crew.crew_avatar_seed import default_icon_avatar  # noqa: F401  (crew_records reads it)
 from kiro_crew.dashboard.agent_admin import agent_config as _owner_agent_config
 from kiro_crew.dashboard.agent_admin import agent_detail as _owner_agent_detail
 from kiro_crew.dashboard.agent_admin import app_mcp_ownership as _owner_app_mcp_ownership
