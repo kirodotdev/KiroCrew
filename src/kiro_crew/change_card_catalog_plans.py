@@ -503,51 +503,7 @@ def build_preview(
             apply.append(_create_schedule_step(p))
         out["apply"] = apply
     elif kind == KIND_CREWMATE_IMPORT:
-        if snapshot.get("exists"):
-            raise _fail("already_exists", f"a mate named '{p['name']}' already exists")
-        out["title"] = f"Import mate “{p['name']}”"
-        out["changes"] = [
-            {"field": "name", "label": "Name", "after": p["name"]},
-            {"field": "sender", "label": "From", "after": p.get("sender", "")},
-        ]
-        for key in ("description", "goal"):
-            if p.get(key):
-                out["changes"].append({"field": key, "label": key.title(), "after": p[key]})
-        # Trust is the receiver's to grant: the mode rides on the create itself,
-        # because an unset mode opens in MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE.
-        inherited = [s for s in snapshot.get("inherited_auto_approve") or () if isinstance(s, str)]
-        # ``import_approval`` only when a row of inherited grants follows: its
-        # hint says the crewmate asks like the owner's other crewmates do.
-        mode = "import_approval" if inherited else "approval_mode"
-        out["changes"].append({"field": mode, "label": "Approval", "after": "normal"})
-        if inherited:  # granted by the template, so the press widens (as crewmate.create)
-            reach = [r for r in snapshot.get("inherited_reach") or () if isinstance(r, dict)]
-            row = {
-                "field": "template_auto_approve",
-                "label": "Your mates use these without asking",
-            }
-            out["changes"].append({**row, "after": reach or ", ".join(inherited)})
-            out["risk"] = RISK_WIDEN
-        out["changes"].append(
-            {"field": "not_included", "label": "Stays with the sender", "after": "private"}
-        )
-        if p.get("not_imported"):
-            out["changes"].append(
-                {"field": "not_imported", "label": "Not brought over", "after": p["not_imported"]}
-            )
-        body = {
-            "name": p["name"],
-            "kiro_agent": DEFAULT_CREWMATE_TEMPLATE,
-            "source": "kirocrew",
-            "description": p.get("description", ""),
-            "approval_mode": "normal",
-        }
-        out["apply"] = [step("POST", "/api/agents", body)]
-        if p.get("goal"):  # crewmate.create's goal step, addressed by step 0's member_id
-            fills = [_step_path_fill("slug", 0, "member_id"), _step_fill("member", 0, "name")]
-            path = f"/api/members/{placeholder(fills[0])}/goals/long-term"
-            body = _with_fills({"long_term": p["goal"], "expected": ""}, fills[1:])
-            out["apply"].append(step("PUT", path, body, fill=fills))
+        out.update(_import_preview(p, snapshot))
     elif kind == KIND_CREWMATE_UPDATE:
         if not snapshot.get("exists"):
             raise _fail("not_found", f"no mate named '{p['name']}'")
@@ -1027,6 +983,186 @@ def _create_schedule_step(p: dict[str, Any]) -> dict[str, Any]:
         **_cron_body(p["schedule"]),
     }
     return step("POST", "/api/crons", _with_fills(body, fills), fill=fills)
+
+
+#: The roles of a ``crewmate.import`` card's apply steps, in plan order
+#: (rfc-crewmate-share.md §5.4). Step 0 is always the create.
+IMPORT_STEP_CREATE = "create"
+IMPORT_STEP_GOAL = "goal"
+IMPORT_STEP_RULES = "rules"
+IMPORT_STEP_FILES = "files"
+IMPORT_STEP_CRON = "cron"
+
+
+def _import_message_crons(p: dict[str, Any]) -> list[dict[str, Any]]:
+    """The crons a plain cron step creates; a ``script`` cron is made with its script."""
+    return [job for job in p.get("crons") or () if "script" not in job]
+
+
+def import_step_roles(p: dict[str, Any]) -> list[str]:
+    """What each apply step of a ``crewmate.import`` card writes, by index."""
+    roles = [IMPORT_STEP_CREATE]
+    if p.get("goal"):
+        roles.append(IMPORT_STEP_GOAL)
+    if p.get("rules"):
+        roles.append(IMPORT_STEP_RULES)
+    if p.get("carried"):
+        roles.append(IMPORT_STEP_FILES)
+    roles += [IMPORT_STEP_CRON] * len(_import_message_crons(p))
+    return roles
+
+
+def import_files_path(slug: str) -> str:
+    """The owner route that writes a new crewmate's carried files (and takes them back)."""
+    return f"/api/members/{slug}/import-files"
+
+
+def _import_member_fills() -> list[dict[str, Any]]:
+    return [_step_path_fill("slug", 0, "member_id"), _step_fill("member", 0, "name")]
+
+
+def _import_rules_step(rules: str) -> dict[str, Any]:
+    fills = _import_member_fills()
+    path = f"/api/members/{placeholder(fills[0])}/rules"
+    return step("PUT", path, _with_fills({"rules": rules}, fills[1:]), fill=fills)
+
+
+def _import_files_step(sha: str) -> dict[str, Any]:
+    """Write the carried files from the staged copy named *sha*, into the new crewmate's own space."""
+    fills = _import_member_fills()
+    body = _with_fills({"sha256": sha}, fills[1:])
+    return step("POST", import_files_path(placeholder(fills[0])), body, fill=fills)
+
+
+def _import_cron_step(job: dict[str, Any]) -> dict[str, Any]:
+    """One imported cron, bound to the new crewmate and created paused in the same write."""
+    fills = [_step_fill("member_id", 0, "member_id")]
+    body = {
+        **_cron_body(job),
+        "agent": DEFAULT_CREWMATE_TEMPLATE,
+        "enabled": False,
+    }
+    return step("POST", "/api/crons", _with_fills(body, fills), fill=fills)
+
+
+def _import_preview(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    """The ``crewmate.import`` card: every part shown, then the §5.4 ordered plan."""
+    from kiro_crew import crewmate_carried
+
+    if snapshot.get("exists"):
+        raise _fail("already_exists", f"a mate named '{p['name']}' already exists")
+    carried = p.get("carried") or {}
+    scripts = {s["file"] for s in carried.get("scripts") or ()}
+    named = {job["script"].partition(":")[0] for job in p.get("crons") or () if "script" in job}
+    if named != scripts:
+        raise _fail("invalid_param", "each script cron needs its script, and each script a cron")
+    bundled = {r["name"] for r in p.get("skills") or () if r["source"] == "bundled"}
+    if bundled != {s["name"] for s in carried.get("skills") or ()}:
+        raise _fail("invalid_param", "each bundled skill needs its files")
+    out: dict[str, Any] = {"risk": RISK_NORMAL, "title": f"Import mate “{p['name']}”"}
+    changes: list[dict[str, Any]] = [
+        {"field": "name", "label": "Name", "after": p["name"]},
+        {"field": "sender", "label": "From", "after": p.get("sender", "")},
+    ]
+    for key, label in (("description", "Description"), ("model_hint", "Model")):
+        if p.get(key):
+            changes.append({"field": key, "label": label, "after": p[key]})
+    refs = [r for r in p.get("skills") or () if r["source"] != "bundled"]
+    if refs:
+        changes.append({"field": "import_skills", "label": "Skills", "after": refs})
+    if carried.get("skills"):
+        row = {"field": "carried_skills", "label": "Skills it brings"}
+        changes.append({**row, "after": carried["skills"]})
+    if p.get("rules"):
+        changes.append({"field": "rules", "label": "Rules", "after": p["rules"]})
+    if p.get("goal"):
+        changes.append({"field": "goal", "label": "Goal", "after": p["goal"]})
+    if p.get("crons"):
+        changes.append({"field": "import_crons", "label": "Crons", "after": p["crons"]})
+    if carried.get("scripts"):
+        row = {"field": "carried_scripts", "label": "Cron scripts"}
+        changes.append({**row, "after": carried["scripts"]})
+    if carried.get("avatar"):
+        changes.append({"field": "carried_avatar", "label": "Picture", "after": carried["avatar"]})
+    if p.get("dashboard_template"):
+        row = {"field": "dashboard_template", "label": "Dashboard"}
+        changes.append({**row, "after": p["dashboard_template"]})
+    # Trust is the receiver's to grant: the mode rides on the create itself,
+    # because an unset mode opens in MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE.
+    inherited = [s for s in snapshot.get("inherited_auto_approve") or () if isinstance(s, str)]
+    # ``import_approval`` only when a row of inherited grants follows: its
+    # hint says the crewmate asks like the owner's other crewmates do.
+    mode = "import_approval" if inherited else "approval_mode"
+    changes.append({"field": mode, "label": "Approval", "after": "normal"})
+    if inherited:  # granted by the template, so the press widens (as crewmate.create)
+        reach = [r for r in snapshot.get("inherited_reach") or () if isinstance(r, dict)]
+        row = {"field": "template_auto_approve", "label": "Your mates use these without asking"}
+        changes.append({**row, "after": reach or ", ".join(inherited)})
+        out["risk"] = RISK_WIDEN
+    if crewmate_carried.code_exec(carried):
+        # Each runs on this machine; a widening press still asks for its acknowledgement.
+        out["widen"] = out["risk"] == RISK_WIDEN
+        out["risk"] = RISK_CODE_EXEC
+    changes.append({"field": "not_included", "label": "Stays with the sender", "after": "private"})
+    if p.get("not_imported"):
+        row = {"field": "not_imported", "label": "Not brought over"}
+        changes.append({**row, "after": p["not_imported"]})
+    out["changes"] = changes
+
+    create: dict[str, Any] = {
+        "name": p["name"],
+        "kiro_agent": DEFAULT_CREWMATE_TEMPLATE,
+        "source": "kirocrew",
+        "description": p.get("description", ""),
+        "approval_mode": "normal",
+        "imported": {
+            "format_version": p["format_version"],
+            "sender_label": p.get("sender", ""),
+            "sha256": p.get("bundle_sha256", ""),
+        },
+    }
+    if p.get("avatar_traits") and not carried.get("avatar"):
+        create["avatar"] = {"kind": "ghost", "traits": p["avatar_traits"]}
+    apply = [step("POST", "/api/agents", create)]
+    if p.get("goal"):  # crewmate.create's goal step, addressed by step 0's member_id
+        fills = _import_member_fills()
+        body = _with_fills({"long_term": p["goal"], "expected": ""}, fills[1:])
+        path = f"/api/members/{placeholder(fills[0])}/goals/long-term"
+        apply.append(step("PUT", path, body, fill=fills))
+    if p.get("rules"):
+        apply.append(_import_rules_step(p["rules"]))
+    if carried:
+        apply.append(_import_files_step(p["bundle_sha256"]))
+    apply += [_import_cron_step(job) for job in _import_message_crons(p)]
+    out["apply"] = apply
+    return out
+
+
+def import_undo(
+    p: dict[str, Any], evidence: list[dict[str, Any]], applied_steps: int
+) -> list[dict[str, Any]]:
+    """Take back what an applied (or ``partial``) import wrote, newest part first.
+
+    Its plain crons are deleted by the ids their creates answered, its carried
+    files (and the script crons made with them) by the file step's own record,
+    its rules are cleared (a rules file outlives the crewmate it belongs to),
+    and the crewmate is deleted last, so every earlier step still finds it.
+    """
+    roles = import_step_roles(p)[:applied_steps]
+    plan = []
+    for index, role in enumerate(roles):
+        job_id = evidence[index].get("id") if index < len(evidence) else None
+        if role == IMPORT_STEP_CRON and job_id:
+            plan.append(step("DELETE", f"/api/crons/{_q(str(job_id))}"))
+    name = (evidence[0].get("name") if evidence else None) or p["name"]
+    slug = str((evidence[0].get("member_id") if evidence else "") or "")
+    if IMPORT_STEP_FILES in roles:
+        plan.append(step("DELETE", import_files_path(_q(slug)), {"member": name}))
+    if IMPORT_STEP_RULES in roles:
+        body = {"member": name, "rules": ""}
+        plan.append(step("PUT", f"/api/members/{_q(slug)}/rules", body))
+    plan.append(step("DELETE", f"/api/agents/{_q(str(name))}"))
+    return plan
 
 
 def legacy_create_apply(

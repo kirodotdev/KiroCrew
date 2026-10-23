@@ -347,7 +347,9 @@ def after_shows_the_write(
         created = ev[0].get("member_id") if ev else None
         if not isinstance(created, str) or not created:
             return False
-        return bool(after.get("exists")) and after.get("member_id") == created
+        if not (bool(after.get("exists")) and after.get("member_id") == created):
+            return False
+        return kind != catalog.KIND_CREWMATE_IMPORT or _import_after_is_written(p, after, ev)
     if kind == catalog.KIND_CREWMATE_CHECK_INS:
         sched = after.get("schedules")
         return isinstance(sched, dict) and all(
@@ -891,7 +893,16 @@ async def resumed_undo_is_stale(rec: dict[str, Any], index: int, *, state: Any, 
     kind, params, after = rec["kind"], rec["params"], rec.get("after") or {}
     if kind in catalog.CREWMATE_CREATING_KINDS:
         current = await read_state(kind, params, rec["evidence"][:1], state=state, app=app)
-        keys = ("exists", "member_id", "revision")
+        keys: tuple[str, ...] = ("exists", "member_id", "revision")
+        undo = (rec.get("plan") or {}).get("undo") or []
+        rules_at = next(
+            (i for i, s in enumerate(undo) if str(s.get("path", "")).endswith("/rules")), -1
+        )
+        if kind == catalog.KIND_CREWMATE_IMPORT and "rules" in after and index <= rules_at:
+            # Until the Undo's own rules step runs, rules saved since are the
+            # owner's; after it, the Undo cleared them itself.
+            current = await read_state(kind, params, rec["evidence"], state=state, app=app)
+            keys += ("rules",)
         return canonical({k: current.get(k) for k in keys}) != canonical(
             {k: after.get(k) for k in keys}
         )
@@ -976,6 +987,8 @@ async def read_state(
         return await asyncio.to_thread(_template_state_with_skills, params, state)
     # A legacy-shaped create card made its schedule at step 1, the current one at
     # step 2: the evidence says which (the same index its Undo deletes).
+    if kind == catalog.KIND_CREWMATE_IMPORT and evidence:
+        return await _import_state(params, evidence, state=state)
     schedule_step = catalog._create_schedule_index(evidence)
     if kind == catalog.KIND_CREWMATE_CREATE and len(evidence) > schedule_step:
         base = await asyncio.to_thread(_sync_read_state, kind, params, evidence[:1])
@@ -983,6 +996,74 @@ async def read_state(
         schedule = _cron_job_revision(job) if job is not None else None
         return {**base, "schedule_exists": job is not None, "schedule": schedule}
     return await asyncio.to_thread(_sync_read_state, kind, params, evidence)
+
+
+async def _import_state(
+    params: dict[str, Any], evidence: list[dict[str, Any]], *, state: Any
+) -> dict[str, Any]:
+    """An applied import's crewmate, plus each cron it made and its rules, as fingerprints.
+
+    The Undo deletes a cron only while it still reads as the import left it, and
+    clears the rules only while they are still the imported text: an edit the
+    owner saved since makes the snapshot differ, so the Undo is refused. The
+    carried files are checked file by file by their own route's Undo.
+    """
+    base = await asyncio.to_thread(
+        _sync_read_state, catalog.KIND_CREWMATE_IMPORT, params, evidence[:1]
+    )
+    roles = catalog.import_step_roles(params)
+    crons: dict[str, Any] = {}
+    for index, role in enumerate(roles[: len(evidence)]):
+        job_id = evidence[index].get("id")
+        if role == catalog.IMPORT_STEP_CRON and isinstance(job_id, str) and job_id:
+            job = await state.crons.get_job_async(job_id)
+            crons[job_id] = _cron_job_revision(job) if job is not None else None
+    out = {**base, "crons": crons}
+    if catalog.IMPORT_STEP_RULES in roles[: len(evidence)]:
+        out["rules"] = await asyncio.to_thread(_import_rules_digest, evidence[0])
+    return out
+
+
+def _import_after_is_written(
+    params: dict[str, Any], after: dict[str, Any], evidence: list[dict[str, Any]]
+) -> bool:
+    """Whether the post-apply read of an import holds what each step committed.
+
+    Each cron step's response carried the fingerprint of the job it made, and the
+    rules step wrote the card's own text. A cron or the rules the owner saved
+    while later steps ran would otherwise become the Undo's baseline, and the
+    Undo would then delete that edit.
+    """
+    import hashlib
+
+    roles = catalog.import_step_roles(params)
+    seen = after.get("crons")
+    crons: dict[str, Any] = seen if isinstance(seen, dict) else {}
+    for index, role in enumerate(roles[: len(evidence)]):
+        if role == catalog.IMPORT_STEP_CRON:
+            job_id, written = evidence[index].get("id"), evidence[index].get("revision")
+            if not isinstance(written, str) or crons.get(str(job_id)) != written:
+                return False
+        elif role == catalog.IMPORT_STEP_RULES:
+            text = str(params.get("rules") or "").strip()
+            if after.get("rules") != hashlib.sha256(text.encode("utf-8")).hexdigest():
+                return False
+    return True
+
+
+def _import_rules_digest(ev0: dict[str, Any]) -> str | None:
+    import hashlib
+
+    from kiro_crew import members as members_mod
+
+    slug, name = ev0.get("member_id"), ev0.get("name")
+    if not isinstance(slug, str) or not slug or not isinstance(name, str):
+        return None
+    try:
+        text = members_mod.read_member_rules(slug, name)
+    except Exception:
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 async def _folder(state: Any, folder_id: str) -> dict[str, Any] | None:

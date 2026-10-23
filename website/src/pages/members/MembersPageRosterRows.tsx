@@ -306,7 +306,7 @@ export function MemberRow({
  *  tokens follow `EmptyState` in components/ui.tsx; the face is the real ghost at
  *  full strength rather than EmptyState's 12%-opacity icon, because here the
  *  avatar IS the subject (what a crewmate looks like), not decoration. */
-export function CrewmateEmptyHero({ onCreate, onAdvanced, held }: {
+export function CrewmateEmptyHero({ onCreate, onAdvanced, held, onImport }: {
   onCreate: () => void
   /** Opens the New crewmate card with its Advanced settings unfolded. */
   onAdvanced: () => void
@@ -318,6 +318,8 @@ export function CrewmateEmptyHero({ onCreate, onAdvanced, held }: {
    * the dialog reads the same hold.
    */
   held: string | null
+  /** Opens Import from file (rfc-crewmate-share.md §5.4). */
+  onImport?: () => void
 }) {
   const { t } = useTranslation()
   return (
@@ -350,6 +352,20 @@ export function CrewmateEmptyHero({ onCreate, onAdvanced, held }: {
       >
         {t('pages.membersPage.create_advanced')}
       </button>
+      {/* The header "+" menu and the switcher are both hidden here, so the
+          first crewmate can only be imported from this hero. */}
+      {onImport && (
+        <button
+          type="button"
+          onClick={onImport}
+          disabled={held !== null}
+          className="text-[12.5px] text-muted underline-offset-2 hover:underline bg-transparent border-none cursor-pointer disabled:cursor-default disabled:opacity-60"
+          data-testid="crewmate-empty-import"
+          {...uiLocation('members.empty.import')}
+        >
+          {t('pages.membersPage.import_from_file')}
+        </button>
+      )}
     </div>
   )
 }

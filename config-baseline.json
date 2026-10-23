@@ -9825,6 +9825,20 @@
       "defaultValue": {}
     },
     {
+      "path": "agents.*.imported",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Imported",
+      "help": "Provenance stamp of a mate imported from a .crewmate file: {'format_version', 'sender_label', 'sha256', 'imported_at'}. Empty for a mate made here. The sender label is self-declared; nothing reads the stamp to reach the sender.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
       "path": "default_agent",
       "kind": "core",
       "type": "string",

@@ -395,6 +395,16 @@ class KiroCrewAgentConfig:
             "endpoint.",
         ),
     )
+    imported: dict = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Imported",
+            "Provenance stamp of a mate imported from a .crewmate file: "
+            "{'format_version', 'sender_label', 'sha256', 'imported_at'}. Empty "
+            "for a mate made here. The sender label is self-declared; nothing "
+            "reads the stamp to reach the sender.",
+        ),
+    )
 
 
 @dataclass

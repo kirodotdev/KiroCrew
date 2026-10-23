@@ -53,6 +53,7 @@ from kiro_crew.change_card_catalog_kinds import (
     KIND_CREWMATE_CREATE,
     KIND_CREWMATE_DASHBOARD_PAGE,
     KIND_CREWMATE_GOAL,
+    KIND_CREWMATE_IMPORT,
     KIND_CREWMATE_KEY_RESULTS,
     KIND_CREWMATE_UPDATE,
     KIND_DENIED_COMMAND,
@@ -71,6 +72,10 @@ from kiro_crew.change_card_catalog_kinds import (
 from kiro_crew.change_card_catalog_plans import (
     DASHBOARD_KEYS,
     DASHBOARD_LIST_OP_KEYS,
+    IMPORT_STEP_CRON,
+    IMPORT_STEP_FILES,
+    IMPORT_STEP_GOAL,
+    IMPORT_STEP_RULES,
     LEGACY_CREWMATE_CREATE_SCHEDULE_STEP,
     UNDO_NO_IDENTITY_CHECK,
     _capability_plan,
@@ -86,6 +91,8 @@ from kiro_crew.change_card_catalog_plans import (
     _short,
     _toggle_step,
     capability_inverse,
+    import_step_roles,
+    import_undo,
     list_op_step,
     offers_no_undo,
     setting_write_step,
@@ -116,6 +123,10 @@ def extract_evidence(
         return pick("id")
     if kind in CREWMATE_CREATING_KINDS and step_index == 0:
         return pick("member_id", "name")
+    if kind == KIND_CREWMATE_IMPORT and op == OP_APPLY:
+        # A cron step's job id and the fingerprint of the job as it made it; the
+        # import's Undo reads them only at a cron step.
+        return pick("id", "revision")
     if kind == KIND_CREWMATE_GOAL and op == OP_APPLY:
         # The goal the write added or changed, so the Undo of an added goal can
         # remove exactly that one.
@@ -233,6 +244,8 @@ def _build_undo(
         if not job_id:
             return None, "identity_unknown"
         return [step("DELETE", f"/api/crons/{_q(str(job_id))}")], None
+    if kind == KIND_CREWMATE_IMPORT:
+        return import_undo(p, evidence, applied_steps), None
     if kind in CREWMATE_CREATING_KINDS:
         plan = []
         at = _create_schedule_index(evidence)
@@ -411,6 +424,20 @@ def result_summary(
     if status == "partial":
         if kind in CREWMATE_CREATING_KINDS:
             name = params.get("name")
+            if kind == KIND_CREWMATE_IMPORT and failed_step:
+                # The import's steps depend on what the file holds: name the
+                # part that failed, not the create plan's fixed step 1.
+                roles = import_step_roles(params)
+                part = {
+                    IMPORT_STEP_GOAL: "its goal",
+                    IMPORT_STEP_RULES: "its rules",
+                    IMPORT_STEP_FILES: "its skills, scripts and picture",
+                    IMPORT_STEP_CRON: "its schedules",
+                }.get(roles[failed_step] if failed_step < len(roles) else "", "every part")
+                return (
+                    f"Created mate “{name}” without {part} or anything after it. "
+                    "Undo removes the mate and what was saved"
+                )
             if failed_step == CREWMATE_CREATE_GOAL_STEP:
                 # A failed step stops the plan, so a schedule after it never ran.
                 rest = " or its schedule" if params.get("schedule") else ""
@@ -566,6 +593,9 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("PUT", "/api/members/{slug}/goals/long-term"),
         ("PUT", "/api/members/{slug}/goals/key-results"),
         ("PUT", "/api/members/{slug}/goals/schedules"),
+        ("PUT", "/api/members/{slug}/rules"),
+        ("POST", "/api/members/{slug}/import-files"),
+        ("DELETE", "/api/members/{slug}/import-files"),
         ("POST", "/api/members/{slug}/dashboard/page-offer"),
         ("POST", "/api/mcp/discover/install"),
         ("POST", "/api/mcp/custom"),
@@ -588,12 +618,18 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
 )
 #: The folder PATCH is hooked only so a ``folder.steering`` card can be applied
 #: through it; it is sidebar organization, not a setting, so it writes no
-#: memory line.
+#: memory line. The rules PUT and the import-files routes are hooked so a
+#: ``crewmate.import`` card can write a new crewmate's rules and files; the
+#: rules are the owner's private boundary and the files are code, so neither
+#: is described in Global memory.
 MEMORY_ROUTES: frozenset[tuple[str, str]] = HOOKED_ROUTES - {
     ("POST", "/api/agents/{name}/capabilities/preview"),
     ("GET", "/api/connections/mint"),
     ("PATCH", "/api/chat/folders/{id}"),
     ("POST", "/api/members/{slug}/dashboard/page-offer"),
+    ("PUT", "/api/members/{slug}/rules"),
+    ("POST", "/api/members/{slug}/import-files"),
+    ("DELETE", "/api/members/{slug}/import-files"),
 }
 
 
@@ -612,6 +648,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CRON_EXPR_RE,
         _CRON_FIELDS,
         _ID_RE,
+        _IMPORT_MAX_CRONS,
+        _IMPORT_MAX_SKILLS,
+        _IMPORT_PART_RE,
+        _IMPORT_SCRIPT_RE,
+        _IMPORT_SKILL_SOURCE_RE,
+        _IMPORT_TEMPLATE_RE,
         _KR_TEXT_MAX,
         _KR_VALUE_MAX,
         _LIST_ITEM_MAX,
@@ -627,6 +669,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PLACEHOLDER,
         _SETTING_ID_RE,
         _SETTING_ORDER,
+        _SHA256_RE,
         _SLUG_RE,
         _STR,
         _TEMPLATE_LIST_FIELDS,
@@ -636,7 +679,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         CREWMATE_FORMAT_VERSIONS,
         DEFAULT_CREWMATE_TEMPLATE,
         FOLDER_STEERING_DIR_MAX,
-        KIND_CREWMATE_IMPORT,
         KIND_SCHEDULE_UPDATE,
         KIND_TRUST_APP,
         KINDS,
@@ -657,6 +699,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _clean_str,
         _fail,
         _goal_text,
+        _import_parts,
         _member_name,
         _obj,
         _only,
@@ -674,6 +717,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         DASHBOARD_LIST_KEYS,
         DASHBOARD_LIST_SETTINGS,
         DASHBOARD_SETTINGS,
+        IMPORT_STEP_CREATE,
         LIST_SETTING_WORDING,
         PATH_FILL_VALUE,
         STORE_DASHBOARD,
@@ -683,6 +727,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cron_body,
         _display,
         _impact_rows,
+        _import_cron_step,
+        _import_files_step,
+        _import_member_fills,
+        _import_message_crons,
+        _import_preview,
+        _import_rules_step,
         _kr_line,
         _launched_servers,
         _list_diff,
@@ -696,6 +746,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _user_fill,
         _with_fills,
         build_preview,
+        import_files_path,
         is_path_fill,
         legacy_create_apply,
         list_after,

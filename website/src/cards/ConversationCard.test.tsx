@@ -433,6 +433,24 @@ describe('change card', () => {
     expect(screen.getByTestId('change-card-risk').textContent).toContain(L('risk_widen_import', { servers: 'github' }))
   })
 
+  it('says beside an import press what it does and how to take it back, and names the decline', async () => {
+    pending = [card({ kind: 'crewmate.import', risk: 'code_exec', params: { name: 'Q' } })]
+    renderCards()
+    expect((await screen.findByTestId('change-card-press-note')).textContent).toBe(L('note_crewmate_import'))
+    // Read beside the code_exec warning, before any code.
+    expect(within(screen.getByTestId('change-card-risk')).getByTestId('change-card-press-note')).toBeTruthy()
+    // The title is rebuilt in the reader's language, not the gateway's English.
+    expect(screen.getByRole('heading', { name: L('title_crewmate_import', { name: 'Q' }) })).toBeTruthy()
+    expect(screen.getByTestId('change-card-cancel').textContent).toBe(L('decline_crewmate_import'))
+  })
+
+  it('keeps the generic decline and no press note on other kinds', async () => {
+    pending = [card()]
+    renderCards()
+    expect((await screen.findByTestId('change-card-cancel')).textContent).toBe(L('cancel'))
+    expect(screen.queryByTestId('change-card-press-note')).toBeNull()
+  })
+
   it('still gates on the acknowledgement when a code_exec card also carries the widen flag', async () => {
     // A capabilities card that BOTH launches a server and expands auto-approval
     // reads risk: code_exec (the worst label) yet carries widen separately, so

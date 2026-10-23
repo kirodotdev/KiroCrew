@@ -352,8 +352,8 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // door returning is a revert rather than a rewrite.
     const item = await openAddMenu()
     expect(item).toBeInTheDocument()
-    // New crewmate only; no team door.
-    expect(within(screen.getByTestId('member-add-menu')).getAllByRole('menuitem')).toHaveLength(1)
+    // New crewmate and Import from file only; no team door.
+    expect(within(screen.getByTestId('member-add-menu')).getAllByRole('menuitem')).toHaveLength(2)
     expect(screen.queryByTestId('member-add-team')).toBeNull()
     await closeAddMenu()
     expect(screen.queryByTestId('team-dialog-body')).toBeNull()

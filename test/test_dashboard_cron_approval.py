@@ -61,6 +61,36 @@ class TestCronCreateApprovalMode:
         assert resp.status == 200
 
     @pytest.mark.asyncio
+    async def test_enabled_false_creates_the_job_paused_in_the_one_write(self):
+        """An imported crewmate's cron lands paused (rfc-crewmate-share.md §5.4 step 4)."""
+        request = self._make_request({"name": "t", "message": "m", "every": 300, "enabled": False})
+        resp = await api_crons_create(request)
+        assert resp.status == 200
+        _, kwargs = request.app["state"].crons.add_job_async.call_args
+        assert kwargs.get("enabled") is False
+        # The fingerprint of the job as made: an import card's Undo baseline.
+        from kiro_crew.dashboard.change_cards import cron_job_revision
+
+        made = await request.app["state"].crons.add_job_async()
+        assert json.loads(resp.body)["revision"] == cron_job_revision(made)
+
+    @pytest.mark.asyncio
+    async def test_an_absent_enabled_keeps_creating_running_jobs(self):
+        request = self._make_request({"name": "t", "message": "m", "every": 300})
+        resp = await api_crons_create(request)
+        assert resp.status == 200
+        _, kwargs = request.app["state"].crons.add_job_async.call_args
+        assert "enabled" not in kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["false", 0, None])
+    async def test_a_non_bool_enabled_is_refused(self, bad):
+        request = self._make_request({"name": "t", "message": "m", "every": 300, "enabled": bad})
+        resp = await api_crons_create(request)
+        assert resp.status == 400
+        request.app["state"].crons.add_job_async.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_null_agent_does_not_crash(self):
         """JSON null for 'agent' is coerced to empty string, not AttributeError on .strip()."""
         request = self._make_request({"name": "t", "message": "m", "every": 300, "agent": None})

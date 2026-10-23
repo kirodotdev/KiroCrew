@@ -64,6 +64,10 @@ from kiro_crew import _facade_mirror
 # catches an omission.
 NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
     {
+        # Gate-side: the .crewmate reader runs `needs_redaction` on bundle text
+        # only to REFUSE a file whose rules, crons or carried files hold a
+        # credential-shaped string. It returns no redacted text.
+        "crewmate_bundle.py",
         # The redaction cards' owner-only route (allowed hosts). It applies no
         # redactor; the call-site scan matches its
         # handler names (`api_redaction_allow_host`, ...).

@@ -44,10 +44,10 @@ KIND_SECRET_SAVE = "secret.save"
 KIND_TRUST_APP = "trust.app"
 KIND_DENIED_COMMAND = "denied_command"
 KIND_FOLDER_STEERING = "folder.steering"
-#: An app's proposal of one crewmate from a ``.crewmate`` bundle
-#: (``docs/request-for-change/rfc-crewmate-share.md``). Only an app that
-#: declares ``permissions.proposeCrewmate`` raises it, through ``ctx.crewmate``;
-#: an agent cannot, so :func:`list_kinds` leaves it out.
+#: One crewmate from a ``.crewmate`` file
+#: (``docs/request-for-change/rfc-crewmate-share.md``). The owner raises it from
+#: the crewmate dropdown (``POST /api/members/import``); an agent never can, so
+#: :func:`list_kinds` leaves it out.
 KIND_CREWMATE_IMPORT = "crewmate.import"
 #: The kinds whose apply step 0 creates a crewmate, so they share its evidence,
 #: its identity-checked Undo (delete that crewmate) and its state reads.
@@ -595,7 +595,7 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_IMPORT,
-            "Import one crewmate from a .crewmate bundle (apps only).",
+            "Import one crewmate from a .crewmate file (owner only).",
             _obj(
                 {
                     "name": {"type": "string", "maxLength": _CREWMATE_NAME_MAX},
@@ -603,7 +603,16 @@ KINDS: dict[str, KindDef] = {
                     "goal": _STR,
                     "sender": _STR,
                     "format_version": {"type": "integer"},
+                    "rules": _STR,
+                    "crons": {"type": "array", "items": {"type": "object"}},
+                    "skills": {"type": "array", "items": {"type": "object"}},
+                    "avatar_traits": {"type": "object"},
+                    "model_hint": _STR,
+                    "reasoning_effort_hint": _STR,
+                    "dashboard_template": _STR,
+                    "bundle_sha256": _STR,
                     "not_imported": {"type": "array", "items": _STR},
+                    "carried": {"type": "object"},
                 },
                 ["name", "format_version"],
             ),
@@ -798,6 +807,86 @@ def _check_mcp_spec_shapes(name: str, spec: dict[str, Any]) -> None:
                 raise _fail("invalid_param", f"server '{name}' {key} must map strings to strings")
 
 
+#: A ``.crewmate`` skill or script name (rfc-crewmate-share.md §5.2).
+_IMPORT_PART_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_IMPORT_SCRIPT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\.py:[A-Za-z_][A-Za-z0-9_]{0,63}$")
+_IMPORT_SKILL_SOURCE_RE = re.compile(r"^(?:bundled|app:[a-z0-9][a-z0-9_-]{0,63})$")
+_IMPORT_TEMPLATE_RE = re.compile(r"^builtin:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_IMPORT_MAX_CRONS = 16
+_IMPORT_MAX_SKILLS = 32
+
+
+def _import_parts(p: dict[str, Any]) -> dict[str, Any]:
+    """The parts of a ``crewmate.import`` card beyond its name, each as its route takes it."""
+    from kiro_crew.config.sections_agent_fields import _safe_avatar
+    from kiro_crew.members import MEMBER_RULES_MAX_CHARS
+
+    out: dict[str, Any] = {}
+    rules = _clean_str(p, "rules", required=False, max_len=MEMBER_RULES_MAX_CHARS, allow_empty=True)
+    if rules:
+        out["rules"] = rules
+    crons = p.get("crons")
+    if crons is not None:
+        if not isinstance(crons, list) or len(crons) > _IMPORT_MAX_CRONS:
+            raise _fail("invalid_param", f"'crons' must be a list of at most {_IMPORT_MAX_CRONS}")
+        clean_crons = []
+        for job in crons:
+            if not isinstance(job, dict):
+                raise _fail("invalid_param", "each cron must be an object")
+            _only(job, {"name", "message", "cron_expr", "timezone", "script"}, "crons")
+            expr, tz = _clean_cron(job, required=True)
+            c: dict[str, Any] = {"name": _clean_str(job, "name"), "cron_expr": expr}
+            if tz:
+                c["timezone"] = tz
+            script = _clean_str(job, "script", required=False, pattern=_IMPORT_SCRIPT_RE)
+            if script:
+                c["script"] = script
+            message = _clean_str(job, "message", required=not script, max_len=_TEXT_MAX)
+            if message:
+                c["message"] = message
+            clean_crons.append(c)
+        if clean_crons:
+            out["crons"] = clean_crons
+    skills = p.get("skills")
+    if skills is not None:
+        if not isinstance(skills, list) or len(skills) > _IMPORT_MAX_SKILLS:
+            raise _fail("invalid_param", f"'skills' must be a list of at most {_IMPORT_MAX_SKILLS}")
+        refs = []
+        for ref in skills:
+            if not isinstance(ref, dict):
+                raise _fail("invalid_param", "each skill must be an object")
+            _only(ref, {"name", "source"}, "skills")
+            refs.append(
+                {
+                    "name": _clean_str(ref, "name", pattern=_IMPORT_PART_RE),
+                    "source": _clean_str(ref, "source", pattern=_IMPORT_SKILL_SOURCE_RE),
+                }
+            )
+        if len({r["name"] for r in refs}) != len(refs):
+            raise _fail("invalid_param", "'skills' names one skill twice")
+        if refs:
+            out["skills"] = refs
+    traits = p.get("avatar_traits")
+    if traits is not None:
+        if not isinstance(traits, dict):
+            raise _fail("invalid_param", "'avatar_traits' must be an object")
+        face = _safe_avatar({"kind": "ghost", "traits": traits}).get("traits")
+        if face:
+            out["avatar_traits"] = face
+    for key in ("model_hint", "reasoning_effort_hint"):
+        hint = _clean_str(p, key, required=False, max_len=72, allow_empty=True)
+        if hint:
+            out[key] = hint
+    template = _clean_str(p, "dashboard_template", required=False, pattern=_IMPORT_TEMPLATE_RE)
+    if template:
+        out["dashboard_template"] = template
+    digest = _clean_str(p, "bundle_sha256", required=False, pattern=_SHA256_RE)
+    if digest:
+        out["bundle_sha256"] = digest
+    return out
+
+
 def validate_params(kind: str, params: Any) -> dict[str, Any]:
     """Normalize *params* for *kind*. Raises :class:`CardCatalogError`."""
     if kind not in KINDS:
@@ -899,11 +988,19 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
                 out[key] = text
         if p.get("goal") is not None:
             out["goal"] = _goal_text(p, "goal", max_len=_LONG_TERM_GOAL_MAX, multiline=True)
+        out.update(_import_parts(p))
         left_out = _str_list(p.get("not_imported", []), "not_imported", max_len=32)
         if not set(left_out) <= set(NOT_IMPORTED_CODES):
             raise _fail("invalid_param", "'not_imported' names a part this version does not know")
         if left_out:
             out["not_imported"] = left_out
+        from kiro_crew import crewmate_carried
+
+        carried = crewmate_carried.validate(p.get("carried"))
+        if carried:
+            if "bundle_sha256" not in out:
+                raise _fail("invalid_param", "carried files need the file they came from")
+            out["carried"] = carried
         return out
     if kind == KIND_CREWMATE_UPDATE:
         _only(p, {"name", "fields"})

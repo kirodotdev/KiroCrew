@@ -654,6 +654,14 @@ describe('MembersPage default member, memory and URL', () => {
       expect(currentUrl()).toBe('/members?member=alpha')
     })
 
+    it('the empty roster offers Import from file, so the first mate can be a shared one', async () => {
+      const membersMock = api.members as ReturnType<typeof vi.fn>
+      membersMock.mockResolvedValue({ members: [defaultRow()], default_agent: 'kirocrew' })
+      renderFromElsewhere({ to: '/members' })
+      fireEvent.click((await screen.findAllByTestId('crewmate-empty-import'))[0])
+      expect(await screen.findByTestId('crewmate-import-dialog')).toBeTruthy()
+    })
+
     it('the first mate created from an empty roster opens on a replace, so one Back still leaves the page', async () => {
       // A pushed open would leave a bare /members under the chat, and the phone
       // lands a bare /members on a crewmate by itself: Back would bounce back in.

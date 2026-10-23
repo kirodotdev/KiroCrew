@@ -71,6 +71,28 @@ describe('CardChanges', () => {
     expect(screen.getByTestId('change-card-hint')).toHaveTextContent(L('approval_mode_hint_normal'))
   })
 
+  it('shows every rule in full and each imported cron as arriving paused', () => {
+    render(<CardChanges changes={[
+      { field: 'rules', label: 'Rules', after: 'Never push to main.\nAsk before deleting.' },
+      { field: 'import_crons', label: 'Crons', after: [{ name: 'weekly', cron_expr: '0 9 * * 1' }] },
+      { field: 'import_skills', label: 'Skills', after: [{ name: 'notes', source: 'app:release-tools' }] },
+      { field: 'carried_skills', label: 'x', after: [{ name: 'drafts', files: [{ path: 'SKILL.md' }, { path: 'a.py' }] }] },
+      { field: 'carried_scripts', label: 'x', after: [{ file: 'run.py' }] },
+    ]} />)
+    const rules = screen.getByText(/Never push to main\./)
+    expect(rules.textContent).toBe('Never push to main.\nAsk before deleting.')
+    expect(rules.className).toContain('whitespace-pre-wrap')
+    for (const k of ['field_rules', 'field_import_crons', 'field_import_skills', 'field_carried_skills', 'field_carried_scripts']) expect(screen.getByText(L(k))).toBeTruthy()
+    expect(screen.getByText(/weekly/).textContent).toContain('(arrives paused)')
+    render(<CardChanges changes={[{ field: 'import_crons', label: 'Crons', after: [{ name: 'daily', cron_expr: '0 8 * * *', message: 'Post the summary', timezone: 'Europe/Paris' }] }]} />)
+    const daily = screen.getByText(/daily/).textContent ?? ''
+    expect(daily).toContain('Post the summary')
+    expect(daily).toContain(L('import_cron_timezone', { tz: 'Europe/Paris' }))
+    expect(screen.getByText(/notes/).textContent).toContain('release-tools')
+    expect(screen.getByText(L('carried_skill_files', { name: 'drafts', count: 2 }))).toBeTruthy()
+    expect(screen.getByText('run.py')).toBeTruthy()
+  })
+
   it("shows an import card's sender and what it leaves out in the reader's language", () => {
     render(<CardChanges changes={[
       { field: 'sender', label: 'From', after: 'Ana' },

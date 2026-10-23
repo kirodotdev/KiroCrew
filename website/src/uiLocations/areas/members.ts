@@ -61,6 +61,15 @@ export const LOCATIONS = {
     terms: ADVANCED_TERMS,
     placements: [{ ...ON_PAGE, entry: 'content', requires: [{ kind: 'condition', id: 'no_crewmates' }] }],
   },
+  // The empty roster's Import from file: the first crewmate can be a shared one.
+  'members.empty.import': {
+    kind: 'button',
+    terms: {
+      en: ['import a crewmate', 'open a crewmate file', 'add a shared crewmate'],
+      'zh-CN': ['导入队友', '打开队友文件'],
+    },
+    placements: [{ ...ON_PAGE, entry: 'content', requires: [{ kind: 'condition', id: 'no_crewmates' }] }],
+  },
   // The header "+" (an icon button): its name is the aria-label "Add…".
   // The roster's header "+" (an icon button): its name is the aria-label
   // "Add…". An open crewmate chat folds the roster away on a wide screen, so
@@ -157,6 +166,25 @@ export const LOCATIONS = {
   'members.switcher.new': {
     kind: 'menu-item',
     terms: CREATE_TERMS,
+    placements: [{ surface: 'members', parent: 'members.switcher', entry: 'menu' }],
+  },
+  // The header "+" menu's Import from file: the phone roster's door to the import dialog.
+  'members.add-menu.import': {
+    kind: 'menu-item',
+    label: { from: 'text', key: 'pages.membersPage.import_from_file' },
+    terms: {
+      en: ['import a crewmate', 'open a crewmate file', 'add a shared crewmate'],
+      'zh-CN': ['导入队友', '打开队友文件'],
+    },
+    placements: [{ surface: 'members', parent: 'members.add-menu', entry: 'menu' }],
+  },
+  // Under it, Import from file: a crewmate someone shared as a .crewmate file.
+  'members.switcher.import': {
+    kind: 'menu-item',
+    terms: {
+      en: ['import a crewmate', 'open a crewmate file', 'add a shared crewmate'],
+      'zh-CN': ['导入队友', '打开队友文件'],
+    },
     placements: [{ surface: 'members', parent: 'members.switcher', entry: 'menu' }],
   },
   // The identity pill in the open crewmate's header. Its text (and accessible

@@ -143,6 +143,33 @@ export const cardsApi = {
     const { post, j } = apiTransport
     return post(cardPath(card.id, 'dismiss')).then(j).then(unwrap)
   },
+  /** Hand the gateway one `.crewmate` file; it answers with the ONE pending
+   *  `crewmate.import` card it raised, or refuses the file and raises none.
+   *  The bytes go unchanged as `application/zip`, which is not a CORS-simple
+   *  type, so no other page can post here unasked. */
+  importCrewmate: async (file: Blob): Promise<Card | null> => {
+    const r = await fetch('/api/members/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip', 'X-Session-Key': 'dashboard:ui' },
+      body: file,
+    })
+    return apiTransport.j(r).then(unwrap)
+  },
+  /** Every file a live import card's `.crewmate` file brings, as text (the picture as a data URL). */
+  importFiles: async (sha256: string): Promise<CrewmateImportFiles> => {
+    const { get, j } = apiTransport
+    return await get(`/api/members/import/${encodeURIComponent(sha256)}/files`).then(j) as CrewmateImportFiles
+  },
+}
+
+/** The reserved card slot of the crewmate dropdown's Import from file. */
+export const CREWMATE_IMPORT_SLOT = 'owner:crewmate-import'
+
+/** `GET /api/members/import/{sha256}/files`: skill files by skill then path, scripts by file. */
+export interface CrewmateImportFiles {
+  skills: Record<string, Record<string, string>>
+  scripts: Record<string, string>
+  avatar?: string
 }
 
 /** The headers that tie ONE real request to the plan step it executes.

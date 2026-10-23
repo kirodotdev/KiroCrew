@@ -21,7 +21,7 @@
  * change even when every test of the moved code still passes.
  */
 import { Fragment, useCallback, useMemo, useRef, useState } from 'react'
-import { Check, Circle, Goal, MessageCircleQuestionMark, Plus, Star, X, Zap } from 'lucide-react'
+import { Check, Circle, FileUp, Goal, MessageCircleQuestionMark, Plus, Star, X, Zap } from 'lucide-react'
 import { Btn } from '../../components/ui'
 import { CrewMemberMark } from '../../components/CrewMemberMark'
 import { useTranslation } from 'react-i18next'
@@ -42,6 +42,7 @@ import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_STA
 import { ListDock } from '../../components/ListDock'
 import { tabStatus } from '../../lib/sessionTabs'
 import TeamGroupHeader from './TeamGroupHeader'
+import CrewmateImportDialog from './CrewmateImportDialog'
 import { useMemberProjection } from '../../state/useMemberProjection'
 import type { RosterView } from '../../state/memberProjectionTypes'
 import type { CrewmateIdentity } from '../chat/CrewmateMessage'
@@ -452,6 +453,7 @@ export function MembersPageRosterColumn({
   slotKeyOf, faceOnStageFor,
 }: MembersPageRosterColumnProps) {
   const { t } = useTranslation()
+  const [importing, setImporting] = useState(false)
   const { rosterQuery, loaded, loadError, collidingSlugs, members } = rosterRead
   const { teamsNoticeShown, dismissTeamsNotice, activeTeam, collapsedTeams, toggleTeamCollapsed } = teamsRead
   const { roster, rosterPinned, rosterFolded, rosterShown, rosterAsideRef, setRosterPin } = layout
@@ -593,9 +595,18 @@ export function MembersPageRosterColumn({
                       )}
                     </span>
                   </DropdownMenuItem>
+                  {/* Import from file, the same dialog the switcher opens, so the
+                      phone roster (where the switcher is hidden) reaches it too. */}
+                  {createHeld === null && (
+                    <DropdownMenuItem onSelect={() => setImporting(true)} data-testid="member-add-import">
+                      <FileUp size={13} className="lucide-inline text-muted shrink-0" aria-hidden="true" />
+                      <span {...uiLocation('members.add-menu.import')}>{t('pages.membersPage.import_from_file')}</span>
+                    </DropdownMenuItem>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
               )}
+              {importing && <CrewmateImportDialog open onOpenChange={setImporting} />}
               {/* The pinned roster's own way out, beside a thread on desktop — a
                   second close for the pin the switcher's footer action also lifts.
                   Not in a team view: the column stands there on its own, so
@@ -838,7 +849,7 @@ export function MembersPageRosterColumn({
                 // instead (see the DM thread section), so the two panes never
                 // show the same hero twice on a wide viewport.
                 <li className="md:hidden">
-                  <CrewmateEmptyHero onCreate={openQuick} onAdvanced={openAdvanced} held={createHeld} />
+                  <CrewmateEmptyHero onCreate={openQuick} onAdvanced={openAdvanced} held={createHeld} onImport={() => setImporting(true)} />
                 </li>
               )}
               {loadError && (

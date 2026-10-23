@@ -410,6 +410,28 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # Provenance of a crewmate imported from a .crewmate file (rfc-crewmate-share.md
+    # §5.4 step 5). The caller names what it read; the instant is the gateway's.
+    imported: dict = {}
+    if "imported" in body:
+        from datetime import datetime, timezone
+
+        from kiro_crew.config.sections import safe_imported
+
+        raw_imported = body["imported"]
+        stamp = {
+            **(raw_imported if isinstance(raw_imported, dict) else {}),
+            "imported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        imported = safe_imported(stamp) if isinstance(raw_imported, dict) else {}
+        if not imported or "imported_at" in raw_imported:
+            return web.json_response(
+                {
+                    "error": "imported must be {format_version, sender_label, sha256}",
+                    "code": "invalid_imported",
+                },
+                status=400,
+            )
     # Old clients still send default/empty on create. They now mean automatic
     # private allocation; no caller can choose or reuse another member's store.
     memory_store = body.get("memory_store", DEFAULT_MEMORY_STORE)
@@ -513,6 +535,7 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             source=body.get("source", "kirocrew"),
             session_color=session_color,
             avatar=avatar,
+            imported=imported,
         )
         # Provision against this snapshot; publish the agent, its owned store and
         # its own workspace together through persist_member_config's flocked delta

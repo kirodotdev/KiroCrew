@@ -156,6 +156,9 @@ def test_one_shared_content_word_of_a_term_is_no_answer() -> None:
         ("delete button", "en"),
         ("where is the add button", "en"),
         ("删除按钮", "zh-CN"),
+        # Import on the artifacts page and the crewmate import entries all start with it.
+        ("import button", "en"),
+        ("where is the import button", "en"),
     ],
 )
 def test_a_bare_action_verb_asks_what_to_act_on(query: str, lang: str) -> None:
@@ -164,13 +167,13 @@ def test_a_bare_action_verb_asks_what_to_act_on(query: str, lang: str) -> None:
     assert d["needs_object"].startswith("the question names an action but not what it acts on")
 
 
-@pytest.mark.parametrize("query", ["import button", "where is the import button", "import icon"])
+@pytest.mark.parametrize("query", ["install button", "where is the install button", "install icon"])
 def test_a_control_noun_answers_a_verb_only_one_control_starts_with(query: str) -> None:
-    """Import is the only control labelled with "import", so "import button"
-    names it; bare "import" still asks (pinned above)."""
+    """Install is the only control labelled with "install", so "install button"
+    names it."""
     d = ui_index.find_ui(query, "en")
     assert d["status"] == "ok" and "needs_object" not in d, d
-    assert _ids(d) == ["artifacts.import"] and d["ambiguous"] is False, d
+    assert _ids(d) == ["apps.detail.install"] and d["ambiguous"] is False, d
     assert d["results"][0]["match"] == "verb_control"
 
 

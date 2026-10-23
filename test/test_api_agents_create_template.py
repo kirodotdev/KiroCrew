@@ -378,3 +378,72 @@ class TestApprovalModeOnCreate:
         assert data["code"] == "invalid_approval_mode"
         assert cfg.saved == []
         assert cfg.agents == {}
+
+
+class TestImportedCrewmateCreate:
+    """The ``crewmate.import`` card's create step, run through the real route.
+
+    rfc-crewmate-share.md §5.4 step 1 and step 5: the press creates exactly one
+    member, pinned to ``normal`` in the one write (never ``trust`` for any
+    moment), with a fresh identity and the provenance stamp on its crew record.
+    """
+
+    @staticmethod
+    def _import_create_body():
+        from kiro_crew import change_card_catalog as catalog
+        from kiro_crew.crewmate_bundle import crewmate_import_params
+
+        bundle = {
+            "crewmate": {
+                "format": "kirocrew.crewmate",
+                "formatVersion": 1,
+                "name": "Release Captain",
+                "sender": {"label": "Ana"},
+            },
+            "agent": {},
+        }
+        params = crewmate_import_params(bundle)
+        preview = catalog.build_preview("crewmate.import", params, {"exists": False}, {})
+        return preview["apply"][0]["body"]
+
+    @pytest.mark.asyncio
+    async def test_the_card_create_lands_one_member_in_normal_with_its_stamp(self):
+        cfg = _fake_config()
+        status, data = await _post(self._import_create_body(), cfg, installed=("kirocrew",))
+        assert status == 200, data
+        assert cfg.saved == [True]
+        # Exactly one record: the crew key is the slug of the name.
+        (record,) = cfg.written["doc"]["agents"].values()
+        assert record["approval_mode"] == "normal"
+        assert record["member_id"] and data["member_id"] == record["member_id"]
+        # Its own workspace and memory store, minted by the create.
+        assert record["workspace"] and record["memory_store"]
+        stamp = record["imported"]
+        assert {k: stamp[k] for k in ("format_version", "sender_label", "sha256")} == {
+            "format_version": 1,
+            "sender_label": "Ana",
+            "sha256": "",
+        }
+        assert stamp["imported_at"].endswith("Z")
+        assert not {"allowedTools", "autoApprove"} & set(record)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "x",
+            {"format_version": 1},
+            {"format_version": "1", "sender_label": "", "sha256": ""},
+            {"format_version": 1, "sender_label": "", "sha256": "nothex"},
+            {"format_version": 1, "sender_label": "a" * 65, "sha256": ""},
+            # The instant is the gateway's, never the caller's.
+            {"format_version": 1, "sender_label": "", "sha256": "", "imported_at": "x"},
+        ],
+    )
+    async def test_a_malformed_stamp_is_refused_before_any_write(self, bad):
+        cfg = _fake_config()
+        body = {"name": "scout", "kiro_agent": "kirocrew", "imported": bad}
+        status, data = await _post(body, cfg)
+        assert status == 400
+        assert data["code"] == "invalid_imported"
+        assert cfg.saved == [] and cfg.agents == {}

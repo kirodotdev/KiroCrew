@@ -225,7 +225,8 @@ def test_the_existing_route_creates_a_single_fire_job():
             await client.close()
 
     status, data = asyncio.run(run())
-    assert status == 200 and data == {"ok": True, "id": "job1"}
+    assert status == 200 and data == {"ok": True, "id": "job1", "revision": data["revision"]}
+    assert isinstance(data["revision"], str) and data["revision"]
     name, message, kw = calls[0]
     assert (name, message) == ("Dentist", "Call the dentist")
     assert kw["at_ts"] == body["at"] and kw["delete_after_run"] is True

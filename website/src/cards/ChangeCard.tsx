@@ -310,6 +310,10 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
                   <AlertTriangle size={14} className="mt-[3px] shrink-0 text-warn" aria-hidden="true" />
                   <span>{card.risk === 'widen' ? widenText(card) : i18nT('components.changeCards.risk_code_exec')}</span>
                 </div>
+                {/* What the press does, read beside the warning, before any code. */}
+                {spec?.pressNote && card.status === 'pending' && !expired && (
+                  <p className="m-0 mt-1 pl-[22px]" data-testid="change-card-press-note">{spec.pressNote()}</p>
+                )}
                 {widen && (
                   <label className="mt-1 flex min-h-11 items-center gap-2 cursor-pointer">
                     <input
@@ -325,6 +329,10 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
                   </label>
                 )}
               </div>
+            )}
+
+            {spec?.pressNote && card.risk !== 'widen' && card.risk !== 'code_exec' && card.status === 'pending' && !expired && (
+              <p className="m-0 mt-3 text-[13px] leading-5 text-text" data-testid="change-card-press-note">{spec.pressNote()}</p>
             )}
 
             <div className="mt-2 [&>[data-card-row]+[data-card-row]]:border-t [&>[data-card-row]+[data-card-row]]:border-border" data-testid="change-card-rows">
@@ -385,7 +393,7 @@ export default function ChangeCard({ card, store, refresh, remove }: ChangeCardP
                 disabled={busy}
                 data-testid="change-card-cancel"
               >
-                {i18nT('components.changeCards.cancel')}
+                {spec?.decline?.() ?? i18nT('components.changeCards.cancel')}
               </Btn>
             )}
             {(card.status === 'failed' || expired) && (

@@ -325,6 +325,16 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/members/{slug}/goals/schedules",
         _deferred("member_goals", "api_member_goals_schedules"),
     )
+    # A ``crewmate.import`` card's file step writes (and its Undo takes back) the
+    # carried files; card steps only, owner only.
+    app.router.add_post(
+        "/api/members/{slug}/import-files",
+        _deferred("crewmate_import_files", "api_member_import_files"),
+    )
+    app.router.add_delete(
+        "/api/members/{slug}/import-files",
+        _deferred("crewmate_import_files", "api_member_import_files_undo"),
+    )
     # The ``crewmate.dashboard_page`` card's yes: it wakes the crewmate to write its page.
     app.router.add_post(
         "/api/members/{slug}/dashboard/page-offer",
@@ -345,6 +355,8 @@ def _register_mcp_routes(app: web.Application) -> None:
         ("POST", "/api/cards/{card_id}/preview", "api_cards_preview"),
         ("POST", "/api/cards/{card_id}/cancel", "api_cards_cancel"),
         ("POST", "/api/cards/{card_id}/dismiss", "api_cards_dismiss"),
+        ("POST", "/api/members/import", "api_members_import"),
+        ("GET", "/api/members/import/{sha256}/files", "api_members_import_files"),
     ):
         app.router.add_route(_method, _path, _deferred("change_cards", _name))
     app.router.add_get(

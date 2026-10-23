@@ -465,8 +465,8 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // team creation is hidden for the phase.
     fireEvent.pointerDown(screen.getByTestId('member-add'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
     const addMenu = await screen.findByTestId('member-add-menu')
-    // New crewmate only; no team door.
-    expect(within(addMenu).getAllByRole('menuitem')).toHaveLength(1)
+    // New crewmate and Import from file only; no team door.
+    expect(within(addMenu).getAllByRole('menuitem')).toHaveLength(2)
     expect(screen.queryByTestId('member-add-team')).toBeNull()
     await closeAddMenu()
 
@@ -1074,12 +1074,12 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(pill).toHaveAccessibleName(/oncall/)
   })
 
-  it('the "+" menu offers New mate only: no Advanced or guided-flow rows', async () => {
+  it('the "+" menu offers New mate and Import from file only: no Advanced or guided-flow rows', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     await rosterRow('oncall')
     await openAddMenu()
     const menu = await screen.findByTestId('member-add-menu')
-    expect(within(menu).getAllByRole('menuitem').map(el => el.textContent?.trim())).toEqual(['New mate'])
+    expect(within(menu).getAllByRole('menuitem').map(el => el.textContent?.trim())).toEqual(['New mate', 'Import from file'])
   })
 
   it('the roster header "+" menu\'s New mate opens the card as a modal with Advanced settings folded, and they unfold inline — no trip to the crew manager', async () => {

@@ -928,6 +928,7 @@ def build_config(
                     # internals are reached through the module, not
                     # re-exported from here.
                     avatar=_sections._safe_avatar(crew.get("avatar")),
+                    imported=_sections.safe_imported(crew.get("imported")),
                 )
 
     # Migrate workspaces from flat or structured format

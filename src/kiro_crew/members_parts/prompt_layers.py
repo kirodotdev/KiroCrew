@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import stat
+import threading
 from pathlib import Path
 
 from kiro_crew import context_omissions, platform_compat
@@ -126,8 +127,27 @@ def read_member_rules(slug: str, member: str) -> str:
     return data["rules"].strip()
 
 
-def write_member_rules(slug: str, *, member: str, text: str) -> None:
+#: Every rules write in this process holds it, so a compare-and-write (a card
+#: Undo clearing the rules it wrote) cannot interleave with an ordinary save.
+_RULES_WRITE_LOCK = threading.Lock()
+
+
+class MemberRulesChanged(RuntimeError):
+    """The rules read differently from what the caller expected; nothing was written."""
+
+
+MemberRulesChanged.__module__ = "kiro_crew.members"
+
+
+def write_member_rules(
+    slug: str, *, member: str, text: str, expected_sha256: str | None = None
+) -> None:
     """Persist a member's permanent rules atomically (human write path only).
+
+    With *expected_sha256*, write only while the current rules (as
+    :func:`read_member_rules` returns them) still hash to it, compared under the
+    same lock every rules write holds; otherwise raise :class:`MemberRulesChanged`.
+    A card Undo uses it so rules another tab saved after its check are kept.
 
     Records the EXACT member name in the payload so the name-scoped read can
     attribute the file across lossy-slug collisions. Raises rather than
@@ -145,6 +165,17 @@ def write_member_rules(slug: str, *, member: str, text: str) -> None:
     member, so they must not silently vanish to a crash after the dashboard
     confirmed the save.
     """
+    import hashlib
+
+    with _RULES_WRITE_LOCK:
+        if expected_sha256 is not None:
+            current = read_member_rules(slug, member)
+            if hashlib.sha256(current.encode("utf-8")).hexdigest() != expected_sha256:
+                raise MemberRulesChanged(f"member rules for {slug!r} changed since the check")
+        _write_member_rules(slug, member=member, text=text)
+
+
+def _write_member_rules(slug: str, *, member: str, text: str) -> None:
     path = member_rules_path(slug)
     if len(text) > MEMBER_RULES_MAX_CHARS:
         raise ValueError(

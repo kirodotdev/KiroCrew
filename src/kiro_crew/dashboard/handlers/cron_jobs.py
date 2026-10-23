@@ -446,6 +446,14 @@ async def api_crons_create(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid approval_mode"}, status=400)
     silent = body.get("silent", False)
     strict_schedule = body.get("strict_schedule", False)
+    # ``False`` creates the job already paused in the one locked write, so a
+    # caller that must never leave it running (an imported crewmate's cron)
+    # has no enabled-then-paused window. Only a real bool is honoured.
+    enabled = body.get("enabled", True)
+    if not isinstance(enabled, bool):
+        return web.json_response(
+            {"error": "enabled must be a boolean", "code": "invalid_enabled"}, status=400
+        )
     hide_in_chat = body.get("hide_in_chat", False)
     # A job created on a full context pays for memory, lessons, steering, skills
     # and prior history on every wake, whether or not the wake had anything to
@@ -534,6 +542,8 @@ async def api_crons_create(request: web.Request) -> web.Response:
     }
     if approval_mode:
         add_kwargs["approval_mode"] = approval_mode
+    if not enabled:
+        add_kwargs["enabled"] = False
     # An app token's job is stamped as that app's, exactly as ``CronSDK`` stamps
     # it: without the stamp every later reader (the app's own PATCH/DELETE, the
     # cron session's scope, the disabled-app fire gate, uninstall cleanup) takes
@@ -592,7 +602,11 @@ async def api_crons_create(request: web.Request) -> web.Response:
             {"error": _redact_memory_field(str(exc)), "code": "invalid_cron"}, status=400
         )
     state.push_refresh("crons")
-    return web.json_response({"ok": True, "id": job.id})
+    from kiro_crew.dashboard.change_cards import cron_job_revision
+
+    # The fingerprint of the job as this write made it: a card step records it,
+    # so its Undo's baseline is what the card made, not a later edit.
+    return web.json_response({"ok": True, "id": job.id, "revision": cron_job_revision(job)})
 
 
 async def api_cron_delete(request: web.Request) -> web.Response:

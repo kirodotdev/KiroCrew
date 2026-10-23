@@ -32,6 +32,47 @@ export const FIELD_LABELS: Record<string, () => string> = {
   not_included: () => i18nT('components.changeCards.field_not_included'),
   not_imported: () => i18nT('components.changeCards.field_not_imported'),
   template_auto_approve: () => i18nT('components.changeCards.field_template_auto_approve'),
+  rules: () => i18nT('components.changeCards.field_rules'),
+  model_hint: () => i18nT('components.changeCards.field_model_hint'),
+  import_skills: () => i18nT('components.changeCards.field_import_skills'),
+  import_crons: () => i18nT('components.changeCards.field_import_crons'),
+  dashboard_template: () => i18nT('components.changeCards.field_dashboard_template'),
+  carried_skills: () => i18nT('components.changeCards.field_carried_skills'),
+  carried_scripts: () => i18nT('components.changeCards.field_carried_scripts'),
+  carried_avatar: () => i18nT('components.changeCards.field_carried_avatar'),
+}
+
+/** The import rows whose text the crewmate reads every turn: shown whole, line breaks kept. */
+const FULL_TEXT_FIELDS: ReadonlySet<string> = new Set(['rules', 'description', 'import_crons'])
+
+/** One imported cron: its name, schedule and that it lands paused, then the
+ *  full message it sends (or its script) and its time zone, so two crons that
+ *  would do different things never read the same. */
+function importCronText(job: unknown): string {
+  const o = (job && typeof job === 'object' ? job : {}) as {
+    name?: unknown; cron_expr?: unknown; message?: unknown; script?: unknown; timezone?: unknown
+  }
+  const when = typeof o.cron_expr === 'string' ? fmtCardCron(o.cron_expr) : ''
+  const lines = [
+    typeof o.message === 'string' ? o.message : '',
+    typeof o.script === 'string' ? o.script : '',
+    typeof o.timezone === 'string' && o.timezone ? i18nT('components.changeCards.import_cron_timezone', { tz: o.timezone }) : '',
+  ].filter(Boolean)
+  return i18nT('components.changeCards.import_cron_paused', { name: String(o.name ?? ''), when, detail: lines.join('\n') }).trimEnd()
+}
+
+/** One skill reference: the skill and the app it comes from. */
+function importSkillText(ref: unknown): string {
+  const o = (ref && typeof ref === 'object' ? ref : {}) as { name?: unknown; source?: unknown }
+  const app = typeof o.source === 'string' && o.source.startsWith('app:') ? o.source.slice(4) : ''
+  return i18nT('components.changeCards.import_skill_app', { name: String(o.name ?? ''), app })
+}
+
+/** One carried skill: its name and how many files it brings (each shown in full below). */
+function carriedSkillText(skill: unknown): string {
+  const o = (skill && typeof skill === 'object' ? skill : {}) as { name?: unknown; files?: unknown }
+  const count = Array.isArray(o.files) ? o.files.length : 0
+  return i18nT('components.changeCards.carried_skill_files', { name: String(o.name ?? ''), count })
 }
 
 /** One inherited MCP server, said as what it reaches: a service's host or a local program. */
@@ -105,6 +146,11 @@ function changeValue(c: CardChange, v: unknown): string {
   if (c.field === 'not_included' && v === 'private') return i18nT('components.changeCards.not_included_private')
   if (c.field === 'template_auto_approve' && Array.isArray(v)) return v.map(reachText).join('; ')
   if (c.field === 'not_imported' && Array.isArray(v)) return fmtList(v.map(code => LEFT_OUT_LABELS[String(code)]?.() ?? String(code)))
+  if (c.field === 'import_crons' && Array.isArray(v)) return v.map(importCronText).join('\n')
+  if (c.field === 'import_skills' && Array.isArray(v)) return fmtList(v.map(importSkillText))
+  if (c.field === 'carried_skills' && Array.isArray(v)) return fmtList(v.map(carriedSkillText))
+  if (c.field === 'carried_scripts' && Array.isArray(v)) return fmtList(v.map(s => String((s as { file?: unknown })?.file ?? '')))
+  if (c.field === 'carried_avatar' && v && typeof v === 'object') return i18nT('components.changeCards.carried_avatar_kind', { type: String((v as { type?: unknown }).type ?? '') })
   return formatCardValue(v)
 }
 
@@ -154,7 +200,11 @@ export function CardChanges({ changes }: { changes: CardChange[] }) {
                 {c.before !== undefined && <span className="text-muted [overflow-wrap:anywhere]">{changeValue(c, c.before)}</span>}
                 {c.before !== undefined && <span aria-hidden="true" className="text-muted">→</span>}
                 {c.before !== undefined && <span className="sr-only">{i18nT('components.changeCards.becomes')}</span>}
-                {c.after !== undefined && <span className="font-medium [overflow-wrap:anywhere]">{changeValue(c, c.after)}</span>}
+                {c.after !== undefined && (
+                  <span className={`font-medium [overflow-wrap:anywhere]${c.field && FULL_TEXT_FIELDS.has(c.field) ? ' whitespace-pre-wrap' : ''}`}>
+                    {changeValue(c, c.after)}
+                  </span>
+                )}
               </span>
               {changeHint(c) && (
                 <span className="block text-[12px] leading-4 text-muted" data-testid="change-card-hint">{changeHint(c)}</span>

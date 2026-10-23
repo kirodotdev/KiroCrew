@@ -49,6 +49,7 @@ import { AWAITING_REPLY_ACTIVITY } from '../../components/chat/useCrewmateAwaiti
 import ChatPane from '../../components/ChatPane'
 import MateWelcomeCard from './MateWelcomeCard'
 import MateEntrance from './MateEntrance'
+import CrewmateImportDialog from './CrewmateImportDialog'
 import { useMateGreeting } from './mateGreeting'
 import CrewComposer from './CrewComposer'
 import ErrorBoundary from '../../components/ErrorBoundary'
@@ -631,6 +632,8 @@ export function MembersPageThreadColumn({
   const { patrol } = rosterSignals
   const { openMember, openArtifactInThread } = navigation
   const { closeTeamView, teamMembers } = teamView
+  // Import from file on the empty roster's hero (the switcher is not shown yet).
+  const [importing, setImporting] = useState(false)
   // The post-create notice (a failed roster re-read) with its retry, rendered
   // ONCE, in the chat column: below md a roster notice brings that column on
   // screen (see the two `className`s: this column's `<section>` below, and
@@ -714,8 +717,9 @@ export function MembersPageThreadColumn({
                 team view too: a team can exist before its first crewmate does,
                 and the pane is the team's then. */}
             {!active && !activeTeam && !postCreateError && loaded && !loadError && hasNoCrewmates(members) && (
-              <CrewmateEmptyHero onCreate={openQuick} onAdvanced={openAdvanced} held={createHeld} />
+              <CrewmateEmptyHero onCreate={openQuick} onAdvanced={openAdvanced} held={createHeld} onImport={() => setImporting(true)} />
             )}
+            {importing && <CrewmateImportDialog open onOpenChange={setImporting} />}
             {/* A failed roster read at md and up: the roster column shows its own
                 notice, but this column would otherwise be blank — no chat can
                 open (the URL sync waits on the roster) and the hero is gated on a
