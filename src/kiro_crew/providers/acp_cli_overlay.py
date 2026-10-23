@@ -8,12 +8,15 @@ Each function here whose first parameter is ``self`` is an ``AcpProvider`` metho
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
+Instance fields written: ``_effort_overlay_recovered``, ``_effort_per_model``.
+
 Instance fields read: ``_client``, ``_tool_search``, ``_tool_search_min_pct``,
 ``_tool_search_min_tokens``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -47,6 +50,48 @@ logger = logging.getLogger("kiro_crew.providers.acp")
 #: here, and the overlay writers then replace it with only Kiro Crew's keys, so
 #: every reader drops one leading mark. Writers emit plain UTF-8.
 _CLI_JSON_ENCODING = "utf-8-sig"
+
+#: A settings file is kilobytes. Past this Kiro Crew neither reads it nor
+#: rewrites it: the repository can track a ``cli.json`` of any size, and a
+#: whole-file read and parse of it holds the shared settings lock for as long as
+#: that takes and grows memory with the file. A larger file is left unread and
+#: unchanged, so none of Kiro Crew's own keys land in it. The same ceiling bounds
+#: the bytes a rewrite would publish, because an indented rewrite of a file just
+#: under it can grow past it and the next read would then refuse the file this
+#: module wrote.
+_CLI_JSON_MAX_BYTES = 1024 * 1024
+
+
+class _OverlayTooLarge(ValueError):
+    """The workspace cli.json, or the document a write would publish, passes the ceiling.
+
+    A ``ValueError`` that is neither ``OSError`` nor ``json.JSONDecodeError`` on
+    purpose: every ``except (JSONDecodeError, OSError)`` here reads a refused
+    file as empty and goes on to replace it, which for an oversized file would
+    discard the person's settings.
+    """
+
+
+def _load_cli_json(cli_json: Path) -> object:
+    """Parse *cli_json* after reading at most ``_CLI_JSON_MAX_BYTES`` bytes of it.
+
+    Raises :class:`_OverlayTooLarge` for a larger file without reading the rest,
+    ``OSError`` when it cannot be opened (an absent file included) and
+    ``json.JSONDecodeError`` when it does not parse.
+    """
+    with cli_json.open("rb") as handle:
+        raw = handle.read(_CLI_JSON_MAX_BYTES + 1)
+    if len(raw) > _CLI_JSON_MAX_BYTES:
+        raise _OverlayTooLarge(f"{cli_json} is larger than {_CLI_JSON_MAX_BYTES} bytes")
+    return json.loads(raw.decode(_CLI_JSON_ENCODING))
+
+
+def _publish_cli_json(cli_json: Path, document: dict) -> None:
+    """Atomically replace *cli_json* with *document*, refusing one past the ceiling."""
+    text = json.dumps(document, indent=2)
+    if len(text) > _CLI_JSON_MAX_BYTES:  # ``json.dumps`` is ASCII, so characters are bytes
+        raise _OverlayTooLarge(f"{cli_json} would exceed {_CLI_JSON_MAX_BYTES} bytes")
+    atomic_write(cli_json, text, newline="")  # atomic: readers never see a partial file
 
 
 def _write_cli_overlay(
@@ -87,11 +132,7 @@ def _write_cli_overlay(
     """
     with workspace_cli_settings_lock(work_dir, timeout=timeout) as cli_json:
         try:
-            existing = (
-                json.loads(cli_json.read_text(encoding=_CLI_JSON_ENCODING))
-                if cli_json.exists()
-                else {}
-            )
+            existing = _load_cli_json(cli_json) if cli_json.exists() else {}
         except (json.JSONDecodeError, OSError):
             existing = {}
         if not isinstance(existing, dict):
@@ -118,9 +159,7 @@ def _write_cli_overlay(
                 model_cfg.pop(other_key, None)
         model_defaults[model] = model_cfg
         existing["chat.modelDefaults"] = model_defaults
-        atomic_write(
-            cli_json, json.dumps(existing, indent=2)
-        )  # atomic: readers never see a partial file
+        _publish_cli_json(cli_json, existing)
 
 
 # The thresholds and their clamps live in ``agent_sdk.tool_search`` so the
@@ -177,11 +216,7 @@ def _write_tool_search_overlay(
     """
     with workspace_cli_settings_lock(work_dir) as cli_json:
         try:
-            existing = (
-                json.loads(cli_json.read_text(encoding=_CLI_JSON_ENCODING))
-                if cli_json.exists()
-                else {}
-            )
+            existing = _load_cli_json(cli_json) if cli_json.exists() else {}
         except (json.JSONDecodeError, OSError):
             existing = {}
         if not isinstance(existing, dict):
@@ -195,9 +230,7 @@ def _write_tool_search_overlay(
             # would take effect if a later build flips the global default on.
             existing.pop("toolSearch.minPct", None)
             existing.pop("toolSearch.minTokens", None)
-        atomic_write(
-            cli_json, json.dumps(existing, indent=2)
-        )  # atomic: readers never see a partial file
+        _publish_cli_json(cli_json, existing)
 
 
 def _clear_cli_overlay_effort(work_dir: Path, model: str) -> bool:
@@ -225,7 +258,7 @@ def _clear_cli_overlay_effort(work_dir: Path, model: str) -> bool:
             if not cli_json.exists():
                 return True
             try:
-                data = json.loads(cli_json.read_text(encoding=_CLI_JSON_ENCODING))
+                data = _load_cli_json(cli_json)
             except json.JSONDecodeError:
                 # A malformed file names no effort for any model, and
                 # ``_read_cli_overlay`` reads it as ``{}`` too, so a respawn
@@ -257,7 +290,12 @@ def _clear_cli_overlay_effort(work_dir: Path, model: str) -> bool:
                             model_cfg.pop(key, None)
                 if not model_cfg:
                     model_defaults.pop(model, None)
-            atomic_write(cli_json, json.dumps(data, indent=2))  # atomic
+            _publish_cli_json(cli_json, data)
+    except _OverlayTooLarge:
+        # The file is left as it was and may still name a level for *model*:
+        # the clear did not happen, which is the False this function answers.
+        logger.warning("ACP effort overlay clear refused: workspace cli.json is too large")
+        return False
     except OSError:
         logger.debug("ACP effort overlay clear failed", exc_info=True)
         return False
@@ -275,8 +313,8 @@ def _read_cli_overlay(work_dir: Path) -> dict[str, str]:
     if not cli_json.exists():
         return {}
     try:
-        data = json.loads(cli_json.read_text(encoding=_CLI_JSON_ENCODING))
-    except (json.JSONDecodeError, OSError):
+        data = _load_cli_json(cli_json)
+    except (json.JSONDecodeError, OSError, _OverlayTooLarge):
         return {}
     if not isinstance(data, dict):
         return {}
@@ -299,6 +337,35 @@ def _read_cli_overlay(work_dir: Path) -> dict[str, str]:
     return out
 
 
+async def _recover_effort_overlay(self: AcpProvider) -> None:
+    """Fill the effort map from the levels the workspace overlay already holds.
+
+    Once per provider, on its first start: after a gateway restart the map then
+    names what kiro-cli will run. Caller-provided overrides win -- only gaps are
+    filled. A later restart of the same provider does not read again, because the
+    file is keyed by work dir and another chat's last pick would otherwise be
+    adopted as this chat's own.
+
+    The overlay's own readers only (``ACP_BACKENDS_EFFORT_OVERLAY``): read back by
+    a harness that never opens the file (KAS), it would start a new chat at
+    whatever level another chat in the same work dir picked last. Such a harness
+    takes its level from the factory alone.
+
+    The read is bounded (``_CLI_JSON_MAX_BYTES``) and runs in a worker thread, so
+    the file is never opened on the event loop; the map is filled back on the loop.
+    """
+    if self._effort_overlay_recovered or self._client.backend not in ACP_BACKENDS_EFFORT_OVERLAY:
+        return
+    self._effort_overlay_recovered = True
+    try:
+        recovered = await asyncio.to_thread(_read_cli_overlay, self._client._work_dir)
+    except Exception:
+        logger.debug("ACP effort overlay recovery failed", exc_info=True)
+        return
+    for model, level in recovered.items():
+        self._effort_per_model.setdefault(model, level)
+
+
 def _apply_effort_overlay(
     self: AcpProvider, *, timeout: float = CLI_SETTINGS_LOCK_TIMEOUT_SECS
 ) -> bool:
@@ -307,16 +374,17 @@ def _apply_effort_overlay(
     Written only for the harnesses that READ it (``ACP_BACKENDS_EFFORT_OVERLAY``
     — kiro-cli takes effort from this file at spawn); every other harness takes
     its level live, KAS as the ``effortLevel`` config option. Also a no-op when
-    the model is not effort-capable or no level resolves. Called before every
-    (re)spawn so resume/restart keeps the same level.
+    the model is not effort-capable or no level resolves. Called from ``start()``
+    before every (re)spawn so resume/restart keeps the same level, and never from
+    the constructor, which runs on the event loop.
 
     KAS is not written: the file is shared by every session in the work dir and
-    construction reads it back, so a level one KAS chat left there would start
+    the first start reads it back, so a level one KAS chat left there would start
     the next one. A KAS slot's own level survives a gateway restart through the
     slot's metadata instead, which the factory hands back as its override.
 
     Membership rather than "not claude": the companion reads and clears (provider
-    construction, :meth:`change_effort`, :meth:`clear_effort`) are gated on the
+    start-up recovery, :meth:`change_effort`, :meth:`clear_effort`) are gated on the
     same set, so a wider gate here writes an overlay for a harness they never
     reach — a stale file left in the user's workspace.
     """
