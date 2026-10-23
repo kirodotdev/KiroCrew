@@ -1,8 +1,8 @@
 """Tests for the notes and preambles built from a session's history.
 
 Covers ``context.py``'s stop-event notes, the cancelled-turn preamble's
-instruction, and the interrupted-turn preamble rebuilt from the slot window for a
-natively resumed session.
+instruction and the request it restores, and the interrupted-turn preamble
+rebuilt from the slot window for a natively resumed session.
 """
 
 from __future__ import annotations
@@ -123,6 +123,49 @@ class TestCancelledTurnPreambleInstruction:
         # Restored context is still carried.
         assert "please refactor the parser" in result
         assert "Starting on the parser" in result
+
+
+class TestCancelledTurnPreambleRequest:
+    """Which request the cancelled-turn restore names."""
+
+    def test_a_taken_back_steer_is_not_the_cancelled_request(self, tmp_path):
+        # The take-back leaves the steer's row in place with its text cleared. The
+        # turn never read it, so the request it cancelled is the prompt before it.
+        import json
+
+        from kiro_crew.context import build_cancelled_turn_preamble
+        from kiro_crew.dashboard.chat_delivery import (
+            STEER_RETRACTABLE_META,
+            STEER_STATE_RETRACTED,
+        )
+        from kiro_crew.dashboard.steer_retract import RETRACT_ACTION_META, RETRACT_UNSEND
+
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("sess1", "user", "please refactor the parser")
+        log.append("sess1", "assistant", "Starting on the parser")
+        log.append(
+            "sess1",
+            "user",
+            "",
+            extra_meta={
+                "steer": True,
+                "steerState": STEER_STATE_RETRACTED,
+                RETRACT_ACTION_META: RETRACT_UNSEND,
+                STEER_RETRACTABLE_META: False,
+            },
+        )
+        log.append(
+            "sess1",
+            "system",
+            json.dumps(
+                {"kind": "stop_event", "id": "stop-abc", "state": "stopped", "outcome": "soft"}
+            ),
+        )
+
+        result = build_cancelled_turn_preamble(log, "sess1")
+
+        assert "Cancelled user request:\nplease refactor the parser" in result
+        assert "Partial assistant response before cancel:\nStarting on the parser" in result
 
 
 class TestInterruptedTurnPreamble:

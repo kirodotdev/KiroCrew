@@ -367,6 +367,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "the backends that can carry it. Nothing runs without its kit, so a card "
         "line would describe a refusal the user meets with its own remedy"
     ),
+    "ACP_BACKENDS_STEER_RETRACT": (
+        "whether a pending steer can be taken back (the dashboard's Unsend, Edit and "
+        "Queue instead). The steer itself is the mid-turn-steer line's claim, and these "
+        "controls are drawn only on a steer the running harness can take back, so no "
+        "reader is promised an undo the harness lacks. A wrong membership offers a "
+        "control whose clear names nothing, which leaves the steer to run, and is a "
+        "defect"
+    ),
     "ACP_BACKENDS_SERIAL_SESSION_STARTS": (
         "which backend's process answers session starts and mode switches one at a "
         "time. It decides only what a timed-out start's error says about the "

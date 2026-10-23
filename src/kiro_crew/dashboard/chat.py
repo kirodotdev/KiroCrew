@@ -79,6 +79,7 @@ from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     api_chat_slot_selection_capabilities,
     api_chat_slot_source_link_unlink,
     api_chat_slot_source_links,
+    api_chat_slot_steer_retract,
     api_chat_slot_stop,
     api_chat_slot_summary,
     api_chat_slot_summary_generate,

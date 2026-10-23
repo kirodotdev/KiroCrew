@@ -91,6 +91,59 @@ describe('row callbacks keep their identity across streamed frames', () => {
     expect(calls.regenerateSlot).toHaveBeenCalledWith('slot-a')
   })
 
+  it('useRegenerate: steps past a trailing taken-back steer to regenerate its reply', () => {
+    const dispatch = vi.fn()
+    const messages = [
+      msg('user', 't1', 'm1'),
+      msg('assistant', 't2', 'm2'),
+      { ...msg('user', 't3', 'm3'), content: '', meta: { mid: 'm3', steer: true, steerState: 'retracted' } },
+    ]
+    const ref = { current: messages }
+    const { result } = renderHook(() => useRegenerate({
+      dispatch: dispatch as never,
+      activeSlot: 'slot-a',
+      messages,
+      messagesRef: ref,
+      slotRunning: false,
+      activeSlotRemoteBound: false,
+      isStreaming: false,
+      setRefusedPress: vi.fn(),
+      showRefusedPress: vi.fn(),
+    }))
+
+    act(() => { result.current.handleRegenerate() })
+
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat/truncateAfterIndex', payload: 1 }))
+    expect(calls.regenerateSlot).toHaveBeenCalledWith('slot-a')
+  })
+
+  it('useRegenerate: truncates before a taken-back steer when a later reply exists', () => {
+    const dispatch = vi.fn()
+    const messages = [
+      msg('user', 't1', 'm1'),
+      msg('assistant', 't2', 'm2'),
+      { ...msg('user', 't3', 'm3'), content: '', meta: { mid: 'm3', steer: true, steerState: 'retracted' } },
+      msg('assistant', 't4', 'm4'),
+    ]
+    const ref = { current: messages }
+    const { result } = renderHook(() => useRegenerate({
+      dispatch: dispatch as never,
+      activeSlot: 'slot-a',
+      messages,
+      messagesRef: ref,
+      slotRunning: false,
+      activeSlotRemoteBound: false,
+      isStreaming: false,
+      setRefusedPress: vi.fn(),
+      showRefusedPress: vi.fn(),
+    }))
+
+    act(() => { result.current.handleRegenerate() })
+
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat/truncateAfterIndex', payload: 1 }))
+    expect(calls.regenerateSlot).toHaveBeenCalledWith('slot-a')
+  })
+
   it('useTranscriptPins: handleJumpToQuote is stable and finds a row only the newest frame holds', () => {
     const navToDisplayIndex = vi.fn()
     const ref = { current: first }

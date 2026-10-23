@@ -56,7 +56,9 @@ export interface SlotDraftStoreOpts<T> {
 
 export interface SlotDraftStore<T> {
   load(): Record<string, T>
-  save(drafts: Record<string, T>): void
+  /** Read sanitized, TTL-fresh entries without changing memory or storage. */
+  peek(): Record<string, T>
+  save(drafts: Record<string, T>): boolean
   set(drafts: Record<string, T>, slot: string, value: T): void
   /** @internal test-only: reset module state between tests. `undefined` in the
    *  prod bundle (gated on `!import.meta.env.PROD`). */
@@ -203,17 +205,48 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
     }
   }
 
-  function save(drafts: Record<string, T>): void {
+  function peek(): Record<string, T> {
+    let knownTimestamps = timestamps
+    if (hasTtl && !timestampsLoaded) {
+      knownTimestamps = {}
+      try {
+        const rawTimestamps = store().getItem(tsKey)
+        const parsedTimestamps = rawTimestamps ? JSON.parse(rawTimestamps) : {}
+        if (parsedTimestamps && typeof parsedTimestamps === 'object' && !Array.isArray(parsedTimestamps)) {
+          for (const [k, v] of Object.entries(parsedTimestamps as Record<string, unknown>)) {
+            if (typeof v === 'number') knownTimestamps[k] = v
+          }
+        }
+      } catch { /* ignore */ }
+    }
+    try {
+      const raw = store().getItem(key)
+      const parsed = raw ? JSON.parse(raw) : {}
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+      const cutoff = Date.now() - (ttlMs ?? 0)
+      const fresh: Record<string, T> = {}
+      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+        const clean = sanitize(v)
+        if (clean === null) continue
+        if (!hasTtl || !(k in knownTimestamps) || knownTimestamps[k] >= cutoff) fresh[k] = clean
+      }
+      return fresh
+    } catch {
+      return {}
+    }
+  }
+
+  function save(drafts: Record<string, T>): boolean {
     ensureTimestampsLoaded()
-    if (!evictAfterWrite) { persistNow(drafts); return }
+    if (!evictAfterWrite) return persistNow(drafts)
     // Evict-after-write: cap a copy, persist it, and only mirror the evictions
     // back to the caller once the write actually stuck. A failed persist leaves
     // the caller's in-memory drafts whole so nothing that never reached storage
     // is silently dropped.
     const toSave = { ...drafts }
-    if (persistNow(toSave)) {
-      for (const k of Object.keys(drafts)) if (!(k in toSave)) delete drafts[k]
-    }
+    if (!persistNow(toSave)) return false
+    for (const k of Object.keys(drafts)) if (!(k in toSave)) delete drafts[k]
+    return true
   }
 
   /** Mutate `drafts` for `slot`: delete-then-reinsert a sanitized deep copy if
@@ -238,5 +271,5 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
         timestampsLoaded = false
       }
 
-  return { load, save, set, __resetForTests }
+  return { load, peek, save, set, __resetForTests }
 }

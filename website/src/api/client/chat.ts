@@ -148,6 +148,10 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     cancelQueuedMessage: (slot: string, queueId: string) => del('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/' + encodeURIComponent(queueId)).then(j),
     editQueuedMessage: (slot: string, queueId: string, content: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/' + encodeURIComponent(queueId), { content }).then(j),
     reorderQueuedMessages: (slot: string, order: string[]) => put('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/order', { order }).then(j),
+    /** Take back a steer the running turn has not read yet (the row's `meta.mid`).
+     *  Resolves once the take-back is armed; what became of the steer lands on its
+     *  own row (`steerState`), which is where the caller reads the outcome. */
+    retractSteer: (slot: string, mid: string, action: 'unsend' | 'edit' | 'queue') => post('/api/chat/slots/' + encodeURIComponent(slot) + '/steers/' + encodeURIComponent(mid) + '/retract', { action }).then(j),
     interruptSlot: (slot: string, queueId?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/interrupt', queueId ? { queue_id: queueId } : {}).then(j),
     /** Ask the sleeping `wait` tool to return early. Cooperative, not a stop:
      *  the turn continues with a normal tool result. `waitId` must name the sleep

@@ -44,6 +44,7 @@ from kiro_crew.acp.session_handle_watchdog import (
 from kiro_crew.acp.skill_reads import SkillReadTracker
 from kiro_crew.acp.types import (
     ACP_BACKENDS_STEER,
+    ACP_BACKENDS_STEER_RETRACT,
     ACP_BACKENDS_STEERING_REQUEST,
     AcpEvent,
     AcpPromptStats,
@@ -158,6 +159,7 @@ class AcpSessionHandle:
     _sync_effort_levels = _sh_models._sync_effort_levels
     # Steering a live turn: ``kiro_crew.acp.session_handle_steering``.
     steer = _sh_steering.steer
+    clear_pending_steers = _sh_steering.clear_pending_steers
     _steer_via_steering_request = _sh_steering._steer_via_steering_request
     _settle_abandoned_steering = _sh_steering._settle_abandoned_steering
     _take_injected_steers = _sh_steering._take_injected_steers
@@ -782,6 +784,10 @@ class AcpSessionHandle:
     # mixing the two clocks is how a suspend-resume silently reorders them.
     _last_steer_monotonic: float = 0.0
 
+    # Set once kiro-cli refuses ``_session/steer/clear`` (a build without it), so
+    # the session stops offering a pending steer back. See ``clear_pending_steers``.
+    _steer_clear_refused: bool = False
+
     @property
     def last_steer_monotonic(self) -> float:
         """Monotonic time of the last steer written to the backend (0.0 if none)."""
@@ -803,6 +809,19 @@ class AcpSessionHandle:
         """
         backend = self._runtime.acp_backend
         return backend in ACP_BACKENDS_STEER or backend in ACP_BACKENDS_STEERING_REQUEST
+
+    @property
+    def supports_steer_retract(self) -> bool:
+        """True when a steer this session has not read yet can be taken back.
+
+        Membership in ``ACP_BACKENDS_STEER_RETRACT``, read from the runtime's own
+        backend id, and False once the host refused the request
+        (:meth:`clear_pending_steers`), so a build without it is not offered again.
+        """
+        return (
+            self._runtime.acp_backend in ACP_BACKENDS_STEER_RETRACT
+            and not self._steer_clear_refused
+        )
 
     @property
     def supports_refusal_steer(self) -> bool:

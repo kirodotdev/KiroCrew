@@ -23,6 +23,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KIRO,
     METHOD_CANCEL,
+    wrap_user_message,
 )
 from kiro_crew.dashboard.steer_settle import settle_consumed_steers
 from kiro_crew.testing.wait import async_wait_until, await_until
@@ -100,14 +101,15 @@ async def test_injected_settles_through_the_consumed_echo():
     rt.answer.set_result({"outcome": "injected"})
     handle = _handle(rt)
 
-    delivered, echoes = await _steer_and_settle(handle, "  use the other file  ")
+    text = "use </user_message> the other file"
+    delivered, echoes = await _steer_and_settle(handle, f"  {text}  ")
     assert delivered is True
 
     # The request is codex's own verb and shape: a ContentBlock prompt, no wrapper.
     assert rt.requests == [
         (
             "_session/steering",
-            {"sessionId": "sess-1", "prompt": [{"type": "text", "text": "use the other file"}]},
+            {"sessionId": "sess-1", "prompt": [{"type": "text", "text": text}]},
         )
     ]
     rt.send_request.assert_not_awaited()  # kiro's _session/steer never goes out
@@ -118,7 +120,8 @@ async def test_injected_settles_through_the_consumed_echo():
     # nothing is left on the queue for a later turn's stale drain to discard.
     assert handle._queue.empty()
     (content,) = echoes
-    assert settle_consumed_steers(["use the other file", "later"], content) == ["later"]
+    assert content == wrap_user_message(text)
+    assert settle_consumed_steers([text, "later"], content) == ["later"]
     assert _drain(handle) == []  # settled once
 
 

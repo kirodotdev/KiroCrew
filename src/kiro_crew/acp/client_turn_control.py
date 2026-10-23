@@ -72,6 +72,7 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
     steering_outcome,
+    wrap_user_message,
 )
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
@@ -458,7 +459,7 @@ async def steer(self: AcpClient, message: str) -> bool:
         return await self._steer_via_steering_request(text)
     if self.backend in ACP_BACKENDS_STEER_CONCURRENT_PROMPT:
         return await self._steer_via_concurrent_prompt(text)
-    wrapped = f"<user_message>\n{text}\n</user_message>"
+    wrapped = wrap_user_message(text)
     await self._send_request("_session/steer", {"sessionId": self._session_id, "message": wrapped})
     # See AcpSessionHandle.steer for why the stamp is taken at the write.
     self._last_steer_monotonic = time.monotonic()
@@ -597,7 +598,7 @@ async def _steer_via_steering_request(self: AcpClient, text: str) -> bool:
         # Injected, but its turn is already over: nothing will report it
         # consumed, so the caller queues the text.
         return False
-    self._steers_accepted.append((aimed_at, f"<user_message>\n{text}\n</user_message>"))
+    self._steers_accepted.append((aimed_at, wrap_user_message(text)))
     self._last_steer_monotonic = time.monotonic()
     return True
 
@@ -689,7 +690,7 @@ async def _steer_via_request(self: AcpClient, method: str, text: str) -> bool:
     if len(held) + len(answers) >= MAX_STEERING_ANSWERS:
         return False
     answer: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-    wrapped = f"<user_message>\n{text}\n</user_message>"
+    wrapped = wrap_user_message(text)
     req_ids: list[int] = []
 
     def _register(req_id: int) -> None:
@@ -765,7 +766,7 @@ async def _steer_via_concurrent_prompt(self: AcpClient, text: str) -> bool:
         return False
     if len(text) > _MAX_CONCURRENT_STEER_CHARS or len(turn.steers) >= _MAX_CONCURRENT_STEERS:
         return False
-    wrapped = f"<user_message>\n{text}\n</user_message>"
+    wrapped = wrap_user_message(text)
     sent: list[int] = []
     steers = turn.steers
 

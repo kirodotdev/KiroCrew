@@ -559,6 +559,11 @@ async def stop_slot_turn(
             slot,
             [str(entry.get("content", "")) for entry in discarded],
         )
+        # A hard Stop ends the turn outside the runner's event order. Release an
+        # in-flight take-back without claiming whether kiro-cli read or dropped it.
+        from kiro_crew.dashboard import steer_retract
+
+        steer_retract.on_hard_stop(slot)
         # Hard kill = "discard everything": drop unconsumed steers too, so the
         # end-of-turn requeue (chat_runner finally) has nothing to resurrect.
         # Mirrors the queue clear above; a soft stop preserves both.

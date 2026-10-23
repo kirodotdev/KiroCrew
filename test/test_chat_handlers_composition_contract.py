@@ -234,6 +234,7 @@ _BASE_ROUTES = (
     ("POST", "/api/chat/slots/{slot}/reload", "api_chat_slot_reload"),
     ("POST", "/api/chat/slots/{slot}/reset-conversation", "api_chat_slot_reset_conversation"),
     ("POST", "/api/chat/slots/{slot}/resume", "api_chat_slot_resume"),
+    ("POST", "/api/chat/slots/{slot}/steers/{mid}/retract", "api_chat_slot_steer_retract"),
     ("POST", "/api/chat/slots/{slot}/stop", "api_chat_slot_stop"),
     ("POST", "/api/chat/slots/{slot}/summary", "api_chat_slot_summary_generate"),
     ("POST", "/api/chat/slots/{slot}/turn-timeout", "api_chat_slot_turn_timeout"),

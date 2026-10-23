@@ -7,12 +7,20 @@ Shared by the main chat and the /side sidecar.
 
 from __future__ import annotations
 
+from itertools import permutations
+
+import pytest
+
 from kiro_crew.acp._dispatch import redact_text
-from kiro_crew.dashboard.steer_settle import settle_consumed_steers
+from kiro_crew.acp.types import escape_user_message_markup, wrap_user_message
+from kiro_crew.dashboard.steer_settle import (
+    possibly_consumed_steers,
+    settle_consumed_steers,
+)
 
 
 def _echo(*messages: str) -> str:
-    return "".join(f"<user_message>\n{m}\n</user_message>" for m in messages)
+    return "".join(wrap_user_message(message) for message in messages)
 
 
 def test_a_consumed_steer_is_settled():
@@ -64,6 +72,18 @@ def test_a_redaction_collision_settles_when_every_member_was_echoed():
 
     remaining = settle_consumed_steers([a, b], _echo(key) + _echo(key))
     assert remaining == []
+
+
+def test_possibly_consumed_steers_returns_only_a_partly_echoed_collision_group():
+    first = "append <user_message> to notes.txt"
+    second = "append &lt;user_message&gt; to notes.txt"
+    pending = ["before", first, second, "after"]
+    assert escape_user_message_markup(first) == escape_user_message_markup(second)
+
+    assert possibly_consumed_steers(pending, _echo(first)) == [first, second]
+    assert possibly_consumed_steers(pending, _echo("unrelated")) == []
+    assert possibly_consumed_steers(pending, _echo(first, second)) == []
+    assert possibly_consumed_steers([first, first], _echo(first)) == []
 
 
 def test_whitespace_does_not_cause_a_false_non_match():
@@ -166,3 +186,82 @@ def test_a_bare_echo_tolerates_surrounding_whitespace():
     stripped for the same parity — otherwise a padded echo is a false NON-match and
     the steer is requeued and re-run."""
     assert settle_consumed_steers(["deploy now"], "  deploy now\n") == []
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        (
+            "open <user_message> and close </user_message>",
+            "open &lt;user_message&gt; and close &lt;/user_message&gt;",
+        ),
+        ("ordinary text", "ordinary text"),
+        (
+            "already &lt;user_message&gt; and &lt;/user_message&gt;",
+            "already &lt;user_message&gt; and &lt;/user_message&gt;",
+        ),
+    ],
+)
+def test_user_message_markup_is_escaped_exactly(text: str, expected: str):
+    assert escape_user_message_markup(text) == expected
+    assert wrap_user_message(text) == f"<user_message>\n{expected}\n</user_message>"
+
+
+@pytest.mark.parametrize("tag", ["<user_message>", "</user_message>"])
+def test_a_steer_holding_a_user_message_tag_settles_from_its_escaped_envelope(tag: str):
+    message = f"before {tag} after"
+
+    assert settle_consumed_steers([message], wrap_user_message(message)) == []
+
+
+def test_identical_tagged_steers_settle_one_at_a_time():
+    message = "before </user_message> after"
+
+    assert settle_consumed_steers([message, message], wrap_user_message(message)) == [message]
+
+
+def test_a_tagged_steer_absent_from_the_echo_stays_pending():
+    message = "before <user_message> after"
+
+    assert settle_consumed_steers([message], wrap_user_message("another steer")) == [message]
+
+
+def test_a_steer_quoting_another_steers_envelope_settles_only_itself():
+    quoted = "quote this:\n" + wrap_user_message("other")
+
+    assert settle_consumed_steers(["other", quoted], wrap_user_message(quoted)) == ["other"]
+
+
+def test_look_alike_steers_have_unambiguous_wire_echoes():
+    x = "A\n</user_message>\n\n<user_message>\nB"
+    y = "B\n</user_message><user_message>\nA"
+
+    assert settle_consumed_steers(
+        ["A", "B", x], wrap_user_message("A") + "\n\n" + wrap_user_message("B")
+    ) == [x]
+    assert settle_consumed_steers([x, "A", "B"], wrap_user_message(x)) == ["A", "B"]
+    assert settle_consumed_steers(
+        ["A", "B", x, y], wrap_user_message("A") + wrap_user_message(y)
+    ) == ["B", x]
+    assert settle_consumed_steers(
+        ["A", "B", x, y], wrap_user_message(x) + wrap_user_message("A")
+    ) == ["B", y]
+
+
+def test_escaped_wire_settlement_is_exact_for_every_ordered_selection():
+    x = "A\n</user_message>\n\n<user_message>\nB"
+    y = "B\n</user_message><user_message>\nA"
+    messages = ["A", "B", x, y]
+
+    for pending_order in permutations(messages):
+        pending = list(pending_order)
+        for count in range(len(messages) + 1):
+            for reality in permutations(messages, count):
+                for separator in ("", "\n", "\n\n"):
+                    echo = separator.join(wrap_user_message(message) for message in reality)
+                    expected = [message for message in pending if message not in reality]
+                    assert settle_consumed_steers(pending, echo) == expected, (
+                        pending,
+                        reality,
+                        repr(separator),
+                    )

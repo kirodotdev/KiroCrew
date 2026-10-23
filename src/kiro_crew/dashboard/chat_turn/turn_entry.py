@@ -117,10 +117,13 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     state = turn.state
     turn_exit = turn.turn_exit
     turn_exit.depth = _prompt_depth
-    from kiro_crew.dashboard import responsive_chat
+    from kiro_crew.dashboard import responsive_chat, steer_retract
 
     if _prompt_depth == 0:
         responsive_chat.begin_turn(slot, protected=_responsive_protected)
+        # Before this turn can be steered: a take-back still offered on a row now
+        # belongs to a turn that ended without settling it (a hard Stop, a restart).
+        steer_retract.withdraw_stale_offers(state, slot)
     _responsive_turn = responsive_chat.turn_state(slot)
     turn._responsive_turn = _responsive_turn
     _responsive_owner = asyncio.current_task()

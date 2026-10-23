@@ -36,6 +36,7 @@ from kiro_crew.security.credential_sources import CredentialEvidence
 if TYPE_CHECKING:
     from kiro_crew.dashboard.git_repo_touches import TouchCandidates
     from kiro_crew.dashboard.state_parts.dashboard_state import DashboardState
+    from kiro_crew.dashboard.steer_retract import SteerClear, SteerRetract
     from kiro_crew.subagent import SubagentDelivery
     from kiro_crew.trust_patterns import GrantDeadline
 
@@ -317,6 +318,8 @@ class _ChatSlot:
         "_steer_decision_strips",
         "_steer_possibly_delivered",
         "_steer_rpc_in_flight",
+        "_steer_retract",
+        "_steer_clear",
         "_steer_audience_fences",
         "_steer_audience_fence_holders",
         "_steer_attachment_meta",
@@ -587,6 +590,8 @@ class _ChatSlot:
     _steer_decision_strips: dict[str, dict]
     _steer_possibly_delivered: set[str]
     _steer_rpc_in_flight: set[str]
+    _steer_retract: SteerRetract | None
+    _steer_clear: SteerClear | None
     _steer_audience_fences: dict[str, dict]
     _steer_audience_fence_holders: dict[str, int]
     _steer_attachment_meta: dict[str, dict[str, Any]]

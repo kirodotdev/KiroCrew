@@ -941,6 +941,17 @@ describe('CrewChatWindow', () => {
     await waitFor(() => expect(screen.getByTestId('composer-model-chip')).toHaveTextContent('High'), { timeout: 8000 })
   }, 15000)
 
+  it('offers Regenerate on the newest reply when a taken-back steer follows it', async () => {
+    detail = { running: false, messages: [
+      { role: 'user', content: 'hi', ts: 't1' },
+      { role: 'assistant', content: 'hello', ts: 't2' },
+      { role: 'user', content: '', ts: 't3', meta: { steer: true, steerState: 'retracted' } },
+    ] }
+    renderWindow()
+    const reply = await screen.findByTestId('crew-window-assistant', {}, PEER_ROW_WAIT)
+    expect(within(reply).getByRole('button', { name: 'Regenerate response' })).toBeTruthy()
+  })
+
   it('offers Regenerate on the newest reply even when a compaction notice follows it', async () => {
     detail = { running: false, messages: [
       { role: 'user', content: 'hi', ts: 't1' }, { role: 'assistant', content: 'hello', ts: 't2' },

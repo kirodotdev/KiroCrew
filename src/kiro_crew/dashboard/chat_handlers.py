@@ -165,6 +165,7 @@ from kiro_crew.dashboard.chat_api.prompt_queue import (  # noqa: F401
     api_chat_slot_queue_cancel,
     api_chat_slot_queue_edit,
     api_chat_slot_queue_reorder,
+    api_chat_slot_steer_retract,
 )
 from kiro_crew.dashboard.chat_api.resume import (  # noqa: F401
     _hydrate_slot_from_history,

@@ -27,9 +27,9 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_stale_recovery_retries``, ``_steer_act_now``, ``_steer_admissions``,
 ``_steer_attachment_meta``, ``_steer_audience_fence_holders``,
 ``_steer_audience_fences``, ``_steer_automation``, ``_steer_channel_origin``,
-``_steer_confirmed``,
+``_steer_clear``, ``_steer_confirmed``,
 ``_steer_decision_strips``, ``_steer_delivery_ids``, ``_steer_possibly_delivered``,
-``_steer_rpc_in_flight``, ``_steer_segment_cut``, ``_steer_send_ids``,
+``_steer_retract``, ``_steer_rpc_in_flight``, ``_steer_segment_cut``, ``_steer_send_ids``,
 ``_steer_user_origin``, ``_subagent_deliveries_inflight``,
 ``_subagents_inline_collected``, ``_synthesis_completion_turns``,
 ``_synthesis_inflight``, ``_synthesis_recheck``, ``_synthesis_rechecks``,
@@ -421,6 +421,12 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # already be in the pipe, and the RPC's own verdict arrives too late to
     # mark an entry the drain may already have run.
     self._steer_rpc_in_flight = set()
+    # A pending steer the person is taking back, and the ``_session/steer/clear``
+    # written for it whose drop kiro-cli has not reported yet. Both live for one
+    # turn at most: the turn's report or its teardown settles them
+    # (``dashboard/steer_retract.py``). None when nothing is being taken back.
+    self._steer_retract = None
+    self._steer_clear = None
     # Admission snapshots of the peer steers that influenced THIS turn, keyed by
     # an opaque token. The turn consults them before publishing its CROSS-SURFACE
     # reply leg and withholds it when a constraint newly holds:

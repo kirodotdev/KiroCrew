@@ -171,3 +171,9 @@ async def test_wait_for_compaction_defaults_to_timeout(provider: _MinimalProvide
 @pytest.mark.asyncio
 async def test_cancel_defaults_to_no_turn(provider: _MinimalProvider) -> None:
     assert await provider.cancel(wait_ack_timeout=0.01) == "no_turn"
+
+
+@pytest.mark.asyncio
+async def test_a_steer_take_back_is_not_offered_by_default(provider: _MinimalProvider) -> None:
+    assert provider.supports_steer_retract is False
+    assert await provider.clear_pending_steers() is False

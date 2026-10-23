@@ -108,6 +108,9 @@ with no row here.
    * - ``ACP_BACKENDS_STEER_CONCURRENT_PROMPT``
      - pre-session registry query (whether a user steer travels as a second
        ``session/prompt`` that joins the running turn)
+   * - ``ACP_BACKENDS_STEER_RETRACT``
+     - driver-internal (whether a pending steer can be taken back with
+       ``_session/steer/clear``)
    * - ``ACP_BACKENDS_COMPACT``
      - pre-session registry query (whether manual ``/compact`` is offered at all)
    * - ``ACP_BACKENDS_INLINE_COMPACTION``
@@ -892,8 +895,11 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_NATIVE_TODOS,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
+    ACP_BACKENDS_STEER_RETRACT,
     ACP_BACKENDS_STEERING_REQUEST,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     ACP_BACKENDS_UNMARKED_COMPACTION_PAIR,
+    escape_user_message_markup,
+    wrap_user_message,
 )
