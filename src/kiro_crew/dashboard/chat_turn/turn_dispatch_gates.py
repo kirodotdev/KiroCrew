@@ -23,8 +23,10 @@ if TYPE_CHECKING:
         attributable_user_chars,
         cancel_notice,
         classify_stop_reason,
+        code_channel_post_thread,
         crew_log_emit,
         logger,
+        notify_code_channel_turn_start,
         read_context_tokens,
         replays_of,
         row_mid,
@@ -479,7 +481,19 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         _mirror_thread, _mirror_chan = state.sessions.get_slack_link(session_key)
         turn._mirror_chan = _mirror_chan
         turn._mirror_thread = _mirror_thread
+        _mirror_post_ts = code_channel_post_thread(_mirror_chan, _mirror_thread)
+        turn._mirror_post_ts = _mirror_post_ts
         if _mirror_thread and _mirror_chan:
+            try:
+                _code_channel_turn = await notify_code_channel_turn_start(
+                    _mirror_chan,
+                    _mirror_thread,
+                    session_key,
+                    source="slack" if slot._turn_channel_origin else "dashboard",
+                )
+                turn._code_channel_turn = _code_channel_turn
+            except Exception:
+                logger.debug("code channel turn-start hooks failed", exc_info=True)
             try:
                 if not _is_synthetic:
                     from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
@@ -491,12 +505,12 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                     # <!channel> / <@U…> in `text`, so escape at this sink.
                     _mirror_msg = escape_mrkdwn(_prepare_mirror_msg(_user_msg_for_mirror))
                     await state.slack_client.post_message(
-                        _mirror_chan, f"💬 _{_mirror_msg}_", _mirror_thread
+                        _mirror_chan, f"💬 _{_mirror_msg}_", _mirror_post_ts
                     )
                 # Start a stream for real-time tool animations
                 _mirror_stream_ts = (
                     await state.slack_client.start_stream(
-                        _mirror_chan, _mirror_thread, initial_text="Thinking…"
+                        _mirror_chan, _mirror_post_ts or "", initial_text="Thinking…"
                     )
                     or ""
                 )

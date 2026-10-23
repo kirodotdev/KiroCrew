@@ -379,6 +379,7 @@ async def maybe_route_linked_thread(
     reply_ts: str,
     target_slot: Any | None = None,
     route_pinned: bool = False,
+    user_meta: dict[str, Any] | None = None,
 ) -> bool:
     """Route a Slack message to a linked dashboard slot, if one is linked.
 
@@ -400,7 +401,8 @@ async def maybe_route_linked_thread(
     between deliver that answer into a different conversation. Pinning is
     tri-state on purpose: a pinned ``None`` means "this answer belongs to no
     slot", so a thread linked AFTER acceptance cannot capture a native answer
-    either.
+    either. *user_meta* is stored as the appended user row's ``meta`` (a code
+    channel names the message's Slack sender there).
     """
     if not (_dashboard_state and hasattr(_dashboard_state, "get_linked_slot")):
         return False
@@ -466,6 +468,7 @@ async def maybe_route_linked_thread(
                 reply_ts,
                 target_slot=_dashboard_state.get_linked_slot(reply_ts),
                 route_pinned=True,
+                user_meta=user_meta,
             )
 
     _linked_slot_key = _linked_slot.key
@@ -479,7 +482,13 @@ async def maybe_route_linked_thread(
     # (a frame without ``meta.mid`` lets a client receiving the row through a
     # second door render it a second time as a duplicate).
     append_and_surface(
-        _dashboard_state, _linked_slot, "user", _safe_text, "msg msg-u", broadcast_user=True  # type: ignore[arg-type]
+        _dashboard_state,  # type: ignore[arg-type]
+        _linked_slot,
+        "user",
+        _safe_text,
+        "msg msg-u",
+        broadcast_user=True,
+        **({"meta": dict(user_meta)} if user_meta else {}),
     )
     if not _linked_slot.running:
         from kiro_crew.dashboard.chat import _run_chat
@@ -503,9 +512,14 @@ async def maybe_route_linked_thread(
         # Stamp the admission-time containment. A linked slot records
         # linked=True here, so its own channel's queued messages keep draining;
         # only a constraint that appears AFTER this enqueue drops the entry.
+        # *user_meta* rides on the entry too: the drain writes the turn's own
+        # user row from the entry's meta.
         _linked_slot.queue_append(
             text,
-            meta=containment_meta(_dashboard_state, _linked_slot),  # type: ignore[arg-type]
+            meta={
+                **{k: dict(v) if isinstance(v, dict) else v for k, v in (user_meta or {}).items()},
+                **containment_meta(_dashboard_state, _linked_slot),  # type: ignore[arg-type]
+            },
             directive_user_origin=True,
             directive_channel_origin=True,
         )

@@ -291,6 +291,14 @@ Behind `code_channels_enabled(cfg)`, reusing `ae2545752c`, `8b243f0b1d` and
   is better made by the model reading the request than by a keyword check in
   front of it" ([lifecycle of a code channel](https://docs.slack.dev/ai/slack-code/lifecycle)).
   The reference implementation does the same in kiro-bot's `code_channel_routing`.
+  A directed message is a mention, or a reply without a mention in a channel
+  thread the bot already answers (one thread-follow admits: the bot holds its
+  session, session link or conversation log), from a person the channel
+  accepts, not addressed to someone else. A thread's replies are classified
+  only until the thread has opened a code channel; after that the thread's
+  link points there and later replies are answered in place without a model
+  call. A code channel opened from a reply carries the thread as its context,
+  and the thread's own session does not also answer that reply.
   * **The call.** One sandboxed, tool-less model call: no tools, no MCP servers,
     no hooks, no resources. Its input is the request plus a bounded window of
     recent context from the origin conversation (the last few messages, capped
@@ -313,7 +321,12 @@ Behind `code_channels_enabled(cfg)`, reusing `ae2545752c`, `8b243f0b1d` and
   * **Cost.** One extra model call per directed human message, and only in an
     ordinary conversation while `code_channels_enabled(cfg)` is true. A message
     inside a code channel, a bot copy, and every message with the switch off or
-    unavailable skip the classifier entirely.
+    unavailable skip the classifier entirely. A thread reply costs the same
+    once (a call of at most 12 s, one `conversations.replies` read for the
+    context and one route record), only until its thread has opened a code
+    channel, and never twice for the same message: a re-delivered event reuses
+    its recorded decision. Replies in one thread are decided one at a time, in
+    order, so two of them cannot open two channels.
   * **Idempotent creation.** A deterministic
     `session_id = sha256(app_id, team_id, conversation, source_ts)` makes the
     `agents.conversations.create` call idempotent across retries and restarts.
@@ -330,6 +343,15 @@ Behind `code_channels_enabled(cfg)`, reusing `ae2545752c`, `8b243f0b1d` and
   Kiro Crew did not create is recognised through `conversations.info`
   (`record_type == "agent_channel"` and this bot among its agents), re-checked on
   every message.
+* **Sender attribution.** Every person's message a code channel hands to its
+  session -- the request that opened it, each later message, queued or not, and
+  each button answer clicked there --
+  stores `meta["slack_sender"] = {team_id, enterprise_id ("" outside Enterprise
+  Grid), user_id}` on the session's user row: raw Slack ids only, each checked
+  against its id shape, and the key left off for a bot copy, Slack's origin copy
+  or a malformed id. The team and org are the ones the gateway admitted the
+  message under. Shared Crew reads it to attribute a code channel's messages to
+  their Slack users; no access decision reads it.
 * **Worktree, diff and context bar.** When the project is a git repository the
   session works in its own worktree off the project's default branch. After each
   turn the gateway publishes the unified diff against the base as the channel's

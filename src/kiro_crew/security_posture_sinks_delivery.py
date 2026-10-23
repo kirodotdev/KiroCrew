@@ -876,4 +876,8 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "redactor is handed in by the route rather than chosen here, so the module "
         "applies the gateway's own redactor and cannot substitute a weaker one.",
     ),
+    ("Slack code-channel classifier", "slack/code_channels/classifier.py", "Its model prompt."),
+    ("Slack code-channel diagnostics", "slack/code_channels/client.py", "Logs; credentials only."),
+    ("Slack code-channel bar", "slack/code_channels/workspace/context_bar.py", "Its labels."),
+    ("Slack code-channel diff", "slack/code_channels/workspace/service.py", "Its diff view."),
 )

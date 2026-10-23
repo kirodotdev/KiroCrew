@@ -139,8 +139,12 @@ async def _route_action_to_session(
     context_tag: str,
     action_id_value: str,
     blocks: list[dict],
+    user_meta: dict[str, Any] | None = None,
 ) -> None:
-    """Shared logic for routing an action:: interaction to the agent session."""
+    """Shared logic for routing an action:: interaction to the agent session.
+
+    *user_meta* is the routed user row's meta (a code channel's Slack sender).
+    """
     assert _orch and _orch.slack  # caller already checked  # noqa: S101
 
     # Redact label before any Slack surface
@@ -201,6 +205,7 @@ async def _route_action_to_session(
             task_runner=_orch.task_runner,
             action_context=action_context,
             start_priority=StartPriority.FOREGROUND,
+            user_meta=user_meta,
         )
     )
     _orch._handler_tasks.add(t)
@@ -354,6 +359,10 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
     thread_ts = payload.get("message", {}).get("thread_ts") or msg_ts
     user_id = payload.get("user", {}).get("id", "")
     team_id = (payload.get("team") or {}).get("id", "")
+    from kiro_crew.slack.code_channels.routing import action_user_meta
+
+    # A button answer in a code channel names its clicker on the routed row.
+    user_meta = action_user_meta(channel, payload)
 
     if not is_allowed_user(user_id):
         sel().log_tool_invocation(
@@ -596,6 +605,7 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
             route_pinned=_route_pinned,
             asker_key=_asker_key,
             start_priority=StartPriority.FOREGROUND,
+            user_meta=user_meta,
         )
     )
     _orch._handler_tasks.add(t)
@@ -624,6 +634,10 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
     thread_ts = payload.get("message", {}).get("thread_ts") or msg_ts
     user_id = payload.get("user", {}).get("id", "")
     team_id = (payload.get("team") or {}).get("id", "")
+    from kiro_crew.slack.code_channels.routing import action_user_meta
+
+    # A button answer in a code channel names its clicker on the routed row.
+    user_meta = action_user_meta(channel, payload)
     blocks = payload.get("message", {}).get("blocks", [])
 
     # ── Action button: route payload to existing session as context ──
@@ -645,6 +659,7 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             "Action button clicked",
             action_id_value,
             blocks,
+            user_meta=user_meta,
         )
         return
 
@@ -681,6 +696,7 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             "Action element selected",
             action_id_value,
             blocks,
+            user_meta=user_meta,
         )
         return
 
@@ -847,6 +863,7 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             route_pinned=_route_pinned,
             asker_key=_asker_key,
             start_priority=StartPriority.FOREGROUND,
+            user_meta=user_meta,
         )
     )
     _orch._handler_tasks.add(t)

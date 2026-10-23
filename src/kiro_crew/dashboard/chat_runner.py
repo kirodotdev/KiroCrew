@@ -895,6 +895,11 @@ from kiro_crew.session_agent_selection import (  # noqa: F401
     session_agent_selection_kind,
 )
 from kiro_crew.session_capabilities import CapabilityStartupError
+from kiro_crew.slack.code_channels.binding import mirror_post_thread as code_channel_post_thread
+from kiro_crew.slack.code_channels.binding import notify_turn_end as notify_code_channel_turn_end
+from kiro_crew.slack.code_channels.binding import (
+    notify_turn_start as notify_code_channel_turn_start,
+)
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.start_priority import StartPriority, person_priority
@@ -2250,6 +2255,7 @@ async def _run_chat(
         _mirror_chan = turn._mirror_chan
         _mirror_stream_ts = turn._mirror_stream_ts
         _mirror_thread = turn._mirror_thread
+        _code_channel_turn = turn._code_channel_turn
         _native_card_output = turn._native_card_output
         _native_tracker = turn._native_tracker
         _recovering_compaction = turn._recovering_compaction
@@ -2591,6 +2597,29 @@ async def _run_chat(
         # clears it. The nested try/finally makes the release unconditional
         # while preserving the reset-then-release ordering.
         try:
+            if _code_channel_turn:
+                # Exactly one end per start, on every exit path: the channel's
+                # status goes back to ready and subscribers settle the turn.
+                # First in this block and shielded, so a cancel landing in the
+                # cleanup below still lets it finish.
+                _code_channel_turn = False
+                turn._code_channel_turn = _code_channel_turn
+                try:
+                    await asyncio.shield(
+                        notify_code_channel_turn_end(
+                            _mirror_chan,
+                            _mirror_thread,
+                            session_key,
+                            source="slack" if slot._turn_channel_origin else "dashboard",
+                            outcome=(
+                                "stopped"
+                                if turn._stop_reason == STOP_REASON_CANCELLED
+                                else "ok" if turn._stop_reason == STOP_REASON_END_TURN else "error"
+                            ),
+                        )
+                    )
+                except Exception:
+                    logger.debug("code channel turn-end hooks failed", exc_info=True)
             if _deferred_options_expiry:
                 _deferred_options_expiry = False
                 turn._deferred_options_expiry = _deferred_options_expiry

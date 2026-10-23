@@ -112,6 +112,7 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
         reply_ts,
         target_slot=_target_slot,
         route_pinned=route_pinned,
+        user_meta=turn.user_meta,
     ):
         return False
 
