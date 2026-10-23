@@ -112,7 +112,7 @@ describe('the facade composition', () => {
     'useSessionSources', 'useDebouncedSessionSearch', 'useSessionRename', 'useSessionAutoTitle', 'useSessionSort', 'useSidebarLane',
     'useSessionFilterState', 'useSessionStatusFilters', 'useHistoryPane', 'useSessionCleanup', 'useBulkModelSwitch', 'usePinnedSessionOrder',
     'useManualSessionOrder',
-    'useStaleCollapse', 'useFolderSort', 'useFolderRename', 'useSidebarTags',
+    'useStaleCollapse', 'useFolderSort', 'useUnfiledAboveFolders', 'useFolderRename', 'useSidebarTags',
     'useSidebarModels', 'useBoardColumns', 'useSidebarResize', 'useFullTitlesOnScrollSetting', 'usePinnedOrderAuthority', 'useColumnPopover', 'useBoardColumnMutations',
     'useColumnMatches', 'useFolderVisibility', 'useStaleMoveWatcher', 'useSearchMatches',
     'useCollapsedCrews', 'useCollapsedCrewSpaces', 'useCrewEnable', 'useHoverHold', 'useLineageAvailable', 'useHoverPinLiveness', 'useStaleNarrowBridge',
