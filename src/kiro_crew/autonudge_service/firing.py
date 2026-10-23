@@ -410,10 +410,15 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
             self._arm_from_deadline(loop)
         return
     self._firing.add(loop.id)
+    # When this fire window opened: the overdue backstop names a fire as wedged
+    # by how long the window has been open, not by the loop's deadline, because a
+    # channel loop's fire runs its whole turn inline.
+    self._fire_started[loop.id] = time.time()
     try:
         await self._run_fire_cycle(loop)
     finally:
         self._firing.discard(loop.id)
+        self._fire_started.pop(loop.id, None)
         # A re-arm requested DURING the fire window (a dashboard turn that
         # completed while we were still persisting) was deferred rather than
         # applied, because applying it would have cancelled this very task

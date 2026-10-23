@@ -76,6 +76,21 @@ _OVERDUE_REARM_SECS = 10
 _RECONCILE_INTERVAL_SECS = 60
 
 
+# How many of its own intervals an active, unheld prompt loop may sit past its
+# deadline before the overdue backstop names it (see ``_overdue_branch``). Every
+# healthy shape re-arms within one interval -- ``_arm_from_deadline`` and the
+# refused-fire backoff are both capped at ``idle_secs`` -- so two intervals past
+# the deadline is a loop that is not keeping its schedule, whatever the reason.
+_OVERDUE_INTERVALS = 2
+
+# How long a fire window may stay open before the backstop names it wedged: the
+# highest per-turn ceiling an operator can configure
+# (``config.sections_limits.CHAT_TURN_TIMEOUT_MAX``), so no turn the gateway
+# allows can reach it. Kept as a number here so this module does not import the
+# config package; a test pins the two equal.
+_WEDGED_FIRE_SECS = 86400
+
+
 def _resolve_beat(beat: "asyncio.Future[None]") -> None:
     """Resolve one reconciler heartbeat future (see ``_reconcile_forever``)."""
     if not beat.done():
@@ -938,6 +953,12 @@ def _reconcile_once(self: AutoNudgeService) -> None:
       deadline is safe: its ``next_due_ts`` is that deadline, and the
       armed tick either finds evidence or retires the claim through
       ``record_monitor_completion_evidence_unavailable``.
+
+    The same pass is the OVERDUE backstop (``_overdue_branch``): a prompt loop
+    that is active, unheld and more than ``_OVERDUE_INTERVALS`` of its own
+    intervals past its deadline is named in one WARNING per episode, because the
+    no-live-timer test above cannot see a loop whose fires are all refused (its
+    backoff timer is live) or whose fire never returns (it is mid-fire).
     """
     if self._lock.locked():
         # A mutation or persist is mid-flight. ``update()`` mutates loop
@@ -953,7 +974,23 @@ def _reconcile_once(self: AutoNudgeService) -> None:
         # rescue behind a busy store's persist cadence.
         return
     eligible: set[str] = set()
+    now = time.time()
+    still_overdue: set[str] = set()
     for loop in list(self._loops.values()):
+        branch = _overdue_branch(self, loop, now)
+        if branch:
+            still_overdue.add(loop.id)
+            # Overdue and inside a fire that is not wedged: the episode goes on,
+            # but there is nothing to name or re-arm while the fire runs. Ending
+            # the episode here would let the next pass re-arm a refusing loop
+            # again and trade its backoff for the overdue beat.
+            if branch != _OVERDUE_IN_FIRE and loop.id not in self._overdue_warned:
+                self._overdue_warned.add(loop.id)
+                _warn_overdue(self, loop, branch, now)
+            # Both shapes are only named. A refusing loop's live backoff timer
+            # already retries within one interval, so arming it again would only
+            # move a retry the slot will refuse; and a fire window is never
+            # cancelled (``_cancel_timer``), so a wedged fire cannot be taken back.
         # Mirror _timer's own re-arm guard, not a stricter one: an
         # INACTIVE loop still waiting for terminal-completion evidence
         # owns a finite accepted-turn correlation whose expiry needs a
@@ -999,3 +1036,68 @@ def _reconcile_once(self: AutoNudgeService) -> None:
         )
         self._arm_from_deadline(loop)
     self._reconcile_candidates = eligible
+    # A loop back on schedule (or gone) ends its episode, so a later one warns again.
+    self._overdue_warned &= still_overdue
+
+
+#: The shapes the overdue backstop tells apart, named in its one WARNING.
+_OVERDUE_REFUSED = "refused_fires"
+_OVERDUE_WEDGED = "wedged_fire"
+#: Overdue inside a fire window that is not wedged: keeps the episode, names nothing.
+_OVERDUE_IN_FIRE = "in_fire"
+
+
+def _overdue_branch(svc: AutoNudgeService, loop: NudgeLoop, now: float) -> str:
+    """Which stuck shape an overdue prompt loop is in; ``""`` when it names none.
+
+    Two shapes are named: ``refused_fires`` and ``wedged_fire``. A past deadline
+    alone is not enough, because healthy turns leave it behind too: a channel
+    fire running its turn, a retry in the fire window (``in_fire``, which keeps
+    the episode and names nothing), and a user turn that cancelled the timer.
+    Only prompt loops: a structured monitor keeps its own cadence and claims. A
+    held loop (an approval hold, a person-wait hold) is past its deadline on
+    purpose and is skipped, as is a loop that cleanup owns. A cleared deadline
+    (``0``, a just-delivered dashboard fire) is not overdue: the turn-complete
+    hook or the two-pass rescue owns that shape.
+    """
+    if not loop.active or is_structured_monitor_loop(loop):
+        return ""
+    if loop.approval_stalled or bool(getattr(loop, "waiting_on_person", False)):
+        return ""
+    if loop.id in svc._maintenance_quiescing:
+        return ""
+    due = loop.next_due_ts
+    if not (due > 0 and now - due > _OVERDUE_INTERVALS * max(1, loop.idle_secs)):
+        return ""
+    if loop.id in svc._firing:
+        # A channel loop's fire runs its whole turn inline, so a long healthy turn
+        # sits in the fire window past its deadline. Wedged means the window has
+        # outlasted any turn the gateway allows.
+        started = svc._fire_started.get(loop.id)
+        if started is not None and now - started > _WEDGED_FIRE_SECS:
+            return _OVERDUE_WEDGED
+        return _OVERDUE_IN_FIRE
+    # Refused fires: a live backoff timer AND a refused-fire streak. Without the
+    # streak a past deadline is a healthy deferral (a user turn cancelled the timer,
+    # a turn-complete hook has not re-armed yet), and a loop with no live timer at
+    # all belongs to the two-pass rescue, so neither is named.
+    timer = svc._timers.get(loop.id)
+    if timer is not None and not timer.done() and svc._rearm_fail_count.get(loop.id, 0):
+        return _OVERDUE_REFUSED
+    return ""
+
+
+def _warn_overdue(svc: AutoNudgeService, loop: NudgeLoop, branch: str, now: float) -> None:
+    """The backstop's one WARNING for an overdue episode, naming the shape it caught."""
+    logger.warning(
+        "AutoNudge: loop %s on slot %s is overdue by %.0fs (%d intervals of %ds) "
+        "while active and not held -- caught as %s (cycle %d, %d refused fires in a row)",
+        loop.id,
+        loop.slot_key,
+        now - loop.next_due_ts,
+        int((now - loop.next_due_ts) // max(1, loop.idle_secs)),
+        loop.idle_secs,
+        branch,
+        loop.cycle_count,
+        svc._rearm_fail_count.get(loop.id, 0),
+    )

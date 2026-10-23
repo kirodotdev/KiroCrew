@@ -709,6 +709,26 @@ next turn into the same slot:
   awaiting terminal-completion evidence is deliberately **included**: its accepted-turn
   correlation needs a timer to expire, and stranding it would refuse every replacement
   watch on the slot forever.
+- **An active, unheld prompt loop more than two intervals past its deadline is named
+  once.** The two-pass rescue only sees a loop with no live timer, so two shapes
+  escaped it with nothing in the journal: every fire refused (a live backoff timer
+  that re-arms forever) and a fire that never returns (the loop parked in the fire
+  window). Each pass checks `next_due_ts` against the loop's own interval; a loop
+  past it by more than two intervals, not held (approval or person-wait), not
+  structured and not quiesced, is checked for exactly two shapes, and gets ONE
+  WARNING per episode naming the one it is in, with the overdue time, the cycle and
+  the refused-fire streak. `refused_fires` is a live backoff timer AND a refused-fire
+  streak above zero; it is only named, since its backoff timer already retries
+  within one interval and arming it again would only move a refused retry earlier.
+  `wedged_fire` is a fire
+  window open longer than the highest configurable turn ceiling
+  (`CHAT_TURN_TIMEOUT_MAX`, one day), measured from when the window opened; it is
+  only named, since the fire window is never cancelled. A past deadline alone names
+  nothing, because healthy turns leave it behind too: a channel fire running its
+  turn, a retry inside the fire window (which keeps the episode open so it is not
+  re-armed again), and a user turn that cancelled the timer. A loop with no live
+  timer is left to the two-pass rescue. The episode ends at the first pass that
+  finds the loop on schedule, and a later stall warns again.
 - **Delivered fires and reconciler rescues are both logged at INFO.** Fires were
   otherwise unlogged, so a loop that had died and one with nothing to report were
   byte-identical in the journal. One line per delivered turn — each of which already
