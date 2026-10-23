@@ -21,7 +21,7 @@ sys.modules[_spec.name] = gate
 _spec.loader.exec_module(gate)
 
 # The ceiling only moves down. Raising it is the change this test exists to stop.
-X_CAPTURE_CEILING = 10
+X_CAPTURE_CEILING = 7
 KIRO_KAS_PAIR_CEILING = 0
 
 
@@ -137,8 +137,7 @@ def test_dropping_an_x_set_is_refused(monkeypatch) -> None:
     )
     monkeypatch.setattr(gate, "_base_allowlists", lambda base: prior)
     assert gate.enforce_x_captures("base") == 0
-    monkeypatch.delitem(gate.X_FEATURE_SETS, "ACP_BACKENDS_MARKDOWN_AGENT_SPECS")
-    monkeypatch.delitem(gate.X_CAPTURE_ALLOWLIST, ("ACP_BACKENDS_MARKDOWN_AGENT_SPECS", "kas"))
+    monkeypatch.delitem(gate.X_FEATURE_SETS, "ACP_BACKENDS_MATE_WORKER_KIT")
     assert gate.enforce_x_captures("base") == 1
 
 
@@ -190,3 +189,74 @@ def test_the_shrink_check_reads_the_merge_base_not_the_base_tip(monkeypatch) -> 
     monkeypatch.setattr(gate, "enforce_x_captures", lambda base: seen.append(base) or 0)
     assert gate.main([]) == 0
     assert seen == ["forkpoint"]
+
+
+def _frames(rel: str) -> list[dict]:
+    import json
+
+    with open(os.path.join(gate.REPO_ROOT, gate._FIXTURES, rel), encoding="utf-8") as fh:
+        return [json.loads(line) for line in fh if line.strip()]
+
+
+def _reply_and_tool_tags(rel: str) -> tuple[str, list[str]]:
+    """The model's reply text and the tool tags of the LAST ``_kiro/tools/didChange``."""
+    reply, tags = "", None
+    for f in _frames(rel)[1:]:
+        params = f.get("params") or {}
+        if f.get("method") == "_kiro/tools/didChange":
+            tags = [t["tag"] for t in params["tags"]]
+        update = params.get("update") or {}
+        if update.get("sessionUpdate") == "agent_message_chunk":
+            reply += update["content"]["text"]
+    assert tags is not None, rel
+    return reply, tags
+
+
+def test_kas_custom_agents_are_proven_by_their_own_captures() -> None:
+    """The markdown and worker-kit captures are cited, pass, and are off the allowlist."""
+    comments = gate.set_comments()
+    for name, rel in (
+        ("ACP_BACKENDS_MARKDOWN_AGENT_SPECS", "kas/markdown-agent-live.jsonl"),
+        ("ACP_BACKENDS_MATE_WORKER_KIT", "kas/worker-kit-live.jsonl"),
+    ):
+        assert name in gate.X_FEATURE_SETS
+        assert (name, "kas") not in gate.X_CAPTURE_ALLOWLIST
+        assert f"acp_frames/{rel}" in comments[name]
+        gaps = gate.check_x_captures(gate.live_sets(), comments)
+        assert (name, "kas") not in gaps
+        assert (name, "kas") in gate.check_x_captures(
+            gate.live_sets(), {**comments, name: comments[name].replace(rel, "kas/absent.jsonl")}
+        )
+
+
+def test_the_markdown_agent_capture_shows_its_prompt_and_tools_applied() -> None:
+    reply, tags = _reply_and_tool_tags("kas/markdown-agent-live.jsonl")
+    assert reply.strip() == "markdown agent saffron"
+    assert tags == ["read"]
+
+
+def test_the_worker_kit_capture_shows_the_crewmate_prompt_and_limit_applied() -> None:
+    reply, tags = _reply_and_tool_tags("kas/worker-kit-live.jsonl")
+    assert reply.rstrip().endswith("worker kit juniper")
+    assert "read_file" in reply and "execute_bash" not in reply
+    assert tags == ["read"]  # the crewmate file excluded ``shell`` from the base
+
+
+def test_every_live_kas_capture_names_the_engine_version() -> None:
+    """KAS is versioned apart from kiro-cli; a live capture records the engine's own."""
+    import re
+
+    kas = os.path.join(gate.REPO_ROOT, gate._FIXTURES, "kas")
+    live = []
+    for f in sorted(os.listdir(kas)):
+        if not f.endswith(".jsonl"):
+            continue
+        meta = _frames(f"kas/{f}")[0].get("_meta") or {}
+        if meta.get("recorded") != "live":
+            continue
+        live.append(f)
+        version = meta.get("agent_version", "")
+        assert re.fullmatch(r"\d+\.\d+\.\d+", version), f
+        if "kiro_cli_version" in meta:
+            assert version != meta["kiro_cli_version"], f
+    assert {"markdown-agent-live.jsonl", "worker-kit-live.jsonl"} <= set(live)

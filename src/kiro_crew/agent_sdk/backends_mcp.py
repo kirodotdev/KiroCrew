@@ -151,6 +151,12 @@ ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
 # on-disk form is Crew's to parse; codex-acp, opencode, pi, claude-agent-acp,
 # goose and deepseek are not members because none of them reads
 # ``~/.kiro/agents`` at all (``ACP_BACKENDS_SESSION_MCP_ARRAY``).
+# KAS is captured live on KAS 0.66.58 (kiro-cli 2.33.1):
+# ``test/fixtures/acp_frames/kas/markdown-agent-live.jsonl``. A markdown agent
+# read with ``load_agent_spec`` and bound with ``customAgents`` plus
+# ``session/set_mode`` got its body applied as the prompt and its ``tools``
+# applied. KAS 0.66.43 (kiro-cli 2.32.0) dropped the prompt of every custom
+# agent, JSON or markdown.
 ACP_BACKENDS_MARKDOWN_AGENT_SPECS = frozenset({ACP_BACKEND_KAS})
 
 # Backends whose agent's MCP SERVERS come from the USER-LEVEL spec alone, so a

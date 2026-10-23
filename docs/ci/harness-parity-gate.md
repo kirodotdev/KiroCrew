@@ -84,6 +84,8 @@ A non-standard (X) capability — an underscore method, a `_meta` field, a harne
 | for kiro-cli and KAS (`HANDSHAKE_IDENTITY`), hold its own `initialize` response: KAS with `agentCapabilities._meta.kiro.extensionMethods` and no `agentInfo`, kiro-cli with `agentInfo` "Kiro CLI Agent" and no such list | a kiro-cli capture relabeled `backend: kas`, or a KAS capture relabeled `backend: ""` |
 | have its `.expected.json` snapshot | a capture `test_acp_frame_replay.py` does not replay through the dispatch parsers |
 
+For KAS, `agent_version` is the engine's own version, read from the `@kiro/agent` package.json kiro-cli installs, not kiro-cli's version; a newer capture also records `kiro_cli_version`. `test_x_feature_captures.py` checks that every live `kas/` capture names an engine version.
+
 A second check covers kiro-cli and KAS drifting apart: every `ACP_BACKENDS_*` set holding exactly one of them must name the other in its comment, so the reader sees the split was decided, not assumed.
 
 Today's gaps live in `X_CAPTURE_ALLOWLIST` (each entry names the missing capture) and `KIRO_KAS_PAIR_ALLOWLIST`. Both only shrink: with `HARNESS_BASE_REF` set, an entry missing from the base ref's copy fails; an entry whose member now passes fails until it is deleted; an X set dropped from `X_FEATURE_SETS`, or its scope narrowed, fails; and `test/test_x_feature_captures.py` holds a ceiling on each. A member added to an X set therefore lands with its capture, or not at all. The self-test plants each shape above.

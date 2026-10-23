@@ -400,6 +400,7 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     "ACP_BACKENDS_MEMBER_DISPATCH": frozenset({"kas"}),
     # pi's membership rides its gate extension's confirm dialog, not a mirror.
     "ACP_BACKENDS_HONOR_ZERO_TOOL_BAN": frozenset({"pi"}),
+    "ACP_BACKENDS_MATE_WORKER_KIT": None,
 }
 
 # ``initialize.agentInfo.name`` (or the ``_meta.agent_name`` header) a capture
@@ -451,10 +452,6 @@ X_CAPTURE_ALLOWLIST: dict[tuple[str, str], str] = {
     ("ACP_BACKENDS_SIDE_READONLY", "goose"): "goose side session read-only turn",
     ("ACP_BACKENDS_MEMBER_CAPABILITIES", "codex"): "codex saved member spec session",
     ("ACP_BACKENDS_MEMBER_CAPABILITIES", "deepseek"): "deepseek saved member spec session",
-    ("ACP_BACKENDS_MARKDOWN_AGENT_SPECS", "kas"): (
-        "live KAS 0.66.43 registers a markdown agent but ignores its prompt; "
-        "membership decided separately"
-    ),
 }
 
 # Sets holding exactly one of kiro-cli and KAS whose comment does not name the

@@ -99,6 +99,10 @@ ACP_BACKENDS_MEMBER_TOOL_LIMITS = frozenset({ACP_BACKEND_KIRO})
 # pi) read their spec off disk by agent name and report ``excludedTools`` as a
 # projection gap, so the crewmate's switched-off tools would come back. A worker
 # allocated on a non-member is refused before spawn (``worker_kit_harness_unsupported``).
+# KAS is captured live on KAS 0.66.58 (kiro-cli 2.33.1):
+# ``test/fixtures/acp_frames/kas/worker-kit-live.jsonl``. A worker base with
+# tools ``read`` and ``shell``, merged with a crewmate file that adds a prompt and
+# excludes ``shell``, ran with only the ``read`` tools and followed the added prompt.
 ACP_BACKENDS_MATE_WORKER_KIT = frozenset({ACP_BACKEND_KAS})
 
 # Backends that can mount a DIFFERENT MCP tool set on one session than the
