@@ -102,6 +102,17 @@ function settleStoredOptimisticRows(local: SideState, snapshot: SideSnapshot): S
   return { ...local, messages: local.messages.filter(row => !settled.has(row)) }
 }
 
+/** The text of an edit this tab kept while its read was in flight, when that edit
+ *  is newer than the read's copy of the entry. The gateway bumps an entry's `rev`
+ *  on every edit and sends it with both, so the read's copy wins when it already
+ *  carries that edit or a later one this tab missed. Without a `rev` on either
+ *  side the edit counts as newer, since the read may have been answered before it. */
+function newerKeptText(edit: { content: string; rev?: number } | undefined, entry: { rev?: number }): string | undefined {
+  if (!edit) return undefined
+  if (edit.rev === undefined || entry.rev === undefined) return edit.content
+  return edit.rev > entry.rev ? edit.content : undefined
+}
+
 /** The side state a panel restored from `GET .../side` shows, merged with what
  *  frames already drew in this tab (`local`).
  *
@@ -171,6 +182,7 @@ function restoredSide(local: SideState | undefined, snapshot: SideSnapshot): Sid
   if (keptOptimistic) pending = true
 
   const removed = new Set(local?.removedQueueIds ?? [])
+  const keptEdits = new Map((local?.editedBeforeRestore ?? []).map(edit => [edit.id, edit]))
   const localQueue = (local?.queue ?? []).map(entry => ({ ...entry }))
   const localEntry = new Map(localQueue.map(entry => [entry.id, entry]))
   const restoredQueueIds = new Set((snapshot.queue ?? []).map(entry => entry.id))
@@ -181,7 +193,7 @@ function restoredSide(local: SideState | undefined, snapshot: SideSnapshot): Sid
     ...localOnlyQueue.filter(entry => entry.front),
     ...(snapshot.queue ?? [])
       .filter(entry => !removed.has(entry.id))
-      .map(entry => localEntry.get(entry.id) ?? { id: entry.id, content: entry.content, ts: entry.ts }),
+      .map(entry => localEntry.get(entry.id) ?? { id: entry.id, content: newerKeptText(keptEdits.get(entry.id), entry) ?? entry.content, ts: entry.ts }),
     ...localOnlyQueue.filter(entry => !entry.front),
   ]
 
@@ -336,17 +348,19 @@ export const sideReducers = {
     side.messages.push({ role: 'assistant', content, ts: tsIso, run_id, ...(message_id ? { id: message_id } : {}) })
     if (!earlierRun) side.lastRunId = run_id
   },
-  sseSideQueue(state: ChatState, action: PayloadAction<{ slot: string; action: 'push' | 'edit' | 'cancel' | 'drain'; queue_id: string; content?: string; ts?: number; front?: boolean; steer_id?: string; raw?: boolean; suppressRelease?: boolean }>) {
-    const { slot, action: kind, queue_id, content, ts, front, steer_id, raw, suppressRelease } = action.payload
+  sseSideQueue(state: ChatState, action: PayloadAction<{ slot: string; action: 'push' | 'edit' | 'cancel' | 'drain'; queue_id: string; content?: string; ts?: number; front?: boolean; steer_id?: string; raw?: boolean; suppressRelease?: boolean; rev?: number }>) {
+    const { slot, action: kind, queue_id, content, ts, front, steer_id, raw, suppressRelease, rev } = action.payload
     if (isUnsafeKey(slot)) return
     // A queue mutation is never a reason to resurrect a closed side.
     if (!state.slotSide[slot]) {
-      if (state.slotSideClosed[slot] || kind === 'edit') return
+      // An edit for an entry this tab has no card for matters only while the
+      // restore read is in flight: see the `at < 0` branch below.
+      if (state.slotSideClosed[slot] || (kind === 'edit' && !state.slotSideReading?.[slot])) return
       const parentTurnCount = slot === state.activeSlot
         ? state.messages.filter(m => m.role === 'user' || m.role === 'assistant').length
         : 0
-      // A terminal frame can beat the restore read. Keep only the same empty
-      // shell SideChat already renders for absent state, plus its retired id.
+      // A terminal frame or an edit can beat the restore read. Keep only the same
+      // empty shell SideChat already renders for absent state, plus what it said.
       state.slotSide[safeKey(slot)] = { messages: [], openedAtTurnCount: parentTurnCount, createdAt: new Date().toISOString() }
     }
     const side: SideState = state.slotSide[slot]
@@ -356,6 +370,10 @@ export const sideReducers = {
       const retired = side.removedQueueIds ?? []
       if (!retired.includes(queue_id)) {
         side.removedQueueIds = [...retired, queue_id].slice(-MAX_RETIRED_QUEUE_IDS)
+      }
+      // A retired entry is left out of the restore, so an edit kept for it is moot.
+      if (side.editedBeforeRestore?.some(edit => edit.id === queue_id)) {
+        side.editedBeforeRestore = side.editedBeforeRestore.filter(edit => edit.id !== queue_id)
       }
     }
     if (kind === 'push') {
@@ -383,6 +401,18 @@ export const sideReducers = {
     }
     if (at < 0) {
       if (kind === 'cancel' || kind === 'drain') retireQueueId()
+      // Another tab edited an entry this tab has no card for, while this tab's
+      // restore read is in flight. The read may have been answered before the
+      // edit, so its copy would show the old text. The frame's `rev` lets the
+      // restore keep the read's copy instead when it is at least as new. With no
+      // read in flight the edit is not kept: a read issued later is answered
+      // after it, so it already carries the new text.
+      if (kind === 'edit' && content !== undefined && state.slotSideReading?.[slot]) {
+        side.editedBeforeRestore = [
+          ...(side.editedBeforeRestore ?? []).filter(edit => edit.id !== queue_id),
+          { id: queue_id, content, ...(rev !== undefined ? { rev } : {}) },
+        ].slice(-MAX_RETIRED_QUEUE_IDS)
+      }
       return
     }
     if (!queue) return
@@ -505,6 +535,22 @@ export const sideReducers = {
     // restore read still in flight describes the conversation just closed.
     state.slotSideRestored ??= {}
     state.slotSideRestored[safeKey(action.payload)] = true
+    if (state.slotSideReading) delete state.slotSideReading[action.payload]
+  },
+  /** A restore read of the slot's side conversation started (`reading: true`), or
+   *  failed (`reading: false`). Only while one is in flight does the panel keep an
+   *  edit for a queued question it has no card for; a failed read drops them,
+   *  since the next read is answered after them. `sideRestore` ends a read that landed. */
+  sideRestoreReading(state: ChatState, action: PayloadAction<{ slot: string; reading: boolean }>) {
+    const { slot, reading } = action.payload
+    if (isUnsafeKey(slot)) return
+    if (reading) {
+      state.slotSideReading ??= {}
+      state.slotSideReading[safeKey(slot)] = true
+      return
+    }
+    if (state.slotSideReading) delete state.slotSideReading[slot]
+    if (state.slotSide[slot]) delete state.slotSide[slot].editedBeforeRestore
   },
   /** Settle a slot's panel against the gateway's own copy of its side
    *  conversation (`GET .../side`), once per page: what a reload had dropped
@@ -512,6 +558,7 @@ export const sideReducers = {
   sideRestore(state: ChatState, action: PayloadAction<{ slot: string; snapshot: SideSnapshot }>) {
     const { slot, snapshot } = action.payload
     if (isUnsafeKey(slot)) return
+    if (state.slotSideReading) delete state.slotSideReading[slot]
     state.slotSideRestored ??= {}
     if (state.slotSideRestored[slot]) return
     state.slotSideRestored[safeKey(slot)] = true

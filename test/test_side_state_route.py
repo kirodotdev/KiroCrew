@@ -22,7 +22,7 @@ from side_helpers import (  # noqa: F401 -- the autouse fixture registers by imp
     _published_readonly_spec_fixture,
 )
 
-from kiro_crew.dashboard.handlers.side import _run_side_turn
+from kiro_crew.dashboard.handlers.side import _run_side_turn, api_side_queue_edit
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.llm_helpers import PromptBusyExhaustedError
 from kiro_crew.testing.wait import async_wait_until, await_until
@@ -101,7 +101,64 @@ async def test_the_read_returns_the_question_queue_and_running_turn(tmp_path, mo
     [question_frame] = [d for d in _side_frames(events) if d["role"] == "user"]
     assert row["id"] and row["id"] == question_frame["message_id"]
     assert body["queue"] == [
-        {"id": queued["queue_id"], "content": "second?", "ts": slot._side.queue[0]["ts"]}
+        {
+            "id": queued["queue_id"],
+            "content": "second?",
+            "ts": slot._side.queue[0]["ts"],
+            "rev": 0,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_read_and_the_edit_frame_carry_the_entry_revision(tmp_path, monkeypatch):
+    """Every edit bumps a queued entry's ``rev``, and the read and the edit frame
+    report the same count, so a reloaded panel holding an edit frame and a read's
+    copy of the entry can tell which one is newer."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _blocking(state, slot, run_id, question, *, is_first_turn, start_priority=None):
+        started.set()
+        try:
+            await release.wait()
+        finally:
+            if slot._side is not None and slot._side.last_run_id == run_id:
+                slot._side.is_complete = True
+                slot._side.task = None
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side._run_side_turn", _blocking)
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    slot = state.get_or_create_slot("parent")
+    app = _app(state)
+    app.router.add_patch("/api/chat/slots/{slot}/side/queue/{queue_id}", api_side_queue_edit)
+
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/api/chat/slots/parent/side/open", json={})
+        await client.post("/api/chat/slots/parent/side/turn", json={"question": "first?"})
+        await await_until(started)
+        queued = await (
+            await client.post("/api/chat/slots/parent/side/turn", json={"question": "second?"})
+        ).json()
+        before = await (await client.get("/api/chat/slots/parent/side")).json()
+        for text in ("second, edited", "second, edited again"):
+            resp = await client.patch(
+                f"/api/chat/slots/parent/side/queue/{queued['queue_id']}", json={"content": text}
+            )
+            assert resp.status == 200, await resp.json()
+        after = await (await client.get("/api/chat/slots/parent/side")).json()
+        release.set()
+        await async_wait_until(lambda: slot._side.is_complete)
+
+    assert [entry["rev"] for entry in before["queue"]] == [0]
+    assert [(entry["content"], entry["rev"]) for entry in after["queue"]] == [
+        ("second, edited again", 2)
+    ]
+    edits = [d for t, d in events if t == "chat.side_queue" and d.get("action") == "edit"]
+    assert [(d["content"], d["rev"]) for d in edits] == [
+        ("second, edited", 1),
+        ("second, edited again", 2),
     ]
 
 

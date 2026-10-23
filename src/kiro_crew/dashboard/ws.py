@@ -711,6 +711,7 @@ def broadcast_side_queue(
     front: bool = False,
     steer_id: str = "",
     origin_client: str = "",
+    rev: int | None = None,
 ) -> None:
     """Broadcast a side-queue mutation on the dedicated side channel.
 
@@ -719,6 +720,10 @@ def broadcast_side_queue(
     frontend can retire its card without waiting for the user frame. ``depth``
     is the queue length AFTER the mutation, letting a client that missed a frame
     resync its badge without a refetch.
+
+    ``rev`` is the entry's revision after an ``edit``, the same count the side
+    read reports, so a tab that holds both an edit and a read's copy of the entry
+    keeps the newer one.
 
     ``front`` says the entry went to the HEAD of the queue rather than the tail —
     which is how a requeued steer and a failed drain's entry land. Without it a
@@ -739,6 +744,8 @@ def broadcast_side_queue(
     }
     if front:
         payload["front"] = True
+    if rev is not None:
+        payload["rev"] = rev
     if steer_id:
         # Not sensitive — an opaque ledger id. It lets the submitting client match
         # its own RAW steer text to this card, whose content is redacted here.
