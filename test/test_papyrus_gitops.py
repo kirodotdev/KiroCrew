@@ -35,7 +35,7 @@ import pytest
 
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew import sandbox
-from kiro_crew.apps.builtins.papyrus.backend import gitops
+from kiro_crew.apps.builtins.papyrus.backend import gitops, store
 
 
 def _hermetic_git_env() -> dict[str, str]:
@@ -207,6 +207,13 @@ class TestClone:
         with mock.patch.object(gitops, "_git", script):
             await gitops.clone("https://example.com/g/p.git", dest)
         assert dest.is_dir()
+
+    async def test_clone_returns_the_new_papers_generation(self, tmp_path: Path) -> None:
+        dest = tmp_path / "dest"
+        with mock.patch.object(gitops, "_git", _GitScript()):
+            generation = await gitops.clone("https://example.com/g/p.git", dest)
+        assert generation
+        assert generation == store.project_generation(dest)
 
     async def test_a_clone_that_loses_the_rename_reports_a_conflict(
         self, tmp_path: Path
