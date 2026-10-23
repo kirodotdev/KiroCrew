@@ -534,6 +534,43 @@ def _load_agent_prompt(
         return ""
 
 
+def _crewmate_worker_prompt(agent: str, base_prompt: str, session_key: str) -> str:
+    """*base_prompt*, or for a crewmate's worker session the prompt its worker runs.
+
+    *base_prompt* is the contract this block selected (the worker is a default-named
+    agent, so the default one). A worker session gets the worker's own principles
+    after it, in the shape ``service_agents._install_mate_worker_agent`` writes the
+    on-disk base, then its crewmate's prompt, read through the one seam
+    (``mate_worker.worker_session_spec``, the session's execution record) that KAS's
+    wire spec and the mirrored hosts' MCP array read too. Only a worker whose
+    backend gets its prompt from this block alone
+    (``ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT``: claude, codex, deepseek)
+    carries both here; KAS's wire spec already does, so its block keeps the base.
+    Any other agent, or no session, keeps the base too.
+    """
+    from kiro_crew.mate_worker import (
+        MATE_WORKER_AGENT,
+        MATE_WORKER_PROMPT,
+        WorkerKitUnreadable,
+        worker_prompt_in_context_block,
+        worker_session_spec,
+    )
+
+    if agent != MATE_WORKER_AGENT or not session_key or not base_prompt:
+        return base_prompt
+    if not worker_prompt_in_context_block():
+        return base_prompt
+    worker_base = f"{base_prompt.rstrip()}\n\n{MATE_WORKER_PROMPT}"
+    try:
+        prompt = worker_session_spec({"prompt": worker_base}, session_key).get("prompt")
+    except WorkerKitUnreadable:
+        # The session itself is refused where its spec is projected; the
+        # contract keeps the worker's base rather than failing the turn's assembly.
+        logger.warning("worker session %s: crewmate prompt unreadable", session_key)
+        return worker_base
+    return prompt if isinstance(prompt, str) and prompt else worker_base
+
+
 def _resolve_agent_prompt(
     self,
     agent: str | None,
@@ -583,6 +620,9 @@ def _resolve_agent_prompt(
         pp = ctx._prompt_path()
         logger.debug("Prompt selection: mode=%r → %s", mode, pp)
         agent_prompt = _read_prompt_file(pp)
+    # After every branch: the worker is a default-named agent, so it takes the
+    # default contract above, and its crewmate's prompt follows that base.
+    agent_prompt = _crewmate_worker_prompt(agent or "", agent_prompt, session_key or "")
     # A built-in spec whose own prompt asks for widgets gets the widget pointer
     # here rather than as a token in its spec: kiro-cli loads that spec prompt
     # natively and a crewmate's essentials deliver it verbatim, and neither path

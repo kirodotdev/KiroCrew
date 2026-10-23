@@ -359,7 +359,10 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
         from kiro_crew.acp.session_mcp import session_mcp_projection
 
         projection = session_mcp_projection(
-            self._agent, stub_server_names=stubbed, work_dir=self._work_dir
+            self._agent,
+            stub_server_names=stubbed,
+            work_dir=self._work_dir,
+            session_key=self._session_key or "",
         )
     except Exception:
         logger.warning(

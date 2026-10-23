@@ -568,14 +568,18 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
             f"{_member_capable_backend_names()}, or reset the member's "
             "Capabilities page, then start a new chat."
         )
-        _err_meta = _terminal_error_meta(exc)
-    elif isinstance(exc, CapabilityStartupError) and str(exc) == "worker_kit_harness_unsupported":
-        from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
+        from kiro_crew.members import is_crewmate_worker_session
 
-        _err_text = "worker_kit_harness_unsupported: " + (
-            worker_kit_backend_refusal(crewmate_worker_backend(KiroCrewConfig.load().agent))
-            or "this worker's backend cannot carry its kit; start a new hand-off"
-        )
+        if is_crewmate_worker_session(session_key):
+            # A crewmate's worker is refused for its kit, which only some
+            # member backends carry, so the member card's remedy does not fit.
+            from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
+
+            _worker_reason = worker_kit_backend_refusal(
+                crewmate_worker_backend(KiroCrewConfig.load().agent)
+            )
+            if _worker_reason:
+                _err_text = "capability_harness_unsupported: " + _worker_reason
         _err_meta = _terminal_error_meta(exc)
     elif (
         isinstance(exc, CapabilityStartupError) and str(exc) == "capability_tool_limits_unsupported"
