@@ -88,3 +88,33 @@ def test_projected_mcp_cleans_up_after_rpc(tmp_path, monkeypatch, rpc_error):
     process.wait.assert_called_once_with(timeout=5)
     assert process.stdin.closed and process.stdout.closed
     assert not profile.exists()
+
+
+def test_handoff_opens_a_session_over_the_projected_dashboard(tmp_path, monkeypatch):
+    """HANDOFF is the conductor's hand-off: one session_create on the dashboard
+    server (core has no session tools), its answer returned whole."""
+    core = {"name": "kirocrew-core", "command": "core-command"}
+    dashboard = {"name": "kirocrew-dashboard", "command": "dashboard-command"}
+    monkeypatch.setattr(
+        agent_sdk, "projected_session_mcp_servers", lambda *a, **k: [core, dashboard]
+    )
+    prepare = Mock(return_value=(["wrapped"], {}, None))
+    monkeypatch.setattr(scenario, "sandboxed_spawn_argv", prepare)
+    opened = {"content": [{"type": "text", "text": "Opened `chat-1`"}]}
+    replies = [{"id": 1, "result": {}}, {"id": 2, "result": opened}]
+    process = Mock(
+        stdin=io.StringIO(),
+        stdout=io.StringIO("".join(json.dumps(reply) + "\n" for reply in replies)),
+    )
+    sent: list[str] = []
+    process.stdin.write = sent.append
+    monkeypatch.setattr(scenario, "popen_limited", Mock(return_value=process))
+
+    result = scenario.respond("[[WF_E2E:HANDOFF:A]]", [], str(tmp_path))
+
+    assert json.loads(result) == opened
+    calls = [json.loads(line) for line in sent if '"tools/call"' in line]
+    assert [call["params"] for call in calls] == [
+        {"name": "session_create", "arguments": {"title": "WF_E2E A"}}
+    ]
+    assert prepare.call_args.args == (["dashboard-command"],)

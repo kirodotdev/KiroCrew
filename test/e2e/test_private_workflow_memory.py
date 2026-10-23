@@ -155,6 +155,63 @@ async def _nested_with_owner_approval(client, session, nested_source):
                     await reader
 
 
+def _next_reply(client, slot, message):
+    """Send *message* on *slot* and return the assistant reply that follows it."""
+
+    def replies():
+        messages = client.get(f"/api/chat/slots/{slot}").get("messages", [])
+        return [
+            str(m.get("content", ""))
+            for m in messages
+            if m.get("role") == "assistant" and str(m.get("content", "")).strip()
+        ]
+
+    seen = len(replies())
+    client.post("/api/chat?ws=1", {"slot": slot, "message": message})
+    current = wait_until(
+        lambda: (lambda now: now if len(now) > seen else None)(replies()),
+        timeout=max(0.0, _wait_deadline() - time.monotonic()),
+        describe=lambda: f"no reply on {slot} to {message}; last messages: "
+        + repr(
+            [
+                (m.get("role"), str(m.get("content", ""))[:300])
+                for m in client.get(f"/api/chat/slots/{slot}").get("messages", [])[-6:]
+            ]
+        )
+        + f"\n{client.diagnostics()}",
+    )
+    return current[seen]
+
+
+def _assert_private_worker_child(handle, client):
+    """Crewmate A's conductor opens a session; the child reads and writes A's store."""
+    from kiro_crew.execution_context import execution_from_record
+    from kiro_crew.history_files import transcript_stem
+
+    # The hand-off runs from A's own DM thread: only a member thread mounts the
+    # dashboard tools (``member_dispatch``); a plain chat bound to A does not.
+    slot = client.post("/api/members/workflow-e2e-a/thread", {})["slot_key"]
+    opened = _next_reply(client, slot, "[[WF_E2E:HANDOFF:A]]")
+    match = re.search(r"Opened `([^`]+)`", opened)
+    assert match, opened
+    child = match.group(1)
+    client.post("/api/chat?ws=1", {"slot": child, "message": "[[WF_E2E:WORK:A]]"})
+    work = json.loads(str(_await_assistant_reply(client, child)["content"]))
+    recall = json.dumps(work["recall"])
+    assert "WF_E2E_A_PRIVATE_LESSON" in recall, work
+    assert '"isError": true' not in json.dumps(work), work
+    for other in ("B", "V"):
+        assert f"WF_E2E_{other}_PRIVATE_LESSON" not in recall, work
+    session_file = handle.home / "sessions" / f"{transcript_stem(f'dashboard:{child}')}.jsonl"
+    with session_file.open(encoding="utf-8") as lines:
+        execution = execution_from_record(json.loads(lines.readline()))
+    config = json.loads((handle.home / "config.json").read_text(encoding="utf-8"))
+    binding = config["agents"]["workflow-e2e-a"]
+    assert execution.template_id == "kirocrew-mate-worker"
+    assert execution.store.store_id == binding["memory_store"]
+    assert execution.member_id == binding["member_id"]
+
+
 def test_private_workflows_execute_over_real_projected_mcp():
     with _booted("rich") as (handle, client):
         members = {}
@@ -204,6 +261,9 @@ def test_private_workflows_execute_over_real_projected_mcp():
         _assert_result(_finished(client, nested_id), "A")
         refused = json.dumps(nested["nested_spawn"])
         assert "starts no sub-agents" in refused, nested["nested_spawn"]
+        # The conductor hands work off with session_create instead: the child is
+        # the crewmate's worker, on its private store and member identity.
+        _assert_private_worker_child(handle, client)
         for marker in ("B", "V"):
             control_source = f'META = {{"name": "foreign control"}}\nasync def workflow(ctx):\n    return await ctx.agent("[[WF_E2E:CONTROL:{marker}:{starts["A"]}]]")\n'
             control = _post_as(

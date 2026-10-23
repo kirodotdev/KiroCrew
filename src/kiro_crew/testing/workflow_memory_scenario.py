@@ -17,7 +17,7 @@ from typing import Any
 from kiro_crew.sandbox import popen_limited, sandboxed_spawn_argv
 
 TRIGGER = re.compile(
-    r"^[ \t]*\[\[WF_E2E:(START|AUTHOR|WORK|NEST|CONTROL):([ABV])(?::(wf_\d+))?\]\][ \t]*$",
+    r"^[ \t]*\[\[WF_E2E:(START|AUTHOR|WORK|NEST|CONTROL|HANDOFF):([ABV])(?::(wf_\d+))?\]\][ \t]*$",
     re.MULTILINE,
 )
 
@@ -53,9 +53,11 @@ def respond(text: str, servers: list[dict[str, Any]], cwd: str) -> str | None:
         agent = sys.argv[sys.argv.index("--agent") + 1]
     projected = {item["name"]: item for item in projected_session_mcp_servers(agent, work_dir=cwd)}
     projected.update({item["name"]: item for item in servers})
-    core = projected.get("kirocrew-core")
+    # session_create is a dashboard tool; everything else here is core's.
+    label = "dashboard" if operation == "HANDOFF" else "core"
+    core = projected.get(f"kirocrew-{label}")
     if core is None or core.get("type", "stdio") != "stdio":
-        raise RuntimeError("The workflow canary requires the real projected core MCP transport")
+        raise RuntimeError(f"The workflow canary requires the real projected {label} MCP transport")
     env = dict(os.environ)
     env.update({item["name"]: item["value"] for item in core.get("env", [])})
     responses: queue.Queue[dict | None] = queue.Queue()
@@ -145,6 +147,16 @@ def respond(text: str, servers: list[dict[str, Any]], cwd: str) -> str | None:
                         index, "tools/call", {"name": tool, "arguments": arguments}
                     )
                 return json.dumps(results)
+            if operation == "HANDOFF":
+                # A crewmate's conductor hands work off by opening a session: the
+                # child is its worker, on the crewmate's own store.
+                return json.dumps(
+                    request(
+                        2,
+                        "tools/call",
+                        {"name": "session_create", "arguments": {"title": f"WF_E2E {marker}"}},
+                    )
+                )
             if operation == "NEST":
                 nested = request(
                     2,
