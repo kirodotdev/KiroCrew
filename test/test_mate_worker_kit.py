@@ -291,6 +291,36 @@ def test_re_copying_the_same_template_onto_a_migrated_file_changes_nothing(home)
     assert preview["changes"] == []
 
 
+@pytest.mark.parametrize(
+    ("entry", "row"),
+    [
+        ({"disabled": True}, {"section": "disabledServers", "id": "kirocrew-core"}),
+        (
+            {"command": "kc", "disabledTools": ["cron_add"]},
+            {"section": "disabledTools", "id": "@kirocrew-core/cron_add"},
+        ),
+    ],
+)
+def test_the_preview_lists_what_a_copy_restricts_on_a_base_server(home, entry, row):
+    """The base's entry wins the merge, so the limit is listed on its own, both ways."""
+    user, mates = home
+    base = {
+        "name": "kirocrew-mate-worker",
+        "prompt": "Worker base.",
+        "tools": ["@kirocrew-core"],
+        "mcpServers": {"kirocrew-core": {"command": "kc"}},
+    }
+    (mates / "kirocrew-mate-worker.json").write_text(json.dumps(base), encoding="utf-8")
+    template = {**TEMPLATE, "mcpServers": {**TEMPLATE["mcpServers"], "kirocrew-core": entry}}
+    (user / "release-bot.json").write_text(json.dumps(template), encoding="utf-8")
+
+    assert {**row, "change": "added"} in _copy()["changes"]
+
+    (user / "release-bot.json").write_text(json.dumps(TEMPLATE), encoding="utf-8")
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot", "keep_additions": False})
+    assert {**row, "change": "removed"} in preview["changes"]
+
+
 def test_a_private_copy_names_the_template_it_was_forked_from(monkeypatch):
     from kiro_crew import agent_state, mate_worker_kit
 

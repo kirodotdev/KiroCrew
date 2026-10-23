@@ -32,7 +32,7 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import dashboardReducer from '../store/dashboardSlice'
 import chatReducer from '../store/chatSlice'
 import notificationsReducer from '../store/notificationsSlice'
-import type { CapabilityView, CapabilityPreview } from '../api/crewCapabilities'
+import type { CapabilityRow, CapabilityView, CapabilityPreview } from '../api/crewCapabilities'
 
 /* Render framer-motion elements as plain DOM (same rationale as the sibling
    editor test: the dialog is an AnimatePresence child). */
@@ -367,17 +367,37 @@ describe('CrewEditorNextDialog — section rail', () => {
     expect(within(dialog).getByTestId('worker-kit-preview')).toHaveTextContent('Re-copy from template')
   })
 
-  it("counts what an owned config's worker carries, not the file's additions alone", async () => {
+  it("counts and lists the same set: what an owned config's worker carries", async () => {
+    const row = (section: CapabilityRow['section'], id: string, value: unknown = true): CapabilityRow => ({
+      section, id, label: section === 'skills' ? '' : id, state: 'inherited', present: true, value, managed: false, shared_reference: section === 'skills',
+    })
     mockCaps.get.mockResolvedValue({
       ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' },
-      worker: { tools: 17, mcpServers: 11, skills: 3 },
+      worker: {
+        rows: [
+          row('tools', 'fs_read'), row('tools', 'execute_bash'), row('tools', '@platform'),
+          row('mcpServers', 'platform', { command: 'plat' }),
+          row('skills', 'release-notes'),
+        ],
+      },
     })
     mockKit.get.mockResolvedValue({ member: 'oncall', template: 'release-captain', revision: 'r1', has_additions_since: false })
     const dialog = await openNew()
     fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
-    expect(await within(dialog).findByTestId('next-builtfrom-stat-skills')).toHaveTextContent('3')
-    expect(within(dialog).getByTestId('next-builtfrom-stat-tools')).toHaveTextContent('17')
-    expect(within(dialog).getByTestId('next-builtfrom-stat-mcp')).toHaveTextContent('11')
+    expect(await within(dialog).findByTestId('next-builtfrom-stat-skills')).toHaveTextContent('1')
+    expect(within(dialog).getByTestId('next-builtfrom-stat-tools')).toHaveTextContent('3')
+    expect(within(dialog).getByTestId('next-builtfrom-stat-mcp')).toHaveTextContent('1')
+    fireEvent.click(within(dialog).getByTestId('next-builtfrom-tab-tools'))
+    const tools = await within(dialog).findByTestId('next-builtfrom-tools')
+    // The file's own rows (CAPS_VIEW's fs_write) are not what the worker runs.
+    expect(within(tools).getByText('execute_bash')).toBeInTheDocument()
+    expect(within(tools).queryByText('fs_write')).toBeNull()
+    fireEvent.click(within(dialog).getByTestId('next-builtfrom-tab-mcp'))
+    const mcp = await within(dialog).findByTestId('next-builtfrom-mcp')
+    expect(within(mcp).getByTestId('next-mcp-row-platform')).toBeInTheDocument()
+    expect(within(mcp).queryByTestId('next-mcp-row-github')).toBeNull()
+    fireEvent.click(within(dialog).getByTestId('next-builtfrom-tab-skills'))
+    expect(within(await within(dialog).findByTestId('next-builtfrom-skills')).getByText('Release Notes')).toBeInTheDocument()
   })
 
   it('renders the General pane fields (name, built-from, workspace, color)', async () => {

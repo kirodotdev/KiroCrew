@@ -20,6 +20,7 @@ from kiro_crew.agent_capabilities import CapabilityError, CapabilityService
 
 ENV_TOKEN = "env-tok-7f3a9c2e51"
 HEADER_TOKEN = "hdr-tok-b84d01e6aa"
+REAL_WORKER_SUMMARY = mate_capabilities.worker_summary
 
 SPEC = {
     "name": "qwe",
@@ -143,3 +144,14 @@ def test_a_retain_path_onto_an_unmasked_leaf_is_refused(mate):
     with pytest.raises(CapabilityError) as exc:
         service.put("qwe", _body(view["revision"], [op]))
     assert exc.value.code == "invalid_retain_path"
+
+
+def test_the_workers_server_rows_are_masked_too(mate, monkeypatch):
+    from kiro_crew import mate_worker
+
+    service, _ = mate
+    monkeypatch.setattr(mate_capabilities, "worker_summary", REAL_WORKER_SUMMARY)
+    monkeypatch.setattr(mate_worker, "member_worker_spec", lambda member: SPEC)
+    view = service.get("qwe")
+    assert view["worker"]["rows"]
+    assert not _leaks(view)

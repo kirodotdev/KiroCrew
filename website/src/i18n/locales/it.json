@@ -19925,6 +19925,14 @@
     "change_removed": "Rimosso",
     "change_changed": "Modificato",
     "cancel": "Annulla",
-    "apply": "Applica"
+    "apply": "Applica",
+    "error_stale_revision": "La configurazione di questo compagno o il modello è cambiato dopo l'anteprima. Mostra di nuovo l'anteprima della copia.",
+    "error_revision_required": "Prima mostra l'anteprima della copia, poi applicala.",
+    "error_template_required": "Prima scegli un modello.",
+    "error_template_unreadable": "Impossibile leggere quel modello. Scegline un altro o controlla che esista ancora.",
+    "error_template_restrictions_uncarried": "Quel modello imposta regole di autorizzazione, impostazioni degli strumenti o hook che il worker non può mantenere. Scegli un altro modello.",
+    "error_invalid_spec": "Impossibile leggere il file di configurazione di questo compagno. Correggi o ripristina il file, poi riprova.",
+    "error_not_a_mate_file": "Questo compagno non ha un proprio file di configurazione, quindi non ha un kit del worker.",
+    "error_invalid_request": "Impossibile leggere la richiesta. Ricarica la pagina e riprova."
   }
 }

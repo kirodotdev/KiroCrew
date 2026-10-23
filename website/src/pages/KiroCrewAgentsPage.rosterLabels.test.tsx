@@ -112,7 +112,10 @@ describe.each<CrewView>(['cards', 'list'])('crew roster labels (%s)', view => {
     mockKit.get.mockRejectedValue(new ApiError(500, 'invalid_spec', JSON.stringify({ error: 'invalid_spec', code: 'invalid_spec' })))
     renderRoster([ADA], view)
     const ada = holder('Ada', view)
-    await waitFor(() => expect(within(ada).getByTestId('crew-built-from-error')).toBeInTheDocument())
+    const notice = await within(ada).findByTestId('crew-built-from-error')
     expect(builtFrom(ada).textContent ?? '').not.toContain(i18nT('pages.membersPage.built_from_default', { agent: 'kirocrew' }))
+    // The refusal's code reads as a sentence, never as the code itself.
+    expect(notice).toHaveTextContent(i18nT('crewWorkerKit.error_invalid_spec'))
+    expect(notice).not.toHaveTextContent('invalid_spec')
   })
 })

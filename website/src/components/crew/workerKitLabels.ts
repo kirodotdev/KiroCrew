@@ -45,6 +45,7 @@ export function changeLabel(change: Pick<WorkerKitChange, 'section' | 'id'>): st
       return skillLabel(change.id)
     case 'allowedTools':
     case 'excludedTools':
+    case 'disabledTools':
     case 'tools':
       return approvalLabel(change.id)
     default:

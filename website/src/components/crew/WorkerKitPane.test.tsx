@@ -28,6 +28,7 @@ vi.mock('../SimpleSelect', () => ({
 }))
 
 import WorkerKitPane from './WorkerKitPane'
+import { ApiError } from '../../api/apiError'
 
 const PREVIEW = {
   member: 'pixel',
@@ -126,6 +127,65 @@ describe('WorkerKitPane', () => {
     await waitFor(() => expect(mockKit.apply).toHaveBeenCalledWith('pixel', {
       template: 'release-bot', keep_additions: false, revision: 'rev-1',
     }))
+  })
+
+  it('names a limit the copy sets on a server the worker already has', async () => {
+    mockKit.preview.mockResolvedValue({
+      ...PREVIEW,
+      changes: [
+        { section: 'disabledServers', id: 'kirocrew-core', change: 'added' },
+        { section: 'disabledTools', id: '@kirocrew-core/cron_add', change: 'added' },
+      ],
+    })
+    renderPane()
+    await screen.findByTestId('worker-kit-current')
+    fireEvent.click(screen.getByRole('option', { name: 'release-bot' }))
+    fireEvent.click(screen.getByTestId('worker-kit-preview'))
+    const changes = await screen.findByTestId('worker-kit-changes')
+    const rows = within(changes).getAllByRole('listitem')
+    expect(rows.map(r => r.textContent)).toEqual([
+      'AddedTurned offkirocrew-core',
+      'AddedTurned offcron_add on kirocrew-core',
+    ])
+  })
+
+  it.each([
+    ['stale_revision', 'changed after the preview. Preview the copy again.'],
+    ['template_restrictions_uncarried', "hooks the worker can't keep. Choose another template."],
+    ['template_unreadable', "That template can't be read."],
+  ])('says what a %s refusal means, never the code', async (code, text) => {
+    mockKit.apply.mockRejectedValue(new ApiError(409, code, JSON.stringify({ error: code, code })))
+    renderPane()
+    await screen.findByTestId('worker-kit-current')
+    fireEvent.click(screen.getByRole('option', { name: 'release-bot' }))
+    fireEvent.click(screen.getByTestId('worker-kit-preview'))
+    await screen.findByTestId('worker-kit-changes')
+    fireEvent.click(screen.getByTestId('worker-kit-apply'))
+    const notice = await screen.findByTestId('worker-kit-error')
+    expect(notice).toHaveTextContent(text)
+    expect(notice).not.toHaveTextContent(code)
+  })
+
+  it('drops a stale preview so the next step is a fresh one', async () => {
+    mockKit.apply.mockRejectedValue(new ApiError(409, 'stale_revision', '{"error":"stale_revision","code":"stale_revision"}'))
+    renderPane()
+    await screen.findByTestId('worker-kit-current')
+    fireEvent.click(screen.getByRole('option', { name: 'release-bot' }))
+    fireEvent.click(screen.getByTestId('worker-kit-preview'))
+    await screen.findByTestId('worker-kit-changes')
+    fireEvent.click(screen.getByTestId('worker-kit-apply'))
+    await screen.findByTestId('worker-kit-error')
+    expect(screen.queryByTestId('worker-kit-changes')).toBeNull()
+    expect(screen.getByTestId('worker-kit-preview')).toBeEnabled()
+  })
+
+  it('keeps a readable message the transport already made', async () => {
+    mockKit.preview.mockRejectedValue(new ApiError(403, 'Only the owner can do this.', '{"error":"Only the owner can do this."}'))
+    renderPane()
+    await screen.findByTestId('worker-kit-current')
+    fireEvent.click(screen.getByRole('option', { name: 'release-bot' }))
+    fireEvent.click(screen.getByTestId('worker-kit-preview'))
+    expect(await screen.findByTestId('worker-kit-error')).toHaveTextContent('Only the owner can do this.')
   })
 
   it('does not ask about additions when there are none', async () => {

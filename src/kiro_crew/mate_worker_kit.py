@@ -147,6 +147,10 @@ def _layered(template: dict[str, Any], kept: dict[str, Any]) -> dict[str, Any]:
     return kit
 
 
+#: What a worker kit restricts on the worker base's own servers (``_worker_kit``).
+_BASE_RESTRICTION_KEYS = ("disabledTools", "disabledServers")
+
+
 def _changes(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str, str]]:
     """One row per kit item that the write would add, remove or change."""
     rows: list[dict[str, str]] = []
@@ -162,8 +166,8 @@ def _changes(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str, st
             else:
                 change = "changed"
             rows.append({"section": "mcpServers", "id": name, "change": change})
-    for key in ("resources", "skills", "allowedTools", "tools"):
-        old_set, new_set = set(before[key]), set(after[key])
+    for key in ("resources", "skills", "allowedTools", "tools", *_BASE_RESTRICTION_KEYS):
+        old_set, new_set = set(before.get(key, ())), set(after.get(key, ()))
         for item in sorted(new_set - old_set):
             rows.append({"section": key, "id": item, "change": "added"})
         for item in sorted(old_set - new_set):
@@ -325,7 +329,15 @@ def _worker_kit(spec: dict[str, Any], base: dict[str, Any] | None) -> dict[str, 
         return _kit_of(spec)
     from kiro_crew.mate_worker import worker_additions
 
-    return _kit_of(worker_additions(base, _kit_of(spec)))
+    additions = worker_additions(base, _kit_of(spec))
+    kit = _kit_of(additions)
+    # The base's own entry wins the merge for a server it declares, so what the
+    # file restricts on it is not in ``mcpServers``: list those limits on their own.
+    kit["disabledTools"] = [
+        ref for ref in additions["disabledTools"] if _server_of(ref) not in kit["mcpServers"]
+    ]
+    kit["disabledServers"] = list(additions["disabledServers"])
+    return kit
 
 
 def _worker_base_or_none() -> dict[str, Any] | None:

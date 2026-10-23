@@ -19925,6 +19925,14 @@
     "change_removed": "Supprimé",
     "change_changed": "Modifié",
     "cancel": "Annuler",
-    "apply": "Appliquer"
+    "apply": "Appliquer",
+    "error_stale_revision": "La configuration de ce coéquipier ou le modèle a changé après l'aperçu. Affiche de nouveau l'aperçu de la copie.",
+    "error_revision_required": "Affiche d'abord l'aperçu de la copie, puis applique-la.",
+    "error_template_required": "Choisis d'abord un modèle.",
+    "error_template_unreadable": "Impossible de lire ce modèle. Choisis-en un autre, ou vérifie qu'il existe toujours.",
+    "error_template_restrictions_uncarried": "Ce modèle définit des règles d'autorisation, des réglages d'outils ou des hooks que le travailleur ne peut pas garder. Choisis un autre modèle.",
+    "error_invalid_spec": "Impossible de lire le fichier de configuration de ce coéquipier. Corrige ou restaure le fichier, puis réessaie.",
+    "error_not_a_mate_file": "Ce coéquipier n'a pas son propre fichier de configuration, il n'a donc pas de kit du travailleur.",
+    "error_invalid_request": "Impossible de lire la requête. Recharge la page et réessaie."
   }
 }

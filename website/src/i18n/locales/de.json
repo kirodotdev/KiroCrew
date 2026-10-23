@@ -19632,6 +19632,14 @@
     "change_removed": "Entfernt",
     "change_changed": "Geändert",
     "cancel": "Abbrechen",
-    "apply": "Übernehmen"
+    "apply": "Übernehmen",
+    "error_stale_revision": "Die Konfiguration dieses Crew-Kameraden oder die Vorlage hat sich nach der Vorschau geändert. Zeig die Vorschau der Kopie noch einmal an.",
+    "error_revision_required": "Zeig zuerst die Vorschau der Kopie an und wende sie dann an.",
+    "error_template_required": "Wähle zuerst eine Vorlage.",
+    "error_template_unreadable": "Diese Vorlage kann nicht gelesen werden. Wähle eine andere oder prüfe, ob sie noch existiert.",
+    "error_template_restrictions_uncarried": "Diese Vorlage legt Berechtigungsregeln, Tool-Einstellungen oder Hooks fest, die der Worker nicht behalten kann. Wähle eine andere Vorlage.",
+    "error_invalid_spec": "Die Konfigurationsdatei dieses Crew-Kameraden kann nicht gelesen werden. Repariere oder stelle die Datei wieder her und versuch es dann erneut.",
+    "error_not_a_mate_file": "Dieser Crew-Kamerad hat keine eigene Konfigurationsdatei und daher kein Worker-Kit.",
+    "error_invalid_request": "Die Anfrage konnte nicht gelesen werden. Lade die Seite neu und versuch es erneut."
   }
 }

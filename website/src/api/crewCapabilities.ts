@@ -25,8 +25,9 @@ export interface CapabilityView {
   /** Set when a member chat on the backend `setting` resolves to would refuse
    * this spec. A warning only: the save still lands. */
   backend_warning?: CapabilityBackendWarning | null
-  /** A crewmate that owns its file: what its WORKER carries (base merged with the file). */
-  worker?: { tools: number; mcpServers: number; skills: number } | null
+  /** A crewmate that owns its file: what its WORKER carries (base merged with
+   * the file), as the rows Built From both lists and counts. */
+  worker?: { rows: CapabilityRow[] } | null
   /** Set when Stop following would be refused for this saved setup, so the pane can say so up front. */
   detach_blocked?: 'detach_tool_limits_unkept' | 'detach_removal_unkept' | null
   /** Stopping would turn the global mcp.json merge off for the kept copy; the owner confirms it. */
@@ -84,7 +85,8 @@ export interface WorkerKitView {
   has_additions_since: boolean
 }
 export interface WorkerKitChange {
-  section: 'prompt' | 'mcpServers' | 'resources' | 'skills' | 'allowedTools' | 'excludedTools' | 'tools'
+  /** `disabledTools` / `disabledServers`: a limit on a server the worker base declares. */
+  section: 'prompt' | 'mcpServers' | 'resources' | 'skills' | 'allowedTools' | 'excludedTools' | 'disabledTools' | 'disabledServers' | 'tools'
   id: string
   change: 'added' | 'removed' | 'changed'
 }

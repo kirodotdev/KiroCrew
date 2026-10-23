@@ -9712,6 +9712,14 @@
     "change_removed": "Removed",
     "change_changed": "Changed",
     "cancel": "Cancel",
-    "apply": "Apply"
+    "apply": "Apply",
+    "error_stale_revision": "This crewmate's config or the template changed after the preview. Preview the copy again.",
+    "error_revision_required": "Preview the copy first, then apply it.",
+    "error_template_required": "Choose a template first.",
+    "error_template_unreadable": "That template can't be read. Choose another one, or check that it still exists.",
+    "error_template_restrictions_uncarried": "That template sets permission rules, tool settings or hooks the worker can't keep. Choose another template.",
+    "error_invalid_spec": "This crewmate's config file can't be read. Fix or restore the file, then try again.",
+    "error_not_a_mate_file": "This crewmate has no config file of its own, so it has no worker kit.",
+    "error_invalid_request": "The request couldn't be read. Reload the page and try again."
   }
 }

@@ -19925,6 +19925,14 @@
     "change_removed": "Eliminado",
     "change_changed": "Cambiado",
     "cancel": "Cancelar",
-    "apply": "Aplicar"
+    "apply": "Aplicar",
+    "error_stale_revision": "La configuración de este compañero o la plantilla cambió después de la vista previa. Vuelve a previsualizar la copia.",
+    "error_revision_required": "Primero previsualiza la copia y luego aplícala.",
+    "error_template_required": "Primero elige una plantilla.",
+    "error_template_unreadable": "No se puede leer esa plantilla. Elige otra o comprueba que todavía existe.",
+    "error_template_restrictions_uncarried": "Esa plantilla define reglas de permisos, ajustes de herramientas o hooks que el trabajador no puede conservar. Elige otra plantilla.",
+    "error_invalid_spec": "No se puede leer el archivo de configuración de este compañero. Corrige o restaura el archivo y vuelve a intentarlo.",
+    "error_not_a_mate_file": "Este compañero no tiene un archivo de configuración propio, así que no tiene kit del trabajador.",
+    "error_invalid_request": "No se pudo leer la solicitud. Recarga la página y vuelve a intentarlo."
   }
 }

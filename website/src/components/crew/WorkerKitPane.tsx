@@ -17,6 +17,8 @@ import ErrorNotice from '../ErrorNotice'
 import { i18nT } from '../../i18n/t'
 import { kitTemplateName, templateDisplayName } from './builtFromName'
 import { changeLabel } from './workerKitLabels'
+import { workerKitErrorText } from './workerKitErrors'
+import { apiErrorCode } from '../../api/apiError'
 import {
   crewCapabilitiesKey,
   crewWorkerKitApi,
@@ -32,17 +34,14 @@ const SECTION_KEYS: Record<WorkerKitChange['section'], string> = {
   skills: 'crewWorkerKit.section_skill',
   allowedTools: 'crewWorkerKit.section_approval',
   excludedTools: 'crewWorkerKit.section_excluded',
+  disabledTools: 'crewWorkerKit.section_excluded',
+  disabledServers: 'crewWorkerKit.section_excluded',
   tools: 'crewWorkerKit.section_mcp',
 }
 const CHANGE_KEYS: Record<WorkerKitChange['change'], string> = {
   added: 'crewWorkerKit.change_added',
   removed: 'crewWorkerKit.change_removed',
   changed: 'crewWorkerKit.change_changed',
-}
-
-function errorText(err: unknown): string | null {
-  if (!err) return null
-  return err instanceof Error ? err.message : String(err)
 }
 
 export default function WorkerKitPane({
@@ -109,6 +108,9 @@ export default function WorkerKitPane({
         queryClient.invalidateQueries({ queryKey: crewCapabilitiesKey(member) }),
       ])
     } catch (e) {
+      // The preview no longer matches the file or the template: it cannot be
+      // applied, so it goes, and the message asks for a fresh one.
+      if (apiErrorCode(e) === 'stale_revision') setPreview(null)
       setErr(e)
     } finally {
       setBusy(false)
@@ -134,7 +136,7 @@ export default function WorkerKitPane({
       {/* No hand-off: the pane holds an unconfirmed preview; the hand-off would
           navigate away from the open editor and lose it. */}
       <ErrorNotice
-        message={errorText(kitQuery.error) ?? errorText(err)}
+        message={workerKitErrorText(kitQuery.error) ?? workerKitErrorText(err)}
         variant="inline"
         askAgent={false}
         testId="worker-kit-error"

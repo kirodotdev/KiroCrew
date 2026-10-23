@@ -19339,6 +19339,14 @@
     "change_removed": "已移除",
     "change_changed": "已更改",
     "cancel": "取消",
-    "apply": "应用"
+    "apply": "应用",
+    "error_stale_revision": "预览之后，此队友的配置或模板发生了变化。请重新预览这次复制。",
+    "error_revision_required": "先预览这次复制，再应用。",
+    "error_template_required": "先选择一个模板。",
+    "error_template_unreadable": "无法读取这个模板。换一个模板，或检查它是否还在。",
+    "error_template_restrictions_uncarried": "这个模板设置了工作者无法保留的权限规则、工具设置或钩子。请换一个模板。",
+    "error_invalid_spec": "无法读取此队友的配置文件。修复或恢复该文件后再试一次。",
+    "error_not_a_mate_file": "此队友没有自己的配置文件，所以没有工作者套件。",
+    "error_invalid_request": "无法读取这个请求。刷新页面后再试一次。"
   }
 }

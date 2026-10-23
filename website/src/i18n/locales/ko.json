@@ -19339,6 +19339,14 @@
     "change_removed": "제거됨",
     "change_changed": "변경됨",
     "cancel": "취소",
-    "apply": "적용"
+    "apply": "적용",
+    "error_stale_revision": "미리 보기 이후 이 크루메이트의 설정이나 템플릿이 바뀌었습니다. 복사 미리 보기를 다시 확인하세요.",
+    "error_revision_required": "먼저 복사 미리 보기를 확인한 다음 적용하세요.",
+    "error_template_required": "먼저 템플릿을 선택하세요.",
+    "error_template_unreadable": "이 템플릿을 읽을 수 없습니다. 다른 템플릿을 선택하거나 아직 있는지 확인하세요.",
+    "error_template_restrictions_uncarried": "이 템플릿에는 워커가 유지할 수 없는 권한 규칙, 도구 설정 또는 훅이 있습니다. 다른 템플릿을 선택하세요.",
+    "error_invalid_spec": "이 크루메이트의 설정 파일을 읽을 수 없습니다. 파일을 고치거나 복원한 다음 다시 시도하세요.",
+    "error_not_a_mate_file": "이 크루메이트에는 자체 설정 파일이 없으므로 워커 키트도 없습니다.",
+    "error_invalid_request": "요청을 읽을 수 없습니다. 페이지를 새로 고친 다음 다시 시도하세요."
   }
 }

@@ -11,6 +11,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { i18nT } from '../../i18n/t'
 import { crewWorkerKitApi, crewWorkerKitKey, type WorkerKitView } from '../../api/crewCapabilities'
+import { workerKitErrorText } from './workerKitErrors'
 
 /** The built-in template a crewmate starts from unless another is picked. */
 export const DEFAULT_TEMPLATE = 'kirocrew'
@@ -51,10 +52,7 @@ export function useBuiltFromName({
     retry: false,
   })
   if (!ownsFile) return { name: templateDisplayName(kiroAgent), error: null }
-  if (kit.isError) {
-    const err = kit.error
-    return { name: '', error: err instanceof Error ? err.message : String(err) }
-  }
+  if (kit.isError) return { name: '', error: workerKitErrorText(kit.error) }
   return { name: kitTemplateName(kit.data) ?? templateDisplayName(DEFAULT_TEMPLATE), error: null }
 }
 

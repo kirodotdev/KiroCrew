@@ -473,9 +473,9 @@ export default function CrewEditorNextDialog({
   // from, and the General switcher (which would repoint the binding away from
   // the file) gives way to Advanced > Re-copy from template.
   const ownsFile = capsQuery.data?.mode === 'mate'
-  // A crewmate that owns its file: its file holds only additions, so the
-  // summary counts what its worker carries.
-  const workerCounts = ownsFile ? capsQuery.data?.worker ?? null : null
+  // A crewmate that owns its file: its file holds only additions, so Built
+  // From's summary AND its lists read what its worker carries, one set.
+  const builtFromRows = (ownsFile ? capsQuery.data?.worker?.rows : null) ?? capsQuery.data?.rows ?? []
   const { name: builtFromName, error: builtFromError } = useBuiltFromName({ member: ctl.editing, kiroAgent: ctl.kiroAgent, ownsFile, enabled: ctl.open })
   const { confirm, confirmDialog } = useConfirm()
 
@@ -581,7 +581,7 @@ export default function CrewEditorNextDialog({
   const caps = capsQuery.data
   // Tools auto-approved to run without a prompt: present rows in `allowedTools`.
   const autoApprovedTools = new Set(
-    (caps?.rows ?? []).filter(r => r.section === 'allowedTools' && r.present).map(r => r.id),
+    builtFromRows.filter(r => r.section === 'allowedTools' && r.present).map(r => r.id),
   )
 
   const sections: { key: NextSection; label: string }[] = [
@@ -943,9 +943,9 @@ export default function CrewEditorNextDialog({
                                 two-action cap. */}
                             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                               {([
-                                { tab: 'tools' as const, label: i18nT('crewEditorNext.tab_tools'), n: workerCounts?.tools ?? presentRows(caps.rows, 'tools').length },
-                                { tab: 'mcp' as const, label: i18nT('crewEditorNext.stat_mcp_servers'), n: workerCounts?.mcpServers ?? presentRows(caps.rows, 'mcpServers').length },
-                                { tab: 'skills' as const, label: i18nT('crewEditorNext.tab_skills'), n: workerCounts?.skills ?? presentRows(caps.rows, 'skills').length },
+                                { tab: 'tools' as const, label: i18nT('crewEditorNext.tab_tools'), n: presentRows(builtFromRows, 'tools').length },
+                                { tab: 'mcp' as const, label: i18nT('crewEditorNext.stat_mcp_servers'), n: presentRows(builtFromRows, 'mcpServers').length },
+                                { tab: 'skills' as const, label: i18nT('crewEditorNext.tab_skills'), n: presentRows(builtFromRows, 'skills').length },
                               ]).map(stat => (
                                 <div
                                   key={stat.tab}
@@ -992,18 +992,18 @@ export default function CrewEditorNextDialog({
                         )}
                         {builtFromTab === 'tools' && (
                           <ToolsTab
-                            rows={presentRows(caps.rows, 'tools')}
+                            rows={presentRows(builtFromRows, 'tools')}
                             autoApproved={autoApprovedTools}
                             filter={toolFilter}
                             onFilter={setToolFilter}
                           />
                         )}
                         {builtFromTab === 'mcp' && (
-                          <McpServersTab rows={presentRows(caps.rows, 'mcpServers')} />
+                          <McpServersTab rows={presentRows(builtFromRows, 'mcpServers')} />
                         )}
                         {builtFromTab === 'skills' && (
                           <SkillsTab
-                            rows={presentRows(caps.rows, 'skills')}
+                            rows={presentRows(builtFromRows, 'skills')}
                             filter={skillFilter}
                             onFilter={setSkillFilter}
                           />

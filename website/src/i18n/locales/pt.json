@@ -19925,6 +19925,14 @@
     "change_removed": "Removido",
     "change_changed": "Alterado",
     "cancel": "Cancelar",
-    "apply": "Aplicar"
+    "apply": "Aplicar",
+    "error_stale_revision": "A configuração deste colega ou o modelo mudou depois da prévia. Veja a prévia da cópia de novo.",
+    "error_revision_required": "Primeiro veja a prévia da cópia e depois aplique.",
+    "error_template_required": "Escolha um modelo primeiro.",
+    "error_template_unreadable": "Não foi possível ler esse modelo. Escolha outro ou verifique se ele ainda existe.",
+    "error_template_restrictions_uncarried": "Esse modelo define regras de permissão, configurações de ferramentas ou hooks que o trabalhador não consegue manter. Escolha outro modelo.",
+    "error_invalid_spec": "Não foi possível ler o arquivo de configuração deste colega. Corrija ou restaure o arquivo e tente de novo.",
+    "error_not_a_mate_file": "Este colega não tem um arquivo de configuração próprio, então não tem kit do trabalhador.",
+    "error_invalid_request": "Não foi possível ler a solicitação. Recarregue a página e tente de novo."
   }
 }

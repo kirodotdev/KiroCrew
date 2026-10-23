@@ -15,6 +15,7 @@ import { ApiError } from '../api/apiError'
 import { parseErrorCode } from '../utils/errorReport'
 import { crewWorkerKitApi, crewWorkerKitKey } from '../api/crewCapabilities'
 import { DEFAULT_TEMPLATE, kitTemplateName, templateDisplayName } from '../components/crew/builtFromName'
+import { workerKitErrorText } from '../components/crew/workerKitErrors'
 import { memberMemoryState } from './KiroCrewAgentsPageFields'
 
 export type MemoryStores = Record<string, { memory_version?: number; owner_member?: string }>
@@ -52,7 +53,7 @@ export function useRosterBuiltFrom(agent: { name: string; kiro_agent: string }):
     if (err instanceof ApiError && parseErrorCode(err.body) === 'not_a_mate_file') {
       return { label: templateDisplayName(agent.kiro_agent), error: null }
     }
-    return { label: '', error: err instanceof Error ? err.message : String(err) }
+    return { label: '', error: workerKitErrorText(err) }
   }
   if (!kit.data) return { label: '', error: null }
   return { label: kitTemplateName(kit.data) ?? templateDisplayName(DEFAULT_TEMPLATE), error: null }
