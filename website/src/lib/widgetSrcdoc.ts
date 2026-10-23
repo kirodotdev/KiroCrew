@@ -1060,11 +1060,25 @@ export function resolveWidgetTheme(
   return { themeVars, mode }
 }
 
+/** Common "surface" names no theme defines, pointed at the injected names they
+ * mean. A widget reaching for `var(--surface, #1e1e1e)` otherwise always gets
+ * its dark literal, which is unreadable under a light theme. Each alias is a
+ * `var()` reference, so it follows the theme (and the light-canvas fallback),
+ * and when its target is missing the widget's own fallback still applies. */
+const THEME_VAR_ALIASES: Readonly<Record<string, (typeof THEME_VAR_NAMES)[number]>> = {
+  '--surface': '--card',
+  '--surface-secondary': '--bg-elevated',
+}
+
 function buildThemeCss(vars: Record<string, string>, mode: 'dark' | 'light'): string {
-  const rootBody = Object.entries(vars).map(([k, v]) => `${k}:${v}`).join(';')
+  const declarations = Object.entries(vars).map(([k, v]) => `${k}:${v}`)
   // No readable vars means no theme to apply, and inventing one is worse than
   // the browser's own defaults — a guard pins that this path emits no `:root`.
-  if (!rootBody) return ''
+  if (!declarations.length) return ''
+  for (const [alias, target] of Object.entries(THEME_VAR_ALIASES)) {
+    if (!(alias in vars)) declarations.push(`${alias}:var(${target})`)
+  }
+  const rootBody = declarations.join(';')
   return (
     `:root{${rootBody};color-scheme:${mode}}` +
     // On the root element as well as the body: background propagates from html

@@ -32,6 +32,32 @@ describe('widgetSrcdoc', () => {
     expect(out).toContain('color-scheme:dark')
   })
 
+  it('aliases --surface to --card and --surface-secondary to --bg-elevated', () => {
+    const out = buildSrcdoc({
+      html: '<div style="background:var(--surface-secondary, #2a2a2a)">x</div>',
+      themeVars: { '--bg': '#fff', '--card': '#fafafa', '--bg-elevated': '#f5f5f5' },
+      mode: 'light',
+    })
+    expect(out).toContain('--surface:var(--card)')
+    expect(out).toContain('--surface-secondary:var(--bg-elevated)')
+  })
+
+  it('keeps a --surface value the caller passed instead of aliasing it', () => {
+    const out = buildSrcdoc({
+      html: '<x/>',
+      themeVars: { '--card': '#fafafa', '--surface': '#eeeeee' },
+      mode: 'light',
+    })
+    expect(out).toContain('--surface:#eeeeee')
+    expect(out).not.toContain('--surface:var(--card)')
+    expect(out).toContain('--surface-secondary:var(--bg-elevated)')
+  })
+
+  it('emits no aliases when there are no theme vars to apply', () => {
+    const out = buildSrcdoc({ html: '<x/>', themeVars: {}, mode: 'light' })
+    expect(out).not.toContain('--surface')
+  })
+
   it('omits the height reporter by default', () => {
     const out = buildSrcdoc({ html: '', themeVars: {}, mode: 'light' })
     expect(out).not.toContain('mc-widget-height')
