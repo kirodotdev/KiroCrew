@@ -222,6 +222,21 @@ describe('code channel crew: workers fold under the conductor row', () => {
     expect(rowOf('w1 title')).not.toBeNull()
     expect(screen.queryByTestId('code-channel-crew-toggle')).toBeNull()
   })
+
+  it('a title-only card keeps the crew state, the channel badge and the fold on its title line', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ compactSessionCards: true }))
+    renderSidebar([
+      conductorRow(),
+      workerRow('w2', { pending_approval: true, running: true, last_message: 'approve git push' }),
+    ])
+    const title = rowOf('cond title')!.querySelector('[data-session-title]') as HTMLElement
+    expect(within(rowOf('cond title')!).queryByTestId('code-channel-crew-state')).toBeNull()
+    const marker = within(title).getByTestId('session-compact-attention')
+    expect(marker.getAttribute('data-state')).toBe('code_channel_crew')
+    expect(marker.getAttribute('aria-label')).toBe(i18nT('pages.chatSidebar.needs_approval'))
+    expect(within(title).getByTestId('code-channel-crew-toggle')).toHaveAccessibleName('Show 1 worker session')
+    expect(within(title).getByRole('link', { name: /fix-kirocrew-issue-22452/ })).toBeInTheDocument()
+  })
 })
 
 describe('code channel crew: the optional work_aggregate on the conductor slot', () => {

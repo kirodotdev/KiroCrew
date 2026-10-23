@@ -1120,6 +1120,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_count_includes_subfolders')} hint={i18nT('pages.settings.chatPanel.folder_count_includes_subfolders_description')} checked={chatCfg.countSubfolderContents} onChange={v => setChat('countSubfolderContents', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.full_titles_on_scroll')} hint={i18nT('pages.settings.chatPanel.full_titles_on_scroll_description')} checked={chatCfg.fullTitlesOnScroll} onChange={v => setChat('fullTitlesOnScroll', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.needs_me_hover_card')} hint={i18nT('pages.settings.chatPanel.needs_me_hover_card_hint')} checked={chatCfg.needsMeHoverCard} onChange={v => setChat('needsMeHoverCard', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.compact_session_cards')} description={i18nT('pages.settings.chatPanel.compact_session_cards_desc')} checked={chatCfg.compactSessionCards} onChange={v => setChat('compactSessionCards', v)} />
           <SettingsSelect
             label={i18nT('settings.chat.defaultMemoryMode.label')}
             description={i18nT('settings.chat.defaultMemoryMode.description_summary')}
