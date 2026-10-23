@@ -3657,7 +3657,17 @@ stamped by `session_send`), the thread is woken with ONE hidden turn
 `report_prompt`: the `[Worker report]` envelope, the worker's title and key, and
 its reply scrubbed (`member_goals.scrub_text`), capped at 4,000 characters (held
 cut, with its cut flag) and fenced between `<<<worker reply` / `>>>end of worker
-reply` as data. Transcript metadata alone wakes nothing. A busy thread keeps one
+reply` as data. The wake ends on one Dashboard line (`page_line`, read off the
+loop just before the turn starts), because a worker report is where a dispatched
+job's state changes and the check-ins that otherwise ask for the page run only
+with a goal and a switch on: a page in force with fields the crewmate writes
+gets `worker_report.dashboard_fields`, naming those fields and asking for them
+to be written with `dashboard_write` before the turn ends; a tab still on the
+suggestions page gets `dashboard_agentic.SUGGESTIONS_LINE`; no line with
+`agent.crew_panel` off, under the lock while the tab shows suggestions, or for a
+page whose every field is folded. A thread closed (`is_closing`), removed or
+replaced while that read runs gets no wake, and its reports stay pending.
+Transcript metadata alone wakes nothing. A busy thread keeps one
 pending report per worker (`_mate_wakes`, counting turns) and its flush waits on
 the thread's own turn task, so a report is delivered once, never twice; pending
 reports live in memory. While the app is stopping

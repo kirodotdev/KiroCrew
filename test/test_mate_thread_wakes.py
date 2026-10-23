@@ -51,6 +51,8 @@ def dispatched(monkeypatch):
         calls.append((slot.key, prompt))
 
     monkeypatch.setattr("kiro_crew.dashboard.mate_welcome.dispatch_hidden_turn", dispatch)
+    # The Dashboard line has its own tests below; the wake path is pinned without it.
+    monkeypatch.setattr(wakes, "page_line", lambda slug: "", raising=False)
     return calls
 
 
@@ -304,3 +306,98 @@ def test_a_worker_gap_is_asked_for_on_the_users_next_turn():
 
     assert "capabilities" not in member_self.OWN_GOAL_PROPOSALS
     assert "next message" in wakes._missing_capability_line("jira")
+
+
+def _page(
+    monkeypatch, *, panel=True, suggestions=False, locked=False, fields=("for_you", "verdict")
+):
+    """Stub the page lookups ``page_line`` reads, so each test names the tab's state."""
+    from kiro_crew import dashboard_agentic
+    from kiro_crew.dashboard_templates import instance as template_instance
+
+    manifest = object()
+    monkeypatch.setattr(members_mod, "crew_panel_enabled", lambda: panel)
+    monkeypatch.setattr(dashboard_agentic, "tab_shows_suggestions", lambda slug: suggestions)
+    monkeypatch.setattr(template_instance, "is_locked", lambda slug: locked)
+    monkeypatch.setattr(
+        dashboard_agentic, "page_in_force", lambda slug: (object(), manifest) if fields else None
+    )
+    monkeypatch.setattr(
+        dashboard_agentic,
+        "agentic_fields",
+        lambda m: {n: None for n in fields} if m is manifest else {},
+    )
+
+
+def test_a_report_on_a_page_names_its_fields_to_write_this_turn(monkeypatch):
+    """A one-shot job's news reaches the page: no check-in runs without a goal and a switch."""
+    _page(monkeypatch, fields=("verdict", "for_you", "ci"))
+    line = wakes.page_line("atlas")
+    assert "ci, for_you, verdict" in line
+    assert "dashboard_write" in line and "Before you end this turn" in line
+    prompt = wakes.report_prompt([{"key": "k", "title": "t", "reply": "done", "turns": 1}])
+    assert wakes.with_page(prompt, line) == f"{prompt}\n\n{line}"
+    assert wakes.with_page(prompt, "") == prompt
+
+
+def test_a_report_on_the_suggestions_page_carries_the_build_line(monkeypatch):
+    from kiro_crew import dashboard_agentic
+
+    _page(monkeypatch, suggestions=True)
+    assert wakes.page_line("atlas") == dashboard_agentic.SUGGESTIONS_LINE
+    _page(monkeypatch, suggestions=True, locked=True)
+    assert wakes.page_line("atlas") == ""
+
+
+def test_no_page_line_without_page_tools_or_fields(monkeypatch):
+    _page(monkeypatch, panel=False)
+    assert wakes.page_line("atlas") == ""
+    _page(monkeypatch, fields=())
+    assert wakes.page_line("atlas") == ""
+    assert wakes.page_line("") == ""
+
+
+@pytest.mark.asyncio
+async def test_the_wake_a_worker_report_starts_carries_the_page_line(monkeypatch):
+    calls: list[str] = []
+    seen: list[str] = []
+
+    def dispatch(state, slot, prompt, *, human_seen, heartbeat=False):
+        calls.append(prompt)
+
+    def line(slug: str) -> str:
+        seen.append(slug)
+        return "PAGE LINE"
+
+    monkeypatch.setattr("kiro_crew.dashboard.mate_welcome.dispatch_hidden_turn", dispatch)
+    monkeypatch.setattr(wakes, "page_line", line, raising=False)
+    mate, worker = _crewmate(), _worker()
+    state = _State(mate, worker)
+
+    wakes.note_turn_end(state, worker, "Fixed; 3/3 suites pass.")
+    await _settle(state)
+    assert seen == ["atlas"]
+    assert len(calls) == 1 and calls[0].endswith("\n\nPAGE LINE")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["closing", "removed", "replaced"])
+async def test_a_thread_closed_during_the_page_read_gets_no_wake(dispatched, monkeypatch, how):
+    """The page read is a thread hop: a close or a new generation in it wins, reports stay."""
+    mate, worker = _crewmate(), _worker()
+    state = _State(mate, worker)
+
+    def close_during_read(slug: str) -> str:
+        if how == "closing":
+            mate.is_closing = True
+        elif how == "removed":
+            del state._slots[mate.key]
+        else:
+            state._slots[mate.key] = _crewmate()
+        return "PAGE LINE"
+
+    monkeypatch.setattr(wakes, "page_line", close_during_read, raising=False)
+    wakes.note_turn_end(state, worker, "Fixed; 3/3 suites pass.")
+    await _settle(state)
+    assert dispatched == []
+    assert list(wakes._pending(state)[mate.key]) == [worker.key]

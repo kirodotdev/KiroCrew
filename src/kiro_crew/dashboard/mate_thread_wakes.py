@@ -128,6 +128,48 @@ def reporting_creator(state: Any, slot: Any) -> Any:
     return creator
 
 
+def page_line(slug: str) -> str:
+    """The line that sends a worker report's news to crewmate *slug*'s Dashboard page.
+
+    A worker report is where a dispatched job's state changes, and the check-ins that
+    otherwise ask for the page (``goal_reminder``) run only with a goal and a switch
+    on. So the wake names the page's own fields: a page in force with fields the
+    crewmate writes gets ``worker_report.dashboard_fields`` naming them; a tab still
+    on the suggestions page gets ``dashboard_agentic.SUGGESTIONS_LINE``, the turn
+    block's build-your-page line. No line with ``agent.crew_panel`` off (no page
+    tools), under the person's lock while the tab shows suggestions (an apply would
+    be refused), or for a page whose every field is folded. TOTAL: a page that
+    cannot be read costs the line. Blocking IO.
+    """
+    if not slug:
+        return ""
+    try:
+        from kiro_crew import dashboard_agentic
+        from kiro_crew.dashboard_templates import instance as template_instance
+
+        if not members_mod.crew_panel_enabled():
+            return ""
+        if dashboard_agentic.tab_shows_suggestions(slug):
+            if template_instance.is_locked(slug):
+                return ""
+            return dashboard_agentic.SUGGESTIONS_LINE
+        page = dashboard_agentic.page_in_force(slug)
+        if page is None:
+            return ""
+        names = sorted(dashboard_agentic.agentic_fields(page[1]))
+    except Exception:
+        logger.debug("worker report for %s: page lookup failed", slug, exc_info=True)
+        return ""
+    if not names:
+        return ""
+    return crewmate_prompts.fill("worker_report.dashboard_fields", fields=", ".join(names))
+
+
+def with_page(prompt: str, page: str) -> str:
+    """*prompt* (:func:`report_prompt`) closed by *page* (:func:`page_line`), when any."""
+    return f"{prompt}\n\n{page}" if page else prompt
+
+
 def _excerpt(text: str) -> tuple[str, bool]:
     from kiro_crew.member_goals import scrub_text
 
@@ -266,6 +308,17 @@ async def _flush(state: Any, key: str) -> None:
             dispatch_hidden_turn(state, slot, NOTICE_PROMPT, human_seen=False)
             logger.info("upgrade notice started on %s", key)
             continue
+        # The Dashboard line reads the page store: off the loop, before the idle check.
+        slug = (members_mod.slug_from_dm_slot_key(key) or "") if reports else ""
+        page = await asyncio.to_thread(page_line, slug) if slug else ""
+        if slug and (
+            state.get_slot(key) is not slot
+            or not is_crewmate_thread(slot)
+            or getattr(slot, "is_closing", False)
+        ):
+            # The thread was closed or replaced during the read: no wake on it, and
+            # what is pending stays for the thread's next turn end.
+            return
         if not reports:
             return
         if _idle(slot):
@@ -273,7 +326,7 @@ async def _flush(state: Any, key: str) -> None:
             dispatch_hidden_turn(
                 state,
                 slot,
-                report_prompt(list(reports.values()), slot.agent),
+                with_page(report_prompt(list(reports.values()), slot.agent), page),
                 human_seen=False,
             )
             logger.info("worker report woke %s (%d worker(s))", key, len(reports))

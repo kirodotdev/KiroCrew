@@ -57,6 +57,8 @@ def woken(monkeypatch):
         "dispatch_hidden_turn",
         lambda state, slot, prompt, human_seen: turns.append((slot.key, prompt)),
     )
+    # The Dashboard line reads the page off the loop; these tests pin the wake alone.
+    monkeypatch.setattr(wakes, "page_line", lambda slug: "", raising=False)
     monkeypatch.setattr(
         members_mod,
         "read_dm_binding",
@@ -80,6 +82,11 @@ def _job(**over) -> CronJob:
 async def _settle():
     for _ in range(5):
         await asyncio.sleep(0)
+    # The flush reads the Dashboard page off the loop, so wait for it rather than a
+    # fixed number of loop turns.
+    others = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if others:
+        await asyncio.wait(others, timeout=5)
 
 
 async def _deliver(state, job, result, rh):
