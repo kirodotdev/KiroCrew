@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         read_config_text,
         resolve_configured_provider,
         validated_config_string,
+        validated_language_code,
     )
 
 
@@ -95,6 +96,8 @@ def load_voice_reply_config(cfg: "KiroCrewConfig | None" = None) -> None:
     # the dashboard cannot drift apart on them.
     _vc.provider = resolve_configured_provider(_vr)
     _vc.system_voice = _str_or_default(_vr.get("system_voice"))
+    # A malformed tag reads as no preference, like any other hand-edited typo here.
+    _vc.language_code = validated_language_code(_vr.get("language_code")) or ""
 
 
 async def _safe_voice_reply(
@@ -122,6 +125,7 @@ async def _safe_voice_reply(
             aws_profile=_vc.aws_profile,
             region=_vc.region,
             system_voice=_vc.system_voice,
+            language_code=_vc.language_code,
         )
     except Exception:
         logger.debug("Voice reply failed", exc_info=True)

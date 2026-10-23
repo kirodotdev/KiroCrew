@@ -306,6 +306,25 @@ def validated_config_bool(value: object) -> bool | None:
     return value
 
 
+#: A BCP-47 language tag such as ``en-US`` or ``zh-CN``, the shape the language
+#: pickers offer. Shape-checked because the value is handed to a provider.
+_LANGUAGE_CODE_RE = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}")
+
+
+def validated_language_code(value: object) -> str | None:
+    """Return *value* as a TTS language tag, ``""`` for none, or ``None`` to reject.
+
+    ``""`` (and a blank string) means "no preference": each provider speaks in
+    its own default language, which is how every config without the key behaves.
+    Shared by the config loaders, which read ``None`` as ``""``, and the dashboard
+    PUT handler, which answers ``None`` with a 400.
+    """
+    text = validated_config_string(value)
+    if text is None or (text and not _LANGUAGE_CODE_RE.fullmatch(text)):
+        return None
+    return text
+
+
 #: A Markdown link whose destination keeps a balanced ``(...)`` pair; see
 #: :func:`kiro_crew.constants.md_link_destination`. The label stops at the next
 #: ``[``, so a run of ``[`` cannot make every opener rescan the text.
@@ -862,6 +881,8 @@ async def synthesize_speech(
     region: str = "",
     # System-specific:
     system_voice: str = "",
+    # Edition providers only; see the registered branch below.
+    language_code: str = "",
 ) -> str | None:
     """Generate audio from *text* using the configured *provider*.
 
@@ -881,6 +902,8 @@ async def synthesize_speech(
     if url_warns:
         logger.warning("voice_reply: redacted %d suspicious URL(s) before TTS", len(url_warns))
 
+    # ``language_code`` is unused by both built-ins: Polly and the built-in engine
+    # each speak the language of the voice the user picked.
     if provider == PROVIDER_POLLY:
         ssml = text_to_ssml(text, rate=rate, pitch=pitch, engine=engine)
         if not ssml:
@@ -906,7 +929,12 @@ async def synthesize_speech(
             registered,
             plain,
             registered_voice_config(
-                provider, voice_id=voice_id, rate=rate, pitch=pitch, system_voice=system_voice
+                provider,
+                voice_id=voice_id,
+                rate=rate,
+                pitch=pitch,
+                system_voice=system_voice,
+                language_code=language_code,
             ),
         )
     logger.error("synthesize_speech: unknown provider %r", provider)
@@ -1389,6 +1417,7 @@ def synthesis_settings(raw: dict | None) -> dict:
     out: dict = {"provider": resolve_configured_provider(section)}
     for key, kwarg, default in _SYNTHESIS_KEYS:
         out[kwarg] = section.get(key, default)
+    out["language_code"] = validated_language_code(section.get("language_code")) or ""
     return out
 
 
@@ -1405,6 +1434,7 @@ async def synthesize_and_deliver(
     region: str = "",
     # System:
     system_voice: str = "",
+    language_code: str = "",
 ) -> bool:
     """Synthesize *response_text* and hand the audio file to *deliver*.
 
@@ -1431,6 +1461,7 @@ async def synthesize_and_deliver(
             aws_profile=aws_profile,
             region=region,
             system_voice=system_voice,
+            language_code=language_code,
         )
     except SandboxUnavailableError:
         # This path delivers audio to a chat surface and has no channel for remedy
@@ -1467,6 +1498,7 @@ async def voice_reply(
     region: str = "",
     # System:
     system_voice: str = "",
+    language_code: str = "",
 ) -> bool:
     """Full pipeline: text → provider synthesis → Slack upload.
 
@@ -1489,4 +1521,5 @@ async def voice_reply(
         aws_profile=aws_profile,
         region=region,
         system_voice=system_voice,
+        language_code=language_code,
     )

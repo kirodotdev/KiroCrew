@@ -309,6 +309,7 @@ running a value the file does not hold. A failed write answers non-2xx with a
 | `voice_id`, `engine`, `pitch` | Polly synthesis settings. The dashboard synthesis endpoint accepts per-request overrides on the Polly path only, as body fields `voice` (not `voice_id`), `engine`, `rate` and `pitch`. |
 | `rate` | Speech rate as a percentage. Shared by Polly and the built-in engine, which converts it to words per minute or to SAPI's `-10..10`. |
 | `system_voice` | The built-in engine's own voice selector; empty means the OS default voice. |
+| `language_code` | BCP-47 tag for spoken replies (`en-US`, `zh-CN`), checked by `voice_reply.validated_language_code()`; empty means each provider's own default language. Handed to edition providers as `voice_config["language_code"]`; Polly and the built-in engine ignore it and speak the language of the selected voice. A malformed stored value reads as empty; the PUT refuses one with 400 `voice_language_invalid`. The GET also serves `language_codes`, the picker's choices: `""`, `speech_languages.COMMON_LANGUAGE_CODES` (the list the STT picker offers), then a stored code outside it. |
 | `aws_profile`, `region` | Passed to the AWS CLI by the Polly provider. |
 
 `dashboard.routes.sessions.register()` registers:

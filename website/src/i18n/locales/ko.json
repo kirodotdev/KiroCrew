@@ -17445,7 +17445,10 @@
         "voice": "음성",
         "voice_catalogue_unavailable": "Polly 음성 목록을 불러올 수 없습니다. 선택기는 내장된 대체 목록을 표시합니다.",
         "voice_from_the_hosts_built_in_speech_engine": "호스트의 내장 음성 엔진 음성",
-        "recheck": "다시 확인"
+        "recheck": "다시 확인",
+        "language": "언어",
+        "language_for_spoken_replies": "음성으로 읽어 주는 답변의 언어",
+        "language_provider_default": "제공자 기본값"
       },
       "weComPanel": {
         "allow_all_bypass_note": "모두 허용이 켜져 있어 위의 userid 목록은 무시됩니다. 다시 되돌릴 때를 위해 그대로 보관됩니다.",

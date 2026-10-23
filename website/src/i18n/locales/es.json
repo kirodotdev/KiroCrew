@@ -17987,7 +17987,10 @@
         "voice": "Voz",
         "voice_catalogue_unavailable": "No se pudo cargar la lista de voces de Polly. El selector muestra una lista de respaldo integrada.",
         "voice_from_the_hosts_built_in_speech_engine": "Voz del motor de voz integrado del host",
-        "recheck": "Comprobar de nuevo"
+        "recheck": "Comprobar de nuevo",
+        "language": "Idioma",
+        "language_for_spoken_replies": "Idioma de las respuestas leídas",
+        "language_provider_default": "Predeterminado del proveedor"
       },
       "weComPanel": {
         "allow_all_bypass_note": "La opción de permitir a todos está activada: se omite la lista de userid de arriba. Se conserva para cuando vuelvas a desactivarla.",

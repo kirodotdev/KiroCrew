@@ -17445,7 +17445,10 @@
         "voice": "音声",
         "voice_catalogue_unavailable": "Polly の音声一覧を読み込めませんでした。ピッカーには内蔵の代替一覧を表示しています。",
         "voice_from_the_hosts_built_in_speech_engine": "ホストの内蔵音声エンジンの音声",
-        "recheck": "再確認"
+        "recheck": "再確認",
+        "language": "言語",
+        "language_for_spoken_replies": "音声で読み上げる返信の言語",
+        "language_provider_default": "プロバイダーの既定"
       },
       "weComPanel": {
         "allow_all_bypass_note": "すべて許可がオンになっています。上記のユーザーIDリストはスキップされます。戻すときのために保持されています。",

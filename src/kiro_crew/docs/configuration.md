@@ -457,7 +457,10 @@ still present, so there is nothing you have to remove by hand.
 
 Spoken replies live in the `voice_reply` block of `config.json`: `enabled`,
 `auto_speak`, `provider` (`system`, the default host speech engine, or `polly`),
-`voice_id`, `engine`, `rate`, `pitch`, `aws_profile`, `region` and `system_voice`.
+`voice_id`, `engine`, `rate`, `pitch`, `aws_profile`, `region`, `system_voice` and
+`language_code`. `language_code` is a language tag such as `en-US` for spoken
+replies; empty, the default, lets each provider use its own default language, and
+the built-in providers speak the language of the selected voice.
 The `piper` provider was removed; a saved `piper` value speaks with `system` and
 logs one warning, and its `piper_*` keys are ignored. **Settings > Voice** is the writer for this block. It is not in
 the config schema, so `kirocrew config set voice_reply.<key>` answers

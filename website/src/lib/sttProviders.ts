@@ -9,7 +9,7 @@
  * dictation socket reports its own failures by `code` too, so its vocabulary
  * is here beside the availability one rather than inlined in the hook.
  */
-import { fmtBytes, fmtPercent } from '../i18n/format'
+import { fmtBytes, fmtLanguageName, fmtPercent } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 
 /** Resident speech recogniser inside the gateway process. The default, every OS. */
@@ -210,6 +210,18 @@ export const STREAM_ERROR_CODE_KEY: Record<string, string> = {
  */
 export function localeLanguage(code: string): string {
   return code.split('-', 1)[0]
+}
+
+/**
+ * A locale code as a picker option: the language's name in the app language for
+ * the reader, then the code, which is what tells two dialects apart. Shared by
+ * the Speech-to-Text and Text-to-Speech Language pickers.
+ */
+export function languageOptionLabel(code: string): string {
+  return i18nT('pages.settings.sttSettings.language_option', {
+    name: fmtLanguageName(localeLanguage(code)),
+    code,
+  })
 }
 
 /**

@@ -525,6 +525,7 @@ class TestTtsDispatch:
             default_rate="100%",
             default_pitch="+0%",
             system_voice="",
+            language_code="ja-JP",
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", vc)
         state = _make_state(tmp_path)
@@ -533,6 +534,7 @@ class TestTtsDispatch:
             resp = await client.post("/api/voice/synthesize", json={"text": "hello", "slot": "s1"})
             assert resp.status == 200
             assert (await resp.json())["chunks"] == 2
+        assert acme.spoken[0][1]["language_code"] == "ja-JP"
         frames = [(c.args[0], c.args[1]) for c in state.broadcast_ws.call_args_list]
         assert [kind for kind, _ in frames] == ["voice_chunk", "voice_chunk", "voice_complete"]
         assert [p["sentence"] for k, p in frames if k == "voice_chunk"] == ["first", "second"]
@@ -758,3 +760,101 @@ class TestCheckIsBounded:
 
         status = speech_providers.check_status_sync(_Broken(), SttConfig())
         assert (status.available, status.error) == (False, True)
+
+
+# ── the Text-to-Speech language ──────────────────────────────────────────────
+
+
+class TestTtsLanguage:
+    """``voice_reply.language_code``: validated, saved, served, handed to a provider."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("", ""),
+            ("   ", ""),
+            ("en-US", "en-US"),
+            (" zh-CN ", "zh-CN"),
+            ("yue", "yue"),
+            ("zh-Hant-TW", "zh-Hant-TW"),
+        ],
+    )
+    def test_a_language_tag_or_empty_is_accepted(self, value, expected) -> None:
+        assert voice_reply.validated_language_code(value) == expected
+
+    @pytest.mark.parametrize(
+        "value", [None, 5, ["en-US"], {}, "english", "en_US", "e", "en-", "en-US; rm -rf"]
+    )
+    def test_anything_else_is_rejected(self, value) -> None:
+        assert voice_reply.validated_language_code(value) is None
+
+    def test_synthesis_settings_carry_it_and_drop_a_malformed_one(self) -> None:
+        def language(section):
+            return voice_reply.synthesis_settings(section)["language_code"]
+
+        assert language(None) == ""
+        assert language({"language_code": "de-DE"}) == "de-DE"
+        assert language({"language_code": "not a tag"}) == ""
+
+    def test_the_loader_reads_it_and_drops_a_malformed_one(self, monkeypatch) -> None:
+        from kiro_crew.slack.handler import _vc, load_voice_reply_config
+
+        monkeypatch.setattr(_vc, "language_code", "")
+        monkeypatch.setattr(_vc, "provider", _vc.provider)
+        monkeypatch.setattr(_vc, "system_voice", _vc.system_voice)
+        _write_config({"voice_reply": {"language_code": "ko-KR"}})
+        load_voice_reply_config()
+        assert _vc.language_code == "ko-KR"
+        _write_config({"voice_reply": {"language_code": ["ko-KR"]}})
+        load_voice_reply_config()
+        assert _vc.language_code == ""
+
+    def test_the_provider_receives_it(self) -> None:
+        acme = _AcmeTts()
+        _install(tts=(acme,))
+        path = asyncio.run(
+            voice_reply.synthesize_speech("hi", provider="acme", language_code="fr-FR")
+        )
+        assert path is not None
+        Path(path).unlink()
+        assert acme.spoken[0][1]["language_code"] == "fr-FR"
+
+    @pytest.mark.asyncio
+    async def test_the_put_saves_it_and_the_get_serves_it(self, tmp_path, monkeypatch) -> None:
+        from kiro_crew.slack.handler import _vc
+
+        _install(tts=(_AcmeTts(),))
+        path = _write_config({"voice_reply": {"provider": "acme"}})
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.config_path", lambda: path)
+        monkeypatch.setattr(_vc, "provider", "acme")
+        monkeypatch.setattr(_vc, "language_code", "")
+        async with TestClient(TestServer(_voice_app(_make_state(tmp_path)))) as client:
+            before = await (await client.get("/api/voice/config")).json()
+            assert before["language_code"] == ""
+            assert before["language_codes"][0] == "" and "ja-JP" in before["language_codes"]
+
+            resp = await client.put("/api/voice/config", json={"language_code": "ja-JP"})
+            assert resp.status == 200
+            assert json.loads(path.read_text())["voice_reply"]["language_code"] == "ja-JP"
+            assert _vc.language_code == "ja-JP"
+            after = await (await client.get("/api/voice/config")).json()
+            assert after["language_code"] == "ja-JP"
+
+            resp = await client.put("/api/voice/config", json={"language_code": "Japanese!"})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "voice_language_invalid"
+        assert json.loads(path.read_text())["voice_reply"]["language_code"] == "ja-JP"
+        assert _vc.language_code == "ja-JP"
+
+    @pytest.mark.asyncio
+    async def test_a_stored_code_outside_the_list_stays_selectable(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from kiro_crew.slack.handler import _vc
+
+        monkeypatch.setattr(_vc, "language_code", "th-TH")
+        async with TestClient(TestServer(_voice_app(_make_state(tmp_path)))) as client:
+            body = await (await client.get("/api/voice/config")).json()
+        assert body["language_codes"][-1] == "th-TH"
+        assert body["language_codes"].count("th-TH") == 1

@@ -17987,7 +17987,10 @@
         "voice": "Voix",
         "voice_catalogue_unavailable": "Impossible de charger la liste des voix Polly. Le sélecteur affiche une liste de secours intégrée.",
         "voice_from_the_hosts_built_in_speech_engine": "Voix du moteur vocal intégré de la machine",
-        "recheck": "Vérifier à nouveau"
+        "recheck": "Vérifier à nouveau",
+        "language": "Langue",
+        "language_for_spoken_replies": "Langue des réponses vocales",
+        "language_provider_default": "Valeur par défaut du fournisseur"
       },
       "weComPanel": {
         "allow_all_bypass_note": "L’autorisation générale est activée : la liste de userid ci-dessus est ignorée. Elle est conservée pour ton retour en arrière.",

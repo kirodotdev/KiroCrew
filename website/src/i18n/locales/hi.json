@@ -17716,7 +17716,10 @@
         "voice": "वॉइस",
         "voice_catalogue_unavailable": "Polly वॉइस सूची लोड नहीं हो सकी। पिकर में बिल्ट-इन वैकल्पिक सूची दिख रही है।",
         "voice_from_the_hosts_built_in_speech_engine": "होस्ट के अंतर्निहित स्पीच इंजन की आवाज़",
-        "recheck": "फिर से जाँचें"
+        "recheck": "फिर से जाँचें",
+        "language": "भाषा",
+        "language_for_spoken_replies": "बोले गए उत्तरों की भाषा",
+        "language_provider_default": "प्रदाता का डिफ़ॉल्ट"
       },
       "weComPanel": {
         "allow_all_bypass_note": "सभी को अनुमति चालू है: ऊपर की userid सूची दरकिनार है। वापस बदलने के लिए यह सुरक्षित रखी गई है।",

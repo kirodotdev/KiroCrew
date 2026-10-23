@@ -17716,7 +17716,10 @@
         "voice": "কণ্ঠস্বর",
         "voice_catalogue_unavailable": "Polly ভয়েস তালিকা লোড করা যায়নি। পিকারে বিল্ট-ইন বিকল্প তালিকা দেখানো হচ্ছে।",
         "voice_from_the_hosts_built_in_speech_engine": "হোস্টের অন্তর্নির্মিত স্পিচ ইঞ্জিনের কণ্ঠ",
-        "recheck": "আবার পরীক্ষা করুন"
+        "recheck": "আবার পরীক্ষা করুন",
+        "language": "ভাষা",
+        "language_for_spoken_replies": "কথিত উত্তরের ভাষা",
+        "language_provider_default": "প্রদানকারীর ডিফল্ট"
       },
       "weComPanel": {
         "allow_all_bypass_note": "সবাইকে অনুমতি চালু আছে: উপরের userid তালিকা এড়িয়ে যাওয়া হচ্ছে। আবার ফিরে গেলে কাজে লাগবে বলে তালিকাটা রেখে দেওয়া হয়েছে।",

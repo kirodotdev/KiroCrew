@@ -1651,6 +1651,13 @@
       "configKey": "stt.language_code"
     },
     {
+      "id": "voice.language-2",
+      "label": "Language",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.language-2",
+      "hint": "Language for spoken replies"
+    },
+    {
       "id": "voice.microphone",
       "label": "Microphone",
       "tab": "voice",

@@ -20,12 +20,19 @@ logger = logging.getLogger("kiro_crew.voice_reply")
 
 
 def registered_voice_config(
-    provider: str, *, voice_id: str = "", rate: str = "", pitch: str = "", system_voice: str = ""
+    provider: str,
+    *,
+    voice_id: str = "",
+    rate: str = "",
+    pitch: str = "",
+    system_voice: str = "",
+    language_code: str = "",
 ) -> dict[str, str]:
     """The ``voice_config`` an edition TTS provider receives: the settings in force.
 
     A plain dict of strings, never the live settings object, so a provider can
-    read the user's choices but cannot change them.
+    read the user's choices but cannot change them. ``language_code`` is the
+    ``voice_reply.language_code`` BCP-47 tag, or ``""`` for the provider's default.
     """
     return {
         "provider": provider,
@@ -33,6 +40,7 @@ def registered_voice_config(
         "rate": rate,
         "pitch": pitch,
         "system_voice": system_voice,
+        "language_code": language_code,
     }
 
 

@@ -2717,6 +2717,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "stt.language_code"
   },
   {
+    "id": "voice.language-2",
+    "label": "Language",
+    "labelKey": "pages.settings.voicePanel.language",
+    "hint": "Language for spoken replies",
+    "tab": "voice",
+    "type": "select",
+    "occurrence": 2,
+    "settingId": "voice.language-2"
+  },
+  {
     "id": "voice.microphone",
     "label": "Microphone",
     "labelKey": "pages.settings.sttSettings.microphone",

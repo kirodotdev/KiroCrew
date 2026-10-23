@@ -43,6 +43,7 @@ from kiro_crew.dashboard.handlers.core_stt_access import (
     _stt_positive_int,
 )
 from kiro_crew.dashboard.stt_stream import PROVIDER_LOCAL, streaming_providers
+from kiro_crew.speech_languages import COMMON_LANGUAGE_CODES
 from kiro_crew.stt import decoder as stt_decoder
 from kiro_crew.stt import models as stt_models
 from kiro_crew.stt.limits import (
@@ -133,21 +134,9 @@ async def _stt_provider_rows(
 # candidates the Transcribe mixed-language picker offers. The handler accepts any
 # string value on PUT; this list only drives the UI dropdowns, and GET adds the
 # stored values to it so a code set in config.json stays selectable. AWS
-# Transcribe supports many more.
-_STT_LANGUAGE_CODES: tuple[str, ...] = (
-    "en-US",
-    "en-GB",
-    "fr-FR",
-    "de-DE",
-    "es-ES",
-    "es-US",
-    "it-IT",
-    "pt-BR",
-    "ja-JP",
-    "ko-KR",
-    "zh-CN",
-    "vi-VN",
-)
+# Transcribe supports many more. The list lives in kiro_crew.speech_languages
+# because the Text-to-Speech Language picker offers the same codes.
+_STT_LANGUAGE_CODES: tuple[str, ...] = COMMON_LANGUAGE_CODES
 
 
 def _stt_language_codes(stt_cfg: SttConfig) -> list[str]:

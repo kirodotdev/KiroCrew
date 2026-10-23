@@ -35,6 +35,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.sandbox import SandboxUnavailableError, without_python_env
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.handler import _vc
+from kiro_crew.speech_languages import COMMON_LANGUAGE_CODES
 from kiro_crew.voice_reply import (
     PROVIDER_POLLY,
     PROVIDER_SYSTEM,
@@ -56,6 +57,7 @@ from kiro_crew.voice_reply import (
     valid_providers,
     validated_config_bool,
     validated_config_string,
+    validated_language_code,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,6 +81,7 @@ _VOICE_ATTR_TO_CONFIG_KEY: dict[str, str] = {
     "aws_profile": "aws_profile",
     "region": "region",
     "system_voice": "system_voice",
+    "language_code": "language_code",
 }
 _MAX_CANCELLED_REQUESTS = 128
 
@@ -243,9 +246,20 @@ async def _voice_provider_rows() -> list[dict]:
             rate=_vc.default_rate,
             pitch=_vc.default_pitch,
             system_voice=_vc.system_voice,
+            language_code=_vc.language_code,
         ),
     )
     return rows
+
+
+def _tts_language_codes() -> list[str]:
+    """The TTS Language picker's codes: none (``""``), the common codes the STT
+    picker also offers, then the stored code when they do not already hold it, so
+    it stays selectable."""
+    codes = ["", *COMMON_LANGUAGE_CODES]
+    if _vc.language_code not in codes:
+        codes.append(_vc.language_code)
+    return codes
 
 
 async def api_voice_config(request: web.Request) -> web.Response:
@@ -263,6 +277,9 @@ async def api_voice_config(request: web.Request) -> web.Response:
                 "aws_profile": _vc.aws_profile,
                 "region": _vc.region,
                 "system_voice": _vc.system_voice,
+                # ``""`` is no preference: each provider speaks its default language.
+                "language_code": _vc.language_code,
+                "language_codes": _tts_language_codes(),
                 # One row per selectable provider, built-ins first in today's
                 # order, then the edition's: ``{name, label, builtin, available,
                 # reason, action}``. ``action`` is a sign-in step or null.
@@ -340,6 +357,17 @@ async def api_voice_config(request: web.Request) -> web.Response:
                     status=400,
                 )
             pending[_attr] = _value
+    if "language_code" in body:
+        _language = validated_language_code(body["language_code"])
+        if _language is None:
+            return web.json_response(
+                {
+                    "error": "language_code must be a language tag such as en-US, or empty",
+                    "code": "voice_language_invalid",
+                },
+                status=400,
+            )
+        pending["language_code"] = _language
     # Persist FIRST, then apply to the live `_vc`: a write that failed must not
     # leave the gateway running a setting the file does not hold, which the next
     # restart would silently revert. The write is a locked delta RMW of the keys
@@ -574,7 +602,12 @@ async def _synthesize_registered_stream(
     """
     plain = strip_markdown(text).strip()
     voice_config = registered_voice_config(
-        _vc.provider, voice_id=voice_id, rate=rate, pitch=pitch, system_voice=_vc.system_voice
+        _vc.provider,
+        voice_id=voice_id,
+        rate=rate,
+        pitch=pitch,
+        system_voice=_vc.system_voice,
+        language_code=_vc.language_code,
     )
     chunks: list[tuple[bytes, str]] = []
     if plain:

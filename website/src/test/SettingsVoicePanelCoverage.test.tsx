@@ -473,3 +473,47 @@ describe('VoicePanel save failure', () => {
     await waitFor(() => expect(screen.queryByText('Failed to save voice config')).toBeNull())
   })
 })
+
+/* ── Language (edition providers) ────────────────────────────────────────── */
+
+/** A registered edition provider: the only kind that reads `language_code`. */
+const EDITION_PROVIDERS = [
+  { name: 'system', label: 'system', builtin: true, available: true, reason: null, action: null },
+  { name: 'polly', label: 'polly', builtin: true, available: true, reason: null, action: null },
+  { name: 'acme', label: 'Acme Speech', builtin: false, available: true, reason: null, action: null },
+]
+const LANGUAGE_CODES = ['', 'en-US', 'ja-JP', 'zh-CN']
+
+describe('VoicePanel language picker', () => {
+  it('offers the served codes with the provider default first, and saves the pick', async () => {
+    const { save } = seed({ provider: 'acme', providers: EDITION_PROVIDERS, language_code: '', language_codes: LANGUAGE_CODES })
+    const language = await screen.findByRole('combobox', { name: /^Language$/ }, { timeout: 5_000 })
+    expect(language).toHaveTextContent('Provider default')
+
+    await pick(/^Language$/, 'Japanese (ja-JP)')
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ language_code: 'ja-JP' }))
+  })
+
+  it('carries its own setting id, so search highlights it and not the STT Language row', async () => {
+    seed({ provider: 'acme', providers: EDITION_PROVIDERS, language_code: '', language_codes: LANGUAGE_CODES })
+    const language = await screen.findByRole('combobox', { name: /^Language$/ }, { timeout: 5_000 })
+    expect(language.closest('[data-setting-id]')?.getAttribute('data-setting-id')).toBe('voice.language-2')
+  })
+
+  it('shows a stored code as the selection', async () => {
+    seed({ provider: 'acme', providers: EDITION_PROVIDERS, language_code: 'zh-CN', language_codes: LANGUAGE_CODES })
+    const language = await screen.findByRole('combobox', { name: /^Language$/ }, { timeout: 5_000 })
+    expect(language).toHaveTextContent('Chinese (zh-CN)')
+  })
+
+  it('leaves when a built-in provider is picked, since those speak the voice\'s own language', async () => {
+    const { cfg, load } = seed({ provider: 'acme', providers: EDITION_PROVIDERS, language_code: '', language_codes: LANGUAGE_CODES })
+    await screen.findByRole('combobox', { name: /^Language$/ }, { timeout: 5_000 })
+
+    // The refetch after the save must read the saved provider, as the gateway would.
+    load.mockResolvedValue({ ...cfg, provider: 'system' })
+    await pick(/^Provider$/, 'System (built-in)')
+    await screen.findByRole('combobox', { name: /^Voice$/ }, { timeout: 5_000 })
+    expect(screen.queryByRole('combobox', { name: /^Language$/ })).toBeNull()
+  })
+})

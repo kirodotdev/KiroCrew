@@ -21,6 +21,7 @@ import {
   FALLBACK_STREAMING_PROVIDERS,
   CODE_PROVIDER_UNAVAILABLE,
   INSTALLED_BUT_REFUSED_CODES,
+  languageOptionLabel,
   localeLanguage,
   nextTranscribeLanguages,
   PROVIDER_LOCAL,
@@ -468,17 +469,6 @@ function TranscribeVocabularyPicker({
       )}
     </>
   )
-}
-
-/**
- * A locale code as a picker option: the language's name in the app language for
- * the reader, then the code, which is what tells two dialects apart.
- */
-function languageOptionLabel(code: string): string {
-  return i18nT('pages.settings.sttSettings.language_option', {
-    name: fmtLanguageName(localeLanguage(code)),
-    code,
-  })
 }
 
 /**

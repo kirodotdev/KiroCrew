@@ -9787,7 +9787,10 @@
         "text_to_speech": "Text-to-Speech",
         "us_east_1": "us-east-1",
         "voice": "Voice",
-        "recheck": "Check again"
+        "recheck": "Check again",
+        "language": "Language",
+        "language_for_spoken_replies": "Language for spoken replies",
+        "language_provider_default": "Provider default"
       },
       "webexPanel": {
         "access": "Access",

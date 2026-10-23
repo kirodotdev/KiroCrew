@@ -18258,7 +18258,10 @@
         "voice": "Голос",
         "voice_catalogue_unavailable": "Не удалось загрузить список голосов Polly. В списке показан встроенный резервный набор.",
         "voice_from_the_hosts_built_in_speech_engine": "Голос встроенного речевого движка хоста",
-        "recheck": "Проверить снова"
+        "recheck": "Проверить снова",
+        "language": "Язык",
+        "language_for_spoken_replies": "Язык озвучиваемых ответов",
+        "language_provider_default": "По умолчанию у провайдера"
       },
       "weComPanel": {
         "allow_all_bypass_note": "Режим «разрешить всем» включён: список userid выше не используется. Он сохранён на случай возврата.",

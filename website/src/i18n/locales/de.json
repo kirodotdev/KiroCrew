@@ -17716,7 +17716,10 @@
         "voice": "Sprache",
         "voice_catalogue_unavailable": "Die Polly-Stimmenliste konnte nicht geladen werden. Die Auswahl zeigt eine integrierte Ersatzliste.",
         "voice_from_the_hosts_built_in_speech_engine": "Stimme aus der integrierten Sprach-Engine des Hosts",
-        "recheck": "Erneut prüfen"
+        "recheck": "Erneut prüfen",
+        "language": "Sprache",
+        "language_for_spoken_replies": "Sprache für gesprochene Antworten",
+        "language_provider_default": "Standard des Anbieters"
       },
       "weComPanel": {
         "allow_all_bypass_note": "„Alle erlauben“ ist aktiv: Die Liste der userids oben wird übergangen. Die Liste bleibt erhalten, falls du zurückwechselst.",
