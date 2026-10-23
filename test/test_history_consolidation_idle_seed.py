@@ -673,6 +673,10 @@ async def test_the_seed_helpers_ride_out_a_windows_sharing_violation(tmp_path, m
 
     Seeded on the loop thread, the marker rewrite re-raises the first simulated
     violation, which is the ``[WinError 5]`` the Windows shard hit.
+
+    The append that creates the transcript renames through ``atomic_write``,
+    so the two simulated violations land on that create and are retried; the
+    marker rewrite then renames once more on the same retrying path.
     """
     from windows_sim import replace_sharing_violation
 
@@ -687,5 +691,5 @@ async def test_the_seed_helpers_ride_out_a_windows_sharing_violation(tmp_path, m
             log, consolidator = _live(tmp_path, [LIVE], consolidated=True)
     await asyncio.gather(*list(consolidator._tasks), return_exceptions=True)
 
-    assert sim["n"] == 3  # two refused renames, then the retry that landed
+    assert sim["n"] == 4  # two refused creates, the retry that landed, then the marker rewrite
     assert log.get_metadata(LIVE)["last_consolidated"] == 3
