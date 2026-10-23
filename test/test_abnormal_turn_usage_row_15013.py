@@ -222,9 +222,9 @@ class TestCancelDuringCompletePersist:
     ``EVENT_COMPLETE`` sets ``_turn_usage_persisted = True`` BEFORE its awaited,
     thread-offloaded ``persist_token_record_async``. A cancellation landing on
     that await -- after the row is appended -- unwinds into ``_run_chat``'s
-    ``CancelledError`` arm, which runs ``_persist_partial_reply`` ->
-    ``_record_abnormal_turn_usage``. The seam must see the row already claimed and
-    write nothing, so the turn lands exactly one usage row.
+    ``CancelledError`` arm, whose ``_on_cancelled`` (``chat_turn/turn_failures.py``) runs
+    ``_persist_partial_reply`` -> ``_record_abnormal_turn_usage``. The seam must see the
+    row already claimed and write nothing, so the turn lands exactly one usage row.
     """
 
     @pytest.mark.asyncio
@@ -441,9 +441,9 @@ class TestCancelDuringCompletePersist:
         client.stream = _dies_before_complete
         client.stream_command = _dies_before_complete
 
-        # The CancelledError unwinds through _run_chat's cancel arm into
-        # _persist_partial_reply -> _record_abnormal_turn_usage, which calls the
-        # REAL provider_last_turn_usage with since=_turn_stats0.
+        # The CancelledError unwinds through _run_chat's cancel arm and _on_cancelled
+        # (chat_turn/turn_failures.py) into _persist_partial_reply -> _record_abnormal_turn_usage,
+        # which calls the REAL provider_last_turn_usage with since=_turn_stats0.
         await _run_chat(state, slot, "test message")
 
         assert _rows(tmp_path) == [], (

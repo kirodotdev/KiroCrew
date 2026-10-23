@@ -89,11 +89,11 @@ and each error surface must receive the same safe text.
   heartbeat work, then `annotate_model_fallback` prefixes a delivered result
   while the provider marker remains active.
 - `dashboard/chat_runner.py` swaps through `_fallback_swap_for_turn`
-  (`dashboard/chat_turn/model_fallback.py`, which owns the dashboard's four swap
-  and restore helpers named below) after its
-  pre-activity transient branch, persists a notice, and requeues the same
-  message as a synthetic recovery item. Its fallback condition excludes nested
-  prompts. On exhaustion it renders the slot-local walk in the terminal error.
+  (`dashboard/chat_turn/model_fallback.py`, which owns the dashboard's four swap and restore
+  helpers named below) after its pre-activity transient branch; `_on_acp_transient_exhausted`
+  (`chat_turn/acp_recovery.py`) persists a notice and requeues the same message as a synthetic
+  recovery item. The swap's condition excludes nested prompts. On exhaustion `_on_acp_error_card`
+  (`chat_turn/turn_failures.py`) renders the slot-local walk in the terminal error.
 - `subagent_manager/run_turn.py::_run_inner_impl`'s nested `_stream_with_transient_retry` follows the zero-activity branch,
   uses the shared candidate helper, and applies `annotate_model_fallback` to
   the completed result.

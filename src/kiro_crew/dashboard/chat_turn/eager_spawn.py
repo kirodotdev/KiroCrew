@@ -830,7 +830,7 @@ async def _eager_spawn(
     except asyncio.CancelledError:
         raise
     except SessionClosingError:
-        # Same shutdown race as _run_chat's terminal arm: the gateway began
+        # Same shutdown race as _on_session_closing: the gateway began
         # closing while the speculative spawn was mid-start. Not a failure —
         # the allocation path already reaped the half-started provider.
         logger.info("Eager spawn for %s aborted — gateway is shutting down", slot.key)

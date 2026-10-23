@@ -606,7 +606,7 @@ class TestChatSlot:
         slot._pending_subagent_failures.append(
             "[Subagent completion event]\nAgent `a2` ❌ timed out"
         )
-        # Simulate drain logic from _run_chat
+        # Simulate drain logic from _turn_build_prompt (chat_turn/prompt_assembly.py)
         failures = slot._pending_subagent_failures[:]
         slot._pending_subagent_failures.clear()
         message = "\n\n".join(failures) + "\n\n" + "user message"

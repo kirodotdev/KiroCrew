@@ -1318,7 +1318,7 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
             _empty_rung = EMPTY_RUNG_GIVE_UP
             # Recoverable, usually-transient: surface a soft "notice" card
             # (not a red "error" card) so a self-healing event doesn't read
-            # like a crash. Single emit (see the AcpProcessDied note in _run_chat):
+            # like a crash. Single emit (see the note in _on_process_died):
             # slot.append persists + broadcasts one chat_message via
             # _on_message; no explicit broadcast_ws. Same rung, different
             # words, for the same reason as the continue rung above: the

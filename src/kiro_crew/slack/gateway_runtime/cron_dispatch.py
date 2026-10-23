@@ -56,9 +56,9 @@ _CRON_TRANSIENT_RETRIES = 2
 # subagent path's constant verbatim (gateway.py already imports from
 # kiro_crew.subagent) instead of adding a third hand-maintained copy next to
 # the dashboard's _POSTTOKEN_RECOVER_MSG — see the PARITY NOTE in
-# dashboard/chat_runner.py. The cron result is delivered once at the end of
-# the turn, so the preserved partial is concatenated with the continuation
-# instead of being re-shown to a live viewer.
+# _on_acp_posttoken_transient (dashboard/chat_turn/acp_recovery.py). The cron
+# result is delivered once at the end of the turn, so the preserved partial is
+# concatenated with the continuation instead of being re-shown to a live viewer.
 _CRON_POSTTOKEN_CONTINUE_MSG = _TRANSIENT_CONTINUE_MSG
 
 

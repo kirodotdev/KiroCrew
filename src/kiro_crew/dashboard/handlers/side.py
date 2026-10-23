@@ -798,8 +798,8 @@ async def _run_side_turn(
         logger.warning("Side turn auth required: slot=%s run_id=%s", slot.key, run_id)
         # Non-retryable: every queued question would hit the same wall. Draining
         # would spend the whole queue on identical failures and leave nothing to
-        # resume after signing in, so the queue is held intact below. Mirrors the
-        # main chat, which already makes this call in `_run_chat`.
+        # resume after signing in, so the queue is held intact below. Mirrors the main
+        # chat, which already makes this call in `_on_auth_required` (chat_turn/turn_failures.py).
         auth_required = True
         # Local import: chat_runner imports from this package, so a module-level
         # import would close a cycle.

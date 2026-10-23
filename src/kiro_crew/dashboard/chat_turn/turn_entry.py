@@ -144,9 +144,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # assignment -- a slot close or runtime disconnect during pre-prompt memory
     # and hook work -- unwinds into those arms with the names still unbound, so
     # the seam's keyword list would raise NameError OUT of the recovery handler
-    # and strand the error card / session reset it owes. Initialised here, where
-    # the body's single entry cannot miss them, and overwritten with their real
-    # values in _turn_dispatch_gates and _run_chat; the seam then always reads a bound name.
+    # and strand the error card / session reset it owes. Initialised here, where the body's single
+    # entry cannot miss them, and overwritten with their real values in _turn_dispatch_gates,
+    # _turn_build_prompt and _on_cancelled; the seam then always reads a bound name.
     _turn_t0 = time.monotonic()
     turn._turn_t0 = _turn_t0
     _stop_reason = ""
@@ -712,8 +712,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # conversation), discard_conversation CLEARS the sid so the next turn
     # cold-starts a fresh conversation — while keeping the session-map entry,
     # whose Slack thread/channel linkage must survive the recovery. Set only
-    # by the poisoned-conversation canary, the typed unsupported-history-image
-    # recovery or the thinking-binding rebuild in _run_chat's AcpError handler;
+    # by the poisoned-conversation canary in _on_acp_error_card, the typed
+    # unsupported-history-image recovery or the thinking-binding rebuild in acp_recovery.py;
     # their cross-cycle streak and one-shot live in ``_escalation``.
     needs_conversation_discard = False
     turn.needs_conversation_discard = needs_conversation_discard
@@ -846,8 +846,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     turn._l1_interrupted = _l1_interrupted
     # Whether THIS turn consumed the one-shot post-compaction re-injection flag.
     # Bound at turn scope, not at the consume site: the consume lives inside
-    # _run_chat's context-builder leg, and the probe/base legs skip it entirely —
-    # reading an unbound local at its finally's restore would raise UnboundLocalError.
+    # _turn_build_prompt's context-builder leg, and the probe/base legs skip it entirely —
+    # reading an unbound local at the restore in _run_chat's finally would raise UnboundLocalError.
     _needs_reinjection = False
     turn._needs_reinjection = _needs_reinjection
     # Set ONLY where the turn is recorded as successful. _run_chat's `finally` restores

@@ -851,8 +851,6 @@ def _priority_args(path: str, function: str, callee: str) -> list[str]:
             "owner_start_priority(request)",
         ),
         ("dashboard/stt_stream.py", "_classify", "run_bg_oneliner", "StartPriority.FOREGROUND"),
-        # The dashboard runner hands every start the turn's own priority.
-        ("dashboard/chat_runner.py", "_run_chat", "run_bg_oneliner", "_turn_priority"),
         # The turn's eager respawn runs in its tail, from the priority the turn
         # recorded in its outcome.
         (
@@ -898,15 +896,41 @@ def test_an_unattended_stream_claims_nothing():
     )
 
 
-def test_the_dashboard_runner_allocates_at_the_turns_priority():
+def _turn_tree() -> ast.Module:
+    """The dashboard runner and the chat_turn owners it composes, parsed as one module."""
     runner = _SRC / "dashboard/chat_runner.py"
-    tree = ast.parse(
+    return ast.parse(
         "\n".join(
             turn_file.read_text(encoding="utf-8")
             for turn_file in [*sorted(runner.with_name("chat_turn").glob("*.py")), runner]
             if turn_file.name != "__init__.py"
         )
     )
+
+
+def test_the_dashboard_runner_hands_every_start_the_turns_priority():
+    """Every ``run_bg_oneliner`` start of the dashboard runner and its ``chat_turn`` phases
+    (the poisoned-conversation canary in ``_on_acp_error_card`` today) passes the turn's
+    own priority."""
+    starts = [
+        call
+        for call in ast.walk(_turn_tree())
+        if isinstance(call, ast.Call)
+        and (
+            (isinstance(call.func, ast.Attribute) and call.func.attr == "run_bg_oneliner")
+            or (isinstance(call.func, ast.Name) and call.func.id == "run_bg_oneliner")
+        )
+    ]
+    # Control: the sweep finds the canary's start, so it cannot pass on nothing.
+    assert starts, "no run_bg_oneliner call found in the runner or its chat_turn owners"
+    for call in starts:
+        assert [ast.unparse(k.value) for k in call.keywords if k.arg == "start_priority"] == [
+            "_turn_priority"
+        ], ast.unparse(call)
+
+
+def test_the_dashboard_runner_allocates_at_the_turns_priority():
+    tree = _turn_tree()
     # The turn's admission phase (chat_turn/turn_admission.py) builds the allocation.
     admit = next(
         n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_turn_admit"

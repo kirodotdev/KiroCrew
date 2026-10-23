@@ -2348,12 +2348,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/session_control_parts/model_switch.py",
         "dashboard/session_control_parts/session_create.py",
         # The owners composed into dashboard/chat_runner.py: the redactor calls of the runner's
-        # helpers, _run_chat's closures and its phases, unchanged (deny rows, eager-spawn errors,
-        # file-change snapshots, the MCP sign-in banner, the fallback model id, native cards, prompt
+        # helpers, _run_chat's closures and its phases, unchanged (deny rows, turn and spawn errors,
+        # file-change snapshots, the MCP sign-in banner, fallback model ids, native cards, prompt
         # and skill mentions, the queue drain, admission and permission logs, stream redactors,
         # cross-surface legs, the segment flush, tool rows and results, directive tool-call ids, the
         # agent-switch name, the /compact summary and failure reason, the partial reply and stream
         # flushes, spec-hook notices, the stats footer). Their output reaches the runner's surfaces.
+        "dashboard/chat_turn/acp_recovery.py",
         "dashboard/chat_turn/deny_chokepoints.py",
         "dashboard/chat_turn/eager_spawn.py",
         "dashboard/chat_turn/file_changes.py",
@@ -2372,6 +2373,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_turn/tool_rows.py",
         "dashboard/chat_turn/turn_admission.py",
         "dashboard/chat_turn/turn_entry.py",
+        "dashboard/chat_turn/turn_failures.py",
         "dashboard/chat_turn/turn_ledgers.py",
         "dashboard/chat_turn/turn_reply_seams.py",
         "dashboard/chat_turn/turn_spec_hooks.py",

@@ -1733,7 +1733,7 @@ def _format_acp_error_worded(
             # bang alias, it is owner-gated even there, and it restarts the
             # GATEWAY rather than the session. It is also unnecessary: the
             # handlers reset and re-queue on AcpPromptBusy by themselves (see
-            # dashboard/chat_runner.py's retry-eligible branch).
+            # _on_acp_retryable in dashboard/chat_turn/acp_recovery.py).
             formatted = (
                 "I'm still processing a previous request. Please wait a moment "
                 "and try again; it clears on its own once the stale turn "

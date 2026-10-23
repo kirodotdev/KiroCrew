@@ -270,8 +270,8 @@ dashboard load into header-only round trips.
   `capabilities.theme_persona` governance capability (`SCOPE_CATALOG`,
   `capability_default=True`): standalone it defaults to allow, but an
   enterprise POLICY can force-disable installed-pack persona injection
-  wholesale (consulted at the `chat_runner.py` injection site; a denying policy
-  skips injection silently). See `governance.md`.
+  wholesale (consulted at the injection site in `_turn_build_prompt`,
+  `chat_turn/prompt_assembly.py`; a denying policy skips injection silently). See `governance.md`.
 
 ## Frontend Integration Points
 

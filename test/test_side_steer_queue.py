@@ -1118,9 +1118,9 @@ async def test_an_auth_failure_holds_the_queue_instead_of_draining_it(tmp_path, 
 
     Every queued question would hit the same wall, so draining spends the whole queue
     on identical errors and leaves nothing to resume once the user signs in. The main
-    chat already decided this in ``_run_chat`` ("hold the queue intact instead");
-    ``/side`` must not disagree. An unconsumed steer is still requeued — it was never
-    delivered either — so only the DISPATCH is withheld.
+    chat already decided this in ``_on_auth_required`` (``chat_turn/turn_failures.py``:
+    "hold the queue intact instead"); ``/side`` must not disagree. An unconsumed steer is
+    still requeued — it was never delivered either — so only the DISPATCH is withheld.
     """
     from kiro_crew.acp.client import AcpAuthRequired
     from kiro_crew.dashboard.handlers.side import _run_side_turn

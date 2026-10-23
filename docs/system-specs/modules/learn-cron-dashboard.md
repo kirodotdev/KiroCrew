@@ -2118,8 +2118,8 @@ names:
 | Owner | Responsibility |
 |---|---|
 | `turn_context` | memory-mode fold into the execution context, pending context drain and detach, folder steering gate, the unavailable-agent message, the DM member binding check, the session memory assignment and the skills context restored after a compaction (`_restore_skills_context_after_compaction`) |
-| `prompt_assembly` | cold-start replay history, egress scrub of the dashboard prefix, checklist resync, prompt and skill mentions (`_resolve_prompt_mention`, `_expand_prompt_mention`, `_expand_dollar_skills`) and the prompt chip |
-| `model_fallback` | session model default and settle, served-model sync, fallback chain, swap and restore probe, refusal fallback hop, the canonical-model backfill and the pinned-model verdict |
+| `prompt_assembly` | cold-start replay history, egress scrub of the dashboard prefix, checklist resync, prompt and skill mentions (`_resolve_prompt_mention`, `_expand_prompt_mention`, `_expand_dollar_skills`) and the prompt chip, and the prompt the turn sends (`_turn_build_prompt`): a slash command's own prompt, the context build (the raw message kept for Slack, the theme persona gate, the ContextBuilder's `build_message` and the first-turn history it assembles) or the bare message |
+| `model_fallback` | session model default and settle, served-model sync, fallback chain, swap and restore probe, refusal fallback hop, the canonical-model backfill and the pinned-model verdict, and the model-access fallback arm of the turn's `except AcpError` chain (`_on_acp_model_access`) |
 | `tool_approval` | PreToolUse block reasons, spec-hook notices, credential hints, trust and auto-approve policy, name-grant refusals, and the permission arm's own answers (`_on_permission_request`): the hooks, the trust reads, the grants and auto-approve |
 | `permission_prompt` | a permission request put to the user (`_on_permission_prompt`): the batch-rejection cascade's auto-reject, the approval card, the wait and what the answer does |
 | `mcp_session` | session MCP report, the session-init OAuth drain and the MCP OAuth banner lifecycle (`_emit_mcp_oauth_request`, its supersede and completion) and the scrub of the ACP strings it shows, and the stream's MCP arms (`_on_mcp_oauth_request`, `_on_mcp_server_initialized`, `_on_mcp_server_init_failure`) |
@@ -2130,7 +2130,7 @@ names:
 | `steer_queue` | steer settlement and requeue, queue entry actors, the drain's admission sweep, and the stream's steer arm (`_on_steer_consumed`) |
 | `stop_recovery` | recovering a turn whose stream ended badly: the stop reasons it retries on its own (`_turn_stop_recovery`), with their runtime-death attribution; and the end of a turn that reached the post-loop chain (`_turn_persist_and_settle`): its stats footer, file changes, marker retire and save, the landed turn's reset of every retry budget, and consolidation |
 | `recovery` | empty-turn config, terminal error metadata, retry delays and stop gates, the drain and consume seams of the recovery-replay ledger, auth and busy requeues, the refusal card text and the compact-after-turn notice. The ledger itself is the plain module `dashboard/recovery_replays.py` (`slot.replays`: the records, the drained-alone claim, the sweep, the revocation rule and each family's policy). A new replay family is a `ReplayFamily` member and a `POLICIES` row there (the row's position is the drain's re-check order; its `consume_phase` puts the consume-seam check before or after the turn-start allowance refresh), plus the arm site that queues it |
-| `acp_recovery` | the post-token transient re-prompt, the poisoned-session canary's settings and the thinking-binding discard-and-replay gate (`_binding_rebuild_allowed`); a new canary setting goes here too |
+| `acp_recovery` | the post-token transient re-prompt and the thinking-binding discard-and-replay gate (`_binding_rebuild_allowed`); the except arms that recover the turn: a dead process (`_on_process_died`) and the `except AcpError` ladder's arms for a retryable ACP error on a fresh session, a lost or rebound session, an unsupported image, and a transient error before the first token (retried or spent) and after it (the `_on_acp_*` arms); a new arm that retries, resets or replays the turn goes here (a model fallback hop in `model_fallback`), one that ends it in `turn_failures` |
 | `turn_marker` | the in-flight turn marker's write, retire and clear |
 | `directives` | not-applied directive wording and the unclaimed-directive backstop |
 | `tool_rows` | what a turn's tool rows persist and broadcast: row meta, the WS payload, the refinement rewrite, the tool-call identity key and the rows-only save, and the stream's tool-call and tool-update arms (`_on_tool_call`, `_on_tool_call_update`) |
@@ -2143,11 +2143,12 @@ names:
 | `decisions_hooks` | the decisions hooks (`decisions.md`): the stale-decision drop, the strip hand-off, the tool-card risk annotation, and the Jev model routing family (`_route_model_for_turn` and its gates) |
 | `segment_flush` | finalizing an assistant text segment (`_flush_segment`): its redaction with the records, row meta, the variant stash, the `[OPTIONS:]` footer audit and the widget registration, and a local slash command's reply persisted through the same redaction (`_append_command_reply`), and the settle of the turn's answer once the stream ends (`_turn_settle_answer`): the terminal directive, the final segment, the refusal-fallback hop and refusal card, the post-compaction continuation and the empty-response ladder |
 | `turn_ending` | the if/elif chain that decides how a turn ends (`_turn_ending_chain`): the leaked tool-call notice, the L1 infrastructure retry, the promise-only and false-blocker recoveries, the spent-budget and progress-claim notices and the compaction-dropped leak card |
+| `turn_failures` | the except arms outside the `except AcpError` recovery ladder, and the ladder's terminal fall-through: a cancel (`_on_cancelled`), a sign-in and a busy prompt queue, each requeueing the message (`_on_auth_required`, `_on_prompt_busy`), a closing gateway (`_on_session_closing`), the ACP error card with the poisoned-conversation escalation: the canary probe and its settings, the discard and one requeue (`_on_acp_error_card`), and any other error (`_on_error`); the arm for a slot whose app agent is not loaded is `app_agent_binding`'s. A new arm that ends the turn goes here |
 | `session_reset` | the deferred session reset: the consume before the next turn allocates and the retry armed while it cannot run yet |
 | `context_cap` | the conductor context cap (`rfc-conductor-context-cap.md`): the check before a goal conductor's dashboard turn claims its KAS session (`_cap_conductor_context`: the marks, the holds, the damping guard and the `discard_conversation(replay=True)` trim), the notice row, and the seed the trimmed session's cold start replays (`_take_context_cap_seed`, `_context_cap_seed_head`), spent only once a provider is known to hold it: by `_run_chat`'s `finally` where it settles the first-turn history debt (`_spend_context_cap_seed`), or by a later turn start that finds a live session owing none |
 | `slash_commands` | the dashboard's local slash commands: `/workflow`, `/agent` and `/goal` (`_handle_workflow_command`, `_handle_agent_command`, `_handle_goal_command`), the backend a slash command would run on, the refusal of one the dashboard does not offer (`_refuse_blocked_slash`) and the answer to one no channel can take, and the turn's slash gate (`_turn_slash_gate`), which answers a local slash command before a session is claimed, and the answer to a `/compact` the session did not compact for (`_turn_compact_command`) |
 | `eager_spawn` | starting a slot's session before its first message: the eager spawn (`schedule_eager_spawn`, `_eager_spawn`) and the resume prefetch (`_spawn_admitted_prefetch`, `_prefetch_ttl`), their admission, backoff, caps and TTL, the binding snapshot a handshake is checked against (`_slot_binding`), the prefetch's `get_or_create` allocation, and the shutdown's cancel of every pending start (`stop_eager_spawns`) |
-| `app_agent_binding` | an app agent's binding to a slot: whether it applies, whether the turn's backend may run the app's own agent (`_app_agent_host_allowed`, `_app_agent_turn_backend`) and whether a session runs the app's launch copy (`_runs_app_agent_launch`), its start directories, the session it retires and its recovery |
+| `app_agent_binding` | an app agent's binding to a slot: whether it applies, whether the turn's backend may run the app's own agent (`_app_agent_host_allowed`, `_app_agent_turn_backend`) and whether a session runs the app's launch copy (`_runs_app_agent_launch`), its start directories, the session it retires and its recovery, and the turn's answer when the slot's app agent is not loaded (`_on_app_agent_not_loaded`) |
 | `queue_drain` | starting the slot's next queued turn (`_start_next_queued_turn`): the parked-for-memory drain, the queued-delivery settlement and the drained sub-agent notices |
 | `queue_cycle` | the end of a turn and of a queue cycle: `_end_turn_tail`, `_finish_queue_cycle`, the pending synthesis and its re-check, the hand-off, the `chat_done` send, and the turn's exit record (`_TurnExit`, `_TurnOutcome`) |
 | `turn_entry` | a turn's entry state: the Stop signal it reads live (`_stop_pressed`), the session's Stop count and the directive provenance a channel steer can narrow, and the opening phase (`_turn_open`): the turn's identity, provenance, consume veto, allowances and clocks, with the responsive turn's `begin_turn` |
@@ -2158,7 +2159,6 @@ names:
 | `turn_locals` | the per-turn state `_ChatTurn` that `_run_chat`, the owner functions it calls with the turn and its phases share, and `_Flow`, the exit a phase hands back to `_run_chat` |
 | `chat_runner.py` | the off-loop prompt expansion `_expand_prompt_mention_off_loop`: `test_prompts.py` reads its `asyncio.to_thread` call in the runner |
 | `chat_runner.py` | the crew-log closers, which guards read in the runner (the turn's `latch_crew_log_previous` call is in `turn_admission`, the eager spawn's in `eager_spawn`); a new crew-log record helper goes in `crew_log_attribution` |
-| `chat_runner.py` | the poisoned-conversation canary: `test_start_priority.py` reads its `run_bg_oneliner` call, with the turn's `start_priority`, in `_run_chat` |
 
 `chat_turn.compose` composes the package's modules (`chat_turn.owner_modules()`):
 it binds on `chat_runner` every name an owner binds that the runner lacks, so
@@ -2215,10 +2215,11 @@ together with its row and with the guard that reads it. A test that reads the tu
 code as text reads every `chat_turn/` module and then `chat_runner.py` as one text, so
 a construct it pins may live in either. In `chat_runner.py` stay the live-stream,
 thinking-stream and final-message sinks `security_posture` names, the transcript-derivation plumbing, the
-abnormal-end usage-row persist, the runtime-death attribution and L1 retry-budget resets
-of its except arms (`stop_recovery` holds the ones after the stream loop), the memory-store
-seam's `build_message` calls, the theme persona gate, `_CONTEXT_FRAME_CONTRACT`, and every
-`_run_chat` arm a test reads from `_run_chat`'s own source. The final-message sink
+abnormal-end usage-row persist, `_CONTEXT_FRAME_CONTRACT`, and every `_run_chat` arm a test
+reads from `_run_chat`'s own source. The runtime-death attribution and the L1 retry-budget
+resets run in the phases that recover (`acp_recovery`, `turn_failures`, `stop_recovery`), and
+the memory-store seam's `build_message` calls and the theme persona gate in
+`_turn_build_prompt` (`prompt_assembly`). The final-message sink
 names `chat_runner.py`: the pass on an interrupted reply (`_persist_partial_reply`, in
 `turn_reply_seams`) and `_flush_segment` both run on the runner's globals; `turn_stats`
 holds the EVENT_COMPLETE usage-row persist and the turn-metric emit. The deny chokepoints live in
@@ -2234,15 +2235,17 @@ registered in `security_posture.NON_EGRESS_REDACTION_MODULES`: they reach the
 surfaces they reached from the runner.
 
 **Where new code goes**: a step of the turn's prologue goes in its phase:
-`_turn_open`, `_turn_slash_gate`, `_turn_admit`, `_turn_dispatch_prep` or
+`_turn_open`, `_turn_slash_gate`, `_turn_admit`, `_turn_dispatch_prep`, `_turn_build_prompt` or
 `_turn_dispatch_gates`, each a coroutine `_run_chat` awaits with the turn; a step of
 an event the stream loop answers in a phase (every arm but the text and thinking chunks)
 goes in that event's `_on_<event>` phase, which takes the event too, and a step after the
-loop goes in its phase, `_turn_stop_recovery` through `_turn_stop_hook`. A phase
+loop goes in its phase, `_turn_stop_recovery` through `_turn_stop_hook`. A step of an
+except arm goes in that arm's phase (`_on_<exception>`, or `_on_acp_<case>` for an arm of
+the `except AcpError` chain), which takes the exception too. A phase
 reads the turn's values at its entry, copies each value it stores back onto the turn
 (`_run_chat` reloads what it reads after the call), and returns a `_Flow` member
 when `_run_chat` must return, break or continue after it. A step inside the text or
-thinking arm, an except arm or the finally stays in `_run_chat`, or beside the guarded construct in
+thinking arm, the except dispatch or the finally stays in `_run_chat`, or beside the guarded construct in
 `chat_runner.py`. New work for a family the table
 names `chat_runner.py` for goes in `chat_runner.py`, beside it. Anything else goes
 in the owner whose responsibility it is, as a function that takes what it reads and
@@ -2841,9 +2844,9 @@ drops the row's stale lists.
 **A steer whose RPC died ambiguously.** When `client.steer()` raises an
 `AcpProcessDied` with `ambiguous_delivery` (a stdin stall with the child alive),
 the steer frame may already be in the turn. A steer that WAS written is in the
-same position when the turn's own death is ambiguous: `_run_chat`'s
-`AcpProcessDied` handler then marks every pending steer, since each sits in the
-stalled pipe behind the prompt. So is a steer whose RPC is still in flight when
+same position when the turn's own death is ambiguous: `_run_chat`'s `AcpProcessDied` handler,
+`_on_process_died` in `chat_turn/acp_recovery.py`, then marks every pending steer, since each
+sits in the stalled pipe behind the prompt. So is a steer whose RPC is still in flight when
 its turn ends (`slot._steer_rpc_in_flight`): the requeue marks it at once,
 because the RPC's own verdict can land after the entry has drained. `steer_into_running_turn` then keeps
 the steer registered, marks it in `slot._steer_possibly_delivered` (cleared at

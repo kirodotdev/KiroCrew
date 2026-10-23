@@ -57,9 +57,9 @@ def first_advertised_fallback(advertised: Any, rejected: str | None) -> str | No
 # side (kiro-cli
 # has no fallback mechanism) and is NEVER silent: every swap is logged at
 # warning, published on the provider (TURN_FALLBACK_ATTR) so the delivering
-# surface can prepend a visible notice, and — on the interactive path —
-# announced in chat (see dashboard/chat_runner). An empty chain (the default)
-# disables the feature: behavior is byte-for-byte the pre-feature error surface.
+# surface can prepend a visible notice, and — on the interactive path — announced in chat (see
+# _on_acp_transient_exhausted in dashboard/chat_turn/acp_recovery.py). An empty chain (the
+# default) disables the feature: behavior is byte-for-byte the pre-feature error surface.
 
 # Attempts per fallback candidate: initial + ONE ~2s retry — deliberately NOT a
 # fresh _TRANSIENT_RETRIES budget. Throttle-exhaustion events are often

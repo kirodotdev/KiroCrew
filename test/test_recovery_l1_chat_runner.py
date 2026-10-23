@@ -376,12 +376,16 @@ class TestRunnerBranch:
         # continuation runs on it, so it settles — the landed test cannot see it
         # because _recovering_compaction is itself a guard on the landed block.
         assert "_recovering_compaction and _compaction_completed" in dwin
-        settle = src.index("if _first_turn_history_assembled and _first_turn_history_delivered:")
+        settle = re.search(
+            r"if (?:turn\.)?_first_turn_history_assembled and _first_turn_history_delivered:", src
+        ).start()
         window = src[settle : settle + 400]
         assert "consume_first_turn_history_owed(session_key)" in window
         # The rejected imprecise boundaries must be gone entirely.
         assert "if _turn_landed:" not in window
-        assert "if _first_turn_history_assembled and _turn_emitted:" not in src
+        assert not re.search(
+            r"if (?:turn\.)?_first_turn_history_assembled and (?:turn\.)?_turn_emitted:", src
+        )
         assert "(_turn_emitted or _saw_terminal_event)" not in src
         # The assembled flag is raised in BOTH the builder and the builder-less
         # fallback context-build arms (a standalone dashboard without a builder
@@ -1071,12 +1075,12 @@ class TestTheRunnerCallSitesChargeTheFailedCycle:
     """The call sites, not the helper, are what these pin.
 
     The helper's own gate is unit-tested in test_autonudge_cycle_failures.py, but
-    nothing exercised the two ``_run_chat`` call sites: deleting either
-    ``_note_cycle_failure`` call, or dropping the ``err_meta=_err_meta`` argument
-    the generic arm passes, left the whole suite green. These drive ``_run_chat``
-    end to end into the generic terminal arm so a dispatched death DOES charge
-    while a pre-dispatch ``memory_unavailable`` does NOT -- the latter is what the
-    ``err_meta`` argument is for, so dropping it reddens the no-charge case.
+    nothing exercised its two call sites, ``_on_acp_error_card`` and ``_on_error`` in
+    ``chat_turn/turn_failures.py``: deleting either ``_note_cycle_failure`` call, or dropping
+    the ``err_meta=_err_meta`` argument the generic arm passes, left the whole suite green.
+    These drive ``_run_chat`` end to end into the generic terminal arm so a dispatched death
+    DOES charge while a pre-dispatch ``memory_unavailable`` does NOT -- the latter is what
+    the ``err_meta`` argument is for, so dropping it reddens the no-charge case.
     """
 
     @pytest.mark.asyncio
@@ -1251,11 +1255,11 @@ class TestTheRunnerCallSitesChargeTheFailedCycle:
     @pytest.mark.asyncio
     async def test_an_acp_transient_5xx_same_session_retry_does_not_charge(self, tmp_path) -> None:
         """A transient backend 5xx raised as an ``AcpError`` is retried ONCE on
-        the SAME live session (no reset) at ``chat_runner.py`` ~16563 --
+        the SAME live session (no reset) in ``_run_chat``'s ``except AcpError`` chain --
         ``not _turn_emitted and acp_error_is_transient(exc) and
-        _transient_5xx_retries < TRANSIENT_RETRIES``. That arm re-queues the
-        message and ends the turn without reaching a terminal arm, so the cycle
-        has not failed and must NOT charge.
+        _transient_5xx_retries < TRANSIENT_RETRIES``. That arm, ``_on_acp_transient_retry``
+        in ``chat_turn/acp_recovery.py``, re-queues the message and ends the turn without
+        reaching a terminal arm, so the cycle has not failed and must NOT charge.
 
         This is a DIFFERENT branch from the L1 ``last_infra_error`` re-queue the
         test above covers: a charge added inside this ACP transient arm passed

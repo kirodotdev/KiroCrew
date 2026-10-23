@@ -1,9 +1,9 @@
 """Steps that build a dashboard turn's prompt around the user's message, and the prompt
 and skill mentions it expands.
 
-The turn keeps the order the steps run in, the ContextBuilder call and the
-context-composition record; each step here reads what it is handed and returns
-what it adds, so the order stays readable in ``_run_chat``.
+The prompt phase ``_turn_build_prompt`` runs the steps in order and makes the
+ContextBuilder call; each step reads what it is handed and returns what it adds. The
+context-composition record is written in ``_turn_dispatch_gates``, once the gates pass.
 """
 
 from __future__ import annotations
@@ -15,19 +15,35 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from kiro_crew.context import ContextBuilder
     from kiro_crew.dashboard.chat_runner import (
+        _BUSY_RECOVER_MSG,
+        _CONN_RECOVER_MSG,
+        _MANUAL_RESUME_MSG,
         MAX_PROMPT_BYTES,
+        TURN_OPENING_INJECT_KINDS,
         DashboardState,
         FileTooLargeError,
+        _apply_incognito_prefix,
         _ChatSlot,
         _find_prompt,
         _get_skills,
+        _maybe_inject_persona,
+        _prewarm_startup_query,
         _prompt_read_within_root,
+        _resolve_folder_steering_dirs,
+        consume_reinjection,
+        context_omissions,
         is_sensitive_path,
         logger,
+        prepare_store_vectors,
+        refresh_tag_grants_cache,
+        resolve_board_tags,
+        run_in_embed_pool,
         safe_read_file_bytes_nolink,
         sel,
         served_provider_label,
         session_skill_globs,
+        slot_steering_principal,
+        user_text_span,
         validate_file_path,
     )
     from kiro_crew.dashboard.chat_turn.context_cap import (
@@ -36,6 +52,13 @@ if TYPE_CHECKING:
         _drop_context_cap_seed,
         _take_context_cap_seed,
     )
+    from kiro_crew.dashboard.chat_turn.queue_drain import settle_drained_subagent_notices
+    from kiro_crew.dashboard.chat_turn.turn_context import (
+        _detach_appended_context,
+        _folder_steering_turn,
+        drain_pending_context,
+    )
+    from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
 
 
 async def _session_replay_history(
@@ -508,3 +531,420 @@ def _expand_dollar_skills(
     )
     state.push_slots_update()
     return expanded, len(names)
+
+
+async def _turn_build_prompt(turn: _ChatTurn) -> None:
+    """Build the prompt the turn sends: a slash command's, the context builder's or the bare message."""
+    _trusted_prompt_tail: str | None
+    slot_ctx_omitted: dict[str, dict[str, Any]]
+    _context_is_new = turn._context_is_new
+    _current_replay_message = turn._current_replay_message
+    _is_quick_prompt = turn._is_quick_prompt
+    _is_synthetic = turn._is_synthetic
+    _jev_route_text = turn._jev_route_text
+    _provider_has_history = turn._provider_has_history
+    _request_prefix_context = turn._request_prefix_context
+    _responsive_recovery = turn._responsive_recovery
+    _synthetic_recovery_turn = turn._synthetic_recovery_turn
+    _turn_project = turn._turn_project
+    _user_span = turn._user_span
+    client = turn.client
+    execution_context = turn.execution_context
+    first_word = turn.first_word
+    is_new = turn.is_new
+    is_slash = turn.is_slash
+    kiro_agent = turn.kiro_agent
+    memory_store = turn.memory_store
+    message = turn.message
+    prompt_expanded = turn.prompt_expanded
+    provider_name = turn.provider_name
+    session_key = turn.session_key
+    slot = turn.slot
+    state = turn.state
+    user_typed_len = turn.user_typed_len
+    if is_slash:
+        full_message = message
+        turn.full_message = full_message
+        sel().log_tool_invocation(
+            session_key=session_key,
+            agent=slot.agent or "kirocrew",
+            source="dashboard",
+            tool_name="slash_command",
+            tool_kind="slash",
+            outcome="bypass",
+            metadata={"command": first_word, "slot": slot.key},
+        )
+    elif state.context_builder:
+
+        # Length of the message as the user's text stands NOW (after any
+        # @prompt/$skill expansion, before the context this branch prepends).
+        # The difference against len(message) at build_message time is how
+        # far the user's text was pushed down — its offset for split_blocks.
+        _core_msg_len = len(message)
+
+        # Record that a non-slash context-bearing turn ASSEMBLED its history
+        # replay — this is the ``elif state.context_builder:`` arm, so a slash
+        # command (the ``if is_slash:`` arm above) never reaches it. The build
+        # arm's replay only reaches the provider when the stream starts, so a
+        # pre-output backend 5xx fails AFTER assembly and the re-queue needs the
+        # debt — _run_chat's finally settles it (gated on this flag) only once the
+        # provider durably keeps the prompt. The suppression arm (a reset asked
+        # to forget) pays the debt directly inside the helper.
+        if _context_is_new and not _provider_has_history:
+            _first_turn_history_assembled = True
+            turn._first_turn_history_assembled = _first_turn_history_assembled
+        compressed = await _session_replay_history(
+            state,
+            state.context_builder,
+            slot,
+            client,
+            session_key,
+            _context_is_new=_context_is_new,
+            _provider_has_history=_provider_has_history,
+            _current_replay_message=_current_replay_message,
+        )
+        # After a soft-cancel, kiro-cli drops the cancelled turn from its
+        # conversation log — but everything BEFORE the cancel is preserved.
+        # Re-inject just the cancelled turn (user prompt + partial assistant)
+        # as a preamble so the LLM remembers what was interrupted, without
+        # duplicating older history. Flag lives on the session (set by
+        # SessionManager.stop_turn), consumed one-shot here. Use getattr
+        # for prev_turn_cancelled so test doubles don't raise on access.
+        _session = getattr(state.sessions, "_sessions", {}).get(session_key)
+        if _session is not None and getattr(_session, "prev_turn_cancelled", False):
+            _session.prev_turn_cancelled = False
+            if (
+                not _responsive_recovery
+                and state.context_builder
+                and state.context_builder.conversation_log
+            ):
+                from kiro_crew.context import (
+                    build_cancelled_turn_preamble,  # circular: context -> dashboard.chat -> chat_runner (can't top-level: context imports chat at module load); circular: context -> chat -> chat_runner; circular: context -> chat
+                )
+
+                preamble = build_cancelled_turn_preamble(
+                    state.context_builder.conversation_log, session_key
+                )
+                if preamble:
+                    message = preamble + "\n\n" + message
+                    turn.message = message
+        # A turn that CONTINUES an interrupted one, on a session this turn
+        # natively resumed (session/load). kiro-cli logs a prompt only once it
+        # is answered, so the turn cut off by the process dying is missing
+        # from what the load restored, and a resumed session gets no replay
+        # above. Re-inject that turn from the slot's own transcript, or the
+        # model is told to finish a request it cannot see.
+        if (
+            is_new
+            and _provider_has_history
+            and _synthetic_recovery_turn
+            and message in (_MANUAL_RESUME_MSG, _CONN_RECOVER_MSG, _BUSY_RECOVER_MSG)
+        ):
+            from kiro_crew.context import (  # circular: context -> chat
+                build_interrupted_turn_preamble,
+            )
+
+            preamble = build_interrupted_turn_preamble(
+                list(slot.messages),
+                current=_current_replay_message,
+                opener_inject_kinds=TURN_OPENING_INJECT_KINDS,
+            )
+            if preamble:
+                logger.info(
+                    "Restoring the interrupted turn for natively resumed session %s",
+                    session_key,
+                )
+                # Minted after the egress scrub in _turn_dispatch_gates, which would
+                # otherwise neutralize its own (registered) frame.
+                _interrupted_turn_preamble = preamble
+                turn._interrupted_turn_preamble = _interrupted_turn_preamble
+        logger.info("🔍 Chat slot=%s is_new=%s mode=%r", slot.key, is_new, slot.mode)
+        # Drain any pending subagent delivery failures so the LLM knows
+        # about timed-out results and can read them from disk.
+        if slot._pending_subagent_failures:
+            failures = slot._pending_subagent_failures[:]
+            slot._pending_subagent_failures.clear()
+            settle_drained_subagent_notices(state, slot, failures)
+            message = "\n\n".join(failures) + "\n\n" + message
+            turn.message = message
+        # Save raw user message before context/persona prepend for Slack
+        # mirror — avoids leaking injected context to the linked thread.
+        _user_msg_for_mirror = message
+        turn._user_msg_for_mirror = _user_msg_for_mirror
+        # Drain pending context injections (silent background context
+        # from apps/subagents).  Expired entries are discarded.
+        _ctx_prefix = drain_pending_context(slot)
+        if _ctx_prefix:
+            message = _ctx_prefix + message
+            turn.message = message
+        # Use resolved kiro agent name (e.g. "kirocrew"), not the slot
+        # name (e.g. "default"), so build_message's is_custom check
+        # correctly identifies kirocrew sessions and enables skills.
+        # Generated $skill/persona bytes travel through
+        # request_prefix_context below; ``message`` itself therefore keeps
+        # the actual current request at its tail.
+        # Folder breadcrumb: inject once per session, and again after a
+        # folder move (no session reset — it's just a label refresh).
+        folder_path = None
+        if _context_is_new or slot._folder_changed:
+            folder_path = state.folder_breadcrumb(slot.folder_id) or None
+            slot._folder_changed = False
+        # Board tags: resolve the slot's tag ids to (id, agent-policy) via
+        # the live vocabulary so the [BOARD] context line can list the tags
+        # and which are agent-writable. Canonical IDs, never the free-form
+        # ``name`` field: names are agent-writable prose and an
+        # instruction-shaped name must never enter trusted model context;
+        # ids are also the exact handles the ``chat_tag``
+        # directive consumes. Best-effort — a resolution failure must never
+        # break message assembly.
+        board_tags: list[tuple[str, str]] | None = None
+        try:
+            _slot_tags = list(getattr(slot, "tags", None) or [])
+            if _slot_tags:
+                # Grants-store read+parse off the loop; the per-tag
+                # resolutions below serve from the warmed cache.
+                await asyncio.to_thread(refresh_tag_grants_cache)
+                # Row-backed resolution: only ids with a protected grant
+                # row reach the trusted rail — see resolve_board_tags.
+                board_tags = resolve_board_tags(_slot_tags, state._tags) or None
+        except Exception:
+            logger.debug("board_tags resolution failed", exc_info=True)
+        _color_theme = getattr(slot, "color_theme", "")
+        # Governance gate: installed-pack persona injection
+        # is a governable capability. A policy can force-disable it wholesale
+        # (default-allow standalone). Only consult when a persona could
+        # actually be injected (new turn + installed "custom-" theme) to
+        # avoid a governance call on every ordinary turn. fail_closed=True:
+        # unlike the neighboring capability sites (spawn/messaging/...),
+        # which have always-on chokepoint checks behind governance, this
+        # gate is the ONLY enforcement of the enterprise persona
+        # off-switch — a degraded permissive Decision would silently
+        # bypass a policy that disables capabilities.theme_persona.
+        # A governance-evaluation error therefore denies (persona skipped
+        # for that turn; the chat itself is unaffected).
+        _persona_permitted = True
+        if _context_is_new and isinstance(_color_theme, str) and _color_theme.startswith("custom-"):
+            from kiro_crew.platform.governance_profiles import governance_permits
+
+            _decision = governance_permits(
+                "capabilities.theme_persona",
+                "",
+                session_key=session_key,
+                log_warning=False,
+                fail_closed=True,
+            )
+            _persona_permitted = getattr(_decision, "permitted", False)
+            if not _persona_permitted:
+                logger.info(
+                    "theme persona injection skipped: capabilities."
+                    "theme_persona denied by governance policy"
+                )
+        if _persona_permitted:
+            persona_message = _maybe_inject_persona(
+                message,
+                _color_theme,
+                _context_is_new,
+                theme_consent_sha=getattr(slot, "theme_consent_sha", None),
+            )
+            message, persona_context = _detach_appended_context(message, persona_message)
+            turn.message = message
+            _request_prefix_context += persona_context
+            turn._request_prefix_context = _request_prefix_context
+        # Scale the injected-context budget to the active model's context
+        # window so a 200K model gets one-fifth the memory/lessons/history
+        # chars a 1M model gets (same share of the window). Resolve from the
+        # live session client (prefers its usage-reported window, else its
+        # resolved model id) — the same helper Slack uses, so both surfaces
+        # share one strategy. Unset/Auto ⇒ None ⇒ the 1M reference (unchanged
+        # default behavior).
+        from kiro_crew.context import window_for_provider_client  # circular: context -> chat
+
+        model_window = window_for_provider_client(client)
+        # Everything this branch PREPENDED (cancelled-turn preamble,
+        # subagent failures, drained pending context) sits between the
+        # request header and the user's text; record its current length.
+        # Generated skill/persona context is passed separately and never
+        # shifts the authoritative user slice.
+        _user_prepend_offset = max(0, len(message) - _core_msg_len)
+        turn._user_prepend_offset = _user_prepend_offset
+        # build_message resolves where the user's own text ENDS UP (it owns
+        # the hook rewrite, the neutralization and the multibyte fold) and
+        # writes the exact bounds into _user_span.
+        # build_message performs blocking work (episodic query embed via
+        # urllib to Ollama, file reads) — run off-loop (mc-embed bulkhead)
+        # so a slow embedding endpoint can't stall the gateway event loop.
+        # A compaction on the PREVIOUS turn dropped the session-start
+        # context, taking the skills index with it. Read-and-clear the flag
+        # here so this turn re-injects the index exactly once.
+        _needs_reinjection = consume_reinjection(state.sessions, session_key)
+        turn._needs_reinjection = _needs_reinjection
+        # Folder steering directories, resolved LIVE from the committed
+        # folder tree rather than from a value cached on the slot, so a
+        # folder edit or a re-file reaches the chats already inside it at
+        # their next session-start context with no cache to invalidate.
+        # For a template chat only the two turns that carry session-start
+        # context read the tree (a fresh provider session, or a reinjection
+        # after compaction); warm turns never touch it. A V2 MEMBER chat is
+        # different: build_message rebuilds the member's essentials
+        # envelope on EVERY turn, and that envelope declares itself the
+        # complete replacement for all prior snapshots ("do not keep
+        # applying removed sources"). Folder steering rides inside that
+        # envelope, so a warm member turn that passed no directories would
+        # hand the model a snapshot that silently withdraws the folder's
+        # guides. Resolve on every turn that rebuilds the envelope. The
+        # resolver re-validates every stored path — stat calls and
+        # realpath — so it runs off-loop. A resolution error degrades to
+        # no folder steering and a warning naming the slot; it must never
+        # fail the turn.
+        _folder_steering_dirs: tuple[str, ...] = ()
+        if slot.folder_id and _folder_steering_turn(
+            slot,
+            execution_context,
+            context_is_new=_context_is_new,
+            provider_has_history=_provider_has_history,
+            needs_reinjection=_needs_reinjection,
+        ):
+            _folder_snapshot = await state.read_folders(
+                lambda folders: [dict(folder) for folder in folders]
+            )
+            _resolved_dirs, _steering_err = await asyncio.to_thread(
+                _resolve_folder_steering_dirs,
+                _folder_snapshot,
+                slot.folder_id,
+                slot_app=slot_steering_principal(slot, execution_context),
+            )
+            if _steering_err:
+                logger.warning(
+                    "Folder steering unavailable for slot %s: %s", slot.key, _steering_err
+                )
+            else:
+                _folder_steering_dirs = tuple(_resolved_dirs)
+        # Stand up this crew's OWN vector store before the offloaded build.
+        # It has to happen here, on the loop, because init() is blocking file
+        # IO (sqlite connect, migrations, a FAISS load) that build_message's
+        # sync resolver may not perform. A no-op for the default store.
+        #
+        # Learned V2 memory is optional here: an unavailable member database
+        # leaves manual essentials available and the builder reports that
+        # learned memory could not be loaded. Temporary turns skip preparation.
+        # Legacy V1 named stores retain their Markdown/keyword fallback.
+        if not slot.blocks_reads:
+            try:
+                await prepare_store_vectors(
+                    state.context_builder, memory_store, session_key=session_key
+                )
+            except (OSError, ValueError):
+                if execution_context is None or execution_context.member_id is None:
+                    raise
+                # The builder keeps essentials and reports unavailable learned memory.
+                logger.info("Member learned memory unavailable for context preparation")
+        # Every session-start build starts its message's embedding here, just
+        # ahead of itself, so the build joins it and waits within its deadline. A
+        # pre-warmed session gets its only early embed here; after the cold-start embed in
+        # `_turn_admit` (turn_admission), the same text is a cache hit or joins that inference.
+        if _context_is_new and not _provider_has_history and not is_slash:
+            await _prewarm_startup_query(
+                state,
+                slot,
+                message,
+                memory_store=memory_store,
+                execution_context=execution_context,
+            )
+        # The budgets that cut a block record the cut as they write its notice;
+        # the collection gathers them for the ``context/composed`` _turn_dispatch_gates writes.
+        # It opens around the build alone, so only THIS turn's composition lands in
+        # it, and the worker thread sees it through the context the pool copies.
+        with context_omissions.collect() as _ctx_omitted:
+            full_message, _ = await run_in_embed_pool(
+                state.context_builder.build_message,
+                message,
+                _context_is_new,
+                session_key,
+                agent=kiro_agent or slot.agent or None,
+                resumed=_provider_has_history,
+                workspace=slot.workspace or None,
+                project=_turn_project or None,
+                memory_store=memory_store,
+                compressed_history=compressed,
+                mode=slot.mode,
+                blocks_reads=slot.blocks_reads,
+                provider_type=provider_name,
+                runtime_source="dashboard",
+                request_prefix_context=_request_prefix_context or None,
+                exclude_last_n=1,
+                folder_path=folder_path,
+                board_tags=board_tags,
+                model_window=model_window,
+                # Member DM threads get the four-layer member identity block.
+                # `slot.agent` is the member the human picked (the crew name);
+                # the `agent=` above is the TEMPLATE it resolved to, which is
+                # why the member identity travels separately.
+                member=slot.agent if slot.mode == "member" and slot.agent else "",
+                execution_context=execution_context,
+                user_text_range=user_text_span(
+                    _user_prepend_offset,
+                    user_typed_len,
+                    quick_prompt=_is_quick_prompt,
+                    prompt_expanded=prompt_expanded,
+                ),
+                user_span_out=_user_span,
+                needs_reinjection=_needs_reinjection,
+                steering_dirs=_folder_steering_dirs,
+                context_provider=client,
+                # Skill triggers read only what the person asked: none of
+                # the context prepended above, and nothing at all on a turn
+                # whose text the person did not write (a recovery or Continue
+                # continuation, the synthesis prompt, an MCP App's message).
+                skill_trigger_text="" if _is_synthetic else _jev_route_text,
+            )
+            turn.full_message = full_message
+        slot_ctx_omitted = dict(_ctx_omitted)
+        turn.slot_ctx_omitted = slot_ctx_omitted
+        # The reported span is valid for the message as build_message
+        # returned it. Several later steps PREPEND to the finished prompt
+        # (incognito/temporary notice, re-injected history, hook context, a
+        # regenerate system line), each of which slides the span. Rather than
+        # patch every site, snapshot the length and the spanned text here and
+        # re-derive the offset once, in _turn_dispatch_gates just before classification,
+        # and verify the shifted span still holds the same text, so a future transform
+        # that breaks the assumption degrades to the legacy reconstruction
+        # instead of silently persisting a wrong attribution.
+        if len(_user_span) == 2:
+            _span_probe = full_message[_user_span[0] : _user_span[1]]
+            turn._span_probe = _span_probe
+            _span_base_len = len(full_message)
+            turn._span_base_len = _span_base_len
+        full_message = _apply_incognito_prefix(slot, full_message)
+        turn.full_message = full_message
+        _trusted_prompt_tail = full_message
+        turn._trusted_prompt_tail = _trusted_prompt_tail
+    else:
+        full_message = _request_prefix_context + message
+        turn.full_message = full_message
+        if _context_is_new and not _provider_has_history:
+            # Mirror the builder arm (above): this is the one place a
+            # context-bearing turn in the builder-less fallback handles its
+            # history, so settle the FRESH first-turn debt here too. A reset
+            # that asked to forget pays it now; otherwise record that history
+            # was assembled and let _run_chat's finally settle it on a durably-kept
+            # turn. Without this a standalone dashboard with no context_builder
+            # leaves the debt armed and re-prepends full history every turn.
+            _first_turn_history_assembled = True
+            turn._first_turn_history_assembled = _first_turn_history_assembled
+            if state.sessions.consume_replay_suppression(session_key):
+                state.sessions.consume_first_turn_history_owed(session_key)
+                logger.info(
+                    "Session replay suppressed by an explicit conversation reset: %s",
+                    session_key,
+                )
+            else:
+                from kiro_crew.dashboard.chat_persistence import _build_history_prefix
+
+                history = await asyncio.to_thread(
+                    _build_history_prefix,
+                    slot,
+                    conversation_log=state.conversation_log,
+                    current_message=_current_replay_message,
+                )
+                full_message = history + full_message
+                turn.full_message = full_message

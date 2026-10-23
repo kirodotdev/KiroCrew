@@ -1714,7 +1714,7 @@ disposition:
   nothing. `fail_closed=True` is the same disposition the authorization/admission
   chokepoints use (e.g. `capabilities.publish` in `publish_governance.py`,
   `capabilities.theme_install` in `handlers/themes.py`, `capabilities.theme_persona`
-  in `chat_runner.py`) where a wrong permit lets bytes leave the box or ingests
+  in `chat_turn/prompt_assembly.py`) where a wrong permit lets bytes leave the box or ingests
   untrusted content. The ALLOW audit is disposition-split: a **governed** allow
   (a policy/profile governs `channels`, detected as the Decision's
   `layer ∈ {policy, profile, both}`) is **audit-or-deny** — written
@@ -2815,8 +2815,8 @@ the scope this row enforces today. (It does NOT gate L2 asset serving —
 overlays/topbar/audio keep working under a denying policy; if wholesale L2
 disablement is wanted it will be its own row or an extension of this one,
 tracked with kirodotdev/KiroCrew#312.) The decision is consulted at the
-injection site
-(`chat_runner.py`, via `governance_permits("capabilities.theme_persona",
+injection site (`_turn_build_prompt` in `chat_turn/prompt_assembly.py`,
+via `governance_permits("capabilities.theme_persona",
 "", session_key=...)`); a denying policy skips injection silently (info log).
 It is a **data row only** — `CONTRACT_VERSION` is unchanged and the evaluator
 (`resolve`/`gate_decision`/`load_security_policy`) is untouched, per this

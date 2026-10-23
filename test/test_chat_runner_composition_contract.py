@@ -89,6 +89,7 @@ _OWNER_MODULES = frozenset(
         "turn_dispatch_gates",
         "turn_ending",
         "turn_entry",
+        "turn_failures",
         "turn_ledgers",
         "turn_locals",
         "turn_marker",
@@ -468,6 +469,8 @@ _AWAIT_FREE_PHASES = (
     "_on_clear_status",
     "_on_steer_consumed",
     "_turn_context_usage",
+    "_on_app_agent_not_loaded",
+    "_on_session_closing",
 )
 _SUSPENDING_OPS = frozenset(
     {"GET_AWAITABLE", "SEND", "YIELD_VALUE", "GET_AITER", "GET_ANEXT", "BEFORE_ASYNC_WITH"}
@@ -1263,6 +1266,7 @@ def test_no_owner_captures_a_name_tests_rebind_on_the_runner() -> None:
 _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
     r"\b\w*redact\w*\(": (
         _RUNNER_HOME,
+        "dashboard/chat_turn/acp_recovery.py",
         "dashboard/chat_turn/deny_chokepoints.py",
         "dashboard/chat_turn/eager_spawn.py",
         "dashboard/chat_turn/file_changes.py",
@@ -1280,6 +1284,7 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/tool_results.py",
         "dashboard/chat_turn/tool_rows.py",
         "dashboard/chat_turn/turn_admission.py",
+        "dashboard/chat_turn/turn_failures.py",
         "dashboard/chat_turn/turn_ledgers.py",
         "dashboard/chat_turn/turn_reply_seams.py",
         "dashboard/chat_turn/turn_spec_hooks.py",
@@ -1314,11 +1319,17 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/turn_stats.py",
     ),
     r"_emit_turn_metric\(": ("dashboard/chat_turn/turn_stats.py",),
-    r"caused_by_this_session": (_RUNNER_HOME, "dashboard/chat_turn/stop_recovery.py"),
-    r"note_shared_death": (_RUNNER_HOME, "dashboard/chat_turn/stop_recovery.py"),
+    r"caused_by_this_session": (
+        "dashboard/chat_turn/acp_recovery.py",
+        "dashboard/chat_turn/stop_recovery.py",
+    ),
+    r"note_shared_death": (
+        "dashboard/chat_turn/acp_recovery.py",
+        "dashboard/chat_turn/stop_recovery.py",
+    ),
     r"clear_shared_deaths": ("dashboard/chat_turn/stop_recovery.py",),
     r"_acp_pipe_death_retries": (
-        _RUNNER_HOME,
+        "dashboard/chat_turn/acp_recovery.py",
         "dashboard/chat_turn/recovery.py",
         "dashboard/chat_turn/stop_recovery.py",
     ),
@@ -1397,14 +1408,26 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/eager_spawn.py",
         "dashboard/chat_turn/turn_admission.py",
     ),
-    r"capabilities\.theme_persona": (_RUNNER_HOME,),
+    r"capabilities\.theme_persona": ("dashboard/chat_turn/prompt_assembly.py",),
     r"(?m)^_CONTEXT_FRAME_CONTRACT\b": (_RUNNER_HOME,),
-    r"slot\._infra_retries = 0": (_RUNNER_HOME, "dashboard/chat_turn/stop_recovery.py"),
-    r"slot\._transient_5xx_retries = 0": (_RUNNER_HOME, "dashboard/chat_turn/stop_recovery.py"),
-    r"\bmemory_store=": (_RUNNER_HOME, "dashboard/chat_turn/turn_admission.py"),
+    r"slot\._infra_retries = 0": (
+        "dashboard/chat_turn/acp_recovery.py",
+        "dashboard/chat_turn/stop_recovery.py",
+        "dashboard/chat_turn/turn_failures.py",
+    ),
+    r"slot\._transient_5xx_retries = 0": (
+        "dashboard/chat_turn/acp_recovery.py",
+        "dashboard/chat_turn/stop_recovery.py",
+        "dashboard/chat_turn/turn_failures.py",
+    ),
+    r"\bmemory_store=": (
+        _RUNNER_HOME,
+        "dashboard/chat_turn/prompt_assembly.py",
+        "dashboard/chat_turn/turn_admission.py",
+    ),
     r"compaction_settled=_compaction_completed,": ("dashboard/chat_turn/segment_flush.py",),
     r"await _post_native_question_card\(": ("dashboard/chat_turn/tool_rows.py",),
-    r"\brun_bg_oneliner\(": (_RUNNER_HOME,),
+    r"\brun_bg_oneliner\(": ("dashboard/chat_turn/turn_failures.py",),
 }
 
 

@@ -893,7 +893,7 @@ async def _run_inner_impl(
         """
         attempts = 0
         # One-shot post-activity allowance, mirroring the main path's
-        # ``_posttoken_retry_used`` rule (dashboard/chat_runner.py ~L4324):
+        # ``_posttoken_retry_used`` rule (_on_acp_posttoken_transient, chat_turn/acp_recovery.py):
         # each continuation turn issued AFTER observed activity is an
         # independent opportunity for the model to repeat a side-effecting
         # tool, so post-activity recovery gets exactly ONE attempt.

@@ -1,6 +1,7 @@
 """Which agent an app-owned dashboard slot runs as: whether the app's binding applies, whether
-the turn's backend may run the app's own agent, and retiring and recovering the app agent's
-session."""
+the turn's backend may run the app's own agent, retiring and recovering the app agent's
+session, and the except arm for an app agent that is not loaded
+(``_on_app_agent_not_loaded``)."""
 
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
         select_provider_backend,
         subprocess_executor,
     )
+    from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
 
 
 def app_agent_binding_applies(slot: "_ChatSlot") -> bool:
@@ -189,3 +191,19 @@ async def _app_agent_turn_backend(
     if cfg is None:
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
     return select_provider_backend(session_key, cfg.agent.member_acp_backend, cfg.agent.acp_backend)
+
+
+async def _on_app_agent_not_loaded(turn: _ChatTurn, exc) -> None:
+    """The slot's app agent is not loaded."""
+    slot = turn.slot
+    # An app-owned slot whose agent never materialized, even after the
+    # self-heal warm. Deliberately terminal: running the default agent here is
+    # the exact silent substitution this guards against. Surface the naming
+    # card through the same ``slot.append("error", ...)`` path as every other
+    # terminal turn error, but do NOT record a session failure — nothing
+    # failed to run, the agent simply is not loaded yet, and the user's next
+    # send (once the warm lands) should start clean.
+    logger.warning("App agent not loaded for slot %s: %s", slot.key, exc)
+    slot.append("error", str(exc), "msg msg-err")
+    _crew_log_error = type(exc).__name__
+    turn._crew_log_error = _crew_log_error

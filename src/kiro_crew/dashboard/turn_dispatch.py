@@ -428,8 +428,8 @@ def finish_turn_task(
     """
     state._background_tasks.discard(task)
     if task.cancelled():
-        # Cooperative stop or shutdown. Already surfaced by _run_chat's own
-        # CancelledError handler; a second card would be noise.
+        # Cooperative stop or shutdown. Already surfaced by _run_chat's CancelledError
+        # arm, _on_cancelled in chat_turn/turn_failures.py; a second card would be noise.
         return
     try:
         exc = task.exception()

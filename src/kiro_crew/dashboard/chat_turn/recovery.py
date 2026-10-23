@@ -781,7 +781,7 @@ async def _requeue_after_prompt_busy(
     Within the busy budget a top-level turn is re-queued on the fresh provider;
     past it, or nested, the transcript says so instead.
 
-    *_stop_pressed* is ``_run_chat``'s live Stop read: a Stop that already
+    *_stop_pressed* is ``_on_prompt_busy``'s live Stop read: a Stop that already
     resolved to idle is invisible to ``_should_suppress_requeue`` and
     ``_queue_recovery`` takes no Stop snapshot of its own, so this gate is the
     only place it can veto the replay (the same pairing as the other arms).
@@ -790,7 +790,7 @@ async def _requeue_after_prompt_busy(
         pass
     elif _prompt_depth == 0 and slot._prompt_busy_retries <= 3:
         # Single emit: slot.append persists + broadcasts one chat_message
-        # via _on_message (see the AcpProcessDied note in ``_run_chat``); no explicit
+        # via _on_message (see the note in ``_on_process_died``); no explicit
         # broadcast_ws or the UI shows a duplicate card.
         _retry_msg = "⟳ Session busy — retrying…"
         slot.append("error", _retry_msg, "msg msg-err", meta={"kind": TRANSIENT_RETRY_KIND})

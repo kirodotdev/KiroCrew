@@ -1,6 +1,7 @@
 """The model a dashboard turn runs on: the session-start settle, the fallback chain, the
-swap, the restore probe, the refusal hop, the canonical-model backfill and the pinned-model
-verdict."""
+swap, the restore probe, the refusal hop, the canonical-model backfill, the pinned-model
+verdict, and the except arm that falls back when the model refuses the account
+(``_on_acp_model_access``)."""
 
 from __future__ import annotations
 
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
         provider_active_model,
         provider_advertised_ids,
         provider_raw_model,
+        redact,
         redact_credentials,
         redact_exfiltration_urls,
         replays_of,
@@ -44,10 +46,16 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.recovery import (
         _session_stop_generation_for,
         _should_suppress_requeue,
+        _terminal_error_meta,
     )
     from kiro_crew.dashboard.chat_turn.steer_queue import _has_user_queued_followup
-    from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
-    from kiro_crew.dashboard.chat_turn.turn_ledgers import _queue_recovery
+    from kiro_crew.dashboard.chat_turn.turn_entry import _session_stop_generation, _stop_pressed
+    from kiro_crew.dashboard.chat_turn.turn_ledgers import (
+        _queue_recovery,
+        _replay_owes_delivery,
+        _requeue_owed_completion,
+    )
+    from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
 
 
 def _app_allocation_kwargs(slot: "_ChatSlot") -> dict[str, str]:
@@ -1114,3 +1122,311 @@ async def _refusal_fallback_retry(turn) -> bool:
         turn._turn_tool_calls,
     )
     return True
+
+
+async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_candidate) -> None:
+    """The model refused the account: fall back to a model it may use."""
+    _attachment_meta = turn._attachment_meta
+    _attachments = turn._attachments
+    _is_synthetic = turn._is_synthetic
+    client = turn.client
+    message = turn.message
+    session_key = turn.session_key
+    slot = turn.slot
+    # ── Reactive model-access-denial fallback ──
+    # A new conversation starts on the configured model (commonly the
+    # "auto" sentinel), and this account is not ENTITLED to it — a
+    # different failure from a throttle/capacity blip on an advertised
+    # model. The raise-time classifier tags exactly this case: a named
+    # model that is ABSENT from the session's advertised list
+    # (``exc.rejected_model`` + ``model_is_unusable`` — the same
+    # discriminator ``_model_is_unentitled`` uses to WORD the terminal
+    # error, so the trigger and the prose cannot disagree). Because the
+    # error is entitlement, not throttle, it is classified terminal and
+    # the two throttle-gated fallback branches in _run_chat's except AcpError
+    # chain (``acp_error_is_transient``) do not fire, so the first reply just
+    # fails. This is the same reactive swap the unattended surfaces
+    # run (``stream_and_collect`` Case 2.5 / ``run_bg_oneliner``),
+    # on the interactive path.
+    #
+    # THREE properties the shared candidate selector already guarantees,
+    # so this stays a fix and not a new hazard:
+    #   - never the failed model: ``first_advertised_fallback`` skips
+    #     ``exc.rejected_model`` AND the ``"auto"`` sentinel, so the
+    #     default ``agent.fallback_model`` chain of ``("auto",)`` — whose
+    #     only entry is the very model that just failed — can never be
+    #     the target;
+    #   - bounded: one attempt (``_model_access_fallback_used`` one-shot).
+    #     An account entitled to NOTHING yields no candidate, _run_chat's elif
+    #     goes false, and the terminal ``_on_acp_error_card`` arm surfaces the
+    #     entitlement error whose prose already names the served list;
+    #   - not a catch-all: _run_chat's elif guard fires ONLY on a named model absent
+    #     from the advertised set. An unrelated provider error carries no
+    #     ``rejected_model`` and stays terminal, so a real fault is never
+    #     masked as a model switch.
+    slot.purge_chunks()
+    _rejected_safe = redact(str(_rejected_id))
+    _cand_safe = redact(str(_access_fb_candidate))
+    # Move the live session onto the accessible model through the shared
+    # substitute set_model seam (the same one the throttle walk uses);
+    # candidates are pre-filtered against the advertised list, so the
+    # explicit-pick guard inside set_model does not fire for them.
+    _set_model_fn = resolve_substitute_set_model(client)
+    if _set_model_fn is None:
+        # No set_model seam on this provider — nothing to swap onto.
+        # Surface the entitlement error the same way ``_on_acp_error_card``
+        # does (visible error card, structural meta so the frontend
+        # offers the picker) and end the turn. A bare re-raise here would
+        # escape _run_chat to a log-only callback and dead-end the turn
+        # with no card — the exact silent failure this PR fixes.
+        logger.info(
+            "model access fallback: slot %s provider exposes no set_model; "
+            "surfacing entitlement error for %r",
+            slot.key,
+            _rejected_id,
+        )
+        _entitle_text = redact(str(exc))
+        slot.purge_chunks()
+        slot.append(
+            "error",
+            f"❌ {_entitle_text}",
+            "msg msg-err",
+            meta=_terminal_error_meta(exc),
+        )
+    else:
+        # Serialise the swap RPC AND the pick/fallback-state writes
+        # under the SAME locks every other writer of those fields takes
+        # (explicit pick + bulk pick in chat_handlers, throttle swap and
+        # restore probe): the per-session switch lock plus the per-slot
+        # pick lock. A forced bulk pick (skip_running=false) is a
+        # documented concurrent API call that can land in the set_model
+        # await below, commit its own model + tear the session down; the
+        # session lock keeps this path's state writes ordered against it
+        # so they cannot record a stale fallback record or diverge
+        # slot.model from the live session.
+        # No deadlock: _set_model_fn is the PROVIDER's set_model (see
+        # resolve_substitute_set_model) — a provider/client coroutine
+        # with no reference to this slot, so it cannot re-acquire the
+        # slot-held _model_pick_lock. getattr-guarded for minimal test
+        # stubs; the real _ChatSlot always carries the lock.
+        _pick_lock = getattr(slot, "_model_pick_lock", None)
+        if _pick_lock is None:
+            _pick_lock = asyncio.Lock()
+        # Take the per-SESSION switch lock outside the per-slot pick lock,
+        # the exact order the restore probe and every switch handler use.
+        # The per-slot _model_pick_lock is DISJOINT across session aliases
+        # (a channel twin and the dashboard tab hold different slot
+        # objects), so it alone does not serialize this swap against a
+        # concurrent forced bulk pick on a twin slot that holds the
+        # session lock. slot_switch_session_lock is keyed by session, so
+        # both aliases contend on it and the swap RPC plus the
+        # fallback-state writes below cannot interleave with a twin's
+        # set_model, keeping persisted fallback state and slot.model
+        # consistent with the live session.
+        _fb_session_lock = slot_switch_session_lock(session_key)
+        async with _fb_session_lock, _pick_lock:
+            _swap_ok = False
+            try:
+                _raw_before = provider_raw_model(client)
+                await _set_model_fn(_access_fb_candidate)
+            except Exception:
+                # The swap RPC itself failed. Same rule as the no-seam
+                # corner: surface the ORIGINAL entitlement error through
+                # the terminal card path and end the turn, never a bare
+                # re-raise (which escapes to a log-only callback and shows
+                # the user nothing).
+                logger.debug(
+                    "model access fallback: set_model(%r) failed; surfacing " "entitlement error",
+                    _access_fb_candidate,
+                    exc_info=True,
+                )
+                _entitle_text = redact(str(exc))
+                slot.purge_chunks()
+                slot.append(
+                    "error",
+                    f"❌ {_entitle_text}",
+                    "msg msg-err",
+                    meta=_terminal_error_meta(exc),
+                )
+            else:
+                # Witness the swap before recording state or announcing it
+                # (same rule as the restore probe and throttle walk): a
+                # non-raising set_model can be a silent no-op that leaves
+                # the original still-unentitled model active. Recording
+                # fallback state and a "running on X instead" notice here
+                # would be a false claim, and the replay would rerun the
+                # rejected model. When the model is unchanged and is not
+                # the candidate we asked for, treat it as a swap failure
+                # and surface the original entitlement error instead.
+                _raw_after = provider_raw_model(client)
+                if (
+                    _raw_before
+                    and _raw_after == _raw_before
+                    and _raw_after.strip().lower() != _access_fb_candidate.strip().lower()
+                ):
+                    logger.warning(
+                        "model access fallback: set_model(%r) was a silent "
+                        "no-op (model still %r); surfacing entitlement error",
+                        _access_fb_candidate,
+                        _raw_after,
+                    )
+                    _entitle_text = redact(str(exc))
+                    slot.purge_chunks()
+                    slot.append(
+                        "error",
+                        f"❌ {_entitle_text}",
+                        "msg msg-err",
+                        meta=_terminal_error_meta(exc),
+                    )
+                else:
+                    slot._model_access_fallback_used = True
+                    _sync_served_model(slot, client)
+                    _swap_ok = True
+                if _swap_ok:
+                    # Register the SAME sticky fallback record the throttle
+                    # walk writes (``advance_fallback_candidate``), for two
+                    # reasons the one-shot flag alone does not cover:
+                    #   - The spawn backfill (see the ``not slot.model and not
+                    #     slot._active_fallback_model`` guard) writes the served
+                    #     model into an empty ``slot.model`` whose crewmate
+                    #     pins a model, on the replay turn. Without
+                    #     ``_active_fallback_model`` set, that
+                    #     backfill turns this TEMPORARY substitution into a
+                    #     PERSISTENT pin that survives a reload — a durable
+                    #     change to the user's slot caused by a transient
+                    #     entitlement denial. Setting it makes the guard hold,
+                    #     exactly as it does for throttle.
+                    #   - ``_probe_fallback_restore_for_slot`` fires only while
+                    #     ``_active_fallback_model`` is set; registering it arms
+                    #     the start-of-turn probe to set_model back to the
+                    #     primary and heal ``slot.model`` once the account can
+                    #     use it again.
+                    # ``_fallback_primary_model`` is the rejected (configured)
+                    # model to restore TO; ``_fallback_slot_model`` snapshots
+                    # the slot's pin to heal back (empty for an ``auto`` slot);
+                    # ``_fallback_pick_gen`` snapshots the pick generation so a
+                    # LATER genuine user pick (which bumps it) is told apart
+                    # from the automatic backfill and clears the sticky state
+                    # instead of being overridden by a restore.
+                    if not slot._fallback_primary_model:
+                        slot._fallback_primary_model = _rejected_id
+                        slot._fallback_slot_model = slot.model or ""
+                        slot._fallback_pick_gen = slot._model_pick_gen
+                        # And the shared CLIENT pick epoch: the slot-local
+                        # generation is invisible to a pick made through a
+                        # session alias (a channel-born slot and its
+                        # dashboard twin share one wire session and one
+                        # client), so an alias re-picking the substitute
+                        # would be undone by this slot's restore unless the
+                        # probe also compares the shared epoch. Stamped here,
+                        # compared in _probe_fallback_restore_for_slot_locked — mirroring
+                        # _refusal_client_pick_epoch on the refusal path.
+                        slot._fallback_client_pick_epoch = getattr(
+                            pick_epoch_host(client), "_explicit_pick_epoch", 0
+                        )
+                    slot._active_fallback_model = _access_fb_candidate
+                    # Persisted notice card (never silent: the account, not the
+                    # user, forced the model change, so it must be said out
+                    # loud and survive a reload the way the throttle notice
+                    # does).
+                    slot.append(
+                        "notice",
+                        f"⚠️ Your account cannot use model '{_rejected_safe}' — "
+                        f"running on '{_cand_safe}' instead.",
+                        "msg msg-info",
+                    )
+                    logger.warning(
+                        "model access fallback: slot %s model %r not entitled; "
+                        "re-prompting on %r",
+                        slot.key,
+                        _rejected_id,
+                        _access_fb_candidate,
+                    )
+                    # Re-queue through _queue_recovery like every other retry:
+                    # a direct queue_insert carries no admission stamp, so the
+                    # drain's fail-closed re-check would destroy this retry in a
+                    # channel-linked session.
+                    #
+                    # The set_model above is a provider RPC that yields the
+                    # event loop, so a Stop (or a user follow-up) can land
+                    # between _run_chat's elif entry guard and here. Re-check the same
+                    # live-stop signals every sibling requeue site checks right
+                    # before enqueue: a message the user has since stopped or
+                    # replaced must not replay ahead of it. The model is already
+                    # swapped and the notice already shown, which is harmless;
+                    # we simply abandon the replay and let the turn end.
+                    # ``_stop_pressed()`` is the SINGLE live-Stop predicate for
+                    # this turn: it is True when a stop is in flight
+                    # (``slot._stopping``) OR the monotonic ``slot._stop_generation``
+                    # moved since turn entry. That one counter is sufficient for a
+                    # channel-linked slot too: every Stop — dashboard or
+                    # channel-born — enters through ``stop_slot_turn``, which sets
+                    # ``slot._stop_state`` (whose setter bumps ``_stop_generation``
+                    # on the idle→active edge) ON THE SLOT and only then routes the
+                    # cancel to the linked session key; the link changes which
+                    # session the cancel ADDRESSES, not which counter moves
+                    # (asserted by test_stop_addresses_linked_session.py). So there
+                    # is no session-scoped stop counter this guard could miss — the
+                    # slot counter is the one every Stop advances.
+                    if _replay_owes_delivery(turn):
+                        # An owed completion is queued as the completion it
+                        # is: no recovery record, so nothing cancels it
+                        # before it runs (it runs on the swapped model).
+                        _requeue_owed_completion(turn)
+                    elif (
+                        not _should_suppress_requeue(slot)
+                        and not _stop_pressed(turn)
+                        and not bool(getattr(slot, "_pending_steers", None))
+                        and not _has_user_queued_followup(slot)
+                    ):
+                        # Snapshot the stop counter, so the drain can drop
+                        # this replay at dequeue if a soft Stop or user
+                        # follow-up lands while it waits (the pre-enqueue
+                        # guard above closes only the pre-enqueue window).
+                        # And the session-scoped one: a Stop issued on a
+                        # linked channel surface moves ONLY that one.
+                        _ma_stop_gen = getattr(slot, "_stop_generation", 0)
+                        _ma_session_stop_gen = _session_stop_generation(turn)
+                        # Forward the turn's attachment metadata into the
+                        # replay, the same way the sibling refusal replay does:
+                        # the replay is the SAME turn again, so a folder
+                        # attachment must replay as a folder (keyed under its
+                        # meta list) rather than being retyped as a file.
+                        # Rebucketing the flat list under "files" would resolve
+                        # an [attached_dir N] marker against the wrong list.
+                        if _attachment_meta:
+                            _ma_replay_extra = {
+                                key: list(paths) for key, paths in _attachment_meta.items()
+                            }
+                        elif _attachments:
+                            _ma_replay_extra = {"files": list(_attachments)}
+                        else:
+                            _ma_replay_extra = None
+                        _ma_replay_qid = _queue_recovery(
+                            turn,
+                            0,
+                            message,
+                            kind=SYNTHETIC_RECOVERY_KIND,
+                            # Verbatim replay, same rule as the
+                            # transient/throttle retries.
+                            payload=payload_for_replay(_is_synthetic),
+                            extra_meta=_ma_replay_extra,
+                        )
+                        # Record THIS replay's queue id: it is the replay's
+                        # identity. The drain claims it for the replay turn
+                        # (the turn-start reset then preserves the one-shot
+                        # for this replay alone), and its abort removes only
+                        # this entry -- SYNTHETIC_RECOVERY_KIND is shared by
+                        # many recovery paths, so a removal by kind would
+                        # destroy co-queued unrelated recoveries. The binding
+                        # is the one this replay's swap ran under: a cron
+                        # result binding an unbound slot during the awaited
+                        # set_model rebinds the session mid-episode, and the
+                        # replay belongs to the OLD session.
+                        replays_of(slot).arm(
+                            ReplayFamily.MODEL_ACCESS,
+                            entry_id=_ma_replay_qid or "",
+                            session_key=session_key,
+                            stop_gen=_ma_stop_gen,
+                            session_stop_gen=_ma_session_stop_gen,
+                        )

@@ -148,7 +148,7 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
             logger.debug("self-change undo block skipped", exc_info=True)
 
     # Ensure the mirror-source message is always bound before both the Slack
-    # and channel-neutral user-message mirror legs run. The assignment in _run_chat's
+    # and channel-neutral user-message mirror legs run. The assignment in _turn_build_prompt's
     # context build that refines it only executes for non-slash turns that have a
     # context_builder; without this default, a non-slash turn with no
     # context_builder would hit UnboundLocalError at the mirror legs.
@@ -172,7 +172,7 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     slot_ctx_omitted = {}
     turn.slot_ctx_omitted = slot_ctx_omitted
     # Chars this turn prepends between the request header and the user's
-    # text; set in _run_chat's context_builder branch, 0 elsewhere.
+    # text; set in _turn_build_prompt's context_builder branch, 0 elsewhere.
     _user_prepend_offset = 0
     turn._user_prepend_offset = _user_prepend_offset
     # Exact bounds of the user's text in the final prompt, reported by
@@ -200,7 +200,7 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     _todo_recovery_carried = False
     turn._todo_recovery_carried = _todo_recovery_carried
     # The interrupted turn a natively resumed session lost (see the restore in
-    # _run_chat's context build); minted after the egress scrub.
+    # _turn_build_prompt's context build); minted after the egress scrub.
     _interrupted_turn_preamble = ""
     turn._interrupted_turn_preamble = _interrupted_turn_preamble
     _provider_has_history = resumed
@@ -310,7 +310,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # Checklist resync. The pill's snapshot outlives the native conversation
     # that produced it (agent switch, failed session/load, poisoned discard,
     # /clear all cold-start a fresh one), and kiro-cli's todo_list state lives
-    # in that conversation. Same gate as the transcript replay in _run_chat's
+    # in that conversation. Same gate as the transcript replay in _turn_build_prompt's
     # context build — a cold start the provider did not resume itself — because
     # that is exactly when the agent's own list is empty while the pill is not.
     #
@@ -334,7 +334,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # Slash commands use _kiro.dev/commands/execute for full native output;
     # regular messages use session/prompt.
     # Attribute the FINAL prompt back to the blocks that produced it, after every
-    # prefix from _run_chat's context build and this phase is applied. Classifying
+    # prefix from _turn_build_prompt's context build and this phase is applied. Classifying
     # the OUTPUT rather than counting at each of the ~30 append sites means the
     # breakdown cannot drift from what was actually sent, and an unrecognised
     # block surfaces as `unclassified` instead of being folded into a neighbour.
@@ -714,8 +714,8 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # atomic span those two gates rely on is unchanged.
     #
     # The two request facts are emitted HERE for the same reason, and not where the
-    # prompt is assembled in _run_chat's context build. ``context/composed`` states what the
-    # gateway PUT IN FRONT OF THE MODEL, so a refused dispatch must not write one: the
+    # prompt is assembled in _turn_build_prompt's context build. ``context/composed`` states
+    # what the gateway PUT IN FRONT OF THE MODEL, so a refused dispatch must not write one: the
     # prompt was built, but nothing ever saw it. Written before the gates, every
     # refusal left a composition the ``usage`` fold published as a per-turn row, and
     # the Context chart drew a bar for a turn that never ran -- with no way to

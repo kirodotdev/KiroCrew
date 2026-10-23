@@ -1,9 +1,9 @@
 """Test that injected context is excluded from the Slack mirror.
 
-Regression test for the fix in chat_runner.py that saves the raw user
-message before context/persona prepend and uses _prepare_mirror_msg()
-for the Slack mirror. Without the fix, [Background context from ...]
-blocks leak into the linked Slack thread.
+Regression test for the fix that saves the raw user message before
+context/persona prepend (_turn_build_prompt in chat_turn/prompt_assembly.py)
+and uses _prepare_mirror_msg() for the Slack mirror. Without the fix,
+[Background context from ...] blocks leak into the linked Slack thread.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ class TestPrepareMirrorMsg:
 
         user_msg = "Hello, please investigate"
 
-        # --- Replicate chat_runner.py logic ---
+        # --- Replicate _turn_build_prompt logic (chat_turn/prompt_assembly.py) ---
         message = user_msg
 
         # Save raw message for mirror BEFORE context prepend

@@ -1,9 +1,9 @@
 """The Chat_Runner resolves folder steering LIVE and hands it to ``build_message``.
 
-The unit under test is one block in ``chat_runner._run_chat``: on a turn that
-carries session-start context (a fresh provider session, or a reinjection after
-compaction) it reads the COMMITTED folder tree, resolves the slot's accumulated
-steering directories off-loop, and passes them to ``build_message`` as
+The unit under test is one block in ``_turn_build_prompt`` (``chat_turn/prompt_assembly.py``):
+on a turn that carries session-start context (a fresh provider session, or a reinjection after
+compaction) it reads the COMMITTED folder tree, resolves the slot's accumulated steering
+directories off-loop, and passes them to ``build_message`` as
 ``steering_dirs``. Nothing is cached on the slot, so a folder edit reaches the
 chats already filed inside it (Req 5.1, 5.3); a slot with no folder passes ``()``
 (Req 5.4); a resolver error degrades to ``()`` plus a warning naming the slot

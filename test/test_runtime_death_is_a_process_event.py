@@ -490,6 +490,18 @@ def _guard_names_in_ancestors(tree: ast.AST, target: ast.AST) -> set[str]:
     return names
 
 
+def _awaited_turn_phases(handler: ast.ExceptHandler) -> list[str]:
+    """The ``_on_*`` phases *handler* awaits: the dashboard runner's except arms run there."""
+    return [
+        sub.value.func.id
+        for sub in ast.walk(handler)
+        if isinstance(sub, ast.Await)
+        and isinstance(sub.value, ast.Call)
+        and isinstance(sub.value.func, ast.Name)
+        and sub.value.func.id.startswith("_on_")
+    ]
+
+
 def test_the_attribution_predicate_reaches_every_charging_site():
     """One guard, every site. A charge added later without asking whose failure
     it was is the exact regression this whole change exists to remove, and it
@@ -1105,10 +1117,19 @@ def test_every_death_handler_that_charges_a_budget_asks_whose_fault_it_was():
     conservative direction and needs no ownership question.
     """
     handlers = 0
+    awaited: list[str] = []
+    turn_phases: dict[str, tuple[ast.Module, ast.AsyncFunctionDef]] = {}
     unguarded: list[str] = []
     for path in sorted(_SRC.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         backed = _predicate_backed_guards(tree)
+        if path.parent.name == "chat_turn":
+            # The dashboard runner's except arms run in these owners' phases, by name.
+            turn_phases.update(
+                (node.name, (tree, node))
+                for node in tree.body
+                if isinstance(node, ast.AsyncFunctionDef)
+            )
         for node in ast.walk(tree):
             if not isinstance(node, ast.ExceptHandler):
                 continue
@@ -1121,6 +1142,7 @@ def test_every_death_handler_that_charges_a_budget_asks_whose_fault_it_was():
             if "AcpProcessDied" not in names:
                 continue
             handlers += 1
+            awaited += _awaited_turn_phases(node)
             for sub in ast.walk(node):
                 if not isinstance(sub, ast.AugAssign):
                     continue
@@ -1128,17 +1150,30 @@ def test_every_death_handler_that_charges_a_budget_asks_whose_fault_it_was():
                     continue
                 if not (_guard_names_in_ancestors(tree, sub) & backed):
                     unguarded.append(f"{path.name}:{sub.lineno}")
+    # A handler of the dashboard runner awaits its arm's phase in a chat_turn owner: the
+    # phase's body is the handler's, so the same sweep reads it there.
+    swept = [name for name in awaited if name in turn_phases]
+    for name in swept:
+        owner, phase = turn_phases[name]
+        owner_backed = _predicate_backed_guards(owner)
+        for sub in ast.walk(phase):
+            if not isinstance(sub, ast.AugAssign) or not isinstance(sub.op, ast.Add):
+                continue
+            if not (_guard_names_in_ancestors(owner, sub) & owner_backed):
+                unguarded.append(f"{name}:{sub.lineno}")
     # Control: the scan must actually find the handler population. Zero handlers
     # would make the assertion below vacuously true, which is the failure mode a
     # structural test is most likely to hide.
     assert handlers >= 4, f"only {handlers} AcpProcessDied handlers found -- scan is broken"
+    # Control: the runner's AcpProcessDied arm is read through its phase.
+    assert "_on_process_died" in swept, f"the runner's death-arm phase was not swept: {swept}"
     assert not unguarded, f"death handler charges a budget with no ownership guard: {unguarded}"
 
 
 def test_every_retry_budget_charge_is_guarded_by_the_predicate_itself():
-    """The same rule for the chat runner's budget specifically, including the
-    arms that catch a pipe death as a plain ``AcpError`` rather than a typed one
-    and so fall outside the handler scan above.
+    """The same rule for the chat runner's budget specifically: its death arms, the ones that
+    catch a pipe death as a plain ``AcpError`` too, charge it in their phases in
+    ``chat_turn/acp_recovery.py``, outside any ``except`` node and so outside the scan above.
     """
     runner = _SRC / "dashboard" / "chat_runner.py"
     tree = ast.parse(

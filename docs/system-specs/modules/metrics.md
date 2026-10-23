@@ -1073,10 +1073,10 @@ facts, the preferences file past the protected-content ceiling, the background
 admission pool (`admit_background`), a member briefing at its character cap, and folder
 steering (a collection ceiling records that the section is incomplete; the section's
 character cap and the member essentials envelope record the documents not loaded
-whole). `_run_chat` opens `context_omissions.collect()` around `build_message` and
-writes the collected record as `omitted` on that turn's `context/composed`. The
-collector is a `ContextVar`, so two sessions composing against one store never see
-each other's numbers, and the composer's worker thread inherits it through
+whole). `_turn_build_prompt` (`chat_turn/prompt_assembly.py`) opens `context_omissions.collect()`
+around `build_message`, and `_turn_dispatch_gates` writes the collected record as `omitted` on
+that turn's `context/composed`. The collector is a `ContextVar`, so two sessions composing against
+one store never see each other's numbers, and the composer's worker thread inherits it through
 `copy_context`. Outside a collection `record` is a no-op. The record is bounded by
 construction: `record` admits one entry per kind in `context_omissions.KINDS`, each a
 reason from `REASONS` and at most four integers or the closed set of background

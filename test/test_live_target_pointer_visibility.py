@@ -346,9 +346,9 @@ class TestTheRefusalReachesTheChatCard:
     """The dashboard surface for an agent spawn, pinned at the two places it can break.
 
     The refusal escapes ``_run_chat``'s ACP handler chain (it is a ``RuntimeError``, not
-    an ``AcpError``) and lands in its terminal ``except Exception`` handler, which appends
-    ``str(exc)`` as the error row. Two things have to hold for the remedy to arrive, and
-    each is a separate way the card could go quiet:
+    an ``AcpError``) and lands in its terminal ``except Exception`` handler, whose ``_on_error``
+    (``chat_turn/turn_failures.py``) appends ``str(exc)`` as the error row. Two things have to
+    hold for the remedy to arrive, and each is a separate way the card could go quiet:
 
     * the handler must keep using the exception's own text -- a generic "agent failed to
       start" there is exactly the substitution the issue asked about;

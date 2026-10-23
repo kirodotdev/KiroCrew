@@ -458,8 +458,8 @@ none" is the single on-disk representation and a PATCH with `[]` clears it.
   occurrence.
 - **Live resolution, no slot field.** The effective list is never cached on the
   chat slot: `_ChatSlot` carries no steering field, and neither slot create nor
-  agent switch resolves one. The dashboard turn path
-  (`dashboard/chat_runner.py`) resolves it live from the slot's current
+  agent switch resolves one. The dashboard turn's prompt build (`_turn_build_prompt`,
+  `dashboard/chat_turn/prompt_assembly.py`) resolves it live from the slot's current
   `folder_id` against the committed folder tree, on every fresh session and
   every post-compaction reinjection turn; a V2 member chat resolves it on every
   turn, because its essentials envelope is rebuilt each turn
@@ -2062,10 +2062,10 @@ common hot path — no `_app`, or already resolved):
    raises `_AppAgentNotLoaded` (naming `slot.agent`, e.g. *"The app agent
    'my-app-agent' isn't loaded yet — try again in a moment, or restart the
    gateway"*) which a dedicated `except` arm beside the terminal turn-error
-   handlers surfaces as a normal `error` card (no `record_failure` — nothing ran).
-   The raise happens *before* `get_or_create`, while no session lock is held, so
-   the standard `finally` teardown runs without ever creating a session or
-   dispatching an agent.
+   handlers (`_on_app_agent_not_loaded`, `chat_turn/app_agent_binding.py`) surfaces
+   as a normal `error` card (no `record_failure` — nothing ran). The raise happens
+   *before* `get_or_create`, while no session lock is held, so the standard
+   `finally` teardown runs without ever creating a session or dispatching an agent.
 
 The eager-spawn pre-warm path mirrors the **self-heal** step (rescan →
 re-register-from-source) only (so the speculative session bakes in the app's own

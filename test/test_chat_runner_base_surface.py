@@ -432,7 +432,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_MAX_MODEL_ID_LEN", "value", "int"),
     ),
-    "acp_recovery": (
+    "turn_failures": (
         ("_POISON_CANARY_PROMPT", "value", "str"),
         ("_POISON_CANARY_TIMEOUT_SECS", "value", "float"),
     ),

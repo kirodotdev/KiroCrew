@@ -203,7 +203,7 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
             slot._infra_retries += 1
             await _recovery_delay(_l1.delay_secs)
             # Re-read the interrupt signals AFTER the wait, exactly as the throttle-exhaustion
-            # re-queue in _run_chat's AcpError arm does: the guards in the
+            # re-queue in _on_acp_transient_exhausted does: the guards in the
             # condition above were read seconds ago, and a Stop, steer or
             # follow-up arriving during the backoff resolves while no prompt
             # is active, so nothing downstream catches it — the dispatch-point
