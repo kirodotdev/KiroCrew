@@ -311,6 +311,10 @@ export interface SidebarRows {
   filteredSlots: Slot[]
   /** Is any dimension narrowing the list right now? */
   listNarrowed: boolean
+  /** Is a dimension that lets pinned rows through (tags, status chips) narrowing
+   *  the list right now? Then a visible pinned row may be there only because it is
+   *  pinned, which the pinned-band caption says. */
+  pinnedExemptNarrowing: boolean
   /** One entry per dimension, in declaration order: does it hide THIS row, and how to
    *  drop it. The reveal effect walks this instead of naming the dimensions. */
   revealBlockingFilters: RevealBlockingFilter[]
@@ -563,6 +567,7 @@ function makeDimensions(
       // is a session property, so it behaves like the Unread/Pinned status chips.
       filtersRow: slot => tags.resolved.size === 0 || pinnedBypass(slot) || (slot.tags ?? []).some(id => tags.resolved.has(id)),
       narrows: () => tags.resolved.size > 0,
+      exemptsPinned: true,
       // The pinned exemption is restated here because this predicate does not go
       // through `excluded`: a reveal of a pinned row must not clear a tag filter that
       // was never hiding it.
@@ -595,6 +600,7 @@ function makeDimensions(
           || ((slot.title || '') + slot.key + (slot.agent || '')).toLowerCase().includes(q)
       },
       narrows: () => Boolean(search.text),
+      exemptsPinned: false,
       hides: (slot, excluded) => Boolean(search.text) && excluded(slot),
       clear: () => clears.search(),
     },
@@ -606,6 +612,7 @@ function makeDimensions(
       // hidden by the chips and a reveal would clear them.
       filtersRow: slot => activeStatus.length === 0 || pinnedBypass(slot) || activeStatus.some(key => matches[key](slot)),
       narrows: () => activeStatus.length > 0,
+      exemptsPinned: true,
       hides: (slot, excluded) => activeStatus.length > 0 && !pinnedBypass(slot) && excluded(slot),
       clear: () => clears.status(),
     },
@@ -614,6 +621,7 @@ function makeDimensions(
       // un-hides the row's own ancestor chain rather than clearing globally.
       filtersRow: null,
       narrows: null,
+      exemptsPinned: false,
       hides: slot => {
         const folderId = folderOf(slot)
         return !!folderId && folderFilter.hiddenSubtree.has(folderId)
@@ -628,6 +636,7 @@ function makeDimensions(
       // a hidden row clears only the hide, not the include chips set alongside it.
       filtersRow: slot => !isRowStatusHidden(slot),
       narrows: () => status.hidden.size > 0,
+      exemptsPinned: false,
       // Unlike search and the include chips, a hide CAN answer for one row on its
       // own: it hides exactly the rows its predicates match. Asking list membership
       // instead would let a row the search dropped clear every hide on reveal, even
@@ -644,6 +653,7 @@ function makeDimensions(
       // asked to leave the list.
       filtersRow: models.passes,
       narrows: () => models.active,
+      exemptsPinned: false,
       hides: slot => !models.passes(slot),
       clear: () => clears.models(),
     },
@@ -822,6 +832,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
   const filteredSlots = reuse(prev?.filteredSlots, [rows, dimensions.value, laneOrder.value, frozen], () =>
     frozenList ?? filterRows(rows, dimensions.value, laneOrder.value))
   const listNarrowed = dimensions.value.some(d => d.narrows !== null && d.narrows())
+  const pinnedExemptNarrowing = dimensions.value.some(d => d.exemptsPinned && d.narrows !== null && d.narrows())
   const revealBlockingFilters = reuse(prev?.revealBlockingFilters, [dimensions.value, filteredSlots.value], () =>
     makeRevealRegistry(dimensions.value, filteredSlots.value))
 
@@ -853,6 +864,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
   const result: SidebarRows = {
     filteredSlots: filteredSlots.value,
     listNarrowed,
+    pinnedExemptNarrowing,
     revealBlockingFilters: revealBlockingFilters.value,
     statusCounts: statusCounts.value,
     laneOrder: laneOrder.value,

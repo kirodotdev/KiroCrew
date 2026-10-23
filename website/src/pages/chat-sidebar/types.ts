@@ -230,6 +230,10 @@ export interface FilterDimension {
    *  folder filter: counting it would strand every folder as an empty
    *  "New chat in <name>" shell while one is hidden). */
   narrows: (() => boolean) | null
+  /** Does a pinned row pass this dimension whatever it says? Read by
+   *  `pinnedExemptNarrowing`, so the pinned-band caption follows the same
+   *  rule `filtersRow` applies instead of restating it. */
+  exemptsPinned: boolean
   /** Does this dimension hide THIS row from a reveal? `excluded` reports list
    *  membership, for dimensions (search, status) that rank against backend
    *  state a single row cannot answer for alone. Non-nullable on purpose,

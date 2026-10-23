@@ -453,12 +453,11 @@ function ChatSidebar({
     frozen: dragFrozen,
   }, previousRowsRef.current)
   previousRowsRef.current = sidebarRows
-  const { listNarrowed, revealBlockingFilters, laneOrder, isRowFolderHidden, isRowStatusHidden } = sidebarRows
-  // Caption shown at the top of the pinned band only when a tag filter or active
-  // status chip (not the model filter or status hides) narrows the list and the
-  // search box is empty. Passed into scope so createListLanes can render it.
-  const pinnedBandCaption = (activeTagIds.size > 0 || (activeFilters.size > 0 && !filtersPaused))
-    && slotFilter.trim() === ''
+  const { listNarrowed, pinnedExemptNarrowing, revealBlockingFilters, laneOrder, isRowFolderHidden, isRowStatusHidden } = sidebarRows
+  // Caption shown at the top of the pinned band only when a filter that exempts
+  // pinned rows narrows the list (the row model decides which ones) and the search
+  // box is empty. Passed into scope so createListLanes can render it.
+  const pinnedBandCaption = pinnedExemptNarrowing && slotFilter.trim() === ''
     ? i18nT('pages.chatSidebar.pinned_always_shown')
     : undefined
   // `laneSlots` is the Local lanes' rows: `filteredSlots` minus every row a crew
