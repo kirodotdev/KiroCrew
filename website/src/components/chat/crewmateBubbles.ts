@@ -44,6 +44,7 @@ import { isWorkflowCompletionMessage } from '../../pages/chat/WorkflowCompletion
 import { isSubagentCompletionMessage } from '../../pages/chat/subagentCompletion'
 import { REASONING_ROLES } from '../../pages/chat/groupDisplayItems'
 import { isSpawnRunTool } from '../../pages/chat/SubagentRunCard'
+import { isPendingTransientNotice } from '../../pages/chat/transientNotice'
 import type { ChatMessage } from '../../types'
 import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
 
@@ -131,6 +132,14 @@ export function isCrewmateChatRow(m: ChatMessage): boolean {
   // Runtime notices belong to Sessions, not the conversation with a person
   // (docs/decisions/2026-10-09-crewmate-chat-draws-messages-only.md).
   if (m.role === 'notice') return false
+  // The transient-5xx ladder writes its progress under the `error` role
+  // (`meta.notice = transient_retrying | transient_resuming`). A pending link
+  // is a runtime notice in all but role — the gateway has already re-queued
+  // the turn — so the same decision drops it; on a patroller it otherwise
+  // stacks one "Connection restored" card per retried wake. The terminal
+  // give-up keeps drawing: it is the one shape the person must act on (the red
+  // ErrorCard with its Continue affordance). Every other error row stays.
+  if (m.role === 'error') return !isPendingTransientNotice(m)
   // A pending approval is the approval surface and stays; a RESOLVED one draws
   // nothing (its renderer returns null) and must not count as content — kept,
   // it would hide the quiet hint behind a blank chat. Same rule `isRunTransparent`

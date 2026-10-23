@@ -2956,7 +2956,14 @@ therefore a turn whose final assistant text is empty: the model's own silence
 is the signal, and no heuristic over the words decides for it — a row with
 visible words is always shown, so a finding or a question can never be
 filtered away. No "N quiet patrols" divider is drawn in their place. Rows the
-user must see or act on stay: `user`, `error`, `file`, `mcp_oauth`,
+user must see or act on stay: `user`, `error` — except the PENDING links of the
+gateway's transient-5xx ladder (`meta.notice` of `transient_retrying` /
+`transient_resuming`, `isPendingTransientNotice` in
+`pages/chat/transientNotice.ts`), which are runtime notices in all but role:
+the turn is already re-queued, and on a patroller they otherwise stack one
+"Connection restored" card per retried wake with nothing of the crewmate's
+between them; the terminal `transient_give_up` keeps drawing because the person
+must act on it — `file`, `mcp_oauth`,
 `permission` (pending native and background-spawn approvals remain actionable),
 question cards, change cards, the stop card (a `system` row of kind
 `stop_event`, the record of the person's own Stop press, which breaks a run like
