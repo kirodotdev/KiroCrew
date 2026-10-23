@@ -614,7 +614,14 @@ def _url_payload_command(n: int) -> str:
 #: hook runs under cmd.exe, and its verdict is cached once per command so a
 #: command of many segments is not re-read per segment. A regex alternative was
 #: tried first and lost twice to bash word splitting.
-_PACKAGE_LINE_BUDGET = 33_523
+#: Set to the true count, 33,281, which adds 37 lines for
+#: ``readonly_bash.command_names_git``, the no-approver hook surface's fail-closed
+#: git check: it folds a line continuation, removes the quotes and backslashes the
+#: shell removes, and refuses whenever ``git`` is left anywhere in the text or the
+#: shell writes a word's letters itself (a glob, an extglob, a brace list, an ANSI-C
+#: ``$'...'``), read in the text as written and with the quotes removed. It parses
+#: no shell grammar, so it refuses more than it must rather than less.
+_PACKAGE_LINE_BUDGET = 33_281
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
