@@ -785,6 +785,19 @@ answer, and the process exits with status `75` so the pool relaunches it from th
 current install. Otherwise nothing would bring it back, so it keeps its transport
 and refuses each call with a message to restart Kiro Crew.
 
+## Servers that ask the person (MCP elicitation)
+
+An MCP server the agent calls may gate a tool on a human answer -- a confirmation,
+a short form, a link to visit -- by sending its agent an `elicitation/create`. Kiro
+Crew is the ACP CLIENT of that agent, so the ask reaches it as a server->client
+request (`elicitation/create` on a standard harness, `_kiro/mcp/elicitation` on
+KAS) and is put to the person as a card; no trust tier answers it, and a session
+with no person reachable declines. The wire shapes, the fail-closed parse, the
+consumer opt-in and the dashboard route are in
+[acp-client.md, *MCP elicitation*](../system-specs/modules/acp-client.md#mcp-elicitation-acpelicitationpy).
+This is distinct from everything else in this document, which is about the MCP
+servers Kiro Crew itself SERVES to the agent.
+
 ## Shareability verdicts
 
 `GET /api/mcp-gateway/servers` returns a `recommendation` per row: whether the

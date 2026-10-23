@@ -109,6 +109,15 @@ EVENT_TOOL_RESULT = "tool_result"
 #: ``unknown`` for an outcome the stream did report.
 TERMINAL_TOOL_STATUSES = frozenset({"completed", "failed", "cancelled", "canceled", "refused"})
 EVENT_PERMISSION_REQUEST = "permission_request"
+#: An MCP server's elicitation, turned around by the harness as a server->client
+#: request (``METHOD_ELICITATION_CREATE`` or ``METHOD_KAS_MCP_ELICITATION``).
+#: Carries :attr:`AcpEvent.elicitation`; the consumer answers it through the
+#: driver's ``answer_elicitation``. Yielded only to a consumer that declared it
+#: can put the ask to a person (``accepts_elicitation``); every other consumer's
+#: request is declined by the driver before it would be yielded, so no consumer
+#: that never heard of this kind can leave the tool call hanging. See
+#: :mod:`kiro_crew.acp.elicitation`.
+EVENT_ELICITATION_REQUEST = "elicitation_request"
 EVENT_COMPLETE = "complete"
 EVENT_COMPACTION_STATUS = "compaction_status"
 EVENT_CLEAR_STATUS = "clear_status"
@@ -140,6 +149,11 @@ METHOD_SET_MODE = "session/set_mode"
 METHOD_PROMPT = "session/prompt"
 METHOD_CANCEL = "session/cancel"
 METHOD_REQUEST_PERMISSION = "session/request_permission"
+#: Standard ACP client method: the agent asks the client to put an MCP server's
+#: elicitation to the person. Fields flat on ``params`` (``mode``, ``message``,
+#: ``requestedSchema`` or ``elicitationId`` + ``url``) next to ``sessionId`` and
+#: ``toolCallId``. Answered ``{"action": ..., "content"?: ...}``.
+METHOD_ELICITATION_CREATE = "elicitation/create"
 METHOD_SESSION_UPDATE = "session/update"
 METHOD_METADATA = "_kiro.dev/metadata"
 METHOD_COMMANDS_EXECUTE = "_kiro.dev/commands/execute"
@@ -252,6 +266,13 @@ METHOD_KAS_MCP_RESET_SERVER = "_kiro/mcp/resetServer"
 #: Engine -> client request carrying the consent URL of that sign-in. It names
 #: neither the session nor the server.
 METHOD_KAS_OPEN_EXTERNAL_URL = "_kiro/openExternalUrl"
+#: KAS's spelling of ``elicitation/create``: the engine turns an MCP server's
+#: elicitation around as this server->client request, with the elicitation
+#: fields NESTED under ``params.elicitation`` next to ``sessionId`` and
+#: ``toolCallId``. Same answer shape as the standard method. A client that does
+#: not answer (a -32601) makes the engine report ``cancel`` to the server, so the
+#: elicitation-gated tool fails silently rather than asking.
+METHOD_KAS_MCP_ELICITATION = "_kiro/mcp/elicitation"
 METHOD_SUBAGENT_LIST_UPDATE = "_kiro.dev/subagent/list_update"
 METHOD_KIRO_SESSION_UPDATE = "_kiro.dev/session/update"
 METHOD_SET_CONFIG_OPTION = "session/set_config_option"
@@ -286,24 +307,38 @@ TODO_ID_MAX = 64
 
 # Capabilities we advertise during `initialize`.
 #
-# Nothing is advertised that has no inbound handler. Kiro Crew serves exactly one
-# server-initiated request, `session/request_permission`; everything else reaches
-# `_reject_unknown_server_request` and comes back `-32601 method not found`.
+# Nothing is advertised that has no inbound handler. Kiro Crew serves two
+# server-initiated requests on every harness, `session/request_permission` and
+# `elicitation/create`; everything else reaches `_reject_unknown_server_request`
+# and comes back `-32601 method not found`.
 #
-# `elicitation` was declared here as a forward-bet on kiro-cli routing an MCP
-# server's `elicitation/create` out over ACP. It is withdrawn because the bet is
-# not free, which is what the bet assumed. A client that sees the capability
-# routes its human-in-the-loop prompts through `elicitation/create` INSTEAD of
-# falling back to `session/request_permission` -- codex-acp gates exactly that
-# way on `clientCapabilities.elicitation.form` -- so declaring a capability we do
-# not serve does not sit inert waiting for a handler. It replaces a path that
-# works with one that returns an error, and the client reads that error as a
-# cancellation of the tool call the human was approving.
-#
-# So the declaration goes back to honest, and every affected client returns to the
-# fallback that already works. Re-add the key in the same change that registers a
-# handler for it, never before: `test_acp_client_capabilities.py` fails if the two
-# drift apart again.
+# `elicitation` is declared because both drivers answer it (see
+# :mod:`kiro_crew.acp.elicitation`). The declaration is what makes a standard
+# ACP harness forward an MCP server's elicitation at all: the schema marks
+# `elicitation/create` as gated on this capability, so without the key the ask
+# never leaves the agent. It is not inert either way, which is why it is never
+# declared ahead of the handler and `test_acp_client_capabilities.py` pins the
+# two together. It does not move TOOL APPROVALS: codex-acp
+# (`@agentclientprotocol/codex-acp`, `src/CodexElicitationHandler.ts`) recognises
+# a tool approval as a message-only form and routes it through
+# `session/request_permission` whatever the client declared
+# (`shouldUseAcpElicitation` returns false for a message-only form); only a
+# form WITH fields and a URL ask consult `clientCapabilities.elicitation`, and
+# those are the asks this handler renders. Measured, not only read:
+# `test_codex_session_mcp_approval.py` drives the pinned codex-acp with
+# this very dict declared and sees the command approval arrive as
+# `session/request_permission` (the live fixture
+# `codex/command-approval-elicitation-declared-live.jsonl`). Codex's own command
+# approvals never pass through its elicitation handler at all
+# (`handleCommandExecution` -> `requestPermission`). Without the key codex
+# answers a URL ask through `session/request_permission` and cancels a form
+# with fields. opencode's ACP server routes tool permissions through
+# `requestPermission` and never calls the SDK's `unstable_createElicitation`;
+# pi's gated `bash` call is measured in `test_pi_real_adapter.py` under Crew's
+# own handshake and arrives as `session/request_permission`; kiro-cli, KAS,
+# claude-agent-acp and goose never send `elicitation/create`. Both modes are
+# declared because both are rendered: a form from the requested schema, and a
+# URL the person is sent to.
 #
 # `fs` and `terminal` stay false for the same reason, and always have: Kiro Crew
 # does not serve the agent's file or terminal requests over ACP -- the agent uses
@@ -312,6 +347,7 @@ TODO_ID_MAX = 64
 ACP_CLIENT_CAPABILITIES: dict = {
     "fs": {"readTextFile": False, "writeTextFile": False},
     "terminal": False,
+    "elicitation": {"form": {}, "url": {}},
 }
 
 # The variable kiro-cli reads to name the application driving it, and the name
@@ -928,6 +964,12 @@ class AcpEvent:
     # MCP OAuth notification fields (EVENT_MCP_OAUTH_REQUEST):
     server_name: str = ""
     oauth_url: str = ""
+    #: The parsed ask of an ``EVENT_ELICITATION_REQUEST``, as
+    #: ``ElicitationRequest.as_dict()`` renders it for a card: ``mode``,
+    #: ``message``, the ``fields`` of a form or the ``url`` of a URL ask, plus
+    #: ``request_id`` and ``tool_call_id``. ``request_id`` and ``tool_call_id``
+    #: on the event itself carry the same ids. None on every other kind.
+    elicitation: dict[str, Any] | None = None
     #: True when this text chunk is a backend CONTROL NOTICE that arrived as
     #: ordinary assistant text -- today only the claude adapter's compaction
     #: notices, which it emits as plain ``agent_message_chunk`` content with no

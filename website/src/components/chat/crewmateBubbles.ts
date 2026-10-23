@@ -51,7 +51,7 @@ export type CrewmateRunPosition = 'single' | 'start' | 'cont' | 'end'
  *  turn, so the crewmate's next message opens a new run (RFC screen 05:
  *  "consecutive bubbles from one turn" group their corners). */
 const WITHIN_TURN_ROLES: ReadonlySet<string> = new Set([
-  'tool', 'tool_call', 'tool_result', 'thinking', 'done', 'system', 'queued', 'permission', 'streaming',
+  'tool', 'tool_call', 'tool_result', 'thinking', 'done', 'system', 'queued', 'permission', 'elicitation', 'streaming',
 ])
 
 /** Roles that are the crewmate's own machinery: the transcript keeps them, the

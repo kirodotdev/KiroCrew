@@ -79,6 +79,7 @@ async def _resolve_app_approval(
     # Imported here: chat_handlers imports this package at module scope.
     from kiro_crew.dashboard.chat_handlers import (
         _app_may_send_to_slot,
+        _pending_elicitation_ids,
         deny_session_approval_caller,
     )
 
@@ -88,10 +89,16 @@ async def _resolve_app_approval(
     live: list[tuple[Any, asyncio.Future[str]]] = []
     if "origin" not in request.query:
         # Snapshot before any await: the permission reads below yield the loop.
+        # An MCP elicitation shares the slot's registry so a Stop and the Board
+        # see it, but it is the SERVER's question to a person, not a tool
+        # approval this grant covers: its future is not a candidate here, and
+        # the id reads as "does not exist" like every other refusal.
         live = [
             (slot, future)
             for slot in list(state._slots.values())
-            if (future := slot._approval_futures.get(approval_id)) and not future.done()
+            if (future := slot._approval_futures.get(approval_id))
+            and not future.done()
+            and approval_id not in _pending_elicitation_ids(slot)
         ]
     controllable = [pair for pair in live if await _app_may_send_to_slot(request_app, pair[0])]
     if len(controllable) == 1:

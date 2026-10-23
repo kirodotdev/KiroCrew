@@ -485,7 +485,7 @@ def _mark_permission_resolved(
 #: count the durable rows it folds into the frozen prefix — and re-exported by
 #: ``chat_persistence`` as ``_TRANSIENT_ROLES`` for its readers, so there is one
 #: definition rather than two that can drift.
-_TRANSIENT_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})
+_TRANSIENT_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission", "elicitation"})
 
 
 def durable_row_count(rows: Iterable[dict]) -> int:

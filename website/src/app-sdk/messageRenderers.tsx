@@ -32,6 +32,7 @@ import UserMessage from '../pages/chat/UserMessage'
 import { renderMcpOAuthMessage } from '../pages/chat/McpOAuthBanner'
 import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
 import NudgeCard from '../pages/chat/NudgeCard'
+import ElicitationCard from '../pages/chat/ElicitationCard'
 import NoticeCard from '../pages/chat/NoticeCard'
 import { SystemNoticeRow, isSystemNoticeRow } from '../pages/chat/CompactionCard'
 import SkillLoadCard, { isSkillLoadRow } from '../pages/chat/SkillLoadCard'
@@ -818,6 +819,14 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
       if (!banner) return null
       return ctx.row(banner)
     },
+  },
+  {
+    // An MCP server's own question to the person. The default has no slot to
+    // answer on, so it draws the ask read-only (buttons disabled); a host that
+    // knows its slot replaces this entry by id, as ChatPage does.
+    id: 'elicitation',
+    roles: ['elicitation'],
+    render: (m, ctx) => ctx.row(<ElicitationCard message={m} slot={null} />),
   },
   {
     // Auto-nudge cycle marker. `onOpenLoop` (jump to the loop popover) is

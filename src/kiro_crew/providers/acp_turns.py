@@ -132,6 +132,11 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # it before the evidence text, and the sub-agent run loop yields
         # its lane slot (``waiting_input`` WaitRecord) on it.
         status=e.status,
+        # The MCP server's ask itself (mode, message, fields or URL). Dropping
+        # it hands the dashboard runner an EVENT_ELICITATION_REQUEST with
+        # nothing to render: an empty card the person cannot answer, while
+        # the engine holds the tool call open for the whole window.
+        elicitation=e.elicitation,
     )
 
 

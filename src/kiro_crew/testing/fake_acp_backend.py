@@ -43,6 +43,14 @@ Prompt-driven behaviour on ``session/prompt`` (the reply is always sent last):
   the host's answer (bounded by ``PERMISSION_WAIT_SECS``) and reflects it: a
   reject/cancel outcome yields ``status: "failed"`` on the tool_call_update.
   On timeout it reports ``completed``, preserving the never-block guarantee.
+* ``[[ELICIT:form]]`` / ``[[ELICIT:url]]`` in the prompt -> a tool_call, then an
+  MCP server's elicitation as the server->client request the launch shape would
+  carry (``_kiro/mcp/elicitation`` on the KAS relay, ``elicitation/create``
+  otherwise). The fake WAITS for the host's answer (bounded by
+  ``PERMISSION_WAIT_SECS``) and echoes it as the reply text,
+  ``ELICIT_ANSWER <json>``, so a test reads exactly what the host sent; a
+  non-accept answer fails the tool call. Headless-safe: the host's drivers
+  answer an elicitation themselves whenever no consumer can ask a person.
 * ``[[SLOW]]`` -> stream ``SLOW_CHUNKS`` chunks with a delay, checking for a
   ``session/cancel`` between each. A cancel ends the turn early with
   ``stopReason: "cancelled"`` (the ACP soft-stop ack the host waits for).
@@ -138,6 +146,16 @@ PERMISSION_TRIGGER = "[[PERMISSION]]"
 # reflects it in the tool_call_update status. Distinct from PERMISSION_TRIGGER,
 # whose fire-and-forget behaviour existing specs rely on.
 GATED_PERMISSION_TRIGGER = "[[GATED]]"
+# ``[[ELICIT:form]]`` / ``[[ELICIT:url]]``: an MCP server's elicitation raised mid
+# tool call. The fake emits the tool_call, then the server->client elicitation
+# request -- ``_kiro/mcp/elicitation`` when launched as the KAS engine
+# (``--agent-engine v3``), the standard ``elicitation/create`` otherwise -- WAITS
+# for the host's answer (bounded by PERMISSION_WAIT_SECS) and echoes it as the
+# reply text (``ELICIT_ANSWER <json>``), so a test reads exactly what the host
+# sent. An unanswered ask echoes ``ELICIT_ANSWER null``.
+ELICIT_TRIGGER_PREFIX = "[[ELICIT:"
+_ELICIT_RE = re.compile(r"\[\[ELICIT:(form|url)\]\]")
+ELICIT_ANSWER_PREFIX = "ELICIT_ANSWER "
 # A turn long enough for a host to press Stop mid-flight. SLOW honours
 # session/cancel; SLOW_NOACK deliberately ignores it so the host's soft-stop
 # budget expires (the "Stop Failed, Session Reset" path). SLOW_LATEACK honours
@@ -281,6 +299,15 @@ _TOOL_CALL_ID = "fake-tool-1"
 # pill can otherwise drop (falling back to the literal command line).
 _TOOL_PURPOSE = "Say hello from the fake backend"
 _PERMISSION_REQ_ID = 9001
+_ELICIT_REQ_ID = 9002
+_ELICIT_FORM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "confirm": {"type": "boolean", "title": "Confirm", "description": "Really do it"},
+        "reason": {"type": "string", "maxLength": 80},
+    },
+    "required": ["confirm"],
+}
 
 
 def slow_hold_trigger(token: str) -> str:
@@ -548,6 +575,64 @@ def _emit_tool_call(session_id: str, *, with_permission: bool, gated: bool = Fal
     )
 
 
+def _emit_elicitation(session_id: str, mode: str) -> str:
+    """Raise an MCP elicitation mid tool call and echo the host's answer.
+
+    The request rides the method a real engine of this launch shape would use:
+    KAS nests the fields under ``params.elicitation`` on ``_kiro/mcp/elicitation``;
+    every other harness sends them flat on ``elicitation/create``. Returns the
+    reply text: ``ELICIT_ANSWER`` plus the host's JSON-RPC ``result`` (or an
+    ``error`` object), ``null`` when nothing arrived in time.
+    """
+    _update(
+        session_id,
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": _TOOL_CALL_ID,
+            "title": "@elicit_probe/confirm_delete",
+            "kind": "other",
+            "status": "pending",
+            "rawInput": {"item": "probe.txt", "mode": mode},
+        },
+    )
+    body: dict[str, Any] = {"mode": mode, "message": "Really delete probe.txt?"}
+    if mode == "url":
+        body.update({"elicitationId": "e-fake-1", "url": "https://example.com/confirm"})
+    else:
+        body["requestedSchema"] = _ELICIT_FORM_SCHEMA
+    if _KAS_RELAY:
+        params: dict[str, Any] = {
+            "sessionId": session_id,
+            "toolCallId": _TOOL_CALL_ID,
+            "elicitation": body,
+        }
+        method = "_kiro/mcp/elicitation"
+    else:
+        params = {"sessionId": session_id, "toolCallId": _TOOL_CALL_ID, **body}
+        method = "elicitation/create"
+    _send({"jsonrpc": "2.0", "id": _ELICIT_REQ_ID, "method": method, "params": params})
+    answer = _await_inbox(
+        lambda m: m.get("method") is None and m.get("id") == _ELICIT_REQ_ID,
+        PERMISSION_WAIT_SECS,
+    )
+    if answer is None:
+        echoed: Any = None
+    elif "error" in answer:
+        echoed = {"error": answer["error"]}
+    else:
+        echoed = answer.get("result")
+    accepted = isinstance(echoed, dict) and echoed.get("action") == "accept"
+    _update(
+        session_id,
+        {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": _TOOL_CALL_ID,
+            "status": "completed" if accepted else "failed",
+        },
+    )
+    return ELICIT_ANSWER_PREFIX + json.dumps(echoed, sort_keys=True)
+
+
 class _SlowHoldExpired(Exception):
     """A held stream was not released within ``SLOW_HOLD_WAIT_SECS``."""
 
@@ -705,6 +790,19 @@ def _handle(msg: dict[str, Any]) -> None:
         if ERROR_TRIGGER in text:
             # A JSON-RPC error instead of a result: the turn fails, not stops.
             _error(req_id)
+            return
+        elicit = _ELICIT_RE.search(text)
+        if elicit is not None:
+            # The echo IS the reply: a test reads the host's answer off it.
+            echoed = _emit_elicitation(session_id, elicit.group(1))
+            _update(
+                session_id,
+                {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": echoed},
+                },
+            )
+            _result(req_id, {"stopReason": "end_turn"})
             return
         if GATED_PERMISSION_TRIGGER in text:
             _emit_tool_call(session_id, with_permission=True, gated=True)

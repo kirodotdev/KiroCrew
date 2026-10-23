@@ -51,6 +51,7 @@ from kiro_crew.acp.client_timeouts import (
 )
 from kiro_crew.acp.client_transport import _is_safe_oauth_url
 from kiro_crew.acp.client_turn_control import format_command_result
+from kiro_crew.acp.elicitation import is_elicitation_request
 from kiro_crew.acp.liveness import EVIDENCE_SAMPLING, VERDICT_WORKING, consult_offloaded
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.transport_errors import (
@@ -170,6 +171,11 @@ def _process_message(self: AcpClient, msg: JsonRpcMessage, req_id: int) -> str:
 
     if msg.is_method(METHOD_KIRO_SESSION_UPDATE):
         return "subagent_activity"
+
+    # An MCP server's elicitation on either wire; a request only, so the
+    # standard `elicitation/complete` notification still reaches "skip".
+    if is_elicitation_request(msg):
+        return "elicitation"
 
     # Unknown server→client REQUEST (has both method AND id). Per JSON-RPC
     # the agent blocks until it gets a response, so it must be answered
@@ -674,6 +680,9 @@ async def send_message_stream(
                 _raise_acp_error(msg.error, self._advertised_model_ids(), backend=self.backend)
             if action == "permission":
                 await self._handle_permission(msg)
+            elif action == "elicitation":
+                # No consumer on this API to put the ask to: declined.
+                await self._decline_elicitation(msg)
             elif action == "server_request_unknown":
                 await self._reject_unknown_server_request(msg)
             elif action == "update":
@@ -788,6 +797,9 @@ async def _dispatch_events(
     # a prior turn cannot leak into this one (memory + correctness).
     self._permission_options.clear()
     getattr(self, "_permission_gate_events", {}).clear()
+    # An elicitation the last turn left unanswered is cancelled on the wire,
+    # not just forgotten: the engine holds its tool call open until then.
+    await self.cancel_pending_elicitations()
     self._stale_eligible = False
     self._tool_dispatched = False
     if self._active_tool_calls.evicted_count:
@@ -920,6 +932,18 @@ async def _dispatch_events(
                 self._parked_on_permission = True
                 try:
                     yield permission_event
+                finally:
+                    self._parked_on_permission = False
+        elif action == "elicitation":
+            # An MCP server's human-in-the-loop ask: declined here unless this
+            # consumer can put it to a person, in which case the event is
+            # yielded and the consumer answers through answer_elicitation.
+            # Parked like a permission: the human's time is not a stall.
+            _elicit_event = await self._handle_elicitation_request(msg)
+            if _elicit_event is not None:
+                self._parked_on_permission = True
+                try:
+                    yield _elicit_event
                 finally:
                     self._parked_on_permission = False
         elif action == "server_request_unknown":
@@ -1311,6 +1335,9 @@ async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) ->
             _raise_acp_error(msg.error, self._advertised_model_ids(), backend=self.backend)
         if action == "permission":
             await self._handle_permission(msg)
+        elif action == "elicitation":
+            # No consumer on this API to put the ask to: declined.
+            await self._decline_elicitation(msg)
         elif action == "server_request_unknown":
             await self._reject_unknown_server_request(msg)
         elif action == "update":

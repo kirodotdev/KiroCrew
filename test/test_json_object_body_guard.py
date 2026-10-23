@@ -355,6 +355,13 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_api/resume.py::api_chat_slot_resume": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/slot_approval.py::api_chat_mode": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/slot_approval.py::api_chat_slot_approve": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # An MCP elicitation answer: two ids, an action and at most PROPERTIES_MAX
+    # form values of up to STRING_VALUE_MAX_CHARS each -- a form the card drew
+    # must be answerable, so the cap is sized from those bounds.
+    "handlers/chat_elicitation.py::api_chat_slot_elicitation": (
+        "ELICITATION_BODY_MAX_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
     "chat_api/slot_settings.py::api_chat_slot_color": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/pending_context.py::api_chat_slot_context": ("None", _UNBOUNDED_USER_CONTENT),
     "chat_api/slot_note.py::api_chat_slot_note": ("None", _UNBOUNDED_USER_CONTENT),

@@ -223,7 +223,10 @@ def _build_message_entry_uncached(
     from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
 
     role = m.get("role", "assistant")
-    if role in ("chunk", "done", "streaming", "queued", "permission"):
+    # The ONE list of roles the transcript never holds (``_TRANSIENT_ROLES``),
+    # not a copy of it: a role added there and not here would be written to
+    # disk stripped of its ``cls``, and read back as a card with no request.
+    if role in cp._TRANSIENT_ROLES:
         return None
     content = m.get("content", "")
     # Gate is `!= "user"`, NOT `not in ("user", "system")`. _save_slot_to_history

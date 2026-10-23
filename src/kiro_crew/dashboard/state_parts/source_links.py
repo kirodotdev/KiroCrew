@@ -238,7 +238,9 @@ def _project_source_links(
 _CHIP_STATUS_KEYS = ("ci", "ciPending", "state", "mergeable", "mergeStateStatus")
 
 
-_NON_DURABLE_SOURCE_LINK_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})
+_NON_DURABLE_SOURCE_LINK_ROLES = frozenset(
+    {"chunk", "done", "streaming", "queued", "permission", "elicitation"}
+)
 
 
 def init_source_links_fields(self: _ChatSlot) -> None:

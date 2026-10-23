@@ -6876,6 +6876,27 @@
         "outcome_discarded": "Discarded. The live page didn’t change.",
         "outcome_closed": "Preview ended. This is the live page now.",
         "outcome_undo": "To undo, ask {{name}} to restore the previous dashboard."
+      },
+      "elicitationCard": {
+        "answer_failed": "Your answer could not be sent. Try again.",
+        "choose": "Choose…",
+        "date_time_format": "Format: 2026-01-31T09:30:00Z",
+        "decline": "Decline",
+        "done": "I've finished",
+        "integer_not_whole": "{{field}} must be a whole number.",
+        "integer_too_large": "{{field}} is too large to send exactly; use at most 15 digits.",
+        "no_longer_pending": "This question is no longer waiting for an answer.",
+        "required_missing": "{{field}} is required.",
+        "resolved_accept": "Answered",
+        "resolved_cancel": "Not answered",
+        "resolved_decline": "Declined",
+        "sending": "Sending…",
+        "submit": "Submit",
+        "title": "A tool is asking you",
+        "title_named": "{{who}} is asking you",
+        "title_named_resolved": "{{who}} asked you",
+        "title_resolved": "A tool asked you",
+        "url_hint": "Open the link, finish there, then come back and press “I've finished”."
       }
     },
     "chatPage": {

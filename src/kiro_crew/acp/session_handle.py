@@ -303,6 +303,7 @@ _SESSION_HANDLE_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.session_handle_lifecycle",
     "kiro_crew.acp.session_handle_compaction",
     "kiro_crew.acp.session_handle_permissions",
+    "kiro_crew.acp.session_handle_elicitation",
     "kiro_crew.acp.session_handle_updates",
     "kiro_crew.acp.session_handle_turn",
     "kiro_crew.acp.session_handle_dispatch",

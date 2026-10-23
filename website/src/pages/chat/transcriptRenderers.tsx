@@ -32,6 +32,7 @@
  * and a narrow entry must precede the broader one it refines.
  */
 import type React from 'react'
+import ElicitationCard from './ElicitationCard'
 import ThinkingBlock from './ThinkingBlock'
 import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
@@ -422,6 +423,15 @@ export function createTranscriptRenderers(
         if (!launch) return toolLine(m, ctx)
         return ctx.row(<SubagentRunCard key={ctx.key} launch={launch} slot={o.slot ?? ''} />, true)
       },
+    },
+    {
+      // An MCP server's own question to the person (a form or a link). The SDK
+      // default draws it read-only because it has no slot to answer on; every
+      // dashboard surface that knows its slot (the page, a pane, a crew window)
+      // takes this entry instead, so the card answers on the slot it belongs to.
+      id: 'elicitation',
+      roles: ['elicitation'],
+      render: (m, ctx) => ctx.row(<ElicitationCard message={m} slot={o.slot ?? null} />),
     },
     {
       // Replaces the default pill with the live, store-connected tool line:

@@ -6,7 +6,7 @@ import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, fetchS
 import { addNotification, ackNotificationByTs, unackNotificationByTs, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
-  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, sseContextUsage, clearMessages, clearSlotCache, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, queueEntryAttachments, isTerminalWorkflowStatus,
+  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, sseContextUsage, clearMessages, clearSlotCache, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, queueEntryAttachments, isTerminalWorkflowStatus,
 } from '../store/chatSlice'
 import { store } from '../store'
 import { TAB_ID } from '../api/tabId'
@@ -420,6 +420,22 @@ export function useWebSocket() {
             // The approvals module refreshes the shared `global-approvals` cache,
             // which the command center reads too.
             approvals.onApprovalResolved(data)
+            break
+          case 'elicitation_resolved':
+            // An MCP server's question was answered (by the person, or cancelled
+            // when its window ran out): stamp the card's row so it stops offering
+            // buttons. Same row-by-approval_id write the permission rows take.
+            if (typeof data.id === 'string' && typeof data.slot === 'string') {
+              dispatch(resolveByApprovalId({
+                id: data.id,
+                slot: data.slot,
+                decision: String(data.action || 'cancel'),
+                ...(typeof data.mid === 'string' && data.mid ? { mid: data.mid } : {}),
+                // The accepted form's values, so the card's summary fills in
+                // without waiting for a transcript reload.
+                ...(data.answer && typeof data.answer === 'object' && !Array.isArray(data.answer) ? { answer: data.answer as Record<string, unknown> } : {}),
+              }))
+            }
             break
           case 'refresh': {
             const kinds: string[] = data.kinds || []

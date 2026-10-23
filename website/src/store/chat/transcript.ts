@@ -801,8 +801,9 @@ export function olderHeadAbovePage(
   return { cutIdx, olderHead: cutIdx > 0 ? prior.slice(0, cutIdx) : [] }
 }
 
-/** Roles the server never writes to history. `permission` is in the backend's own
- *  `_TRANSIENT_ROLES`; `queued`/`streaming`/`thinking` exist only in this client.
+/** Roles the server never writes to history. `permission` and `elicitation` are in
+ *  the backend's own `_TRANSIENT_ROLES`; `queued`/`streaming`/`thinking` exist only
+ *  in this client.
  *  `error`/`mcp_oauth` are deliberately absent -- those ARE persisted.
  *
  *  One set, because two consumers ask the same question for opposite reasons and a
@@ -810,7 +811,7 @@ export function olderHeadAbovePage(
  *  a paging OFFSET, and `hasUnidentifiedDurableRow` looks for a durable row the
  *  bound cannot see. A role missing from one copy would silently mis-shift a cursor
  *  in the first and silently drop scrollback in the second. */
-const CLIENT_ONLY_ROLES: ReadonlySet<string> = new Set(['queued', 'streaming', 'thinking', 'permission'])
+const CLIENT_ONLY_ROLES: ReadonlySet<string> = new Set(['queued', 'streaming', 'thinking', 'permission', 'elicitation'])
 
 /** Does this row survive in the server's transcript?
  *

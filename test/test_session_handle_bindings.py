@@ -56,6 +56,12 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_apply_init_notification": ("function", False, "ac6a24522ec0", "session_handle_mcp"),
     "_apply_kas_context_pct": ("function", False, "386e4643466b", "session_handle_kas"),
     "_apply_kas_turn_completion": ("function", False, "7f31b87afeac", "session_handle_kas"),
+    "_audit_elicitation_decision": (
+        "function",
+        False,
+        "fa17e47d8779",
+        "session_handle_elicitation",
+    ),
     "_audit_handle_reject": ("function", False, "8a9e7399a659", "session_handle_permissions"),
     "_backfill_context_window": ("function", False, "f3e546765020", "session_handle_compaction"),
     "_build_child_tool_activity_prefix": (
@@ -86,6 +92,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_emit_watchdog_metric": ("function", False, "8cf581201a27", "session_handle_watchdog"),
     "_end_human_wait": ("function", False, "b60c5fea256e", "session_handle_watchdog"),
     "_end_stalled_tool": ("function", "agen", "1fcba2664f9e", "session_handle_watchdog"),
+    "_handle_elicitation_request": ("function", True, "e64128661dfa", "session_handle_elicitation"),
     "_handle_kas_session_info": ("function", False, "f3c17ef22460", "session_handle_kas"),
     "_handle_kas_subagent": ("function", False, "5f796c64544c", "session_handle_native_children"),
     "_handle_kas_subagent_chunk": (
@@ -200,6 +207,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_wait_for_response": ("function", True, "87f499e313b4", "session_handle_lifecycle"),
     "_working_tool_bound_reached": ("function", False, "c7051eec1093", "session_handle_watchdog"),
     "agent_version": ("property", False, "bb418bb7ece8", "session_handle_class"),
+    "answer_elicitation": ("function", True, "2fcb1ac189fa", "session_handle_elicitation"),
     "apply_session_permission_routing": (
         "function",
         True,
@@ -211,6 +219,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "awaiting_permission": ("property", False, "a6632a57e602", "session_handle_class"),
     "bind_session_key": ("function", False, "57eca86d38c3", "session_handle_lifecycle"),
     "cancel": ("function", True, "4b75d9a5e0c7", "session_handle_lifecycle"),
+    "cancel_pending_elicitations": ("function", True, "fa6cfecd5574", "session_handle_elicitation"),
     "cleanup_transcript_files": ("staticmethod", False, "a9cece317161", "session_handle_lifecycle"),
     "command_result": ("function", True, "1f650230e18e", "session_handle_lifecycle"),
     "compact": ("function", True, "416a3df991e6", "session_handle_compaction"),
@@ -300,6 +309,7 @@ _OWNERS = (
     "kiro_crew.acp.session_handle_lifecycle",
     "kiro_crew.acp.session_handle_compaction",
     "kiro_crew.acp.session_handle_permissions",
+    "kiro_crew.acp.session_handle_elicitation",
     "kiro_crew.acp.session_handle_updates",
     "kiro_crew.acp.session_handle_turn",
     "kiro_crew.acp.session_handle_dispatch",

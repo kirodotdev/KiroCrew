@@ -36,6 +36,7 @@ from kiro_crew.acp._dispatch import (
     parse_usage_cost,
     parse_usage_update,
 )
+from kiro_crew.acp.elicitation import ElicitationParseError, parse_elicitation_request
 from kiro_crew.acp.harness.pi_steer import steer_echo_seq
 from kiro_crew.acp.types import AcpEvent, JsonRpcMessage
 from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
@@ -81,6 +82,7 @@ HANDLED_ACTIONS = (
     "mcp_server_init_failure",
     "subagent_list",
     "subagent_activity",
+    "elicitation",
     "server_request_unknown",
     "skip",
 )
@@ -318,6 +320,14 @@ def _replay(
         elif action == "metadata":
             context_pct, credits = parse_metadata(params)
             entry["metadata"] = {"context_pct": context_pct, "credits": credits}
+        elif action == "elicitation":
+            # Both wires (`elicitation/create` flat, `_kiro/mcp/elicitation`
+            # nested) read into the one request the card renders; a shape the
+            # card cannot draw is what the drivers answer `decline` to.
+            try:
+                entry["elicitation"] = parse_elicitation_request(msg).as_dict()
+            except ElicitationParseError as exc:
+                entry["elicitation_refused"] = str(exc)
         else:
             # compaction / clear / agent_switched / mcp_* / subagent_list /
             # server_request_unknown / skip carry no parser in _dispatch; the

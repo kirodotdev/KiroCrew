@@ -341,7 +341,7 @@ def _same_persisted_body(
 
 
 def _is_answered_permission(m: dict) -> bool:
-    """True for a ``permission`` row whose approval has already been answered.
+    """True for a ``permission`` or ``elicitation`` row that has already been answered.
 
     A permission row is never persisted, so it is always owed and therefore always
     lands in the tail — i.e. after every row that DID reach disk. For a pending
@@ -357,7 +357,7 @@ def _is_answered_permission(m: dict) -> bool:
     ``!meta.resolved`` test (``store/chat/selectors.ts`` ``selectSlotPendingApproval``), so an
     empty decision still counts as pending and an actionable approval is never lost.
     """
-    if m.get("role") != "permission":
+    if m.get("role") not in ("permission", "elicitation"):
         return False
     meta = parse_cls_meta(m.get("cls", "")) or {}
     return bool(meta.get("resolved"))
