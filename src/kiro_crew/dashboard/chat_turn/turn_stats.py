@@ -27,6 +27,7 @@ from kiro_crew.monitoring.completion import (
     disposition_for_stop_reason,
     is_monitor_completion_evidence,
 )
+from kiro_crew.parent_turns import note_turn_landed
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -1046,6 +1047,14 @@ async def _turn_context_usage(turn: _ChatTurn) -> None:
         # must NOT restore the one-shot flag.
         _turn_landed = True
         turn._turn_landed = _turn_landed
+        if _stop_reason == STOP_REASON_END_TURN:
+            # Only a turn that ran to its end, as every engine notes it: this
+            # attempt's release then confirms the inline results the turn
+            # received (``kiro_crew.parent_turns``), so a child it read back
+            # plays no second turn on a cron or channel tab. Any other end
+            # revokes them and the completion is delivered. A recovery this
+            # turn re-queues is its own claim, so it never confirms these.
+            note_turn_landed(state.sessions, session_key)
         # Per-interaction telemetry (PlatformContext seam) — shared helper so
         # the payload shape and model reflection cannot drift across surfaces.
         record_interaction_event(client, session_key, "dashboard")

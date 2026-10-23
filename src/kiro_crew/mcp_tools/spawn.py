@@ -882,6 +882,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _OWNER_UNRESOLVED_PREFIX,
         RESUME_HOLD_SECS,
         _audit_owner,
+        _carried_in_reply,
         _held_by_a_deferral,
         _ResumeHold,
         _SubAgentsStep,
@@ -909,6 +910,8 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
     from kiro_crew.subagent_wait_reasons import queued_wait_text  # noqa: F401
     from kiro_crew.validation import (  # noqa: F401
         MAX_MEDIUM_STRING,
+        MAX_RESPONSE_LEN,
         MAX_SHORT_STRING,
         SPAWN_SUB_AGENTS_SCHEMA,
+        sanitize_string,
     )

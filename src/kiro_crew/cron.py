@@ -696,6 +696,10 @@ class CronService:
         # the entire exact key, not one caller's reference to it.
         self._active_session_lock = threading.Lock()
         self._active_session_keys: dict[str, dict[str, _RunClaim | None]] = {}
+        # (job id, key) pairs whose registering run ended its turn on the key
+        # (``finish_session_key``): retired by the last sub-agent's cleanup even
+        # while that run's claim is live.
+        self._finished_session_keys: set[tuple[str, str]] = set()
         self._sessions: SessionManager | None = None
         self._reaper_task: asyncio.Task[None] | None = None
         self._push_refresh: Callable[[str], None] | None = None  # set externally
@@ -833,6 +837,8 @@ class CronService:
     # The runs in flight: ``kiro_crew.cron_service.service.run_registry``.
     register_active_session_key = _run_registry.register_active_session_key
     clear_active_session_key = _run_registry.clear_active_session_key
+    retire_finished_session_key = _run_registry.retire_finished_session_key
+    finish_session_key = _run_registry.finish_session_key
     _run_session_keys = _run_registry._run_session_keys
     active_session_keys = _run_registry.active_session_keys
     get_history = _run_registry.get_history
