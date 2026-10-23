@@ -217,10 +217,33 @@ describe('code channel crew: workers fold under the conductor row', () => {
     expect(within(rowOf('cond title')!).queryByTestId('code-channel-crew-state')).toBeNull()
   })
 
+  it('double-clicking a title-only card\'s worker fold does not start a rename', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ compactSessionCards: true }))
+    renderSidebar([conductorRow(), workerRow('w1')])
+    fireEvent.doubleClick(within(rowOf('cond title')!).getByTestId('code-channel-crew-toggle'))
+    expect(rowOf('cond title')!.querySelector('textarea')).toBeNull()
+  })
+
   it('an ordinary parent keeps its children in the list, with no fold', () => {
     renderSidebar([slot('cond'), workerRow('w1')])
     expect(rowOf('w1 title')).not.toBeNull()
     expect(screen.queryByTestId('code-channel-crew-toggle')).toBeNull()
+  })
+
+  it('a title-only card keeps the crew state, the channel badge and the fold on its title line', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ compactSessionCards: true }))
+    renderSidebar([
+      conductorRow(),
+      workerRow('w2', { pending_approval: true, running: true, last_message: 'approve git push' }),
+    ])
+    const title = within(rowOf('cond title')!).getByTestId('session-compact-marks')
+    expect(rowOf('cond title')!.querySelector('[data-session-title]')!.textContent).toBe('cond title')
+    expect(within(rowOf('cond title')!).queryByTestId('code-channel-crew-state')).toBeNull()
+    const marker = within(title).getByTestId('session-compact-attention')
+    expect(marker.getAttribute('data-state')).toBe('code_channel_crew')
+    expect(marker.getAttribute('aria-label')).toBe(i18nT('pages.chatSidebar.needs_approval'))
+    expect(within(title).getByTestId('code-channel-crew-toggle')).toHaveAccessibleName('Show 1 worker session')
+    expect(within(title).getByRole('link', { name: /fix-kirocrew-issue-22452/ })).toBeInTheDocument()
   })
 })
 
