@@ -125,6 +125,26 @@ class TestDispatcher:
         assert not spool.exists(), "an incognito message was persisted to the spool"
 
     @pytest.mark.asyncio
+    async def test_the_pick_follows_a_promotion_before_the_attachment_cleanup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The cleanup is an await: a prompt that starts there resets the walk."""
+        from kiro_crew.agent_sdk.drivers import acp_vocab
+
+        order: list[str] = []
+        real_follow = acp_vocab.follow_engine_promotion
+
+        def _follow(*args: Any, **kwargs: Any) -> bool:
+            order.append("follow")
+            return real_follow(*args, **kwargs)
+
+        monkeypatch.setattr(acp_vocab, "follow_engine_promotion", _follow)
+        monkeypatch.setattr(td_mod, "cleanup_attachments", lambda _paths: order.append("cleanup"))
+        d, _cli, _sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg("hello"))
+        assert order == ["follow", "cleanup"]
+
+    @pytest.mark.asyncio
     async def test_monitor_wake_busy_at_dispatch_boundary_is_not_steered_or_queued(
         self,
     ) -> None:
@@ -205,6 +225,21 @@ class TestDispatcher:
         key = dispatcher._session_key("u1")
         await manager.get_or_create(key)
         manager.release(key)
+        # The winning user turn's engine promoted A -> B. The BUSY wake runs no
+        # prompt, so it must leave that promotion for the user turn to follow.
+        from kiro_crew.acp.engine_fallback import (
+            TRACKER_ATTR,
+            EngineFallbackTracker,
+            ModelFallbackNotice,
+        )
+
+        tracker = EngineFallbackTracker()
+        tracker.apply(
+            SimpleNamespace(_model="model-a", _resolved_model_id="model-a"),
+            [ModelFallbackNotice("model-a", "model-b", "refused", promoted=True)],
+        )
+        setattr(provider, TRACKER_ATTR, tracker)
+        dispatcher._model_pref[dispatcher._scope_id("u1")] = "model-a"
         completions: list[MonitorActionCompletion] = []
 
         async def _complete(completion: MonitorActionCompletion) -> None:
@@ -230,6 +265,8 @@ class TestDispatcher:
             assert provider.steered == []
             assert manager.dequeue(key) is None
             assert completions == []
+            assert tracker.promotion_followed is False
+            assert dispatcher._model_pref[dispatcher._scope_id("u1")] == "model-a"
         finally:
             resume_monitor.set()
             if manager.is_busy(key):

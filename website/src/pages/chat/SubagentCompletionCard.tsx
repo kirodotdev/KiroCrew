@@ -244,9 +244,12 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
               {modelDowngraded && <AlertCircle size={10} aria-hidden />}
               {/* Left-truncate: long ids share a provider prefix
                   (us.anthropic.claude-…), so clipping the END hides the one part
-                  that says WHICH model. rtl+plaintext keeps the glyphs in logical
-                  LTR order while the ellipsis falls on the left (UX review #3582). */}
-              <span className="truncate inline-block max-w-full [direction:rtl] [unicode-bidi:plaintext] text-left align-bottom">{displayModel}</span>
+                  that says WHICH model. The span is rtl so its ellipsis falls on the
+                  left, and the id sits in an ltr <bdi> so its glyphs keep their
+                  order. Not `unicode-bidi: plaintext`, which re-derives the
+                  direction from the (LTR) id and puts the ellipsis back on the
+                  right (UX review #3582). */}
+              <span className="truncate inline-block max-w-full [direction:rtl] text-left align-bottom"><bdi dir="ltr">{displayModel}</bdi></span>
             </code>
           )
         })()}

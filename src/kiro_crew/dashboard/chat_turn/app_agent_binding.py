@@ -153,10 +153,10 @@ def _launched_copy_names(provider: Any) -> set[str]:
     The allocation stamps it on the provider (``app_launch_agent``) and the Kiro
     runtime keeps it (``_launch_agent``); the agent's own name stays on ``_agent``.
     """
-    from kiro_crew.dashboard.handlers.usage import _wrapper_chain
+    from kiro_crew.wrapper_chain import wrapper_chain
 
     names: set[str] = set()
-    for node in _wrapper_chain(provider):
+    for node in wrapper_chain(provider):
         for attr in ("app_launch_agent", "_launch_agent"):
             name = getattr(node, attr, None)
             if isinstance(name, str) and name:

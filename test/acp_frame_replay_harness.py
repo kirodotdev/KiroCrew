@@ -36,6 +36,7 @@ from kiro_crew.acp._dispatch import (
     parse_usage_cost,
     parse_usage_update,
 )
+from kiro_crew.acp.engine_fallback import normalize_kiro_v2
 from kiro_crew.acp.harness.pi_steer import steer_echo_seq
 from kiro_crew.acp.types import AcpEvent, JsonRpcMessage
 from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
@@ -81,6 +82,7 @@ HANDLED_ACTIONS = (
     "mcp_server_init_failure",
     "subagent_list",
     "subagent_activity",
+    "model_fallback",
     "server_request_unknown",
     "skip",
 )
@@ -313,6 +315,10 @@ def _replay(
                 )
                 if todo is not None:
                     entry["todo"] = todo
+        elif action == "model_fallback":
+            entry["model_fallback"] = [
+                dataclasses.asdict(notice) for notice in normalize_kiro_v2(update)
+            ]
         elif action == "steer":
             entry["session_update"] = update.get("sessionUpdate", "")
         elif action == "metadata":

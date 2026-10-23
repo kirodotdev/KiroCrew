@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _NO_PRIOR_STATS,
         SUBAGENT_SYNTHESIS_PROMPT,
+        EngineFallbackWalk,
         PoisonedConversationEscalation,
         ReplayFamily,
         StreamRedactor,
@@ -864,6 +865,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # teardown before that, so it must be bound up front.
     _stop_reason = ""
     turn._stop_reason = _stop_reason
+    # The engine's own fallback hops this turn (acp/engine_fallback.py). Bound up
+    # front for the same reason: _run_chat's finally ends the walk with a notice.
+    _engine_fallback_walk = EngineFallbackWalk()
+    turn._engine_fallback_walk = _engine_fallback_walk
     # Replay settlement also lives in _run_chat's ``finally``. Bind at turn scope because
     # config, binding and session-start failures can reach teardown before the
     # acquisition block in _turn_admit determines whether replay is pending.
