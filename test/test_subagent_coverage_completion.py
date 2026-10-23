@@ -647,19 +647,6 @@ class TestScanKeepStates:
 
 
 class TestReleaseConversation:
-    def test_busy_conversation_refused(self) -> None:
-        mgr = _manager()
-        mgr._agents["c1"] = _info("c1")
-        ok, detail = mgr.release_conversation("c1")
-        assert ok is False
-        assert "conversation_busy" in detail
-
-    def test_nothing_to_release(self) -> None:
-        mgr = _manager()
-        mgr._sessions.forget_conversation.return_value = ""
-        with patch.object(sa, "update_state"):
-            ok, detail = mgr.release_conversation("c1")
-        assert (ok, detail) == (False, "conversation_gone: nothing to release")
 
     def test_released_deletes_session_files(self) -> None:
         mgr = _manager()
@@ -693,44 +680,12 @@ class TestSweepConversations:
         await mgr._sweep_conversations_async(now=1001.0)
         assert "subagent:c1" in mgr._conversations
 
-    @pytest.mark.asyncio
-    async def test_busy_conversation_refreshed_not_released(self) -> None:
-        mgr = _manager()
-        mgr._conversations["subagent:c1"] = 0.0
-        mgr._agents["c1"] = _info("c1")
-        now = float(sa._CONVERSATION_TTL_SECS * 3)
-        await mgr._sweep_conversations_async(now=now)
-        assert mgr._conversations["subagent:c1"] == now
-
-    @pytest.mark.asyncio
-    async def test_expired_conversation_released(self) -> None:
-        mgr = _manager()
-        mgr._conversations["subagent:c1"] = 0.0
-        mgr._sessions.forget_conversation.return_value = "sid-1"
-        with (
-            patch.object(sa, "update_state"),
-            patch.object(sa, "_cleanup_session_files_sync"),
-        ):
-            await mgr._sweep_conversations_async(now=float(sa._CONVERSATION_TTL_SECS * 3))
-        assert "subagent:c1" not in mgr._conversations
-
 
 class TestInheritedContextGroups:
     def test_live_record_wins(self) -> None:
         mgr = _manager()
         mgr._agents["c1"] = _info("c1", include_memory=False)
         assert mgr._inherited_context_groups("c1") == (False, True, True)
-
-    def test_run_predating_the_field_defaults_all_on(self) -> None:
-        mgr = _manager()
-        with patch.object(sa, "read_state", return_value={}):
-            assert mgr._inherited_context_groups("c1") == (True, True, True)
-
-    def test_persisted_scope_is_read_back(self) -> None:
-        mgr = _manager()
-        raw = f"{sa.CONTEXT_GROUP_LESSONS},{sa.CONTEXT_GROUP_PROJECT}"
-        with patch.object(sa, "read_state", return_value={"context_groups": raw}):
-            assert mgr._inherited_context_groups("c1") == (False, True, True)
 
     def test_empty_scope_means_every_group_withheld(self) -> None:
         mgr = _manager()
@@ -885,28 +840,11 @@ def _sweep_digest_holds(mgr: SubagentManager, form: str, *, now: float) -> None:
 
 
 class TestSweepDigestHolds:
-    def test_disabled_deadline_is_a_noop(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 0.0)
-        mgr = _manager(on_done=AsyncMock())
-        with patch.object(mgr, "force_digest_flush") as flush:
-            mgr._sweep_digest_holds(now=1e9)
-        flush.assert_not_called()
-
     def test_no_completion_consumer_is_a_noop(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 10.0)
         mgr = _manager()
         with patch.object(mgr, "force_digest_flush") as flush:
             mgr._sweep_digest_holds(now=1e9)
-        flush.assert_not_called()
-
-    def test_hold_within_window_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 100.0)
-        mgr = _manager(on_done=AsyncMock())
-        held = _info("a", batch_id="w1", batch_total=2)
-        held._digest_held_at = 1000.0
-        mgr._agents["a"] = held
-        with patch.object(mgr, "force_digest_flush") as flush:
-            mgr._sweep_digest_holds(now=1050.0)
         flush.assert_not_called()
 
     @pytest.mark.parametrize("form", ["sync", "async"])

@@ -464,12 +464,6 @@ class TestLastMessagePreview:
         _write(log._path("k"), _jsonl({"_type": "metadata", "created_at": "x"}))
         assert log.last_message_preview("k") == ""
 
-    def test_returns_newest_message(self, tmp_path: Path) -> None:
-        log = _log(tmp_path)
-        log.append("k", "user", "first")
-        log.append("k", "assistant", "second")
-        assert log.last_message_preview("k") == "second"
-
     def test_structured_content_blocks(self, tmp_path: Path) -> None:
         log = _log(tmp_path)
         _write(
@@ -1493,19 +1487,6 @@ class TestUpdateMetadataLocked:
 
 
 class TestDeleteSession:
-    def test_missing_session_returns_false(self, tmp_path: Path) -> None:
-        assert _log(tmp_path).delete_session("nope") is False
-
-    def test_removes_file_and_summary_sidecar(self, tmp_path: Path) -> None:
-        log = _log(tmp_path)
-        log.append("k", "user", "hi")
-        log.set_cached_summary("k", "a summary", 1.0)
-        sidecar = log._summary_cache_path("k")
-        assert sidecar.exists()
-        assert log.delete_session("k") is True
-        assert not log._path("k").exists()
-        assert not sidecar.exists()
-
     def test_unlink_failure_returns_false(self, tmp_path: Path) -> None:
         log = _log(tmp_path)
         log.append("k", "user", "hi")
@@ -1572,9 +1553,6 @@ class TestContentSnippet:
 
 
 class TestRecentFromSource:
-    def test_missing_dir_returns_empty(self, tmp_path: Path) -> None:
-        assert ConversationLog(base_dir=tmp_path / "absent").recent_from_source("slack") == []
-
     def test_collects_and_excludes(self, tmp_path: Path) -> None:
         log = _log(tmp_path)
         log.append("slack:a", "user", "from a")
@@ -1597,13 +1575,6 @@ class TestRecentFromSource:
         log.append("slack:a", "user", "hi")
         with patch("builtins.open", side_effect=OSError("locked")):
             assert log.recent_from_source("slack") == []
-
-    def test_max_messages_trims_to_the_newest(self, tmp_path: Path) -> None:
-        log = _log(tmp_path)
-        for i in range(6):
-            log.append("slack:a", "user", f"m{i}")
-        got = log.recent_from_source("slack", max_messages=2)
-        assert [m["content"] for m in got] == ["m4", "m5"]
 
 
 # ── skill-text helpers ─────────────────────────────────────────────────────

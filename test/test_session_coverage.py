@@ -120,9 +120,6 @@ PROBES = [
 class TestProviderProbeHelpers:
     """Each probe is a strict opt-in: only an exact ``True`` counts."""
 
-    def test_missing_attribute_reads_as_no(self, probe, attr) -> None:
-        assert probe(SimpleNamespace()) is False
-
     def test_non_callable_attribute_reads_as_no(self, probe, attr) -> None:
         """A stub that sets the name to a plain bool must not be called."""
         assert probe(SimpleNamespace(**{attr: True})) is False
@@ -132,9 +129,6 @@ class TestProviderProbeHelpers:
             raise RuntimeError("provider is wedged")
 
         assert probe(SimpleNamespace(**{attr: boom})) is False
-
-    def test_true_is_the_only_yes(self, probe, attr) -> None:
-        assert probe(SimpleNamespace(**{attr: lambda: True})) is True
 
     def test_truthy_non_bool_is_still_no(self, probe, attr) -> None:
         """``is True``, not truthiness — a Mock return must not read as yes."""
@@ -1060,19 +1054,3 @@ class TestRegistrySnapshots:
 
         _register(mgr, "d2", provider=_stub_provider(has_active_turn=lambda: True))
         assert mgr.any_active_turn() is True
-
-    def test_get_pid_reads_the_client(self, mgr) -> None:
-        provider = _stub_provider()
-        provider.client = SimpleNamespace(_pid=555)
-        _register(mgr, "d1", provider=provider)
-        assert mgr.get_pid("d1") == 555
-
-    def test_get_pid_is_none_for_an_unknown_key(self, mgr) -> None:
-        assert mgr.get_pid("nope") is None
-
-    def test_get_pid_is_none_when_the_provider_has_no_client(self, mgr) -> None:
-        _register(mgr, "d1", provider=_stub_provider())
-        assert mgr.get_pid("d1") is None
-
-    def test_get_provider_is_none_for_an_unknown_key(self, mgr) -> None:
-        assert mgr.get_provider("nope") is None

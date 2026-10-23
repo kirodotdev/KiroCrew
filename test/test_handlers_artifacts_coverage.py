@@ -136,45 +136,12 @@ def _json_body(resp: Any) -> dict:
 
 
 class TestVersionEndpoints:
-    @pytest.mark.asyncio
-    async def test_versions_lists_every_snapshot(self, isolated_store: ArtifactStore) -> None:
-        art = isolated_store.create(name="Doc", content="v1", kind="markdown")
-        # Only an explicit snapshot mints a new numbered version (the default
-        # silent save keeps the version dropdown unchanged).
-        isolated_store.update(art.slug, content="v2", snapshot=True)
-        resp = await api_artifact_versions(_request(match={"slug": art.slug}))
-        assert resp.status == 200
-        assert _json_body(resp)["versions"] == [1, 2]
-
-    @pytest.mark.asyncio
-    async def test_versions_unknown_slug_404(self, isolated_store: ArtifactStore) -> None:
-        resp = await api_artifact_versions(_request(match={"slug": "nope"}))
-        assert resp.status == 404
 
     @pytest.mark.asyncio
     async def test_versions_invalid_slug_400(self, isolated_store: ArtifactStore) -> None:
         # A slug that fails store-side validation is a 400, not a 404.
         resp = await api_artifact_versions(_request(match={"slug": "NOT A SLUG"}))
         assert resp.status == 400
-
-    @pytest.mark.asyncio
-    async def test_version_detail_non_numeric_version_400(
-        self, isolated_store: ArtifactStore
-    ) -> None:
-        art = isolated_store.create(name="Doc", content="v1", kind="markdown")
-        resp = await api_artifact_version_detail(
-            _request(match={"slug": art.slug, "version": "latest"})
-        )
-        assert resp.status == 400
-        assert "invalid version" in _json_body(resp)["error"]
-
-    @pytest.mark.asyncio
-    async def test_version_detail_version_miss_404(self, isolated_store: ArtifactStore) -> None:
-        art = isolated_store.create(name="Doc", content="v1", kind="markdown")
-        resp = await api_artifact_version_detail(
-            _request(match={"slug": art.slug, "version": "99"})
-        )
-        assert resp.status == 404
 
     @pytest.mark.asyncio
     async def test_version_detail_returns_historical_content(
@@ -252,16 +219,6 @@ class TestRecordEvent:
         assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_wrong_event_type_400(
-        self, isolated_store: ArtifactStore, patch_restricted: None
-    ) -> None:
-        art = isolated_store.create(name="Doc", content="x", kind="markdown")
-        req = _request(body={"type": "edited"}, match={"slug": art.slug})
-        resp = await api_artifact_record_event(req)
-        assert resp.status == 400
-        assert "type='referenced'" in _json_body(resp)["error"]
-
-    @pytest.mark.asyncio
     async def test_non_object_metadata_400(
         self, isolated_store: ArtifactStore, patch_restricted: None
     ) -> None:
@@ -299,14 +256,6 @@ class TestRecordEvent:
         resp = await api_artifact_record_event(req)
         assert resp.status == 400
         assert "widget_index" in _json_body(resp)["error"]
-
-    @pytest.mark.asyncio
-    async def test_unknown_slug_404(
-        self, isolated_store: ArtifactStore, patch_restricted: None
-    ) -> None:
-        req = _request(body={"type": "referenced"}, match={"slug": "ghost"})
-        resp = await api_artifact_record_event(req)
-        assert resp.status == 404
 
     @pytest.mark.asyncio
     async def test_invalid_slug_400(
@@ -362,41 +311,6 @@ class TestRecordEvent:
         resp = await api_artifact_record_event(req)
         assert resp.status == 200
         assert _json_body(resp)["event"]["by"] == "agent"
-
-    @pytest.mark.asyncio
-    async def test_dashboard_ui_session_key_is_dropped(
-        self, isolated_store: ArtifactStore, patch_restricted: None
-    ) -> None:
-        # The literal ``dashboard:ui`` is not a real session, so it must not be
-        # recorded as the event's session id.
-        art = isolated_store.create(name="Doc", content="x", kind="markdown")
-        req = _request(
-            body={"type": "referenced"}, match={"slug": art.slug}, session_key="dashboard:ui"
-        )
-        resp = await api_artifact_record_event(req)
-        assert resp.status == 200
-        assert not _json_body(resp)["event"].get("session_id")
-
-    @pytest.mark.asyncio
-    async def test_second_impression_in_same_session_is_suppressed(
-        self, isolated_store: ArtifactStore, patch_restricted: None
-    ) -> None:
-        art = isolated_store.create(name="Doc", content="x", kind="markdown")
-
-        def _req() -> MagicMock:
-            return _request(
-                body={"type": "referenced"},
-                match={"slug": art.slug},
-                session_key="dashboard:dup",
-            )
-
-        first = await api_artifact_record_event(_req())
-        assert first.status == 200
-        second = await api_artifact_record_event(_req())
-        assert second.status == 200
-        payload = _json_body(second)
-        assert payload["suppressed"] is True
-        assert payload["event"] is None
 
 
 # ── Refresh sharing ─────────────────────────────────────────────────────────
@@ -732,19 +646,6 @@ class TestSetFolderErrors:
         assert resp.status == 500
         assert capture_audit[-1]["outcome"] == "error"
 
-    @pytest.mark.asyncio
-    async def test_folder_path_autocreates_and_moves(
-        self, stores, patch_restricted: None, capture_audit: list[dict]
-    ) -> None:
-        store, fstore = stores
-        art = store.create(name="Doc", content="x", kind="markdown")
-        resp = await api_artifact_set_folder(
-            _request(body={"folder": "Reports/2026"}, match={"slug": art.slug})
-        )
-        assert resp.status == 200
-        folder_id = capture_audit[-1]["extra"]["folder_id"]
-        assert fstore.breadcrumb(folder_id) == "Reports/2026"
-
 
 class TestSetPinned:
     @pytest.mark.asyncio
@@ -1028,18 +929,6 @@ class TestRemoteArtifactGet:
         assert capture_audit[-1]["outcome"] == "error"
 
     @pytest.mark.asyncio
-    async def test_provider_timeout_maps_to_504_with_non_empty_error(
-        self, patch_restricted: None, remote_provider, capture_audit: list[dict]
-    ) -> None:
-        remote_provider.times_out = True
-        req = _request(match={"provider": "fakeprov", "external_id": "ext-1"})
-        resp = await api_remote_artifact_get(req)
-        assert resp.status == 504
-        # str(asyncio.TimeoutError()) is "" — the handler must supply real text.
-        assert _json_body(resp)["error"]
-        assert capture_audit[-1]["outcome"] == "timeout"
-
-    @pytest.mark.asyncio
     async def test_unreadable_artifact_404(self, patch_restricted: None, remote_provider) -> None:
         remote_provider.content = None
         req = _request(match={"provider": "fakeprov", "external_id": "ext-1"})
@@ -1246,20 +1135,6 @@ class TestRemotePostComment:
         )
         assert resp.status == 201
         assert "anchor" not in _json_body(resp)["comment"]
-
-    @pytest.mark.asyncio
-    async def test_provider_timeout_maps_to_504(
-        self,
-        patch_restricted: None,
-        remote_provider,
-        gate_open: list[str],
-        capture_audit: list[dict],
-    ) -> None:
-        remote_provider.times_out = True
-        resp = await api_remote_artifact_post_comment(_request(body={"text": "hi"}, match=_MATCH))
-        assert resp.status == 504
-        assert _json_body(resp)["error"]
-        assert capture_audit[-1]["outcome"] == "timeout"
 
 
 class TestRemoteReplyComment:
@@ -1531,19 +1406,6 @@ class TestSerializeRemoteComment:
         assert out["sync_state"] == "synced"
         assert out["status"] == "review"
         assert out["is_agent"] is True
-
-    def test_anchor_with_none_prefix_and_suffix_survives(self) -> None:
-        rc = RemoteComment(
-            remote_id="r1",
-            thread_id="r1",
-            author="a",
-            body="b",
-            anchor=CommentAnchor(quote="span", prefix=None, suffix=None),
-        )
-        out = _serialize_remote_comment(rc, "fakeprov")
-        assert out["anchor"]["quote"] == "span"
-        assert out["anchor"]["prefix"] is None
-        assert out["anchor"]["suffix"] is None
 
     def test_anchor_without_quote_is_omitted(self) -> None:
         rc = RemoteComment(

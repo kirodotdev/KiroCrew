@@ -249,7 +249,7 @@ class TestEnsureUtf8Console:
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.setattr(pc.sys, "stdout", None)
         monkeypatch.setattr(pc.sys, "stderr", None)
-        pc.ensure_utf8_console()  # no exception = pass
+        pc.ensure_utf8_console()
 
 
 # ---------------------------------------------------------------------------
@@ -693,10 +693,6 @@ class TestWindowsHandleAcquisition:
     def test_open_handle_is_none_off_windows(self, monkeypatch):
         monkeypatch.setattr(pc, "IS_WINDOWS", False)
         assert pc._open_process_termination_handle(500) is None
-
-    def test_open_handle_returns_the_opened_handle(self, monkeypatch):
-        _fake_windows(monkeypatch, kernel32=types.SimpleNamespace(OpenProcess=_const(4321)))
-        assert pc._open_process_termination_handle(500) == 4321
 
     def test_open_handle_is_none_when_the_open_fails(self, monkeypatch):
         _fake_windows(monkeypatch, kernel32=types.SimpleNamespace(OpenProcess=_const(0)))

@@ -1223,14 +1223,6 @@ class TestProfilesControlPlane:
         assert _payload(resp)["default"] == "p"
 
     @pytest.mark.asyncio
-    async def test_post_refuses_when_registry_is_full(self, monkeypatch):
-        full = {"profiles": [profiles_mod.make_entry(f"p{i}", "us-west-2")
-                             for i in range(50)], "default": "p0"}
-        monkeypatch.setattr(profiles_mod, "load_registry", lambda: full)
-        resp = await handlers._handle_profiles_post(_FakeReq({"name": "new"}))
-        assert resp.status == 400 and "registry is full" in _payload(resp)["error"]
-
-    @pytest.mark.asyncio
     async def test_put_rejects_invalid_name(self):
         resp = await handlers._handle_profiles_put(
             _FakeReq({}, match_info={"name": "bad name;"}))

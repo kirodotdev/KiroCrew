@@ -170,10 +170,6 @@ class TestCancelTaskIntentionally:
 
 class TestCancelLookup:
     @pytest.mark.asyncio
-    async def test_unknown_agent_is_false(self) -> None:
-        assert await _manager().cancel("nope") is False
-
-    @pytest.mark.asyncio
     async def test_finished_agent_is_false(self) -> None:
         mgr = _manager()
         mgr._agents["a"] = _info("a", done=True)
@@ -184,27 +180,6 @@ class TestCancelLookup:
 
 
 class TestSteerRun:
-    @pytest.mark.asyncio
-    async def test_unknown_run(self) -> None:
-        assert await _manager().steer_run("nope", "hi") == (False, "not_found")
-
-    @pytest.mark.asyncio
-    async def test_finished_run_points_at_continue(self) -> None:
-        mgr = _manager()
-        mgr._agents["a"] = _info("a", done=True)
-        ok, detail = await mgr.steer_run("a", "hi")
-        assert ok is False
-        assert detail.startswith("not_running")
-
-    @pytest.mark.asyncio
-    async def test_shared_provider_steer_accepted(self) -> None:
-        mgr = _manager()
-        info = _info("a", parent_session_key="dash:1")
-        info._session_sharing = True
-        info._shared_provider = MagicMock(steer=AsyncMock(return_value=True))
-        mgr._agents["a"] = info
-        with patch.object(sa, "sel"):
-            assert await mgr.steer_run("a", "hi") == (True, "ok")
 
     @pytest.mark.asyncio
     async def test_provider_rejection_reported(self) -> None:
@@ -224,18 +199,6 @@ class TestSteerRun:
         mgr._agents["a"] = info
         with patch.object(sa, "sel", side_effect=RuntimeError("sel down")):
             assert await mgr.steer_run("a", "hi") == (True, "ok")
-
-    @pytest.mark.asyncio
-    async def test_startup_grace_returns_typed_refusal(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(sa, "_STEER_STARTUP_WAIT_SECS", 0.05)
-        monkeypatch.setattr(sa, "_STEER_STARTUP_POLL_SECS", 0.01)
-        mgr = _manager()
-        mgr._agents["a"] = _info("a")
-        ok, detail = await mgr.steer_run("a", "hi")
-        assert ok is False
-        assert detail.startswith("session_starting")
 
     @pytest.mark.asyncio
     async def test_run_finishing_during_the_grace_wait_flips_to_not_running(

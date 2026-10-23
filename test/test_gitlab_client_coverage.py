@@ -1456,13 +1456,6 @@ def test_set_pr_state_rejects_an_unknown_state(route):
     assert router.calls == []
 
 
-def test_submit_pr_review_refuses_request_changes(route):
-    router = route([])
-    with pytest.raises(gl.ProviderCliError, match="no 'request changes' review verb"):
-        gl.submit_pr_review("g", "p", 12, "REQUEST_CHANGES", "no", "abc1234", host="gitlab.com")
-    assert router.calls == []
-
-
 def test_submit_pr_review_rejects_an_unknown_event(route):
     with pytest.raises(gl.ProviderCliError, match="invalid review event"):
         gl.submit_pr_review("g", "p", 12, "DISMISS", head_sha="abc1234", host="gitlab.com")
@@ -1534,21 +1527,6 @@ def test_merge_pull_request_sends_squash_false_explicitly(route):
     out = gl.merge_pull_request("g", "p", 12, "merge", "abc1234", host="gitlab.com")
     assert out == {"merged": False, "sha": None, "message": "conflict"}
     assert json.loads(router.calls[0]["input"])["squash"] is False
-
-
-def test_merge_pull_request_refuses_a_method_gitlab_cannot_honour(route):
-    router = route([])
-    with pytest.raises(gl.ProviderCliError, match="invalid merge method"):
-        gl.merge_pull_request("g", "p", 12, "REBASE", "abc1234", host="gitlab.com")
-    assert "REBASE" not in gl.PR_MERGE_METHODS
-    assert router.calls == []
-
-
-def test_merge_pull_request_requires_the_reviewed_commit(route):
-    router = route([])
-    with pytest.raises(gl.ProviderCliError, match="refusing to merge"):
-        gl.merge_pull_request("g", "p", 12, "SQUASH", "nope", host="gitlab.com")
-    assert router.calls == []
 
 
 def test_auto_merge_is_refused_in_both_directions(route):

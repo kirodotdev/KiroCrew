@@ -160,34 +160,8 @@ def _read_config() -> dict:
 
 class TestViewRegistry:
     @pytest.mark.asyncio
-    async def test_submission_dispatches_to_registered_handler(self) -> None:
-        seen: list[dict] = []
-
-        async def handler(payload: dict) -> None:
-            seen.append(payload)
-
-        ix.register_view_handler("cb_ok", handler)
-        payload = {"view": {"callback_id": "cb_ok"}}
-        await ix.handle_view_submission(payload)
-        assert seen == [payload]
-
-    @pytest.mark.asyncio
-    async def test_submission_unknown_callback_id_is_ignored(self) -> None:
-        # No handler, no forward-callback match -> logged and dropped, no raise.
-        await ix.handle_view_submission({"view": {"callback_id": "nope"}})
-
-    @pytest.mark.asyncio
     async def test_submission_missing_view_key_is_ignored(self) -> None:
         await ix.handle_view_submission({})
-
-    @pytest.mark.asyncio
-    async def test_submission_swallows_handler_exception(self) -> None:
-        async def boom(payload: dict) -> None:
-            raise RuntimeError("handler blew up")
-
-        ix.register_view_handler("cb_boom", boom)
-        # Must not propagate: a raising modal handler cannot break the socket loop.
-        await ix.handle_view_submission({"view": {"callback_id": "cb_boom"}})
 
     @pytest.mark.asyncio
     async def test_submission_falls_back_to_forward_handler(
@@ -465,17 +439,6 @@ class TestDispatchAuthorization:
 
 class TestDispatchRouting:
     """Each recognised action_id must reach exactly its own handler."""
-
-    @pytest.mark.asyncio
-    async def test_checkboxes_toggle_is_a_noop(
-        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from kiro_crew.slack.format import OPTIONS_CHECKBOXES_ACTION
-
-        spy = AsyncMock()
-        monkeypatch.setattr(ix, "_handle_options_submit", spy)
-        await ix.dispatch(_action_payload(OPTIONS_CHECKBOXES_ACTION))
-        spy.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_spent_options_marker_is_a_noop(

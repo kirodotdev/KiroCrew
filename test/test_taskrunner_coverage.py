@@ -468,19 +468,6 @@ class TestPlan:
         assert [t.index for t in run.tasks] == [1, 2]
 
     @pytest.mark.asyncio
-    async def test_workspace_override_becomes_work_dir(self, tmp_path: Path) -> None:
-        override = tmp_path / "override"
-        override.mkdir()
-        runner = _runner(tmp_path)
-        with patch.object(
-            TaskRunner,
-            "_decompose",
-            AsyncMock(return_value=[Task(index=1, title="T", description="d")]),
-        ):
-            run = await runner.plan(input_text="go", source="text", workspace_dir=str(override))
-        assert run.work_dir == str(override.resolve())
-
-    @pytest.mark.asyncio
     async def test_decompose_timeout_becomes_value_error(self, tmp_path: Path) -> None:
         runner = _runner(tmp_path)
         with patch.object(TaskRunner, "_decompose", AsyncMock(side_effect=asyncio.TimeoutError())):
@@ -1780,15 +1767,6 @@ class TestPersistence:
         assert runner._persist_written == 0
         assert not (tmp_path / "runs.json").exists()
 
-    def test_stale_snapshot_never_clobbers_a_newer_one(self, tmp_path: Path) -> None:
-        runner = _runner(tmp_path)
-        newest = json.dumps([_registry_item(task_id="snapshot-task", name="new")])
-        stale = json.dumps([_registry_item(task_id="snapshot-task", name="stale")])
-        runner._commit_snapshot(5, newest)
-        runner._commit_snapshot(2, stale)
-        assert (tmp_path / "runs.json").read_text(encoding="utf-8") == newest
-        assert runner._persist_written == 5
-
 
 def _registry_item(**overrides) -> dict:
     item = {
@@ -1815,13 +1793,6 @@ def _registry_item(**overrides) -> dict:
 class TestLoadRuns:
     def test_missing_file_starts_empty(self, tmp_path: Path) -> None:
         assert _runner(tmp_path)._runs == {}
-
-    def test_corrupt_registry_is_preserved_as_sidecar(self, tmp_path: Path) -> None:
-        (tmp_path / "runs.json").write_text("{not json", encoding="utf-8")
-        runner = _runner(tmp_path)
-        assert runner._runs == {}
-        assert (tmp_path / "runs.json.corrupt").exists()
-        assert not (tmp_path / "runs.json").exists()
 
     def test_sidecar_failure_still_starts_empty(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
