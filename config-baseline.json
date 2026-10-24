@@ -360,7 +360,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Crew member ACP backend",
-      "help": "Backend for crew-member DM sessions: 'kas' (default when omitted or '') or another dispatch-capable backend (claude, codex, opencode, goose). Crewmates run on KAS as their Kiro backend, so 'kiro' here also selects KAS. Members dispatch work into worker sessions through session-control tools mounted per session over the wire.",
+      "help": "Backend for crew-member DM sessions: 'kas' (default when omitted or '') or another dispatch-capable backend (claude, codex, opencode, goose). Crewmates run on KAS as their Kiro backend, so 'kiro' here also selects KAS. Members dispatch work into worker sessions through session-control tools mounted per session over the wire. A crewmate's worker runs only where its kit can be applied (today KAS); on any other backend its hand-off is refused.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "kas"

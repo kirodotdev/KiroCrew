@@ -532,7 +532,7 @@ def test_a_binding_without_a_member_id_is_left_alone_without_a_word(layout, pers
     with caplog.at_level(logging.INFO, logger="kiro_crew.mate_config_migration"):
         report = migrate_existing_crewmates(cfg)
 
-    assert report == type(report)()
+    assert report == type(report)(read=True)
     assert cfg.agents["assistant"].kiro_agent == "kirocrew-assistant"
     assert saved == {}
     assert not (mates / "assistant.json").exists()
@@ -872,3 +872,169 @@ def test_a_crash_right_after_the_repoint_still_moves_the_old_threads(
 
     assert migrate_existing_crewmates(cfg).threads_repointed == {"zxc": [key]}
     assert _now(ec, key).template_id == mate_worker.MATE_CONDUCTOR_AGENT
+
+
+# ── startup checks a version instead of scanning every boot ─────────────────
+
+
+def test_a_finished_pass_stamps_the_version_so_boot_stops_scanning(
+    layout, persisted, monkeypatch, tmp_path
+):
+    from kiro_crew import mate_config_migration as migration
+
+    monkeypatch.setattr(paths_mod, "data_home", lambda: tmp_path / "data")
+    (tmp_path / "data").mkdir()
+    user, _ = layout
+    _write(user, "builder", _template("builder", prompt="Follow the release SOP."))
+    persisted(_cfg(zxc=KiroCrewAgentConfig(member_id="zxc", kiro_agent="builder")))
+    assert migration.migration_pending()
+
+    assert migrate_existing_crewmates().migrated == ["zxc"]
+
+    assert not migration.migration_pending()
+    monkeypatch.setattr(migration, "MIGRATION_VERSION", migration.MIGRATION_VERSION + 1)
+    assert migration.migration_pending()  # a new step is owed again
+
+
+def test_a_pass_that_left_a_crewmate_behind_stays_pending(layout, persisted, monkeypatch, tmp_path):
+    from kiro_crew import mate_config_migration as migration
+
+    monkeypatch.setattr(paths_mod, "data_home", lambda: tmp_path / "data")
+    (tmp_path / "data").mkdir()
+    persisted(_cfg(zxc=KiroCrewAgentConfig(member_id="zxc", kiro_agent="gone")))
+
+    assert migrate_existing_crewmates().skipped_no_source == ["zxc"]
+
+    assert migration.migration_pending()
+
+
+def test_a_pass_that_still_owes_a_thread_pass_stays_pending(
+    layout, persisted, monkeypatch, tmp_path
+):
+    from kiro_crew import mate_config_migration as migration
+
+    monkeypatch.setattr(paths_mod, "data_home", lambda: tmp_path / "data")
+    (tmp_path / "data").mkdir()
+    _user, mates = layout
+    (mates.parent / "migrated.json").write_text(
+        json.dumps({"threads": {"zxc": {"from": "builder", "repointed": [], "done": False}}})
+    )
+    persisted(_cfg())
+
+    assert migrate_existing_crewmates().read
+
+    assert migration.migration_pending()
+
+
+def test_a_pass_that_could_not_read_the_crewmates_stays_pending(layout, monkeypatch, tmp_path):
+    from kiro_crew import mate_config_migration as migration
+
+    monkeypatch.setattr(paths_mod, "data_home", lambda: tmp_path / "data")
+    (tmp_path / "data").mkdir()
+
+    def unreadable():
+        raise ValueError("config.json is not JSON")
+
+    monkeypatch.setattr(
+        migration, "KiroCrewConfig", type("Shim", (), {"load": staticmethod(unreadable)})
+    )
+
+    assert not migrate_existing_crewmates().read
+    assert migration.migration_pending()
+
+
+def test_a_pass_that_met_an_unreadable_ledger_stays_pending(
+    layout, persisted, monkeypatch, tmp_path
+):
+    from kiro_crew import mate_config_migration as migration
+
+    monkeypatch.setattr(paths_mod, "data_home", lambda: tmp_path / "data")
+    (tmp_path / "data").mkdir()
+    _user, mates = layout
+    (mates.parent / "migrated.json").write_text("{not json", encoding="utf-8")
+    persisted(_cfg(zxc=KiroCrewAgentConfig(member_id="zxc", kiro_agent="builder")))
+
+    assert not migrate_existing_crewmates().read
+    assert migration.migration_pending()
+
+
+@pytest.mark.parametrize("source", ["builder", "kirocrew-mate-conductor"])
+def test_a_crewmate_left_on_a_template_after_the_stamp_is_moved_at_the_next_start(
+    layout, persisted, monkeypatch, tmp_path, source
+):
+    """The stamp never hides a candidate: a crewmate whose eager copy failed or was
+    refused, one a path created without the copy, or the first crewmate created on
+    the conductor after the pass finished is moved at the next start."""
+    from kiro_crew import mate_config_migration as migration
+
+    monkeypatch.setattr(paths_mod, "data_home", lambda: tmp_path / "data")
+    (tmp_path / "data").mkdir()
+    user, mates = layout
+    _write(user, "builder", _template("builder", prompt="Follow the release SOP."))
+    _write(user, "kirocrew", _template("kirocrew"))
+    _write(mates, "kirocrew-mate-conductor", _template("kirocrew-mate-conductor"))
+    cfg = _cfg()
+    persisted(cfg)
+    migrate_existing_crewmates()
+    assert not migration.migration_pending()  # stamped: no crewmate to move
+
+    cfg.agents["zxc"] = KiroCrewAgentConfig(member_id="zxc", kiro_agent=source)
+
+    report = migration.migrate_crewmates_if_pending(cfg)
+
+    assert report is not None and report.migrated == ["zxc"]
+    assert cfg.agents["zxc"].kiro_agent == "zxc"
+
+
+def test_a_stamped_install_still_finishes_an_owed_thread_pass(
+    layout, persisted, threads, monkeypatch, tmp_path
+):
+    """A pass whose thread repoint stopped short leaves the ledger owing it. With a
+    stamp from an earlier pass in place, the next start still runs the pass."""
+    from kiro_crew import mate_config_migration as migration
+
+    ec = threads
+    monkeypatch.setattr(paths_mod, "data_home", lambda: tmp_path / "data")
+    (tmp_path / "data").mkdir()
+    user, mates = layout
+    _write(user, "builder", _template("builder"))
+    cfg = _cfg(zxc=KiroCrewAgentConfig(member_id="zxc", kiro_agent="zxc"))
+    persisted(cfg)
+    _write(mates, "zxc", {"name": "zxc"})
+    (mates.parent / "migrated.json").write_text(
+        json.dumps(
+            {
+                "migrated": ["zxc"],
+                "threads": {"zxc": {"from": "builder", "repointed": [], "done": False}},
+            }
+        )
+    )
+    (tmp_path / "data" / "crewmate-migration.json").write_text(
+        json.dumps({"version": migration.MIGRATION_VERSION})
+    )
+    key = "dashboard:member-zxc"
+    _thread(ec, key, "zxc", "builder")
+
+    report = migration.migrate_crewmates_if_pending(cfg)
+
+    assert report is not None and report.threads_repointed == {"zxc": [key]}
+    assert _now(ec, key).template_id == mate_worker.MATE_CONDUCTOR_AGENT
+
+
+def test_boot_runs_the_pass_only_while_it_is_pending(monkeypatch, tmp_path):
+    from kiro_crew import mate_config_migration as migration
+
+    runs: list[object] = []
+    monkeypatch.setattr(migration, "migrate_existing_crewmates", runs.append)
+    monkeypatch.setattr(paths_mod, "data_home", lambda: tmp_path)
+    # Stamped with every crewmate on its own file: no candidate.
+    monkeypatch.setattr(migration, "_candidates", lambda cfg: {})
+    monkeypatch.setattr(migration, "_threads_owed", lambda: False)
+
+    migration.migrate_crewmates_if_pending("cfg")
+    (tmp_path / "crewmate-migration.json").write_text(
+        json.dumps({"version": migration.MIGRATION_VERSION})
+    )
+    assert migration.migrate_crewmates_if_pending("cfg") is None
+
+    assert runs == ["cfg"]

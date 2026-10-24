@@ -422,7 +422,7 @@ from kiro_crew.hooks import ScriptHookStore, set_global_hook_store
 from kiro_crew.instances import run_marker  # noqa: F401
 from kiro_crew.instances.registry import InstancesRegistry  # noqa: F401
 from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager, TunnelState  # noqa: F401
-from kiro_crew.mate_config_migration import migrate_existing_crewmates
+from kiro_crew.mate_config_migration import migrate_crewmates_if_pending
 from kiro_crew.mcp_gateway.socketsec import chmod_socket_0600  # noqa: F401
 from kiro_crew.metrics.http_metrics import (  # noqa: F401
     make_route_latency_middleware,
@@ -1445,9 +1445,10 @@ async def start_dashboard(
     # kinds of crewmate at once. Additive and idempotent (see
     # mate_config_migration.py), so a failure here is logged and left for the
     # next boot rather than blocking startup.
-    # The move is one way: nothing undoes it.
+    # The move is one way: nothing undoes it. A version check gates it: an
+    # install whose pass finished reads one small file here and scans nothing.
     try:
-        await asyncio.to_thread(migrate_existing_crewmates, cfg)
+        await asyncio.to_thread(migrate_crewmates_if_pending, cfg)
     except Exception:
         logger.warning("mate-owned-config migration failed", exc_info=True)
 

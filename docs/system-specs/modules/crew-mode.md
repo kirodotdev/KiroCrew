@@ -3830,6 +3830,18 @@ left as it is, with one WARNING, until it is fixed or removed
 and the next write would drop the thread passes it still owes. Nothing is deleted: setting `kiro_agent` back rolls the crewmate's
 new chats back; threads already moved stay on the conductor.
 
+**A version stamp gates the startup pass** (`migrate_crewmates_if_pending`).
+Boot reads `<data home>/crewmate-migration.json` and runs the pass only while
+its `version` is not `MIGRATION_VERSION`. A pass stamps the version only when
+it read the crewmates and the worker base, moved every candidate, and owes no
+thread pass; otherwise the next boot tries again. A new step bumps the version
+(`test/test_mate_config_migration.py`). The stamp never hides a candidate or
+an owed thread pass: with it in place, boot still runs the pass when any
+binding is one (`_candidates` over the loaded config and the ledger) or the
+ledger owes a thread pass (`_threads_owed`), so a crewmate left on a
+template after the stamp (the first crewmate created on the conductor, an
+eager copy that failed or was refused) is moved at the next start.
+
 **Its pre-upgrade threads move with it**
 (`mate_config_migration.repoint_moved_threads`, after the repoints and on every
 boot that still owes it). A thread's own execution record names its old agent,

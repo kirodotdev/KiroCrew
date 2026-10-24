@@ -61,6 +61,8 @@ class MigrationReport:
     skipped_no_source: list[str] = dataclasses.field(default_factory=list)
     #: Per crewmate, the pre-upgrade DM threads moved onto its conductor.
     threads_repointed: dict[str, list[str]] = dataclasses.field(default_factory=dict)
+    #: The crewmates and the worker base were read, so every candidate was tried.
+    read: bool = False
 
 
 def _ledger_path():
@@ -689,16 +691,101 @@ def repair_partial_platform_servers() -> list[str]:
     return repaired
 
 
+#: The migration's version. Bump it when the pass gains a step an install that
+#: already finished an older pass still owes.
+MIGRATION_VERSION = 1
+
+
+def _stamp_path():
+    # Per data home: the crewmates it moves are this instance's config.
+    return paths_mod.data_home() / "crewmate-migration.json"
+
+
+def migration_pending() -> bool:
+    """Whether this instance still owes the migration. One small file read."""
+    try:
+        data = json.loads(_stamp_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    return not (isinstance(data, dict) and data.get("version") == MIGRATION_VERSION)
+
+
+def _threads_owed() -> bool:
+    """Whether a moved crewmate's thread pass is still owed. Unreadable answers True."""
+    try:
+        threads = _read_ledger().get("threads")
+    except Exception:  # noqa: BLE001 - an unreadable ledger may owe anything
+        return True
+    if not isinstance(threads, dict):
+        return False
+    return any(
+        isinstance(e, dict) and e.get("from") and not e.get("done") for e in threads.values()
+    )
+
+
+def _mark_finished(report: MigrationReport) -> None:
+    """Stamp the version once a pass left nothing to retry. Never raises.
+
+    A pass that could not read, left any crewmate unmoved, or still owes a
+    thread pass stays unstamped, so the next boot tries again.
+    """
+    if not report.read or report.skipped_no_source:
+        return
+    if report.copy_failed or report.dry_run_failed or report.repoint_failed:
+        return
+    if _threads_owed():
+        return
+    from kiro_crew.atomic_write import atomic_write
+
+    try:
+        atomic_write(
+            _stamp_path(),
+            json.dumps({"version": MIGRATION_VERSION}) + "\n",
+            restrict_to_owner=True,
+        )
+    except OSError:
+        logger.warning("crewmate migration: finished, but not stamped", exc_info=True)
+
+
+def migrate_crewmates_if_pending(cfg: KiroCrewConfig | None = None) -> MigrationReport | None:
+    """The startup entry: run the pass while :func:`migration_pending`, while any
+    crewmate is still a candidate, or while a moved crewmate's thread pass is owed.
+
+    A crewmate can land on a template after a pass was stamped (the first
+    crewmate created on the conductor, an eager copy that failed or refused, a
+    path that creates crewmates without the copy), so the stamp alone never
+    skips one: the candidate check is the config already loaded plus the
+    ledger. ``None`` when nothing is owed, which is every boot after a finished
+    pass with every crewmate on its own file.
+    """
+    if not migration_pending():
+        try:
+            if not _candidates(cfg or KiroCrewConfig.load()) and not _threads_owed():
+                return None
+        except Exception:  # noqa: BLE001 - unreadable: the pass reads and logs it
+            logger.debug("crewmate migration: candidates unread; running the pass")
+    return migrate_existing_crewmates(cfg)
+
+
 def migrate_existing_crewmates(
     cfg: KiroCrewConfig | None = None, *, work_dir: str = ""
 ) -> MigrationReport:
     """Run the migration; safe to call on every boot (idempotent). Never raises.
+
+    A pass that leaves nothing to retry stamps :data:`MIGRATION_VERSION`, so
+    :func:`migrate_crewmates_if_pending` stops running it.
 
     *work_dir* is accepted for the startup caller's signature and unused: the
     source agent is read from the user-level agents folder, as the create path
     reads it.
     """
     del work_dir
+    report = _migrate(cfg)
+    _mark_finished(report)
+    return report
+
+
+def _migrate(cfg: KiroCrewConfig | None) -> MigrationReport:
     report = MigrationReport()
     repair_partial_platform_servers()
     try:
@@ -706,6 +793,7 @@ def migrate_existing_crewmates(
         paths_mod.mate_agents_dir().mkdir(parents=True, exist_ok=True)
         candidates = _candidates(cfg)
         if not candidates:
+            report.read = True
             report.threads_repointed = repoint_moved_threads()
             return report
         base = _worker_base()
@@ -721,6 +809,7 @@ def migrate_existing_crewmates(
         )
         return report
 
+    report.read = True
     verified: list[str] = []
     unchanged: set[str] = set()
     for name, source in candidates.items():

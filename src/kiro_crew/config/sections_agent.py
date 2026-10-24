@@ -238,7 +238,9 @@ class AgentConfig:
             "or another dispatch-capable backend (claude, codex, opencode, goose). "
             "Crewmates run on KAS as their Kiro backend, so 'kiro' here also "
             "selects KAS. Members dispatch work into worker sessions through "
-            "session-control tools mounted per session over the wire.",
+            "session-control tools mounted per session over the wire. A "
+            "crewmate's worker runs only where its kit can be applied (today "
+            "KAS); on any other backend its hand-off is refused.",
             # Same no-enum reasoning as acp_backend above: the live selectable
             # set comes from the registry via resolve_selected_backend, never a
             # frozen literal.
