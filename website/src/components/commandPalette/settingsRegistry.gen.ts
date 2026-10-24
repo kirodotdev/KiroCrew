@@ -50,6 +50,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.use_builtin_browser"
   },
   {
+    "id": "channels.agent-sessions-slack",
+    "label": "Agent sessions (Slack)",
+    "labelKey": "pages.settings.slackPanel.slackCode.agent_sessions",
+    "labelSuffix": "Slack",
+    "description": "Slack threads show a live status and title, and a Stop button that stops the agent's current reply.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.agent_sessions"
+  },
+  {
     "id": "channels.allowed-emails-webex",
     "label": "Allowed emails (Webex)",
     "labelKey": "pages.settings.webexPanel.allowed_emails",

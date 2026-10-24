@@ -7642,7 +7642,12 @@
         "verified_and_saved": "Verified with Slack and saved.",
         "slackCode": {
           "section": "Slack Code",
-          "intro": "Run your coding work natively in Slack: code channels give each coding task its own channel. Turning a switch on needs a few more permissions for your Slack app, which you add with the steps below. You can turn it off and remove them later.",
+          "intro": "Run your coding work natively in Slack. Agent sessions give every thread a live status and a Stop button; code channels give each coding task its own channel. Turning a switch on needs a few more permissions for your Slack app, which you add with the steps below. You can turn code channels off and remove their permissions later.",
+          "agent_sessions": "Agent sessions",
+          "agent_sessions_desc": "Slack threads show a live status and title, and a Stop button that stops the agent's current reply.",
+          "agent_sessions_manifest_warning": "Agent sessions: saving this manifest in Slack is permanent. Slack removes your app's separate Chat and History tabs, and turning Agent sessions off later does not bring them back.",
+          "agent_sessions_note": "Only changes the manifest this page generates. Nothing changes in Slack until you save that manifest there.",
+          "update_keeps_working": "Slack keeps working as before until you update.",
           "code_channels": "Code channels",
           "code_channels_desc": "Let the agent open a Slack code channel for coding work: one channel per task, with a context bar, a diff tab and channel commands. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
           "stage_tag": "Preview",

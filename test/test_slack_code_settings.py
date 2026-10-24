@@ -115,9 +115,7 @@ class TestSwitches:
         status, body = _call(env, "GET")
         assert status == 200
         assert body["code_channels"] is False
-        # Only registered switches are reported; agent sessions lands with its
-        # runtime, so this build neither reports nor accepts it.
-        assert "agent_sessions" not in body
+        assert body["agent_sessions"] is False
         assert body["code_channel_defaults"] == {
             "folder": None,
             "agent": None,
@@ -137,10 +135,18 @@ class TestSwitches:
         assert body["code_channels"] is on
 
     def test_an_unregistered_switch_is_not_stored(self, env: dict) -> None:
-        _call(env, "PUT", {"agent_sessions": True, "code_channels": True})
+        _call(env, "PUT", {"not_a_switch": True, "code_channels": True})
         stored = _stored(env)
         assert stored["code_channels"] is True
-        assert "agent_sessions" not in stored
+        assert "not_a_switch" not in stored
+
+    @pytest.mark.parametrize("on", [True, False])
+    def test_the_agent_sessions_switch_saves_and_reads_back(self, env: dict, on: bool) -> None:
+        status, res = _call(env, "PUT", {"agent_sessions": on})
+        assert status == 200
+        assert res["restart_required"] is False
+        _, body = _call(env, "GET")
+        assert body["agent_sessions"] is on
 
     def test_unchanged_switch_is_not_staged(self, env: dict) -> None:
         _call(env, "PUT", {"code_channels": True})

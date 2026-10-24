@@ -366,7 +366,7 @@ def capability_notifier(notify: Callable[..., None] | None) -> Callable[[str, st
     """A ``features.set_capability_notifier`` callback posting one dashboard note."""
     if notify is None:
         return None
-    labels = {"code_channels": "Code channels"}
+    labels = {"agent_sessions": "Agent sessions", "code_channels": "Code channels"}
     reasons = {
         "feature_disabled": "Slack has not enabled this feature for your workspace",
         "missing_scope": "your Slack app is missing a permission it needs; update the "

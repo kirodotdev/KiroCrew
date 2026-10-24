@@ -17146,7 +17146,12 @@
         "verified_and_saved": "已通过 Slack 验证并保存。",
         "slackCode": {
           "section": "Slack 代码",
-          "intro": "直接在 Slack 中进行编码工作：代码频道为每个编码任务提供独立频道。开启开关需要为你的 Slack 应用添加一些权限，可按下方步骤添加。之后可以随时关闭开关并移除这些权限。",
+          "intro": "直接在 Slack 中进行编码工作。代理会话为每个话题提供实时状态和停止按钮；代码频道为每个编码任务提供独立频道。开启开关需要为你的 Slack 应用添加一些权限，可按下方步骤添加。代码频道之后可以随时关闭，并移除其权限。",
+          "agent_sessions": "代理会话",
+          "agent_sessions_desc": "Slack 话题会显示实时状态和标题，以及一个可停止代理当前回复的停止按钮。",
+          "agent_sessions_manifest_warning": "代理会话：在 Slack 中保存此清单后不可撤销。Slack 会移除应用单独显示的“聊天”和“历史记录”标签页，之后关闭代理会话也不会恢复。",
+          "agent_sessions_note": "只会更改此页面生成的清单。在 Slack 中保存该清单之前，Slack 不会有任何变化。",
+          "update_keeps_working": "在你更新之前，Slack 会照常工作。",
           "code_channels": "代码频道",
           "code_channels_desc": "允许代理为编码工作开启 Slack 代码频道：每个任务一个频道，带有上下文栏、差异标签页和频道命令。Slack 正在逐步推出代码频道，因此你的工作区可能尚未提供。",
           "stage_tag": "预览",

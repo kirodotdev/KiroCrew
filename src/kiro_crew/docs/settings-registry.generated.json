@@ -36,6 +36,14 @@
       "configKey": "dashboard.use_builtin_browser"
     },
     {
+      "id": "channels.agent-sessions-slack",
+      "label": "Agent sessions (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.agent_sessions",
+      "description": "Slack threads show a live status and title, and a Stop button that stops the agent's current reply.",
+      "configKey": "slack.agent_sessions"
+    },
+    {
       "id": "channels.allowed-emails-webex",
       "label": "Allowed emails (Webex)",
       "tab": "channels",

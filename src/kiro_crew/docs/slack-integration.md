@@ -263,14 +263,20 @@ things about it are worth knowing before you use it:
 Secrets are written to `.env` in the config directory with owner-only permissions, never
 to `config.json`.
 
-## Slack Code: code channels
+## Slack Code: agent sessions and code channels
 
-A switch in the Slack channel view's **Slack Code** section, off by default and applied
-without a restart. When it is on, it runs only once your installed Slack app can use the
+Two switches in the Slack channel view's **Slack Code** section, each off by default and
+applied without a restart. A switch that is on runs only once your installed Slack app can use the
 feature: its permissions (read from Slack each time the gateway connects) include the
 feature's scope, and Slack has not refused it for your workspace. Until then Slack works
 exactly as with the switch off, and the page says why under the switch.
 
+- **Agent sessions** (`slack.agent_sessions`) declares the Slack app an agent
+  (`features.agent_view`): threads show a live status and title, and Slack's own Stop
+  button cancels a running turn. Turning the switch on only changes the manifest the
+  page generates; the permanent step is saving that manifest in Slack, which cannot
+  switch an app back from the agent view to the older assistant view, so the update
+  steps warn you there.
 - **Code channels** (`slack.code_channels`) lets the agent open a Slack code channel for
   coding work: one channel per task, with a context bar, a diff tab and channel commands.
   It adds the `code_channels:manage`, `chat:write.customize`, `canvases:write`,

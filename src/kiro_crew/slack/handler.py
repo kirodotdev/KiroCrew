@@ -194,6 +194,13 @@ from kiro_crew.session_lifecycle import (  # noqa: F401 - read by the owners
     consume_stop_declined,
     decline_stop,
 )
+from kiro_crew.slack.agent_sessions.fence import (  # noqa: F401 - read by the owners
+    _Reset as _TurnScopeReset,
+)
+from kiro_crew.slack.agent_sessions.fence import (
+    enter_turn,
+    exit_turn,
+)
 from kiro_crew.slack.blocks import (  # noqa: F401 - read by the owners
     build_working_blocks,
     deprecation_warning_block,
@@ -1033,8 +1040,12 @@ async def handle_message(
         reply_ts=reply_ts,
         session_key=session_key,
     )
-    if await _dispatch_before_turn(turn) and await _run_turn(turn):
-        await _deliver_answer(turn)
+    try:
+        if await _dispatch_before_turn(turn) and await _run_turn(turn):
+            await _deliver_answer(turn)
+    finally:
+        # Native Stop's write fence, opened by _run_turn, closes after the answer.
+        turn.close_turn_scope()
 
 
 # ── Slack thread auto-title ─────────────────────────────────────────────

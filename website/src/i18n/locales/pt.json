@@ -17688,7 +17688,12 @@
         "verified_and_saved": "Verificado com o Slack e salvo.",
         "slackCode": {
           "section": "Código no Slack",
-          "intro": "Execute seu trabalho de programação diretamente no Slack: os canais de código dão a cada tarefa de programação seu próprio canal. Ativar uma opção exige mais algumas permissões para seu app do Slack, que você adiciona com as etapas abaixo. Você pode desativá-la e removê-las depois.",
+          "intro": "Execute seu trabalho de programação diretamente no Slack. As sessões de agente dão a cada thread um status ao vivo e um botão de parar; os canais de código dão a cada tarefa de programação seu próprio canal. Ativar uma opção exige mais algumas permissões para seu app do Slack, que você adiciona com as etapas abaixo. Você pode desativar os canais de código e remover as permissões deles depois.",
+          "agent_sessions": "Sessões de agente",
+          "agent_sessions_desc": "As threads do Slack mostram status e título ao vivo, e um botão Parar que interrompe a resposta atual do agente.",
+          "agent_sessions_manifest_warning": "Sessões de agente: salvar este manifesto no Slack é permanente. O Slack remove do seu app as abas separadas Chat e Histórico, e desativar as sessões de agente depois não as traz de volta.",
+          "agent_sessions_note": "Só altera o manifesto que esta página gera. Nada muda no Slack até você salvar esse manifesto lá.",
+          "update_keeps_working": "O Slack continua funcionando como antes até você atualizar.",
           "code_channels": "Canais de código",
           "code_channels_desc": "Permita que o agente abra um canal de código do Slack para trabalho de programação: um canal por tarefa, com barra de contexto, aba de diff e comandos de canal. O Slack está liberando os canais de código aos poucos, então talvez seu espaço de trabalho ainda não os tenha.",
           "stage_tag": "Prévia",

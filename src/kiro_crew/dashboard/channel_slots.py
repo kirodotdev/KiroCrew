@@ -276,12 +276,33 @@ async def rename_channel_title_live(
     recover it; the dashboard's own rename endpoint makes the same trade.
     """
     slot = live_dashboard_slot(dashboard_state, session_key)
-    if slot is None:
+    slots = [slot] if slot is not None else _channel_born_slots(dashboard_state, session_key)
+    if not slots:
         return False
 
-    if not await apply_manual_title(dashboard_state, slot, title):
-        logger.warning("channel title update is live but not yet durable for %s", session_key)
+    for slot in slots:
+        if not await apply_manual_title(dashboard_state, slot, title):
+            logger.warning("channel title update is live but not yet durable for %s", session_key)
     return True
+
+
+def _channel_born_slots(dashboard_state: Any, session_key: str) -> list[Any]:
+    """Every open slot running on channel key *session_key* (``slack:<ts>`` etc.).
+
+    Such a slot has no ``dashboard:`` key of its own: it carries the channel key in
+    ``linked_session_key``, so :func:`live_dashboard_slot` never finds it, and a
+    rename that skipped it would be saved back over by the tab's next save. More
+    than one can share the key (a workflow result tab injected into the thread
+    beside the thread's own tab), so all of them are returned.
+    """
+    slots = getattr(dashboard_state, "_slots", None) if dashboard_state is not None else None
+    if not isinstance(slots, dict):
+        return []
+    return [
+        slot
+        for slot in list(slots.values())
+        if getattr(slot, "linked_session_key", "") and effective_session_key(slot) == session_key
+    ]
 
 
 def _close_time(meta: dict[str, Any], file_mtime: float | None) -> float | None:

@@ -1,7 +1,7 @@
 """Slack Code: whether each Slack Code switch runs, and the code-channel defaults.
 
 The switches are the ones registered in :data:`kiro_crew.slack_manifest.FEATURE_SCOPES`
-(today ``code_channels``); everything here is keyed by that name, so registering
+(``agent_sessions``, ``code_channels``); everything here is keyed by that name, so registering
 a switch there is all this module needs. Two layers decide whether one runs, and
 both are read here so every caller answers "is it on?" the same way:
 
@@ -18,8 +18,8 @@ both are read here so every caller answers "is it on?" the same way:
   re-probes): one dashboard notification, one log line, and the runtime falls
   back silently to today's Slack behaviour.
 
-:func:`enabled` is toggle AND capability -- the runtimes call it (for code
-channels, through :func:`code_channels_enabled`). :func:`available` is the
+:func:`enabled` is toggle AND capability -- the runtimes call it (through
+:func:`agent_sessions_enabled` and :func:`code_channels_enabled`). :func:`available` is the
 capability alone, for the settings page.
 
 ``code_channel_defaults`` is the folder / agent / model / effort a new
@@ -41,6 +41,7 @@ from kiro_crew.effort import is_valid_effort
 logger = logging.getLogger(__name__)
 
 #: Feature name, the same string as ``slack_manifest.CODE_CHANNELS``.
+AGENT_SESSIONS = slack_manifest.AGENT_SESSIONS
 CODE_CHANNELS = slack_manifest.CODE_CHANNELS
 
 #: The bot scope each registered feature cannot run without: the manifest's own
@@ -140,6 +141,11 @@ def toggle(cfg: Any, feature: str) -> bool:
 def enabled(cfg: Any, feature: str) -> bool:
     """A registered switch runs: its toggle is on AND the installed app can."""
     return toggle(cfg, feature) and available(feature)
+
+
+def agent_sessions_enabled(cfg: Any) -> bool:
+    """Run Slack threads as agent sessions: the toggle is on AND the app can."""
+    return enabled(cfg, AGENT_SESSIONS)
 
 
 def code_channels_toggle(cfg: Any) -> bool:

@@ -17688,7 +17688,12 @@
         "verified_and_saved": "Vérifié auprès de Slack et enregistré.",
         "slackCode": {
           "section": "Slack Code",
-          "intro": "Fais ton travail de développement directement dans Slack : les canaux de code donnent à chaque tâche de développement son propre canal. Activer une option demande quelques permissions supplémentaires pour ton application Slack, que tu ajoutes en suivant les étapes ci-dessous. Tu pourras la désactiver et les retirer plus tard.",
+          "intro": "Fais ton travail de développement directement dans Slack. Les sessions d’agent donnent à chaque fil un statut en direct et un bouton Arrêter ; les canaux de code donnent à chaque tâche de développement son propre canal. Activer une option demande quelques permissions supplémentaires pour ton application Slack, que tu ajoutes en suivant les étapes ci-dessous. Tu pourras désactiver les canaux de code et retirer leurs permissions plus tard.",
+          "agent_sessions": "Sessions d’agent",
+          "agent_sessions_desc": "Les fils Slack affichent un statut et un titre en direct, ainsi qu’un bouton Arrêter qui arrête la réponse en cours de l’agent.",
+          "agent_sessions_manifest_warning": "Sessions d’agent : enregistrer ce manifeste dans Slack est définitif. Slack retire à ton application ses onglets Chat et Historique séparés, et désactiver les sessions d’agent plus tard ne les fait pas revenir.",
+          "agent_sessions_note": "Ne modifie que le manifeste généré par cette page. Rien ne change dans Slack tant que tu n’y as pas enregistré ce manifeste.",
+          "update_keeps_working": "Slack continue de fonctionner comme avant jusqu’à la mise à jour.",
           "code_channels": "Canaux de code",
           "code_channels_desc": "Laisse l’agent ouvrir un canal de code Slack pour le travail de développement : un canal par tâche, avec une barre de contexte, un onglet diff et des commandes de canal. Slack déploie les canaux de code progressivement, ton espace de travail ne les a donc peut-être pas encore.",
           "stage_tag": "Aperçu",

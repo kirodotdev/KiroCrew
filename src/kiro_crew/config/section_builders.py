@@ -584,6 +584,7 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         auto_link_sessions=section.read("auto_link_sessions", _safe_bool),
         # Default False for both: an unparseable value must never declare the app
         # an agent or open code channels.
+        agent_sessions=section.read("agent_sessions", _safe_bool),
         code_channels=section.read("code_channels", _safe_bool),
         code_channel_defaults=_build_code_channel_defaults(slack_data.get("code_channel_defaults")),
     )

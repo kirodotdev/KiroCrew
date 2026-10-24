@@ -9,7 +9,7 @@
  */
 import { useCallback, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, CheckCircle2, ExternalLink, RefreshCw } from 'lucide-react'
+import { AlertTriangle, Check, CheckCircle2, ExternalLink, RefreshCw } from 'lucide-react'
 import { Badge, Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { api, type SlackConfigData, type SlackManifestChange, type SlackManifestStatus } from '../../api/client'
@@ -286,6 +286,19 @@ export function SlackManifestUpdate({ data, draft, manifestText, onSave, saving 
       {!pending && STEPS_HELP.has(installStatus) && savedOn.length > 0 && (
         <p className="m-0 text-[12px] text-text" data-testid="slack-manifest-replace-warning">
           {i18nT('pages.settings.slackPanel.slackCode.replace_warning')}
+        </p>
+      )}
+      {/* Agent sessions' one-way step is THIS save in Slack, so its warning sits
+          with the steps that perform it, not on the switch. */}
+      {!pending && STEPS_HELP.has(installStatus) && savedOn.includes('agent_sessions') && (
+        <div className="flex items-start gap-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-2" data-testid="slack-manifest-agent-sessions-warning">
+          <AlertTriangle size={12} className="text-warn flex-none mt-0.5" />
+          <span className="text-[12px] text-warn">{i18nT('pages.settings.slackPanel.slackCode.agent_sessions_manifest_warning')}</span>
+        </div>
+      )}
+      {!pending && STEPS_HELP.has(installStatus) && savedOn.length > 0 && (
+        <p className="m-0 text-[12px] text-muted" data-testid="slack-manifest-keeps-working">
+          {i18nT('pages.settings.slackPanel.slackCode.update_keeps_working')}
         </p>
       )}
       {!pending && STEPS_HELP.has(installStatus) && savedOn.length > 0 && (
