@@ -28,10 +28,16 @@ _APPLIER_FILES = (
     "cli_server_update.py",
     "dashboard/handlers/updates_apply.py",
     "slack/gateway_runtime/update_apply.py",
+    "slack/gateway_runtime/update_schedule.py",
 )
 
 _COPY_CALLS = frozenset(
-    {"_snapshot_memory_or_exit", "_snapshot_memory_or_refuse", "snapshot_memory_before_update"}
+    {
+        "_snapshot_memory_or_exit",
+        "_snapshot_memory_or_refuse",
+        "_snapshot_memory_or_skip",
+        "snapshot_memory_before_update",
+    }
 )
 _POLICY_APPLY_CALLS = frozenset({"apply_policy_update", "_run_tracked_policy_apply"})
 
@@ -67,9 +73,20 @@ def _is_copy(node: ast.Call) -> bool:
     )
 
 
+def _is_provider_apply(node: ast.Call) -> bool:
+    """``provider.apply()``: the gateway's unattended policy apply calls it directly."""
+    func = node.func
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "apply"
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "provider"
+    )
+
+
 def _is_rewrite(node: ast.Call) -> bool:
-    """A git reset/fast-forward of the checkout, a policy apply, or the wheel installer."""
-    if _call_name(node) in _POLICY_APPLY_CALLS:
+    """A git reset/fast-forward, a policy or provider apply, or the wheel installer."""
+    if _call_name(node) in _POLICY_APPLY_CALLS or _is_provider_apply(node):
         return True
     words = _string_args(node)
     if {"reset", "--hard"} <= words or {"merge", "--ff-only"} <= words:
@@ -87,7 +104,20 @@ def _function_sites(tree: ast.Module) -> list[tuple[str, list[int], list[int]]]:
         rewrites = sorted(n.lineno for n in calls if _is_rewrite(n))
         if not rewrites or fn.name == "_run_tracked_policy_apply":
             continue
-        copies = sorted(n.lineno for n in calls if _is_copy(n))
+        # A nested copy helper's own body is not a copy at that line: only the
+        # calls to it count, so the helper cannot cover the first rewrite after it.
+        helpers = [
+            (n.lineno, n.end_lineno or n.lineno)
+            for n in ast.walk(fn)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and n is not fn
+            and n.name in _COPY_CALLS
+        ]
+        copies = sorted(
+            n.lineno
+            for n in calls
+            if _is_copy(n) and not any(lo <= n.lineno <= hi for lo, hi in helpers)
+        )
         sites.append((fn.name, rewrites, copies))
     return sites
 
@@ -124,6 +154,7 @@ def test_the_known_appliers_are_found() -> None:
         ("cli_server_update.py", "_update_wheel"),
         ("dashboard/handlers/updates_apply.py", "api_update_apply"),
         ("slack/gateway_runtime/update_apply.py", "_auto_apply_update"),
+        ("slack/gateway_runtime/update_schedule.py", "_check_for_updates_via_provider"),
     } <= found
 
 

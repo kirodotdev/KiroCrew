@@ -49,6 +49,8 @@ if TYPE_CHECKING:
         logger,
         platform_compat,
         record_auto_update_effect,
+        redact_credentials,
+        redact_exfiltration_urls,
         redact_log_via_context,
         resolve_restart_launcher,
         run_pre_exec_stops,
@@ -582,9 +584,38 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
     # ModuleNotFoundError and leave a closed-session gateway un-restarted
     # (found in review). The module stays off the boot path either way —
     # this method runs from the update timer, not from gateway start.
+    from kiro_crew.platform.wheel_apply import snapshot_memory_before_update, snapshot_refusal
     from kiro_crew.platform.wheel_engine import respawn_executable
 
     assert isinstance(provider, UpdateProvider)
+
+    async def _snapshot_memory_or_skip(result: Any) -> bool:
+        """A fresh copy of every memory store before ``provider.apply()``; False skips it.
+
+        The same copy-or-refuse step `kirocrew update` and the git auto-update take.
+        Nobody is watching this path, so a copy that did not land skips the update and
+        says so; it never applies blind and never exits the gateway. Retried on the
+        next check.
+        """
+        copied, failure = await asyncio.to_thread(snapshot_memory_before_update)
+        if not failure:
+            logger.info("Auto-update: pre-update memory snapshot, %d store(s) copied", copied)
+            return True
+        failure, _ = redact_exfiltration_urls(failure)
+        failure, _ = redact_credentials(failure)
+        failure = failure[:500]
+        logger.warning("Auto-update skipped: pre-update memory snapshot failed: %s", failure)
+        message = snapshot_refusal(failure)
+        self._notice_wheel_update_once(
+            f"snapshot_failed:provider:{result.remote_version or ''}",
+            "Kiro Crew update skipped",
+            message,
+        )
+        self._publish_provider_update_state(result)
+        if self.dashboard_state:
+            self.dashboard_state.push_update_progress("failed", message)
+            self.dashboard_state.push_refresh("update_available")
+        return False
 
     # Say who owns updates on every path, "already latest" included, so the
     # dashboard need not run its own check to learn it.
@@ -647,6 +678,8 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
             self._publish_provider_update_state(result)
             return
         try:
+            if not await _snapshot_memory_or_skip(result):
+                return
             logger.warning(
                 "Version compliance: running %s is below the policy minimum %s — "
                 "applying mandatory update via provider (overrides auto_update)",
@@ -679,6 +712,8 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
                 self._publish_provider_update_state(result)
                 return
             try:
+                if not await _snapshot_memory_or_skip(result):
+                    return
                 logger.info("Auto-update enabled — applying update via provider")
                 if self.dashboard_state:
                     self.dashboard_state.push_update_progress("pulling", "Downloading update…")
