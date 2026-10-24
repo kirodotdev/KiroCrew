@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins, Globe } from 'lucide-react'
 import { Badge, Btn, EmptyState, ContentSkeleton, Input } from '../../components/ui'
 import Clickable from '../../components/Clickable'
+import { uiLocation } from '../../uiLocations/uiLocation'
 import { knowledgeApi } from './api'
 import { formatRelativeDate, FALLBACK_SUPPORTED_FORMATS } from './helpers'
 import { parseSourceProps, shouldShowWordCount, syncStatusLabel, ingestionStatusLabel } from './knowledgeUtils'
@@ -508,7 +509,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
           // and a site added in a terminal shows up without a reload.
           queryClient.invalidateQueries({ queryKey: ['knowledge-config'] })
           setShowAdd(true)
-        }} className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded-md hover:bg-accent/80">{i18nT('pages.knowledge.sourcesList.add_source')}</button>
+        }} className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded-md hover:bg-accent/80" {...uiLocation('knowledge.add-source')}>{i18nT('pages.knowledge.sourcesList.add_source')}</button>
       </div>
 
       {showAdd && (
