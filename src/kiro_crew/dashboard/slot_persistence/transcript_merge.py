@@ -326,7 +326,7 @@ def _frozen_prefix_and_foreign_appends(
     *,
     collect_foreign: bool = True,
     bound_prefix: Callable[[list[str]], list[str]] | None = None,
-    archive_dedup: Callable[[list[str]], object] | None = None,
+    archive_dedup: Callable[[list[str]], object],
 ) -> tuple[str, list[str], list[str]]:
     """Return ``(frozen_prefix, foreign_lines, dedup_dropped)`` for a save.
 
@@ -378,12 +378,11 @@ def _frozen_prefix_and_foreign_appends(
     those two real events into one; the bounded, timestamp-first identity
     fixes it for id-less lines, and the ``meta.mid`` tier resolves it exactly
     for stamped lines (see also ``docs/system-specs/modules/history.md``).
-    ``dedup_dropped`` returns any fresh-``ts`` content-tiebreak drops. With
-    *archive_dedup*, they are archived here first and returned only once that
-    write landed; when it raises they are kept in ``foreign_lines`` instead.
-    Without it, the caller routes them through the archive — even the residual ambiguous
-    case (an id-less distinct message indistinguishable from an
-    ``append_if_absent`` copy without a stable id) then loses no data
+    ``dedup_dropped`` is the fresh-``ts`` content-tiebreak drops, each archived
+    through *archive_dedup* before this returns; when that write raises they
+    are kept in ``foreign_lines`` instead, so even the residual ambiguous case
+    (an id-less distinct message indistinguishable from an
+    ``append_if_absent`` copy without a stable id) loses no data
     permanently. A corroborated id-matched fold is NOT such a drop: the ids
     plus body/``ts`` agreeing makes it unambiguous, so it does not churn the
     archive.
@@ -666,7 +665,7 @@ def _frozen_prefix_and_foreign_appends(
     # the lines are kept as foreign, in disk order, so the payload carries them:
     # a duplicate row at worst, never a lost one. Decided here, before the
     # cache below, so a cached fast path re-emits the same kept lines.
-    if dedup_at and archive_dedup is not None:
+    if dedup_at:
         try:
             archive_dedup([line for _j, line in dedup_at])
         except Exception:

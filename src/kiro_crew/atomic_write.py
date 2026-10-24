@@ -1262,6 +1262,84 @@ def atomic_write(
     # already walked; without one the by-name mkstemp + rename is the floor. There
     # is no third state: a descriptor this platform cannot use was refused above.
     pin = parent_dir_fd
+    tmp = _stage_temp(
+        path,
+        content,
+        fsync=fsync,
+        mode=effective_mode if effective_mode is not None else _get_default_mode(),
+        newline=newline,
+        in_data_home=in_data_home,
+        restrict_to_owner=restrict_to_owner,
+        restrict_on_error=restrict_on_error,
+        src_xattrs=src_xattrs,
+        pin=pin,
+    )
+    if pin is None:
+        # Inside a try of its own, so an interrupt that lands after staging
+        # returned and before publish_replacement enters its own try still
+        # removes the temp file. Unlinking a name publish_replacement already
+        # removed is a no-op.
+        try:
+            publish_replacement(tmp, path)
+        except BaseException:
+            _unlink_temp(tmp, None)
+            raise
+        return
+    try:
+        # renameat, both ends relative to the pinned parent: neither the temp
+        # name nor the destination name is re-resolved from the root, so an
+        # ancestor swapped after the caller's walk cannot redirect the
+        # publish. os.rename overwrites an existing destination on POSIX, so
+        # the replace semantics hold; os.replace is not in supports_dir_fd on
+        # every interpreter, os.rename is (pinned_parent_replace_supported
+        # probes rename for exactly this reason).
+        os.rename(
+            os.path.basename(tmp),
+            path.name,
+            src_dir_fd=pin,
+            dst_dir_fd=pin,
+        )
+    except BaseException:
+        _unlink_temp(tmp, pin)
+        raise
+
+
+def _unlink_temp(tmp: str, pin: int | None) -> None:
+    """Remove a staged temp file, ignoring one that is already gone."""
+    try:
+        if pin is None:
+            os.unlink(tmp)
+        else:
+            # Removed relative to the same pinned descriptor the temp was
+            # created under, so cleanup cannot reach a different file even if
+            # the parent name has since been swapped.
+            os.unlink(os.path.basename(tmp), dir_fd=pin)
+    except OSError:
+        pass
+
+
+def _stage_temp(
+    path: Path,
+    content: str | bytes,
+    *,
+    fsync: bool,
+    mode: int,
+    newline: str | None,
+    in_data_home: bool,
+    restrict_to_owner: bool,
+    restrict_on_error: RestrictErrorPolicy,
+    src_xattrs: list[tuple[str, bytes]],
+    pin: int | None,
+) -> str:
+    """Write *content* to a new temp file beside *path*, closed; return its name.
+
+    The one staging sequence behind :func:`atomic_write` and
+    :func:`stage_replacement`. Every step that can fail (the lockdown, ``fchmod``,
+    the write, the xattr carry, the ``fsync`` and the ``close``) runs inside one
+    protected region, so whichever of them raises, the descriptor is released and
+    the temp file removed before the error propagates. The caller only ever
+    receives the name of a complete, closed file.
+    """
     if pin is None:
         if in_data_home:
             # Every directory this creates inside the data home is born 0700;
@@ -1295,9 +1373,7 @@ def atomic_write(
                     exc_info=True,
                 )
         # No-op on Windows (no POSIX permission bits / os.fchmod).
-        platform_compat.fchmod_safe(
-            fd, effective_mode if effective_mode is not None else _get_default_mode()
-        )
+        platform_compat.fchmod_safe(fd, mode)
         _write_all(fd, _encode(content, newline=newline), path)
         # Carry the source's access-control xattrs onto the replacement inode
         # before the rename, so the file is never briefly visible without them.
@@ -1308,50 +1384,77 @@ def atomic_write(
         if fsync:
             os.fsync(fd)
         # Close BEFORE the rename: on Windows os.replace cannot swap a file that
-        # still has an open handle. Clear fd first so the except branch below
-        # cannot double-close if this close is itself what fails.
+        # still has an open handle. Give up ownership of fd first, so a close
+        # that itself fails is not retried below; its error still removes the
+        # temp file, because a file whose close reported an error is not one
+        # this call can vouch for.
         fd, open_fd = -1, fd
         os.close(open_fd)
-        if pin is None:
-            replace_with_retry(tmp, path)
-        else:
-            # renameat, both ends relative to the pinned parent: neither the temp
-            # name nor the destination name is re-resolved from the root, so an
-            # ancestor swapped after the caller's walk cannot redirect the
-            # publish. os.rename overwrites an existing destination on POSIX, so
-            # the replace semantics hold; os.replace is not in supports_dir_fd on
-            # every interpreter, os.rename is (pinned_parent_replace_supported
-            # probes rename for exactly this reason).
-            os.rename(
-                os.path.basename(tmp),
-                path.name,
-                src_dir_fd=pin,
-                dst_dir_fd=pin,
-            )
     except BaseException:
         # BaseException, not Exception. Three of the hand-rolled writers this
         # helper replaces already cleaned up under ``except BaseException``:
         # ``webhooks.write_json_atomic`` and both md_notebook temp writers. So
         # catching only ``Exception`` would leave a temp file behind on Ctrl-C
-        # where the original removed it. The webhooks clause has this exact
-        # shape, fd close included, which is where this one came from.
+        # where the original removed it.
         #
         # Propagation is unchanged: the exception is re-raised untouched, so
-        # KeyboardInterrupt and SystemExit still reach the caller. Only the
-        # orphaned descriptor and the temp file are reclaimed on the way out.
+        # KeyboardInterrupt and SystemExit still reach the caller. A close of
+        # the orphaned descriptor that fails here is swallowed, so it can
+        # neither replace that exception nor skip the unlink after it.
         if fd >= 0:
-            os.close(fd)
-        try:
-            if pin is None:
-                os.unlink(tmp)
-            else:
-                # Removed relative to the same pinned descriptor the temp was
-                # created under, so cleanup cannot reach a different file even if
-                # the parent name has since been swapped.
-                os.unlink(os.path.basename(tmp), dir_fd=pin)
-        except OSError:
-            pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        _unlink_temp(tmp, pin)
         raise
+    return tmp
+
+
+def stage_replacement(path: Path | str, content: str | bytes) -> str:
+    """Write *content* to a new, synced temp file beside *path*; return its name.
+
+    The staging half of ``atomic_write(path, content, fsync=True)`` on its default
+    by-name route: both run :func:`_stage_temp`, so the temp location, mode,
+    newline handling and failure cleanup are one implementation. It is split off
+    so the expensive part, the write and the ``fsync``, can run before a caller
+    takes the lock it needs only for the rename. The caller then calls
+    :func:`publish_replacement` or :func:`discard_replacement`, always one of them.
+    On any failure here, the close included, the temp file is removed and the
+    error raised.
+    """
+    path = Path(path)
+    in_data_home = is_owner_only_target(path)
+    return _stage_temp(
+        path,
+        content,
+        fsync=True,
+        mode=OWNER_ONLY_FILE_MODE if in_data_home else _get_default_mode(),
+        newline=None,
+        in_data_home=in_data_home,
+        restrict_to_owner=False,
+        restrict_on_error="raise",
+        src_xattrs=[],
+        pin=None,
+    )
+
+
+def publish_replacement(staged: str, path: Path | str) -> None:
+    """Rename a staged file over *path* (the retrying rename).
+
+    ``atomic_write``'s by-name route publishes through here too. A failed rename
+    removes the staged file before raising.
+    """
+    try:
+        replace_with_retry(staged, path)
+    except BaseException:
+        _unlink_temp(staged, None)
+        raise
+
+
+def discard_replacement(staged: str) -> None:
+    """Remove a :func:`stage_replacement` file that will not be published."""
+    _unlink_temp(staged, None)
 
 
 def atomic_write_at(

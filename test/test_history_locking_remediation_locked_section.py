@@ -1,8 +1,9 @@
 """Pins what ConversationLog does inside a per-session ``_locked`` hold and on release.
 
 Scenario 6 of the audit list in ``test_history_locking_remediation.py``: a one-line
-metadata rewrite (``update_metadata``, ``mark_consolidated``) persists without an
-``fsync`` while the lock is held. Off the event loop the hold closes its descriptors
+metadata rewrite (``update_metadata``, ``mark_consolidated``, the sub-offset write)
+is synced before the lock is taken, so no file ``fsync`` runs while it is held, and
+a write that lands in between is kept. Off the event loop the hold closes its descriptors
 inline on the caller's thread; entered on the loop thread, its cleanup
 (``release_lock`` and ``os.close``) runs on a worker thread and the append still
 lands. ``append_if_absent`` writes only when no message with the same role and
@@ -16,6 +17,7 @@ save that relies on this lock is pinned in
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -26,49 +28,384 @@ from kiro_crew import platform_compat
 from kiro_crew.history import ConversationLog
 from kiro_crew.testing.wait import async_wait_until
 
-
 # ── Bug 6: reduced lock hold — no fsync under lock for one-line metadata ──────
+#: The three hot metadata writes, each as ``(write, applied)``: *applied* checks
+#: the edit on the metadata a fresh log reads back.
+_HOT_METADATA_WRITES = [
+    pytest.param(
+        lambda log: log.mark_consolidated("k", 1),
+        lambda meta: meta["last_consolidated"] == 1,
+        id="mark_consolidated",
+    ),
+    pytest.param(
+        lambda log: log.advance_consolidation_sub_offset("k", 0, 5, 0),
+        lambda meta: meta["consolidation_sub_offset"] == 5,
+        id="sub_offset",
+    ),
+    pytest.param(
+        lambda log: log.update_metadata("k", {"title": "renamed"}),
+        lambda meta: meta["title"] == "renamed",
+        id="update_metadata",
+    ),
+]
+
+
+def _two_rows(tmp_path: Path) -> ConversationLog:
+    log = ConversationLog(base_dir=tmp_path)
+    log.append("k", "user", "a")
+    log.append("k", "assistant", "b")
+    return log
+
+
+def _record_lock_depth(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Track how many session locks this thread holds, at the lowest lock primitive."""
+    import contextlib
+
+    depth = [0]
+    real = ConversationLog._locked_stem
+
+    @contextlib.contextmanager
+    def recording(self, key):
+        with real(self, key):
+            depth[0] += 1
+            try:
+                yield
+            finally:
+                depth[0] -= 1
+
+    monkeypatch.setattr(ConversationLog, "_locked_stem", recording)
+    return depth
+
+
 class TestReducedLockHold:
-    def test_update_metadata_does_not_fsync(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    """The flush for a one-line metadata edit happens before the session lock is taken.
+
+    The replacement carries every row, so it is synced (an unsynced file renamed
+    over the old one can come back empty after a power loss). But the flush grows
+    with the transcript and every other writer of the session waits on that lock,
+    so it is staged and synced first, and the lock covers only the check that the
+    file is unchanged and the rename.
+    """
+
+    @pytest.mark.parametrize(("write", "applied"), _HOT_METADATA_WRITES)
+    def test_no_file_fsync_while_the_session_lock_is_held(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write, applied
     ) -> None:
-        """A one-line metadata edit must not ``fsync`` while holding the
-        cross-process lock — the flush dominated the critical section every
-        other writer blocked on. The edit must still persist (os.replace is
-        crash-atomic without a flush)."""
-        log = ConversationLog(base_dir=tmp_path)
-        log.append("k", "user", "m")
+        import stat
 
-        calls: list[int] = []
-        monkeypatch.setattr("os.fsync", lambda fd: calls.append(fd))
+        from kiro_crew import history_rewrite
 
-        log.update_metadata("k", {"title": "hello", "agent": "bob"})
+        log = _two_rows(tmp_path)
+        depth = _record_lock_depth(monkeypatch)
+        file_syncs: list[int] = []  # lock depth at each regular-file fsync
+        dir_syncs: list[tuple[Path, int, bool]] = []  # (directory, lock depth, best_effort)
+        real_fsync = os.fsync
+        real_fsync_dir = history_rewrite.fsync_dir
 
-        assert calls == [], "metadata rewrite fsync'd while holding the lock"
+        def recording_fsync(fd: int) -> None:
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                file_syncs.append(depth[0])
+            real_fsync(fd)
+
+        def recording_fsync_dir(path, *, best_effort: bool = False) -> None:
+            dir_syncs.append((Path(path), depth[0], best_effort))
+            real_fsync_dir(path, best_effort=best_effort)
+
+        monkeypatch.setattr("os.fsync", recording_fsync)
+        monkeypatch.setattr(history_rewrite, "fsync_dir", recording_fsync_dir)
+
+        write(log)
+
+        assert file_syncs == [0], f"file fsyncs at lock depths {file_syncs}"
+        # The rename is made durable after the lock is released, best effort.
+        assert dir_syncs == [(log._path("k").parent, 0, True)], f"directory syncs {dir_syncs}"
+        fresh = ConversationLog(base_dir=tmp_path)
+        assert applied(fresh.get_metadata("k"))
+        assert [m["content"] for m in fresh._read_messages("k")] == ["a", "b"]
+
+    @pytest.mark.parametrize(("write", "applied"), _HOT_METADATA_WRITES)
+    @pytest.mark.parametrize("interleaved", ["append", "metadata edit"])
+    def test_a_write_between_the_sync_and_the_rename_is_kept(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write, applied, interleaved
+    ) -> None:
+        """Another writer lands after the staged copy was synced, before the lock.
+
+        The staged copy does not match the file, so it is discarded and the edit
+        is recomputed under the lock: the other writer's row or field survives.
+        """
+        from kiro_crew import history_rewrite
+
+        log = _two_rows(tmp_path)
+        real_stage = history_rewrite.stage_replacement
+        fired: list[str] = []
+
+        def stage_then_interleave(path, content):
+            staged = real_stage(path, content)
+            if not fired:
+                fired.append(staged)
+                if interleaved == "append":
+                    log.append("k", "user", "late")
+                else:
+                    log.update_metadata("k", {"agent": "other"})
+            return staged
+
+        monkeypatch.setattr(history_rewrite, "stage_replacement", stage_then_interleave)
+
+        write(log)
+
+        assert fired, "the interleaving never ran: the write did not stage outside the lock"
+        assert not Path(fired[0]).exists(), "the stale staged copy was left behind"
         fresh = ConversationLog(base_dir=tmp_path)
         meta = fresh.get_metadata("k")
-        assert meta["title"] == "hello"
-        assert meta["agent"] == "bob"
+        assert applied(meta)
+        rows = [m["content"] for m in fresh._read_messages("k")]
+        if interleaved == "append":
+            assert rows == ["a", "b", "late"]
+        else:
+            assert rows == ["a", "b"]
+            assert meta["agent"] == "other"
 
-    def test_mark_consolidated_does_not_fsync(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(("write", "applied"), _HOT_METADATA_WRITES)
+    def test_the_fallback_frees_the_stale_staged_copy_before_writing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write, applied
     ) -> None:
-        """mark_consolidated is likewise a one-line metadata rewrite and must
-        not fsync under the lock, while still persisting the offset and every
-        message."""
-        log = ConversationLog(base_dir=tmp_path)
-        log.append("k", "user", "m1")
-        log.append("k", "assistant", "m2")
+        """The locked rebuild never needs room for two whole-transcript copies.
 
-        calls: list[int] = []
-        monkeypatch.setattr("os.fsync", lambda fd: calls.append(fd))
+        When an append lands after staging, the stale staged file is removed
+        before the locked rewrite writes its own copy, so a disk with room for
+        one replacement still takes the edit.
+        """
+        from kiro_crew import history_rewrite
 
-        log.mark_consolidated("k", 2)
+        log = _two_rows(tmp_path)
+        real_stage = history_rewrite.stage_replacement
+        real_rewrite = history_rewrite.rewrite_transcript
+        staged_names: list[str] = []
+        stale_present_at_rewrite: list[bool] = []
 
-        assert calls == [], "mark_consolidated fsync'd while holding the lock"
+        def stage_then_append(path, content):
+            staged = real_stage(path, content)
+            if not staged_names:
+                staged_names.append(staged)
+                log.append("k", "user", "late")
+            return staged
+
+        def recording_rewrite(path, content):
+            stale_present_at_rewrite.append(Path(staged_names[0]).exists())
+            real_rewrite(path, content)
+
+        monkeypatch.setattr(history_rewrite, "stage_replacement", stage_then_append)
+        monkeypatch.setattr(history_rewrite, "rewrite_transcript", recording_rewrite)
+
+        write(log)
+
+        assert stale_present_at_rewrite == [False], "the stale staged copy was still on disk"
         fresh = ConversationLog(base_dir=tmp_path)
-        assert fresh.get_metadata("k")["last_consolidated"] == 2
-        assert [m["content"] for m in fresh._read_messages("k")] == ["m1", "m2"]
+        assert applied(fresh.get_metadata("k"))
+        assert [m["content"] for m in fresh._read_messages("k")] == ["a", "b", "late"]
+
+    @pytest.mark.parametrize(("write", "applied"), _HOT_METADATA_WRITES)
+    def test_a_same_length_edit_that_restores_the_mtime_is_kept(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write, applied
+    ) -> None:
+        """Only the bytes tell this edit apart from the snapshot.
+
+        Another writer edits a row in place to the same length and restores the
+        mtime, so size, mtime and inode all still match the unlocked snapshot.
+        The staged copy must be discarded and the edit rebuilt under the lock,
+        or the other writer's row is lost.
+        """
+        from kiro_crew import history_rewrite
+
+        log = _two_rows(tmp_path)
+        path = log._path("k")
+        staged_names: list[str] = []
+        published: list[str] = []
+        real_stage = history_rewrite.stage_replacement
+        real_publish = history_rewrite.publish_replacement
+
+        def stage_then_edit_in_place(target, content):
+            staged = real_stage(target, content)
+            staged_names.append(staged)
+            st = os.stat(path)
+            data = path.read_bytes()
+            edited = data.replace(b'"b"', b'"z"', 1)
+            assert len(edited) == len(data) and edited != data
+            with open(path, "r+b") as handle:
+                handle.write(edited)
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+            after = os.stat(path)
+            assert (after.st_size, after.st_mtime_ns, after.st_ino) == (
+                st.st_size,
+                st.st_mtime_ns,
+                st.st_ino,
+            )
+            return staged
+
+        def recording_publish(staged, target):
+            published.append(staged)
+            real_publish(staged, target)
+
+        monkeypatch.setattr(history_rewrite, "stage_replacement", stage_then_edit_in_place)
+        monkeypatch.setattr(history_rewrite, "publish_replacement", recording_publish)
+
+        write(log)
+
+        assert staged_names, "the write did not stage outside the lock"
+        assert published == [], "the staged copy was published over a changed file"
+        assert not Path(staged_names[0]).exists(), "the stale staged copy was left behind"
+        fresh = ConversationLog(base_dir=tmp_path)
+        assert applied(fresh.get_metadata("k"))
+        assert [m["content"] for m in fresh._read_messages("k")] == ["a", "z"]
+
+    @pytest.mark.parametrize(("write", "applied"), _HOT_METADATA_WRITES)
+    def test_a_key_that_moves_before_the_lock_is_rewritten_at_its_new_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write, applied
+    ) -> None:
+        """The staged copy is published only to the path it was staged for.
+
+        A restore or migration can change which file a key resolves to. The new
+        path here is a hard link to the old one, so its bytes match the unlocked
+        snapshot: only the path comparison can tell the staged copy belongs to
+        the old name.
+        """
+        import contextlib
+
+        log = _two_rows(tmp_path)
+        old = log._path("k")
+        moved = tmp_path / "moved.jsonl"
+        try:
+            os.link(old, moved)
+        except OSError as exc:  # pragma: no cover - filesystem dependent
+            pytest.skip(f"hard links unavailable here: {exc}")
+        before = old.read_bytes()
+        state = {"locked": False}
+        real_path = ConversationLog._path
+        real_locked = ConversationLog._locked
+
+        def resolving_path(self, key):
+            if state["locked"] and key == "k":
+                return moved
+            return real_path(self, key)
+
+        @contextlib.contextmanager
+        def moving_locked(self, key):
+            with real_locked(self, key):
+                state["locked"] = True
+                try:
+                    yield
+                finally:
+                    state["locked"] = False
+
+        monkeypatch.setattr(ConversationLog, "_path", resolving_path)
+        monkeypatch.setattr(ConversationLog, "_locked", moving_locked)
+
+        write(log)
+
+        assert old.read_bytes() == before, "the edit was published to the stale path"
+        lines = moved.read_text(encoding="utf-8").splitlines()
+        assert applied(json.loads(lines[0]))
+        assert [json.loads(line)["content"] for line in lines[1:]] == ["a", "b"]
+
+    @pytest.mark.parametrize(("write", "applied"), _HOT_METADATA_WRITES)
+    def test_a_crlf_transcript_keeps_one_line_ending(self, tmp_path: Path, write, applied) -> None:
+        """A transcript written with CRLF endings is edited as text, not as raw lines.
+
+        On Windows a whole-transcript replace written from text gets CRLF endings,
+        so the next metadata edit reads one. The rows must come back unchanged
+        with a single line-ending style and no doubled carriage return.
+        """
+        path = _two_rows(tmp_path)._path("k")
+        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+        log = ConversationLog(base_dir=tmp_path)
+
+        write(log)
+
+        data = path.read_bytes()
+        assert b"\r\r" not in data
+        endings = {
+            b"\r\n" if line.endswith(b"\r\n") else b"\n" for line in data.splitlines(keepends=True)
+        }
+        assert len(endings) == 1, f"mixed line endings: {data!r}"
+        fresh = ConversationLog(base_dir=tmp_path)
+        assert applied(fresh.get_metadata("k"))
+        assert [m["content"] for m in fresh._read_messages("k")] == ["a", "b"]
+
+    @pytest.mark.parametrize(("write", "applied"), _HOT_METADATA_WRITES)
+    def test_an_interrupt_as_the_publish_starts_removes_the_staged_copy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write, applied
+    ) -> None:
+        """A KeyboardInterrupt in the handoff to publish_replacement leaks nothing.
+
+        The interrupt is raised as the publish is entered, before its own ``try``,
+        so only the writer's cleanup around the call can remove the staged file,
+        a whole copy of the transcript. The transcript keeps its old bytes.
+        """
+        from kiro_crew import history_rewrite
+
+        log = _two_rows(tmp_path)
+        path = log._path("k")
+        before = path.read_bytes()
+        handed: list[str] = []
+
+        def interrupted_publish(staged, target):
+            handed.append(staged)
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(history_rewrite, "publish_replacement", interrupted_publish)
+
+        with pytest.raises(KeyboardInterrupt):
+            write(log)
+
+        assert handed, "the write never reached the publish"
+        assert not Path(handed[0]).exists(), "the staged copy was left behind"
+        assert sorted(tmp_path.rglob("*.tmp")) == []
+        assert path.read_bytes() == before
+
+    @pytest.mark.parametrize(("write", "applied"), _HOT_METADATA_WRITES)
+    def test_an_interrupt_after_the_rename_keeps_the_published_edit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write, applied
+    ) -> None:
+        """Cleanup that still owns the staged name after the rename removes nothing.
+
+        The interrupt is raised once the rename has happened, before the publish
+        returns. The writer's cleanup then targets a name the rename already
+        moved, so the published edit and both rows survive.
+        """
+        from kiro_crew import history_rewrite
+
+        log = _two_rows(tmp_path)
+        real_publish = history_rewrite.publish_replacement
+        handed: list[str] = []
+
+        def publish_then_interrupt(staged, target):
+            handed.append(staged)
+            real_publish(staged, target)
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(history_rewrite, "publish_replacement", publish_then_interrupt)
+
+        with pytest.raises(KeyboardInterrupt):
+            write(log)
+
+        assert handed, "the write never reached the publish"
+        assert sorted(tmp_path.rglob("*.tmp")) == []
+        fresh = ConversationLog(base_dir=tmp_path)
+        assert applied(fresh.get_metadata("k"))
+        assert [m["content"] for m in fresh._read_messages("k")] == ["a", "b"]
+
+    def test_update_metadata_still_writes_bytes(self, tmp_path: Path) -> None:
+        log = _two_rows(tmp_path)
+        log.update_metadata("k", {"title": "renamed"})
+        # No newline translation on Windows.
+        assert b"\r\n" not in log._path("k").read_bytes()
+
+    def test_update_metadata_still_upserts_a_missing_transcript(self, tmp_path: Path) -> None:
+        log = ConversationLog(base_dir=tmp_path)
+        log.update_metadata("new", {"title": "t"})
+        meta = ConversationLog(base_dir=tmp_path).get_metadata("new")
+        assert meta["title"] == "t"
+        assert "created_at" in meta
 
 
 class TestOnLoopFdCleanupDeferred:

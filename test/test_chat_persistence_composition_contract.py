@@ -393,7 +393,7 @@ _SIGNATURES: dict[str, str] = {
     "_effort_marker_path": "(directory: 'Path', level: 'str') -> 'Path'",
     "_entry_cache_bounds": "() -> 'tuple[int, int]'",
     "_foreign_tail_ts": "(foreign_lines: 'list[str]') -> 'str | None'",
-    "_frozen_prefix_and_foreign_appends": "(slot: '_ChatSlot', path, disk_older: 'int', window_entries: 'list[dict]', *, collect_foreign: 'bool' = True, bound_prefix: 'Callable[[list[str]], list[str]] | None' = None, archive_dedup: 'Callable[[list[str]], object] | None' = None) -> 'tuple[str, list[str], list[str]]'",
+    "_frozen_prefix_and_foreign_appends": "(slot: '_ChatSlot', path, disk_older: 'int', window_entries: 'list[dict]', *, collect_foreign: 'bool' = True, bound_prefix: 'Callable[[list[str]], list[str]] | None' = None, archive_dedup: 'Callable[[list[str]], object]') -> 'tuple[str, list[str], list[str]]'",
     "_has_validated_effort_marker": "(raw: 'object') -> 'bool'",
     "_interleave_foreign_lines": "(window_entries: 'list[dict]', window_lines: 'list[str]', foreign_lines: 'list[str]') -> 'list[str]'",
     "_is_app_owned_channel_row": "(meta: 'dict', history_key: 'str') -> 'bool'",
