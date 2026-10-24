@@ -711,6 +711,14 @@ class SlackRenderer(Renderer):
         self._redacted_urls = 0
         self._t0 = 0.0
         self._started = False  # guards on_turn_start against double-fire
+        # Whether the "is working" thread status has been cleared. Tracked
+        # SEPARATELY from _finalized because on_done sets _finalized=True BEFORE
+        # it awaits the file upload and only then clears the status: a
+        # cancellation in that window leaves the status set with _finalized
+        # already True, so a close() guarded on _finalized would skip the clear
+        # and leave the indicator stuck. close() clears whenever the status was
+        # set but not yet cleared, regardless of _finalized.
+        self._status_cleared = False
         # Outbound-upload gates. The root is the provider's resolved cwd, so it
         # is UNSET until the dispatcher authorizes one (``authorize_upload_root``)
         # and uploads stay off until then: extraction reads files the model named,
@@ -1300,6 +1308,26 @@ class SlackRenderer(Renderer):
                 self._controller.finalize(error=True)
             except Exception:
                 pass  # non-critical teardown; never raise from close()
+        # A turn that reaches close() without the status being cleared — a
+        # cancellation (!stop, a warm-pool reclaim, shutdown) that skipped
+        # on_done entirely, OR one that landed inside on_done AFTER _finalized
+        # was set but BEFORE the status clear (the file-upload await) — still
+        # has the "is working" thread status on_turn_start set. Clear it here so
+        # the Slack thread does not keep showing a working indicator for a turn
+        # that already ended. Guarded on _started (status was actually set) and
+        # not _status_cleared (on_done has not already cleared it) — NOT on
+        # _finalized, which on_done sets before its own clear. Best-effort and
+        # MUST NOT raise: close() is the dispatcher's finally and a failing
+        # status clear must never mask the cancellation.
+        if self._started and not self._status_cleared:
+            try:
+                await self.slack.set_thread_status(self.channel, self.thread_ts or "", "")
+                self._status_cleared = True
+            except Exception:
+                logger.warning(
+                    "Slack set_thread_status failed at teardown — skipping status clear",
+                    exc_info=True,
+                )
         self._finalized = True
 
     async def release_held_word(self) -> None:
@@ -1833,6 +1861,7 @@ class SlackRenderer(Renderer):
         # recorded failure.
         try:
             await self.slack.set_thread_status(self.channel, self.thread_ts or "", "")
+            self._status_cleared = True
         except Exception:
             logger.warning("Slack set_thread_status failed — skipping status clear", exc_info=True)
         # Timing footer (always posted at turn end), mirroring native.
