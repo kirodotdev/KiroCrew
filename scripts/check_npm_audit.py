@@ -71,10 +71,16 @@ EXCEPTIONS_FILENAME = ".vulnerability-exceptions.json"
 #: report immediately useful and gives it teeth against new debt, without
 #: holding existing debt against an unrelated PR.
 BUILD_CHAIN_BASELINE_FILENAME = "build-chain-audit-baseline.json"
+#: The first three are the shipped Node trees. The last two are CI-only
+#: trees whose binaries execute with credentials (the review CLIs run in
+#: lanes holding Bedrock OIDC credentials and write tokens; the real
+#: adapters run in CI), so they are audited on the same terms.
 AUDITED_LOCKFILES = (
     "website/package-lock.json",
     "website/electron/package-lock.json",
     "site/package-lock.json",
+    ".github/review-cli/package-lock.json",
+    "test/real_adapters/package-lock.json",
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
