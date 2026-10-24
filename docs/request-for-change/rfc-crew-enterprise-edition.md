@@ -1,6 +1,6 @@
 ---
 title: Crew Enterprise Edition -- a build-time edition that requires login, fetches governance rules before it opens, and turns every governable feature off by default
-status: draft
+status: accepted
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-22
 last-audited: 2026-10-23
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Crew Enterprise Edition
 
-- Status: draft. Nothing is built. This document lands first so the implementation pull requests that follow have a design for the First Principles and Design lanes to check against: the enterprise edition changes defaults (every governable feature off) and adds a startup gate.
+- Status: accepted. The owner approved this design on 2026-10-23; D1, D2 and D3 in section 5 are owner decisions. This document landed first so the implementation pull requests that follow have a design for the First Principles and Design lanes to check against: the enterprise edition changes defaults (every governable feature off) and adds a startup gate.
 - Tracking issue: [#23206](https://github.com/kirodotdev/KiroCrew/issues/23206)
 - Related: [rfc-central-governance-ceiling](rfc-central-governance-ceiling.md) (the policy ceiling this edition fetches and enforces), [platform-context](../system-specs/modules/platform-context.md) (the existing edition seam), [governance](../system-specs/modules/governance.md) (the evaluator and catalog this edition tightens)
 
