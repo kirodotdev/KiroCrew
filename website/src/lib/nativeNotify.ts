@@ -42,6 +42,12 @@ export interface NativeNotifyOptions {
   silent?: boolean
   /** Pane-local URL; not relayed (the parent shows its own app icon). */
   icon?: string
+  /**
+   * Click payload. `url` is the note's deep link, read by the service worker's
+   * `notificationclick`, so a banner that replaces a same-tag push banner keeps
+   * the push banner's destination. Not relayed.
+   */
+  data?: { url?: string }
 }
 
 /** Wire shape a pane posts to its parent. */
@@ -123,11 +129,44 @@ export function postNativeNotification(title: string, options: NativeNotifyOptio
     return
   }
   if (typeof Notification === 'undefined') return
-  try {
-    new Notification(title, { ...options, silent })
-  } catch {
-    /* unsupported platform */
+  deliverNativeNotification(title, { ...options, silent })
+}
+
+/**
+ * Show an OS notification, preferring the service worker registration over the
+ * page-context `new Notification(...)` constructor.
+ *
+ * The constructor throws "Illegal constructor" in an installed iOS PWA (and on
+ * Android Chrome, #1828), where the OS only permits notifications through
+ * `ServiceWorkerRegistration.showNotification()`. When a service worker is
+ * registered we deliver through it; otherwise (a desktop browser with no active
+ * registration) we fall back to the constructor. Both paths swallow their
+ * errors: an uncaught throw on the WebSocket message path kills the rest of the
+ * handler, and an unsupported platform is not the caller's problem.
+ */
+function deliverNativeNotification(title: string, options: NotificationOptions): void {
+  const withConstructor = () => {
+    try {
+      new Notification(title, options)
+    } catch {
+      /* unsupported platform */
+    }
   }
+  if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+    // navigator.serviceWorker.ready never settles when registration failed or
+    // was unregistered (stale-shell heal). Race against a timeout so the
+    // constructor fallback fires instead of hanging silently.
+    const SW_READY_TIMEOUT_MS = 2_000
+    const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), SW_READY_TIMEOUT_MS))
+    Promise.race([navigator.serviceWorker.ready, timeout])
+      .then((reg) => {
+        if (reg) return reg.showNotification(title, options)
+        withConstructor()
+      })
+      .catch(withConstructor)
+    return
+  }
+  withConstructor()
 }
 
 /**

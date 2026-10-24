@@ -17278,7 +17278,15 @@
         "custom_sound_undo": "Desfazer",
         "custom_sound_option": "{{name}} (seu)",
         "channel_member": "Mensagens de colegas",
-        "channel_apps": "Atualizações de apps"
+        "channel_apps": "Atualizações de apps",
+        "push_section": "Notificações push",
+        "push_toggle_label": "Notificar-me mesmo quando o {{productName}} estiver fechado",
+        "push_toggle_description": "Um botão separado das notificações do sistema acima, que só funcionam enquanto o {{productName}} está aberto.",
+        "push_install_hint": "No iOS, adicione o {{productName}} à tela inicial para ativar as notificações push.",
+        "push_unsupported": "Este navegador não consegue enviar notificações enquanto o {{productName}} está fechado.",
+        "push_error_permission": "As notificações não foram permitidas. Permita-as quando o navegador pedir e tente novamente.",
+        "push_error_subscribe": "Não foi possível ativar as notificações neste dispositivo. Tente novamente ou recarregue a página.",
+        "push_error_unsubscribe": "Não foi possível desativar as notificações neste dispositivo. Tente novamente ou recarregue a página."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",

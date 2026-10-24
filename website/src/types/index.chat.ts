@@ -600,6 +600,10 @@ export interface ContentBlock {
 export interface Notification {
   kind: string; title: string; body: string; ts: string
   acked?: boolean; job_id?: string; task_id?: string; approval_id?: string
+  /** OS-banner collapse tag the gateway stamps on every delivered note
+   *  (`native_notification_tag`). The service worker's Web Push banner carries
+   *  the same value, so one event shows one banner. Absent on client-made notes. */
+  tag?: string
   slot?: string; session_key?: string; slack_link?: string
   /** Transcript identity used to resume a closed slot; the slot name alone may name no history. */
   history_key?: string

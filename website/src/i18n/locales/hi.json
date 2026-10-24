@@ -17007,7 +17007,15 @@
         "custom_sound_undo": "पूर्ववत करो",
         "custom_sound_option": "{{name}} (तुम्हारी)",
         "channel_member": "साथियों के संदेश",
-        "channel_apps": "ऐप अपडेट"
+        "channel_apps": "ऐप अपडेट",
+        "push_section": "पुश सूचनाएं",
+        "push_toggle_label": "{{productName}} बंद होने पर भी मुझे सूचित करो",
+        "push_toggle_description": "यह ऊपर वाली सिस्टम सूचनाओं से अलग स्विच है, जो सिर्फ़ {{productName}} खुला होने पर काम करती हैं।",
+        "push_install_hint": "iOS पर, पुश सूचनाएं सक्षम करने के लिए पहले {{productName}} को होम स्क्रीन पर जोड़ो।",
+        "push_unsupported": "यह ब्राउज़र {{productName}} बंद होने पर सूचनाएं नहीं भेज सकता।",
+        "push_error_permission": "सूचनाओं की अनुमति नहीं दी गई। ब्राउज़र पूछे तो अनुमति दो, फिर दोबारा कोशिश करो।",
+        "push_error_subscribe": "इस डिवाइस के लिए सूचनाएं चालू नहीं हो सकीं। दोबारा कोशिश करो या पेज फिर से लोड करो।",
+        "push_error_unsubscribe": "इस डिवाइस के लिए सूचनाएं बंद नहीं हो सकीं। दोबारा कोशिश करो या पेज फिर से लोड करो।"
       },
       "privacyPanel": {
         "recordMetricsDescription": "इस मशीन पर परफ़ॉर्मेंस मेट्रिक इकट्ठा करो।",

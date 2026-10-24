@@ -17278,7 +17278,15 @@
         "custom_sound_undo": "Annulla",
         "custom_sound_option": "{{name}} (tuo)",
         "channel_member": "Messaggi dei compagni",
-        "channel_apps": "Aggiornamenti delle app"
+        "channel_apps": "Aggiornamenti delle app",
+        "push_section": "Notifiche push",
+        "push_toggle_label": "Avvisami anche quando {{productName}} è chiuso",
+        "push_toggle_description": "Un interruttore separato dalle notifiche di sistema qui sopra, che funzionano solo mentre {{productName}} è aperto.",
+        "push_install_hint": "Su iOS, aggiungi {{productName}} alla schermata Home per abilitare le notifiche push.",
+        "push_unsupported": "Questo browser non può inviare notifiche mentre {{productName}} è chiuso.",
+        "push_error_permission": "Le notifiche non sono state consentite. Consentile quando il browser lo chiede, poi riprova.",
+        "push_error_subscribe": "Impossibile attivare le notifiche su questo dispositivo. Riprova o ricarica la pagina.",
+        "push_error_unsubscribe": "Impossibile disattivare le notifiche su questo dispositivo. Riprova o ricarica la pagina."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registra le metriche",

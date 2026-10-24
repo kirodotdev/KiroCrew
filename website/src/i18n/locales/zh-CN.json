@@ -16736,7 +16736,15 @@
         "custom_sound_undo": "撤销",
         "custom_sound_option": "{{name}}（自定义）",
         "channel_member": "队友消息",
-        "channel_apps": "应用更新"
+        "channel_apps": "应用更新",
+        "push_section": "推送通知",
+        "push_toggle_label": "即使 {{productName}} 已关闭也通知我",
+        "push_toggle_description": "与上方的系统通知是两个开关：系统通知只在 {{productName}} 打开时有效。",
+        "push_install_hint": "在 iOS 上，请先将 {{productName}} 添加到主屏幕以启用推送通知。",
+        "push_unsupported": "此浏览器无法在 {{productName}} 关闭时发送通知。",
+        "push_error_permission": "未允许通知。请在浏览器询问时允许，然后重试。",
+        "push_error_subscribe": "无法为此设备开启通知。请重试，或重新加载页面。",
+        "push_error_unsubscribe": "无法为此设备关闭通知。请重试，或重新加载页面。"
       },
       "privacyPanel": {
         "recordMetricsLabel": "记录指标",
