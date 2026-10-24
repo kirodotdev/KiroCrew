@@ -270,9 +270,10 @@ def cron_owner_matches(job_owner: str, target: str) -> bool:
     ONE spelling each, and loosening them would let one session's key reach
     another's jobs.
 
-    Deliberately NOT used by the MCP ownership gate (``_owned_by``), which stays
-    exact equality: this decides which jobs a RETIRED principal's cleanup may
-    release, not which jobs a live caller may read or write.
+    Deliberately NOT used by the MCP ownership gate (``_owned_by``): the gate
+    matches the caller's exact key, widened only when a row's own session key and
+    the caller's key name the same crew member, while this decides which jobs a
+    RETIRED principal's cleanup may release.
     """
     if job_owner == target:
         return True
