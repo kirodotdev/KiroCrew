@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from stray_line_helpers import cyclic_gc_quiesced  # noqa: F401 - fixture
 
 from kiro_crew import dashboard_agentic, dashboard_feed
 from kiro_crew.crew_log import entry_types, projection
@@ -205,6 +206,9 @@ class TestTheAgenticWrite:
         assert caught.value.code == "value_too_deep"
         assert str(dashboard_agentic.AGENTIC_VALUE_DEPTH) in str(caught.value)
 
+    # The 550-deep value drives ``copy.deepcopy`` to its recursion limit, so the
+    # cyclic collector is held off for the test (testing-conventions.md, RecursionError).
+    @pytest.mark.usefixtures("cyclic_gc_quiesced")
     def test_a_deep_value_inside_the_byte_cap_is_refused_before_the_fold_has_to_walk_it(
         self,
     ) -> None:
