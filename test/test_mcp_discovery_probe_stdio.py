@@ -507,6 +507,58 @@ class TestProbeStdioMalformedResponse:
         assert "malformed" in result.error
 
 
+class TestProbeStdioProtocolVersion:
+    """The stdio probe offers our newest revision and steps down once on -32602."""
+
+    def setup_method(self) -> None:
+        _clear_cache()
+
+    def _run(self, monkeypatch, lines: list[bytes]) -> tuple[McpServerInfo, list[dict]]:
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.stdin = MagicMock()
+        proc.stdin.drain = AsyncMock()
+        proc.stdout = MagicMock()
+        proc.stdout.readline = AsyncMock(side_effect=[*lines, b""])
+        proc.wait = AsyncMock(return_value=0)
+        monkeypatch.setattr("shutil.which", lambda cmd, path=None: "/usr/bin/srv")
+        with patch(
+            "kiro_crew.mcp_discovery.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        ):
+            result = asyncio.run(probe_server(McpServerInfo(name="srv", command="srv")))
+        sent = [json.loads(c.args[0]) for c in proc.stdin.write.call_args_list]
+        return result, [m for m in sent if m.get("method") == "initialize"]
+
+    def test_offers_the_newest_version_and_steps_down_once(self, monkeypatch) -> None:
+        refusal = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {
+                "code": -32602,
+                "message": "Unsupported",
+                "data": {"supported": ["2024-11-05"]},
+            },
+        }
+        ok = {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2024-11-05"}}
+        tools = {"jsonrpc": "2.0", "id": 2, "result": {"tools": [{"name": "search"}]}}
+        lines = [json.dumps(m).encode() + b"\n" for m in (refusal, ok, tools)]
+
+        result, inits = self._run(monkeypatch, lines)
+
+        assert result.status == "ok"
+        assert result.protocol_version == "2024-11-05"
+        assert [m["params"]["protocolVersion"] for m in inits] == ["2025-06-18", "2024-11-05"]
+
+    def test_an_unknown_error_is_not_retried(self, monkeypatch) -> None:
+        boom = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "boom"}}
+
+        result, inits = self._run(monkeypatch, [json.dumps(boom).encode() + b"\n"])
+
+        assert (result.status, result.error) == ("error", "boom")
+        assert [m["params"]["protocolVersion"] for m in inits] == ["2025-06-18"]
+
+
 def _make_stream(lines: list[bytes]) -> asyncio.StreamReader:
     """Build a StreamReader pre-fed with ``lines`` and an EOF marker."""
     reader = asyncio.StreamReader()

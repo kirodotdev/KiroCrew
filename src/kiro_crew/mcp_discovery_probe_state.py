@@ -1,4 +1,4 @@
-"""What the MCP probes share: the protocol revision the remote probe offers and
+"""What the MCP probes share: the protocol revision every MCP client handshake offers and
 steps down to, the timeouts and error cap, the once-only warning ledgers, and the
 probe-result cache.
 
@@ -27,7 +27,8 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 logger = logging.getLogger("kiro_crew.mcp_discovery")
 
 
-# The newest MCP revision our client probes offer in ``initialize``.
+# The newest MCP revision our client handshakes (HTTP and stdio probes, the gateway
+# backend) offer in ``initialize``.
 MCP_CLIENT_PROTOCOL_VERSION = "2025-06-18"
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 

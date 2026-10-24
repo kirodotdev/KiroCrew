@@ -266,4 +266,4 @@ and delivers each `notifications/resources/updated` to exactly the stubs
 subscribed to its URI, so subscriptions survive pooling and there is nothing to
 warn the operator about.
 
-Tool annotations (`readOnlyHint` and friends) exist only from MCP 2025-03-26 onward. The HTTP probes (`mcp_discovery._probe_remote`, `connections/l1_smoke.py`) offer `MCP_CLIENT_PROTOCOL_VERSION` (`2025-06-18`) and step down once to `2024-11-05` on a `-32602` answer (`downgrade_protocol_version`); the stdio probe and the gateway backend still offer `2024-11-05`. Annotations are therefore treated as opportunistic positive evidence: present means something, absent means nothing.
+Tool annotations (`readOnlyHint` and friends) exist only from MCP 2025-03-26 onward. The HTTP probes (`mcp_discovery._probe_remote`, `connections/l1_smoke.py`), the stdio probe and the gateway backend handshake offer `MCP_CLIENT_PROTOCOL_VERSION` (`2025-06-18`) and step down once to an older listed revision such as `2024-11-05` on a `-32602` answer (`downgrade_protocol_version`). Annotations are therefore treated as opportunistic positive evidence: present means something, absent means nothing.

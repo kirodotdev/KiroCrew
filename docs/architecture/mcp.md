@@ -490,7 +490,7 @@ quarantine exclusion, and the discover-and-sync step (`sync_discovered_servers`,
 | Owner | Owns |
 |---|---|
 | `mcp_discovery_server_info.py` | `McpServerInfo`, the scope names and config-source tables, and `redact_mcp_headers` / `redact_mcp_error` |
-| `mcp_discovery_probe_state.py` | the protocol revision the remote probe offers and steps down to, the probe timeouts and error cap, the once-only warning ledgers, and the probe-result cache |
+| `mcp_discovery_probe_state.py` | the protocol revision every client handshake offers and steps down to, the probe timeouts and error cap, the once-only warning ledgers, and the probe-result cache |
 | `mcp_discovery_managed.py` | the managed servers' subcommand and tool-module tables, `managed_server_is_session_bound`, the in-process tool read, and stale-command repair |
 | `mcp_discovery_config.py` | loading the agent config and the `mcp.json` sources per scope, and `list_servers` |
 | `mcp_discovery_remote.py` | `_probe_remote`: the SSRF vet and pinned connection, the HTTP handshake, header expansion, and the authorization checks |
@@ -529,8 +529,9 @@ Probes run from `POST /api/mcp/probe`:
   retry once with the newest such revision. Every request after `initialize`
   carries `MCP-Protocol-Version` set to the revision the server answered with.
   The connection L1 smoke test (`connections/l1_smoke.py`) imports the same
-  helpers, so both paths negotiate the same way. The stdio probe offers
-  `2024-11-05`.
+  helpers, so both paths negotiate the same way. The stdio probe and the
+  gateway's stdio backend handshake (`send_initialize`) offer the same revision
+  and take the same one step down.
 - **Disabled servers are never spawned.** `probe_all()` returns a muted row as
   an unprobed `status: "disabled"` placeholder with no error text, keeping the
   tools of its last real probe, and writes nothing to the probe cache.

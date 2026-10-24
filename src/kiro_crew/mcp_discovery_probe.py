@@ -35,6 +35,7 @@ from kiro_crew.executors import mcp_probe_executor
 from kiro_crew.mcp_discovery_managed import _is_first_party_managed_argv, _managed_tools_in_process
 from kiro_crew.mcp_discovery_probe_state import (
     _PROBE_TEARDOWN_WAIT_SECS,
+    MCP_CLIENT_PROTOCOL_VERSION,
     _cache_probe,
     _clear_unresolvable,
     _get_probe_timeout,
@@ -44,6 +45,7 @@ from kiro_crew.mcp_discovery_probe_state import (
     _warn_managed_in_process_once,
     _warn_probe_sandbox_unavailable_once,
     _warn_unresolvable_once,
+    downgrade_protocol_version,
 )
 from kiro_crew.mcp_discovery_remote import _probe_remote
 from kiro_crew.mcp_discovery_server_info import McpServerInfo
@@ -604,40 +606,47 @@ async def probe_server(
 
             await asyncio.to_thread(record_owner, probe_tmp, proc.pid)
 
-        # Send initialize request
-        init_req = (
-            json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {},
-                        "clientInfo": (
-                            dict(client_info)
-                            if client_info
-                            else {"name": "kirocrew-probe", "version": "1.0.0"}
-                        ),
-                    },
-                }
-            )
-            + "\n"
-        )
-
         assert proc.stdin is not None
         assert proc.stdout is not None
-        proc.stdin.write(init_req.encode())
-        await proc.stdin.drain()
+        # Offer our newest revision; a -32602 refusal listing ``data.supported``
+        # gets one retry on the same pipe with the newest older one it lists,
+        # the step-down the HTTP probe takes (``mcp_discovery_remote``).
+        protocol_version = MCP_CLIENT_PROTOCOL_VERSION
+        while True:
+            init_req = (
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": protocol_version,
+                            "capabilities": {},
+                            "clientInfo": (
+                                dict(client_info)
+                                if client_info
+                                else {"name": "kirocrew-probe", "version": "1.0.0"}
+                            ),
+                        },
+                    }
+                )
+                + "\n"
+            )
+            proc.stdin.write(init_req.encode())
+            await proc.stdin.drain()
 
-        # Read initialize response. Skip any leading non-JSON banner/log
-        # lines the server (or a launcher like ``aim`` mid-self-update) may
-        # emit on stdout before the JSON-RPC handshake — otherwise a single
-        # stray line makes json.loads() raise and a healthy server is wrongly
-        # marked errored.
-        resp = await _read_stdio_jsonrpc_response(
-            proc.stdout, _get_probe_timeout(), name=server.name
-        )
+            # Read initialize response. Skip any leading non-JSON banner/log
+            # lines the server (or a launcher like ``aim`` mid-self-update) may
+            # emit on stdout before the JSON-RPC handshake — otherwise a single
+            # stray line makes json.loads() raise and a healthy server is wrongly
+            # marked errored.
+            resp = await _read_stdio_jsonrpc_response(
+                proc.stdout, _get_probe_timeout(), name=server.name
+            )
+            fallback = downgrade_protocol_version(resp, protocol_version)
+            if not fallback:
+                break
+            protocol_version = fallback
         if resp is None:
             server.status = "error"
             server.error = "no response"

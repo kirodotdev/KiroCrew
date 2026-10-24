@@ -609,17 +609,18 @@ async def send_initialize(
             "send_initialize() must run before the stdout pump starts; "
             "the running pump owns backend.stdout"
         )
-    request = {
-        "jsonrpc": "2.0",
-        "id": _GATEWAY_INIT_ID,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {"experimental": {INFLIGHT_CAPABILITY_KEY: {}}},
-            "clientInfo": dict(client_info or {"name": "kirocrew-gateway", "version": "0"}),
-        },
-    }
-    await _write_json_line(backend.stdin, request)
+
+    def _request(version: str) -> dict[str, Any]:
+        return {
+            "jsonrpc": "2.0",
+            "id": _GATEWAY_INIT_ID,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": version,
+                "capabilities": {"experimental": {INFLIGHT_CAPABILITY_KEY: {}}},
+                "clientInfo": dict(client_info or {"name": "kirocrew-gateway", "version": "0"}),
+            },
+        }
 
     # Backends may emit log lines to stdout before the JSON-RPC response;
     # skip anything that isn't a well-formed JSON-RPC object addressed to
@@ -635,12 +636,28 @@ async def send_initialize(
                 continue
             return msg
 
-    try:
-        response = await asyncio.wait_for(_await_response(), timeout=timeout)
-    except asyncio.IncompleteReadError as exc:
-        raise ValueError(
-            f"backend closed stdout before initialize response: got {len(exc.partial)} bytes"
-        ) from exc
+    # Offer our newest revision; a -32602 refusal listing ``data.supported``
+    # gets one retry with the newest older one, as the MCP probes do. Imported
+    # here so the names stay off this owner's module namespace, which the
+    # ``backend`` facade re-exports.
+    from kiro_crew.mcp_discovery_probe_state import (
+        MCP_CLIENT_PROTOCOL_VERSION,
+        downgrade_protocol_version,
+    )
+
+    version = MCP_CLIENT_PROTOCOL_VERSION
+    while True:
+        await _write_json_line(backend.stdin, _request(version))
+        try:
+            response = await asyncio.wait_for(_await_response(), timeout=timeout)
+        except asyncio.IncompleteReadError as exc:
+            raise ValueError(
+                f"backend closed stdout before initialize response: got {len(exc.partial)} bytes"
+            ) from exc
+        fallback = downgrade_protocol_version(response, version)
+        if not fallback:
+            break
+        version = fallback
 
     result, backend.supports_caller_identity = _parse_initialize_response(response)
     backend.reports_inflight = _reports_inflight(result)
