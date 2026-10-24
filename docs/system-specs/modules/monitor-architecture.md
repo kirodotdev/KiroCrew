@@ -77,6 +77,21 @@ own `entries` tuple, which requires splitting the subject-level fields off
 `MonitorObservation`, and deriving the fingerprint from the conditions rather
 than from the canonical facts.
 
+**Which statuses carry conditions.** Conditions were originally built only for
+`ACTIONABLE` observations, because the coalescing window was the only reader and
+nothing else was put through it. The GitHub pull-request adapter now derives
+conditions for `PENDING` and `SUCCESS` observations too, and the decision layer
+routes exactly those two through the same window: a `PENDING` PR carries its
+one-time signals (the green-check board completing on a non-draft PR, and digests
+over comments and reviews left by people other than the PR author), and a
+`SUCCESS` PR carries only the human activity that arrived with the terminal
+transition, so a review that settles a review-only watch is heard once before
+the watch stops. A watch's first readable observation records whatever signals it
+sees as a baseline in the re-alert map without waking, because those signals are
+levels rather than edges -- activity that predates the watch must not read as new
+-- while a level that changes later arrives under a fresh key and wakes normally.
+Like any condition, each signal wakes once per re-alert interval after that.
+
 ### A probe boundary not typed to one implementation
 
 **Status: implemented for structured monitors.** `MonitorProbe` in `models.py`
