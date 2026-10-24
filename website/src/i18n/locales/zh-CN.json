@@ -12033,6 +12033,7 @@
       },
       "toolRiskBadge": {
         "annotation_title": "Jev 看过这次调用并做了标记。标记不会影响这次调用是否被允许：那由本会话自己的权限设置决定，而且这次调用仍可能已被拒绝。",
+        "annotation_note": "仅作标记，没有放行或拦截",
         "confidence_title": "Jev 对自己答案的把握，取值 0 到 1",
         "labelled_tier": "Jev：{{tier}}",
         "rate_jev": "Jev",

@@ -12401,6 +12401,7 @@
       },
       "toolRiskBadge": {
         "annotation_title": "Jev a examiné cet appel et l'a signalé. Cela n'a rien changé à son autorisation : c'est le réglage d'autorisations de cette session qui en a décidé, et l'appel a pu être refusé malgré tout.",
+        "annotation_note": "simple signalement, n'a rien autorisé ni bloqué",
         "confidence_title": "La confiance de Jev dans sa propre réponse, de 0 à 1",
         "labelled_tier": "Jev : {{tier}}",
         "rate_jev": "Jev",

@@ -12401,6 +12401,7 @@
       },
       "toolRiskBadge": {
         "annotation_title": "O Jev olhou esta chamada e sinalizou-a. Isso não mudou nada sobre a chamada ter sido permitida: isso foi decidido pela configuração de permissões desta sessão, e a chamada pode ter sido recusada mesmo assim.",
+        "annotation_note": "apenas um aviso, não permitiu nem bloqueou nada",
         "confidence_title": "A confiança do Jev na própria resposta, de 0 a 1",
         "labelled_tier": "Jev: {{tier}}",
         "rate_jev": "Jev",

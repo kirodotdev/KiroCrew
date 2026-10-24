@@ -141,6 +141,15 @@ describe('the badge', () => {
     expect(title).not.toContain('still ran')
   })
 
+  it('says the flag allowed and blocked nothing in visible text, not only in a tooltip', () => {
+    // A title is unreachable on touch and by keyboard (#12298 item 3).
+    render(<ToolRiskBadge record={record} />)
+    const note = screen.getByTestId('tool-risk-badge-note')
+    expect(note.textContent).toBe('flag only, did not allow or block')
+    expect(note).not.toHaveAttribute('title')
+    expect(screen.getByTestId('tool-risk-badge').textContent).toContain('did not allow or block')
+  })
+
   it('keeps the danger colour for a blocked call, not for an annotation on one that ran', () => {
     const { container } = render(<ToolRiskBadge record={record} />)
     expect(container.querySelector('.text-danger')).toBeNull()

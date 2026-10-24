@@ -12033,6 +12033,7 @@
       },
       "toolRiskBadge": {
         "annotation_title": "Jev がこの呼び出しを見て印を付けました。印を付けても、その呼び出しが許可されたかどうかは変わりません。それを決めるのはこのセッションの権限設定で、呼び出しは拒否されたこともあります。",
+        "annotation_note": "印だけで、許可も拒否もしていません",
         "confidence_title": "自分の答えに対する Jev の確信度（0 から 1）",
         "labelled_tier": "Jev: {{tier}}",
         "rate_jev": "Jev",

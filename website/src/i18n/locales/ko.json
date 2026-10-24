@@ -12033,6 +12033,7 @@
       },
       "toolRiskBadge": {
         "annotation_title": "Jev가 이 호출을 보고 표시했습니다. 표시는 호출이 허용되었는지와 무관합니다. 그것은 이 세션의 권한 설정이 결정하며, 호출은 거부되었을 수도 있습니다.",
+        "annotation_note": "표시만 했을 뿐, 허용하거나 차단하지 않았습니다",
         "confidence_title": "자기 답에 대한 Jev의 확신도, 0에서 1까지",
         "labelled_tier": "Jev: {{tier}}",
         "rate_jev": "Jev",

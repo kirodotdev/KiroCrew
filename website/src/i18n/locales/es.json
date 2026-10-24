@@ -12401,6 +12401,7 @@
       },
       "toolRiskBadge": {
         "annotation_title": "Jev miró esta llamada y la marcó. Eso no cambió nada sobre si la llamada estaba permitida: eso lo decidió el ajuste de permisos de esta sesión, y la llamada pudo haber sido rechazada igualmente.",
+        "annotation_note": "solo un aviso, no permitió ni bloqueó nada",
         "confidence_title": "La confianza de Jev en su propia respuesta, de 0 a 1",
         "labelled_tier": "Jev: {{tier}}",
         "rate_jev": "Jev",

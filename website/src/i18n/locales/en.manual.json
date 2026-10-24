@@ -5638,6 +5638,7 @@
       },
       "toolRiskBadge": {
         "annotation_title": "Jev looked at this call and flagged it. That changed nothing about whether the call was allowed: this session's own permission setting decided that, and the call may still have been refused.",
+        "annotation_note": "flag only, did not allow or block",
         "confidence_title": "Jev's confidence in its own answer, from 0 to 1",
         "labelled_tier": "Jev: {{tier}}",
         "rate_jev": "Jev",

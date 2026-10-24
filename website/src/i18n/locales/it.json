@@ -12401,6 +12401,7 @@
       },
       "toolRiskBadge": {
         "annotation_title": "Jev ha guardato questa chiamata e l'ha segnalata. Questo non ha cambiato nulla sul fatto che la chiamata fosse permessa: lo ha deciso l'impostazione dei permessi di questa sessione, e la chiamata potrebbe essere stata rifiutata comunque.",
+        "annotation_note": "solo una segnalazione, non ha permesso né bloccato nulla",
         "confidence_title": "La fiducia di Jev nella propria risposta, da 0 a 1",
         "labelled_tier": "Jev: {{tier}}",
         "rate_jev": "Jev",

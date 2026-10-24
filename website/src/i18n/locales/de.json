@@ -12217,6 +12217,7 @@
       },
       "toolRiskBadge": {
         "annotation_title": "Jev hat diesen Aufruf angesehen und markiert. Das hat nichts daran geändert, ob der Aufruf erlaubt war: darüber hat die Berechtigungseinstellung dieser Sitzung entschieden, und der Aufruf kann trotzdem abgelehnt worden sein.",
+        "annotation_note": "nur ein Hinweis, hat nichts erlaubt oder blockiert",
         "confidence_title": "Jevs Vertrauen in die eigene Antwort, von 0 bis 1",
         "labelled_tier": "Jev: {{tier}}",
         "rate_jev": "Jev",
