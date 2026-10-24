@@ -608,6 +608,46 @@ def _wait_gateway_ready(
         time.sleep(_RESTART_READY_POLL_INTERVAL)
 
 
+def _signing_key_refusal_lines() -> list[str]:
+    """Repair steps to print when a gateway that just failed to start sits on a truncated key.
+
+    The gateway's own refusal (``slack.gateway.signing_key_preflight``) prints these
+    steps to its stderr, which a detached or service-managed gateway sends to a log
+    the person running ``kirocrew restart`` has not opened. Repeating them here puts
+    the fix in the terminal that asked for the restart.
+
+    Same read-only ``lstat`` look ``kirocrew doctor`` takes, with the same sandbox
+    evidence and the same ``open_is_denied`` guard, so a sandbox mask over a
+    healthy key never gets the file-removing steps. Any
+    error answers ``[]``: this only adds a hint to a failure already reported.
+    """
+    try:
+        from kiro_crew import sandbox
+        from kiro_crew.dashboard import token_secret
+        from kiro_crew.service.common import restart_command_hint
+
+        # Same two bits doctor and the boot preflight pass: a foreign macOS
+        # Seatbelt sandbox can leave the real key readable, so the open-refusal
+        # cross-check applies only when that verdict is the sole signal.
+        confined = sandbox.agent_confinement_evidence() is not None
+        state, key_path = token_secret.signing_key_health(
+            confined=confined,
+            require_denied_open=confined and not sandbox.agent_confinement_is_kirocrew_own(),
+        )
+        # A short key this process cannot open may be the sandbox's mode-0 mask
+        # over a healthy key; doctor withholds the removal steps there too.
+        if state != "short" or token_secret.open_is_denied(key_path):
+            return []
+        steps = token_secret.signing_key_remedy(key_path, restart_command_hint())
+    except Exception:  # noqa: BLE001 - a hint on an already-reported failure
+        return []
+    return [
+        f"   The token signing key at {key_path} is shorter than 32 bytes, so the "
+        "gateway refuses to start. Repair it by hand:",
+        *(f"     {step}" for step in steps),
+    ]
+
+
 def _print_token_url(port: int) -> None:
     """Wait for the gateway to come up, then print a fresh token URL."""
     deadline = time.monotonic() + _RESTART_TOKEN_WAIT
@@ -803,6 +843,9 @@ def _restart(cli_port: int | None = None) -> None:
                 lines.append(
                     "   The service manager restarted nothing; run `kirocrew restart` again."
                 )
+            if any(f.kind == RESTART_NOT_UP for f in failures):
+                # A unit that is not up after a restart may be refusing to boot.
+                lines.extend(_signing_key_refusal_lines())
             print("\n".join(lines))
             sys.exit(1)
 
@@ -993,6 +1036,12 @@ def _restart(cli_port: int | None = None) -> None:
                 print("   Its last lines in gateway.log:")
                 for line in tail:
                     print(f"     {line}")
+            else:
+                # The relayed lines already carry the gateway's own refusal and
+                # its repair steps; only an empty relay needs them restated.
+                refusal = _signing_key_refusal_lines()
+                if refusal:
+                    print("\n".join(refusal))
         else:
             print(
                 f"❌ Replacement gateway (pid {pid}) did not become ready within "

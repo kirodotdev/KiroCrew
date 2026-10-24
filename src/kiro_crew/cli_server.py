@@ -894,6 +894,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _replacement_is_serving,
         _resolve_restart_ready_timeout,
         _restart,
+        _signing_key_refusal_lines,
         _spawn_detached_gateway,
         _wait_for_pids_exit,
         _wait_gateway_ready,

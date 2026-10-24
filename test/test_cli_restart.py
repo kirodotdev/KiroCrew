@@ -255,6 +255,93 @@ class TestRestart:
         assert audit["outcome"] == "denied"
         assert "reason=service_restart_not_up" in audit["resources"]
 
+    def test_unit_not_up_on_a_truncated_key_prints_the_repair_steps(self, capsys, tmp_path):
+        # A service gateway's refusal lands in the journal. The restart names
+        # the journal command and, when the key is short, the steps themselves.
+        from kiro_crew import cli_server
+        from kiro_crew.service.common import RESTART_NOT_UP, RestartReport, ScopeRestart
+
+        key = tmp_path / "token_signing.key"
+        not_up = RestartReport(
+            (
+                ScopeRestart(
+                    "user",
+                    False,
+                    reason="kirocrew.service is activating (auto-restart)",
+                    kind=RESTART_NOT_UP,
+                    hint="journalctl --user -u kirocrew.service -n 50 --no-pager",
+                ),
+            )
+        )
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=MagicMock()),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=not_up,
+            ),
+            patch(
+                "kiro_crew.cli_server.service_controller.is_service_active",
+                return_value=True,
+            ),
+            patch("kiro_crew.cli_server._spawn_detached_gateway") as mock_spawn,
+            patch("kiro_crew.sandbox.agent_confinement_evidence", return_value=None),
+            patch(
+                "kiro_crew.dashboard.token_secret.signing_key_health",
+                return_value=("short", key),
+            ),
+            patch(
+                "kiro_crew.service.common.restart_command_hint",
+                return_value="systemctl --user restart kirocrew",
+            ),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli_server._restart(None)
+
+        assert exc.value.code == 1
+        mock_spawn.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Read why it exits:  journalctl --user -u kirocrew.service" in out
+        assert f"token signing key at {key} is shorter than 32 bytes" in out
+        assert "systemctl --user restart kirocrew" in out
+
+    def test_unit_the_manager_refused_to_restart_gets_no_key_steps(self, capsys, tmp_path):
+        # A refused verb never ran the gateway, so its boot cannot be the cause.
+        from kiro_crew import cli_server
+        from kiro_crew.service.common import RESTART_REFUSED, RestartReport, ScopeRestart
+
+        refused = RestartReport(
+            (
+                ScopeRestart(
+                    "system",
+                    False,
+                    reason="Interactive authentication required",
+                    kind=RESTART_REFUSED,
+                    hint="sudo systemctl restart kirocrew",
+                ),
+            )
+        )
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=MagicMock()),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=refused,
+            ),
+            patch(
+                "kiro_crew.cli_server.service_controller.is_service_active",
+                return_value=True,
+            ),
+            patch("kiro_crew.cli_server._spawn_detached_gateway"),
+            patch(
+                "kiro_crew.dashboard.token_secret.signing_key_health",
+                return_value=("short", tmp_path / "token_signing.key"),
+            ) as mock_health,
+        ):
+            with pytest.raises(SystemExit):
+                cli_server._restart(None)
+
+        assert "Repair it by hand" not in capsys.readouterr().out
+        mock_health.assert_not_called()
+
     def test_attempted_restart_that_left_the_unit_failed_never_spawns_a_foreground_gateway(
         self, capsys
     ):
