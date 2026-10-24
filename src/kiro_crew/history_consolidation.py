@@ -81,7 +81,12 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.project_scope import scope_is_admissible
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.skills import AUTO_SKILL_MAX_PROCEDURE_CHARS, AutoSkillProvenance, ClaimRefusal
+from kiro_crew.skills import (
+    AUTO_SKILL_MAX_PROCEDURE_CHARS,
+    AutoSkillProvenance,
+    ClaimRefusal,
+    canonical_skill_text_hash,
+)
 from kiro_crew.skills_dedupe import (
     VERDICT_DUP,
     VERDICT_NEW,
@@ -170,6 +175,7 @@ class HistoryConsolidator:
     _merge_skill_update = _skills._merge_skill_update
     _skill_publication_guard = _skills._skill_publication_guard
     _stage_skill_update = _skills._stage_skill_update
+    _auto_apply_staged_update = _skills._auto_apply_staged_update
     _process_auto_skills = _skills._process_auto_skills
 
     # ── Cross-process consolidation lease (history_consolidation_lease) ──
@@ -208,6 +214,7 @@ class HistoryConsolidator:
         auto_similarity_threshold: float = 0.85,
         # ── Staged approval + lifecycle (v2) ──
         approval_required: bool = True,
+        auto_apply_updates: bool = False,
         max_auto_skills: int = 100,
         stale_after_days: int = 30,
         archive_after_days: int = 90,
@@ -227,6 +234,7 @@ class HistoryConsolidator:
         self._auto_min_tool_calls = auto_min_tool_calls
         self._auto_similarity_threshold = auto_similarity_threshold
         self._approval_required = approval_required
+        self._auto_apply_updates = auto_apply_updates
         self._max_auto_skills = max_auto_skills
         self._stale_after_days = stale_after_days
         self._archive_after_days = archive_after_days
@@ -307,6 +315,7 @@ class HistoryConsolidator:
         self._auto_min_tool_calls = int(getattr(skills, "auto_min_tool_calls"))
         self._auto_similarity_threshold = float(getattr(skills, "auto_similarity_threshold"))
         self._approval_required = bool(getattr(skills, "approval_required"))
+        self._auto_apply_updates = bool(getattr(skills, "auto_apply_updates"))
         self._max_auto_skills = int(getattr(skills, "max_auto_skills"))
         self._stale_after_days = int(getattr(skills, "stale_after_days"))
         self._archive_after_days = int(getattr(skills, "archive_after_days"))
@@ -1147,6 +1156,7 @@ _BOUND_FOR_IMPORTERS = (
     _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
     authored_lesson_applies,
     background_turn,
+    canonical_skill_text_hash,
     copy,
     datetime,
     extracted_lesson_applies,
@@ -1227,6 +1237,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SENSITIVE_TOOL_PATTERNS,
         _SKILL_DETECTION_WINDOW,
         _TOOL_ROLES,
+        _auto_skill_promotion_disabled_reason,
         _count_tool_call_messages,
         _facade_metadata_dedupe_verdict,
         _facade_sel,

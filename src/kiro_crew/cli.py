@@ -450,6 +450,7 @@ def main() -> None:
     register_bench_parser(sub)
     register_desktop_parser(sub)
 
+    cli_parser_agent.register_skills_parser(sub)
     cli_parser_agent.register_knowledge_parser(sub)
     cli_parser_admin.register_secrets_parser(sub)
     cli_parser_admin.register_pod_parser(sub)
@@ -932,6 +933,8 @@ def main() -> None:
         from kiro_crew.cli_commands import _policy
 
         _policy(args)
+    elif args.command == "skills":
+        _skills_cmd(args)
     elif args.command == "knowledge":
         _knowledge(args)
     elif args.command == "secrets":
@@ -1072,7 +1075,7 @@ from kiro_crew.cli_gateway_boot import (  # noqa: E402
     _resolve_gateway_args,
 )
 from kiro_crew.cli_jail import _JAILED_COMMANDS, _jail_reexec_gate  # noqa: E402
-from kiro_crew.cli_knowledge import _consolidate_cmd, _knowledge  # noqa: E402
+from kiro_crew.cli_knowledge import _consolidate_cmd, _knowledge, _skills_cmd  # noqa: E402
 from kiro_crew.cli_logging import _setup_cli_logging  # noqa: E402
 from kiro_crew.cli_perf import perf_cmd, register_perf_parser  # noqa: E402
 from kiro_crew.cli_setup import (  # noqa: E402, F401
@@ -1127,4 +1130,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _redirect_fds_to,
         _stop_log_queue_listener,
         drain_log_queue_before_hard_exit,
+    )
+    from kiro_crew.skills import (  # noqa: F401
+        initialize_gateway_auto_skill_private_authority,
+        retire_auto_skill_private_authority,
     )

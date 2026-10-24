@@ -423,7 +423,7 @@ from kiro_crew.session import (
     SessionManager,
 )
 from kiro_crew.session_start_sizing import resolve_session_start_sizing
-from kiro_crew.skills import SkillsLoader
+from kiro_crew.skills import SkillsLoader, initialize_gateway_auto_skill_private_authority
 from kiro_crew.slack.client import RealSlackClient
 from kiro_crew.slack.format import (
     build_cron_ack_block,

@@ -222,6 +222,7 @@ def _skill_settings() -> types.SimpleNamespace:
         auto_min_tool_calls=3,
         auto_similarity_threshold=0.8,
         approval_required=True,
+        auto_apply_updates=False,
         max_auto_skills=7,
         stale_after_days=30,
         archive_after_days=90,
@@ -265,6 +266,7 @@ def test_a_dashboard_only_launch_builds_its_own_consolidator(
         "auto_min_tool_calls": 3,
         "auto_similarity_threshold": 0.8,
         "approval_required": True,
+        "auto_apply_updates": False,
         "max_auto_skills": 7,
         "stale_after_days": 30,
         "archive_after_days": 90,
@@ -339,6 +341,67 @@ def test_without_a_serving_loop_the_bell_rings_inline_and_retires_nothing(
 
     monkeypatch.setattr(server, "set_pending_staged_hook", _refuse)
     server._register_pending_skill_hooks(state)
+
+
+class _InlineLoop:
+    """A serving-loop double that runs a scheduled callback at once and records it."""
+
+    def __init__(self) -> None:
+        self.scheduled: list[Any] = []
+
+    def is_closed(self) -> bool:
+        return False
+
+    def call_soon_threadsafe(self, callback: Any) -> None:
+        self.scheduled.append(callback)
+        callback()
+
+
+def _auto_applied_hook(monkeypatch: pytest.MonkeyPatch, state: Any) -> Any:
+    applied: list[Any] = []
+    monkeypatch.setattr(server, "set_pending_staged_hook", lambda _hook: None)
+    monkeypatch.setattr(server, "set_pending_consumed_hook", lambda _hook: None)
+    monkeypatch.setattr(server, "set_update_auto_applied_hook", applied.append)
+    server._register_pending_skill_hooks(state)
+    return applied[0]
+
+
+def test_an_unattended_update_rings_the_bell_on_the_serving_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An update applied without review gets the one notification that says a live skill
+    changed, emitted on the gateway loop."""
+    state = MagicMock()
+    state.serving_loop = _InlineLoop()
+    on_applied = _auto_applied_hook(monkeypatch, state)
+
+    on_applied(
+        {"slug": "tidy-up", "target": "tidy", "new_version": 3, "description": "Tidy the desk"}
+    )
+
+    assert len(state.serving_loop.scheduled) == 1
+    payload = {"slug": "tidy-up", "target": "tidy", "new_version": 3}
+    notified = state.notify.call_args
+    assert notified.args[:2] == ("skills", "Skill auto-updated")
+    assert notified.args[2].startswith("**tidy** — Tidy the desk\n\nAuto-updated to v3.")
+    assert "Applied without review because skill approval is disabled" in notified.args[2]
+    assert notified.kwargs == {"meta": payload, "url": "/capabilities?tab=skills"}
+    state.broadcast_ws.assert_called_once_with("skills.pending_changed", payload)
+
+
+def test_without_a_serving_loop_the_auto_update_notice_is_inline_and_contained(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = MagicMock()
+    state.serving_loop = None
+    state.notify.side_effect = RuntimeError("feed unavailable")
+    on_applied = _auto_applied_hook(monkeypatch, state)
+
+    on_applied({"name": "auto/tidy", "new_version": 2})
+
+    assert state.notify.call_args.args[2].startswith("**auto/tidy** auto-updated to v2.")
+    state.broadcast_ws.assert_not_called()
+    on_applied(None)  # an unreadable record is logged, never raised
 
 
 class _Recorder:

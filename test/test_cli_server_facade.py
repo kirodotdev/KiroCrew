@@ -89,8 +89,10 @@ _SPELLS_THE_FACADE = re.compile(
     r"|from\s+kiro_crew\s+import\s+(?:\([^)]*?\bcli_server\b(?!_)|[^\n]*?\bcli_server\b(?!_))"
 )
 
-#: Every name the facade's import statements bound before its owners moved out. They stay
-#: bound here because callers and tests read and patch them as attributes of this module.
+#: Every name the facade's import statements bind: those bound before its owners moved out,
+#: and ``initialize_gateway_auto_skill_private_authority``, which ``_run_task`` (kept here)
+#: calls before it builds task state. They stay bound here because callers and tests read
+#: and patch them as attributes of this module.
 _BASE_IMPORTS = frozenset("""
     ContextBuilder ConversationLog DASHBOARD_HTML_NOT_FOUND_MARKER DivergenceUnreadable
     EXTERNALLY_MANAGED_MESSAGES HistoryConsolidator HookManager KiroCrewConfig LessonStore
@@ -102,7 +104,8 @@ _BASE_IMPORTS = frozenset("""
     _session_work_dir activate_mise argparse asyncio build_frontend_sync build_provider_factory
     check_peer_is_self codecs config_dir config_path count_divergence_sync current_platform
     dashboard_origin dashboard_socket_path dep_sync deque derive_capability distribution
-    ensure_dev_dist_symlink enum get_peer_pid hooks_config_from_config_dict http io
+    ensure_dev_dist_symlink enum get_peer_pid hooks_config_from_config_dict http
+    initialize_gateway_auto_skill_private_authority io
     is_bundled_kiro_cli is_default_home is_governance_pinned_off json lock_holder logging
     loopback_urlopen make_sync_embed_fn math model_file_present os owner_only_opener
     parse_duration pin_kiro_cli platform_compat read_local_secret register_skill_read_observer

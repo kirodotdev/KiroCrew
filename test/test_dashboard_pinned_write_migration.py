@@ -553,7 +553,7 @@ class _ThreadRecordingSkills:
     def update_skill(self, name: str, content: str) -> bool:
         return self._record()
 
-    def delete_skill(self, name: str) -> bool:
+    def delete_skill_checked(self, name: str) -> bool:
         return self._record()
 
 
