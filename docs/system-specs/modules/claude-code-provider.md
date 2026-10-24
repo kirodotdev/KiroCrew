@@ -626,6 +626,46 @@ Crew-owned directory from the user's `~/.claude`, keeping credentials and models
 while stripping inherited `permissions` that would pre-approve past Crew's gate)
 is **not implemented here** — see the known gap below.
 
+### Native subagents (the Agent tool)
+
+Claude Code runs a subagent for its Agent (Task) tool inside the session's own
+process. `AcpClient` declares `clientCapabilities.subagents` on this backend
+(`client_native_children.CLAUDE_CLIENT_CAPABILITIES`), so claude-agent-acp
+(measured on 0.94.0) sends the child form:
+
+- `subagent_update` on the parent session: the child's `sessionId`, a `title` (the
+  agent type), a `description`, and a `state` (`running`, `requires_action`, or
+  `idle` with a `stopReason`);
+- `session_message` on the child session: the prompt the child was handed, whose
+  `messageId` is the Agent call's `toolCallId`;
+- the child's own `tool_call`, `tool_call_update` and `agent_message_chunk` frames
+  under the child's sessionId, each stamped `_meta.claudeCode.parentToolUseId`.
+
+`client_native_children` reads them in all three `AcpClient` readers. Each lifecycle
+change yields the roster of this turn's children that have a task, as `EVENT_SUBAGENT_LIST` in
+the kiro-cli shape, so the native Activity cards (`_native_subagent_sync`) draw one
+card per child. `requires_action` keeps the card running with no tool line, because
+nothing would clear that line when the child resumes. An idle child is completed,
+failed with `cancelled`, or failed with its error. A
+child's text becomes `EVENT_SUBAGENT_ACTIVITY` on its card and never the parent's
+answer. A child's tool call yields its activity prefix and then renders as an
+ordinary tool row, as a kiro-cli child's does on `AcpClient`, so its approval, hooks
+and SEL record are unchanged. The child's other frames are dropped. A child call the
+adapter left on the parent session is still attributed through the Agent call it
+serves.
+
+The child ids and the Agent-call links are bounded by `NATIVE_CHILD_ROSTER_CAP`,
+each link by its length too (parity row H16). A child past the cap gets no card: its
+text and side frames are dropped, and its tool calls render as ordinary rows, so the
+provenance its approvals are judged by still fills. The next turn's start logs how
+many ids or links were refused. The ids outlive
+the turn, because a background child keeps running after the turn that started it;
+a later turn that reads one of its frames lists it again. Not wired: the per-child
+`capabilities.cancel` the adapter offers (a card's Stop still only closes the card),
+a resume naming a child id (it misses as an unknown conversation), and reporting the
+children as uncharged residency. A child's permission request is answered like any
+other request on the session. Contract tests: `test_claude_native_subagent_cards.py`.
+
 ### A Side Chat session
 
 A Side Chat or thread-reply session (`side_read_only`) runs under `READ_ONLY`, which

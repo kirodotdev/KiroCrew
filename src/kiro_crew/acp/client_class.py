@@ -27,6 +27,7 @@ from kiro_crew.acp import client_elicitation as _client_elicitation
 from kiro_crew.acp import client_lifecycle as _client_lifecycle
 from kiro_crew.acp import client_mcp_array as _client_mcp_array
 from kiro_crew.acp import client_model_selection as _client_model_selection
+from kiro_crew.acp import client_native_children as _client_native_children
 from kiro_crew.acp import client_permissions as _client_permissions
 from kiro_crew.acp import client_seed_ownership as _client_seed_ownership
 from kiro_crew.acp import client_spawn_env as _client_spawn_env
@@ -510,6 +511,15 @@ class AcpClient:
         # half was refused, or ``""``. Set by ``_push_model_via_effort_split``.
         self.model_pin_partial: str = ""
         self._child_pids: dict[int, ChildRecord] = {}  # pid → (start_time, basename)
+        # Claude Code's native subagents (``client_native_children``): the child ids
+        # this session has seen, bounded by NATIVE_CHILD_ROSTER_CAP with the overflow
+        # counted, one card row per id, the Agent call each delegation came from,
+        # and the ids listed this turn, in arrival order.
+        self._native_child_sids: set[str] = set()
+        self._native_child_overflow = 0
+        self._native_child_rows: dict[str, dict[str, Any]] = {}
+        self._native_child_by_tool_use: dict[str, str] = {}
+        self._native_child_turn: dict[str, None] = {}
         self.last_prompt_stats = AcpPromptStats()
         # Credits kiro reported while no turn was running (a compaction waited
         # on between turns), held for the next turn's bill; see _track_metadata.
@@ -1337,6 +1347,16 @@ class AcpClient:
     _dispatch_events = _client_turn._dispatch_events
     _send_prompt = _client_turn._send_prompt
     _read_prompt_response = _client_turn._read_prompt_response
+
+    # Read Claude Code's native subagents on this session: ``kiro_crew.acp.client_native_children``.
+    _native_children_declared = _client_native_children._native_children_declared
+    _reset_native_child_turn = _client_native_children._reset_native_child_turn
+    _admit_native_child = _client_native_children._admit_native_child
+    _native_child_roster = _client_native_children._native_child_roster
+    _note_subagent_update = _client_native_children._note_subagent_update
+    _note_session_message = _client_native_children._note_session_message
+    _native_child_of = _client_native_children._native_child_of
+    _native_child_events = _client_native_children._native_child_events
 
     # Control an ``AcpClient`` turn from outside it: ``kiro_crew.acp.client_turn_control``.
     command_result = _client_turn_control.command_result

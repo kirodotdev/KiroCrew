@@ -11,8 +11,10 @@ The contract pinned here:
   every child, a child's ``kirocrew/status`` is rejected (``child_origin``), a
   child cannot be resumed independently, and a late child frame after the turn
   resurrects nothing;
-* the Claude backend exposes no per-child identity, so its counter stays 0 and
-  the liveness oracle still bounds the parent (declared gap, not a defect);
+* a Claude Task call on a session that does not declare ``subagents`` carries no
+  per-child identity, so the handle's counter stays 0 and the liveness oracle still
+  bounds the parent; with the declaration the per-session ``AcpClient`` reads the
+  child form (``test_claude_native_subagent_cards.py``);
 * a Kiro Crew ``spawn_run`` child is the boundary for its OWN native
   grandchildren -- they are counted on that child's handle only;
 * a 200-child parent inflates neither ``HostBudget`` nor the adaptive
@@ -22,7 +24,10 @@ The contract pinned here:
   store at most ``NATIVE_CHILD_ROSTER_CAP`` distinct ids, count what they
   refuse, and answer a frame from a child past the cap the same way (an update
   is a counted drop; a permission request is refused at once under a reason
-  that names the cap).
+  that names the cap). ``AcpClient``'s Claude child set takes the same cap and
+  overflow count; on that one-session client a past-cap child's text is
+  dropped, and its tool calls and permission requests take the session's
+  ordinary path (``test_claude_native_subagent_cards.py``).
 
 SPEC-ADDENDUM §10 scenarios about native subtasks -> tests:
 
@@ -156,9 +161,10 @@ def _status_meta(**fields) -> dict:
 
 
 def _claude_task_call(tool_call_id: str = "task-1") -> dict:
-    """What the Claude adapter emits for its in-harness Task tool: an ordinary
-    ``tool_call`` on the PARENT sessionId. No child sessionId, no roster, no
-    ``_meta.kiro`` -- the child has no identity Kiro Crew can name."""
+    """What the Claude adapter emits for its in-harness Task tool to a client that
+    does not declare ``subagents``: an ordinary ``tool_call`` on the PARENT sessionId.
+    No child sessionId, no roster, no ``_meta.kiro`` -- the child has no identity
+    Kiro Crew can name."""
     return {
         "sessionUpdate": "tool_call",
         "toolCallId": tool_call_id,
@@ -611,16 +617,17 @@ def test_late_child_frame_after_the_turn_resurrects_nothing():
     assert handle.is_turn_active is False
 
 
-# ── (3) Claude backend: no per-child identity -- declared gap H16 ────────────
+# ── (3) Claude backend without ``subagents``: no per-child identity (H16) ────
 
 
 @pytest.mark.asyncio
 async def test_claude_backend_counts_no_children_but_oracle_still_bounds_the_parent():
-    """The Claude adapter's Task tool is an ordinary tool call on the parent:
-    no child sessionId, no roster, no ``_meta.kiro``. The counter stays 0 --
-    not because there are no children, but because the harness exposes none
-    (parity row H16, a declared capability gap). The stall watchdog still
-    bounds the parent turn with the same single session-scoped cancel."""
+    """Undeclared, the Claude adapter's Task tool is an ordinary tool call on the
+    parent: no child sessionId, no roster, no ``_meta.kiro``. The counter stays 0 --
+    not because there are no children, but because the frames name none (parity row
+    H16). The stall watchdog still bounds the parent turn with the same single
+    session-scoped cancel. The declared form is read on ``AcpClient``, where the
+    Claude backend runs: ``test_claude_native_subagent_cards.py``."""
     rt = _runtime(ACP_BACKEND_CLAUDE)
     handle = AcpSessionHandle(PARENT, asyncio.Queue(), rt, watchdog=_FAST_WD)
     events = handle._handle_update(_update_msg(_claude_task_call()))

@@ -1,5 +1,6 @@
-"""kiro-cli native sub-agent Activity cards and the native AskUserQuestion card a dashboard turn
-shows, and the stream's native sub-agent arms (``_on_subagent_list``, ``_on_subagent_activity``)."""
+"""Harness-native sub-agent Activity cards (kiro-cli's, KAS's and Claude Code's) and the native
+AskUserQuestion card a dashboard turn shows, and the stream's native sub-agent arms
+(``_on_subagent_list``, ``_on_subagent_activity``)."""
 
 from __future__ import annotations
 
