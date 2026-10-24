@@ -920,6 +920,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         INTERNAL_STUB_PREFIXES,
         TOOL_SURFACE_STUB_PREFIX,
         BackendGone,
+        _carry_tool_call_id,
         _collapse_nonprintable,
         _inject_caller_meta,
         _inject_tenant_meta,

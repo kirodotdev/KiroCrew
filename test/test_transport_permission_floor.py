@@ -525,13 +525,13 @@ async def test_client_without_an_event_map_is_still_held_to_the_floor():
 # ── AcpSessionHandle ──
 
 
-def _handle():
+def _handle(*, session_key: str = ""):
     from kiro_crew.acp.session_handle import AcpSessionHandle
 
     runtime = MagicMock()
     runtime.send_response = AsyncMock()
     runtime.send_error = AsyncMock()
-    return AcpSessionHandle("s1", asyncio.Queue(), runtime)
+    return AcpSessionHandle("s1", asyncio.Queue(), runtime, session_key=session_key)
 
 
 @pytest.mark.asyncio

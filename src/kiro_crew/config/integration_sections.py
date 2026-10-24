@@ -126,7 +126,7 @@ MANAGED_STUB_LEADER = "kirocrew-core"
 #: already declares, so an opt-in server still reaches only the agents granted it.
 #:
 #: This is ``mcp_discovery._MANAGED_SERVERS_CALLER_AWARE`` minus the leader,
-#: ``kirocrew-computer`` and ``kirocrew-cron``. It is spelled out rather than
+#: ``kirocrew-computer``, ``kirocrew-cron`` and ``kirocrew-secrets``. It is spelled out rather than
 #: derived because this module may import only ``config.fields`` (the config
 #: boundary contract) and ``mcp_discovery`` pulls in aiohttp and the probe
 #: executor. A ratchet test pins the equality, so a new caller-aware server fails
@@ -136,7 +136,8 @@ MANAGED_STUB_LEADER = "kirocrew-core"
 #: per-connection tenant nonce (``mcp_caller.POOLING_REQUIRES_TENANT_NONCE``), so
 #: it stays an explicit choice. ``kirocrew-cron`` is not excluded for a known
 #: hazard: it is simply outside what this layer was measured on, and stays one
-#: operator toggle away like any other server.
+#: operator toggle away like any other server. ``kirocrew-secrets`` is the same:
+#: an opt-in, credential-bearing egress server this layer was not measured on.
 MANAGED_STUB_FOLLOWERS: tuple[str, ...] = (
     "kirocrew-guide",
     "kirocrew-mate",

@@ -245,6 +245,7 @@ sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 #: What a star import binds: every public name of the unsplit module's namespace.
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.mcp_caller import set_current_tool_call_id  # noqa: F401
     from kiro_crew.mcp_shared_calls import (  # noqa: F401
         CANCELLED_IDS_MAX,
         DEFERRED_PARKED_MAX,
@@ -269,6 +270,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _POLL_SECS,
         _WORKER_WAIT_SECS,
         JSONRPC_METHOD_NOT_FOUND,
+        _approved_tool_call_id,
         _tool_call_name,
         _WakePipe,
     )

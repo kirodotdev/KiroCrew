@@ -1698,4 +1698,19 @@ export default [
       'i18next/no-literal-string': 'off',
     },
   },
+
+  // SECRETS AUTHORIZE COMMAND ONLY, same "format IS the interface" category as
+  // `pasteTokens.ts` above: the two literals in this module are a CLI command and
+  // an MCP server grant name the owner types exactly as shown, so translating
+  // either makes the step impossible to complete. The sentence the owner reads
+  // around them is a separate, translated string
+  // (`settings.secrets.custom_authorize`) rendered by `SecretsPanel.tsx`, which
+  // shows the command verbatim in a `<code>` element. This module renders
+  // nothing and holds no prose; copy added here later belongs in the catalog.
+  {
+    files: ['src/pages/settings/secretsAuthorizeCommand.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
 ]

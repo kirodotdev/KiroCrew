@@ -854,6 +854,80 @@ Security properties:
   replaced, by compare-and-swap under the vault's store lock, so a value
   another writer stored since is kept.
 
+### Mediated Custom-secret requests
+
+An authorization policy is accepted only when its canonical authorizations map
+verifies under a key derived from the dashboard token-signing secret
+(`token_signing.key`) under its own purpose label, the same file-less shape as
+`mirror_admission._purpose_key`. No key is stored, and nothing is minted at boot.
+That secret is hidden from every sandbox tier, so an agent cannot compute the key.
+The root is read through `token_secret.get_persisted_secret()`, never the loader's
+ephemeral fallback: when `token_signing.key` cannot be read or persisted,
+`kirocrew secrets authorize` refuses and publishes nothing (a signature from a
+process-local key would report success yet never verify in the gateway), and
+verification fails closed.
+Rotating it invalidates every existing signature (fail closed), and the owner
+re-runs `kirocrew secrets authorize` (with `--reset` for a policy that no longer
+verifies). Only the 64-character lowercase hex this module writes is a valid
+signature; anything else is refused before the constant-time compare. The policy
+(`policy.json`) and its authorize lock live in the `secret-request-policy`
+directory beneath the Kiro Crew data home. The whole directory is on the agent
+file-tool floor and in `sandbox._CREW_HIDDEN_LEAVES`, and is precreated before
+every Linux namespace spawn, so a policy publication (a rename inside the
+directory) never replaces a mask mount point. On that backend the CLI never
+creates it (one it created while a sandbox ran would be unmasked there). A macOS
+Seatbelt deny is a path rule that holds for a name that does not exist yet, and a
+sandbox-off host masks nothing, so on those hosts `kirocrew secrets authorize`
+creates the directory itself, owner-only, refusing a link at the name. The
+backend is the spawn path's own answer (`agent.sandbox` clamped by the governed
+floor, then `detect_backend`); an unanswerable probe keeps the refusal.
+
+After a credential-bearing send, EVERY outcome collapses to the same fixed
+withheld constant, padded until the normalized request timeout expires before
+returning. Success, an SSRF/DNS refusal, a transport failure, and
+origin-selected response latency therefore complete at the same request-bounded
+deadline, so neither an error-vs-success signal nor a per-call
+blocked-vs-public DNS answer can encode a secret bit. The tool never returns the
+origin's response — no body, headers, status, content-type, or length — because
+any of them is an origin-controlled channel a reflected credential could ride
+out on. Every agent-supplied outbound value (request body, headers, query) is
+also scanned with the credential and exfiltration-URL redactors and the request
+is refused before the vault read if either would change it, so the agent cannot
+smuggle a credential OUT through the request it hands the mediator.
+
+The destination check is the product's one fetch vet,
+`link_unfurl.vet_unfurl_url`, and the connection goes through
+`link_unfurl.pinned_connector`, the same pair link previews, the remote MCP probe
+and the calendar fetch use. The mediator only adds what the vet does not know:
+the origin must equal the owner-authorized one exactly (so an explicit port is
+allowed), the scheme must be https, and every redirect hop is checked against
+that origin and vetted and pinned again. The send runs as one task under
+`asyncio.wait_for` bounded by the request timeout, so a stalled origin is
+cancelled at the deadline inside the task and nothing is written after it.
+
+Each approved call is bound to a single-use capability that
+`mediated_request_capability` mints at approval time. Both approval transports
+mint it as the LAST check under the ACP write lock, after the withdrawal, the
+runtime's liveness check and the grant deadline, and before the answer frame. No
+grant exists while an approval waits for that lock, so stopping a member during
+the wait leaves nothing to claim. If the answer is not delivered, the grant is
+revoked whether it is still pending or a caller has already claimed it. Cancelling
+a turn (both ACP cancel paths) revokes every pending and claimed grant of that
+session before the cancel goes out, so a call the operator stopped cannot run later
+on an approval it already received; other sessions' grants are untouched. Each
+cancel also bumps the session's cancellation generation. An approval records that
+generation when it starts and mints only if it is unchanged under the write lock
+(checked again after the insert), so a Stop that lands while an approval waits for
+the lock leaves no grant, whether or not the caller passed a withdrawal check. An approved call can wait
+in the server's FIFO queue (`PENDING_CALLS_MAX` calls, each holding the worker
+for up to the stub's claim and request timeouts), so an unclaimed grant lives for
+that whole queue; once claimed it must be consumed within 30 s. An expired
+approval is logged apart from a no-match. The grants are held in the gateway
+process that answered the approval, which is the process that serves the two
+mediated routes, so the tool works from member conversations the gateway
+proxies. A harness approving the call in another process mints nothing the
+gateway can redeem, and the claim is refused.
+
 ### OS-Level Sandbox (`sandbox.py`)
 
 `kiro_crew.sandbox` is the import and patch surface. What one spawn masks, seals and

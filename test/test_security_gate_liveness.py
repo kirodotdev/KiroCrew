@@ -552,7 +552,12 @@ def _url_payload_command(n: int) -> str:
 #: Raised again, from 32,798, by one line: the per-template MCP additions record joins
 #: the read floor (``_CREW_SECRET_LEAVES``), because an approved entry's ``env`` or
 #: ``headers`` can hold an API key and only the floor masks it from a foreign child.
-_PACKAGE_LINE_BUDGET = 32_799
+#:
+#: Set to the measured 32,802: the package measures 32,799, plus 3 for one
+#: ``_CREW_SECRET_LEAVES`` entry in ``paths_lists``:
+#: the mediated-secret request directory (``secret-request-policy``), denied to the
+#: agent file tools as a whole. Data, not rule logic: the matcher is unchanged.
+_PACKAGE_LINE_BUDGET = 32_802
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

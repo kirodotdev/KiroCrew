@@ -101,6 +101,7 @@ DECLARED_SITES = frozenset(
         ("apps/registry_pipeline/install_rollback.py", "_layout_cleanup_escaped"),
         ("apps/registry_pipeline/install_rollback.py", "_set_aside_new_layout_files"),
         ("apps/registry_pipeline/store_art.py", "_open_pinned_asset_stat"),
+        ("cli_commands_secrets.py", "_handle_secrets_authorize"),
         ("cloud/source.py", "_staging_dir"),
         ("config/loader_locations.py", "materialize_workspace_dir"),
         ("config/superseded_defaults.py", "_update_map"),

@@ -379,6 +379,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _MD_NOTEBOOK_STATE_LEAVES,
         _POLICY_CACHE_LEAF,
         _RELOCATED_CREW_HIDDEN_LEAVES,
+        _SECRET_REQUEST_POLICY_LEAF,
         _VOICE_RUNTIME_LEAF,
         MD_NOTEBOOK_APP_NAME,
         _crew_home_entries,

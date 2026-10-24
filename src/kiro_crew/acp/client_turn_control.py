@@ -28,6 +28,7 @@ from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Collection
 
+from kiro_crew import mediated_request_capability
 from kiro_crew import sel as sel_module
 from kiro_crew.acp import pi_steer_turn, transport_framing
 from kiro_crew.acp.client_claude_session import (
@@ -321,6 +322,9 @@ async def cancel_session(self: AcpClient, grace_secs: float = 0.0) -> None:
     above the 10s floor genuinely extends the window instead of the loop
     bailing early and forcing a session-losing hard kill.
     """
+    # A cancelled turn's approved mediated-secret calls must not run later on
+    # their delivered grants: revoke them first, whatever happens to the cancel.
+    mediated_request_capability.invalidate_session(getattr(self, "_session_key", "") or "")
     if not self._session_id:
         logger.debug("cancel_session: no session_id, skip")
         return

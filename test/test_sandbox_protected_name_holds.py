@@ -393,7 +393,17 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   (``notifications/push_store.py``), masked as a whole directory so the
     #:   ``atomic_write`` temps they publish through are hidden too. At the data-home
     #:   root beside writable siblings, so leaf-only is the only hold.
-    EXPECTED: dict[str, int] = {"standard": 296, "cc": 303, "strict": 304}
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``secret-request-policy`` -- the mediated-secret request directory: the
+    #:   owner-signed egress policy ``kirocrew secrets authorize`` writes and its
+    #:   authorize lock, masked whole so an agent can neither read the allowlist nor
+    #:   plant an entry. Every publication renames INSIDE it, so the directory's own
+    #:   inode stays the same on a republish. It sits at the data-home root beside
+    #:   writable siblings, so no enclosing directory mask can hold it and leaf-only
+    #:   is the only hold available, the same as ``member-records``.
+    EXPECTED: dict[str, int] = {"standard": 299, "cc": 306, "strict": 307}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
