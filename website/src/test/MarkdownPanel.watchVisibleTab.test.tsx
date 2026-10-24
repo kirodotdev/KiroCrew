@@ -1157,7 +1157,9 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
       const onClose = vi.fn()
       const blobs: Blob[] = []
       const names: string[] = []
-      const suffix = partial ? '.partial' : ''
+      // `.partial` sits before the extension so the OS keeps the file's type:
+      // `b.md` -> `b.partial.md`, a whole copy stays `b.md`.
+      const expectedName = partial ? 'b.partial.md' : 'b.md'
       Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: (b: Blob) => { blobs.push(b); return 'blob:partial' } })
       Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: () => {} })
       const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { names.push(this.download) })
@@ -1170,7 +1172,7 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
         expect(banner.textContent).not.toMatch(partial ? /nothing else holds/i : /only part of it/i)
 
         fireEvent.click(within(banner).getByRole('button', { name: i18nT('components.markdownPanel.download') }))
-        expect(names).toEqual([`b.md${suffix}`])
+        expect(names).toEqual([expectedName])
         expect(blobs[0].size).toBe(new TextEncoder().encode(body).length)
 
         fireEvent.keyDown(document, { key: 'Escape' })
@@ -1179,7 +1181,7 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
         expect(onClose).not.toHaveBeenCalled()
         // The dialog's own rescue hands over the same buffer, under the same name.
         fireEvent.click(screen.getByTestId('markdown-panel-dialog-download'))
-        expect(names).toEqual([`b.md${suffix}`, `b.md${suffix}`])
+        expect(names).toEqual([expectedName, expectedName])
         fireEvent.click(within(dialog).getByRole('button', { name: i18nT('components.markdownPanel.close_last_copy_button') }))
         await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
       } finally {
