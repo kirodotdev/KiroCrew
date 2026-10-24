@@ -871,6 +871,12 @@ def read_session_execution(session_key: str, *, required: bool = False) -> Execu
         raise _unavailable("session record is unreadable")
     execution = execution_from_record(record, required=required)
     if execution is not None:
+        # A carrier that stamped a crewmate alias where a template name belongs
+        # cannot launch, and this read is the only seam that ever looks at it
+        # again, so the rebind happens here before the carrier is answered with.
+        repaired = _repair_alias_template_carrier(session_key, record, execution)
+        if repaired is not None:
+            execution = repaired
         # The line's own ``memory_mode`` is the file's privacy contract and a
         # ratchet every writer folds; the record carried beside it holds a mode
         # of its own and can lag a tightening of the line (a hand-edited
@@ -1073,6 +1079,115 @@ def _backfill_legacy_member_record(
         )
         return execution
     # Another reader committed first: its record is the authority, not this derivation.
+    current, readable = ConversationLog().get_metadata_status(session_key)
+    if not readable:
+        raise _unavailable("session record is unreadable")
+    return execution_from_record(current, required=False)
+
+
+def _repair_alias_template_carrier(
+    session_key: str, record: Mapping[str, Any], carrier: ExecutionContext
+) -> ExecutionContext | None:
+    """Rebind a fork only when its parent proves the intended namespace.
+
+    A fork of a carrier-less member chat can carry the parent's alias in
+    ``template_id``. kiro-cli is then asked for a template that does not exist
+    and the child cannot run a turn, and the read above keeps answering from
+    that carrier because it decodes, so the child stays frozen.
+
+    The child's carrier alone is not enough evidence: a deliberately
+    template-stamped parent yields the same child carrier, and a fork can reach
+    this read without the parent's ``agent_kind`` on the child. The durable
+    ``forked_from`` link is therefore the authority. Repair only while that
+    parent is still readable, carries no execution carrier, names the same
+    agent, and is not explicitly stamped ``template``. A missing ``agent_kind``
+    is a member selection under ``_resolve_agent_selection`` when the name is a
+    configured alias, the same rule the parent's own turns and the fork path
+    apply.
+
+    The alias must resolve to the store already named by the child, and V2 is
+    refused rather than opened from inferred identity. Restricted records are
+    also left alone. Every failed proof returns ``None`` and preserves the
+    stored carrier. The successful write is a compare-and-set against both the
+    carrier and the parent link, not ``bind_session_execution``, which would
+    re-enter this read.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_identity
+    from kiro_crew.config.loader_snapshots import _materialized_kiro_agent
+    from kiro_crew.history import ConversationLog
+    from kiro_crew.memory_stores import UnknownMemoryStore
+    from kiro_crew.session_agent_selection import _source_of_view
+
+    if carrier.selection_kind != "template" or carrier.selection_name:
+        return None
+    if carrier.member_id is not None or not carrier.template_id:
+        return None
+    if record.get("memory_mode", "persistent") != "persistent":
+        return None
+    agent = record.get("agent")
+    if not isinstance(agent, str) or not agent:
+        return None
+    if _source_of_view(agent) != carrier.template_id:
+        return None
+    parent_key = record.get("forked_from")
+    if not isinstance(parent_key, str) or not parent_key:
+        return None
+    parent, readable = ConversationLog().get_metadata_status(parent_key)
+    if not readable:
+        return None
+    if parent.get("agent_kind") == "template":
+        return None
+    parent_agent = parent.get("agent")
+    if not isinstance(parent_agent, str) or _source_of_view(parent_agent) != carrier.template_id:
+        return None
+    try:
+        if execution_from_record(parent, required=False) is not None:
+            return None
+    except ValueError:
+        return None
+    config = KiroCrewConfig.load()
+    alias = resolve_agent_identity(config, carrier.template_id)[0]
+    if not alias:
+        return None
+    # A name that also names a materialized kiro-cli template in the record's
+    # project scope is ambiguous: a legitimate template fork of it writes the
+    # same carrier and the same unstamped parent, so the alias lookup alone does
+    # not prove the original selection was the member. Leave such a carrier
+    # untouched rather than swap a valid template chat onto the member.
+    project = record.get("project")
+    if _materialized_kiro_agent(carrier.template_id, project if isinstance(project, str) else None):
+        return None
+    try:
+        repaired = resolve_member_execution(
+            config,
+            alias,
+            memory_mode=carrier.memory_mode,
+            app=carrier.app,
+            validate_memory_files=False,
+        )
+    except UnknownMemoryStore:
+        return None
+    if repaired.store.store_id != carrier.store.store_id:
+        return None
+    # An explicit refusal, not an accident of store naming: a V2 crewmate's
+    # private memory is never opened by a read that only inferred the identity.
+    if getattr(config.memory_stores.get(repaired.store.store_id), "memory_version", 1) == 2:
+        return None
+    committed = ConversationLog().update_metadata_if(
+        session_key,
+        {EXECUTION_CONTEXT_KEY: repaired.to_record()},
+        lambda meta: _carrier_still(meta, carrier)
+        and meta.get("agent") == agent
+        and meta.get("forked_from") == parent_key,
+    )
+    if committed:
+        logging.getLogger(__name__).info(
+            "Rebound session %r from an alias stamped as a template id to crewmate %r",
+            session_key,
+            alias,
+        )
+        return repaired
+    # Another reader committed first: its record is the authority, not this one.
     current, readable = ConversationLog().get_metadata_status(session_key)
     if not readable:
         raise _unavailable("session record is unreadable")
