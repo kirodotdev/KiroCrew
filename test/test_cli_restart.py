@@ -658,7 +658,9 @@ class TestRestart:
             ),
         ):
             _restart(None)
-        assert order == ["probe", "wait:[4242]", "probe", "spawn"]
+        # The first probe is _restart reading this home's own gateway before it
+        # marks the stop; the rest are the restart's own resolution.
+        assert order == ["probe", "probe", "wait:[4242]", "probe", "spawn"]
 
     def test_tool_absent_acked_shutdown_holder_still_alive_refuses_to_spawn(self, capsys):
         """Same entry, holder never exits within the wait: refuse with the same

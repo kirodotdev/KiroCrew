@@ -21,7 +21,8 @@ from aiohttp import web
 # The migration module owns the pre-migration leftover-tab spelling.
 from kiro_crew.channel_transcript_migration import _orphan_target_stem
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, cron_owner_matches
-from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
+from kiro_crew.dashboard import chat_trust_persistence
+from kiro_crew.dashboard.chat_utils import effective_session_key, session_key_for, slot_history_key
 from kiro_crew.dashboard.handlers.sessions_parts.app_scope import _app_owns_transcript
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
 from kiro_crew.history import (
@@ -441,6 +442,43 @@ def _history_delete_candidate_keys(key: str) -> tuple[str, ...]:
             )
         )
     )
+
+
+def _trust_keys_for_delete(key: str, claim: _HistoryDeleteClaim) -> tuple[str, ...]:
+    """Every saved-trust key history row *key* may hold: its ``dashboard:`` keys.
+
+    Only a dashboard chat's trust is saved (:func:`chat_trust_persistence.is_saveable_key`),
+    and its key is ``dashboard:<name>`` for a row named ``dashboard_<name>``, so
+    the keys come from the row name alone and nothing is read first. A closed row
+    is named by its stem while its trust was saved under the session key, so each
+    slot spelling is also tried in its session-key form. A channel row
+    (``slack_<ts>``) never saved trust and yields nothing. Removing a key that
+    was never saved changes nothing.
+
+    Every candidate must name THIS row's own transcript file: a stacked stem
+    (``dashboard_dashboard_<n>``) normalizes onto a sibling's session key, whose
+    transcript is a different file the delete keeps, so that alias is dropped.
+    The claim's own keys count only once the claim proved the slot owns this
+    file (``path_match_verified``); a provisional claim can name a stacked
+    duplicate's slot.
+    """
+    own = set(transcript_stems(key))
+
+    def _names_this_file(candidate: str) -> bool:
+        return bool(set(transcript_stems(candidate)) & own)
+
+    keys: list[str | None] = [key]
+    if claim.path_match_verified:
+        keys += [claim.session_key, claim.history_key]
+    if key.startswith(("dashboard_", "dashboard:")):
+        for spelling in _history_delete_candidate_keys(key):
+            if spelling and _names_this_file(spelling):
+                keys.append(spelling)
+            if spelling and ":" not in spelling:
+                session_key = session_key_for(spelling)
+                if _names_this_file(session_key):
+                    keys.append(session_key)
+    return tuple(k for k in dict.fromkeys(keys) if k and chat_trust_persistence.is_saveable_key(k))
 
 
 def _capture_history_delete_claim(state: DashboardState, key: str) -> _HistoryDeleteClaim:

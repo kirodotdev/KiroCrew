@@ -54,6 +54,7 @@ from kiro_crew.config.sections import (  # noqa: F401 -- read by chat_api.slot_s
     AutocompactPctError,
     parse_autocompact_pct,
 )
+from kiro_crew.dashboard import chat_trust_persistence  # noqa: F401  (read by slot_approval)
 from kiro_crew.dashboard import display_verdicts  # noqa: F401 -- read by chat_api.slot_detail
 from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed  # noqa: F401
@@ -186,6 +187,7 @@ from kiro_crew.dashboard.chat_api.session_relaunch import (  # noqa: F401
     reload_slot_session,
 )
 from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
+    _TRUST_SAVE_CLAIMS,
     _approval_target_required,
     _deny_approval_mode,
     _deny_trust_pattern,

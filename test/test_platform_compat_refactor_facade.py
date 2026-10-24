@@ -234,7 +234,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         linux_process_name process_cgroups_match process_command_line process_owner_uid
         effective_uid _START_TIME_PS_TIMEOUT _process_lstart process_start_time
         process_start_id_for_source _OWN_START_TIME _linux_boot_id _own_identity_token
-        process_incarnation_id own_process_start_time
+        process_incarnation_id own_process_start_time host_boot_id
         """.split()),
     "kiro_crew.platform_compat_ports": tuple("""
         _normalized_tcp_endpoint _linux_tcp_peer_pid _macos_tcp_peer_pid _WindowsTcpOwnerRow

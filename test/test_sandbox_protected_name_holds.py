@@ -284,7 +284,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #: home it protects (the two ``$HOME``-joined ``_CREW_HOME_PREFIXES`` plus
     #: the resolved ``config_dir()`` when it is a third place, as the relocated
     #: ``KIROCREW_HOME`` the conftest pins always is), so one new root-level
-    #: leaf is three entries in every tier. Seven landed after the first
+    #: leaf is three entries in every tier. Nine landed after the first
     #: measurement, all at the data-home root, whose parent no stand-in can
     #: hold, so leaf-only is the only hold available to them:
     #:
@@ -310,6 +310,14 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   under the sandbox read-write ``trust/``. Leaf-only for the same reason.
     #: * ``pinned-order`` -- the person's pinned-session order, person-only by
     #:   route, masked so an agent cannot rewrite it on disk.
+    #: * ``session-trust`` -- the chats the owner trusted, restored after a
+    #:   gateway restart. Masked so an agent can neither read nor trust its own chat
+    #:   past every approval prompt; at the root beside ``redaction-allow`` rather
+    #:   than under ``trust/``, which stays sandbox read-write for SEL.
+    #: * ``session-trust-stop`` -- the owner-stop marker beside it: present means
+    #:   "restore nothing", so a deletable one would bring back trust an owner
+    #:   stop withdrew. A directory of its own because it is written exactly when
+    #:   ``session-trust`` refused a write, so it cannot sit inside that one.
     #:
     #: One more root-level leaf landed since, three more entries per tier:
     #:
@@ -379,7 +387,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   so no sandboxed writer can plant the spec kiro-cli reads there. At the
     #:   data-home root beside writable siblings, so leaf-only is the only hold.
     #:   Three more entries per tier.
-    EXPECTED: dict[str, int] = {"standard": 290, "cc": 297, "strict": 298}
+    EXPECTED: dict[str, int] = {"standard": 296, "cc": 303, "strict": 304}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
