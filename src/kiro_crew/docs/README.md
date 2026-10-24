@@ -16,6 +16,7 @@ organized for someone browsing the repository.
 | [use-cases.md](use-cases.md) | Real-world workflows. |
 | [troubleshooting.md](troubleshooting.md) | Common problems and fixes. |
 | [blocked-commands.md](blocked-commands.md) | Why a command was refused, what the agent is told to do instead, and how to check your credential setup. |
+| [security-model.md](security-model.md) | The defense-in-depth layers, what each one protects against, where they stop, and which posture fits a work vs. personal host. |
 
 ## Core capabilities
 
