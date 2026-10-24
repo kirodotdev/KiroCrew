@@ -101,7 +101,11 @@ async def _start_aea_tunnel(
     app: web.Application, state: DashboardState, cfg: KiroCrewConfig, port: int
 ) -> None:
     """Start the tunnel when the config or the active ``TunnelProvider`` enables it."""
-    _tunnel_enabled = cfg.tunnel.enabled
+    from kiro_crew.edition_locks import local_enable_locked
+
+    # An enterprise build ignores the local switch (RFC D3); a tunnel the edition's
+    # own provider enables below is not a local source.
+    _tunnel_enabled = cfg.tunnel.enabled and not local_enable_locked("tunnel")
     # The enable gate is also routed through the active PlatformContext's
     # TunnelProvider.  The Default TunnelProvider.enabled() returns False, so
     # standalone is gated solely by ``cfg.tunnel.enabled`` exactly as before;

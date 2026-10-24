@@ -31,6 +31,7 @@ Cost model (dev mode is off for essentially all production gateways):
   (:data:`_dev_apps_cache`) so ``handle_app_ui_file`` can decide the cache header
   without any per-request disk IO on the event loop.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -53,6 +54,7 @@ from kiro_crew.apps.manager import (
     holds_app_record_locks,
 )
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.edition_locks import LOCKED_BY_POLICY, local_enable_locked
 from kiro_crew.security import is_sensitive_path, path_contains_sensitive
 from kiro_crew.sel import sel
 
@@ -151,6 +153,8 @@ def _load_dev_apps() -> set[str]:
     sentinel changes and at seeding, never per UI request.
     """
     keep: set[str] = set()
+    if local_enable_locked("app_dev_mode"):
+        return keep
     for name in _read_dev_sentinel():
         try:
             meta = _read_installed(name)
@@ -185,9 +189,7 @@ def _read_dev_grants() -> dict[str, str]:
         return {}
     if isinstance(data, dict):
         return {
-            str(k): str(v)
-            for k, v in data.items()
-            if isinstance(k, str) and isinstance(v, str)
+            str(k): str(v) for k, v in data.items() if isinstance(k, str) and isinstance(v, str)
         }
     return {}
 
@@ -376,6 +378,17 @@ def set_dev_mode(
     """
     if not _check_path_safety(name):
         return {"error": f"invalid app name {name!r}"}
+    if enabled and local_enable_locked("app_dev_mode"):
+        # Audited here, not by the caller, so the CLI and the HTTP toggle both record it.
+        sel().log_api_access(
+            caller=f"app:{name}",
+            operation="app_dev_mode",
+            outcome="denied",
+            source="apps",
+            resources=f"{name} enabled=True",
+            error="locked_by_policy",
+        )
+        return {"error": LOCKED_BY_POLICY, "code": "locked_by_policy"}
     hold_app_record_lock(name)
     # Cheap validation read outside the sentinel lock (the record lock above is
     # already held) — builtin/not-installed status does not change under us. The authoritative read → mutate → write happens again
@@ -450,9 +463,7 @@ def set_dev_mode(
                 # Anchor = resolved apps ROOT + literal name (same rule as the
                 # route): re-resolving through the app's own entry would race
                 # a concurrent swap of that entry.
-                Path(granted_root).relative_to(
-                    Path(os.path.realpath(apps_dir())) / name
-                )
+                Path(granted_root).relative_to(Path(os.path.realpath(apps_dir())) / name)
             except ValueError:
                 # BOTH directions of the sensitivity test: a root that IS
                 # sensitive (inside `~/.ssh`) and a root that CONTAINS
@@ -460,9 +471,7 @@ def set_dev_mode(
                 # only its `config.json` is — and `~` contains everything).
                 # Either shape would let the unauthenticated UI route serve
                 # credential material out of an allowlisted extension.
-                if is_sensitive_path(granted_root) or path_contains_sensitive(
-                    granted_root
-                ):
+                if is_sensitive_path(granted_root) or path_contains_sensitive(granted_root):
                     return {
                         "error": (
                             f"app {name!r} has a ui root resolving to a "
@@ -639,7 +648,7 @@ def is_dev_mode(name: str) -> bool:
     authorization decision use :func:`dev_mode_granted_root`, which also requires
     the gateway-owned sentinel.
     """
-    if not _check_path_safety(name):
+    if not _check_path_safety(name) or local_enable_locked("app_dev_mode"):
         return False
     meta = _read_installed(name)
     return bool(meta and meta.dev)
@@ -691,7 +700,7 @@ def is_dev_mode_cached(name: str) -> bool:
     Safe to call on the event loop per-request. The cache is seeded at watcher
     init and refreshed each tick, so it lags disk by at most one poll interval.
     """
-    return name in _dev_apps_cache
+    return name in _dev_apps_cache and not local_enable_locked("app_dev_mode")
 
 
 def _scan_ui_mtimes(ui_dir: Path) -> tuple[int, int]:

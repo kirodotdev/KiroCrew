@@ -309,7 +309,14 @@ def release_channel() -> str:
     recovery breadcrumb and re-runs the leftover-archive sweep, which can
     ``shutil.rmtree``. Doing that on the event loop as a side effect of asking
     where a directory is is the blocking hazard this avoids.
+
+    An enterprise build follows ``stable`` whatever the file says
+    (:mod:`kiro_crew.edition_locks`, RFC D3).
     """
+    from kiro_crew.edition_locks import local_enable_locked
+
+    if local_enable_locked("updates.channel"):
+        return "stable"
     try:
         raw = (data_home() / "channel").read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -373,9 +380,7 @@ def cdn_bases_are_safe() -> bool:
     unattended path cannot drift apart on what they consider safe.
     """
     feed_base, artifact_base = cdn_bases()
-    return bool(
-        _SAFE_CDN_BASE_RE.match(feed_base) and _SAFE_CDN_BASE_RE.match(artifact_base)
-    )
+    return bool(_SAFE_CDN_BASE_RE.match(feed_base) and _SAFE_CDN_BASE_RE.match(artifact_base))
 
 
 def wheel_update_command(channel: str | None = None) -> str:
@@ -416,7 +421,7 @@ def wheel_update_command(channel: str | None = None) -> str:
         # An empty body would let sh exit 0 on nothing at all, which is the same
         # false success as the piped form.
         'test -n "$_kc_body"; '
-        f'printf \'%s\\n\' "$_kc_body" | sh -s -- --channel {channel}'
+        f"printf '%s\\n' \"$_kc_body\" | sh -s -- --channel {channel}"
     )
 
 

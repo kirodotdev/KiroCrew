@@ -90,7 +90,14 @@ def is_enabled(state: "dict | None" = None) -> bool:
 
     *state* lets a caller that already loaded the file avoid a second read
     inside one dispatch.
+
+    An enterprise build ignores the opt-in and answers ``False``
+    (:mod:`kiro_crew.edition_locks`, RFC D3).
     """
+    from kiro_crew.edition_locks import local_enable_locked
+
+    if local_enable_locked("computer_use"):
+        return False
     data = load_state() if state is None else state
     return data.get(STATE_KEY_ENABLED) is True
 

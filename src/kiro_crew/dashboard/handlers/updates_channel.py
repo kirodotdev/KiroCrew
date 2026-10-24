@@ -318,6 +318,22 @@ async def api_update_channel(request: web.Request) -> web.Response:
             status=409,
         )
 
+    # An enterprise build follows stable; a file write here would be ignored on read.
+    from kiro_crew.edition_locks import LOCKED_BY_POLICY, local_enable_locked
+
+    if local_enable_locked("updates.channel") and requested.strip().lower() != "stable":
+        await _audit_update_event(
+            request,
+            operation="update.channel",
+            outcome="denied",
+            error="locked_by_policy",
+            resources=requested[:32],
+        )
+        return web.json_response(
+            {"error": LOCKED_BY_POLICY, "code": "locked_by_policy", "channel": "stable"},
+            status=409,
+        )
+
     try:
         # Offloaded: mkdir + write + os.replace are synchronous syscalls, and the
         # data home can be network-backed (NFS/SMB), where even a ten-byte write
