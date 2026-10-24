@@ -32,6 +32,7 @@ import {
   stubErrorKey,
   launchChangedSinceDisplay,
   launchPreviewErrorKey,
+  readLaunchPreviews,
   type McpView,
   rowState,
   CONTRARY_STRENGTHS,
@@ -418,15 +419,7 @@ export function McpManagement() {
       // lists the candidates by name and shows no command.
       return {
         pending: false,
-        review: await Promise.all(
-          candidates.map(async name => {
-            try {
-              return { name, preview: await api.mcpGatewayLaunchPreview(name) }
-            } catch (error) {
-              return { name, error }
-            }
-          }),
-        ),
+        review: await readLaunchPreviews(candidates),
       }
     },
     onSuccess: r => {
