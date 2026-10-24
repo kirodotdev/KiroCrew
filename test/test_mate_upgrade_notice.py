@@ -119,6 +119,89 @@ def test_a_thread_not_open_at_startup_gets_it_at_its_next_turn_end(dispatched):
 
 
 def test_the_migration_owes_the_notice_only_for_crewmates_it_moved(monkeypatch, tmp_path):
+    _migrate_atlas_and_orbit(monkeypatch, tmp_path)
+
+    assert notice.claim_notice(members_mod.member_slug("atlas"), "atlas") is True
+    assert notice.claim_notice(members_mod.member_slug("orbit"), "orbit") is False
+
+
+def test_a_crewmate_the_migration_left_behind_tells_its_user_why_once(
+    monkeypatch, tmp_path, dispatched
+):
+    """``orbit`` would gain a shell its template does not give it, so it stays on
+    its template; its thread says so once, with the migration's own reason."""
+    _migrate_atlas_and_orbit(monkeypatch, tmp_path)
+    assert notice.claim_kept_notice(members_mod.member_slug("atlas"), "atlas") == ""
+    slot = _thread("orbit")
+
+    asyncio.run(_offer(_State(slot)))
+    asyncio.run(_offer(_State(slot)))  # a later start, still left behind
+
+    assert len(dispatched) == 1
+    key, prompt = dispatched[0]
+    assert key == slot.key and prompt.startswith(notice.WORKER_UPGRADE_PREFIX)
+    assert "execute_bash" in prompt and "left as it was" in prompt
+
+
+def test_a_left_behind_crewmate_that_moves_later_never_says_it_was_left(
+    monkeypatch, tmp_path, dispatched
+):
+    """Start 1 leaves ``orbit`` behind with its thread unopened; start 2 moves it.
+    Its thread then gets the moved notice only, never the stale kept one."""
+    import json
+
+    import kiro_crew.config.paths as paths_mod
+    from kiro_crew.mate_config_migration import migrate_existing_crewmates
+
+    cfg = _migrate_atlas_and_orbit(monkeypatch, tmp_path)
+    shell = paths_mod.kiro_agents_dir() / "shell.json"
+    spec = json.loads(shell.read_text(encoding="utf-8"))
+    shell.write_text(json.dumps({**spec, "tools": ["fs_read"]}), encoding="utf-8")
+    assert migrate_existing_crewmates(cfg).migrated == ["orbit"]
+    slot = _thread("orbit")
+
+    asyncio.run(_offer(_State(slot)))
+    asyncio.run(_offer(_State(slot)))
+
+    assert dispatched == [(slot.key, notice.NOTICE_PROMPT)]
+
+
+def test_a_kept_record_left_beside_a_claimed_moved_notice_is_not_delivered():
+    """A kept record an older build never cleared, for a crewmate that has moved."""
+    directory = members_mod.member_dir(members_mod.member_slug("orbit"))
+    directory.mkdir(parents=True, exist_ok=True)
+    notice.mark_kept_owed("orbit", "its agent could not be read")
+    (directory / notice.NOTICE_CLAIMED_FILENAME).write_text('{"member": "orbit"}')
+
+    assert notice.claim_kept_notice(members_mod.member_slug("orbit"), "orbit") == ""
+
+
+def test_a_kept_notice_claimed_while_the_thread_is_busy_follows_its_next_turn_end(
+    dispatched,
+):
+    slot = _thread("orbit")
+    notice.mark_kept_owed("orbit", "the agent it runs on could not be read")
+
+    async def _drive():
+        state = _State(slot)
+        slot._queue.append("a queued message")  # busy: the flush waits
+        await _offer(state)
+        assert dispatched == []
+        slot._queue.clear()
+        wakes.note_turn_end(state, slot, "done")
+        for task in list(state._background_tasks):
+            await task
+        for task in list(getattr(state, "_mate_wake_tasks", {}).values()):
+            await task
+
+    asyncio.run(_drive())
+
+    assert [key for key, _ in dispatched] == [slot.key]
+    assert "could not be read" in dispatched[0][1]
+
+
+def _migrate_atlas_and_orbit(monkeypatch, tmp_path):
+    """``atlas`` moves; ``orbit``'s worker would gain ``execute_bash``, so it stays."""
     import json
 
     import kiro_crew.config.paths as paths_mod
@@ -150,9 +233,7 @@ def test_the_migration_owes_the_notice_only_for_crewmates_it_moved(monkeypatch, 
     monkeypatch.setattr("kiro_crew.memory_stores.persist_member_config", lambda c, n, **kw: None)
 
     assert migrate_existing_crewmates(cfg).migrated == ["atlas"]
-
-    assert notice.claim_notice(members_mod.member_slug("atlas"), "atlas") is True
-    assert notice.claim_notice(members_mod.member_slug("orbit"), "orbit") is False
+    return cfg
 
 
 def test_the_notice_names_the_path_to_the_worker_tabs_as_the_dashboard_shows_it():

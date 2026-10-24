@@ -3805,7 +3805,17 @@ The gateway offers it to each open crewmate thread after the slots restore
 `O_EXCL` on `worker_notice_claimed.json`, so it is posted at most once, as one
 hidden turn (`NOTICE_PROMPT`, `[Worker upgrade]`) ahead of any report. It names
 where the user sees the worker's kit (Edit mate, Built From, read only) and
-where they change it (the same editor's Advanced, Worker's extra kit).
+where they change it (the same editor's Advanced, Worker's extra kit). A
+crewmate the pass left where it was (`dry_run_failed`, `skipped_no_source`,
+`copy_failed`, `repoint_failed`) owes its own notice instead
+(`mate_config_migration._tell_kept`, `members/<slug>/worker_kept_owed.json`),
+naming why: the dry-run reason as written, else a plain cause. It is claimed
+once the same way (`worker_kept_claimed.json`), so a crewmate still left behind
+at a later start is not told again. A crewmate that moves later drops its
+unclaimed kept record (`clear_kept_owed`), and a kept notice is never claimed
+once a moved notice is owed or claimed. One claimed while the thread is busy
+waits for its next turn end, like a pending report
+(`test/test_mate_upgrade_notice.py`).
 
 **What the worker lacks, the conductor asks for.** A worker that lacks a tool or
 a skill says so in its report; it has no request tool (its spec lists

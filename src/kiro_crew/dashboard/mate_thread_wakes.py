@@ -236,6 +236,15 @@ def _notices(state: Any) -> set[str]:
     return notices
 
 
+def _kept_notices(state: Any) -> dict[str, str]:
+    """Threads whose claimed kept notice (its prompt) is still to be delivered."""
+    kept = getattr(state, "_mate_kept_notices", None)
+    if not isinstance(kept, dict):
+        kept = {}
+        state._mate_kept_notices = kept
+    return kept
+
+
 def _notice_checked(state: Any) -> set[str]:
     checked = getattr(state, "_mate_notice_checked", None)
     if not isinstance(checked, set):
@@ -254,15 +263,20 @@ async def offer_upgrade_notice(state: Any, slot: Any) -> bool:
     if not is_crewmate_thread(slot) or slot.key in _notice_checked(state):
         return False
     _notice_checked(state).add(slot.key)
-    from kiro_crew.mate_upgrade_notice import claim_notice
+    from kiro_crew.mate_upgrade_notice import claim_kept_notice, claim_notice
 
     binding = await asyncio.to_thread(members_mod.read_dm_binding_for_slot, slot.key)
     slug = members_mod.slug_from_dm_slot_key(slot.key)
     if not binding or binding.get("member") != slot.agent or not slug:
         return False
-    if not await asyncio.to_thread(claim_notice, slug, slot.agent):
-        return False
-    _notices(state).add(slot.key)
+    if await asyncio.to_thread(claim_notice, slug, slot.agent):
+        _notices(state).add(slot.key)
+    else:
+        # Not moved: a crewmate the migration left where it was says why, once.
+        kept = await asyncio.to_thread(claim_kept_notice, slug, slot.agent)
+        if not kept:
+            return False
+        _kept_notices(state)[slot.key] = kept
     schedule_flush(state, slot.key)
     return True
 
@@ -289,7 +303,7 @@ async def _flush(state: Any, key: str) -> None:
     while True:
         slot = state.get_slot(key)
         reports = _pending(state).get(key)
-        owed = key in _notices(state)
+        owed = key in _notices(state) or key in _kept_notices(state)
         if not (reports or owed) or slot is None or not is_crewmate_thread(slot):
             # Nothing to say, or the thread is gone: what is pending stays, and
             # the thread's next turn end schedules this again.
@@ -307,6 +321,10 @@ async def _flush(state: Any, key: str) -> None:
             _notices(state).discard(key)
             dispatch_hidden_turn(state, slot, NOTICE_PROMPT, human_seen=False)
             logger.info("upgrade notice started on %s", key)
+            continue
+        if _idle(slot) and key in _kept_notices(state):
+            dispatch_hidden_turn(state, slot, _kept_notices(state).pop(key), human_seen=False)
+            logger.info("kept notice started on %s", key)
             continue
         # The Dashboard line reads the page store: off the loop, before the idle check.
         slug = (members_mod.slug_from_dm_slot_key(key) or "") if reports else ""
@@ -454,7 +472,11 @@ def note_turn_end(state: Any, slot: Any, reply_text: str | None) -> None:
                 reply_text if isinstance(reply_text, str) else "",
             )
         elif is_crewmate_thread(slot):
-            if _pending(state).get(slot.key) or slot.key in _notices(state):
+            if (
+                _pending(state).get(slot.key)
+                or slot.key in _notices(state)
+                or slot.key in _kept_notices(state)
+            ):
                 schedule_flush(state, slot.key)
             if slot.key not in _notice_checked(state):
                 # A thread that was not open at startup is offered its notice here.
