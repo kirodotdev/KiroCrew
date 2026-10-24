@@ -359,8 +359,8 @@ class TestOutboundUploads:
     @pytest.mark.asyncio
     async def test_the_append_only_stream_never_shows_the_path(self, tmp_path) -> None:
         # Slack streams by APPENDING, so markup that lands there stays in the
-        # transcript beside the picture. It is withheld instead, and the withheld
-        # tail is released at the seal.
+        # transcript beside the picture. The reply is appended only once it is
+        # sealed, with the markup already extracted.
         chart = tmp_path / "chart.png"
         chart.write_bytes(PNG)
         slack = _FakeSlack(streaming=True)
@@ -372,7 +372,7 @@ class TestOutboundUploads:
         assert appended, slack.calls
         assert all("![c](" not in t and str(chart) not in t for t in appended), appended
         assert "Here it is:" in "".join(appended)
-        assert "and more after it." in "".join(appended), "the withheld tail was lost"
+        assert "and more after it." in "".join(appended), "the text after the image was lost"
         assert len(slack.uploads) == 1
 
     @pytest.mark.asyncio
@@ -383,6 +383,9 @@ class TestOutboundUploads:
         renderer = _renderer(slack, tmp_path)
 
         await renderer.on_text_chunk(f"chart: ![c]({chart}) done")
+        # No frame is drawn while the turn runs: the reply is held to the end.
+        assert [m for m, _ in slack.calls if m == "update_message"] == [], slack.calls
+        await renderer.on_done()
         frames = [kw["text"] for m, kw in slack.calls if m == "update_message"]
 
         assert frames, slack.calls
@@ -823,28 +826,33 @@ class TestReleasedTailIsRedacted:
         assert len(slack.uploads) == 1, slack.calls
 
     @pytest.mark.asyncio
-    async def test_the_release_path_itself_redacts_not_just_its_caller(self) -> None:
-        """Pinned at the chokepoint, so a later append site inherits the scan."""
+    async def test_the_shown_text_path_itself_redacts_after_the_cut(self, tmp_path) -> None:
+        """Pinned at the chokepoint for text shown outside the sealed reply.
+
+        A step's narration and a dying turn's held reply both go through
+        ``_shown``, which removes image markup FIRST and redacts the joined text
+        after, so a key the cut spells is caught there and every caller inherits it.
+        """
         slack = _FakeSlack(streaming=True)
         renderer = _renderer(slack)
-        renderer._ref_hold = f"{self._HEAD}{self._TAIL} trailing prose"
+        chart = tmp_path / "chart.png"
 
-        released = await renderer._release_refs()
+        shown = await renderer._shown(f"{self._HEAD}![c]({chart}){self._TAIL} trailing prose")
 
-        assert released
-        assert self._HEAD + self._TAIL not in released
-        assert "trailing prose" in released
+        assert shown
+        assert "![c]" not in shown
+        assert self._HEAD + self._TAIL not in shown
+        assert "trailing prose" in shown
 
     @pytest.mark.asyncio
-    async def test_an_exfiltration_url_in_the_tail_is_redacted_too(self) -> None:
+    async def test_an_exfiltration_url_in_shown_text_is_redacted_too(self) -> None:
         """Both outbound redactors, in the seal's order -- URLs then credentials."""
         slack = _FakeSlack(streaming=True)
         renderer = _renderer(slack)
-        renderer._ref_hold = "see https://evil.example.com/?q=AKIAIOSFODNN7EXAMPLE now"
 
-        released = await renderer._release_refs()
+        shown = await renderer._shown("see https://evil.example.com/?q=AKIAIOSFODNN7EXAMPLE now")
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in released
+        assert "AKIAIOSFODNN7EXAMPLE" not in shown
 
 
 class TestEveryRendererEgressMeetsTheDisplayFloor:

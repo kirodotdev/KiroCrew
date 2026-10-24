@@ -1339,8 +1339,8 @@ async def handle_message_transport(
         #     flock and ON the loop it single-shots and drops the row.
         #   * its own try/except: a disk failure here must not replace the real
         #     exception in the log with a bookkeeping one.
-        # Persist only what Slack CONFIRMED it showed. ``SlackRenderer`` batches on
-        # an edit throttle, so the text the model has produced runs routinely ahead
+        # Persist only what Slack CONFIRMED it showed. ``SlackRenderer`` holds the
+        # reply until the turn ends, so the text the model has produced runs ahead
         # of the text the user has seen; a rescue that persisted the former would
         # record unseen output as established fact, and the retry would build on
         # something that was never on screen. ``delivered_text`` is the renderer's
@@ -1356,13 +1356,11 @@ async def handle_message_transport(
         # throttled, replaced wholesale, or truncated. Slack is the one renderer
         # that keeps a per-append record of what the API acknowledged, so it is
         # the one place a rescue can persist shown text rather than produced text.
-        # A throttled flush can be holding a trailing word back so a timer tick
-        # cannot tear one in half. That hold is released by ``on_done`` or at a
-        # ``wait`` boundary -- neither of which a dying turn reaches -- so it is
-        # released here, before the ledger is read, or the rescued transcript
-        # would end one word short of what the model established.
+        # The renderer holds the reply until ``on_done``, which a dying turn
+        # never reaches, so it is released here, before the ledger is read, or
+        # the rescued transcript would miss what the model last established.
         if renderer is not None:
-            await renderer.release_held_word()
+            await renderer.release_held_text()
         _shown = renderer.delivered_text if renderer is not None else ""
         # ``strip`` decides EMPTINESS only. What gets persisted is ``_shown``
         # verbatim: leading indentation is content in a transcript — a fenced block
