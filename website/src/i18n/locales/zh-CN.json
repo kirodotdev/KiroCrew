@@ -11087,6 +11087,7 @@
         "regenerate_response": "重新生成回复",
         "rendered_view": "渲染视图",
         "speak": "朗读",
+        "stop_reading": "停止朗读",
         "copy_text": "复制文本",
         "copy_as_rich_text": "复制为富文本",
         "copy_as_markdown": "复制为 Markdown",

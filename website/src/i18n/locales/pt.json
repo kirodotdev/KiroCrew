@@ -11411,6 +11411,7 @@
         "regenerate_response": "Gerar resposta novamente",
         "rendered_view": "Visualização renderizada",
         "speak": "Ler em voz alta",
+        "stop_reading": "Parar a leitura",
         "copy_text": "Copiar texto",
         "copy_as_rich_text": "Copiar como texto formatado",
         "copy_as_markdown": "Copiar como Markdown",

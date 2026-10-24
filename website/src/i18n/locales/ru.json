@@ -11573,6 +11573,7 @@
         "regenerate_response": "Сгенерировать ответ заново",
         "rendered_view": "Отрисованный вид",
         "speak": "Озвучить",
+        "stop_reading": "Остановить озвучивание",
         "copy_text": "Копировать текст",
         "copy_as_rich_text": "Копировать как форматированный текст",
         "copy_as_markdown": "Копировать как Markdown",

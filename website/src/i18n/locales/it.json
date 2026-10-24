@@ -11411,6 +11411,7 @@
         "regenerate_response": "Rigenera la risposta",
         "rendered_view": "Vista formattata",
         "speak": "Leggi ad alta voce",
+        "stop_reading": "Interrompi la lettura",
         "copy_text": "Copia testo",
         "copy_as_rich_text": "Copia come testo formattato",
         "copy_as_markdown": "Copia come Markdown",
