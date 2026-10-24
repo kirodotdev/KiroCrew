@@ -6498,7 +6498,9 @@
       "comment_thread_unread": "टिप्पणी थ्रेड ({{count}}, अपठित)",
       "copied": "कॉपी हो गया!",
       "copy": "कॉपी करें",
-      "generating": "जेनरेट हो रहा है…"
+      "generating": "जेनरेट हो रहा है…",
+      "unwrap": "पंक्तियाँ न लपेटें",
+      "wrap": "पंक्तियाँ लपेटें"
     },
     "columnResizer": {
       "resize_column": "कॉलम का आकार बदलो: {{column}}",

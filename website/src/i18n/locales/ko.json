@@ -6386,7 +6386,9 @@
       "comment_thread_unread": "댓글 스레드 ({{count}}, 읽지 않음)",
       "copied": "복사했습니다!",
       "copy": "복사",
-      "generating": "생성 중…"
+      "generating": "생성 중…",
+      "unwrap": "줄 바꿈 해제",
+      "wrap": "줄 바꿈"
     },
     "columnResizer": {
       "resize_column": "열 너비 조절: {{column}}",

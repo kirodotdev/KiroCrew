@@ -6610,7 +6610,9 @@
       "comment_thread_unread": "Tópico de comentários ({{count}}, não lido)",
       "copied": "Copiado!",
       "copy": "Copiar",
-      "generating": "gerando…"
+      "generating": "gerando…",
+      "unwrap": "Desativar quebra de linha",
+      "wrap": "Quebrar linhas"
     },
     "columnResizer": {
       "resize_column": "Redimensionar coluna: {{column}}",
