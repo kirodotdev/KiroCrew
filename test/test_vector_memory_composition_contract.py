@@ -299,7 +299,7 @@ _STORE_SIGNATURES = {
     "_invalidate_episodic_scoring": "(self) -> 'None'",
     "_invalidate_semantic_scoring": "(self) -> 'None'",
     "_lesson_keywords": "(text: 'str') -> 'set[str]'",
-    "_log_event": "(self, event_type: 'str', memory_type: 'str', key: 'str', old_value: 'str | None', new_value: 'str | None', source: 'str') -> 'None'",
+    "_log_event": "(self, event_type: 'str', memory_type: 'str', key: 'str', old_value: 'str | None', new_value: 'str | None', source: 'str') -> 'int | None'",
     "_matches_allowlist": "(self, key: 'str') -> 'bool'",
     "_matches_tags": "(mem: 'dict', tag_filter: 'list[str]') -> 'bool'",
     "_parse_preference": "(text: 'str') -> 'tuple[str, str] | None'",

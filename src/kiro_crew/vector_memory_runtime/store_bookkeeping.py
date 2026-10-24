@@ -165,8 +165,8 @@ def _log_event(
     old_value: str | None,
     new_value: str | None,
     source: str,
-) -> None:
-    """Append to the audit trail."""
+) -> int | None:
+    """Append to the audit trail; return the new row's id, or None when it was not written."""
 
     from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
 
@@ -177,14 +177,16 @@ def _log_event(
         # unlocked callers, so serialize on the (reentrant) _db_lock: an
         # unsynchronized INSERT races a concurrent writer's implicit BEGIN.
         with self._db_lock:
-            self.db.execute(
+            cursor = self.db.execute(
                 "INSERT INTO memory_events (event_type, memory_type, memory_key, "
                 "old_value, new_value, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (event_type, memory_type, key, old_value, new_value, source, _now_iso()),
             )
             self.db.commit()
+            return cursor.lastrowid
     except Exception:
         logger.debug("Failed to log memory event", exc_info=True)
+        return None
 
 
 def get_events(self: VectorMemoryStore, limit: int = 50, offset: int = 0) -> list[dict]:

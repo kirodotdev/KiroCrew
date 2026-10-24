@@ -31,6 +31,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.vector_memory")
 
 
+def _log_kept_value(key: str, reason: str, event_id: int | None) -> None:
+    """Log which ``memory_events`` row holds a refused write, so the lost value can be found.
+
+    The returned reason stays as it is: it reaches API callers and the dashboard.
+    """
+    if event_id is not None:
+        logger.warning(
+            "Semantic write for %r kept the stored value: %s; memory_events #%d holds"
+            " the stored value, the rejected value and the rejected source",
+            key,
+            reason,
+            event_id,
+        )
+
+
 def _write_semantic(
     self: VectorMemoryStore,
     key: str,
@@ -94,7 +109,7 @@ def _write_semantic(
                         reason = f"Existing entry has higher confidence ({old_conf:.2f} vs {confidence:.2f})"
                 if reason:
                     self.db.rollback()
-                    self._log_event(
+                    event_id = self._log_event(
                         "conflict_skip",
                         "semantic",
                         key,
@@ -102,6 +117,7 @@ def _write_semantic(
                         value_json,
                         source,
                     )
+                    _log_kept_value(key, reason, event_id)
                     return reason
             before = dict(existing) if existing is not None else None
             kind = "directive" if key.startswith("lesson.") else "fact"
@@ -162,8 +178,9 @@ def _write_semantic(
                 )
                 if not _consolidation:
                     self.db.commit()
+                reason = f"Conflicting update saved for review (proposal {proposal_id}); current fact retained"
                 if not _consolidation:
-                    self._log_event(
+                    event_id = self._log_event(
                         "conflict_skip",
                         "semantic",
                         key,
@@ -171,7 +188,8 @@ def _write_semantic(
                         value_json,
                         source,
                     )
-                return f"Conflicting update saved for review (proposal {proposal_id}); current fact retained"
+                    _log_kept_value(key, reason, event_id)
+                return reason
             if private_policy and existing and not changed and source != "user_explicit":
                 # A model reaffirming an owner fact must not erase its origin.
                 if metadata:
