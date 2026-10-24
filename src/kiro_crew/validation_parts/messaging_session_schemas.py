@@ -366,6 +366,10 @@ SESSION_CREATE_SCHEMA = ToolSchema(
             min_val=AUTOCOMPACT_PCT_MIN,
             max_val=AUTOCOMPACT_PCT_MAX,
         ),
+        # The new session's first turn, delivered in the same call so the caller
+        # never has to send to a key it has not read back yet. Bounded exactly as
+        # ``session_send.message`` is; the route repeats that bar before creating.
+        FieldSpec("message", str, required=False, max_len=MAX_LONG_STRING),
     ],
 )
 

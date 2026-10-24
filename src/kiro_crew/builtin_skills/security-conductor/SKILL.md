@@ -497,9 +497,9 @@ discards that work.
   mean trusting arbitrary shell. Unattended operation needs the operator to arm
   this session in trust mode — without it the patrol stalls on its first scope
   check, not on its first intervention. Pre-approving shell alone is not enough:
-  `session_send` (the only way to seed a child, since `session_create` carries no
-  message), `session_stop` and `session_close` are not auto-approved either, so
-  the first dispatch stalls too.
+  `session_send`, `session_stop` and `session_close` are not auto-approved
+  either, so a later seed or stop stalls. A first message passed as
+  `session_create`'s `message` rides that auto-approved create and does not.
 - The verifier's independence is procedural, not enforced. It comes from a fresh
   session and a brief that withholds the auditor's reasoning; a shared model can
   still share a blind spot.

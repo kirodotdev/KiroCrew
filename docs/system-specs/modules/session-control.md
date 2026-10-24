@@ -18,7 +18,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 
 | Tool | Route | What it does |
 |------|-------|--------------|
-| `session_create` | `POST /api/session-control/create` | Open a new, empty session in the caller's workspace, optionally filed into a sidebar folder at creation and pinned to a `model` / `reasoning_effort`; either omitted is filled from the dispatching mate's worker pair, else its own pair (a copy made at creation), else the default. Before any gate, a title is refused with `invalid_title` (400) under `session_rename`'s character rules (control, text-direction and non-allowed format characters, U+2800 anywhere, no visible character), then scrubbed with `_scrub_text` and cut to 200 characters; a cut result that shows nothing is refused the same way, and a blank title is no title |
+| `session_create` | `POST /api/session-control/create` | Open a new session in the caller's workspace, empty unless `message` seeds its first turn through `send_to_target` (the `session_send` path), optionally filed into a sidebar folder at creation and pinned to a `model` / `reasoning_effort`; either omitted is filled from the dispatching mate's worker pair, else its own pair (a copy made at creation), else the default. Before any gate, a title is refused with `invalid_title` (400) under `session_rename`'s character rules (control, text-direction and non-allowed format characters, U+2800 anywhere, no visible character), then scrubbed with `_scrub_text` and cut to 200 characters; a cut result that shows nothing is refused the same way, and a blank title is no title |
 | `session_fork` | `POST /api/session-control/fork` | Open a new session that CARRIES a copy of a source session's transcript — the caller's own by default — the way the dashboard's Fork button does; optionally titled, filed, and cut at a fork point. The title meets `session_create`'s title rules before any gate (`invalid_title`, 400; scrubbed, cut to 200 characters, a cut result that shows nothing refused, a blank title is no title) |
 | `session_stop` | `POST /api/session-control/stop` | Stop another session's in-flight turn |
 | `session_end_wait` | `POST /api/session-control/end-wait` | Wake a session the caller CREATED from the `wait` tool early, keeping its turn; any other target is refused `not_creator`, for every caller class |
@@ -489,8 +489,13 @@ design: an agent that has just worked out that a job needs its own session can
 open it pre-named and bound to the right agent, in the caller's workspace, and
 hand the person a key they can read and stop. Without it the person does that by
 hand -- new tab, retype the title, pick the agent -- and the two observation verbs
-have nothing to point at that the agent itself put there. It deliberately does
-NOT seed a first message: that would be delivery.
+have nothing to point at that the agent itself put there. An optional `message`
+seeds the first turn in the same call, through `send_to_target` -- the same
+target gate, size limit, provenance and audit as `session_send` -- so a caller
+never sends to a key it has not read back. A message `session_send` would refuse
+is refused before anything is created; a delivery failure after the create is
+returned next to the key, and the session is kept. The create keeps its own
+approval: a conductor's auto-approved `session_create` seeds without a prompt.
 
 `session_create` also takes an optional `folder` — a folder id or `/`-separated
 human path, resolved with `chat_folder_create`'s `parent` semantics (missing

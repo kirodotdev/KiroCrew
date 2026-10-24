@@ -247,6 +247,60 @@ def _target(body: dict) -> str:
     return target.strip()
 
 
+def _first_message(body: dict) -> str | None:
+    """The optional first turn a create carries, refused BEFORE anything is created.
+
+    Absent means a create that starts empty, as it always did. Present, it is held
+    to the same bar the send route and ``send_to_target`` hold -- non-empty, and no
+    longer than ``MAX_SEND_MESSAGE_CHARS`` once stripped, with the same codes --
+    but checked here, ahead of the create, so a message session_send would refuse
+    never leaves an empty session behind. ``send_to_target`` repeats both checks.
+    """
+    message = body.get("message")
+    if message is None:
+        return None
+    if not isinstance(message, str):
+        raise sc.SessionControlError("message must be a string", code="invalid_field_type")
+    if not message.strip():
+        raise sc.SessionControlError("message is required", code="message_required")
+    if len(message.strip()) > sc.MAX_SEND_MESSAGE_CHARS:
+        raise sc.SessionControlError(
+            f"message exceeds {sc.MAX_SEND_MESSAGE_CHARS} characters",
+            code="message_too_long",
+            status=400,
+        )
+    return message
+
+
+async def _deliver_first_message(
+    request: web.Request, state: DashboardState, created: dict, message: str
+) -> dict:
+    """Seed the session a create just opened, through session_send's own path.
+
+    ``send_to_target`` is the whole delivery: the same authorization gate (a
+    caller that could not session_send to the new session cannot seed it here),
+    the same size limit, provenance line, sanitizing and audit trail. The create
+    has already committed, so a failed delivery is REPORTED next to the key and
+    never rolls the session back: the caller can still session_send to it.
+    """
+    target = str(created.get("target") or "")
+    try:
+        receipt = await sc.send_to_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=target,
+            message=message,
+            caller_fenced=_carried_fence(request),
+            via="session_create",
+        )
+    except sc.SessionControlError as exc:
+        return {"delivery_error": {"error": exc.message, "code": exc.code}}
+    except Exception:  # noqa: BLE001 - the created key must still reach the caller
+        logger.warning("session_create: first message to %s failed", target, exc_info=True)
+        return {"delivery_error": {"error": "delivery failed", "code": "delivery_failed"}}
+    return {"delivery": receipt}
+
+
 _Route = Callable[[web.Request], Awaitable[web.Response]]
 
 
@@ -354,6 +408,7 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             raise sc.SessionControlError(
                 "reasoning_effort must be a string", code="invalid_field_type"
             )
+        first_message = _first_message(body)
         # Warmed AFTER the body read, which suspends: a config edit landing in that
         # window would change the fingerprint and leave `create_session`'s own
         # synchronous gate re-reading the file on the loop. Nothing suspends between
@@ -382,6 +437,11 @@ async def api_session_control_create(request: web.Request) -> web.Response:
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    if first_message is not None and not dry_run and isinstance(result, dict):
+        result = {
+            **result,
+            **await _deliver_first_message(request, state, result, first_message),
+        }
     if not dry_run and isinstance(result, dict):
         # A create is a dispatch, and a dispatch needs a patrol reading what
         # comes back: the same default patrol a ledger bind arms, through the
