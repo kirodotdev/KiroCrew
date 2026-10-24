@@ -499,7 +499,57 @@ def _url_payload_command(n: int) -> str:
 #: target) the way it steps over a ``VAR=val`` assignment, using the shared
 #: ``shell_normalizer._push_token_redirection`` recognizer. A redirect before
 #: ``rm`` cannot hide the program word.
-_PACKAGE_LINE_BUDGET = 32_518
+#:
+#: Raised again, from 32,518, for ``argv_row_floor.py``: one table that reads the
+#: command-literal deny rows (``terraform destroy.*``, ``git reset --hard.*``,
+#: ``dd if=.*`` and five more) off the argv so an option between the program and
+#: the anchored word cannot re-spell them, plus its hook in the evaluator. It reuses
+#: the shell reader to split commands and words (quotes, glued operators, subshells,
+#: redirections, nested payloads), resolves the program past shell keyword openers
+#: and the shared ``_PROGRAM_RUNNERS`` wrappers, folds line continuations and reads
+#: redirections quote-aware, resolves compound-opener conditions, and matches the
+#: program against the row. It splits at a lone background ``&``, reads ``<>`` and
+#: ``<&`` whole, resolves ``$'…'`` and pre-filters on the quote-stripped program
+#: word; its matchers are one right-to-left pass, linear on the 20 KB ceiling. A
+#: command the reader cannot read is refused when it names a row's program, rather
+#: than left to the literal regex. Text that runs nothing (comments, quoted
+#: newlines, message heredocs, single-quoted substitutions, known option values) is
+#: not read as a command. It only ADDS refusals; no row, pattern or pass moved.
+#:
+#: Raised again, from 33,787, for the argv row floor reading a heredoc by what reads
+#: it: a text that is one bare stdin-interpreter heredoc (``python3 -``, ``node``)
+#: is code in that language, not shell. The 111 lines are the interpreter opener
+#: test, the whole-text check (top-level text, a plain quoted delimiter, plain ASCII,
+#: no line continuation) that no other command can rebind the name, and the opener's
+#: fourth field. No row or pattern moved.
+#:
+#: Raised again, from 33,898, by 44 lines for three heredoc-reading fixes in the
+#: same floor: a bash-correct delimiter decoder (a quoted backslash stays in the
+#: closing word), the git alias hint test for an unprefixed data program, and
+#: ``.`` read as a directory only as a ``-C`` operand in the data command's own
+#: words. No row or pattern moved.
+#:
+#: Raised again, from 33,942, by 44 lines for a second comment reading with every
+#: heredoc body blanked, read alongside the whole-text one: a quote in a body no
+#: longer turns a later quoted `` #`` into a comment that hides the next command.
+#:
+#: Raised again, from 33,986, by 11 lines: the comment reader restarts from a clean
+#: quote state after each comment, so a quote in ``# don't`` stays comment text.
+#: Five more: printed words that also sit in a text holding a substitution are
+#: never skipped as printed only (``echo '<x>'`` beside ``cat <(<x>)``).
+#: Twenty-five more: each frame is also read cut at its first unmatched ``)``, so
+#: a ``"$( )"`` body the walk ran past its closer still meets the rows. Five more:
+#: the floor's shell and Python names now come from ``shell_normalizer_programs``
+#: (one import block; ``mksh`` and ``fish`` join the shared nested-shell list).
+#: Forty-one more: the floor takes the raw command and reads it twice more after
+#: the lower-cased reading -- once with each ``\U`` escape kept, and once as
+#: spelled, since short options and heredoc delimiters are case-sensitive.
+#: Nine more: a text holding ``$'`` is read even when no program name is seen, no
+#: heredoc body is cut when the text has a line continuation, and a ``<<`` inside
+#: open arithmetic is not a heredoc opener. Four more: a quoted empty word stays
+#: an argument, and a write of any descriptor onto a device is the dd write.
+#: Four more: a heredoc whose delimiter holds a ``$`` is never cut as data.
+_PACKAGE_LINE_BUDGET = 34_090
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

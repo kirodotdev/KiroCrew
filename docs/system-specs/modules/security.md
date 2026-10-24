@@ -620,6 +620,40 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   `chmod`/`chown` deny rows: whether every occurrence of a permission verb is an
   ARGUMENT of a command that treats arguments as data. It sits above `argv_floor.py`,
   whose frame walk it reuses (see *Inert mentions of a permission verb* below).
+- `argv_row_floor.py` — the argv floor under the catalog rows that name a command
+  literal (`terraform destroy.*`, `pulumi destroy.*`, `cdk destroy.*`,
+  `kubectl delete namespace.*`, `git reset --hard.*`, `ncat -e.*`, the `nc -e` row,
+  `dd if=.*`). One table maps each rule id to the program that must run and a matcher
+  over that program's argv: a subcommand chain read past options, a subcommand plus an
+  option anywhere after it, or an option / `key=value` operand anywhere. Which options
+  take a value is never guessed: the word after an option is read both as its value
+  and as the subcommand, so the reading can only add a refusal. It is a UNION run after
+  the regex tier — a literal hit keeps its refusal, a row is checked only while it is in
+  the effective set, and each refusal reports the row's own pattern and rule id.
+  On top of the shared reader it splits at a lone background `&`, reads the `<>` and
+  `<&` redirections whole, resolves `$'…'` quoting, and pre-filters on the
+  quote-stripped program word (`g""it` is `git`); its matchers are one right-to-left
+  pass, linear on the 20 KB scan ceiling.
+  It fails closed: a command that names a row's program but whose shell syntax the
+  reader cannot turn into an argv is refused under that row, not left to the regex.
+  A heredoc is judged by what reads it. A body fed to `git`, `gh`, `cat` or `tee` is
+  data while nothing on the opener line could hand it to a shell. A body fed to a
+  bare stdin interpreter (`python3 -`, `python3`, `node`: a plain name, no options or
+  script, a delimiter that is one plain word in one pair of quotes, only output
+  redirections after it) is code in that
+  language, not shell, but only when that heredoc is the whole top-level text: anything
+  else in it (a function, `hash -p`, a `PATH` change, any other command, or a parent
+  around a nested `bash -c` / `eval` payload) could make the name run a shell, so the
+  body is read as commands. An unquoted delimiter stays commands, since the shell
+  expands the body's `$( )` whatever its own quotes say; so does a text with any
+  character outside printable ASCII, space, tab and newline (bash drops a NUL the
+  floor would compare), and any text holding a
+  backslash-newline, which the reader folds before it finds the closing line while
+  the shell keeps it inside a quoted body. Perl, ruby and shells (`bash -s`) stay commands. An
+  interpreter body is not read as shell here at all, so what its code runs is the
+  inline-payload tier's.
+  Aliases that are a different subcommand rather than an option spelling
+  (`kubectl delete ns`, `pulumi down`, `terraform apply -destroy`) are out of it.
 - `credential_sources.py` — where a redacted credential came from, recorded without
   keeping the credential: keyed per-process HMAC fingerprints of redacted values and
   bounded per-turn evidence naming the tool call that produced one (see the
