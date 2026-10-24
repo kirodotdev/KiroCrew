@@ -44,6 +44,7 @@ from kiro_crew.agent_sdk.backends import (  # noqa: F401 - re-exported for exist
     ACP_BACKEND_PI,
     ACP_BACKEND_ROUTING,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_VIBE,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_CLIENT_META_SETTINGS,

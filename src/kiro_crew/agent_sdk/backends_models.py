@@ -30,6 +30,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_VIBE,
 )
 
 # Records from this owner go to the facade's logger, so a filter or a capture keyed on
@@ -528,6 +529,11 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     # strands gets its own key: its ids are ``provider/model`` strings (or bare
     # Bedrock ids) the Strands CLI resolves, a vocabulary no other harness serves.
     ACP_BACKEND_STRANDS: "strands",
+    # vibe gets a fresh namespace even while dormant: its ids are Mistral model
+    # aliases drawn from vibe's own catalog, and the cost of the fresh key is one
+    # row -- while reusing ``acp`` would mix its alias vocabulary into the
+    # kiro-cli bucket the moment routing lands and it becomes selectable.
+    ACP_BACKEND_VIBE: "vibe",
 }
 
 

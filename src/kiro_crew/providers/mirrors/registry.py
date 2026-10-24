@@ -40,6 +40,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
+    ACP_BACKEND_VIBE,
 )
 from kiro_crew.providers.mirrors.base import AgentConfigMirror
 from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
@@ -408,6 +409,36 @@ PROJECTIONS: dict[str, McpProjection] = {
         # No per-call deny path is verified for this harness, so a narrowed server is
         # withheld whole, the direction that cannot leave a switched-off tool reachable.
         per_tool_deny=PerToolDeny.WHOLE_SERVER,
+    ),
+    # vibe is KNOWN but dormant, so this entry is the declaration a dormant
+    # harness owes rather than a channel claim: no live ``vibe-acp`` capture
+    # exists, and the one candidate transport is source-read only. mistral-vibe
+    # v3.0.2's ``initialize`` advertises NO ``mcpCapabilities`` at all -- not
+    # the http/sse pair the array-capable harnesses advertise and not a stdio
+    # refusal either, so the advertisement is not evidence in EITHER direction.
+    # The ACP bridge it ships is thin enough that ``session/new`` plausibly
+    # accepts the ``mcpServers`` array, but "plausibly" is the word this kind
+    # exists to refuse: an unmeasured mount is declared a channel only after a
+    # live capture shows the server mounted, asked initialize, and its tools
+    # listed and called -- the goose and deepseek entries name what that costs.
+    ACP_BACKEND_VIBE: McpProjection(
+        kind=ProjectionKind.NO_CHANNEL,
+        reason=(
+            "vibe-acp advertises no mcpCapabilities on initialize, and no live "
+            "capture has driven a session/new mcpServers element against it, so "
+            "no transport is KNOWN to carry Crew's servers -- the honest state "
+            "for a dormant harness whose ACP surface was read from source and "
+            "never measured"
+        ),
+        channel=(
+            "the session/new mcpServers array, once a live vibe-acp capture "
+            "shows an element mounted, its child asked initialize, and its tools "
+            "listed and called"
+        ),
+        tracking=(
+            "docs/system-specs/modules/harness-onboarding.md"
+            "#worked-example-the-vibe-harness-dormant"
+        ),
     ),
 }
 
