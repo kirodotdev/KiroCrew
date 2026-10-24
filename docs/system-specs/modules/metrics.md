@@ -1951,6 +1951,13 @@ Lambda aggregation outside this repository. The product-side contract is:
 1. Select only `/b/1/install/<slug>` rows with an official catalog slug, a
    32-character lowercase-hex `t`, `k` in `{fresh, update}`, and a normalized
    release `v`; retain the existing no-client-IP/no-User-Agent log projection.
+   "Official catalog slug" MUST mean a slug present in the public
+   `https://apps.crew.kiro.dev/catalog.json` at generation time, and a row whose
+   slug is absent from it MUST be dropped. Receipt eligibility is a BROADER test
+   than this one: a receipt is sent for any app whose entry carries no
+   `_registry` tag, which includes edition-contributed rows that are not in the
+   public catalog. Without this filter, a producer that counted every slug it
+   received would publish those names in a public file.
 2. For `k=fresh`, publish `AppInstallations` as the count of distinct `(app_slug,
    t)` pairs per UTC rollup window (equivalently `COUNT(DISTINCT t)` grouped by
    app slug). Duplicate delivery or reinstall from the same data home must not
@@ -1959,10 +1966,249 @@ Lambda aggregation outside this repository. The product-side contract is:
    `v` may provide a bounded release breakdown, but is not part of uniqueness.
 4. Feed only aggregate per-app results to catalog-ranking publication. Never
    expose or join raw tokens, and never join receipt rows to heartbeat ids.
+5. Apply the small-count floor and publish cadence described under *Withheld
+   counts and the small-count floor* below. Both are producer obligations: the
+   document is public JSON, so nothing the client does can substitute for them.
+6. Treat the count as NOT manipulation-resistant until abuse controls exist.
+   `t` is an HMAC over a secret the client generates, so a script can mint fresh
+   tokens and each one adds to `COUNT(DISTINCT t)`. That is acceptable for a
+   rough adoption metric and is not acceptable as a sort key; see *Trust in the
+   count* below.
 
 The Athena query and aggregator Lambda live in the telemetry AWS account, so
 that implementation and deployment are an explicit infra-account task outside
 this repo and outside this PR.
+
+#### Catalog ranking document (client-side consumer)
+
+The client consumes the ranking via a published JSON document at a known location.
+This decouples the client from any specific pipeline: any producer satisfying the
+schema works. Source: `src/kiro_crew/apps/catalog_ranking.py`. Tests:
+`test/test_catalog_ranking.py`.
+
+**Document location and schema (PROVISIONAL):**
+
+This schema is **provisional until the first document is actually published.** It
+was written against no producer: the Athena query and aggregator Lambda described
+above are unbuilt, so nothing has yet had to generate a document that satisfies
+it. The first real producer is the first test of these field names, types and
+rules, and it is likely to want changes.
+
+That matters more here than it would for an internal interface, because the cost
+is asymmetric. This client pins `SUPPORTED_SCHEMA_VERSION` and refuses any other
+version, so a change after a producer exists means a `schemaVersion` bump, and
+every client already installed on a user's machine keeps refusing the new
+document until that user updates. Reverting this repository does not reach them.
+
+Two consequences, stated so a producer owner is not surprised by them:
+
+- **Before the first publish**, treat every field and rule below as open to
+  change, and prefer changing the schema over working around it. There are no
+  compatibility obligations yet, so this is the cheapest moment to get it wrong.
+- **After the first publish**, the version pin is load-bearing and additive
+  change is the only cheap change. A new optional field costs nothing (unknown
+  keys are ignored at both envelope and entry level); renaming or retyping an
+  existing one costs a version bump and a client rollout.
+
+The producer owner should sign off on this section, or amend it, before the first
+document goes live. Until that happens the rules below describe what this client
+enforces, not an agreed contract.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schemaVersion` | int | Schema version; client rejects unknown versions. Currently `1`. |
+| `generatedAt` | string | ISO 8601 UTC timestamp of generation. |
+| `windowDays` | int | Trending window size in days (e.g. 30). |
+| `rankings` | array | List of per-app ranking entries. |
+
+Each ranking entry:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `appSlug` | string | The official catalog app slug. |
+| `cumulativeInstalls` | int \| null | All-time `k=fresh` install count, floored and not manipulation-resistant (see below). `null` when withheld under the small-count floor. |
+| `windowedInstalls` | int \| null | `k=fresh` installs in the trailing `windowDays`, same caveats. `null` when withheld. |
+
+A cumulative count below its own windowed count describes an impossible app, so
+the client drops such an entry as malformed rather than ranking it.
+
+The published location: `https://apps.crew.kiro.dev/catalog-ranking.json`.
+
+**Withheld counts and the small-count floor:**
+
+A count of `null` means withheld, and it is distinct from both an absent field
+and an explicit `0`. The client carries a withheld count through as "no number",
+so it cannot be recovered from the ranking either.
+
+The floor is a producer MUST, not a producer option. For a public, per-app file:
+
+- The producer MUST choose a floor `k` and publish `null` for every count below
+  it. `k` MUST be at least 5.
+- Hiding one count in a group MUST NOT leave it recoverable by subtracting the
+  published counts from a published total. Where that is possible, the
+  next-smallest count MUST be withheld too, so `null` always reads as "hidden"
+  and never as "below `k`".
+- A per-value floor alone is NOT sufficient, because successive documents can be
+  compared: a cumulative count that moves from 20 to 21 between two hourly
+  documents reveals a single install even though both values clear the floor.
+  The producer MUST therefore also do ONE of: publish on a coarse cadence (daily
+  or slower), publish counts bucketed above `k` rather than exact, or apply the
+  floor to the CHANGE between consecutive documents as well as to each value.
+
+These are producer obligations because the document is public JSON: a
+client-side floor governs only what this client reports and protects nothing on
+its own. #18855 asks for the same floor over additional fields; the floor is
+specified here once and that RFC should reference it rather than restate it.
+
+**Trust in the count:**
+
+The count is not manipulation-resistant. `t` is an HMAC over a secret the client
+generates, so a script can send receipts bearing fresh random tokens and each
+one adds to `COUNT(DISTINCT t)`. That is acceptable for the rough adoption
+metric this document exists to carry.
+
+It is NOT acceptable as a sort key on its own. A consumer that sorts Discover by
+these counts needs producer-side abuse controls first, and when such a sort
+ships it MUST use a deterministic tie-break and place unranked rows AFTER ranked
+ones, so an unmeasured app is never presented as the least popular one.
+
+**Hard requirements enforced by the client:**
+
+1. **k=fresh only:** The schema carries `cumulativeInstalls` and `windowedInstalls`
+   for fresh installs only. There is no field for `k=update` counts; the
+   server-side aggregation filters on `k=fresh`.
+
+2. **Cumulative + windowed:** The schema supports both so Discover can show
+   "Popular" (all-time) and "Trending" (windowed) views.
+
+3. **No rank, not zero rank:** An app not in the document returns `None`, never
+   zero. `RankingDocument.get_cumulative_rank("unknown-app")` returns `None`, not `0`.
+   Entries with zero counts are filtered during parsing, and a withheld count
+   returns `None` for the same reason: reporting it as `0` would present the app
+   as measured at zero and sort it below every counted app.
+
+   Dropping an entry whose cumulative count is below its windowed count is what
+   makes this true by construction rather than by inspection. Ranking needs one
+   count above zero, so the only way a ZERO cumulative count could be ranked --
+   and then stamped onto a store row as measured-at-zero -- is beside a positive
+   windowed count, which is exactly the malformed shape that guard rejects.
+
+4. **Never trust a zero:** An empty or all-zero document is treated as NO DATA
+   and triggers fallback to the stale cache with loud logging. This guards
+   against a rollup over an empty partition reporting success and publishing all
+   zeros, which would otherwise overwrite the last good ranking with nothing.
+   A document whose counts are all withheld is not that case: it reports that
+   every app sits below the floor, which is an answer, so it is accepted and it
+   replaces the cached copy. Treating it as no-data would keep serving a cached
+   copy whose counts predate the floor.
+
+5. **Rank not self-assertable:** The ranking module reads ONLY from the ranking
+   document. No registry-supplied field (`rank`, `popularity`, `featured`) can
+   influence ranking.
+
+   This has to hold ON THE WIRE, not just inside the module, and that takes an
+   explicit strip: an index entry is untrusted content, so an external registry
+   can publish `"installs": 999999` in its own entry and the store merges that
+   entry as the registry wrote it. `GET /api/apps/registry` therefore DROPS
+   `installs` from every row before stamping any, including when no document is
+   published or the loader raised, which is the case that matters most today.
+   Only an official or builtin row is then stamped: the document is keyed by
+   catalog slug and an external row may name itself anything, so a slug-keyed
+   lookup alone would hand an external row the count belonging to whichever
+   catalog app shares its name. `provenance` is the gate because
+   `_apply_trust_fields` computes it server-side from the `_registry` tag, so
+   index content cannot forge it.
+
+6. **Stale-safe with fallback, bounded by age:** Cache with TTL (1 hour). On
+   fetch failure, fall back to stale cache. On invalid document (fails
+   validation or no-data guard), keep stale cache. A stale ranking beats none;
+   an absent ranking beats wrong. The fallback is bounded: a document more than
+   `MAX_AGE_WINDOWS` (3) multiples of its own `windowDays` behind is refused
+   outright, because its `windowedInstalls` describes a window that has closed
+   and serving it as a current trending figure is the wrong-ranking case. The
+   cap is a multiple of the declared window rather than a fixed number of days,
+   so a document declaring a 7-day window goes stale sooner than one declaring
+   30. An unparseable `generatedAt` is invalid, since the age cannot be
+   established; a timestamp without an offset is read as UTC, and one in the
+   future is accepted so clock skew does not drop a ranking. `windowDays` is
+   bounded by `MAX_WINDOW_DAYS` (derived as `timedelta.max.days //
+   MAX_AGE_WINDOWS`), because a larger declared window makes the cap itself
+   unrepresentable; such a document is a validation error, so it takes the
+   ordinary fallback path rather than raising out of the loader and denying the
+   caller a last-good ranking it already holds.
+
+7. **Aggregates only:** The document carries per-app counts and nothing else.
+   No tokens, user data, or raw records are exposed.
+
+**Cache behavior (mirrors registry index):**
+
+The fetch/cache/fallback pattern in `load_ranking_document`:
+
+1. Check the cache. If fresh, return it without network fetch.
+2. If cache is stale or missing, fetch from network.
+3. On fetch success, validate, check the no-data guard, write cache, return.
+4. On fetch failure OR invalid document, fall back to stale cache if available.
+5. If no fallback, return `None`; Discover orders by name (current behavior).
+
+A failed fetch is remembered in a marker file whose CONTENT is the back-off the
+next read should honour, so one marker serves two very different failures:
+
+- `FAILURE_TTL` (60s) for anything that may recover at any moment: DNS, TLS, a
+  timeout, a 5xx. Short, so recovery from an outage is prompt.
+- `NOT_PUBLISHED_TTL` (= `CACHE_TTL`, 1 hour) for HTTP 404, which is not an
+  outage but the origin stating that the document does not exist. That is the
+  ordinary case until a producer ships, and it will not change within the
+  minute. At the 60s back-off it would cost one outbound request per minute per
+  active store, forever, and hand the origin a log line every time the store is
+  opened. A not-published answer is now held exactly as long as a successful one.
+
+A marker that is unreadable, or that asks for a back-off outside the range the
+writer can produce, is read as `FAILURE_TTL`: the shorter value only costs an
+earlier retry, where an over-long one would hold the ranking off for as long as
+the bad value said.
+
+**Official catalog only (privacy boundary):**
+
+Private and corporate app names stay off the wire only if the producer filters
+on the public catalog, which is why producer contract item 1 states that filter
+as a MUST. This client cannot enforce it: it consumes whatever the document
+contains, and nothing in this repository runs at generation time. The guarantee
+is therefore stated as a requirement ON the producer, not as a property of the
+system as built.
+
+What the client does enforce is the other direction: only an official or builtin
+store row is ever stamped with a count, so a count cannot reach a private row
+even if one were published. An app not in the ranking document simply has no
+rank; it does not appear at the bottom of a popularity list.
+
+**Where the rank reaches the store:**
+
+`GET /api/apps/registry` loads the ranking alongside the published category
+order and the editorial sections, in one `asyncio.gather`: each cold-cache load
+does network I/O, so loading them in series would add their fetch timeouts to
+the store response. The ranking is presentation like the other two, so a raising
+loader is logged and costs the ranking only; the endpoint still answers 200 with
+its apps.
+
+Every row's `installs` is then REPLACED with the document's: dropped from all
+rows first (see requirement 5), then stamped on official and builtin rows from
+the document, keyed by the row's own `name` (an app name IS its catalog slug). A
+row is left WITHOUT the key in BOTH of the cases the getter reports as `None`:
+
+- the document does not rank it, and
+- the document ranks it with the count **withheld** under the small-count floor.
+
+That is the `None`-not-zero contract carried onto the wire. An absent key reads
+as `undefined` client-side, so "unmeasured" stays distinguishable from "measured
+at zero"; and a withheld count is never published as a number or a bound, which
+is what keeps the producer's floor from being undone one layer down. Sorting
+Discover by this field is deferred to #9490.
+
+`POST /api/app-store/refresh` drops the ranking cache along with the other
+published-document caches. `catalog_ranking.forget_cache` deletes the failure
+marker as well as the cached document, because a marker surviving inside
+`FAILURE_TTL` would send the next read down the back-off path and return `None`
+instead of re-fetching.
 
 ### Cross-machine identity hazard
 

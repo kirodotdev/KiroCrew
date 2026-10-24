@@ -32,7 +32,7 @@ from aiohttp import web
 
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import platform_compat
-from kiro_crew.apps import official_catalog
+from kiro_crew.apps import catalog_ranking, official_catalog
 from kiro_crew.apps.backend import (
     get_app_backend_port,
     list_app_processes,
@@ -347,6 +347,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         invalidate_app_secret_cache,
     )
     from kiro_crew.apps.routes_registry import (  # noqa: F401
+        _RANKABLE_PROVENANCE,
+        _annotate_install_counts,
         _announce_app_updates,
         _derive_registry_name,
         _write_registries_config,

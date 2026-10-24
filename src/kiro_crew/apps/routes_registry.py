@@ -21,7 +21,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.apps import official_catalog
+from kiro_crew.apps import catalog_ranking, official_catalog
 from kiro_crew.apps.manager import app_lifecycle_lock, get_app
 from kiro_crew.apps.official_category_order import forget_cache as forget_category_order_cache
 from kiro_crew.apps.official_category_order import load_category_order
@@ -86,6 +86,64 @@ async def _announce_app_updates(request: web.Request, rows: list[dict[str, Any]]
         deliver_app_update_notes(state, notes)
 
 
+#: Provenance values whose rows may carry a server-stamped install count.
+#: ``provenance`` is computed by ``_apply_trust_fields`` from the server-attached
+#: ``_registry`` tag, so it cannot be forged by index content -- which is what
+#: makes it usable as the gate here.
+_RANKABLE_PROVENANCE = frozenset({"official", "builtin"})
+
+
+def _annotate_install_counts(apps: list, document: Any) -> None:
+    """Replace each store row's install count with the published document's.
+
+    An app's name IS its catalog slug, which is the key the ranking document is
+    built on, so the row's own name is what resolves its rank.
+
+    REPLACE, not add. Every row's ``installs`` is dropped first, including when
+    there is no document at all (*document* is None), because rank is not
+    self-assertable: an index entry is untrusted content, and an external
+    registry that published ``"installs": 999999`` in its own entry would
+    otherwise have that number served verbatim as though this server had
+    measured it. Stripping unconditionally is what makes the guarantee hold in
+    the case that matters most -- no document is published yet, so the strip is
+    the only thing standing between a configured registry and any rank it likes.
+
+    Only an official or builtin row is then stamped. The document is keyed by
+    catalog slug, and an external row is free to name itself anything, so a
+    slug-keyed lookup alone would hand an external row the count belonging to
+    whichever catalog app shares its name.
+
+    A row the document does not rank is left WITHOUT the field rather than
+    carrying a zero: "unranked" and "ranked zero installs" are different facts,
+    and a client that cannot tell them apart would sort a brand-new app and an
+    unmeasured one into the same place. An absent key reads as ``undefined``
+    client-side, which is what keeps the distinction on the wire.
+
+    A count WITHHELD under the document's small-count floor arrives as None
+    from the same getter, and is therefore served the same way: as an absent
+    key. That is deliberate rather than incidental. Publishing a withheld count
+    as any number -- a zero, or a bound like "<5" -- would hand back the very
+    figure the floor exists to suppress, so the wire format must not be able to
+    express it.
+    """
+    for row in apps:
+        if not isinstance(row, dict):
+            continue
+        # Unconditional, and before any lookup: a row carries no install count
+        # it asserted itself, whatever happens below.
+        row.pop("installs", None)
+        if document is None:
+            continue
+        if row.get("provenance") not in _RANKABLE_PROVENANCE:
+            continue
+        name = row.get("name")
+        if not isinstance(name, str):
+            continue
+        count = document.get_cumulative_rank(name)
+        if count is not None:
+            row["installs"] = count
+
+
 async def handle_registry(request: web.Request) -> web.Response:
     """GET /api/apps/registry — list all apps available for installation."""
     # The published catalog is the storefront's source of truth when it is
@@ -96,16 +154,17 @@ async def handle_registry(request: web.Request) -> web.Response:
         await _announce_app_updates(request, apps)
     else:
         apps = await list_registry()
-    # Published rail order and layout ride along on the response the store already
-    # makes, rather than endpoints the page would have to wait on separately. They
-    # are two documents with two caches, loaded CONCURRENTLY: each cold-cache load
-    # does network I/O, and paying two fetch timeouts in series would delay the
-    # whole store response. Both are presentation, so a failure degrades to the
-    # client's own defaults per document and must never 500 the store -- the same
-    # contract the catalog annotation keeps.
-    order_result, sections_result = await asyncio.gather(
+    # Published rail order, layout, and install ranking ride along on the response
+    # the store already makes, rather than endpoints the page would have to wait on
+    # separately. They are three documents with three caches, loaded CONCURRENTLY:
+    # each cold-cache load does network I/O, and paying three fetch timeouts in
+    # series would delay the whole store response. All three are presentation, so a
+    # failure degrades to the client's own defaults per document and must never 500
+    # the store -- the same contract the catalog annotation keeps.
+    order_result, sections_result, ranking_result = await asyncio.gather(
         asyncio.to_thread(load_category_order),
         asyncio.to_thread(load_sections),
+        asyncio.to_thread(catalog_ranking.load_ranking_document),
         return_exceptions=True,
     )
     if isinstance(order_result, BaseException):
@@ -118,6 +177,13 @@ async def handle_registry(request: web.Request) -> web.Response:
         sections: list = []
     else:
         sections = sections_result
+    if isinstance(ranking_result, BaseException):
+        logger.warning("ignoring the install ranking", exc_info=ranking_result)
+        ranking_result = None
+    # Called even with no document: the annotation's first job is to strip any
+    # `installs` a row asserted for itself, which is exactly what must still
+    # happen when the ranking is absent or failed.
+    _annotate_install_counts(apps, ranking_result)
     return web.json_response(
         {
             "apps": apps,
@@ -131,12 +197,13 @@ async def handle_registry(request: web.Request) -> web.Response:
 async def handle_registry_refresh(request: web.Request) -> web.Response:
     """POST /api/app-store/refresh — drop the published-document caches.
 
-    Drops the on-disk caches of all three published documents (catalog,
-    category order, editorial), so the NEXT ``GET /api/apps/registry`` is
-    rebuilt from fresh fetches. This exists because the caches degrade
-    SILENTLY: a failed fetch overwrites the catalog cache with a failure
-    sentinel and the store quietly falls back to the seed listing, and without
-    an explicit refresh the user's only remedy is waiting out ``CACHE_TTL``.
+    Drops the on-disk caches of all four published documents (catalog,
+    category order, editorial, install ranking), so the NEXT
+    ``GET /api/apps/registry`` is rebuilt from fresh fetches. This exists
+    because the caches degrade SILENTLY: a failed fetch overwrites the catalog
+    cache with a failure sentinel and the store quietly falls back to the seed
+    listing, and without an explicit refresh the user's only remedy is waiting
+    out ``CACHE_TTL``.
 
     Deliberately OUTSIDE ``/api/apps/``: token_auth's ``_app_owns_path``
     grants an app token implicit ownership of everything under
@@ -157,12 +224,13 @@ async def handle_registry_refresh(request: web.Request) -> web.Response:
       fetch on the exact same code path as a cold start, so refresh cannot
       behave differently from the load it is trying to repair.
     """
-    # Off the event loop like every other disk touch on these routes; three
+    # Off the event loop like every other disk touch on these routes; four
     # unlinks gathered because none depends on another.
     await asyncio.gather(
         asyncio.to_thread(official_catalog.forget_cache),
         asyncio.to_thread(forget_category_order_cache),
         asyncio.to_thread(forget_editorial_cache),
+        asyncio.to_thread(catalog_ranking.forget_cache),
     )
     return web.json_response({"ok": True})
 

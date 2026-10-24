@@ -795,8 +795,34 @@ class TestSkipFetchSwitch:
         _floor_monkeypatch.setenv(oc.SKIP_FETCH_ENV, "1")
 
     def test_every_document_reads_as_unreachable_before_the_seam(self):
-        for url in (oc.OFFICIAL_CATALOG_URL, oc.OFFICIAL_CATALOG_BASE + "editorial.json"):
+        for url in (
+            oc.OFFICIAL_CATALOG_URL,
+            oc.OFFICIAL_CATALOG_BASE + "editorial.json",
+            oc.OFFICIAL_CATALOG_BASE + "catalog-ranking.json",
+        ):
             assert oc.fetch_document(url) is None
+
+    def test_the_status_reporting_form_is_skipped_too(self):
+        """The gate lives in the status form, so it covers BOTH callers.
+
+        A gate on the thin ``fetch_document`` wrapper alone would let the
+        ranking document's fetch straight through to the live origin, which is
+        the single thing this switch exists to prevent.
+        """
+        url = oc.OFFICIAL_CATALOG_BASE + "catalog-ranking.json"
+        assert oc.fetch_document_with_status(url) == (None, None)
+
+    def test_a_skipped_fetch_reports_no_status_rather_than_a_404(self):
+        """It asked the origin nothing, so it must not answer for the origin.
+
+        A 404 means "nobody has published this", which the ranking consumer
+        answers with an hour-long back-off. A test rig that skipped the fetch
+        has earned no such conclusion.
+        """
+        _, status = oc.fetch_document_with_status(
+            oc.OFFICIAL_CATALOG_BASE + "catalog-ranking.json"
+        )
+        assert status is None
 
     def test_the_store_degrades_to_the_seed_and_remembers_it(self):
         assert oc.load_official_catalog() == []
@@ -1043,3 +1069,125 @@ class TestListCatalogRows:
         monkeypatch.setattr(oc, "load_official_catalog", lambda: [entry])
         [row] = oc.list_catalog_rows()
         assert row["screenshots"] == ["https://apps.crew.kiro.dev/assets/s/ok.png"]
+
+
+class TestFetchDocumentReportsStatus:
+    """`fetch_document_with_status` tells "not there" apart from "unreachable".
+
+    The ranking consumer needs that distinction and nothing else does: a 404
+    means no producer has published the document, which will not change within
+    the minute, while a timeout may clear at any moment. The two deserve very
+    different back-offs, and a seam that collapses both to None can support
+    neither.
+
+    `fetch_document` stays the document-or-nothing form every other caller
+    wants, and delegates here, so the https-only, redirect-refusing,
+    byte-capped guards stay in exactly one place.
+    """
+
+    URL = "https://apps.crew.kiro.dev/catalog-ranking.json"
+
+    @staticmethod
+    def _responder(status, body=b'{"ok": true}'):
+        """An opener stand-in returning a response with *status* and *body*."""
+
+        class _Resp:
+            def __init__(self):
+                self.status = status
+
+            def read(self, _n=None):
+                return body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+        return lambda _req, *a, **k: _Resp()
+
+    @staticmethod
+    def _raiser(code):
+        """An opener stand-in raising HTTPError, which is what urllib does."""
+
+        def _raise(_req, *a, **k):
+            raise urllib.error.HTTPError(
+                TestFetchDocumentReportsStatus.URL, code, "nope", {}, None
+            )
+
+        return _raise
+
+    def test_a_404_reports_its_status(self, monkeypatch):
+        """The whole point. urllib RAISES for 4xx, so the status is off `.code`;
+        reading `resp.status` alone would never see a real 404."""
+        monkeypatch.setattr(oc, "_open_catalog", self._raiser(404))
+        assert oc.fetch_document_with_status(self.URL) == (None, 404)
+
+    def test_a_5xx_reports_its_status(self, monkeypatch):
+        """Reported, but it is the caller's job to treat it as an outage."""
+        monkeypatch.setattr(oc, "_open_catalog", self._raiser(503))
+        assert oc.fetch_document_with_status(self.URL) == (None, 503)
+
+    def test_a_refused_redirect_reports_the_3xx(self, monkeypatch):
+        monkeypatch.setattr(oc, "_open_catalog", self._raiser(302))
+        assert oc.fetch_document_with_status(self.URL) == (None, 302)
+
+    def test_a_transport_failure_reports_no_status(self, monkeypatch):
+        """No HTTP response was obtained, so there is no status to report."""
+
+        def _boom(_req, *a, **k):
+            raise urllib.error.URLError("connection refused")
+
+        monkeypatch.setattr(oc, "_open_catalog", _boom)
+        assert oc.fetch_document_with_status(self.URL) == (None, None)
+
+    def test_an_http_exception_reports_no_status(self, monkeypatch):
+        """The non-OSError family carries no `.code`, and must not invent one."""
+
+        def _boom(_req, *a, **k):
+            raise http.client.IncompleteRead(b"partial")
+
+        monkeypatch.setattr(oc, "_open_catalog", _boom)
+        assert oc.fetch_document_with_status(self.URL) == (None, None)
+
+    def test_a_non_200_response_object_reports_its_status(self, monkeypatch):
+        """The other arm: an opener that returns a non-200 instead of raising."""
+        monkeypatch.setattr(oc, "_open_catalog", self._responder(204))
+        assert oc.fetch_document_with_status(self.URL) == (None, 204)
+
+    def test_a_good_document_reports_200(self, monkeypatch):
+        monkeypatch.setattr(oc, "_open_catalog", self._responder(200))
+        assert oc.fetch_document_with_status(self.URL) == ({"ok": True}, 200)
+
+    def test_an_unusable_body_is_not_a_not_published_answer(self, monkeypatch):
+        """A 200 whose body fails reports 200: the body failed, not the request.
+
+        Reporting 404 here would be a real bug -- it would park the ranking's
+        hour-long back-off on a document that IS published and merely arrived
+        corrupt once.
+        """
+        monkeypatch.setattr(oc, "_open_catalog", self._responder(200, b"not json"))
+        assert oc.fetch_document_with_status(self.URL) == (None, 200)
+
+    def test_an_oversized_body_reports_200(self, monkeypatch):
+        monkeypatch.setattr(
+            oc, "_open_catalog", self._responder(200, b"[" + b"0," * oc.MAX_BYTES + b"0]")
+        )
+        assert oc.fetch_document_with_status(self.URL) == (None, 200)
+
+    def test_a_non_object_body_reports_200(self, monkeypatch):
+        monkeypatch.setattr(oc, "_open_catalog", self._responder(200, b"[1, 2]"))
+        assert oc.fetch_document_with_status(self.URL) == (None, 200)
+
+    def test_the_scheme_guard_still_applies(self):
+        """A non-https URL fails before any fetch, and reports no status."""
+        assert oc.fetch_document_with_status("http://apps.crew.kiro.dev/x.json") == (None, None)
+
+    def test_fetch_document_is_the_same_fetch_without_the_status(self, monkeypatch):
+        monkeypatch.setattr(oc, "_open_catalog", self._responder(200))
+        assert oc.fetch_document(self.URL) == {"ok": True}
+
+    def test_fetch_document_still_returns_none_on_a_404(self, monkeypatch):
+        """The delegation must not change what existing callers see."""
+        monkeypatch.setattr(oc, "_open_catalog", self._raiser(404))
+        assert oc.fetch_document(self.URL) is None
