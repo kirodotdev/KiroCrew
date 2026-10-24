@@ -8,6 +8,9 @@ import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
 import { createTranscriptVersioner } from '../chat-core/transcript/transcriptVersion'
 import { DOCK_CLEARANCE_PX, useComposerDockMetrics } from '../pages/chat/composerDockMetrics'
 import ChatInput from './ChatInput'
+import { DeliveryWarningStrip } from './DeliveryWarningStrip'
+import { useDeliveryWarningStrip } from './useDeliveryWarningStrip'
+import { mergePaneSends, type PaneSentRestore } from './useChatPaneSend'
 import { busySteerFlag } from './chat-input/busySend'
 import { filterCrewmateChat, withQueuedAsBubbles } from './chat/crewmateBubbles'
 import { AWAITING_REPLY_ACTIVITY, useCrewmateAwaitingReply } from './chat/useCrewmateAwaitingReply'
@@ -566,6 +569,14 @@ export default function ChatPane({
   // host but ChatPage handed any.
   const { onQuote, onAsk, quoteFlight, endQuoteFlight } = useSelectionQuoteAsk({ slot: slotKey, setInput, revealComposer, openSideChat })
 
+  const currentPaneSlot = useCallback(() => slotKeyRef.current, [slotKeyRef])
+  const restorePaneSend = useCallback((forSlot: string, sent: PaneSentRestore) => {
+    restoreIntoComposer(recoverQuoteInto(sent.text, sent.quote, mountedRef.current && forSlot === slotKeyRef.current), sent.files, sent.pastes, forSlot)
+  }, [restoreIntoComposer, recoverQuoteInto, mountedRef, slotKeyRef])
+  const deliveryStrip = useDeliveryWarningStrip<PaneSentRestore>({
+    slot: slotKey, surface: 'pane', currentSlot: currentPaneSlot, restore: restorePaneSend, merge: mergePaneSends, disabled: !!crewmate,
+  })
+
   return (
     <SlotProvider slotId={slotKey}>
       <div
@@ -995,6 +1006,12 @@ export default function ChatPane({
           value={input}
           onChange={handleUserInput}
           onSend={doSend}
+          aboveComposer={deliveryStrip.show ? (
+            <DeliveryWarningStrip
+              noteId={`pane-delivery-note-${slotKey}`}
+              onDismiss={deliveryStrip.onDismiss}
+            />
+          ) : undefined}
           terminalCommands={!paneSlot ? 'pending' : paneSlot.executor === 'remote' ? 'remote' : 'local'}
           hiddenCommands={paneHiddenCommands}
           isRunning={composerBusy}

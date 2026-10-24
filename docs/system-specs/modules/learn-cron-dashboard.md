@@ -2367,7 +2367,9 @@ HTTP receipts still confirm delivery but never insert a skipped bubble.
 A plain send whose receipt misses the transport deadline (`response-late`) and has
 no correlated echo keeps its bubble, stamped client-side `meta.deliveryUnconfirmed`
 (`markSendUnconfirmed`): the bubble shows a muted "Delivery pending…" line, a WARN
-notice under it says what to do, and the footer's running indicator stays hidden
+notice under it says delivery is not confirmed yet, the raising surface's composer
+shows the delivery-warning strip (`useDeliveryWarningStrip`) with the one exit that
+removes the bubble and hands its payload back (crewmate panes and isolated sends raise none), and the footer's running indicator stays hidden
 while that bubble is the newest send (`selectTrailingSendUnconfirmed`). A late echo
 or receipt clears the mark.
 Uncorrelated sends, actual queued/steered sends, and in-band/relay streams keep

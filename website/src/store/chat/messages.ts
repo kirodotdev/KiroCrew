@@ -220,6 +220,35 @@ export const messageReducers = {
     }
     if (!mark(state.messages)) mark(state.slotMessages[safeKey(slot)])
   },
+  /** Remove a row nothing proves landed, as the user's own explicit outcome.
+   *
+   *  Guarded on the absence of proof rather than on the caller: a row confirmation has cleared
+   *  `optimistic` on is the transcript's, and splicing it out would delete a delivered message
+   *  while the server's copy comes straight back on the next fetched page. Scans BOTH arrays as
+   *  `confirmOptimisticSend` does, for the same in-flight slot switch. */
+  dropUnconfirmedRow(state: ChatState, action: PayloadAction<{ slot: string; sendId: string }>) {
+    const { slot, sendId } = action.payload
+    if (isUnsafeKey(slot)) return
+    const drop = (msgs: ChatMessage[] | undefined, active = false): boolean => {
+      if (!msgs) return false
+      const splice = (at: number) => {
+        msgs.splice(at, 1)
+        if (active && state._switchLiveFrom !== undefined && at < state._switchLiveFrom) state._switchLiveFrom -= 1
+      }
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i]
+        if (m.role !== 'user' || m.meta?.sendId !== sendId) continue
+        if (!m.meta?.optimistic) return false
+        splice(i)
+        for (let j = msgs.length - 1; j >= 0; j--) {
+          if (msgs[j].role === 'notice' && msgs[j].meta?.deliveryNoticeFor === sendId) splice(j)
+        }
+        return true
+      }
+      return false
+    }
+    if (!drop(state.messages, true)) drop(state.slotMessages[safeKey(slot)])
+  },
   /** Resolve an optimistic steer bubble against the steer POST's own receipt.
    *
    *  `meta.steer` draws the "Steered into the running turn" badge, so it is an
