@@ -340,7 +340,7 @@ without reading or attaching a gateway credential. Object transfers run directly
 from the workspace: public LFS remains anonymous, while private LFS requires
 workspace-side authentication. `test_remote_git_channel_bounds.py` verifies real LFS
 clone/smudge and pre-push upload through this exclusion, as well as bounded wire
-receive flow.
+receive flow and git status/log/diff failure reporting through `ErrorNotice`.
 
 A vendor tunnel is not assumed to deliver ACP byte for byte (an SSM port forward
 rewrote LF into CR; ECS Exec does not forward piped stdin), so tunnels use
@@ -460,7 +460,9 @@ Archiving a session (tab close, session control's close, the idle sweep) calls
 `coder/retention.schedule_archived` as a background task that never delays or
 fails the close. `warn_unsaved_work` first reads `git status` in each running
 workspace within `UNSAVED_CHECK_SECS` and publishes one `system.agent` notice
-naming unsaved work. The workspace is then stopped and stamped
+naming unsaved work. A status the guest cut at its read cap (`truncated`) has
+its partial last record dropped and its file count worded "at least N". The
+workspace is then stopped and stamped
 `deletion_due_at` = now + `ARCHIVED_RETENTION_DAYS` (7, fixed: a stopped workspace
 still holds its disk). Reopening before
 the deadline clears the stamp: a History resume awaits `retention.keep_reopened`
@@ -723,16 +725,115 @@ other errors keep the pending stop for retry.
 ### Dashboard views
 
 Views that read the gateway's project switch on `useSlotRemoteEnvironment`:
-the composer drops the project chip, the Git view gets no folder, and the Files
+the composer drops the project chip, the Git view renders `RemoteGitPanel`
+(below), and the Files
 tab renders `RemoteFilesPanel`. It reads through
 `GET /api/chat/slots/{slot}/environment/browse?op=list|read&path=`
 (owner-only; `coder.session_browse` runs `workspace_tools.py --browse` with the
 request on stdin and the tools' confinement and caps) and saves through
 `PUT /api/chat/slots/{slot}/environment/file` `{path, content, expected}`
 (owner-only, SEL-audited, the separate `--write` mode). A save whose `expected`
-differs from the file answers 409 `file_changed`, a truncated or binary read is
-not offered for saving, a stopped workspace answers 409 `workspace_stopped`, and
-outdated guest files are reinstalled once before a retry. A terminal opened
+differs from the file answers 409 `file_changed`, a truncated or binary read is not
+offered for saving, a stopped workspace answers 409 `workspace_stopped`, and
+outdated guest files are reinstalled once before a retry: a guest lacking the
+mode, or one that answers a browse op with `op must be …`. The Git view becomes
+`RemoteGitPanel`: the branch (plain text titled read-only) and its unpushed
+and unpulled commit counts as plain muted text titled as read-only counts, one
+coloured status letter per file (`??` shown as `?`, each titled
+with what happened to the file), a per-file HEAD-to-worktree diff opened directly
+under its row, with a notice when the bodies exceed a combined 256 KB,
+and the last 50 commits, from the dashboard browse ops
+`git_status|git_log|git_diff`. The gateway asks the guest for `git_bodies` for a
+diff; a guest that does not know that op is reinstalled once, never asked for a
+patch of raw content. `git_log` sends each commit's date as unix
+seconds (`%at`), which the panel formats in the reader's language as the local
+Git panel does; a value no date can hold is shown as sent. The panel's "Ask the agent" links stage a draft in the chat
+composer, titled to say nothing is sent until the user sends it. The git ops'
+output and error text pass the shared credential and exfiltration-URL redactor
+at the gateway; status and log preserve NUL records and newlines (withholding
+record bodies if a multiline match consumes newlines), while archive-warning
+counts read the raw guest status. Status arrives as NUL porcelain; newline
+records from older guest files are read too. For `git_diff`, the guest reads the
+HEAD blob with `ls-tree` and `cat-file` and the worktree file directly. A renamed
+row (`R`) sends its old path as `from`; the guest reads the HEAD side there,
+confined like the path itself, and names it `old_path` (a `from` that HEAD does
+not hold is ignored), so the gateway writes git's `rename from` and
+`rename to` lines and diffs the two bodies; it writes no `similarity index`,
+since it does not reproduce git's score. A copy (`C`) diffs
+as a new file. The guest also returns `old_mode` (the HEAD entry's) and
+`new_mode` (from `lstat`: `100755` when any execute bit is set, `100644`
+otherwise, `120000` for a symlink, `160000` for a gitlink), keeping the HEAD mode
+where `core.fileMode` or `core.symlinks` is false, as git does; an absent side's
+mode is null. The gateway writes `old mode`/`new mode`, `new file mode` or
+`deleted file mode` after `diff --git`, so a mode-only change or a pure rename is
+a header-only patch, never an empty diff. A missing
+side is absent, an unborn HEAD is empty, and directories and paths missing on
+both sides fail. Gitlinks use `Subproject commit <sha>` bodies from the
+superproject's `--submodule=short` diff with `--ignore-submodules=dirty`, without
+running inside a submodule (the raw format reports an all-zero new id for an
+unstaged gitlink). Only the synthetic commit line is retained, never its patch.
+That diff runs only for a worktree directory or a removed gitlink: a gitlink
+replaced by a regular file or symlink keeps its synthetic HEAD body and reads the
+replacement with the bounded worktree read, so no unbounded git output is buffered.
+A gitlink whose index entry was replaced by files under the path is refused as a
+directory before that diff runs, and every body read, the index listing and the
+submodule summary included, is streamed to `MAX_READ_BYTES + 1` bytes.
+The path's parent is confined; a symlink's body is its link text,
+even when it names a file outside the workdir. NUL in either body's first 8000
+bytes yields a binary notice without bodies. HEAD blobs are streamed with at most
+`MAX_READ_BYTES + 1` bytes retained; reaching that bound stops the read, and a
+timeout keeps the same 30-second cleanup as the other Git reads. Every Git read
+runs under coreutils `timeout`, as `run_command` does, so the stop reaches the
+read's whole process group; the guest itself calls no kill primitive. The status
+and history reads are streamed to the same bound, so one huge commit subject or
+untracked list is never buffered whole. When `timeout` is present but `git` is
+not, the read still reports "git is not installed".
+The worktree read has the same bound. When the two bodies together exceed
+`MAX_READ_BYTES`, the guest sets `truncated` and sends no body, only `git`, the
+path, the modes and any `old_path`. The gateway builds no hunks for a truncated
+reply, whatever bodies it carries: it returns `truncated` with only the
+`diff --git` and extended header lines (mode, rename, new or deleted file) when
+there are any, and otherwise empty output, which the panel shows as its cut-off
+notice with the link to ask the agent for the full diff. Regular worktree CRLF
+endings are converted to LF when `check-attr text eol` or `core.autocrlf` enables
+Git's text conversion: explicit `-text` wins, while `text=auto` and automatic
+conversion require a NUL-free body and, as git's `has_crlf_in_index` does, a HEAD
+blob without CRLF. Attribute/config reads use the same guarded
+Git prefix and never run filter drivers. Truncation is recorded before newline
+normalization, so reducing CRLF bytes cannot hide an incomplete read.
+Before whole-body redaction, the gateway withholds every line from an unmatched
+PEM `BEGIN` marker through the body's end, using one credential tag per line and
+preserving the final-newline state. Any indentation and label are covered; only
+a later `END` of the same label closes a block. This applies to both bodies of
+every complete read: the shared redactor masks a footerless key only through
+unindented base64 lines, so an indented key with no `END` would otherwise show.
+Complete blocks still pass through the normal whole-body redactor.
+The gateway redacts each entire returned body and the path with
+`redact_via_context` BEFORE building a unified patch with three context lines and
+missing-final-newline markers. The hunks come from `unified_diff`,
+whose junk heuristic keeps such input fast.
+Identical masked bodies with no mode change or
+rename yield an empty diff;
+raw bodies and guest patches never reach the dashboard. All of it is
+fixed-argv read-only git in the guest's own checkout, with `core.fsmonitor`,
+the pager, external diff, textconv and `log.showSignature` disabled, and every
+filter driver the repository configures blanked for the read (a driver name
+that cannot be given to `-c` stops the read as `git_failed`); status and the
+gitlink short diff pass `--ignore-submodules=dirty`, so git never runs inside a
+submodule, whose own config could name filters too. Lazy object fetches are disabled
+with `--no-lazy-fetch` and `GIT_NO_LAZY_FETCH=1`; a missing object fails as
+`git_failed`. Git lacking the flag (before 2.44, which also ignores the
+variable) runs a config-only probe for an `extensions.partialClone`,
+`remote.*.promisor` or `remote.*.partialclonefilter` key (any value counts; a
+failed probe refuses every read). With none, every read runs as usual. With one,
+`git_bodies` reports that git 2.44 or later is needed, since a HEAD body is a
+blob the clone may lack; `git_status` (with `--no-renames`, because only inexact
+rename detection reads blobs) and `git_log` (commits only) still run, with
+`GIT_ALLOW_PROTOCOL` empty, so a lazy fetch's `git fetch` is refused before any
+transport starts and a read that needs a missing object, such as a treeless
+clone's missing HEAD tree, fails as `git_failed` instead of fetching.
+It reads only the local repository, so it needs no gateway git login and implies no
+private-remote access, which the `strict` tier withholds. A terminal opened
 from a remote chat carries `remote_slot` and opens
 `coder ssh --disable-autostart <workspace>`, or closes the socket with a coded
 error (`terminal_wrong_machine`, or `terminal_placement_unavailable` while the
@@ -779,10 +880,11 @@ from saved configuration and validated registry names; guest commands are
 quoted remote arguments with payloads on stdin. They need the host login, so
 each has a justified entry in `test/test_spawn_audit.py` instead of the agent
 sandbox. The guest-script rule covers only execution inside the guest
-(`worker.run`, `workspace_tools.run_command` and `_git_status`, which cannot
-import the gateway sandbox), never a gateway CLI reaching a guest; gateway-side
-agent-influenced commands use the sandbox chokepoint. The two `main` entries
-are in-process `asyncio.run`. No directory-wide exemption exists.
+(`worker.run`, `workspace_tools.run_command` and `_run_grouped`, which runs
+the browse git reads; none can import the gateway sandbox), never a gateway
+CLI reaching a guest; gateway-side agent-influenced commands use the sandbox
+chokepoint. The two `main` entries are in-process `asyncio.run`. No
+directory-wide exemption exists.
 The boxd lifecycle CLI is a gateway spawn with fixed machine verbs, validated
 gateway-created names, saved snapshot/CPU settings and a validated retention
 duration, no local shell or agent-selected cwd, and stdin closed; it needs the

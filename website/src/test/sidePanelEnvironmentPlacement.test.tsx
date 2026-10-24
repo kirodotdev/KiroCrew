@@ -9,7 +9,11 @@ import { slotEnvironmentQueryKey } from '../components/sessionEnvironmentHooks'
 import { __resetPanelTabs, usePanelTabs } from '../hooks/usePanelTabs'
 import { createTestStore } from './helpers'
 
-vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
+vi.mock('../pages/chat/ActivityViewer', () => ({
+  default: (props: { view?: string; remoteEnvironmentName?: string }) => (
+    <div data-testid={'activity-' + (props.view ?? '')} data-remote-environment={props.remoteEnvironmentName ?? ''} />
+  ),
+}))
 vi.mock('../pages/chat/FilesHomePanel', () => ({ default: () => <div data-testid="gateway-files" /> }))
 vi.mock('../pages/chat/RemoteFilesPanel', () => ({ default: () => <div data-testid="remote-files" /> }))
 vi.mock('../components/DiffPanel', () => ({ default: () => null }))
@@ -258,5 +262,20 @@ describe('placement gates gateway file and terminal access', () => {
     // Leads with what to do, then why.
     expect(notice.textContent).toMatch(/^Open this chat's files from the Files tab\./)
     expect(notice).toHaveTextContent('this chat runs on Verified workspace.')
+  })
+
+  // The Git tab is the one gateway-named view a remote chat keeps: it gets the
+  // guest's Git view, named for its workspace, never the withheld notice.
+  it.each([
+    ['remote', remote, 'Verified workspace'],
+    ['local', local, ''],
+  ])('opens the Git tab of a %s chat on its own working tree', async (_kind, env, name) => {
+    envRead().mockResolvedValue(env)
+    mount()
+    await filesReady(env === local ? 'gateway-files' : 'remote-files')
+    act(() => { liveController!.openView('git') })
+    const git = await screen.findByTestId('activity-git')
+    expect(git).toHaveAttribute('data-remote-environment', name)
+    expect(screen.queryByTestId('remote-gateway-tab-withheld')).toBeNull()
   })
 })

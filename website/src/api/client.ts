@@ -959,6 +959,17 @@ export interface RemoteEnvironmentHealth {
   }
 }
 
+export interface RemoteGitResult {
+  root: string
+  /** False for a non-repository, or a failure accompanied by error_text. */
+  git: boolean
+  output?: string
+  code?: 'git_failed'
+  /** Subprocess failure only; a non-repository or unborn branch is not an error. */
+  error_text?: string
+  truncated?: boolean
+}
+
 /** `withheld`: the 'strict' agent sandbox lends no gateway login to remote sessions.
  *  `unsupported`: a Windows gateway lends no git login to remote sessions yet. */
 export type GitLoginStatus = 'signed_in' | 'not_signed_in' | 'unchecked' | 'withheld' | 'unsupported'

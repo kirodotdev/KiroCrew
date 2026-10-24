@@ -804,3 +804,39 @@ async def test_health_of_a_cloud_sandbox_is_a_409_not_a_failure(tmp_path, monkey
         resp = await client.get("/h/main")
         assert resp.status == 409
         assert (await resp.json())["code"] == "cloud_sandbox"
+
+
+@sync
+async def test_the_git_views_are_unreachable_with_the_developer_flag_off(tmp_path, monkeypatch):
+    """The Git panel's three reads go through the real browse path and choices
+    gate: with KIROCREW_DEV_MODE off a chat bound to a remote profile reads as
+    local, so every git op answers ``not_remote`` and nothing reaches a guest.
+    Removing the flag check from the choices gate fails this test."""
+    async with _client(tmp_path, monkeypatch) as client:
+        assert (await _choose(client, "dev")).status == 200
+        assert (await _env_of(client))["profile"] == "dev"
+
+        async def never_asked(*_args, **_kwargs):
+            raise AssertionError("flag off must not reach the workspace")
+
+        monkeypatch.setattr(session_browse, "_ask", never_asked)
+        monkeypatch.delenv("KIROCREW_DEV_MODE")
+        for query in ("op=git_status", "op=git_log", "op=git_diff&path=a.py&from=b.py"):
+            resp = await client.get("/b/main?" + query)
+            assert resp.status == 409, query
+            assert (await resp.json())["code"] == "not_remote", query
+
+
+@sync
+async def test_browse_endpoint_forwards_a_rename_source(tmp_path, monkeypatch):
+    calls = []
+
+    async def fake_browse(*args):
+        calls.append(args[1:])
+        return {"root": "/r", "git": True, "output": ""}
+
+    async with _client(tmp_path, monkeypatch) as client:
+        monkeypatch.setattr(session_browse, "browse_session", fake_browse)
+        await client.get("/b/main?op=git_diff&path=new.txt&from=old.txt")
+        await client.get("/b/main?op=git_diff&path=new.txt")
+    assert calls == [("git_diff", "new.txt", "old.txt"), ("git_diff", "new.txt", None)]

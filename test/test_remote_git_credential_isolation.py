@@ -499,6 +499,172 @@ async def test_channel_startup_failure_reaps_child_and_joins_serve(tmp_path, mon
         await asyncio.gather(*serving, return_exceptions=True)
 
 
+def test_textconv_setup_confines_children_at_spawn(tmp_path, monkeypatch):
+    from test_coder_session_launch import test_git_diff_view_does_not_run_a_repository_textconv
+
+    original = subprocess.run
+    setups = []
+
+    def run(argv, **kwargs):
+        if argv[1:2] == ["-C"]:
+            assert kwargs.get("cwd") == tmp_path / "repo"
+            setups.append(argv[3])
+        return original(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    test_git_diff_view_does_not_run_a_repository_textconv(tmp_path)
+    assert setups == ["init", "add", "commit", "config"]
+
+
+@pytest.fixture
+def git_workdir(tmp_path, monkeypatch):
+    from kiro_crew.platform_compat import trusted_git_bin
+    from kiro_crew.remote_session import workspace_tools
+
+    git = trusted_git_bin()
+    if git is None:
+        pytest.skip("Git is required")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "empty-config"))
+
+    def run(*args):
+        return subprocess.run(
+            [git, *args], cwd=tmp_path, check=True, capture_output=True, timeout=30
+        )
+
+    run("init", "-b", "main")
+    run(
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "seed",
+    )
+    return workspace_tools.Workspace(str(tmp_path)), run
+
+
+@pytest.mark.parametrize(
+    "name", ["new.txt", "nested/new.txt", "space name.txt", "é.txt", "arrow -> name.txt", "[x].txt"]
+)
+def test_untracked_files_have_real_addition_diffs(git_workdir, name):
+    from kiro_crew.remote_session import workspace_tools
+
+    ws, _ = git_workdir
+    if os.name == "nt" and ">" in name:
+        pytest.skip("Windows filesystems do not support > in filenames")
+    file = Path(ws.root) / name
+    file.parent.mkdir(exist_ok=True)
+    file.write_text("entirely new content\n", encoding="utf-8")
+    status = workspace_tools.browse(ws, {"op": "git_status"})
+    assert f"?? {name}\0" in status["output"]
+    result = workspace_tools.browse(ws, {"op": "git_bodies", "path": name})
+    assert result["git"] is True and result["old"] is None
+    assert result["new"] == "entirely new content\n"
+    assert "error_text" not in result
+
+
+@pytest.mark.parametrize("name", ["space name.txt", "é.txt", "arrow -> name.txt", "[x].txt"])
+def test_status_literal_paths_reach_the_tracked_diff(git_workdir, name):
+    from kiro_crew.remote_session import workspace_tools
+
+    ws, git = git_workdir
+    if os.name == "nt" and ">" in name:
+        pytest.skip("Windows filesystems do not support > in filenames")
+    file = Path(ws.root) / name
+    file.write_text("before\n", encoding="utf-8")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-m", "tracked")
+    file.write_text("after\n", encoding="utf-8")
+    result = workspace_tools.browse(ws, {"op": "git_status"})
+    assert f" M {name}\0" in result["output"]
+    diff = workspace_tools.browse(ws, {"op": "git_bodies", "path": name})
+    assert diff["old"] == "before\n" and diff["new"] == "after\n"
+
+
+def _commit_link(ws, git, target):
+    os.symlink(target, os.path.join(ws.root, "link"))
+    git("add", "link")
+    git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-m", "link")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="workspaces are Linux; symlinks need privileges")
+def test_a_modified_tracked_symlink_diffs_as_the_link(git_workdir):
+    from kiro_crew.remote_session import workspace_tools
+
+    ws, git = git_workdir
+    for name in ("a.txt", "b.txt"):
+        Path(ws.root, name).write_text(f"body of {name}\n", encoding="utf-8")
+    git("add", "a.txt", "b.txt")
+    _commit_link(ws, git, "a.txt")
+    os.unlink(os.path.join(ws.root, "link"))
+    os.symlink("b.txt", os.path.join(ws.root, "link"))
+    assert " M link\0" in workspace_tools.browse(ws, {"op": "git_status"})["output"]
+    diff = workspace_tools.browse(ws, {"op": "git_bodies", "path": "link"})
+    assert diff["git"] is True, diff
+    assert diff["old"] == "a.txt" and diff["new"] == "b.txt"
+    assert "body of" not in str(diff)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="workspaces are Linux; symlinks need privileges")
+def test_a_symlink_to_outside_the_workspace_diffs_as_the_link(git_workdir, tmp_path_factory):
+    from kiro_crew.remote_session import workspace_tools
+
+    ws, git = git_workdir
+    outside = tmp_path_factory.mktemp("outside")
+    for name in ("one.txt", "two.txt"):
+        (outside / name).write_text("outside secret\n", encoding="utf-8")
+    _commit_link(ws, git, str(outside / "one.txt"))
+    os.unlink(os.path.join(ws.root, "link"))
+    os.symlink(str(outside / "two.txt"), os.path.join(ws.root, "link"))
+    diff = workspace_tools.browse(ws, {"op": "git_bodies", "path": "link"})
+    assert "error" not in diff and diff["git"] is True, diff
+    assert diff["old"] == str(outside / "one.txt")
+    assert diff["new"] == str(outside / "two.txt")
+    assert "outside secret" not in str(diff)
+    os.symlink(str(outside / "one.txt"), os.path.join(ws.root, "untracked-link"))
+    added = workspace_tools.browse(ws, {"op": "git_bodies", "path": "untracked-link"})
+    assert added["old"] is None and added["new"] == str(outside / "one.txt")
+    assert "outside secret" not in str(added)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="workspaces are Linux; symlinks need privileges")
+@pytest.mark.parametrize("path", ["app/../../outside.txt", "..", "ext/file.txt"])
+def test_diff_paths_leaving_the_workspace_stay_refused(git_workdir, tmp_path_factory, path):
+    from kiro_crew.remote_session import workspace_tools
+
+    ws, _ = git_workdir
+    outside = tmp_path_factory.mktemp("outside")
+    (outside / "file.txt").write_text("outside secret\n", encoding="utf-8")
+    Path(ws.root, "app").mkdir()
+    # A symlinked parent directory that names a directory outside the workspace.
+    os.symlink(str(outside), os.path.join(ws.root, "ext"))
+    result = workspace_tools.browse(ws, {"op": "git_bodies", "path": path})
+    assert "outside the workspace" in result.get("error", ""), result
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("## main...origin/main\0", None),
+        (
+            "## main...origin/main [ahead 2]\0 M space name.txt\0?? é.txt\0",
+            "2 uncommitted files, 2 unpushed commits",
+        ),
+        ("## feature\0", "branch feature was never pushed"),
+        ("## No commits yet on main\0?? new.txt\0", "1 uncommitted file"),
+        ("## main...origin/main\0R  dest\nname\0src\nname\0?? a -> b\0", "2 uncommitted files"),
+        ("## main...origin/main\0 C copy\0source\0 M tracked\0", "2 uncommitted files"),
+    ],
+)
+def test_unsaved_warning_understands_nul_status(status, expected):
+    from kiro_crew.coder.session_browse import summarize_unsaved
+
+    assert summarize_unsaved(status) == expected
+
+
 def test_guest_shell_case_declares_windows_prerequisite():
     import sys
 

@@ -548,7 +548,8 @@ async def api_chat_slot_environment_get(request: web.Request) -> web.Response:
 
 
 async def api_chat_slot_environment_browse(request: web.Request) -> web.Response:
-    """``GET .../environment/browse?op=list|read&path=REL``: owner-only remote reads."""
+    """``GET .../environment/browse?op=list|read&path=REL``: owner-only remote reads;
+    ``from`` names a renamed file's old path for ``op=git_diff``."""
     if (
         refusal := await require_owner_dashboard_request(request, "chat.slot_environment_browse")
     ) is not None:
@@ -567,7 +568,7 @@ async def api_chat_slot_environment_browse(request: web.Request) -> web.Response
     op = request.query.get("op", "list")
     path = request.query.get("path", ".")
     try:
-        result = await browse_session(key, op, path)
+        result = await browse_session(key, op, path, request.query.get("from"))
     except ValueError as exc:
         return web.json_response({"error": str(exc), "code": "invalid_request"}, status=400)
     except CloudSandboxOnly as exc:

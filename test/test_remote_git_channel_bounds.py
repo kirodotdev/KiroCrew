@@ -1,14 +1,16 @@
-"""Git-channel receive bounds, repository names and LFS routing."""
+"""Git-channel receive bounds and repository-state/error distinctions."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
-from kiro_crew.remote_session import git_gateway
+from kiro_crew.remote_session import git_gateway, workspace_tools
 
 
 @pytest.mark.asyncio
@@ -193,6 +195,147 @@ def test_leading_dot_and_embedded_dots_are_repository_names(repo):
     assert request.upstream_url() == (
         f"https://github.com/acme/{repo}/info/refs?service=git-upload-pack"
     )
+
+
+@pytest.mark.parametrize("op", ["git_status", "git_log", "git_bodies"])
+@pytest.mark.parametrize("failure", ["missing", "permission", "corruption", "timeout"])
+def test_git_subprocess_failures_are_errors_not_repository_states(
+    tmp_path, monkeypatch, op, failure
+):
+    def run(argv, **kwargs):
+        assert kwargs["env"]["LC_ALL"] == "C"
+        if failure == "missing":
+            raise FileNotFoundError("git")
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(argv, 30)
+        error = (
+            b"fatal: permission denied" if failure == "permission" else b"fatal: bad object HEAD"
+        )
+        return SimpleNamespace(returncode=128, stdout=b"", stderr=error)
+
+    monkeypatch.setattr(workspace_tools, "_run_grouped", run)
+    result = workspace_tools.browse(workspace_tools.Workspace(str(tmp_path)), {"op": op})
+    assert result["code"] == "git_failed"
+    assert result["error_text"]
+    assert "output" not in result
+
+
+def _git_reply(stderr: bytes):
+    """A fake `_run_grouped`: the filter-config read finds nothing, as git exits 1;
+    every other git call answers ``stderr`` with exit 128."""
+
+    def run(argv, **kwargs):
+        if "config" in argv:
+            return SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
+        return SimpleNamespace(returncode=128, stdout=b"", stderr=stderr)
+
+    return run
+
+
+@pytest.mark.parametrize("op", ["git_status", "git_log", "git_bodies"])
+def test_only_not_repository_diagnostic_is_a_non_repo_state(tmp_path, monkeypatch, op):
+    monkeypatch.setattr(
+        workspace_tools,
+        "_run_grouped",
+        _git_reply(b"fatal: not a git repository (or any of the parent directories): .git\n"),
+    )
+    result = workspace_tools.browse(workspace_tools.Workspace(str(tmp_path)), {"op": op})
+    assert result == {"root": str(tmp_path.resolve()), "git": False}
+
+
+def test_unborn_history_is_empty_not_a_process_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        workspace_tools,
+        "_run_grouped",
+        _git_reply(b"fatal: your current branch 'main' does not have any commits yet\n"),
+    )
+    result = workspace_tools.browse(workspace_tools.Workspace(str(tmp_path)), {"op": "git_log"})
+    assert result == {"root": str(tmp_path.resolve()), "git": True, "output": ""}
+
+
+@pytest.mark.parametrize("object_format", ["sha1", "sha256"])
+def test_unborn_diff_includes_staged_files(tmp_path, monkeypatch, object_format):
+    import shutil
+
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git is required")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "empty-config"))
+    subprocess.run(
+        [git, "init", f"--object-format={object_format}", "-b", "main", str(tmp_path)],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / "new.txt").write_text("first content\n")
+    subprocess.run([git, "add", "new.txt"], cwd=tmp_path, check=True)
+    ws = workspace_tools.Workspace(str(tmp_path))
+    assert workspace_tools.browse(ws, {"op": "git_log"})["output"] == ""
+    result = workspace_tools.browse(ws, {"op": "git_bodies", "path": "new.txt"})
+    assert result["git"] is True and result["old"] is None
+    assert result["new"] == "first content\n"
+    assert "error_text" not in result
+
+
+def test_history_never_verifies_signatures_under_log_show_signature(tmp_path, monkeypatch):
+    import re
+    import shutil
+
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git is required")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    marker = tmp_path / "gpg-ran"
+    gpg = tmp_path / "fake-gpg"
+    gpg.write_text(f"#!/bin/sh\necho ran > '{marker}'\necho 'gpg: Signature made' >&2\nexit 1\n")
+    gpg.chmod(0o755)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "empty-config"))
+    ident = {
+        "GIT_AUTHOR_NAME": "A",
+        "GIT_AUTHOR_EMAIL": "a@example.invalid",
+        "GIT_COMMITTER_NAME": "A",
+        "GIT_COMMITTER_EMAIL": "a@example.invalid",
+    }
+    for key, value in ident.items():
+        monkeypatch.setenv(key, value)
+
+    def git_run(*args: str, stdin: bytes = b"") -> bytes:
+        return subprocess.run(
+            [git, *args], cwd=repo, input=stdin, check=True, capture_output=True
+        ).stdout
+
+    git_run("init", "-b", "main", ".")
+    (repo / "a.txt").write_text("a\n")
+    git_run("add", "a.txt")
+    git_run("commit", "-m", "signed subject")
+    # A commit carrying a gpgsig header is what log.showSignature verifies.
+    raw = git_run("cat-file", "commit", "HEAD")
+    head, _, message = raw.partition(b"\n\n")
+    signature = b"gpgsig -----BEGIN PGP SIGNATURE-----\n \n -----END PGP SIGNATURE-----"
+    signed = git_run(
+        "hash-object",
+        "-t",
+        "commit",
+        "-w",
+        "--stdin",
+        stdin=head + b"\n" + signature + b"\n\n" + message,
+    )
+    git_run("update-ref", "refs/heads/main", signed.decode().strip())
+    git_run("config", "log.showSignature", "true")
+    git_run("config", "gpg.program", str(gpg))
+    git_run("log", "-n", "1")
+    assert marker.exists(), "fixture must make a plain git log run gpg"
+    marker.unlink()
+
+    result = workspace_tools.browse(workspace_tools.Workspace(str(repo)), {"op": "git_log"})
+
+    assert not marker.exists()
+    assert result["git"] is True and "error_text" not in result
+    # The date is unix seconds, which the panel formats in the reader's language.
+    assert re.fullmatch(r"[0-9a-f]{7,}\tA\t[0-9]+\tsigned subject", result["output"])
 
 
 @pytest.mark.asyncio

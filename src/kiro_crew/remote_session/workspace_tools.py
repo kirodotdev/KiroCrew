@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -254,6 +255,125 @@ def _lendable_hosts(port_file: str, port: int) -> "tuple[Optional[frozenset[str]
         return None, False  # another proxy's list, or none yet
     complete = fields[1:2] != ["*"]
     return frozenset(fields[1:]) & frozenset(GIT_PROXY_REWRITES), complete
+
+
+def _run_grouped(
+    argv: List[str],
+    *,
+    cwd: str,
+    env: Dict[str, str],
+    timeout: float,
+    stderr: int,
+    stdout_limit: Optional[int] = None,
+) -> "subprocess.CompletedProcess[bytes]":
+    """Run ``argv`` in its own session, under coreutils ``timeout`` when present.
+
+    Like ``run_command``, the guest calls no kill primitive: ``timeout`` signals
+    the read's whole process group on expiry and when it is itself terminated,
+    which is how an unwind or a stdout cutoff stops it. Without ``timeout`` only
+    the leader is signalled. An expiry raises ``TimeoutExpired``. A stdout limit
+    keeps only that prefix and stops the read when reached; this intentional
+    cutoff reports success. Stderr keeps a bounded tail.
+    """
+    wrapped, wait_secs = _under_timeout(argv, timeout)
+    timer = wrapped is not argv
+    # timeout would report a missing program as exit 127; keep the error.
+    if timer and shutil.which(argv[0], path=env.get("PATH", os.defpath)) is None:
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), argv[0])
+    argv = wrapped
+    started = time.monotonic()
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=stderr,
+        start_new_session=True,
+        bufsize=0 if stdout_limit is not None else -1,
+    )
+    readers: List[threading.Thread] = []
+    cutoff = False
+    try:
+        if stdout_limit is None:
+            out, err = proc.communicate(timeout=wait_secs)
+        else:
+            deadline = started + wait_secs
+            prefix = bytearray()
+            errors: List[Exception] = []
+
+            def read_prefix() -> None:
+                try:
+                    assert proc.stdout is not None
+                    while len(prefix) < stdout_limit:
+                        chunk = proc.stdout.read(stdout_limit - len(prefix))
+                        if not chunk:
+                            break
+                        prefix.extend(chunk)
+                except (OSError, ValueError) as exc:
+                    errors.append(exc)
+
+            tail = _OutputTail(MAX_OUTPUT_BYTES)
+            readers.append(threading.Thread(target=read_prefix, daemon=True))
+            if proc.stderr is not None:
+                readers.append(
+                    threading.Thread(target=tail.drain, args=(proc.stderr,), daemon=True)
+                )
+            for reader in readers:
+                reader.start()
+            # Wait for EOF before reaping so descendants holding a pipe remain killable.
+            for index, reader in enumerate(readers):
+                reader.join(max(0, deadline - time.monotonic()))
+                if reader.is_alive():
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                if index == 0 and len(prefix) == stdout_limit:
+                    cutoff = True
+                    _stop_read(proc)
+            if errors:
+                raise errors[0]
+            proc.wait(timeout=max(0, deadline - time.monotonic()))
+            out, err = bytes(prefix), tail.snapshot()[0]
+    finally:
+        if proc.returncode is None:
+            _unwind(proc)
+        for reader in readers:
+            reader.join(_READER_GRACE_SECS)
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
+                pipe.close()
+    if timer and not cutoff and proc.returncode in (124, 137):
+        if time.monotonic() - started >= timeout:
+            raise subprocess.TimeoutExpired(argv, timeout)
+    return subprocess.CompletedProcess(argv, 0 if cutoff else proc.returncode, out, err)
+
+
+def _under_timeout(argv: List[str], timeout: float) -> Tuple[List[str], float]:
+    """``argv`` under coreutils ``timeout`` when present, and how long to wait for it.
+
+    ``timeout`` signals the command's whole process group itself, on expiry and
+    when it is terminated, then KILLs after the grace; the guest calls no kill
+    primitive. The wait covers its expiry and grace.
+    """
+    timer = shutil.which("timeout")
+    if not timer:
+        return argv, timeout
+    return [timer, "-k", str(_KILL_GRACE_SECS), str(timeout), *argv], timeout + 2 * _KILL_GRACE_SECS
+
+
+def _stop_read(proc: Any) -> None:
+    """Ask a command to stop; under ``timeout`` the signal reaches its group."""
+    with contextlib.suppress(OSError):
+        proc.terminate()
+
+
+def _unwind(proc: Any) -> None:
+    """Stop and reap a still-running command; without ``timeout``, the leader only."""
+    _stop_read(proc)
+    try:
+        proc.wait(timeout=2 * _KILL_GRACE_SECS)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=10)
 
 
 class ToolError(Exception):
@@ -546,12 +666,7 @@ class Workspace:
                 starting=self.git_proxy_starting,
             )
         )
-        argv = ["/bin/sh", "-c", command]
-        timer = shutil.which("timeout")
-        if timer:
-            # coreutils timeout signals the command's whole process group itself,
-            # on expiry and when it is terminated, then KILLs after the grace.
-            argv = [timer, "-k", str(_KILL_GRACE_SECS), str(timeout), *argv]
+        argv, wait_secs = _under_timeout(["/bin/sh", "-c", command], timeout)
         started = time.monotonic()
         proc = subprocess.Popen(
             argv,
@@ -568,18 +683,12 @@ class Workspace:
         reader.start()
         code: Optional[int] = None
         try:
-            code = proc.wait(timeout=timeout + (2 * _KILL_GRACE_SECS if timer else 0))
+            code = proc.wait(timeout=wait_secs)
         except subprocess.TimeoutExpired:
             code = None
         finally:
             if proc.returncode is None:
-                # Under timeout this reaches the whole group; without it, the shell only.
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2 * _KILL_GRACE_SECS)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=10)
+                _unwind(proc)
             # A detached job holding the pipe keeps only the daemon reader waiting.
             reader.join(_READER_GRACE_SECS)
         output, omitted = tail.snapshot()
@@ -797,15 +906,18 @@ def browse(ws: Workspace, request: Any) -> Dict[str, Any]:
                 "binary": undecodable or b"\x00" in data[:8192],
                 "truncated": len(data) > MAX_READ_BYTES,
             }
-        if op == "git_status":
-            return _git_status(ws)
+        if op in ("git_status", "git_log", "git_bodies"):
+            source = request.get("from") if op == "git_bodies" else None
+            if source is not None and not isinstance(source, str):
+                raise ToolError("from must be a path")
+            return _git_read(ws, op, path, source)
         if op == "stats":
             return _stats(ws)
     except ToolError as exc:
         return {"error": str(exc)}
     except OSError as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
-    return {"error": "op must be list, read, git_status or stats"}
+    return {"error": "op must be list, read, git_status, git_log, git_bodies or stats"}
 
 
 def _meminfo() -> Dict[str, int]:
@@ -940,63 +1052,357 @@ def _stats(ws: Workspace) -> Dict[str, Any]:
     return result
 
 
-def _git_status(ws: Workspace) -> Dict[str, Any]:
-    """Read-only ``git status``: fixed argv, no shell, no hooks, and every configured
-    filter driver blanked (status would run one without command authorization).
+def _git_bool(run: Callable, key: str, default: bool) -> bool:
+    """A boolean config value as git reads it; ``default`` when it is unset."""
+    try:
+        return run(["config", "--bool", "--get", key]).strip() == b"true"
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode != 1:
+            raise
+        return default
+
+
+def _worktree_mode(st_mode: int) -> str:
+    """Git's mode for a worktree entry, from ``lstat`` alone."""
+    if stat.S_ISLNK(st_mode):
+        return "120000"
+    return "100755" if st_mode & 0o111 else "100644"
+
+
+def _git_bodies(
+    ws: Workspace, path: str, run: Callable, source: Optional[str] = None
+) -> Dict[str, Any]:
+    """Read the two bodies and modes, never a patch of unmasked content.
+
+    ``run`` supplies the fixed git prefix and checks every exit status. Only
+    the parent is resolved: a symlink's body is its target text, not its referent.
+    ``source`` is a rename's old path: the HEAD side is read there, confined the
+    same way, and named in ``old_path``. When the two bodies together exceed
+    ``MAX_READ_BYTES`` the reply is ``truncated`` and carries no body at all.
     """
-    # No hooks, and no index refresh (which would run post-index-change).
+    repo_root = os.fsdecode(run(["rev-parse", "--show-toplevel"])).rstrip("\r\n")
+
+    def locate(name_in_repo: str) -> "tuple[str, str]":
+        found = os.path.normpath(os.path.join(repo_root, name_in_repo))
+        if found == ws.root:
+            raise ValueError("a file path is required, not a directory")
+        parent, leaf = os.path.split(found)
+        found = os.path.join(ws.resolve(parent, must_exist=False), leaf)
+        return found, os.path.relpath(found, repo_root).replace(os.sep, "/")
+
+    target, rel = locate(path)
+    head = "HEAD"
+    try:
+        entry = run(["ls-tree", "-z", head, "--", target])
+    except subprocess.CalledProcessError:
+        # Only an unborn branch has an absent baseline; corrupt objects fail.
+        try:
+            run(["log", "-1", "--format=%h"])
+        except subprocess.CalledProcessError as exc:
+            if exc.returncode != 128 or not re.fullmatch(
+                rb"fatal: your current branch '[^\r\n]+' does not have any commits yet\n?",
+                exc.stderr,
+            ):
+                raise
+        else:
+            raise
+        head = run(["hash-object", "-t", "tree", "--stdin"]).decode("ascii").strip()
+        entry = b""
+    old_rel = rel
+    if source is not None and head == "HEAD":
+        source_path, source_rel = locate(source)
+        if source_rel != rel:
+            source_entry = run(["ls-tree", "-z", head, "--", source_path])
+            # A source HEAD does not hold is no rename; the target's own entry stands.
+            if source_entry:
+                entry, old_rel = source_entry, source_rel
+    mode, sha = "", ""
+    if entry:
+        mode, _kind, sha = entry.split(b"\t", 1)[0].decode("ascii").split()
+        if mode == "040000":
+            raise ValueError("a file path is required, not a directory")
+    old = None
+    if sha:
+        old = (
+            f"Subproject commit {sha}\n".encode()
+            if mode == "160000"
+            else run(["cat-file", "blob", sha])[: MAX_READ_BYTES + 1]
+        )
+    try:
+        disk_mode = os.lstat(target).st_mode
+    except FileNotFoundError:
+        disk_mode = 0
+    new = None
+    new_mode: Optional[str] = None
+    # A gitlink replaced by a file or symlink is read below with the bounded
+    # worktree read; git's own diff of it would be buffered whole.
+    if stat.S_ISDIR(disk_mode) or (mode == "160000" and not disk_mode):
+        index = run(["ls-files", "--stage", "--full-name", "-z", "--", target])
+        rows = [row for row in index.split(b"\0") if row]
+        indexed_link = any(
+            row.startswith(b"160000 ") and row.split(b"\t", 1)[-1] == os.fsencode(rel)
+            for row in rows
+        )
+        # A gitlink the index replaced with files under the path is a directory
+        # of files now: refuse it before git builds that subtree's whole patch.
+        if not indexed_link and (mode != "160000" or rows):
+            raise ValueError("a file path is required, not a directory")
+        summary = run(
+            [
+                "diff",
+                "--no-color",
+                "--submodule=short",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--ignore-submodules=dirty",
+                head,
+                "--",
+                target,
+            ]
+        )
+        # The raw format uses an all-zero new id for an unstaged gitlink.
+        # The short format names its commit without running inside the submodule;
+        # only that synthetic commit line is retained, never the patch itself.
+        match = re.search(rb"^\+Subproject commit ([0-9a-f]{40}(?:[0-9a-f]{24})?)$", summary, re.M)
+        if match:
+            new = b"Subproject commit " + match[1] + b"\n"
+        elif not summary:
+            new = old
+        elif disk_mode and stat.S_ISDIR(disk_mode):
+            raise ValueError("git did not report the submodule commit")
+        if new is not None:
+            new_mode = "160000"
+    if stat.S_ISLNK(disk_mode):
+        new = os.fsencode(os.readlink(target))
+        new_mode = _worktree_mode(disk_mode)
+    elif stat.S_ISREG(disk_mode):
+        # Resolve again on hosts without O_NOFOLLOW; guest workspaces are POSIX.
+        read_path = target if hasattr(os, "O_NOFOLLOW") else ws.resolve(target)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(read_path, flags)
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ValueError("a regular file or symlink is required")
+            new = handle.read(MAX_READ_BYTES + 1)
+        new_mode = _worktree_mode(disk_mode)
+        # Git keeps the recorded mode where the filesystem cannot carry it.
+        if mode in ("100644", "100755") and new_mode != mode:
+            if not _git_bool(run, "core.filemode", True):
+                new_mode = mode
+        elif mode == "120000" and not _git_bool(run, "core.symlinks", True):
+            new_mode = mode
+    elif disk_mode and not stat.S_ISDIR(disk_mode):
+        raise ValueError("a regular file or symlink is required")
+    if old is None and new is None:
+        raise ValueError("the path is neither in HEAD nor a worktree file")
+    truncated = len(old or b"") + len(new or b"") > MAX_READ_BYTES
+    result: Dict[str, Any] = {
+        "root": ws.root,
+        "git": True,
+        "path": rel,
+        "truncated": truncated,
+        "old_mode": mode if old is not None else None,
+        "new_mode": new_mode if new is not None else None,
+    }
+    if old_rel != rel:
+        result["old_path"] = old_rel
+    if any(b"\0" in body[:8000] for body in (old, new) if body is not None):
+        return {**result, "binary": True}
+    if truncated:
+        # Over the cap no body is sent: a partial body cannot give a true diff.
+        return result
+    if new is not None and stat.S_ISREG(disk_mode) and b"\r\n" in new:
+        fields = run(["check-attr", "-z", "text", "eol", "--", target]).split(b"\0")
+        attrs = dict(zip(fields[1::3], fields[2::3]))
+        text, eol = attrs.get(b"text"), attrs.get(b"eol")
+        convert = text == b"set"
+        # Like git's has_crlf_in_index, automatic conversion leaves a file
+        # whose HEAD blob already holds CRLF unchanged; explicit text does not.
+        crlf_in_head = old is not None and b"\r\n" in old
+        if text != b"unset":
+            if text == b"auto":
+                convert = b"\0" not in new and not crlf_in_head
+            elif eol in (b"lf", b"crlf"):
+                convert = True
+            elif not convert:
+                try:
+                    autocrlf = run(["config", "--get", "core.autocrlf"]).strip().lower()
+                except subprocess.CalledProcessError as exc:
+                    if exc.returncode != 1:
+                        raise
+                    autocrlf = b"false"
+                convert = autocrlf in (b"true", b"input") and b"\0" not in new and not crlf_in_head
+        if convert:
+            new = new.replace(b"\r\n", b"\n")
+    return {
+        **result,
+        "old": old.decode("utf-8", "replace") if old is not None else None,
+        "new": new.decode("utf-8", "replace") if new is not None else None,
+    }
+
+
+def _git_read(ws: Workspace, op: str, path: str, source: Optional[str] = None) -> Dict[str, Any]:
+    """Read-only git views of the root: fixed argv, no shell, no hooks.
+
+    No pager, fsmonitor, external diff, textconv or signature check runs. A
+    repository's own config can name filter drivers, which status and diff would
+    run on a changed file without command authorization, so every configured one
+    is blanked, and a driver that cannot be named is a failure, not a read.
+    """
     base = [
         "git",
+        "--no-lazy-fetch",
+        "--literal-pathspecs",
         "-c",
         "core.fsmonitor=",
         "-c",
         "core.pager=cat",
+        # No hooks, and no index refresh (which would run post-index-change).
         "-c",
         "core.hooksPath=/dev/null",
+        # A config-set signature check would run gpg per commit and mix its
+        # lines into the history; older git ignores the unknown key.
+        "-c",
+        "log.showSignature=false",
+        "-C",
+        ws.root,
     ]
-    base += ["-C", ws.root]
+    argv: List[str] = []
     env = {k: v for k, v in os.environ.items() if k not in WITHHELD_ENV}
     env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_NO_LAZY_FETCH"] = "1"
     env["GIT_OPTIONAL_LOCKS"] = "0"
-    pipe, quiet = subprocess.PIPE, subprocess.DEVNULL
-    try:
-        # Reading config runs nothing; exit 1 just means no filter is configured.
-        listed = subprocess.run(
-            base + ["config", "--null", "--name-only", "--get-regexp", r"^filter\."],
-            env=env,
-            stdin=quiet,
-            stdout=pipe,
-            stderr=pipe,
-            timeout=30,
+    # Repository-state diagnostics must not depend on the guest's locale.
+    env["LC_ALL"] = "C"
+
+    def run(args: List[str]):
+        # A filter driver git starts must not outlive a timed-out read.
+        return _run_grouped(args, cwd=ws.root, env=env, timeout=30, stderr=subprocess.PIPE)
+
+    def unborn(proc: Any) -> bool:
+        return (
+            proc.returncode == 128
+            and re.fullmatch(
+                rb"fatal: your current branch '[^\r\n]+' does not have any commits yet\n?",
+                proc.stderr,
+            )
+            is not None
         )
-    except FileNotFoundError:
-        return {"root": ws.root, "git": False, "error_text": "git is not installed"}
-    except subprocess.TimeoutExpired:
-        raise ToolError("git did not answer in 30 seconds")
-    drivers = {
-        name.decode("utf-8", "replace")[len("filter.") :].rpartition(".")[0]
-        for name in listed.stdout.split(b"\0")
-        if name.startswith(b"filter.")
-    }
-    if listed.returncode not in (0, 1) or any("=" in d or not d for d in drivers):
-        # A driver this cannot name in ``-c`` cannot be switched off: run nothing.
-        return {"root": ws.root, "git": False, "error_text": "git filter config not checked"}
-    off = [f"filter.{d}.{key}={value}" for d in sorted(drivers) for key, value in _FILTER_OFF]
-    argv = base + [arg for item in off for arg in ("-c", item)]
-    # A submodule's own config could name filters too: never look inside one.
-    argv += ["status", "--porcelain=v1", "--branch", "--untracked-files=normal"]
-    argv.append("--ignore-submodules=dirty")
+
+    def failure(message: str) -> Dict[str, Any]:
+        return {"root": ws.root, "git": False, "code": "git_failed", "error_text": message}
+
+    unguarded_partial = False
     try:
-        proc = subprocess.run(argv, env=env, stdin=quiet, stdout=pipe, stderr=pipe, timeout=30)
+        # Config reads need no objects, so they can safely probe flag support.
+        filters = ["config", "--null", "--name-only", "--get-regexp", r"^filter\."]
+        listed = run(base + filters)
+        if (
+            listed.returncode == 129
+            and b"unknown option" in listed.stderr
+            and b"no-lazy-fetch" in listed.stderr
+        ):
+            base.remove("--no-lazy-fetch")
+            partial = run(
+                base
+                + [
+                    "config",
+                    "--null",
+                    "--name-only",
+                    "--get-regexp",
+                    r"^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$",
+                ]
+            )
+            if partial.returncode not in (0, 1):
+                return failure("git partial clone config not checked")
+            # Even an empty or false-valued marker counts as a partial clone.
+            if partial.returncode == 0:
+                if op == "git_bodies":
+                    # A HEAD body is a blob a partial clone may lack.
+                    return failure(
+                        "this git cannot read a partial clone without fetching; "
+                        "git 2.44 or later is needed"
+                    )
+                # GIT_NO_LAZY_FETCH arrived with the flag, so this git ignores it.
+                # A lazy fetch runs ``git fetch``, which an empty protocol allow
+                # list refuses before any transport starts: a read that needs a
+                # missing object fails instead of fetching it.
+                env["GIT_ALLOW_PROTOCOL"] = ""
+                unguarded_partial = True
+            listed = run(base + filters)
+        drivers = {
+            name.decode("utf-8", "replace")[len("filter.") :].rpartition(".")[0]
+            for name in listed.stdout.split(b"\0")
+            if name.startswith(b"filter.")
+        }
+        if listed.returncode not in (0, 1) or any("=" in d or not d for d in drivers):
+            # A driver this cannot name in ``-c`` cannot be switched off: run nothing.
+            return failure("git filter config not checked")
+        off = [f"filter.{d}.{key}={value}" for d in sorted(drivers) for key, value in _FILTER_OFF]
+        base = base + [arg for item in off for arg in ("-c", item)]
+        if op == "git_status":
+            # A submodule's own config could name filters too: never look inside one.
+            argv = base + ["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all"]
+            argv.append("--ignore-submodules=dirty")
+            if unguarded_partial:
+                # Status reads trees and the worktree; only inexact rename
+                # detection reads blobs, which a blobless clone may lack.
+                argv.append("--no-renames")
+        elif op == "git_log":
+            # Unix seconds, not %ar: git words a relative date in English whatever
+            # the reader's language, and the panel formats the date itself.
+            fmt = "--pretty=format:%h%x09%an%x09%at%x09%s"
+            argv = base + ["log", "--no-color", "-n", "50", fmt]
+        if op == "git_bodies":
+
+            def checked(args: List[str]) -> bytes:
+                # Every body read is streamed to the cap, so no git output
+                # (a blob, an index listing, a submodule summary) is held whole.
+                reply = _run_grouped(
+                    base + args,
+                    cwd=ws.root,
+                    env=env,
+                    timeout=30,
+                    stderr=subprocess.PIPE,
+                    stdout_limit=MAX_READ_BYTES + 1,
+                )
+                if reply.returncode:
+                    raise subprocess.CalledProcessError(
+                        reply.returncode, args, output=reply.stdout, stderr=reply.stderr
+                    )
+                return reply.stdout
+
+            return _git_bodies(ws, path, checked, source)
+        # Bounded like the blob read: one huge commit subject cannot be buffered.
+        proc = _run_grouped(
+            argv,
+            cwd=ws.root,
+            env=env,
+            timeout=30,
+            stderr=subprocess.PIPE,
+            stdout_limit=MAX_READ_BYTES + 1,
+        )
+        if op == "git_log" and unborn(proc):
+            return {"root": ws.root, "git": True, "output": ""}
     except FileNotFoundError:
-        return {"root": ws.root, "git": False, "error_text": "git is not installed"}
+        return failure("git is not installed")
     except subprocess.TimeoutExpired:
-        raise ToolError("git did not answer in 30 seconds")
+        return failure("git did not answer in 30 seconds")
+    except subprocess.CalledProcessError as exc:
+        err = exc.stderr.decode("utf-8", "replace").strip()
+        if exc.returncode == 128 and err.startswith("fatal: not a git repository"):
+            return {"root": ws.root, "git": False}
+        return failure(err[-300:] or f"git exited with status {exc.returncode}")
+    except ValueError as exc:
+        return failure(str(exc))
+    except OSError as exc:
+        return failure(f"could not run git: {exc}")
     out = proc.stdout[:MAX_READ_BYTES].decode("utf-8", "replace")
     if proc.returncode != 0:
         err = proc.stderr.decode("utf-8", "replace").strip()
-        # Not a repository (or no commits yet) is a state, not a failure.
-        return {"root": ws.root, "git": False, "error_text": err[-300:]}
+        if proc.returncode == 128 and err.startswith("fatal: not a git repository"):
+            return {"root": ws.root, "git": False}
+        return failure(err[-300:] or f"git exited with status {proc.returncode}")
     return {
         "root": ws.root,
         "git": True,

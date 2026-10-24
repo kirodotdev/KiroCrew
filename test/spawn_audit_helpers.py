@@ -34,7 +34,7 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # isolation boundary and the gateway sandbox is unavailable.
         "remote_session/worker.py::run",
         "remote_session/workspace_tools.py::run_command",
-        "remote_session/workspace_tools.py::_git_status",
+        "remote_session/workspace_tools.py::_run_grouped",
         # The Fargate container command runs this stdlib-only bootstrap as guest
         # PID 1. Its authenticated shell requests execute only inside that task;
         # the disposable guest, not the gateway sandbox, supplies isolation.
