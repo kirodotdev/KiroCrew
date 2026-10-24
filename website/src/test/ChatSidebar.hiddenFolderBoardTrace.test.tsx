@@ -296,16 +296,15 @@ describe('a board says on screen how many folders it is hiding', () => {
     expect(queryByTestId(`folder-filter-${HIDDEN_FOLDER}`)).not.toBeNull()
   })
 
-  it('carries its colour as theme tokens, so it holds in a light theme as well as a dark one', () => {
-    // Every theme in `index.css` defines `--warn` and `--warn-subtle`; a literal colour
-    // would be legible in whichever theme it was picked against and wrong in the other
-    // fifteen. Warn rather than accent is the separate point: accent is what the view
-    // toggle beside the funnel uses for "this lane is active".
+  it('wears the same muted gray as the other lanes\' reveal row, not a warning (#14087)', () => {
+    // The hide is something the person chose, so the notice matches the tree, flat and
+    // conductor lanes' reveal row (`data-folder-hidden-reveal`, `text-muted`) instead of
+    // a warn strip. A theme token, never a literal colour, so it holds in every theme.
     hideFolders(HIDDEN_FOLDER)
     const { container } = renderSidebar(true)
     const cls = notice(container)?.className ?? ''
-    expect(cls).toMatch(/\btext-warn\b/)
-    expect(cls).toMatch(/\bbg-warn-subtle\b/)
+    expect(cls).toMatch(/\btext-muted\b/)
+    expect(cls).not.toMatch(/\bwarn/)
     expect(cls).not.toMatch(/#[0-9a-fA-F]{3,6}|rgb\(/)
   })
 })

@@ -370,7 +370,11 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
             * rolled-up shelf lands the reader on a dense panel with no folders in it and
             * the word on the button promises something that did not happen. The other
             * lanes' row peeks the folders open in place; this is the same gesture as far
-            * as a board can carry it. */}
+            * as a board can carry it.
+            *
+            * Muted gray, the same tint as the other lanes' reveal row: the hide is
+            * something the person chose, so it is not a warning. The funnel keeps the
+            * warn tint that sets it apart from the view toggle beside it (#14087). */}
           {hiddenFolderCount > 0 && (
             <button
               type="button"
@@ -383,7 +387,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
               aria-label={i18nT('pages.chatSidebar.show_hidden_folders_from_board', { count: hiddenFolderCount })}
               data-testid="board-hidden-folders"
               data-hidden-folder-count={String(hiddenFolderCount)}
-              className="mx-2 mt-2 px-2 py-1.5 rounded-md bg-warn-subtle border border-warn/40 text-warn-text text-[11px] flex items-center gap-1.5 text-left cursor-pointer hover:bg-warn/20 transition-colors"
+              className="mx-2 mt-2 px-2 py-1.5 rounded-md bg-transparent border-none text-muted text-[11px] flex items-center gap-1.5 text-left cursor-pointer hover:text-text hover:bg-accent-subtle transition-colors"
             >
               <EyeOff size={11} aria-hidden="true" className="shrink-0" />
               <span className="min-w-0 truncate" data-testid="board-hidden-folders-count">
