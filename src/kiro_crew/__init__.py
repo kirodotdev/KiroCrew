@@ -101,6 +101,25 @@ def _apply_build_version_file(base: str, package_dir: "str | None") -> str:
 
 __version__ = _apply_build_version_file(__version__, os.path.dirname(__file__ or ""))
 
+# Answer platform.machine() without WMI, before anything below -- or any
+# submodule this package's importers pull in -- can call it: CPython 3.11+
+# serves machine() from a WMI query whose helper thread is abandoned whenever
+# the query is slow, and on a contended gateway start it is, so a long-lived
+# MCP server carries a spinning thread for the rest of its life.
+# It must sit HERE, after the one import that precedes every submodule's
+# import-time platform.machine() and before every one of them.
+import importlib
+import sys
+
+importlib.import_module("kiro_crew.native_machine").install_platform_override()
+# The override lives on ``platform`` (module-level patch, idempotent on
+# re-import), so the module itself does not need to stay resident: drop it
+# from sys.modules again to keep this package's import free of kiro_crew
+# submodules -- test/test_config_paths.py::TestLeafPurity pins that importing
+# any leaf (e.g. kiro_crew.config.paths) pulls no sibling module.
+sys.modules.pop("kiro_crew.native_machine", None)
+del importlib, sys
+
 # What ``kirocrew --version`` appends when the code runs from a source checkout.
 # There the literal above is whatever the tree says -- often the NEXT version,
 # bumped ahead of its release -- and no ``BUILD_VERSION`` stamp or release lane
