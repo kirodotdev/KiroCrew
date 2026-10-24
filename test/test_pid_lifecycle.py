@@ -913,6 +913,11 @@ class TestReclaimOwnsEveryHarnessItTracked:
             ("opencode", "/opt/n/bin/opencode serve"),
             ("goose", "goose acp"),
             ("deepseek", "dsh --profile acp"),
+            # The dormant harness runs the same recognition path: the argv is the
+            # binary alone, and the marker table already derives it from the
+            # launch row (``vibe-acp``), so the reclaim can find its orphans the
+            # day an edition registers it.
+            ("vibe", "vibe-acp"),
         ],
     )
     def test_each_harness_cmdline_is_recognised(self, backend: str, cmdline: str) -> None:

@@ -70,6 +70,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_VIBE,
     ACP_BACKENDS_KNOWN,
 )
 
@@ -738,6 +739,50 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # ``session/prompt`` with -32603 ``... no API key for provider route
         # "deepseek-official"; store DEEPSEEK_API_KEY ...``.
         signed_out_signature="no API key for provider route",
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_VIBE,
+        # Source-read off mistral-vibe v3.0.2, not verified live: the harness
+        # keeps its home under ``~/.vibe`` (relocated whole by ``VIBE_HOME``),
+        # prefers the OS keyring for stored credentials, and falls back to a
+        # plaintext ``~/.vibe/.env`` with 0600 permissions. The fallback file is
+        # the leaf the floor fences; the keyring lives outside the filesystem
+        # and is the residual every plaintext-fallback harness carries. An
+        # ``MISTRAL_API_KEY`` in the inherited environment is read above both,
+        # which is the route Crew can feed without a file.
+        credential_leaves=(".vibe/.env",),
+        # One variable relocates the whole home, so it stands in for the leaf's
+        # parent and the default override spelling (final segment) is the right
+        # one.
+        home_override_env_vars=("VIBE_HOME",),
+        # Nothing excluded from the mask, because no mask is applied: vibe's
+        # routing is ``Routing.UNVERIFIED``, outside
+        # ``tool_gate.ENFORCED_ROUTINGS``, so ``adapter_hidden_credential_dirs``
+        # returns empty for it and there is nothing to carve an exception out
+        # of -- the same shape as claude. Revisit together with the routing
+        # entry when selectability lands.
+        adapter_own_leaves=(),
+        # Action only, no state: the harness owns its sign-in, and its own
+        # onboarding flag is the documented path.
+        sign_in_remedy=(
+            "Vibe signs in on its own — run vibe-acp --setup in a terminal to "
+            "store credentials, or export MISTRAL_API_KEY in the environment "
+            "vibe is started from. Neither is checked here: the harness reads "
+            "them."
+        ),
+        signed_out_message=(
+            "Vibe is not signed in. Run `vibe-acp --setup` in your terminal, or "
+            "set MISTRAL_API_KEY in the environment vibe is started from, then "
+            "start a new chat."
+        ),
+        # Excluded deliberately: it signs in through its own credential store,
+        # so a ``kiro-cli logout`` says nothing about whether a running vibe
+        # session is still authenticated.
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
+        # Not verified live, so no signature is pinned: a dormant harness has no
+        # driven session to read one off, and a guessed phrase would either
+        # never match or false-positive on the wrong harness's error.
     ),
 )
 

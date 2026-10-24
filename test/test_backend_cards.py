@@ -368,6 +368,10 @@ def test_core_counts_per_harness_are_pinned() -> None:
         "kiro": 6,
         "opencode": 6,
         "pi": 6,
+        # Known but dormant: in no capability set, so its card carries no
+        # available core line -- the honest count for a harness whose routing
+        # and channel claims are both unmeasured.
+        "vibe": 0,
     }
     assert counts["kas"] == len(cards_mod.USER_FACING_LINES)
 
