@@ -616,6 +616,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _materialize_maskable_dirs,
         _materialize_md_notebook_mask_targets,
         _md_notebook_degraded_mask_dirs,
+        _member_records_move,
         _migrate_md_notebook_legacy_state,
         _open_dir_anchored,
         _reconcile_auth_store_staging_links,

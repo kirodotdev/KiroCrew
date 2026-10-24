@@ -261,11 +261,10 @@ A mate's **Goals** tab (Profile card) holds what it works toward:
   press it.
 
 The goal is stored in the mate's goal record,
-`trust/member-goals/<slug>.json` in Kiro Crew's data folder, apart from its
-rules, with the same protection as its rules: the mate's file-editing tools
-are refused there, so it changes the goal or its key results only through a card
-you press (a shell command it runs can still reach the folder, as with its
-rules). A mate made from chat on a **Create mate** card starts with the
+`member-records/member-goals/<slug>.json` in Kiro Crew's data folder, apart
+from its rules, with the same protection as its rules: nothing the mate runs
+can read or change that folder, so it changes the goal or its key results only
+through a card you press. A mate made from chat on a **Create mate** card starts with the
 card's goal as its goal; its description stays empty until it or you write one.
 What the mate is working on right now is its task list on the Crew board,
 not part of the goal.

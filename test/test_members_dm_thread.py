@@ -68,12 +68,13 @@ class TestDmBinding:
         assert binding["slot_key"] == "member-code-reviewer"
         assert binding["created_ts"]
 
-    def test_binding_lives_inside_the_trust_subtree(self):
+    def test_binding_lives_inside_the_member_records_leaf(self):
         write_dm_binding("code-reviewer", member=CREW, slot_key="member-code-reviewer")
         path = dm_binding_path("code-reviewer")
-        # Identity authority belongs under the keystone-gated trust/ subtree,
-        # NOT inside the agent-writable member dir.
-        assert "trust" in path.parts
+        # Identity authority belongs under the gateway-only member-records/ leaf,
+        # NOT inside the agent-writable member dir and not under trust/.
+        assert "member-records" in path.parts
+        assert "trust" not in path.parts
         assert not (member_dir("code-reviewer") / "dm.json").exists()
         assert path.is_file()
         # Plain JSON on disk (atomic_write leaves no temp siblings behind).

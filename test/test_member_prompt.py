@@ -64,12 +64,13 @@ class TestMemberRulesStorage:
         write_member_rules(CREW, member=CREW, text="Never merge PRs.\nAsk before spending money.")
         assert read_member_rules(CREW, CREW) == "Never merge PRs.\nAsk before spending money."
 
-    def test_rules_live_inside_the_trust_subtree(self):
+    def test_rules_live_inside_the_member_records_leaf(self):
         """The rules ARE the boundary the member must not rewrite for itself,
-        so they cannot sit inside the agent-writable member dir."""
+        so they sit in the gateway-only leaf, never the agent-writable member dir."""
         write_member_rules(CREW, member=CREW, text="rule")
         path = member_rules_path(CREW)
-        assert "trust" in path.parts
+        assert "member-records" in path.parts
+        assert "trust" not in path.parts
         assert path.is_file()
         assert not (member_dir(CREW) / path.name).exists()
 

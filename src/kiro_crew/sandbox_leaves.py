@@ -364,6 +364,16 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # hooks) and ``kirocrew agent create`` / ``delete`` from the operator's shell. Whole
     # directory: ``atomic_write`` publishes through a sibling temp.
     "crew-teams",
+    # Each crewmate's governing records (``member_records.py``): its permanent
+    # rules, its goals and its DM thread binding, one ``<slug>.json`` per kind.
+    # The person writes them through the dashboard and the gateway injects them
+    # into that crewmate's prompt or routes its thread by them, so no sandboxed
+    # process may read or write any of them. Deliberately NOT under ``trust/``,
+    # which stays sandbox read-write for SEL; an older build kept them there and
+    # the gateway moves them once (``member_records.migrate_from_trust``). Only
+    # the gateway and the operator's own CLI open it. Whole directory: every
+    # writer publishes through a sibling temp.
+    "member-records",
     # Auth stores and signing keys owned by the gateway web server alone.
     "token_signing.key",
     "refresh_chains.json",

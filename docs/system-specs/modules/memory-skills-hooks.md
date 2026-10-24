@@ -1644,7 +1644,7 @@ Between the permanent rules and the briefing the section carries `[YOUR GOALS]`
 when the member has any: every goal (user-owned), numbered as the Goals tab
 numbers them, and its key results' text, target and the numbers of the goals
 each serves, read from the gateway-only
-goal record (`member_goals.context_block`, `trust/member-goals/<slug>.json`,
+goal record (`member_goals.context_block`, `member-records/member-goals/<slug>.json`,
 capped at `member_goals.CONTEXT_MAX_CHARS`). Unlike the rules it is total: an
 unreadable record omits the block instead of aborting the turn. It carries no
 readings: the essentials ride every turn and are dropped from the wire only

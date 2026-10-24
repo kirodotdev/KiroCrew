@@ -342,8 +342,8 @@ def build_session_context(
     # outranks everything injected below it):
     #   1. identity   — derived from the crew's own config, nobody hand-writes it
     #   2. behavior   — product-owned working protocol (the constant below)
-    #   3. rules      — user-owned, stored under the protected member-rules/
-    #                   subtree so the member's file tools cannot rewrite
+    #   3. rules      — user-owned, stored under the gateway-only member-records/
+    #                   directory so nothing the member runs can rewrite
     #                   its own safety boundary
     #   4. briefing   — member-owned working memory, agent-writable by design
     #

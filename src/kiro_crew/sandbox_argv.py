@@ -54,6 +54,7 @@ from kiro_crew.sandbox_staging import (
     _materialize_maskable_dirs,
     _materialize_md_notebook_mask_targets,
     _md_notebook_degraded_mask_dirs,
+    _member_records_move,
     _migrate_md_notebook_legacy_state,
     _reconcile_auth_store_staging_links,
     _sweep_legacy_auth_store_temps,
@@ -568,6 +569,10 @@ def namespace_argv(
     # (and empties the legacy PAT in place), and the materialiser then plants the stub
     # the launcher masks at any bare name left absent. A failed move is logged, not raised.
     _migrate_md_notebook_legacy_state()
+    # The crewmate records' one-time move out of ``trust/`` runs here too, so it is
+    # done before an agent of this build starts. Unlike the Notes move, one that did not
+    # finish while old records remain REFUSES the spawn (``SandboxCeilingUnsealable``).
+    _member_records_move()
     # And the ``sensitive_files`` loop is guarded on ``isfile``, so md-notebook's state
     # leaves — creatable on a sandboxed host now that the backend carve-out exists —
     # need a mount target too.
@@ -774,6 +779,7 @@ def sandbox_exec_argv(
     # that does not exist yet — but an orphan already on disk needs sweeping here too.
     _sweep_legacy_md_notebook_temps()
     _migrate_md_notebook_legacy_state()
+    _member_records_move()
     _sweep_legacy_auth_store_temps()
     # Reconciled here as well. The stale name is a second name for the signing key either
     # way, and leaving it to accumulate on a macOS host means the first Linux spawn on a

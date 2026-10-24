@@ -2644,13 +2644,16 @@ the report. A record written while short-term goals existed still carries
 `short_term` and `last_crewmate_change`: `_normalize` reads past them and the
 next write drops them.
 
-The record lives at `trust/member-goals/<slug>.json` and has the same
-protection as `member-rules/`: the tool gate (the sensitive-path floor covers
-`trust/`, so the mate's file-write and edit tools are refused there), not an
-OS seal (`trust/` is a read-write leaf of the crew sandbox, so a sandboxed shell
-command can still write it). Because that shell can also plant a symlink there
-and the gateway writing the record is not sandboxed, the record is never reached
-through a link: `trust`, `member-goals` and the record are each opened relative
+The record lives at `member-records/member-goals/<slug>.json` and has the same
+protection as the rules file beside it (`member-records/member-rules/`): the
+OS sandbox masks the whole `member-records/` directory in every mode, and the
+sensitive-path floor refuses the mate's file tools there (security.md, "Crewmate
+records"). The DM binding (`member-records/member-bindings/`) is held the same
+way. An older build kept all three under `trust/`; `member_records` moves them
+once, before a spawn and before any record path is used, and nothing under
+`trust/` is read after that. The gateway writing the record is not sandboxed,
+so the record is never reached
+through a link: `member-records`, `member-goals` and the record are each opened relative
 to the one before with `O_NOFOLLOW` and written inside that pinned directory
 (`member_goals._open_goals_dir`); a link at any of them is refused as
 `GoalsUnreadable`, so the gateway cannot be pointed at `profiles/` or another

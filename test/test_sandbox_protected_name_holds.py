@@ -379,7 +379,14 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   so no sandboxed writer can plant the spec kiro-cli reads there. At the
     #:   data-home root beside writable siblings, so leaf-only is the only hold.
     #:   Three more entries per tier.
-    EXPECTED: dict[str, int] = {"standard": 290, "cc": 297, "strict": 298}
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``member-records`` -- each crewmate's permanent rules, goals and DM
+    #:   binding, which the gateway writes on a person's action. Masked at the
+    #:   data-home root beside ``crew-teams`` rather than under the sandbox
+    #:   read-write ``trust/``, so leaf-only for the same reason.
+    EXPECTED: dict[str, int] = {"standard": 293, "cc": 300, "strict": 301}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
