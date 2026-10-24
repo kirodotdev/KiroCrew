@@ -28,7 +28,11 @@ from kiro_crew.dashboard.chat_utils import (
     _redact_for_display,
     _redact_meta,
 )
-from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS, warn_if_not_durable
+from kiro_crew.dashboard.slot_queue_repository import (
+    ATTACHMENT_META_KEYS,
+    RESTORED_QUEUE_KEY,
+    warn_if_not_durable,
+)
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -1414,4 +1418,10 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
     label = (item.get("meta") or {}).get("appLabel")
     if isinstance(label, str) and label:
         view.setdefault("meta", {})["appLabel"] = label
+    # Entries loaded from disk on restart carry RESTORED_QUEUE_KEY=True.
+    # Projecting this as a boolean lets the client skip a restored queued row
+    # when deciding whether to offer Resume — matching the backend gate in
+    # continue_slot_turn that checks RESTORED_QUEUE_KEY.
+    if item.get(RESTORED_QUEUE_KEY):
+        view.setdefault("meta", {})["restored"] = True
     return view
