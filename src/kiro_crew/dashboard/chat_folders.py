@@ -903,13 +903,14 @@ async def api_chat_pinned_order(request: web.Request) -> web.Response:
 
     ``"only_if_unset": true`` makes the write conditional: it lands only while
     no order is stored, and is otherwise a 409 ``pinned_order_exists`` carrying
-    the stored order. The sidebar's one-time hand-off of a browser's old local
-    order uses it.
+    the stored order. The sidebar's one-time first-load seed uses it: the
+    browser's old local order if it kept one, then the natural order it is
+    showing, so a browser that never kept a local order seeds one too.
 
     Every key must name a live, pinned session. One that does not is a 409 for
     the whole request: the caller computed its order from a sidebar that has
     since changed, and applying part of it would put sessions where nobody
-    asked. The ``only_if_unset`` hand-off is the exception: it carries a
+    asked. The ``only_if_unset`` seed is the exception: it may carry a
     browser's whole old order, which may name sessions the gateway has not
     restored yet, so its keys are pruned instead of checked. A repeated key is
     a 400.
