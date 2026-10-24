@@ -69,6 +69,7 @@ def deepseek_projection(
         agent,
         stub_server_names=stub_server_names,
         work_dir=work_dir,  # type: ignore[arg-type]
+        session_key=session_key,
     )
     narrowed = frozenset(server for server, _tool in projection.disabled_tools)
     out = place_single_binary_array(

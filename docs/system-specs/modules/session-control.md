@@ -626,7 +626,7 @@ model-id namespace. The crewmate's own worker runs on the crewmate's backend
 crewmate's backend"), so its pins are judged there; the profile's explicit
 `worker_model` is validated for that harness (`PUT /api/agents/{name}`) and
 crosses freely. A conductor's hand-off whose worker backend cannot carry the
-worker's kit is refused `worker_kit_harness_unsupported` before anything is
+worker's kit is refused `capability_harness_unsupported` before anything is
 allocated. Either pin is dropped when the child's namespace advertises a list it is
 not on while another harness claims it; `"auto"` always passes. When the
 mate's own model is dropped, the mate's own effort that rode along for

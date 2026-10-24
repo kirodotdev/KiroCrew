@@ -679,7 +679,10 @@ def worker_session_spec(literal_base: dict[str, Any], session_key: str) -> dict[
 
     The harness-neutral seam; *literal_base* has its prompt literal. The crewmate
     comes from the session's own execution record, never a supplied name; a session
-    with no record or no member is refused (:class:`WorkerKitUnreadable`). Blocking.
+    with no record or no member is refused (:class:`WorkerKitUnreadable`). KAS's
+    projection reads it, and so does the session MCP projection the member-capable
+    mirrored hosts read (``acp.session_mcp.session_mcp_projection``, keyed by the
+    session). Blocking.
     """
     from kiro_crew.execution_context import read_session_execution
 
@@ -733,6 +736,57 @@ def worker_kit_backend_refusal(backend: str) -> str | None:
         f"servers and switched-off tools for one session; set agent.member_acp_backend "
         f"to {able}"
     )
+
+
+def crewmate_tool_limited_servers(member_id: str) -> tuple[str, ...]:
+    """What crewmate *member_id*'s own file narrows for its worker, sorted.
+
+    The member rule on the file (``tool_limited_servers``: an entry's
+    ``disabledTools``), plus every entry of its own ``excludedTools`` (as a copied
+    kit keeps them): the server an ``@server`` / ``@server/tool`` names, or the
+    native tool itself. The worker spec carries all of them as ``excludedTools``
+    (:func:`worker_additions`), which only ``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS``
+    honour. A server the file mutes whole is not counted. Blocking.
+    """
+    from kiro_crew.agent_capabilities import tool_limited_servers
+    from kiro_crew.agent_sdk import agent_specs
+    from kiro_crew.config import paths as paths_mod
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+
+    name = mate_file_for_member(member_id) if member_id else ""
+    if not name:
+        return ()
+    try:
+        spec = agent_specs.load_agent_spec(paths_mod.mate_agents_dir(), name)
+    except agent_specs.AgentSpecUnreadable:
+        return ()
+    limited = set(tool_limited_servers(spec))
+    servers = _servers(spec.get("mcpServers"))
+    for ref in _strings(spec.get("excludedTools")):
+        server = _server_of(ref)
+        if not server:
+            # A native tool: the mirrored hosts project no exclusion for it either.
+            if ref.strip():
+                limited.add(ref.strip())
+        elif not (server in servers and mcp_entry_is_muted(servers[server])):
+            limited.add(server)
+    return tuple(sorted(limited))
+
+
+def worker_prompt_in_context_block(agent_cfg: Any = None) -> bool:
+    """Whether a crewmate's worker gets its prompt only from the context block.
+
+    Membership of its backend (:func:`crewmate_worker_backend`) in
+    ``ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT``; *agent_cfg* defaults to the
+    loaded config's ``agent`` section.
+    """
+    from kiro_crew.acp_backends import ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT
+
+    if agent_cfg is None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        agent_cfg = KiroCrewConfig.load().agent
+    return crewmate_worker_backend(agent_cfg) in ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT
 
 
 def member_worker_spec(member: str) -> dict[str, Any]:

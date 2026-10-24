@@ -236,17 +236,19 @@ class ClaudeCodeMirror(AgentConfigMirror):
 
         ``denied_tools`` stays empty: the deny channel is the settings file, not
         a client-side refusal. ``kwargs`` may carry ``session_key`` /
-        ``channel_id``, which this backend ignores -- a claude MCP child inherits
-        the adapter's process env, so identity needs no element-level carry.
+        ``channel_id``; only the key is read, and only to find a crewmate's worker
+        spec -- a claude MCP child inherits the adapter's process env, so identity
+        needs no element-level carry.
 
         Same blocking allowance and the same wiring obligation as
         :meth:`session_params` (H13).
         """
-        del kwargs
         projection = session_mcp_projection(
             agent,
             stub_server_names=stub_server_names,
             work_dir=work_dir,  # type: ignore[arg-type]
+            # A crewmate's worker reads its own spec by its session's record.
+            session_key=str(kwargs.get("session_key") or ""),
         )
         if not permission_surface_owned:
             logger.warning(

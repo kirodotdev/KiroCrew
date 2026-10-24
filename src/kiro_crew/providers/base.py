@@ -426,6 +426,11 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def mate_worker_tool_limits_supported(self) -> bool:
+        """Whether a crewmate worker's single-tool limits are honoured here."""
+        return False
+
+    @property
     def loaded_capability_template(self) -> str:
         """Confirmed saved template; projection gaps are reported separately."""
         return ""

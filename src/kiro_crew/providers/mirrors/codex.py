@@ -359,6 +359,7 @@ def codex_projection(
         agent,
         stub_server_names=stub_server_names,
         work_dir=work_dir,  # type: ignore[arg-type]
+        session_key=session_key,
     )
     withheld = codex_withheld_servers(projection.restricted)
     kept: list[dict[str, Any]] = []
