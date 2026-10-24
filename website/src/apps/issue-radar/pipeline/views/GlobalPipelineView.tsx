@@ -22,7 +22,7 @@
 // eagerly would pay for data nobody asked to see.
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Activity, AlertTriangle, ChevronLeft, GitBranch, RefreshCw } from 'lucide-react'
+import { Activity, AlertTriangle, ChevronLeft, RefreshCw } from 'lucide-react'
 import {
   autoTriagePipelineFoldApi,
   isQueueMigrationPending,
@@ -34,6 +34,7 @@ import {
 import { repoScopeKey } from '../../lib/links'
 import { Btn, Card, IconButton, PageHeader, EmptyState as UIEmptyState } from '../../../../components/ui'
 import { i18nT } from '../../../../i18n/t'
+import ErrorNotice from '../../../../components/ErrorNotice'
 import PipelineFlow, { stepLabel } from './PipelineFlow'
 import StepItemsTable from './StepItemsTable'
 import ItemSessionsTable from './ItemSessionsTable'
@@ -244,18 +245,35 @@ export default function GlobalPipelineView({ repo }: { repo: RepoRef }) {
             // here rather than by the host because this is where the request and its
             // error already live -- asking the same question a second time, above the
             // tabs, would mean restating the rule the refusal already carries.
-            <div
-              className="min-h-[50vh] flex flex-col items-center justify-center gap-2.5 text-center px-6"
-              data-testid="atp-unsupported-forge"
-            >
-              <GitBranch size={26} className="text-muted opacity-50" strokeWidth={1.5} />
-              <div className="text-[13px] text-muted">
-                {i18nT('apps.issueRadar.views.pipelineDashboard.github_only')}
-              </div>
-              <div className="text-[11.5px] text-muted opacity-70 max-w-md">
-                {i18nT('apps.issueRadar.views.pipelineDashboard.github_only_hint')}
-              </div>
-            </div>
+            //
+            // Both registers are an ErrorNotice: the value comes from a rejected
+            // request, so the `errors-use-error-notice` rule applies whatever the forge,
+            // and the hand-off is on because this is a read failure on a page that holds
+            // no draft input. Only the hint differs. A GitLab project is refused when its
+            // host is not in `dashboard.gitlab_hosts`, and the operator clears that by
+            // listing it, so the hint names that one step with the host filled in. Every
+            // other refused forge (Azure DevOps, GitHub Enterprise) has no step that
+            // clears it, so its hint states the reason and no config step, which would
+            // send the reader to a setting that cannot help. `repo.provider` is the
+            // identity the host handed down from the connected record, which is what
+            // makes the branch possible: the refusal body itself carries no forge.
+            //
+            // The GitLab hint needs the host as well as the provider: `RepoRef.host` is
+            // optional, and a GitLab ref with no host is refused by the backend for that
+            // very omission, so there is no host to list and the step would be a lie.
+            <ErrorNotice
+              title={i18nT('apps.issueRadar.views.pipelineDashboard.forge_unsupported')}
+              message={
+                repo.provider === 'gitlab' && repo.host
+                  ? i18nT('apps.issueRadar.views.pipelineDashboard.forge_unsupported_gitlab_hint', {
+                      host: repo.host,
+                    })
+                  : i18nT('apps.issueRadar.views.pipelineDashboard.forge_unsupported_other_hint')
+              }
+              messagePlacement="below"
+              askAgent
+              testId="atp-unsupported-forge"
+            />
           ) : (
             // No `error` prop here, deliberately. The migration refusal cannot reach
             // this level: `fold_pipeline` never reads the queue, and `_handle_overview`

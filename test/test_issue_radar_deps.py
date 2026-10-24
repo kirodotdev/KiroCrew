@@ -38,6 +38,7 @@ from off_loop_helpers import off_loop
 from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime as cr
 from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
+from kiro_crew.apps.builtins.issue_radar.backend import gitlab_queries as glq
 from kiro_crew.apps.builtins.issue_radar.backend import provider, routes, store
 from kiro_crew.crew_log import projection as crew_log_projection
 
@@ -61,6 +62,22 @@ class DepsCacheStoreTest(unittest.TestCase):
         self.assertEqual(out["edges"], edges)
         self.assertEqual(out["nodes"]["5"]["title"], "blocker")
         self.assertGreater(out["fetched_at"], 0.0)
+
+    def test_blockers_unknown_survives_the_round_trip_and_only_as_true(self):
+        # The GitLab fetcher flags a node whose own links were never read. The
+        # cache normalizer must keep that flag or the node comes back as a
+        # falsely-"ready" one on every read; anything but a literal True is
+        # dropped so a hand-edited "yes" cannot smuggle it in.
+        nodes = {
+            "5": {"kind": "issue", "state": "open", "title": "walked"},
+            "7": {"kind": "issue", "state": "open", "title": "past cap", "blockers_unknown": True},
+            "9": {"kind": "issue", "state": "open", "title": "junk", "blockers_unknown": "yes"},
+        }
+        store.write_deps_cache(OWNER, REPO, [], nodes, root=self.root, fetched_at=time.time())
+        out = store.read_deps_cache(OWNER, REPO, self.root)
+        self.assertNotIn("blockers_unknown", out["nodes"]["5"])
+        self.assertIs(out["nodes"]["7"]["blockers_unknown"], True)
+        self.assertNotIn("blockers_unknown", out["nodes"]["9"])
 
     def test_absent_cache_is_a_miss(self):
         self.assertIsNone(store.read_deps_cache(OWNER, REPO, self.root))
@@ -940,18 +957,47 @@ class DepsHandlerTest(unittest.TestCase):
         self.assertEqual(res.status, 502)
 
     def test_a_non_github_key_gets_an_empty_graph_without_a_fetch(self):
-        # M1 is GitHub-native. A GitLab key returns an empty graph rather than an
-        # error, so the frontend can call /deps uniformly.
+        # GitLab now fetches real edges via gitlab_queries.fetch_dependency_edges.
+        # Azure (and unknown providers) return an empty graph without a fetch.
+        from kiro_crew.apps.builtins.issue_radar.backend import gitlab_queries
+
         with (
             mock.patch.object(store, "is_repo_connected", return_value=True),
-            mock.patch.object(gh, "fetch_dependency_edges") as fetch,
+            mock.patch.object(store, "read_deps_cache", side_effect=[None, None]),
+            mock.patch.object(routes, "_load_open_issues_for_reco", return_value=[]),
+            mock.patch.object(store, "write_deps_cache"),
+            mock.patch.object(
+                gitlab_queries, "fetch_dependency_edges", return_value=([], {})
+            ) as gl_fetch,
+            mock.patch.object(gh, "fetch_dependency_edges") as gh_fetch,
         ):
             res = asyncio.run(_call("owner=o&repo=r&provider=gitlab&host=gitlab.com"))
         self.assertEqual(res.status, 200)
         body = _body(res)
         self.assertEqual(body["provider"], "gitlab")
         self.assertEqual(body["edges"], [])
-        fetch.assert_not_called()
+        # GitLab now uses its own fetcher, not the GitHub one.
+        gl_fetch.assert_called_once()
+        gh_fetch.assert_not_called()
+
+    def test_azure_key_gets_empty_graph_without_a_fetch(self):
+        # Azure DevOps: no fetch, empty graph (same as the old "non-GitHub" behavior).
+        from kiro_crew.apps.builtins.issue_radar.backend import gitlab_queries
+
+        with (
+            mock.patch.object(store, "is_repo_connected", return_value=True),
+            mock.patch.object(store, "read_deps_cache", side_effect=[None, None]),
+            mock.patch.object(store, "write_deps_cache"),
+            mock.patch.object(gitlab_queries, "fetch_dependency_edges") as gl_fetch,
+            mock.patch.object(gh, "fetch_dependency_edges") as gh_fetch,
+        ):
+            res = asyncio.run(_call("owner=o&repo=r&provider=azure&host=dev.azure.com"))
+        self.assertEqual(res.status, 200)
+        body = _body(res)
+        self.assertEqual(body["provider"], "azure")
+        self.assertEqual(body["edges"], [])
+        gl_fetch.assert_not_called()
+        gh_fetch.assert_not_called()
 
 
 # ── /deps serve-stale background revalidation ───────────────────
@@ -1256,6 +1302,21 @@ class OpenBlockerCountTest(unittest.TestCase):
     def test_a_blocker_with_no_node_is_treated_as_open(self):
         graph = {"edges": [{"blocked": 1, "blocker": 2, "source": "native"}], "nodes": {}}
         self.assertEqual(cr._open_blocker_count(graph, 1), 1)
+
+    def test_an_item_flagged_blockers_unknown_is_unknown_not_zero(self):
+        # GitLab marks a node whose own /links were never read. Its edgeless
+        # shape is the one that would read as "zero open blockers" and fire a
+        # false 1→0 unlock on a still-blocked issue; it must read as unknown.
+        graph = {
+            "edges": [],
+            "nodes": {
+                "1": {"kind": "issue", "state": "open", "title": "", "blockers_unknown": True}
+            },
+        }
+        self.assertIsNone(cr._open_blocker_count(graph, 1))
+        # The flag is honoured only as a literal True, the shape the store keeps.
+        graph["nodes"]["1"]["blockers_unknown"] = False
+        self.assertEqual(cr._open_blocker_count(graph, 1), 0)
 
 
 class FingerprintOpenBlockersTest(unittest.TestCase):
@@ -1572,9 +1633,53 @@ class SweepDepsRefreshTest(unittest.TestCase):
         write.assert_called_once()
         self.assertIs(out, stored)
 
-    def test_a_non_github_provider_stays_a_plain_cache_read(self):
-        with mock.patch.object(cr.store, "read_deps_cache", return_value=None):
-            self.assertIsNone(cr._read_or_refresh_deps(self._key("gitlab"), None))
+    def test_a_stale_gitlab_cache_is_refreshed_through_the_gitlab_fetch(self):
+        # The sweep dispatches exactly as the /deps route does: a GitLab repo's
+        # stale graph is rebuilt by gitlab_queries with the repo's host, and the
+        # GitHub fetch is never consulted for it.
+        stale = {"edges": [], "nodes": {}, "fetched_at": time.time() - 99999}
+        stored = {"edges": [{"blocked": 2, "blocker": 1, "source": "native"}], "nodes": {}}
+        key = provider.RepoKey(owner="o", repo="r", provider="gitlab", host="gitlab.example.com")
+        with (
+            mock.patch.object(cr.store, "read_deps_cache", side_effect=[stale, stored]),
+            mock.patch.object(cr.store, "read_issues_cache", return_value=[{"number": 2}]),
+            mock.patch.object(cr.store, "write_deps_cache") as write,
+            mock.patch.object(gh, "fetch_dependency_edges") as gh_fetch,
+            mock.patch.object(
+                glq,
+                "fetch_dependency_edges",
+                return_value=([{"blocked": 2, "blocker": 1, "source": "native"}], {}),
+            ) as gl_fetch,
+        ):
+            out = cr._read_or_refresh_deps(key, None)
+        gh_fetch.assert_not_called()
+        gl_fetch.assert_called_once()
+        self.assertEqual(gl_fetch.call_args.kwargs.get("host"), "gitlab.example.com")
+        write.assert_called_once()
+        self.assertIs(out, stored)
+
+    def test_a_gitlab_refresh_failure_keeps_the_stale_graph(self):
+        stale = {"edges": [], "nodes": {}, "fetched_at": time.time() - 99999}
+        key = provider.RepoKey(owner="o", repo="r", provider="gitlab", host="gitlab.example.com")
+        with (
+            mock.patch.object(cr.store, "read_deps_cache", return_value=stale),
+            mock.patch.object(cr.store, "read_issues_cache", return_value=[]),
+            mock.patch.object(cr.store, "write_deps_cache") as write,
+            mock.patch.object(glq, "fetch_dependency_edges", side_effect=RuntimeError("boom")),
+        ):
+            out = cr._read_or_refresh_deps(key, None)
+        self.assertIs(out, stale)
+        write.assert_not_called()
+
+    def test_an_unsupported_provider_stays_a_plain_cache_read(self):
+        with (
+            mock.patch.object(cr.store, "read_deps_cache", return_value=None),
+            mock.patch.object(gh, "fetch_dependency_edges") as gh_fetch,
+            mock.patch.object(glq, "fetch_dependency_edges") as gl_fetch,
+        ):
+            self.assertIsNone(cr._read_or_refresh_deps(self._key("azure"), None))
+        gh_fetch.assert_not_called()
+        gl_fetch.assert_not_called()
 
     def test_a_refresh_failure_keeps_the_stale_graph(self):
         stale = {"edges": [], "nodes": {}, "fetched_at": time.time() - 99999}

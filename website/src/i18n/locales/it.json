@@ -2849,8 +2849,8 @@
             "which_labels_mean_an_issue_still_needs_triage_dr": "Quali etichette indicano che una issue necessita ancora di triage. Determina il conteggio \"Senza triage\" della Panoramica e la coda degli elementi che richiedono attenzione.",
             "without_push_access_to": "Senza accesso push a",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "Le tue modifiche vengono mantenute qui ma non verranno salvate in modo permanente. Se hai appena aggiornato Issue Radar, riavvia il backend così l'API delle impostazioni diventa disponibile.",
-            "notify_me_when_ci_fails_on_my_pull_request": "Avvisami quando la CI fallisce su una delle mie pull request in {{repo}}",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Legge solo le esecuzioni di GitHub Actions sulle tue pull request aperte, tramite il tuo accesso a gh. Silenzialo o cambiane la priorità in Impostazioni → Notifiche."
+            "notify_me_when_ci_fails_on_my_pull_request": "Avvisami quando la CI fallisce su una delle mie {{prs}} in {{repo}}",
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Legge solo le esecuzioni di {{ci}} sulle tue {{prs}} aperte, tramite il tuo accesso a {{cli}}. Silenzialo o cambiane la priorità in Impostazioni → Notifiche."
           }
         },
         "tagging": {
@@ -2964,8 +2964,14 @@
           "empty_board": "SCHEDA NON POPOLATA",
           "empty_title": "Ancora nessuna dipendenza",
           "empty_blurb": "Questo repository non ha archi di dipendenza da disegnare. Imposta una dipendenza nativa con gh issue edit --add-blocked-by, oppure Issue Radar le dedurrà dai riferimenti incrociati alla prossima sincronizzazione.",
+          "empty_blurb_gitlab": "Questo progetto non ha collegamenti bloccanti da disegnare. Segna una issue come bloccata da un’altra nei suoi elementi collegati (GitLab Premium o Ultimate), poi riprova.",
           "empty_unavailable_title": "Dati delle dipendenze non disponibili",
           "empty_unavailable_blurb": "Impossibile caricare il grafo. La route deps potrebbe non essere ancora attiva per questo repository. Riprova quando lo sarà.",
+          "empty_unavailable_auth_gitlab": "Non hai effettuato l'accesso alla CLI di GitLab (glab) su questo host. Esegui il comando qui sotto, poi riprova.",
+          "empty_unavailable_cli_missing_gitlab": "La CLI di GitLab (glab) non è installata su questo host. Installala, accedi con glab e riprova.",
+          "empty_unavailable_fetch_failed_gitlab": "GitLab non ha risposto per la maggior parte delle issue (un'interruzione o un limite di frequenza). Attendi un momento, poi riprova.",
+          "empty_unavailable_issue_scope": "Il grafo delle dipendenze ha bisogno dell’elenco delle issue aperte, che non è ancora disponibile. Apri la scheda Issue per metterlo in cache, oppure controlla l’errore qui sotto, poi riprova.",
+          "refresh_failed_stale_graph": "Mostra l'ultimo grafico caricato; l'aggiornamento più recente non è riuscito.",
           "retry": "RIPROVA"
         },
         "groupReviewsView": {
@@ -2982,8 +2988,9 @@
           "see_all": "Vedi tutto su GitLab"
         },
         "pipelineDashboard": {
-          "github_only": "La pipeline di triage funziona solo con repository GitHub",
-          "github_only_hint": "I suoi processi pianificati leggono e scrivono solo su GitHub, quindi questa bacheca non ha dati di pipeline per questo repository."
+          "forge_unsupported": "La pipeline di triage non è disponibile per questo repository",
+          "forge_unsupported_gitlab_hint": "Aggiungi {{host}} a dashboard.gitlab_hosts in ~/.kiro/crew/config.json per vedere questa pipeline.",
+          "forge_unsupported_other_hint": "I job pianificati della pipeline non vengono eseguiti sull'host di questo repository, quindi non ci sono dati della pipeline da mostrare."
         },
         "ciRunsView": {
           "recent_github_actions_runs_in_your_connected_repos": "Esecuzioni recenti di GitHub Actions nei tuoi repository GitHub collegati.",

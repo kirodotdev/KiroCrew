@@ -2725,8 +2725,8 @@
             "which_labels_mean_an_issue_still_needs_triage_dr": "哪些标签表示 issue 仍需分类。它决定概览中的“未分类”计数和待关注队列。",
             "without_push_access_to": "若没有对以下仓库的 push 权限：",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "你的编辑会保留在此处但不会持久化。如果你刚更新了 Issue Radar，请重启后端以启用设置 API。",
-            "notify_me_when_ci_fails_on_my_pull_request": "当我在 {{repo}} 中的拉取请求 CI 失败时通知我",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "仅通过你的 gh 登录，读取你自己未关闭拉取请求上的 GitHub Actions 运行。可在 设置 → 通知 中将其静音或更改优先级。"
+            "notify_me_when_ci_fails_on_my_pull_request": "当我在 {{repo}} 中的 {{prs}} CI 失败时通知我",
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "仅通过你的 {{cli}} 登录，读取你自己未关闭 {{prs}} 上的 {{ci}} 运行。可在 设置 → 通知 中将其静音或更改优先级。"
           }
         },
         "tagging": {
@@ -2830,8 +2830,14 @@
           "empty_board": "空板",
           "empty_title": "尚无依赖关系",
           "empty_blurb": "此仓库暂无可绘制的依赖边。可用 gh issue edit --add-blocked-by 设置原生依赖，或等 Issue Radar 下次同步时从交叉引用推断。",
+          "empty_blurb_gitlab": "此项目暂无可绘制的阻塞链接。在议题的关联项中将其标记为被另一议题阻塞（GitLab Premium 或 Ultimate），然后重试。",
           "empty_unavailable_title": "依赖数据不可用",
           "empty_unavailable_blurb": "依赖图加载失败。该仓库的 deps 后端路由可能尚未启用，可用后重试。",
+          "empty_unavailable_auth_gitlab": "你尚未在此主机登录 GitLab CLI (glab)。请运行下面的命令后重试。",
+          "empty_unavailable_cli_missing_gitlab": "此主机上未安装 GitLab CLI (glab)。请安装后使用 glab 登录，然后重试。",
+          "empty_unavailable_fetch_failed_gitlab": "GitLab 对大多数议题没有响应（故障或速率限制）。请稍候再重试。",
+          "empty_unavailable_issue_scope": "依赖关系图谱需要开放议题列表，但目前尚不可用。请打开“议题”标签页将其缓存，或查看下方的错误，然后重试。",
+          "refresh_failed_stale_graph": "正在显示上次加载的依赖图；最近一次刷新失败。",
           "retry": "重试"
         },
         "groupReviewsView": {
@@ -2848,8 +2854,9 @@
           "see_all": "在 GitLab 上查看全部"
         },
         "pipelineDashboard": {
-          "github_only": "分流流水线仅支持 GitHub 仓库",
-          "github_only_hint": "其定时任务只读写 GitHub，因此此看板没有该仓库的流水线数据。"
+          "forge_unsupported": "分流流水线不适用于此仓库",
+          "forge_unsupported_gitlab_hint": "要查看此流水线，请在 ~/.kiro/crew/config.json 中将 {{host}} 添加到 dashboard.gitlab_hosts。",
+          "forge_unsupported_other_hint": "流水线计划任务不会针对此仓库主机运行，因此没有可显示的流水线数据。"
         },
         "ciRunsView": {
           "recent_github_actions_runs_in_your_connected_repos": "你已连接的 GitHub 仓库中最近的 GitHub Actions 运行。",

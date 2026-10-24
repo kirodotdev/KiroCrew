@@ -972,7 +972,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
             {relatedRefs.length > 0 && <RelatedLinks items={relatedRefs} />}
 
             {/* Dependency edges — blocked by / blocking (deps cache). */}
-            <DepsSection number={issue.number} />
+            <DepsSection number={issue.number} kind="issue" />
 
             {/* Activity timeline — newest first, latest node pulsing. */}
             <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted mb-3 font-medium">

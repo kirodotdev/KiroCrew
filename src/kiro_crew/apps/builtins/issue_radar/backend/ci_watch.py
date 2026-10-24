@@ -1,36 +1,47 @@
 """Issue Radar — CI-failure alerts for the signed-in user's own pull requests.
 
 One pass of the in-process watcher (``watch._poll_once``), run only for the
-connected GitHub repos whose per-repo setting ``notify_on_own_pr_ci_failure`` is
-on. With no repo opted in it returns before touching ``gh``, so the watcher's
-calls and notifications are those of the new-issue pass and the crew sweep alone.
+connected GitHub and GitLab repos whose per-repo setting
+``notify_on_own_pr_ci_failure`` is on. With no repo opted in it returns before
+touching ``gh`` or ``glab``, so the watcher's calls and notifications are those
+of the new-issue pass and the crew sweep alone.
 
-Each cycle:
+Each cycle, per forge:
 
-  1. one GraphQL search (per few repos, read page by page) lists the viewer's
-     open PRs in the opted-in repos, with each head commit
-     (``search_viewer_open_pull_heads``); repos whose search is cut off at its
-     page cap are skipped for the cycle, with a warning;
-  2. for each head commit, the Actions runs on it are read with the same client
-     the PR pane's run actions use (``list_pr_workflow_runs``);
+  1. the viewer's open PRs in the opted-in repos are listed with each head
+     commit. On GitHub that is one GraphQL search per few repos, read page by
+     page (``search_viewer_open_pull_heads``); on GitLab it is one per-project
+     MR listing scoped to the token's user (``search_viewer_open_mr_heads``).
+     Repos whose listing is cut off at its page cap are skipped for the cycle,
+     with a warning;
+  2. for each head commit, the runs on it are read with the same client the PR
+     pane's run actions use (``list_pr_workflow_runs``: Actions runs on GitHub,
+     pipelines on GitLab, where the pipeline id is the run id);
   3. a run that concluded ``failure`` or ``timed_out`` at an attempt not yet
      reported produces one dashboard notification per PR, on this app's
      ``ci-failure`` channel, so the channel's mute and priority settings in
      Settings → Notifications apply to it.
 
 Reported attempts are kept per repo in ``ci-watch-state.json`` (see
-``store.read_ci_watch_state``). The first successful read of a repo seeds that
-record without notifying, so turning the setting on does not announce the red
-runs already present. A head commit whose runs had all completed at its last read
-is re-read every :data:`SETTLED_RECHECK_SEC` rather than every cycle; that keeps
-a user with many quiet open PRs from spending a request per PR per minute, and
-still catches a re-run within a few minutes.
+``store.read_ci_watch_state``), under the repo's own provider subtree; the record
+schema is the same on every forge. The first successful read of a repo seeds
+that record without notifying, so turning the setting on does not announce the
+red runs already present. A head commit whose runs had all completed at its last
+read is re-read every :data:`SETTLED_RECHECK_SEC` rather than every cycle; that
+keeps a user with many quiet open PRs from spending a request per PR per minute,
+and still catches a re-run within a few minutes.
 
-Read-only and GitHub-only: it uses the user's existing ``gh`` session and never
-writes to the provider. Any ``gh`` error skips the affected repo for the cycle
-and leaves its record untouched, so nothing is lost or reported twice. A note
-the rate limiter refuses, or that the notification history fails to persist, is
-left unrecorded, so the next cycle offers it again.
+A re-run is announced again on GitHub because a workflow run carries an ``attempt``
+number that climbs on each re-run. GitLab's "Retry" reuses the pipeline id and
+its rows carry no attempt, so an in-place retry that fails again is NOT
+re-announced; a new commit is, because its pipelines are new ids.
+
+Read-only: it uses the user's existing ``gh`` / ``glab`` session and never writes
+to the provider. Azure repos are not covered (:data:`CI_WATCH_PROVIDERS`). Any
+provider error skips the affected repo for the cycle and leaves its record
+untouched, so nothing is lost or reported twice. A note the rate limiter
+refuses, or that the notification history fails to persist, is left unrecorded,
+so the next cycle offers it again.
 """
 
 from __future__ import annotations
@@ -44,7 +55,13 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.apps.builtins.issue_radar.backend import github_client, provider, store
+from kiro_crew.apps.builtins.issue_radar.backend import (
+    github_client,
+    gitlab_client,
+    gitlab_client_ci,
+    provider,
+    store,
+)
 from kiro_crew.apps.manager import app_lifecycle_lock
 from kiro_crew.dashboard.handlers import notifications_push
 from kiro_crew.notifications.bus import NotificationPayload, NotificationValidationError
@@ -52,6 +69,10 @@ from kiro_crew.notifications.bus import NotificationPayload, NotificationValidat
 logger = logging.getLogger("kirocrew.app.issue-radar")
 
 APP_NAME = "issue-radar"
+
+#: The forges this pass covers. Membership here is the whole opt-in: a provider
+#: outside it is never searched, whatever its repos' settings say.
+CI_WATCH_PROVIDERS = frozenset({provider.GITHUB, provider.GITLAB})
 
 #: Channel id, mirroring ``app.json``'s ``notifications.channels``. The bus
 #: namespaces it as ``issue-radar.ci-failure``.
@@ -90,20 +111,46 @@ _head_failed: dict[str, set[str]] = {}
 
 def opted_in(settings: dict[str, Any], key: provider.RepoKey) -> bool:
     """Whether the CI-failure pass covers this repo."""
-    return key.provider == provider.GITHUB and bool(settings.get("notify_on_own_pr_ci_failure"))
+    return key.provider in CI_WATCH_PROVIDERS and bool(settings.get("notify_on_own_pr_ci_failure"))
 
 
 async def poll_ci_failures(app: web.Application, keys: list[provider.RepoKey]) -> None:
-    """Run one CI-failure pass over the opted-in repos in ``keys``."""
-    keys = [k for k in keys if k.provider == provider.GITHUB]
-    if not keys:
+    """Run one CI-failure pass over the opted-in repos in ``keys``.
+
+    GitHub repos share one batched search; GitLab projects are listed one by one,
+    each on its own host. A forge whose listing fails is skipped for the cycle
+    without touching the other forge's repos.
+    """
+    github_keys = [k for k in keys if k.provider == provider.GITHUB]
+    gitlab_keys = [k for k in keys if k.provider == provider.GITLAB]
+    if not github_keys and not gitlab_keys:
         return
+    live: set[str] = set()
+    if github_keys:
+        await _poll_github(app, github_keys, live)
+    # One ``GET /user`` per GitLab host per cycle, not per project: the login is the
+    # same for every project on a host, and a host whose user cannot be read skips
+    # all of its projects for the cycle (their tracked heads stay tracked).
+    logins: dict[str, str | None] = {}
+    for key in gitlab_keys:
+        if key.host not in logins:
+            logins[key.host] = await _gitlab_login(key.host)
+        await _poll_gitlab(app, key, live, login=logins[key.host])
+    for tag in [t for t in _settled if t not in live]:
+        _settled.pop(tag, None)
+    for tag in [t for t in _head_failed if t not in live]:
+        _head_failed.pop(tag, None)
+
+
+async def _poll_github(app: web.Application, keys: list[provider.RepoKey], live: set[str]) -> None:
     try:
         found = await asyncio.to_thread(
             github_client.search_viewer_open_pull_heads, [(k.owner, k.repo) for k in keys]
         )
     except Exception:
         logger.warning("issue-radar CI watch: own-PR search failed", exc_info=True)
+        # Nothing was read, so every head this forge tracked stays tracked.
+        live.update(t for t in (*_settled, *_head_failed) if t.startswith(f"{provider.GITHUB}/"))
         return
     # A repo whose search had more open PRs than it reads is skipped for the
     # cycle: seeding or checking it from a partial list would announce failures
@@ -119,28 +166,108 @@ async def poll_ci_failures(app: web.Application, keys: list[provider.RepoKey]) -
     by_repo: dict[str, list[dict[str, Any]]] = {}
     for pull in found["pulls"]:
         by_repo.setdefault(f"{pull['owner']}/{pull['repo']}".lower(), []).append(pull)
-    live: set[str] = set()
     for key in keys:
         slug = f"{key.owner}/{key.repo}".lower()
         if slug in truncated:
-            live.update(t for t in (*_settled, *_head_failed) if t.startswith(f"{slug}@"))
+            live.update(_tracked_heads(key))
             continue
-        pulls = by_repo.get(slug, [])
-        live.update(_head_tag(key, p["head_sha"]) for p in pulls)
-        try:
-            await _check_repo(app, key, pulls)
-        except Exception:
-            logger.warning(
-                "issue-radar CI watch failed for %s/%s", key.owner, key.repo, exc_info=True
+        await _check_found(app, key, by_repo.get(slug, []), live)
+
+
+async def _gitlab_login(host: str) -> str | None:
+    """The signed-in ``glab`` user on ``host``, or ``None`` when it cannot be read."""
+    try:
+        login = await asyncio.to_thread(partial(gitlab_client.get_current_login, host=host))
+    except Exception:
+        logger.warning(
+            "issue-radar CI watch: could not read the glab user on %s", host, exc_info=True
+        )
+        return None
+    if not login:
+        logger.warning("issue-radar CI watch: glab did not report the signed-in user on %s", host)
+    return login or None
+
+
+async def _poll_gitlab(
+    app: web.Application, key: provider.RepoKey, live: set[str], *, login: str | None
+) -> None:
+    if login is None:
+        live.update(_tracked_heads(key))
+        return
+    try:
+        found = await asyncio.to_thread(
+            partial(
+                gitlab_client.search_viewer_open_mr_heads,
+                key.owner,
+                key.repo,
+                host=key.host,
+                login=login,
             )
-    for tag in [t for t in _settled if t not in live]:
-        _settled.pop(tag, None)
-    for tag in [t for t in _head_failed if t not in live]:
-        _head_failed.pop(tag, None)
+        )
+    except Exception:
+        logger.warning(
+            "issue-radar CI watch: own-MR listing failed for %s/%s",
+            key.owner,
+            key.repo,
+            exc_info=True,
+        )
+        live.update(_tracked_heads(key))
+        return
+    if found["truncated"]:
+        logger.warning(
+            "issue-radar CI watch: skipped %s/%s with more than %d open own MRs per listing",
+            key.owner,
+            key.repo,
+            gitlab_client_ci.CI_SEARCH_PAGE_SIZE * gitlab_client_ci.CI_SEARCH_MAX_PAGES,
+        )
+        live.update(_tracked_heads(key))
+        return
+    await _check_found(app, key, list(found["pulls"]), live)
+
+
+async def _check_found(
+    app: web.Application, key: provider.RepoKey, pulls: list[dict[str, Any]], live: set[str]
+) -> None:
+    live.update(_head_tag(key, p["head_sha"]) for p in pulls)
+    try:
+        await _check_repo(app, key, pulls)
+    except Exception:
+        logger.warning("issue-radar CI watch failed for %s/%s", key.owner, key.repo, exc_info=True)
+
+
+def _repo_tag(key: provider.RepoKey) -> str:
+    # Provider and host are part of the tag: a GitHub repo and a GitLab project
+    # sharing a slug must not share settled or failed-run memory.
+    return f"{key.provider}/{key.host}/{key.owner}/{key.repo}".lower()
 
 
 def _head_tag(key: provider.RepoKey, sha: str) -> str:
-    return f"{key.owner}/{key.repo}@{sha}".lower()
+    return f"{_repo_tag(key)}@{sha}".lower()
+
+
+def _tracked_heads(key: provider.RepoKey) -> set[str]:
+    prefix = f"{_repo_tag(key)}@"
+    return {t for t in (*_settled, *_head_failed) if t.startswith(prefix)}
+
+
+def _note_scope(key: provider.RepoKey) -> str:
+    """The repo part of a note's ``group_key``.
+
+    GitHub keeps the ``owner/repo`` spelling its notes have always grouped under, so
+    a note from before this pass covered GitLab still stacks with the next one; any
+    other forge carries its provider and host so a same-slug project cannot stack
+    onto a GitHub repo's thread.
+    """
+    if key.provider == provider.GITHUB:
+        return f"{key.owner}/{key.repo}".lower()
+    return _repo_tag(key)
+
+
+def _list_runs(key: provider.RepoKey, sha: str) -> list[dict[str, Any]]:
+    """The runs on one head commit, from the key's own forge client."""
+    if key.provider == provider.GITLAB:
+        return gitlab_client.list_pr_workflow_runs(key.owner, key.repo, sha, host=key.host)
+    return github_client.list_pr_workflow_runs(key.owner, key.repo, sha)
 
 
 async def _check_repo(
@@ -173,9 +300,7 @@ async def _check_repo(
             and time.monotonic() - last < SETTLED_RECHECK_SEC
         ):
             continue
-        runs = await asyncio.to_thread(
-            partial(github_client.list_pr_workflow_runs, owner, repo, sha)
-        )
+        runs = await asyncio.to_thread(partial(_list_runs, key, sha))
         new_failed: list[dict[str, Any]] = []
         failed_ids: set[str] = set()
         for run in runs:
@@ -304,6 +429,8 @@ async def push_ci_failure(
         return DROPPED
     try:
         owner, repo, number = key.owner, key.repo, int(pull["number"])
+        # "#7" on GitHub, "!7" on GitLab: the forge's own spelling of the ref.
+        sigil = provider.terms(key)["change_request_sigil"]
         names = [str(r.get("name") or "workflow") for r in runs]
         listed = ", ".join(names[:_NOTIFY_LIST_CAP])
         if len(names) > _NOTIFY_LIST_CAP:
@@ -312,12 +439,14 @@ async def push_ci_failure(
         payload = NotificationPayload(
             source=f"app:{APP_NAME}",
             channel=channel,
-            title=_clip(f"CI failed · {owner}/{repo}#{number}", _MAX_TITLE_CHARS),
+            title=_clip(f"CI failed · {owner}/{repo}{sigil}{number}", _MAX_TITLE_CHARS),
             body=_clip(f"{listed} failed on {pr_title}", _MAX_BODY_CHARS),
-            group_key=f"ci-failure:{owner}/{repo}#{number}".lower(),
+            group_key=f"ci-failure:{_note_scope(key)}{sigil}{number}",
             url=_APP_URL,
             meta={
                 "app": APP_NAME,
+                "provider": key.provider,
+                "host": key.host,
                 "owner": owner,
                 "repo": repo,
                 "number": number,

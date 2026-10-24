@@ -2813,8 +2813,8 @@
             "which_labels_mean_an_issue_still_needs_triage_dr": "이슈에 아직 트리아지가 필요함을 뜻하는 레이블입니다. 개요의 ‘트리아지 안 됨’ 개수와 확인 필요 대기열을 결정합니다.",
             "without_push_access_to": "다음에 대한 푸시 권한이 없으면:",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "편집 내용은 여기에 유지되지만 영구 저장되지는 않습니다. 방금 Issue Radar를 업데이트했다면 백엔드를 다시 시작해 설정 API를 사용할 수 있게 하세요.",
-            "notify_me_when_ci_fails_on_my_pull_request": "{{repo}}의 내 풀 리퀘스트에서 CI가 실패하면 알림 받기",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "gh 로그인으로 내가 연 열린 풀 리퀘스트의 GitHub Actions 실행만 읽습니다. 설정 → 알림에서 음소거하거나 우선순위를 바꿀 수 있습니다."
+            "notify_me_when_ci_fails_on_my_pull_request": "{{repo}}의 내 {{prs}}에서 CI가 실패하면 알림 받기",
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "{{cli}} 로그인으로 내가 연 열린 {{prs}}의 {{ci}} 실행만 읽습니다. 설정 → 알림에서 음소거하거나 우선순위를 바꿀 수 있습니다."
           }
         },
         "tagging": {
@@ -2918,8 +2918,14 @@
           "empty_board": "빈 보드",
           "empty_title": "아직 의존성이 없습니다",
           "empty_blurb": "이 저장소에는 그릴 의존성 간선이 없습니다. gh issue edit --add-blocked-by로 네이티브 의존성을 설정하거나, 다음 동기화 때 Issue Radar가 상호 참조에서 추론합니다.",
+          "empty_blurb_gitlab": "이 프로젝트에는 그릴 차단 링크가 없습니다. 연결된 항목에서 이슈를 다른 이슈에 의해 차단됨으로 표시한 뒤(GitLab Premium 또는 Ultimate) 다시 시도하세요.",
           "empty_unavailable_title": "의존성 데이터를 사용할 수 없음",
           "empty_unavailable_blurb": "그래프를 불러오지 못했습니다. 이 저장소에서 deps 라우트가 아직 활성화되지 않았을 수 있습니다. 활성화 후 다시 시도하세요.",
+          "empty_unavailable_auth_gitlab": "이 호스트에서 GitLab CLI (glab)에 로그인되어 있지 않습니다. 아래 명령을 실행한 뒤 다시 시도하세요.",
+          "empty_unavailable_cli_missing_gitlab": "이 호스트에 GitLab CLI(glab)가 설치되어 있지 않습니다. 설치한 뒤 glab으로 로그인하고 다시 시도하세요.",
+          "empty_unavailable_fetch_failed_gitlab": "GitLab이 대부분의 이슈에 응답하지 않았습니다(장애 또는 속도 제한). 잠시 기다린 뒤 다시 시도하세요.",
+          "empty_unavailable_issue_scope": "종속성 그래프에는 열린 이슈 목록이 필요하지만 아직 사용할 수 없습니다. 이슈 탭을 열어 캐시하거나 아래 오류를 확인한 뒤 다시 시도하세요.",
+          "refresh_failed_stale_graph": "마지막으로 불러온 그래프를 표시 중입니다. 최근 새로 고침이 실패했습니다.",
           "retry": "다시 시도"
         },
         "groupReviewsView": {
@@ -2936,8 +2942,9 @@
           "see_all": "GitLab에서 모두 보기"
         },
         "pipelineDashboard": {
-          "github_only": "분류 파이프라인은 GitHub 저장소만 지원합니다",
-          "github_only_hint": "예약 작업이 GitHub만 읽고 쓰므로 이 보드에는 이 저장소의 파이프라인 데이터가 없습니다."
+          "forge_unsupported": "이 리포지토리에서는 트리아지 파이프라인을 사용할 수 없습니다",
+          "forge_unsupported_gitlab_hint": "이 파이프라인을 보려면 ~/.kiro/crew/config.json의 dashboard.gitlab_hosts에 {{host}}을(를) 추가하세요.",
+          "forge_unsupported_other_hint": "파이프라인의 예약된 작업은 이 리포지토리의 호스트에서 실행되지 않으므로 표시할 파이프라인 데이터가 없습니다."
         },
         "ciRunsView": {
           "recent_github_actions_runs_in_your_connected_repos": "연결된 GitHub 저장소의 최근 GitHub Actions 실행입니다.",

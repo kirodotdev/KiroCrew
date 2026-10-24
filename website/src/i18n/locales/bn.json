@@ -2787,8 +2787,8 @@
             "which_labels_mean_an_issue_still_needs_triage_dr": "কোন লেবেলগুলো বোঝায় যে ইস্যুর এখনো ট্রায়াজ দরকার। এটাই ওভারভিউয়ের “ট্রায়াজ হয়নি” সংখ্যা আর মনোযোগ-দরকার তালিকা ঠিক করে।",
             "without_push_access_to": "পুশ অ্যাক্সেস না থাকলে এখানে:",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "আপনার সম্পাদনাগুলো এখানে রাখা হচ্ছে, কিন্তু স্থায়ী হবে না। আপনি যদি সদ্য Issue Radar আপডেট করে থাকেন, তবে ব্যাকএন্ড পুনরায় চালু করুন যাতে সেটিংস API পাওয়া যায়।",
-            "notify_me_when_ci_fails_on_my_pull_request": "{{repo}}-এ আমার কোনো pull request-এ CI ব্যর্থ হলে আমাকে জানান",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "তোমার gh সাইন-ইন দিয়ে শুধু তোমার নিজের খোলা pull request-এর GitHub Actions রান পড়ে। সেটিংস → বিজ্ঞপ্তি থেকে এটি মিউট করো বা এর অগ্রাধিকার বদলাও।"
+            "notify_me_when_ci_fails_on_my_pull_request": "{{repo}}-এ আমার কোনো {{prs}}-এ CI ব্যর্থ হলে আমাকে জানান",
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "তোমার {{cli}} সাইন-ইন দিয়ে শুধু তোমার নিজের খোলা {{prs}}-এর {{ci}} রান পড়ে। সেটিংস → বিজ্ঞপ্তি থেকে এটি মিউট করো বা এর অগ্রাধিকার বদলাও।"
           }
         },
         "tagging": {
@@ -2897,8 +2897,14 @@
           "empty_board": "খালি বোর্ড",
           "empty_title": "এখনও কোনো নির্ভরতা নেই",
           "empty_blurb": "এই রিপোজিটরিতে আঁকার মতো কোনো নির্ভরতা প্রান্ত নেই। gh issue edit --add-blocked-by দিয়ে নেটিভ নির্ভরতা দিন, নয়তো পরের সিঙ্কে Issue Radar ক্রস-রেফারেন্স থেকে অনুমান করবে।",
+          "empty_blurb_gitlab": "এই প্রজেক্টে আঁকার মতো কোনো ব্লকিং লিঙ্ক নেই। কোনো ইস্যুকে তার লিঙ্কড আইটেমে অন্য ইস্যু দ্বারা ব্লকড হিসেবে চিহ্নিত করো (GitLab Premium বা Ultimate), তারপর আবার চেষ্টা করো।",
           "empty_unavailable_title": "নির্ভরতার ডেটা অনুপলব্ধ",
-          "empty_unavailable_blurb": "গ্রাফ লোড করা যায়নি। এই রিপোজিটরির জন্য deps রুট হয়তো এখনও চালু হয়নি। চালু হলে আবার চেষ্টা করুন।",
+          "empty_unavailable_blurb": "গ্রাফ লোড করা যায়নি। এই রিপোজিটরির জন্য deps রুট হয়তো এখনও চালু হয়নি। চালু হলে আবার চেষ্টা করো।",
+          "empty_unavailable_auth_gitlab": "তুমি এই হোস্টে GitLab CLI (glab)-এ সাইন ইন করোনি। নিচের কমান্ডটি চালাও, তারপর আবার চেষ্টা করো।",
+          "empty_unavailable_cli_missing_gitlab": "এই হোস্টে GitLab CLI (glab) ইনস্টল করা নেই। এটি ইনস্টল করো, glab দিয়ে সাইন ইন করো, তারপর আবার চেষ্টা করো।",
+          "empty_unavailable_fetch_failed_gitlab": "GitLab বেশিরভাগ ইস্যুর জন্য সাড়া দেয়নি (আউটেজ বা রেট লিমিট)। একটু অপেক্ষা করো, তারপর আবার চেষ্টা করো।",
+          "empty_unavailable_issue_scope": "ডিপেন্ডেন্সি গ্রাফের জন্য খোলা ইস্যুর তালিকা দরকার, যা এখনও পাওয়া যাচ্ছে না। ক্যাশ করতে ইস্যু ট্যাব খোলো, বা নিচের ত্রুটি দেখো, তারপর আবার চেষ্টা করো।",
+          "refresh_failed_stale_graph": "সর্বশেষ লোড হওয়া গ্রাফ দেখানো হচ্ছে; সাম্প্রতিক রিফ্রেশ ব্যর্থ হয়েছে।",
           "retry": "আবার চেষ্টা করুন"
         },
         "groupReviewsView": {
@@ -2915,8 +2921,9 @@
           "see_all": "GitLab-এ সব দেখো"
         },
         "pipelineDashboard": {
-          "github_only": "ট্রায়াজ পাইপলাইন কেবল GitHub রিপোজিটরিতে চলে",
-          "github_only_hint": "এর নির্ধারিত কাজগুলি কেবল GitHub পড়ে ও লেখে, তাই এই বোর্ডে এই রিপোজিটরির পাইপলাইন ডেটা নেই।"
+          "forge_unsupported": "এই রিপোজিটরির জন্য ট্রায়াজ পাইপলাইন উপলব্ধ নয়",
+          "forge_unsupported_gitlab_hint": "এই পাইপলাইন দেখতে {{host}}-কে ~/.kiro/crew/config.json-এর dashboard.gitlab_hosts-এ যোগ করো।",
+          "forge_unsupported_other_hint": "পাইপলাইনের নির্ধারিত কাজগুলো এই রিপোজিটরির হোস্টে চলে না, তাই দেখানোর মতো কোনো পাইপলাইন ডেটা নেই।"
         },
         "ciRunsView": {
           "recent_github_actions_runs_in_your_connected_repos": "তোমার সংযুক্ত GitHub রিপোজিটরিগুলোর সাম্প্রতিক GitHub Actions রান।",

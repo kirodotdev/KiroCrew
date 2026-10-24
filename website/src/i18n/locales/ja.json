@@ -2813,8 +2813,8 @@
             "which_labels_mean_an_issue_still_needs_triage_dr": "Issue がまだトリアージが必要なことを示すラベルはどれですか。概要の「未トリアージ」カウントと注意が必要なキューを駆動します。",
             "without_push_access_to": "へのプッシュアクセス権がない場合:",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "編集内容はここに保持されていますが、永続化されません。Issue Radar を更新した場合は、バックエンドを再起動して、設定 API を利用できるようにしてください。",
-            "notify_me_when_ci_fails_on_my_pull_request": "{{repo}} の自分のプルリクエストで CI が失敗したら通知する",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "gh のサインインを使い、自分のオープンなプルリクエストの GitHub Actions 実行だけを読み取ります。設定 → 通知 でミュートや優先度の変更ができます。"
+            "notify_me_when_ci_fails_on_my_pull_request": "{{repo}} の自分の {{prs}} で CI が失敗したら通知する",
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "{{cli}} のサインインを使い、自分のオープンな {{prs}} の {{ci}} 実行だけを読み取ります。設定 → 通知 でミュートや優先度の変更ができます。"
           }
         },
         "tagging": {
@@ -2918,8 +2918,14 @@
           "empty_board": "未実装ボード",
           "empty_title": "依存関係はまだありません",
           "empty_blurb": "このリポジトリには描画できる依存エッジがありません。gh issue edit --add-blocked-by でネイティブ依存を設定するか、次回同期時に Issue Radar が相互参照から推定します。",
+          "empty_blurb_gitlab": "このプロジェクトには描画できるブロック関係のリンクがありません。関連アイテムで Issue を別の Issue にブロックされているとマークしてから（GitLab Premium または Ultimate）、再試行してください。",
           "empty_unavailable_title": "依存データを取得できません",
           "empty_unavailable_blurb": "依存グラフを読み込めませんでした。このリポジトリで deps ルートが未有効の可能性があります。利用可能になったら再試行してください。",
+          "empty_unavailable_auth_gitlab": "このホストで GitLab CLI (glab) にサインインしていません。下のコマンドを実行してから再試行してください。",
+          "empty_unavailable_cli_missing_gitlab": "この端末に GitLab CLI (glab) がインストールされていません。インストールして glab でサインインしてから再試行してください。",
+          "empty_unavailable_fetch_failed_gitlab": "GitLab がほとんどの Issue に応答しませんでした（障害またはレート制限）。少し待ってから再試行してください。",
+          "empty_unavailable_issue_scope": "依存関係グラフにはオープンな Issue の一覧が必要ですが、まだ利用できません。Issue タブを開いてキャッシュするか、下のエラーを確認してから、再試行してください。",
+          "refresh_failed_stale_graph": "最後に読み込んだグラフを表示しています。直近の更新は失敗しました。",
           "retry": "再試行"
         },
         "groupReviewsView": {
@@ -2936,8 +2942,9 @@
           "see_all": "GitLab ですべて表示"
         },
         "pipelineDashboard": {
-          "github_only": "トリアージパイプラインは GitHub リポジトリのみ対応しています",
-          "github_only_hint": "スケジュールジョブは GitHub のみを読み書きするため、このボードにこのリポジトリのパイプラインデータはありません。"
+          "forge_unsupported": "このリポジトリではトリアージパイプラインを利用できません",
+          "forge_unsupported_gitlab_hint": "このパイプラインを表示するには、~/.kiro/crew/config.json の dashboard.gitlab_hosts に {{host}} を追加してください。",
+          "forge_unsupported_other_hint": "パイプラインのスケジュールされたジョブはこのリポジトリのホストに対して実行されないため、表示できるパイプラインのデータはありません。"
         },
         "ciRunsView": {
           "recent_github_actions_runs_in_your_connected_repos": "接続済みの GitHub リポジトリの最近の GitHub Actions 実行。",

@@ -2939,8 +2939,8 @@
             "which_labels_mean_an_issue_still_needs_triage_dr": "Quelles étiquettes signifient qu’un ticket nécessite encore un triage. Alimente le compteur « Non triés » de la vue d’ensemble et la file des tickets nécessitant une attention.",
             "without_push_access_to": "Sans accès en écriture à",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "Vos modifications sont conservées ici mais ne seront pas persistées. Si vous venez de mettre à jour Issue Radar, redémarrez le backend pour que l’API des paramètres soit disponible.",
-            "notify_me_when_ci_fails_on_my_pull_request": "M’avertir quand la CI échoue sur une de mes pull requests dans {{repo}}",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Lit uniquement les exécutions GitHub Actions de tes propres pull requests ouvertes, via ta connexion gh. Coupe-le ou change sa priorité dans Paramètres → Notifications."
+            "notify_me_when_ci_fails_on_my_pull_request": "M’avertir quand la CI échoue sur une de mes {{prs}} dans {{repo}}",
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Lit uniquement les exécutions {{ci}} de tes propres {{prs}} ouvertes, via ta connexion {{cli}}. Coupe-le ou change sa priorité dans Paramètres → Notifications."
           }
         },
         "tagging": {
@@ -3054,8 +3054,14 @@
           "empty_board": "CARTE NON PEUPLÉE",
           "empty_title": "Aucune dépendance pour l’instant",
           "empty_blurb": "Ce dépôt n’a aucune arête de dépendance à tracer. Définissez une dépendance native avec gh issue edit --add-blocked-by, ou Issue Radar les déduira des références croisées à la prochaine synchronisation.",
+          "empty_blurb_gitlab": "Ce projet n’a aucun lien bloquant à tracer. Marque un ticket comme bloqué par un autre dans ses éléments liés (GitLab Premium ou Ultimate), puis réessaie.",
           "empty_unavailable_title": "Données de dépendances indisponibles",
-          "empty_unavailable_blurb": "Impossible de charger le graphe. La route deps n’est peut-être pas encore active pour ce dépôt. Réessayez ensuite.",
+          "empty_unavailable_blurb": "Impossible de charger le graphe. La route deps n’est peut-être pas encore active pour ce dépôt. Réessaie ensuite.",
+          "empty_unavailable_auth_gitlab": "Tu n'es pas connecté à la CLI GitLab (glab) sur cet hôte. Exécute la commande ci-dessous, puis réessaie.",
+          "empty_unavailable_cli_missing_gitlab": "La CLI GitLab (glab) n'est pas installée sur cet hôte. Installe-la, connecte-toi avec glab, puis réessaie.",
+          "empty_unavailable_fetch_failed_gitlab": "GitLab n'a pas répondu pour la plupart des tickets (panne ou limite de débit). Patiente un instant, puis réessaie.",
+          "empty_unavailable_issue_scope": "Le graphe de dépendances a besoin de la liste des tickets ouverts, qui n’est pas encore disponible. Ouvre l’onglet Tickets pour la mettre en cache, ou regarde l’erreur ci-dessous, puis réessaie.",
+          "refresh_failed_stale_graph": "Affichage du dernier graphe chargé ; la dernière actualisation a échoué.",
           "retry": "RÉESSAYER"
         },
         "groupReviewsView": {
@@ -3072,8 +3078,9 @@
           "see_all": "Tout voir sur GitLab"
         },
         "pipelineDashboard": {
-          "github_only": "Le pipeline de triage fonctionne uniquement avec les dépôts GitHub",
-          "github_only_hint": "Ses tâches planifiées lisent et écrivent uniquement sur GitHub, ce tableau n'a donc aucune donnée de pipeline pour ce dépôt."
+          "forge_unsupported": "Le pipeline de triage n'est pas disponible pour ce dépôt",
+          "forge_unsupported_gitlab_hint": "Ajoute {{host}} à dashboard.gitlab_hosts dans ~/.kiro/crew/config.json pour voir ce pipeline.",
+          "forge_unsupported_other_hint": "Les tâches planifiées du pipeline ne s'exécutent pas sur l'hôte de ce dépôt, il n'y a donc aucune donnée de pipeline à afficher."
         },
         "ciRunsView": {
           "recent_github_actions_runs_in_your_connected_repos": "Exécutions GitHub Actions récentes dans tes dépôts GitHub connectés.",
