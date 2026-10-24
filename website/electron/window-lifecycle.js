@@ -16,7 +16,7 @@ const {
   watchFullScreenTransitions,
   repairStalledFullScreenExit,
 } = require("./fullscreen-transition-watch");
-const { createWindowOpenHandler } = require("./external-scheme");
+const { createNavigationGuard, createWindowOpenHandler } = require("./external-scheme");
 const { sanitizeWindowState, captureWindowState } = require("./window-state");
 const { stepZoomFactor } = require("./zoom");
 const { registerCaptureSurface } = require("./capture-trust");
@@ -568,8 +568,16 @@ function createWindowLifecycle(options) {
     // An allowed same-origin window.open (the session pop-out) is a child window
     // Electron creates on its own. Give it, and each of its own children, the
     // same handler, or its external links open yet another in-app window.
+    // A pane iframe can top-navigate the dashboard (or a pop-out) to its own
+    // document, which would then hold the dashboard's session grants. Refuse
+    // every renderer-started navigation off this window's own origin.
+    const navigationGuard = createNavigationGuard({
+      getAppOrigin: () => windowBackendUrl,
+      log: glog,
+    });
     const armWindowOpen = (contents) => {
       contents.setWindowOpenHandler(windowOpenHandler);
+      contents.on("will-navigate", navigationGuard);
       contents.on("did-create-window", (child) => armWindowOpen(child.webContents));
     };
     armWindowOpen(view.webContents);

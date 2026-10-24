@@ -208,11 +208,56 @@ function createWindowOpenHandler(deps) {
   };
 }
 
+/**
+ * Build the `will-navigate` listener for a dashboard WebContents.
+ *
+ * A renderer-started top-level navigation is allowed only to an http(s) URL on
+ * the dashboard's own origin (scheme, host and port). Anything else is refused
+ * and nothing is opened: an iframe pane can top-navigate its parent, and the
+ * promoted document would otherwise inherit every default-session grant the
+ * dashboard holds. Main-process `loadURL`/`loadFile` calls do not emit this
+ * event, so boot, reconnect and token-retry loads are unaffected.
+ *
+ * Deny-only by design: it never opens the target elsewhere, so it adds no new
+ * way for a page to reach the OS. Fails closed on any error.
+ *
+ * @param {object} deps
+ * @param {() => string} deps.getAppOrigin resolves the dashboard origin (REQUIRED)
+ * @param {(msg: string) => void} [deps.log] diagnostic sink
+ * @returns {(event: {preventDefault: () => void}, url: string) => void}
+ */
+function createNavigationGuard(deps) {
+  if (!deps || typeof deps.getAppOrigin !== "function") {
+    throw new Error("getAppOrigin is required");
+  }
+  const log = deps.log || (() => {});
+  return function guardNavigation(event, url) {
+    let allowed = false;
+    try {
+      const target = new URL(url);
+      allowed = WEB_SCHEMES.includes(target.protocol)
+        && classifyNavigation(url, deps.getAppOrigin()) === "allow";
+    } catch {
+      allowed = false;
+    }
+    if (allowed) return;
+    event.preventDefault();
+    try {
+      let origin = "unparseable";
+      try { origin = new URL(url).origin; } catch { /* keep placeholder */ }
+      log(`denied top-level navigation away from the app origin: ${String(origin).slice(0, 80)}`);
+    } catch {
+      /* a failing log sink must not undo the refusal */
+    }
+  };
+}
+
 module.exports = {
   EXTERNAL_URLS,
   ORIGIN_INHERITING_SCHEMES,
   WEB_SCHEMES,
   classifyNavigation,
+  createNavigationGuard,
   createWindowOpenHandler,
   openExternalSafely,
 };

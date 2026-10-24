@@ -1143,6 +1143,7 @@ describe("dashboard window wiring order", () => {
       "win.on:focus",
       "win.on:focus",
       "view.setWindowOpenHandler",
+      "view.on:will-navigate",
       "view.on:did-create-window",
       "view.session.onBeforeSendHeaders",
       "view.session.on:will-download",
@@ -1209,6 +1210,30 @@ describe("dashboard window wiring order", () => {
       assert.deepEqual(verdict, { action: "deny" }, "no in-app window for an external link");
     }
     assert.deepEqual(openedExternally, ["https://example.com/docs", "https://example.com/docs"]);
+  });
+
+  it("refuses a top-level navigation off the app origin, in the dashboard and its pop-outs", async (t) => {
+    const { viewContents, openedExternally } = await wireDashboardWindow(t, { platform: "darwin" });
+    const popout = { webContents: { ...recordingEmitter("child", []), setWindowOpenHandler() {} } };
+    viewContents.emit("did-create-window", popout);
+    const navigate = (contents, url) => {
+      let prevented = false;
+      contents.emit("will-navigate", { preventDefault: () => { prevented = true; } }, url);
+      return prevented;
+    };
+    for (const contents of [viewContents, popout.webContents]) {
+      // A pane on another loopback port promoting itself to the top frame.
+      assert.equal(navigate(contents, "http://localhost:5477/"), true);
+      assert.equal(navigate(contents, "http://127.0.0.1:5476/"), true);
+      assert.equal(navigate(contents, "https://example.com/"), true);
+      assert.equal(navigate(contents, "file:///etc/passwd"), true);
+      assert.equal(navigate(contents, "blob:http://localhost:5476/x"), true);
+      assert.equal(navigate(contents, "not a url"), true);
+      // The dashboard's own routes, and the token prompt's hand-off, still work.
+      assert.equal(navigate(contents, "http://localhost:5476/chat?x=1"), false);
+      assert.equal(navigate(contents, "http://localhost:5476/?token=t"), false);
+    }
+    assert.deepEqual(openedExternally, [], "a refused navigation opens nothing");
   });
 
   it("a framed window injects neither the drag band nor caption controls", async (t) => {
