@@ -1,17 +1,27 @@
 """What an auto-generated skill is: its namespace and on-disk layout, its provenance record and
 rendered ``SKILL.md``, the claim refusal record, and the pending-queue observer hooks.
 
+It also holds what the claim protocol shares: the one auto-skill lock order, the quarantine,
+claim, evidence and lock directory names, the private authority's provenance record names,
+the scan and snapshot bounds, the immutable records a claim captures, and the refusals a
+dismissal or a live mutation reports while its candidate or skill is still there.
+
 ``kiro_crew.skills`` re-exports every name here, and the facade mirror sends a patch of one
 through ``kiro_crew.skills`` to this module.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
+
+from kiro_crew.constants import AUTO_SKILL_AUTHORITY_PARENT_DIRNAME
 
 #: The facade's logger, so a filter or a capture on ``kiro_crew.skills`` sees these records.
 logger = logging.getLogger("kiro_crew.skills")
@@ -47,19 +57,48 @@ AUTO_SLUG_CLAIM_LOCK_NAME = ".auto-slug-claim.lock"
 # and letting the next consolidation pass retry beats waiting on a dead holder.
 AUTO_SLUG_CLAIM_LOCK_TIMEOUT_SECS = 5.0
 
+#: The one acquisition order for every auto-skill lock. A path takes any
+#: subsequence of it, always left to right, and never blocks on an earlier lock
+#: while it holds a later one, so no two paths can wait on each other. The one
+#: out-of-order acquisition is a try-acquire that never waits: staging, under the
+#: ``namespace`` lock, try-acquires ``claim`` locks to tell an active claim from
+#: retired evidence (``SkillsLoader._pending_slug_claimed``).
+#:
+#: 1. ``slug-claim`` -- :data:`AUTO_SLUG_CLAIM_LOCK_NAME` at the skills root: one
+#:    test-and-allocate across the live and pending halves of the slug space.
+#:    Staging, a live publish (``create_auto_skill``) and a restore take it first.
+#: 2. ``claim`` -- ``locks/claims/<claim>.lock`` under the private authority, held
+#:    for the life of one claim transaction (approve, dismiss, unattended apply).
+#:    Restart recovery only ever try-acquires it.
+#: 3. ``target`` -- ``locks/target-<slug>.lock``: one live auto-skill. Promotion
+#:    and recovery take it while holding their claim; a live publish and a
+#:    restore take it inside the slug-claim lock; every other live mutation
+#:    (update, pin, inject, archive, delete) takes it alone. A live name that is
+#:    an alias of a canonical slug takes that slug's lock; a name no promotion
+#:    can target under any spelling takes none.
+#: 4. ``namespace`` -- ``locks/pending.lock``: the pending directory. Staging takes
+#:    it inside the slug-claim lock; a claim rename and a refusal restore take it
+#:    inside their claim lock.
+#:
+#: Publication itself never needs the slug-claim lock: it moves a stage into
+#: ``auto/<slug>`` with a no-replace rename, so an occupied name refuses
+#: atomically instead of being tested first.
+AUTO_SKILL_LOCK_ORDER: tuple[str, ...] = ("slug-claim", "claim", "target", "namespace")
+
 
 @dataclass
 class ClaimRefusal:
-    """Whether a claim path's ``None`` was the lock, and so is worth retrying.
+    """Whether a claim path's ``None`` is transient and worth retrying.
 
-    Both claim paths return ``None`` for several unrelated reasons, and only one of
-    them is transient. An invalid slug, an over-long procedure and an exhausted
-    sibling walk are properties of the CANDIDATE: the same input refused once is
-    refused forever, so a retry is waste. An unacquired claim lock is a property of
-    the MOMENT -- another process held it, or could not be coordinated with -- and
-    the comment above, plus ``skill_runtime.auto_skills._auto_slug_claim_lock``,
-    both promise that the next pass retries. That promise is only keepable by a
-    caller that can tell the two apart, and a bare ``None`` cannot.
+    Claim paths return ``None`` for several unrelated reasons. An invalid slug,
+    an over-long procedure and an exhausted sibling walk are properties of the
+    CANDIDATE: the same input refused once is refused forever, so a retry is
+    waste. An unacquired claim lock and an indeterminate active-claim inspection
+    are properties of the MOMENT. The former means another process held the
+    coordination lock; the latter means I/O could not prove the slug unclaimed.
+    Both leave the candidate unwritten and promise that the next pass retries.
+    That promise is only keepable by a caller that can distinguish them from a
+    final candidate verdict, and a bare ``None`` cannot.
 
     Pass an instance to a claim path to learn which it was. It is deliberately a
     mutable out-parameter rather than a raise or a changed return type: the lock
@@ -68,8 +107,10 @@ class ClaimRefusal:
     the distinction keeps reading the same ``str | None``.
     """
 
-    #: True only when the refusal was an unacquired claim lock.
+    #: True only when the refusal is transient and the same candidate should retry.
     retryable: bool = False
+    #: Stable reason for a retryable refusal, or ``None`` for a final candidate verdict.
+    reason: str | None = None
 
 
 # Per-skill version history. A dot-prefixed dir *inside* a live auto-skill
@@ -81,6 +122,241 @@ VERSIONS_DIRNAME = ".versions"
 
 # Cap on retained per-skill version snapshots; oldest are pruned past this.
 MAX_SKILL_VERSIONS = 20
+
+
+# Public, hidden holding area for candidate inodes that may have retained writers.
+# It stays outside the masked private tree so a descriptor opened before the claim
+# never crosses beneath a trusted ancestor. Dot-prefix discovery pruning keeps these
+# consumed candidates out of the pending and live skill catalogs.
+AUTO_QUARANTINE_DIRNAME = ".quarantine"
+
+# Public holding area for detached old-live generations. These inodes were
+# reachable by agent processes before publication, so they must never cross
+# beneath private authority: a retained directory descriptor follows a rename and
+# its ``..`` would bypass the path mask on the private root. Candidate quarantine
+# stays separate so one claim name has one unambiguous role per parent.
+AUTO_LIVE_QUARANTINE_DIRNAME = ".live-quarantine"
+
+AUTO_CLAIMS_DIRNAME = "claims"
+AUTO_EVIDENCE_DIRNAME = "evidence"
+
+# ``pending.lock`` serializes pending publish/claim/restore; target-specific
+# files serialize live updates or first publication to one auto-skill.
+AUTO_LOCKS_DIRNAME = "locks"
+_PROMOTE_LOCK_TIMEOUT_S = 10.0
+_PROMOTE_LOCK_POLL_S = 0.05
+_CLAIM_LOCK_MAX_STATE_BYTES = 1_500_000
+
+#: Maximum names read from any one authority-state directory while startup decides
+#: whether stale claim state is idle. Certification stays on the gateway's
+#: readiness path, before the orchestrator exists and the dashboard socket binds,
+#: so no agent this gateway spawns can run before the stale-state checks. Its
+#: work is bounded regardless of planted state: one provenance read of at most
+#: ``_AUTHORITY_PROVENANCE_MAX_BYTES`` and its MAC; only when provenance does not
+#: verify, at most six directory scans of ``_STALE_CLAIM_SCAN_LIMIT + 1`` entries
+#: each (authority root, ``claims/``, ``evidence/``, ``locks/claims/`` and both
+#: public quarantines) plus two renames; when provisioning, one ``mkdir``, one
+#: record write with its ``fsync`` and two directory syncs; and one rename probe
+#: (create, rename and unlink of one empty file). An overflow is indeterminate and
+#: disables auto-skills instead of extending that path.
+_STALE_CLAIM_SCAN_LIMIT = 1024
+
+#: Maximum unconsumed names counted while staging or recovery determines the
+#: active claim namespace. A public quarantine name already retired into private
+#: evidence is history and is not counted. This separately names the runtime
+#: bound while keeping it aligned with startup's stale-authority scan ceiling.
+_ACTIVE_CLAIM_SCAN_LIMIT = _STALE_CLAIM_SCAN_LIMIT
+
+
+class _StaleClaimScanOverflow(RuntimeError):
+    """A stale-authority directory exceeded the bounded startup scan."""
+
+
+class _ActiveClaimScanOverflow(RuntimeError):
+    """The active claim namespace exceeded its bounded runtime scan."""
+
+
+def _bounded_stale_claim_names(
+    target: int | Path,
+    *,
+    label: str,
+    scanner=os.scandir,
+) -> set[str]:
+    """Read at most ``_STALE_CLAIM_SCAN_LIMIT`` names from one pinned directory."""
+    names: set[str] = set()
+    with scanner(target) as entries:
+        for entry in entries:
+            if len(names) >= _STALE_CLAIM_SCAN_LIMIT:
+                raise _StaleClaimScanOverflow(
+                    f"{label} exceeded the {_STALE_CLAIM_SCAN_LIMIT}-entry "
+                    "stale-claim scan limit"
+                )
+            names.add(entry.name)
+    return names
+
+
+# Whole-generation snapshots retain file bytes until publication completes. Generated
+# skill bodies and scripts are capped far below these ceilings, while live trees may also
+# carry version history. Bound every allocation axis so a planted candidate or live tree
+# fails closed instead of exhausting the gateway while it is authenticated.
+_SKILL_SNAPSHOT_MAX_FILE_BYTES = 1024 * 1024
+_SKILL_SNAPSHOT_MAX_TOTAL_BYTES = 8 * 1024 * 1024
+_SKILL_SNAPSHOT_MAX_ENTRIES = 512
+_SKILL_SNAPSHOT_MAX_DEPTH = 32
+
+# The provenance record is deliberately outside the authority root it certifies.
+# ``tag-grants`` is a pre-existing, precreated whole-directory sandbox mask and
+# file-tool deny floor, so an older sandbox cannot plant this record before the
+# new authority leaf exists. The MAC under ``token_signing.key`` additionally
+# makes a copied or hand-written record inert.
+_AUTHORITY_PROVENANCE_PARENT = AUTO_SKILL_AUTHORITY_PARENT_DIRNAME
+_AUTHORITY_PROVENANCE_NAME = "auto-skill-private-authority.json"
+_AUTHORITY_PROVENANCE_VERSION = 2
+_AUTHORITY_PROVENANCE_MAX_BYTES = 4096
+_AUTHORITY_PROVENANCE_DOMAIN = b"kiro-crew:auto-skill-private-authority:v2\x00"
+
+
+_AUTHORITY_RETIRE_COMMAND = "kirocrew skills authority-retire"
+
+
+#: The refusal for a host whose agents run in a sandbox Kiro Crew does not build.
+#: Pending maintainer confirmation of the supported platform contract; this is the
+#: fail-closed choice.
+_DELEGATED_SANDBOX_REFUSAL = (
+    "agents on this host run in a sandbox Kiro Crew does not build (native Windows, "
+    "or macOS with the Kiro CLI internal sandbox), which cannot hide the auto-skill "
+    "authority from them; auto-skill staging and promotion stay off on this host"
+)
+
+# Stable refusal codes: callers and audit rows must distinguish an operator who
+# explicitly disabled the sandbox from a delegated or unavailable protecting mask.
+_SANDBOX_OFF_REFUSAL = "sandbox_off"
+_SANDBOX_MASK_UNAVAILABLE_REFUSAL = "sandbox_mask_unavailable"
+
+#: The refusal for a data home whose filesystem has no atomic no-replace rename.
+_NO_REPLACE_RENAME_REFUSAL = (
+    "the data home's filesystem has no atomic no-replace rename "
+    "(renameat2(RENAME_NOREPLACE) on Linux, renameatx_np(RENAME_EXCL) on macOS), which "
+    "auto-skill claims and publication need; move KIROCREW_HOME to a local filesystem "
+    "that supports it. Auto-skill staging and promotion stay off on this data home"
+)
+
+# Name prefix of a no-replace rename probe's scratch file. A crash can leave one
+# behind; it is never a claim, so the stale-authority check, lifecycle and claim
+# recovery all skip it, and recovery removes one old enough to be orphaned.
+_RENAME_PROBE_PREFIX = ".rename-probe-"
+
+#: Minimum age before restart recovery treats a ``claims/`` rename probe as
+#: orphaned. A live probe exists for one create-rename-unlink sequence; another
+#: process can be inside one while recovery scans, and removing its file would
+#: fail that process's claim. Measured against the file's own modification time.
+_ORPHANED_RENAME_PROBE_MIN_AGE_S = 300.0
+
+#: Maximum orphaned rename probes one recovery pass removes, so cleanup adds a
+#: bounded amount of work to a pass that is itself bounded by
+#: ``_ACTIVE_CLAIM_SCAN_LIMIT``.
+_ORPHANED_RENAME_PROBE_CLEANUP_LIMIT = 64
+
+
+@dataclass(frozen=True)
+class _TaggedFileIdentity:
+    """A serializable identity from an already-open native handle."""
+
+    kind: str
+    volume: int
+    object_id: int | bytes
+
+
+@dataclass(frozen=True)
+class _CertifiedAuthorityBinding:
+    """Native identities certified by the external authority provenance record."""
+
+    configured_home: Path
+    canonical_home: Path
+    home_identity: _TaggedFileIdentity
+    root_path: Path
+    root_identity: _TaggedFileIdentity
+    provenance_path: Path
+
+
+@dataclass(frozen=True)
+class _SkillTreeSnapshot:
+    """One immutable tree generation captured from authenticated opened inodes."""
+
+    files: dict[Path, bytes]
+    file_modes: dict[Path, int]
+    dir_modes: dict[Path, int]
+    generation_hash: str
+    root_identity: _TaggedFileIdentity
+
+
+@dataclass(frozen=True)
+class _ValidatedCandidateSnapshot:
+    """One authenticated candidate generation captured at the claim boundary."""
+
+    source_files: dict[Path, bytes]
+    files: dict[Path, bytes]
+    modes: dict[Path, int]
+    metadata: dict[str, object]
+    generation_hash: str
+
+
+@dataclass(frozen=True)
+class _ClaimSnapshot:
+    """Immutable facts captured immediately before a pending claim rename.
+
+    ``tree`` is process-local snapshot authority. The durable lock record keeps
+    only the generation witness and metadata needed by restart recovery; no
+    recovered path may publish a candidate without a fresh pre-claim snapshot.
+    """
+
+    generation_hash: str | None
+    metadata_bytes: bytes | None
+    tree: _SkillTreeSnapshot | None = field(default=None, compare=False, repr=False)
+    quarantine_identity: _TaggedFileIdentity | None = field(
+        default=None,
+        compare=False,
+        repr=False,
+    )
+
+
+@dataclass(frozen=True)
+class _PinnedSkillParent:
+    """One opened skill-state parent and the identity captured from its handle."""
+
+    path: Path
+    fd: int
+    identity: tuple[int, int]
+    native_identity: _TaggedFileIdentity
+
+
+@dataclass(frozen=True)
+class _PinnedPrivateState:
+    """The public/private authority hierarchy held from canonical roots."""
+
+    data_home: _PinnedSkillParent
+    auto: _PinnedSkillParent
+    pending: _PinnedSkillParent
+    quarantine: _PinnedSkillParent
+    live_quarantine: _PinnedSkillParent
+    private: _PinnedSkillParent
+    claims: _PinnedSkillParent
+    evidence: _PinnedSkillParent
+    locks: _PinnedSkillParent
+    claim_locks: _PinnedSkillParent
+
+
+def canonical_skill_text_hash(content: str | bytes) -> str:
+    """Hash UTF-8 skill text after canonicalizing CRLF/CR newlines to LF.
+
+    Text-mode reads normalize newlines while descriptor snapshots retain raw
+    bytes.  A base-content binding must describe the logical SKILL.md text, not
+    which platform wrote it; candidate-generation hashes remain byte-exact.
+    """
+    text = content.decode("utf-8") if isinstance(content, bytes) else content
+    canonical = text.replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 
 # ── Pending-staged observer hook ──────────────────────────────────────────────
 # A candidate can be staged by ANY ``SkillsLoader`` instance (consolidation uses
@@ -149,6 +425,28 @@ def _emit_pending_consumed(payload: dict) -> None:
         fn(payload)
     except Exception:  # pragma: no cover - defensive
         logger.debug("pending-consumed hook failed", exc_info=True)
+
+
+# Informational observer for prose-only updates promoted without review. This is
+# separate from the staged hook because the candidate is already live.
+_UPDATE_AUTO_APPLIED_HOOK: "Callable[[dict], None] | None" = None
+
+
+def set_update_auto_applied_hook(fn: "Callable[[dict], None] | None") -> None:
+    """Register (or clear) the unattended-update observer."""
+    global _UPDATE_AUTO_APPLIED_HOOK
+    _UPDATE_AUTO_APPLIED_HOOK = fn
+
+
+def _emit_update_auto_applied(payload: dict) -> None:
+    """Invoke the unattended-update observer without affecting promotion."""
+    fn = _UPDATE_AUTO_APPLIED_HOOK
+    if fn is None:
+        return
+    try:
+        fn(payload)
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("update-auto-applied hook failed", exc_info=True)
 
 
 # Frontmatter field that marks a skill as auto-generated.  Absence means
@@ -275,3 +573,48 @@ def _build_auto_skill_content(
     # between revisions stay readable.
     body = procedure_md.replace("\r\n", "\n").strip()
     return "\n".join(header_lines) + "\n\n" + body + "\n"
+
+
+class PendingDismissalRefused(Exception):
+    """A dismissal was refused while its pending candidate is still staged.
+
+    ``reason`` is ``promotion_disabled``: the data home still has an auto-skill
+    authority root, so a dismissal must claim the candidate under that
+    authority, and this process holds no certificate for it. ``detail`` is
+    :func:`auto_skill_promotion_disabled_reason`; ``hint`` names the operator
+    recovery where ``kirocrew skills authority-retire`` applies to this host, and
+    is ``None`` elsewhere. Raised only by ``dismiss_pending_skill_checked``; the
+    unsuffixed ``dismiss_pending_skill`` keeps its ``False`` for every caller.
+    """
+
+    def __init__(self, reason: str, *, detail: str, hint: str | None = None) -> None:
+        super().__init__(f"{reason}: {detail}")
+        self.reason = reason
+        self.detail = detail
+        self.hint = hint
+
+
+class LiveSkillMutationRefused(Exception):
+    """A live auto-skill delete or pin was refused while the skill is still there.
+
+    ``reason`` is ``promotion_disabled``: the data home still has an auto-skill
+    authority root, so the mutation must take that authority's target lock, and
+    this process holds no certificate for it. ``detail`` and ``hint`` carry the
+    same meaning as on :class:`PendingDismissalRefused`. Raised only by
+    ``delete_skill_checked`` and ``set_pinned_checked``; the unsuffixed methods
+    keep their ``False`` for every caller.
+    """
+
+    def __init__(self, reason: str, *, detail: str, hint: str | None = None) -> None:
+        super().__init__(f"{reason}: {detail}")
+        self.reason = reason
+        self.detail = detail
+        self.hint = hint
+
+
+# Named by the path callers import them from: a traceback renders a raised class as
+# ``module.qualname``, so the owner module must not leak into it.
+PendingDismissalRefused.__module__ = "kiro_crew.skills"
+LiveSkillMutationRefused.__module__ = "kiro_crew.skills"
+_StaleClaimScanOverflow.__module__ = "kiro_crew.skills"
+_ActiveClaimScanOverflow.__module__ = "kiro_crew.skills"
