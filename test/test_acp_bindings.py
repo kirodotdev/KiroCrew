@@ -60,6 +60,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_owning_session_key": ("function", False, "bb418bb7ece8", "acp_runtime_start"),
     "_ready_confirmed_session": ("function", True, "b60c5fea256e", "acp_turns"),
     "_reclaim_work_dir": ("function", True, "b60c5fea256e", "acp_lifecycle"),
+    "_recover_effort_overlay": ("function", True, "b60c5fea256e", "acp_cli_overlay"),
     "_resolve_effort": ("function", False, "f21e39ec5ffb", "acp_model_effort"),
     "_set_effort_config_option": ("function", True, "b9de7871fd78", "acp_model_effort"),
     "_start_kiro_runtime": ("function", True, "b60c5fea256e", "acp_runtime_start"),

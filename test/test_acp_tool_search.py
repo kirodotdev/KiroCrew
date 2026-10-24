@@ -10,8 +10,11 @@ AcpProvider application logic (kiro-only, no-op for the Claude backend).
 
 from __future__ import annotations
 
+import contextlib
 import json
-from unittest.mock import MagicMock, patch
+import threading
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -138,25 +141,92 @@ class TestApplyToolSearchOverlay:
         assert not _cli_json(tmp_path).exists()
 
 
-# ── Constructor wiring ───────────────────────────────────────────────────────
+# ── Constructor and start wiring ─────────────────────────────────────────────
 
 
 class TestInitWiring:
-    def test_kiro_enabled_applies_on_init(self):
-        with patch("kiro_crew.providers.acp.AcpClient") as mock_client, patch.object(
-            AcpProvider, "_apply_tool_search_overlay"
-        ) as ats:
-            mock_client.return_value.backend = ""
-            AcpProvider(acp_backend="", tool_search=True)
-        ats.assert_called_once()
+    def test_construction_writes_nothing_for_any_backend(self):
+        # The constructor runs on the gateway event loop; ``start()`` owns the file.
+        for backend in ("", ACP_BACKEND_CLAUDE):
+            with patch("kiro_crew.providers.acp.AcpClient") as mock_client, patch.object(
+                AcpProvider, "_apply_tool_search_overlay"
+            ) as ats, patch.object(AcpProvider, "_apply_effort_overlay") as aeo:
+                mock_client.return_value.backend = backend
+                AcpProvider(acp_backend=backend, tool_search=True)
+            ats.assert_not_called()
+            aeo.assert_not_called()
 
-    def test_claude_backend_does_not_apply_on_init(self):
-        with patch("kiro_crew.providers.acp.AcpClient") as mock_client, patch.object(
-            AcpProvider, "_apply_tool_search_overlay"
-        ) as ats:
-            mock_client.return_value.backend = ACP_BACKEND_CLAUDE
-            AcpProvider(acp_backend=ACP_BACKEND_CLAUDE, tool_search=True)
-        ats.assert_not_called()
+    def test_construction_opens_no_cli_json(self, tmp_path):
+        _write_tool_search_overlay(tmp_path, True)
+        before = _cli_json(tmp_path).read_bytes()
+        real_open = Path.open
+        opened: list[str] = []
+
+        def _spy(self, *args, **kwargs):
+            if self.name == "cli.json":
+                opened.append(str(self))
+            return real_open(self, *args, **kwargs)
+
+        with patch.object(Path, "open", _spy):
+            AcpProvider(acp_backend="", work_dir=tmp_path, tool_search=False)
+        assert opened == []
+        assert _cli_json(tmp_path).read_bytes() == before
+
+
+def _start_wired(threads: list[int], order: list[str]):
+    """Stub everything ``start()`` does around the overlay, recording the overlay steps."""
+
+    async def _recover(self):
+        order.append("recover")
+
+    def _effort(self, **_kw):
+        order.append("effort")
+        threads.append(threading.get_ident())
+        return True
+
+    def _tool_search(self):
+        order.append("tool_search")
+        threads.append(threading.get_ident())
+
+    return (
+        patch.object(AcpProvider, "_recover_effort_overlay", _recover),
+        patch.object(AcpProvider, "_apply_effort_overlay", _effort),
+        patch.object(AcpProvider, "_apply_tool_search_overlay", _tool_search),
+        patch.object(AcpProvider, "_start_kiro_runtime", AsyncMock()),
+        patch.object(AcpProvider, "_note_zero_tool_servers", AsyncMock()),
+        patch.object(AcpProvider, "_bind_unbound_effort", AsyncMock()),
+        patch.object(AcpProvider, "_apply_initial_effort", AsyncMock()),
+    )
+
+
+class TestStartWiring:
+    @pytest.mark.asyncio
+    async def test_kiro_start_recovers_then_writes_off_the_event_loop(self):
+        provider = _build_provider(backend="")
+        provider._tool_search = True
+        threads: list[int] = []
+        order: list[str] = []
+        with contextlib.ExitStack() as stack:
+            for patcher in _start_wired(threads, order):
+                stack.enter_context(patcher)
+            await provider.start()
+        assert order == ["recover", "effort", "tool_search"]
+        assert threads
+        assert threading.get_ident() not in threads
+
+    @pytest.mark.asyncio
+    async def test_start_reapplies_on_every_restart(self):
+        provider = _build_provider(backend="")
+        provider._tool_search = True
+        threads: list[int] = []
+        order: list[str] = []
+        with contextlib.ExitStack() as stack:
+            for patcher in _start_wired(threads, order):
+                stack.enter_context(patcher)
+            await provider.start()
+            await provider.start()
+        assert order.count("tool_search") == 2
+        assert order.count("effort") == 2
 
 
 # ── Config plumbing ──────────────────────────────────────────────────────────

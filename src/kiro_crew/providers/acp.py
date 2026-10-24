@@ -108,7 +108,6 @@ from kiro_crew.providers import acp_lifecycle as _acp_lifecycle
 from kiro_crew.providers import acp_model_effort as _acp_model_effort
 from kiro_crew.providers import acp_runtime_start as _acp_runtime_start
 from kiro_crew.providers import acp_turns as _acp_turns
-from kiro_crew.providers.acp_cli_overlay import _read_cli_overlay
 from kiro_crew.providers.base import (  # noqa: F401
     CancelOutcome,
     LLMEvent,
@@ -281,26 +280,11 @@ class AcpProvider(LLMProvider):
             if tool_search_min_tokens is None
             else tool_search_min_tokens
         )
-        if self._client.backend in ACP_BACKENDS_EFFORT_OVERLAY:
-            # Read back the levels the overlay already holds, so after a gateway
-            # restart the map names what kiro-cli will run. Caller-provided
-            # overrides win — only fill gaps.
-            #
-            # The overlay's own readers only. The file is keyed by work dir, so
-            # every session in one project shares it; read back by a harness that
-            # never opens it (KAS), it would start a new chat at whatever level
-            # another chat in the same work dir picked last. Such a harness takes
-            # its level from the factory alone.
-            try:
-                for m, lvl in _read_cli_overlay(self._client._work_dir).items():
-                    self._effort_per_model.setdefault(m, lvl)
-            except Exception:
-                logger.debug("ACP effort overlay recovery failed", exc_info=True)
-        if self._client.backend in ACP_BACKENDS_KIRO_FAMILY:
-            # Write the overlay BEFORE the first spawn so kiro-cli reads it on
-            # session/new. Each writer is scoped to the harnesses that read its keys.
-            self._apply_effort_overlay()
-            self._apply_tool_search_overlay()
+        # The workspace ``cli.json`` is not touched here. This constructor runs on
+        # the gateway event loop, and the file is the user's own settings file that
+        # a repository can track at any size. ``start()`` recovers the levels the
+        # overlay holds and writes the effort and Tool Search keys, off the loop.
+        self._effort_overlay_recovered = False
 
     @property
     def client(self) -> AcpClient:
@@ -993,6 +977,7 @@ class AcpProvider(LLMProvider):
 
     # The workspace ``cli.json`` overlay a spawn reads: ``kiro_crew.providers.acp_cli_overlay``.
     _apply_effort_overlay = _acp_cli_overlay._apply_effort_overlay
+    _recover_effort_overlay = _acp_cli_overlay._recover_effort_overlay
     _apply_tool_search_overlay = _acp_cli_overlay._apply_tool_search_overlay
     # The model and reasoning effort the session runs at: ``kiro_crew.providers.acp_model_effort``.
     maybe_refresh_available_models = _acp_model_effort.maybe_refresh_available_models
@@ -1109,6 +1094,8 @@ for _owner in _ACP_PROVIDER_OWNERS:
 _SERVED: frozenset[str] = frozenset(
     {
         "_CLI_JSON_ENCODING",
+        "_CLI_JSON_MAX_BYTES",
+        "_OverlayTooLarge",
         "_RESUME_BACKOFF_BASE_S",
         "_RESUME_MAX_ATTEMPTS",
         "_RESUME_TRANSIENT_LOCK_MARKERS",
@@ -1118,6 +1105,7 @@ _SERVED: frozenset[str] = frozenset(
         "_clamp_min_tokens",
         "_clear_cli_overlay_effort",
         "_is_transient_resume_lock_error",
+        "_read_cli_overlay",
         "_unlink_dead_session_lock",
         "_write_cli_overlay",
         "_write_tool_search_overlay",
@@ -1137,9 +1125,12 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.providers.acp_cli_overlay import (  # noqa: F401
         _CLI_JSON_ENCODING,
+        _CLI_JSON_MAX_BYTES,
         _clamp_min_pct,
         _clamp_min_tokens,
         _clear_cli_overlay_effort,
+        _OverlayTooLarge,
+        _read_cli_overlay,
         _write_cli_overlay,
         _write_tool_search_overlay,
     )
