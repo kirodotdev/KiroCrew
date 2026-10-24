@@ -2,8 +2,9 @@
 
 The loader's state stays on the instance; a member whose body moved lives as a module
 function of the same name in a ``kiro_crew.skills_<role>`` owner, and the class binds it
-(``member = _owner.member``, or ``staticmethod(_owner.member)``). This file pins that
-binding contract for the whole facade family:
+(``member = _owner.member``, ``staticmethod(_owner.member)`` or
+``classmethod(_owner.member)``). This file pins that binding contract for the whole facade
+family:
 
 * the frozen member inventory -- every member, its kind, whether it is a coroutine, and the
   module that owns it (``skills`` for a member the class body still defines);
@@ -15,7 +16,8 @@ binding contract for the whole facade family:
   owner logs on the facade's ``kiro_crew.skills`` logger;
 * a moved exception or enum keeps the facade's ``__module__``, which a traceback names it
   by, and every other moved class keeps its owner's;
-* the facade mirror serves only the two pending-queue hooks, and a patched walk,
+* the facade mirror serves only the globals an owner rebinds at run time (the pending-queue
+  and update-applied hooks and the authority certificate and refusal), and a patched walk,
   catalog or tool-read bound reaches the owner that reads it.
 
 ``test_facade_mirror_guards.py`` checks, for every mirrored facade, ``kiro_crew.skills``
@@ -54,9 +56,25 @@ _MEMBERS: dict[str, tuple[str, object, str]] = {
     "_adopt_extra_paths": ("function", False, "skills_discovery"),
     "_adopt_snapshot": ("function", False, "skills"),
     "_append_project_skill_bodies": ("function", False, "skills"),
+    "_approve_claimed_skill_locked": ("function", False, "skills_review"),
+    "_approve_claimed_update_locked": ("function", False, "skills_auto_promotion"),
+    "_archive_auto_skill_lifecycle_locked": ("function", False, "skills"),
     "_archive_root": ("function", False, "skills"),
     "_audit_project_skill_enforcement": ("function", False, "skills_body_reads"),
+    "_audit_reserved_auto_mutation_denial": ("staticmethod", False, "skills_auto_locks"),
+    "_authenticated_claim_evidence_state": ("function", False, "skills_auto_locks"),
+    "_authenticated_claim_lock_state": ("classmethod", False, "skills_auto_locks"),
+    "_authenticated_claim_publication": ("function", False, "skills_auto_locks"),
+    "_authenticated_claim_restore_state": ("function", False, "skills_auto_locks"),
+    "_authenticated_claim_snapshot_state": ("function", False, "skills_auto_locks"),
+    "_authenticated_completion_marker": ("function", False, "skills_auto_locks"),
+    "_authority_handoff": ("staticmethod", False, "skills_auto_authority"),
+    "_authority_provenance_path": ("function", False, "skills_auto_pinning"),
+    "_authority_record_body": ("staticmethod", False, "skills_auto_authority"),
+    "_authority_record_mac": ("staticmethod", False, "skills_auto_authority"),
+    "_authority_record_valid": ("function", False, "skills_auto_authority"),
     "_auto_activity": ("function", False, "skills"),
+    "_auto_apply_candidate_binding": ("staticmethod", False, "skills_auto_snapshot"),
     "_auto_created_ts": ("function", False, "skills"),
     "_auto_slug_available": ("function", False, "skills"),
     "_auto_slug_claim_lock": ("function", False, "skills"),
@@ -65,21 +83,48 @@ _MEMBERS: dict[str, tuple[str, object, str]] = {
     "_body_matches": ("function", False, "skills"),
     "_cached_frontmatter": ("function", False, "skills_body_reads"),
     "_candidate_has_symlink": ("staticmethod", False, "skills_candidate_tree"),
+    "_candidate_has_unsafe_inode": ("staticmethod", False, "skills_candidate_tree"),
     "_candidate_layout_findings_at": ("function", False, "skills_candidate_tree"),
     "_candidate_layout_ok": ("function", False, "skills_candidate_tree"),
+    "_candidate_metadata_from_bytes": ("function", False, "skills_review"),
+    "_capture_claim_snapshot": ("function", False, "skills_auto_snapshot"),
     "_catalog_fingerprint_hint": ("function", False, "skills"),
     "_catalog_fingerprints_for": ("staticmethod", False, "skills"),
     "_catalog_scope_id": ("function", False, "skills"),
     "_catalog_scope_key": ("function", False, "skills"),
     "_catalog_worker_loop": ("function", False, "skills"),
+    "_claim_lock_path": ("function", False, "skills_auto_locks"),
+    "_claim_lock_state_payload": ("staticmethod", False, "skills_auto_locks"),
+    "_claim_materialization_path": ("function", False, "skills_auto_snapshot"),
+    "_claim_pending_update": ("function", False, "skills_auto_claims"),
+    "_claim_snapshot_fields": ("staticmethod", False, "skills_auto_locks"),
+    "_claim_snapshot_from_fields": ("staticmethod", False, "skills_auto_locks"),
+    "_claims_root": ("function", False, "skills_auto_pinning"),
+    "_cleanup_claim_lock": ("function", False, "skills_auto_locks"),
+    "_cleanup_completed_claim": ("function", False, "skills_auto_locks"),
+    "_cleanup_publication_artifacts": ("function", False, "skills_auto_snapshot"),
+    "_clear_claim_restore_state": ("function", False, "skills_auto_locks"),
     "_collect_scripts": ("staticmethod", False, "skills_candidate_tree"),
     "_collect_scripts_pinned": ("function", False, "skills_candidate_tree"),
+    "_commit_claim_consumption": ("function", False, "skills_auto_locks"),
+    "_commit_claim_evidence_state": ("function", False, "skills_auto_locks"),
+    "_commit_claim_lock_state": ("function", False, "skills_auto_locks"),
+    "_completion_marker_present": ("function", False, "skills_auto_locks"),
     "_confined_frontmatter_and_size": ("function", False, "skills_body_reads"),
+    "_create_pinned_child_exclusive": ("function", False, "skills_auto_pinning"),
     "_create_skill_pinned": ("function", False, "skills"),
     "_cron_referenced_skills": ("staticmethod", False, "skills"),
+    "_discard_trusted_claim": ("function", False, "skills_auto_claims"),
     "_emit_lazy_load_metric": ("staticmethod", False, "skills_body_reads"),
+    "_emit_pending_staged_metadata": ("staticmethod", False, "skills_auto_snapshot"),
+    "_ensure_private_authority": ("function", False, "skills_auto_authority"),
+    "_evidence_root": ("function", False, "skills_auto_pinning"),
     "_exact_read_while_building": ("function", False, "skills"),
+    "_file_lock": ("function", False, "skills_auto_locks"),
     "_get_disabled_app_names": ("function", False, "skills"),
+    "_identity_from_payload": ("staticmethod", False, "skills_auto_pinning"),
+    "_identity_payload": ("staticmethod", False, "skills_auto_pinning"),
+    "_initialize_claim_lock_state": ("function", False, "skills_auto_locks"),
     "_invalidate_iter_cache": ("function", False, "skills"),
     "_is_pending_slug_safe": ("staticmethod", False, "skills"),
     "_is_user_authored": ("function", False, "skills_selection"),
@@ -88,9 +133,20 @@ _MEMBERS: dict[str, tuple[str, object, str]] = {
     "_iter_visible": ("function", False, "skills"),
     "_key_denotes_path": ("staticmethod", False, "skills"),
     "_legacy_context": ("function", False, "skills"),
+    "_live_auto_mutation_lock": ("function", False, "skills_auto_locks"),
+    "_live_auto_mutation_refusal": ("function", False, "skills_auto_locks"),
+    "_live_auto_target_lock_slug": ("staticmethod", False, "skills_auto_locks"),
+    "_live_quarantine_root": ("function", False, "skills_auto_pinning"),
     "_load_catalog_snapshot": ("function", False, "skills"),
+    "_locks_root": ("function", False, "skills_auto_pinning"),
+    "_lone_regular_file_hash": ("staticmethod", False, "skills_auto_snapshot"),
+    "_lone_regular_file_hash_at": ("function", False, "skills_auto_snapshot"),
+    "_materialize_candidate_snapshot": ("staticmethod", False, "skills_auto_snapshot"),
+    "_materialize_skill_tree_snapshot": ("staticmethod", False, "skills_auto_snapshot"),
     "_max_triggered_now": ("function", False, "skills_selection"),
     "_on_config_change": ("function", True, "skills_discovery"),
+    "_open_skill_lock": ("function", False, "skills_auto_pinning"),
+    "_opened_path_matches": ("staticmethod", False, "skills_auto_pinning"),
     "_owned_hint": ("function", False, "skills"),
     "_owning_app": ("function", False, "skills"),
     "_parse_frontmatter": ("staticmethod", False, "skills"),
@@ -98,43 +154,108 @@ _MEMBERS: dict[str, tuple[str, object, str]] = {
     "_pending_root": ("function", False, "skills"),
     "_pending_scripts_verdict": ("function", False, "skills_review"),
     "_pending_scripts_verdict_at": ("function", False, "skills_review"),
+    "_pending_slug_claimed": ("function", False, "skills_auto_locks"),
+    "_pin_private_state": ("function", False, "skills_auto_authority"),
+    "_pin_skill_child_parent": ("function", False, "skills_auto_pinning"),
+    "_pin_skill_parent": ("function", False, "skills_auto_pinning"),
+    "_pinned_child_exists": ("function", False, "skills_auto_pinning"),
+    "_pinned_child_identity": ("function", False, "skills_auto_pinning"),
+    "_pinned_parent_matches": ("staticmethod", False, "skills_auto_pinning"),
+    "_preflight_private_state": ("function", False, "skills_auto_authority"),
+    "_prepare_claim_publication": ("function", False, "skills_auto_locks"),
+    "_private_root": ("function", False, "skills_auto_pinning"),
+    "_private_state_roots_safe": ("function", False, "skills_auto_authority"),
+    "_probe_no_replace_rename": ("function", False, "skills_auto_authority"),
+    "_probe_rename_under_authority": ("function", False, "skills_auto_authority"),
+    "_promote_pending_skill": ("function", False, "skills_auto_promotion"),
+    "_promote_pending_update": ("function", False, "skills_review"),
+    "_promotion_lock": ("function", False, "skills_auto_locks"),
     "_prune_versions": ("function", False, "skills"),
+    "_public_claim_evidence_matches": ("function", False, "skills_auto_locks"),
+    "_publication_live_backup_identity": ("function", False, "skills_auto_locks"),
+    "_publication_paths": ("function", False, "skills_auto_snapshot"),
+    "_publish_prepared_skill_tree": ("function", False, "skills_auto_claims"),
+    "_published_update_evidence_matches": ("function", False, "skills_auto_locks"),
+    "_quarantine_is_consumed_evidence": ("function", False, "skills_auto_locks"),
+    "_quarantine_root": ("function", False, "skills_auto_pinning"),
     "_rank_key": ("function", False, "skills"),
+    "_read_authenticated_claim_lock_payload": ("classmethod", False, "skills_auto_locks"),
     "_read_candidate_pinned": ("function", False, "skills_review"),
     "_read_enumerated_skill_bytes": ("function", False, "skills_body_reads"),
     "_read_exact_key": ("function", False, "skills_body_reads"),
     "_read_global_skill_text": ("function", False, "skills_body_reads"),
     "_read_pending_meta": ("function", False, "skills_review"),
+    "_read_pinned_regular_file": ("function", False, "skills_auto_pinning"),
     "_readable_frontmatter": ("function", False, "skills"),
     "_recency_boost": ("function", False, "skills"),
+    "_reconcile_prepared_claim": ("function", False, "skills_auto_claims"),
+    "_reconcile_prepared_claim_pinned": ("function", False, "skills_auto_claims"),
     "_record_use": ("function", False, "skills"),
+    "_recover_abandoned_claims": ("function", False, "skills_auto_claims"),
+    "_recover_recorded_claim_restore": ("function", False, "skills_auto_claims"),
     "_redact_deep": ("function", False, "skills_review"),
     "_redact_file_in_place": ("function", False, "skills_review"),
     "_redact_text": ("staticmethod", False, "skills_review"),
     "_redact_validation_report": ("function", False, "skills_review"),
+    "_refuse_failing_pending_scripts": ("function", False, "skills_review"),
+    "_remove_private_tree": ("function", False, "skills_auto_pinning"),
+    "_remove_untrusted_completion_marker": ("function", False, "skills_auto_locks"),
+    "_rename_skill_child_no_replace": ("function", False, "skills_auto_pinning"),
+    "_rename_untrusted_link_no_replace": ("function", False, "skills_auto_pinning"),
     "_repo_scope_satisfied": ("staticmethod", False, "skills_selection"),
     "_request_catalog_refresh": ("function", False, "skills"),
     "_resolve_path": ("function", False, "skills"),
     "_resolve_path_and_root": ("function", False, "skills"),
     "_resolve_snapshot_version": ("function", False, "skills"),
+    "_restoration_path": ("function", False, "skills_auto_snapshot"),
+    "_restore_claimed_update": ("function", False, "skills_review"),
+    "_restore_failed_promotion_claim": ("function", False, "skills_auto_claims"),
+    "_restrict_private_parent": ("function", False, "skills_auto_pinning"),
+    "_retain_claim_evidence": ("function", False, "skills_auto_claims"),
+    "_retain_published_update_evidence": ("function", False, "skills_auto_locks"),
     "_rewrite_update_frontmatter": ("staticmethod", False, "skills"),
     "_run_catalog_build": ("function", False, "skills"),
     "_safe_name": ("staticmethod", False, "skills"),
     "_scoped_entries": ("function", False, "skills"),
     "_screen_extra_paths": ("staticmethod", False, "skills_discovery"),
     "_served_key_by_realpath": ("function", False, "skills"),
+    "_set_aside_stale_authority": ("function", False, "skills_auto_authority"),
     "_short_desc": ("staticmethod", False, "skills"),
+    "_skill_tree_entries_hash": ("staticmethod", False, "skills_auto_snapshot"),
+    "_skill_tree_hash": ("staticmethod", False, "skills_auto_snapshot"),
+    "_skill_tree_hash_child": ("function", False, "skills_auto_snapshot"),
+    "_skill_tree_snapshot": ("staticmethod", False, "skills_auto_snapshot"),
+    "_skill_tree_snapshot_by_name": ("staticmethod", False, "skills_auto_snapshot"),
+    "_skill_tree_snapshot_child": ("function", False, "skills_auto_snapshot"),
+    "_skill_tree_snapshot_pinned": ("staticmethod", False, "skills_auto_snapshot"),
     "_snapshot_admitted_roots": ("function", False, "skills"),
+    "_snapshot_path_matches": ("staticmethod", False, "skills_auto_snapshot"),
+    "_stable_file_payload": ("staticmethod", False, "skills_auto_snapshot"),
+    "_stage_candidate_under_pending_parent": ("function", False, "skills_auto_snapshot"),
+    "_stale_authority_claims": ("function", False, "skills_auto_authority"),
+    "_stat_pinned_child": ("staticmethod", False, "skills_auto_pinning"),
+    "_sync_pinned_parent": ("function", False, "skills_auto_pinning"),
+    "_sync_pinned_rename_parents": ("function", False, "skills_auto_pinning"),
+    "_sync_skill_tree": ("staticmethod", False, "skills_auto_snapshot"),
+    "_tag_opened_identity": ("staticmethod", False, "skills_auto_pinning"),
     "_trusted_project_key": ("function", False, "skills_body_reads"),
+    "_unlink_skill_child": ("function", False, "skills_auto_pinning"),
     "_usage_fields": ("function", False, "skills"),
     "_user_first": ("function", False, "skills_selection"),
     "_validate_and_redact_candidate": ("function", False, "skills_review"),
+    "_validate_and_redact_snapshot": ("function", False, "skills_review"),
     "_versions_root": ("function", False, "skills"),
     "_vet_unconfined_path": ("function", False, "skills"),
+    "_write_claim_lock_payload": ("classmethod", False, "skills_auto_locks"),
+    "_write_claim_restore_state": ("function", False, "skills_auto_locks"),
+    "_write_claim_snapshot_state": ("function", False, "skills_auto_locks"),
+    "_write_completion_marker": ("function", False, "skills_auto_locks"),
+    "_write_pinned_new_file": ("function", False, "skills_auto_pinning"),
     "_write_skill_md": ("staticmethod", False, "skills"),
     "approve_pending_skill_checked": ("function", False, "skills_review"),
     "approve_pending_update_checked": ("function", False, "skills_review"),
     "archive_auto_skill": ("function", False, "skills"),
+    "auto_apply_pending_update": ("function", False, "skills_auto_promotion"),
     "catalog_project_skills": ("function", False, "skills_review"),
     "catalog_status": ("function", False, "skills"),
     "close": ("function", False, "skills"),
@@ -143,9 +264,12 @@ _MEMBERS: dict[str, tuple[str, object, str]] = {
     "create_skill": ("function", False, "skills"),
     "credit_skill_reads": ("function", False, "skills"),
     "delete_skill": ("function", False, "skills"),
+    "delete_skill_checked": ("function", False, "skills_auto_locks"),
     "dismiss_all_pending": ("function", False, "skills"),
     "dismiss_pending_skill": ("function", False, "skills"),
+    "dismiss_pending_skill_checked": ("function", False, "skills_auto_promotion"),
     "dismiss_pending_slugs": ("function", False, "skills"),
+    "emit_pending_staged": ("function", False, "skills_auto_snapshot"),
     "find_similar": ("function", False, "skills"),
     "get_always_skills": ("function", False, "skills_selection"),
     "get_auto_skill_version": ("function", False, "skills"),
@@ -176,6 +300,7 @@ _MEMBERS: dict[str, tuple[str, object, str]] = {
     "search_skills_report": ("function", False, "skills"),
     "set_inject_on_trigger": ("function", False, "skills"),
     "set_pinned": ("function", False, "skills"),
+    "set_pinned_checked": ("function", False, "skills_auto_locks"),
     "split_triggered": ("function", False, "skills"),
     "stage_skill_candidate": ("function", False, "skills"),
     "strip_frontmatter": ("staticmethod", False, "skills"),
@@ -186,15 +311,18 @@ _MEMBERS: dict[str, tuple[str, object, str]] = {
 }
 
 
-#: The pending-queue hook globals: their setters rebind them in their owner, so the facade
-#: serves them from there instead of binding a copy of its own.
 #: How long a test waits for a fresh loader's background catalog walk: well over the
 #: loader's own two-second cold-start budget and under half the suite's 120 s timeout.
 _CATALOG_SETTLE_SECS = 30.0
 
+#: The globals an owner rebinds at run time -- the pending-queue and update-applied hooks and
+#: the process's auto-skill authority certificate and refusal -- served from that owner.
 _SERVED = {
     "_PENDING_CONSUMED_HOOK": "kiro_crew.skills_auto_model",
     "_PENDING_STAGED_HOOK": "kiro_crew.skills_auto_model",
+    "_STARTUP_AUTHORITY_BINDING": "kiro_crew.skills_auto_authority",
+    "_STARTUP_AUTHORITY_REFUSAL": "kiro_crew.skills_auto_authority",
+    "_UPDATE_AUTO_APPLIED_HOOK": "kiro_crew.skills_auto_model",
 }
 
 
@@ -204,7 +332,7 @@ def _owners() -> list[ModuleType]:
 
 def _member_function(name: str) -> Any:
     value = vars(SkillsLoader)[name]
-    return value.__func__ if isinstance(value, staticmethod) else value
+    return value.__func__ if isinstance(value, (staticmethod, classmethod)) else value
 
 
 def _tree(module: ModuleType) -> ast.Module:
@@ -215,11 +343,11 @@ def _self_functions(
     tree: ast.Module, owner: str = ""
 ) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
     """The owner's functions the class binds: every ``self``-first function, plus the
-    ones the inventory records as static methods of *owner*."""
+    ones the inventory records as static or class methods of *owner*."""
     statics = {
         name
         for name, (kind, _co, home) in _MEMBERS.items()
-        if kind == "staticmethod" and home and f"kiro_crew.{home}" == owner
+        if kind in ("staticmethod", "classmethod") and home and f"kiro_crew.{home}" == owner
     }
     return [
         node
@@ -247,6 +375,7 @@ def test_each_member_keeps_its_kind_shape_and_owner(name: str) -> None:
         return
     assert {
         "staticmethod": isinstance(value, staticmethod),
+        "classmethod": isinstance(value, classmethod),
         "function": inspect.isfunction(value),
     }[kind], f"{name} is no longer a {kind}"
     fn = _member_function(name)
@@ -435,7 +564,13 @@ def test_a_moved_exception_keeps_the_facade_module_name() -> None:
         for name, (cls, _home) in classes.items()
         if issubclass(cls, (BaseException, enum.Enum))
     }
-    assert named == {"PendingApprovalRefused"}
+    assert named == {
+        "LiveSkillMutationRefused",
+        "PendingApprovalRefused",
+        "PendingDismissalRefused",
+        "_ActiveClaimScanOverflow",
+        "_StaleClaimScanOverflow",
+    }
     for name, (cls, home) in sorted(classes.items()):
         assert cls.__module__ == ("kiro_crew.skills" if name in named else home), name
 
@@ -451,7 +586,7 @@ def _index() -> _facade_mirror.MirrorIndex:
     return index
 
 
-def test_the_mirror_serves_only_the_two_hooks() -> None:
+def test_the_mirror_serves_only_the_rebound_globals() -> None:
     index = _index()
     assert type(sk) is _facade_mirror.MirroredModule
     assert index.owners == sk._OWNERS

@@ -896,11 +896,16 @@ _UNPREDICTABLE_APPROVE_REFUSALS: dict[str, str] = {
         "made at click time, not a candidate scripts finding."
     ),
     "redaction_failed": (
-        "the in-place redaction of SKILL.md / a script could not read or write "
-        "the file. The write half is click-time I/O a read-only poll cannot "
-        "observe; the unreadable-script half IS already surfaced by the verdict "
-        "as a finding, and SKILL.md content is outside the scripts verdict's "
-        "remit."
+        "redacting SKILL.md / a script failed: the captured snapshot could not "
+        "be decoded as text. The unreadable-script half IS already surfaced by "
+        "the verdict as a finding, and SKILL.md content is outside the scripts "
+        "verdict's remit."
+    ),
+    "promotion_disabled": (
+        "this host cannot stage or promote auto-skills (the auto-skill authority "
+        "was not certified at gateway startup, or agents here run in a delegated "
+        "sandbox). A property of the host, identical for every candidate, not "
+        "something the candidate's layout or scripts can predict."
     ),
     "promotion_failed": (
         "an OS-level read/write/move failure AFTER every check passed. "
