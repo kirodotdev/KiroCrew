@@ -1288,6 +1288,12 @@ _KIRO_AGENTS_DIR = ".kiro/agents"
 _WRITE_PROTECTED_HOME_PATHS += [_KIRO_AGENTS_DIR]
 
 
+# The crewmate folder (``config.paths.mate_agents_dir()``): crewmate and mate service
+# specs in the agents-dir format, fenced like it. Only gateway handlers write it, directly.
+_KIRO_MATE_AGENTS_DIR = ".kiro/mates/agents"
+_WRITE_PROTECTED_HOME_PATHS += [_KIRO_MATE_AGENTS_DIR]
+
+
 # ── kiro-cli global MCP registry (~/.kiro/settings/mcp.json) ──
 # The sibling of the agents dir above, and an INPUT TO A SECURITY DECISION by the
 # same route: an ``autoApprove`` on an entry here is honoured by default
@@ -1324,8 +1330,8 @@ _KIRO_SETTINGS_MCP_JSON = ".kiro/settings/mcp.json"
 _WRITE_PROTECTED_HOME_PATHS += [_KIRO_SETTINGS_MCP_JSON]
 
 
-#: The kiro-cli-owned entries on the write-only tier, as ONE list because they
-#: share an anchoring rule rather than only an owner: each is re-anchored under
+#: The ``KIRO_HOME``-relative entries on the write-only tier, as ONE list because
+#: they share an anchoring rule rather than an owner: each is re-anchored under
 #: ``KIRO_HOME``, and like every entry each has its ``$HOME``-rooted form
 #: resolved, so a symlink anywhere below the home root cannot move the real file
 #: out from under the fence. The ``KIRO_HOME`` re-anchoring is driven from this
@@ -1334,6 +1340,7 @@ _WRITE_PROTECTED_HOME_PATHS += [_KIRO_SETTINGS_MCP_JSON]
 _KIRO_CLI_WRITE_TIER_LEAVES: tuple[str, ...] = (
     _KIRO_AGENTS_DIR,
     _KIRO_SETTINGS_MCP_JSON,
+    _KIRO_MATE_AGENTS_DIR,
 )
 
 

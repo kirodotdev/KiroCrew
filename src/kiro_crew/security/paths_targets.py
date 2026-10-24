@@ -108,9 +108,9 @@ class _BuiltTargets(set[str]):
     rather than left to be read as "every target". The build resolves six classes
     of path and no others: ``$HOME``, ``KIROCREW_OS_HOME``, every entry of the
     CALLER'S ``home_dirs`` list anchored under ``$HOME``, each such entry that
-    carries a crew prefix, re-anchored under ``KIROCREW_HOME``, each kiro-cli path
-    in ``_KIRO_CLI_WRITE_TIER_LEAVES`` -- the agents dir and the MCP registry leaf
-    -- re-anchored under ``KIRO_HOME``, and each harness credential leaf
+    carries a crew prefix, re-anchored under ``KIROCREW_HOME``, each path in
+    ``_KIRO_CLI_WRITE_TIER_LEAVES`` -- the agents dir, the MCP registry leaf and the
+    crewmate folder -- re-anchored under ``KIRO_HOME``, and each harness credential leaf
     re-anchored under its own home override. Every other member of the set -- the
     copies re-anchored under the logical home, the home's realpath and
     ``KIROCREW_OS_HOME`` -- comes from ``_anchor`` or ``_anchor_both_separators``,
