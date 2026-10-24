@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +37,7 @@ from change_cards_helpers import (
     _reload,
     _run,
 )
+from crew_log_drain import assert_drained, settle, unsync_appends
 
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew.dashboard import change_cards as cards
@@ -117,7 +120,14 @@ SID = "acp-mate-1"
 
 @pytest.fixture
 def crew_log(tmp_path, monkeypatch):
-    """A crew log for the proposing session, with the emitter on and no writer state."""
+    """A crew log for the proposing session, with the emitter on and no writer state.
+
+    The writer is waited out through ``crew_log_drain`` rather than ``emit.flush()``: a
+    fixed flush budget is a rate assertion on the host's fsync speed, which a loaded
+    Windows runner misses while the writer is still landing entries. The fsync comes out
+    of each append because the subject here is what the log records, not that it is
+    durable, and the writer is settled while the home pin still holds.
+    """
     from types import SimpleNamespace
 
     from kiro_crew.crew_log import CrewLog
@@ -127,6 +137,7 @@ def crew_log(tmp_path, monkeypatch):
 
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     monkeypatch.setenv(crew_log_emit.CREW_LOG_ENV, "1")
+    unsync_appends(monkeypatch)
     crew_log_emit.reset_caches()
     chat_cards.reset()
     CrewLog.create(KIND_SESSION, SID, owner="owner", agent="kirocrew", slot=SLOT)
@@ -139,7 +150,7 @@ def crew_log(tmp_path, monkeypatch):
     monkeypatch.setattr(_ChatSlot, "__init__", _with_client)
 
     def entries(prefix: str = "") -> list:
-        assert crew_log_emit.flush()
+        assert_drained()
         handle = CrewLog.open(KIND_SESSION, SID)
         try:
             return [e for e in handle.iter_from(1) if e.type.startswith(prefix)]
@@ -147,8 +158,7 @@ def crew_log(tmp_path, monkeypatch):
             del handle
 
     yield entries
-    crew_log_emit.drain_for_shutdown(timeout=2.0)
-    crew_log_emit.reset_caches()
+    settle()
     chat_cards.reset()
 
 
@@ -251,6 +261,48 @@ def test_a_cancelled_card_closes_its_row_and_its_log(world, tmp_path, crew_log):
     card, state = _run_with_state(world, store, go)
     assert _card_rows(state)[0]["meta"]["card"]["status"] == "cancelled"
     assert [e.data["status"] for e in crew_log("card/finished")] == ["cancelled"]
+
+
+def test_the_log_is_read_back_from_a_writer_slower_than_the_default_flush_budget(
+    world, tmp_path, crew_log, monkeypatch
+):
+    """The fixture's barrier follows the writer's progress instead of a fixed budget.
+
+    A loaded Windows runner lands the entries but not within ``emit.flush``'s default
+    5 s, which failed ``assert emit.flush()`` with the entries still on their way. The
+    fsync is slowed here and the default budget cut to nothing, so a barrier that is
+    that default fails on any host, and one that waits while the writer lands bytes
+    passes.
+    """
+    from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.crew_log import store
+
+    class _SlowFsyncOs:
+        @staticmethod
+        def fsync(fd: int) -> None:
+            threading.Event().wait(0.05)  # flake-ok: a slow disk; no assert on its duration
+
+        def __getattr__(self, attr: str) -> Any:
+            return getattr(os, attr)
+
+    real_flush = crew_log_emit.flush
+
+    def default_budget_outrun(timeout: float = 5.0) -> bool:
+        return real_flush(timeout=0.0 if timeout == 5.0 else timeout)
+
+    monkeypatch.setattr(store, "os", _SlowFsyncOs())
+    monkeypatch.setattr(crew_log_emit, "flush", default_budget_outrun)
+    card_store = CardStore(tmp_path / "c.json")
+
+    async def go(c, state):
+        card = await _propose_setting(c)
+        await c.post(f"/api/cards/{card['id']}/cancel", json={"revision": 1}, headers=OWNER)
+        return card
+
+    card, _state = _run_with_state(world, card_store, go)
+    assert [(e.data["card_id"], e.data["status"]) for e in crew_log("card/finished")] == [
+        (card["id"], "cancelled")
+    ]
 
 
 def test_a_typed_secret_never_reaches_the_conversation_or_the_crew_log(world, tmp_path, crew_log):
