@@ -212,9 +212,14 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     window.addEventListener('resize', release)
     return () => window.removeEventListener('resize', release)
   }, [rawBoxHeight])
-  useEffect(() => { setRawBoxHeight(null) }, [content, variantIdx])
+  // Both resets run on every streamed chunk, when the value is almost always
+  // already null; reading it through a ref skips the no-op update, which would
+  // otherwise schedule a render of this row per chunk.
+  const rawBoxHeightRef = useRef(rawBoxHeight); rawBoxHeightRef.current = rawBoxHeight
+  useEffect(() => { if (rawBoxHeightRef.current !== null) setRawBoxHeight(null) }, [content, variantIdx])
   const [localIdx, setLocalIdx] = useState<number | null>(null)
-  useEffect(() => { setLocalIdx(null) }, [content, variants?.length])
+  const localIdxRef = useRef(localIdx); localIdxRef.current = localIdx
+  useEffect(() => { if (localIdxRef.current !== null) setLocalIdx(null) }, [content, variants?.length])
 
   const hasVariants = variants && variants.length > 1
   const activeIdx = onSwitchVariant ? (typeof variantIdx === 'number' ? variantIdx : (variants?.length ?? 1) - 1) : (localIdx ?? (typeof variantIdx === 'number' ? variantIdx : (variants?.length ?? 1) - 1))
