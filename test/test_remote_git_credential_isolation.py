@@ -561,7 +561,7 @@ def test_untracked_files_have_real_addition_diffs(git_workdir, name):
         pytest.skip("Windows filesystems do not support > in filenames")
     file = Path(ws.root) / name
     file.parent.mkdir(exist_ok=True)
-    file.write_text("entirely new content\n", encoding="utf-8")
+    file.write_text("entirely new content\n", encoding="utf-8", newline="\n")
     status = workspace_tools.browse(ws, {"op": "git_status"})
     assert f"?? {name}\0" in status["output"]
     result = workspace_tools.browse(ws, {"op": "git_bodies", "path": name})
@@ -578,10 +578,10 @@ def test_status_literal_paths_reach_the_tracked_diff(git_workdir, name):
     if os.name == "nt" and ">" in name:
         pytest.skip("Windows filesystems do not support > in filenames")
     file = Path(ws.root) / name
-    file.write_text("before\n", encoding="utf-8")
+    file.write_text("before\n", encoding="utf-8", newline="\n")
     git("add", ".")
     git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-m", "tracked")
-    file.write_text("after\n", encoding="utf-8")
+    file.write_text("after\n", encoding="utf-8", newline="\n")
     result = workspace_tools.browse(ws, {"op": "git_status"})
     assert f" M {name}\0" in result["output"]
     diff = workspace_tools.browse(ws, {"op": "git_bodies", "path": name})
