@@ -37,6 +37,18 @@ vi.mock('./FolderMoveSubmenu', () => ({
   default: ({ label }: { label: string }) => <div>zzq-folders:{label}</div>,
 }))
 vi.mock('./SendToInstanceSubmenu', () => ({ default: () => <div>zzq-send</div> }))
+vi.mock('./QueuePrioritySubmenu', () => ({
+  default: ({ current, error, errorReport, onPick }: {
+    current?: string
+    error?: string | null
+    errorReport?: { code?: string }
+    onPick: (p: string) => void
+  }) => (
+    <button type="button" onClick={() => onPick('high')} data-report-code={errorReport?.code ?? ''}>
+      zzq-queue-priority:{current ?? 'none'}:{error ?? 'no-error'}
+    </button>
+  ),
+}))
 vi.mock('./SessionColorSwatches', () => ({ default: () => <div>zzq-colors</div> }))
 vi.mock('./LinkedSurfacesSection', () => ({ default: () => <div>zzq-links</div> }))
 vi.mock('./SessionTurnLimitMenu', () => ({ SessionTurnLimitSubmenu: () => <div>zzq-turn-limit</div> }))
@@ -44,6 +56,8 @@ vi.mock('./SessionTurnLimitMenu', () => ({ SessionTurnLimitSubmenu: () => <div>z
 const actions = vi.hoisted(() => ({
   toggleRead: vi.fn(),
   togglePin: vi.fn(),
+  setQueuePriority: vi.fn(),
+  queuePriorityError: null as { key: string; message: string; report?: { code?: string } } | null,
   copyLink: vi.fn(),
   move: vi.fn(),
   reload: vi.fn(),
@@ -87,13 +101,45 @@ const btn = (label: string | RegExp) => screen.getByRole('button', { name: label
 
 describe('SessionActionsMenu', () => {
   beforeEach(() => {
-    Object.values(actions).forEach(fn => fn.mockReset())
+    Object.values(actions).forEach(value => { if (typeof value === 'function') value.mockReset() })
+    actions.queuePriorityError = null
     Object.values(popouts).forEach(fn => fn.mockReset())
     popouts.isPoppedOut.mockReturnValue(false)
     popouts.isSelfPopout.mockReturnValue(false)
     openTagPopover.mockReset()
     chatFolders.mockReset()
     chatFolders.mockResolvedValue([] as never)
+  })
+
+  it('shows the queue priority of this chat and sets it for the slot', () => {
+    actions.queuePriorityError = { key: 'zzq-slot', message: 'zzq failed' }
+    setup({}, { queue_priority: 'low' })
+    fireEvent.click(btn('zzq-queue-priority:low:zzq failed'))
+    expect(actions.setQueuePriority).toHaveBeenCalledWith('zzq-slot', 'high')
+  })
+
+  it("passes the failure's report to the submenu for the agent hand-off", () => {
+    actions.queuePriorityError = { key: 'zzq-slot', message: 'zzq failed', report: { code: 'zzq_code' } }
+    setup({}, { queue_priority: 'low' })
+    expect(btn('zzq-queue-priority:low:zzq failed')).toHaveAttribute('data-report-code', 'zzq_code')
+  })
+
+  it('places the queue priority directly above the turn time limit', () => {
+    setup()
+    const priority = btn(/^zzq-queue-priority:/)
+    const turnLimit = screen.getByText('zzq-turn-limit')
+    expect(priority.compareDocumentPosition(turnLimit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(priority.nextElementSibling).toBe(turnLimit)
+  })
+
+  it('hides the queue priority on a cron- or hook-bound chat', () => {
+    setup({}, { queue_priority: null })
+    expect(screen.queryByRole('button', { name: /^zzq-queue-priority:/ })).not.toBeInTheDocument()
+  })
+
+  it('treats a slot with no queue priority field as Medium and still shows the menu', () => {
+    setup()
+    expect(btn('zzq-queue-priority:none:no-error')).toBeInTheDocument()
   })
 
   it('wires the tab-modifier actions to the slot', () => {

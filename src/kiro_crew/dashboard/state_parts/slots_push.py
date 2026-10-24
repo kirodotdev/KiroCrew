@@ -53,7 +53,9 @@ logger = logging.getLogger("kiro_crew.dashboard.state")
 
 #: Fields whose dashboard-user projection is identical for every slot-patch
 #: audience. Per-audience fields such as ``source_links`` require a full frame.
-_SLOT_PATCH_FIELDS = frozenset({"pinned", "mutes_opened", "muted", "title", "folder_id"})
+_SLOT_PATCH_FIELDS = frozenset(
+    {"pinned", "mutes_opened", "muted", "title", "folder_id", "queue_priority"}
+)
 
 
 def _new_card_store(state: Any) -> Any:

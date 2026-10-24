@@ -294,6 +294,18 @@ class DashboardState:
         # entry path is protected, including task/workflow continuations.
         self.kiro_prerequisite_service: Any = None
         self.subagents = subagents
+        # Agent-queue tier per subagent-dispatch LANE ("low" or "high"; Medium
+        # has no entry). One entry per lane, so slots sharing a session can
+        # never disagree. Memory only: see kiro_crew.queue_priority.
+        self._session_queue_priority: dict[str, str] = {}
+        # The per-chat agent-queue priority reaches the dispatcher through ONE
+        # pull source, so a restored, forked or deleted slot never leaves a
+        # stale pushed entry behind.
+        # getattr: the method is bound from slot_directory below, and naming
+        # it as an attribute here makes mypy infer it mid-class.
+        _set_source = getattr(subagents, "set_lane_priority_source", None)
+        if callable(_set_source):
+            _set_source(getattr(self, "lane_queue_priorities"))
         self.channel_manager: Any = None  # lazy-init in server.py
         # A gateway launch defers legacy channel-agent relaunch until memory
         # preparation settles. Standalone dashboard callers keep the immediate
@@ -1094,6 +1106,8 @@ class DashboardState:
     link_slack = _slot_directory.link_slack
     _link_slack_persisted = _slot_directory._link_slack_persisted
     get_or_create_slot = _slot_directory.get_or_create_slot
+    lane_queue_priorities = _slot_directory.lane_queue_priorities
+    queue_priority_of = _slot_directory.queue_priority_of
     live_slot_count = _slot_directory.live_slot_count
     creator_slot_count = _slot_directory.creator_slot_count
     begin_slot_construction = _slot_directory.begin_slot_construction

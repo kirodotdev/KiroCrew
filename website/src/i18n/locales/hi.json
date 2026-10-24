@@ -8164,6 +8164,17 @@
       "question_x_of_y": "प्रश्न {{current}} / {{total}}",
       "submit": "सबमिट करें"
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "सब-एजेंट प्राथमिकता",
+      "caption": "अधिक प्राथमिकता वाली चैट के प्रतीक्षारत सब-एजेंट पहले शुरू होते हैं। गेटवे रीस्टार्ट पर फिर से मध्यम।",
+      "change_failed": "सब-एजेंट की प्राथमिकता नहीं बदली जा सकी",
+      "change_failed_retry": "प्राथमिकता सहेजी नहीं गई। फिर से कोशिश करें।",
+      "change_unconfirmed": "गेटवे ने जवाब नहीं दिया। पक्का करने के लिए कि यह सहेजी गई है, प्राथमिकता फिर से चुनें।",
+      "change_unconfirmed_title": "प्राथमिकता की पुष्टि नहीं हुई",
+      "high": "उच्च",
+      "low": "निम्न",
+      "medium_default": "मध्यम (डिफ़ॉल्ट)"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "रद्द करें और इनपुट पर वापस जाएँ",
       "cancel_queued_message": "कतारबद्ध संदेश रद्द करें",

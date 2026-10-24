@@ -8,7 +8,7 @@ attribute of the same name in :mod:`kiro_crew.subagent_parts.manager`.
 Manager fields read: ``_admission``, ``_queue``, ``_run_events``.
 
 Manager fields written: ``_adaptive_cap``, ``_cap_raise_listener``, ``_default_timeout``,
-``_default_turn_limit``, ``_last_sizing_fields``, ``_max_concurrent``,
+``_default_turn_limit``, ``_lane_priority_source``, ``_last_sizing_fields``, ``_max_concurrent``,
 ``_queue_dispatch_held``, ``_result_ttl_secs``, ``_spawn_stagger_secs``,
 ``_stall_idle_secs``, ``_subagent_queue_max_wait_secs``, ``_user_max_concurrent``.
 """
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         _TIMEOUT_SECS,
         Callable,
         KiroCrewConfig,
+        Mapping,
         SubagentInfo,
         SubagentManager,
         asyncio,
@@ -197,6 +198,20 @@ def set_cap_raise_listener(self: SubagentManager, listener: Callable[[], object]
     single runner lane and re-registration replaces the stale handle.
     """
     self._cap_raise_listener = listener
+
+
+def set_lane_priority_source(
+    self: SubagentManager, source: Callable[[], Mapping[str, str]] | None
+) -> None:
+    """Install the ONE callable that answers each lane's queue priority.
+
+    It returns ``{lane: priority}`` (``low`` / ``medium`` / ``high``) for
+    the lanes whose owner chose one; any lane it omits is ``medium``. The
+    dispatcher calls it on every pick and every store refill, so it must
+    be cheap and must not block. It can run on the task store's writer
+    thread, so it may only take GIL-atomic snapshots of loop state.
+    """
+    self._lane_priority_source = source
 
 
 def _notify_cap_raised(self: SubagentManager) -> None:

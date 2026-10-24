@@ -8296,6 +8296,17 @@
       "question_x_of_y": "Pergunta {{current}} de {{total}}",
       "submit": "Enviar"
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "Prioridade dos subagentes",
+      "caption": "Subagentes em espera de chats com prioridade mais alta começam primeiro. Volta para Média quando o gateway reinicia.",
+      "change_failed": "Não foi possível alterar a prioridade dos subagentes",
+      "change_failed_retry": "A prioridade não foi salva. Tente novamente.",
+      "change_unconfirmed": "O gateway não respondeu. Escolha a prioridade de novo para garantir que ela seja salva.",
+      "change_unconfirmed_title": "Prioridade não confirmada",
+      "high": "Alta",
+      "low": "Baixa",
+      "medium_default": "Média (padrão)"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "Cancelar e voltar para a entrada",
       "cancel_queued_message": "Cancelar mensagem na fila",

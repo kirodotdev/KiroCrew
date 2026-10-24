@@ -356,6 +356,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_api/slot_approval.py::api_chat_mode": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/slot_approval.py::api_chat_slot_approve": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/slot_settings.py::api_chat_slot_color": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_handlers.py::api_chat_slot_queue_priority": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/pending_context.py::api_chat_slot_context": ("None", _UNBOUNDED_USER_CONTENT),
     "chat_api/slot_note.py::api_chat_slot_note": ("None", _UNBOUNDED_USER_CONTENT),
     # handlers/mcp.py and its owners: identifier/flag mutations take the cap; a full

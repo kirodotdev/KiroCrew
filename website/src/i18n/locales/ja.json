@@ -8032,6 +8032,17 @@
       "question_x_of_y": "質問 {{current}} / {{total}}",
       "submit": "送信"
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "サブエージェントの優先度",
+      "caption": "優先度が高いチャットの待機中サブエージェントから先に開始します。ゲートウェイの再起動で中に戻ります。",
+      "change_failed": "サブエージェントの優先度を変更できませんでした",
+      "change_failed_retry": "優先度を保存できませんでした。もう一度お試しください。",
+      "change_unconfirmed": "ゲートウェイから応答がありませんでした。確実に保存するには、優先度をもう一度選んでください。",
+      "change_unconfirmed_title": "優先度は未確認です",
+      "high": "高",
+      "low": "低",
+      "medium_default": "中（デフォルト）"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "キャンセルして入力に戻る",
       "cancel_queued_message": "キューに入っているメッセージをキャンセル",

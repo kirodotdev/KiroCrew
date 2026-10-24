@@ -7,7 +7,8 @@ Each function takes the manager as ``self`` and is bound as the ``SubagentManage
 attribute of the same name in :mod:`kiro_crew.subagent_parts.manager`.
 
 Manager fields read: ``_admission``, ``_admitting_waiting``, ``_agents``,
-``_batch_progress_ts``, ``_batch_submitted``, ``_floor_deferred_ids``, ``_floor_waits``,
+``_batch_progress_ts``, ``_batch_submitted``, ``_floor_deferred_ids``, ``_floor_fit_ids``,
+``_floor_waits``,
 ``_held_approval_modes``, ``_max_concurrent``, ``_memory_mode_for_session``, ``_monitor``,
 ``_run_events``, ``_session_start_concurrency``, ``_session_start_configured``,
 ``_sessions``, ``_startup_reservations``.
@@ -775,6 +776,9 @@ def _forget_pending_start(self: SubagentManager, agent_id: str) -> None:
     self._floor_waits.pop(agent_id, None)
     self._held_approval_modes.pop(agent_id, None)
     self._floor_deferred_ids.discard(agent_id)
+    fit = getattr(self, "_floor_fit_ids", None)
+    if fit is not None:
+        fit.discard(agent_id)
     self._admission.memory_wait_ended(agent_id)
 
 

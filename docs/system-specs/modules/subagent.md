@@ -672,7 +672,10 @@ record is process-local, like the pressure hold's clocks.
   dedicated child running, `_holds_dedicated_runtime`, the same row predicate
   the macOS hold counts, or a recorded wait): with three equal lanes running 2,
   1 and 0, each share is 1, so both the lane at 2 and the lane at exactly 1
-  are held while the third waits. The starved lane is below its share by
+  are held while the third waits. Only a waiting lane on the same or a
+  higher chat queue priority counts (`lane_priorities`), plus the untiered
+  `system` lane, so a High chat's start never waits for a Low chat's share
+  but still gives way to a waiting cron or hook spawn. The starved lane is below its share by
   construction and is never held, so the share decides which lane the memory
   goes to next and cannot deadlock: the held lane waits for the starved lane's
   wait to end (it starts, or reaches the max wait) or for its own children to
@@ -3361,11 +3364,25 @@ The dispatcher's order is not global FIFO. The store side is in
 - **Pick order (`pick_window_index`).** A queued resume (`_resume_id`, FIFO
   among resumes) first — its run is already resident — then `LaneScheduler`
   weighted round-robin over the lanes with eligible window entries, oldest
-  head winning a tie. `_drain_queue_impl` pops that index, not index 0. With
+  head winning a tie, restricted to the highest per-chat priority tier present
+  (`low` / `medium` / `high`, read from the lane priority source; the
+  `system` lane is never filtered out by a tier and keeps its weighted share,
+  so a `high` chat cannot hold waiting cron and hook spawns back indefinitely;
+  see [taskq.md](taskq.md) § Fairness lanes). `_drain_queue_impl` pops that index, not index 0. With
   only the child reserve left, "eligible" means nested (`entry_is_child`:
-  `parent_session_key` starts with `subagent:`); when no window entry
+  `parent_session_key` starts with `subagent:`) **and the tier is not applied**
+  (`tiered=view.root_slot`; the `children_only` top-up likewise gets a refill
+  scheduler with the tiers cleared when capacity is reserve-only, and keeps
+  them while a root slot is free): every candidate there is a nested row of a
+  tree already in flight, and a tier would let one chat's queued child take the
+  reserve pass after pass while another chat's tree waits on its own child. A
+  tier reorders new work; it never withholds the reserve a running tree needs.
+  When no window entry
   qualifies the window is topped up with `children_only` rows and the pick
-  runs once more.
+  runs once more. A root refill never evicts a window entry of a higher tier
+  than the best lane waiting only in the store, so a small
+  `task_dispatch_window` cannot trade a waiting `high` spawn for a `low` one
+  (see [taskq.md](taskq.md) § Fairness lanes).
 - **The lane weights also weigh memory.** The round-robin orders picks among
   rows already queued; it cannot stop one lane's wave taking every start memory
   allows. The per-lane memory share in the gate does (*Memory waits: event wake

@@ -1056,6 +1056,9 @@ class _GateMixin(ManagerComponent):
                 # back stamps it as a floor wait from this mark and the pick
                 # leaves it to this gate, floor first. A refusal below forgets it.
                 self._manager._floor_deferred_ids.add(agent_id)
+                fit = getattr(self._manager, "_floor_fit_ids", None)
+                if fit is not None:
+                    fit.discard(agent_id)
                 return _defer_or_refuse(memory_detail, info, wait=memory_wait)
             # No durable row, so the store sweep cannot bound this wait: the
             # time it has spent PARKED on the floor is kept here (closed parks,

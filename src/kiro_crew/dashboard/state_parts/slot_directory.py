@@ -710,6 +710,57 @@ def get_or_create_slot(
     return slot
 
 
+def queue_lane_of(slot: Any) -> str:
+    """The subagent-dispatch lane *slot*'s spawns queue in.
+
+    The dispatcher files a root spawn under
+    ``lanes.lane_key_for(parent_session_key)``, and a chat's spawns carry the
+    session its turns run on (:func:`chat_utils.effective_session_key`, so a
+    channel-born slot answers for its channel key). Every slot on one session
+    therefore maps to one lane, and a cron- or hook-bound chat maps to the
+    shared ``system`` lane.
+    """
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    # Lazy: kiro_crew.taskq must not load on a dashboard import
+    # (test_dashboard_handlers_lazy_tasks).
+    from kiro_crew.taskq import lanes as _lanes
+
+    return _lanes.lane_key_for(effective_session_key(slot))
+
+
+def queue_priority_of(self: DashboardState, slot: Any) -> str | None:
+    """The agent-queue tier *slot* runs at: ``"low"``, ``"medium"`` or ``"high"``.
+
+    ``None`` for a slot on the ``system`` lane: that lane is shared by every
+    cron job and hook, so no one chat's tier may apply to it. The tier is
+    stored once per lane (``_session_queue_priority``), so every slot on a
+    session reads the same value, including one that joined after the pick.
+    """
+    from kiro_crew.taskq import lanes as _lanes
+
+    lane = queue_lane_of(slot)
+    if _lanes.is_system_lane(lane):
+        return None
+    return getattr(self, "_session_queue_priority", {}).get(lane, "medium")
+
+
+def lane_queue_priorities(self: DashboardState) -> dict[str, str]:
+    """``{lane: priority}`` for every lane with a non-default tier that a
+    live slot still maps to.
+
+    The subagent dispatcher's lane priority source. An entry whose session
+    has no live slot left is not reported, so a closed chat stops ranking.
+    May run on the task store's writer thread, so it reads only ``list()``
+    snapshots and never mutates the map.
+    """
+    stored = dict(getattr(self, "_session_queue_priority", {}))
+    if not stored:
+        return {}
+    live = {queue_lane_of(slot) for slot in list(getattr(self, "_slots", {}).values())}
+    return {lane: tier for lane, tier in stored.items() if lane in live}
+
+
 def live_slot_count(self: DashboardState) -> int:
     """Count published and allocated-but-unpublished slots."""
     return _registry_for(self).live_slot_count(self)

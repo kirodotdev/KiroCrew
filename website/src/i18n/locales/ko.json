@@ -8032,6 +8032,17 @@
       "question_x_of_y": "질문 {{current}} / {{total}}",
       "submit": "제출"
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "서브에이전트 우선순위",
+      "caption": "우선순위가 더 높은 채팅의 대기 중인 서브에이전트가 먼저 시작합니다. 게이트웨이를 다시 시작하면 보통으로 돌아갑니다.",
+      "change_failed": "서브에이전트 우선순위를 변경하지 못했습니다",
+      "change_failed_retry": "우선순위를 저장하지 못했습니다. 다시 시도하세요.",
+      "change_unconfirmed": "게이트웨이가 응답하지 않았습니다. 확실히 저장되도록 우선순위를 다시 선택하세요.",
+      "change_unconfirmed_title": "우선순위가 확인되지 않음",
+      "high": "높음",
+      "low": "낮음",
+      "medium_default": "보통(기본값)"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "취소하고 입력창으로 되돌리기",
       "cancel_queued_message": "대기 중인 메시지 취소",

@@ -8032,6 +8032,17 @@
       "question_x_of_y": "问题 {{current}} / {{total}}",
       "submit": "提交"
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "子代理优先级",
+      "caption": "优先级更高的聊天中等待的子代理先开始。网关重启后恢复为“中”。",
+      "change_failed": "无法更改子代理优先级",
+      "change_failed_retry": "未能保存优先级。请重试。",
+      "change_unconfirmed": "网关没有响应。请再次选择该优先级，确保已保存。",
+      "change_unconfirmed_title": "优先级未确认",
+      "high": "高",
+      "low": "低",
+      "medium_default": "中（默认）"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "取消并退回到输入框",
       "cancel_queued_message": "取消排队消息",

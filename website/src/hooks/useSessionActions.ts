@@ -16,7 +16,8 @@ import { forkFailureNoticeOffsite } from '../utils/forkFailure'
 import type { ForkFailureNotice } from '../utils/forkFailure'
 import { errMessage } from '../utils/thunkError'
 import { sessionDisplayTitle } from '../utils/sessionDisplayTitle'
-import type { ChatSlot } from '../types'
+import { reportForError, type ErrorReport } from '../utils/errorReport'
+import type { ChatSlot, QueuePriority } from '../types'
 
 interface PinMutationEntry {
   key: string
@@ -49,6 +50,9 @@ export function pinMutationKeysInFlight(): string[] {
 }
 let pinReconcileRequestId = 0
 const pinMutationTails = new Map<string, Promise<unknown>>()
+const queuePriorityMutationTails = new Map<string, Promise<unknown>>()
+// Latest pick per slot: only that pick's failure may publish a notice.
+const queuePriorityPickSeq = new Map<string, number>()
 
 // Mute-toggle serialization, per flag and slot (`<flag>:<slot>`). `muteMutationTails`
 // chains each one's PATCHes so the backend transaction sees them in INVOCATION order (a delayed
@@ -76,6 +80,26 @@ function setSlotPinInOrder(key: string, pinned: boolean) {
   return request.finally(() => {
     if (pinMutationTails.get(key) === request) pinMutationTails.delete(key)
   })
+}
+
+/** Preserve invocation order at the server for rapid priority picks of one session. */
+function setSlotQueuePriorityInOrder(key: string, priority: QueuePriority) {
+  const request = (queuePriorityMutationTails.get(key) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => api.setSlotQueuePriority(key, priority))
+  queuePriorityMutationTails.set(key, request)
+  return request.finally(() => {
+    if (queuePriorityMutationTails.get(key) === request) queuePriorityMutationTails.delete(key)
+  })
+}
+
+/** A failed queue-priority save: the localized title and line, plus the
+ *  structured report the line can no longer be matched to. */
+export interface QueuePriorityError {
+  key: string
+  title: string
+  message: string
+  report?: ErrorReport
 }
 
 /**
@@ -110,6 +134,10 @@ export interface SessionActions {
   toggleMutesOpened: (slotKey: string) => void
   /** Toggle the per-row mute of this session. */
   toggleMuted: (slotKey: string) => void
+  /** Ask the gateway for the chat's agent-queue priority tier; the row follows its slot patch. */
+  setQueuePriority: (slotKey: string, priority: QueuePriority) => void
+  /** Latest queue-priority failure, scoped to the slot whose write failed. */
+  queuePriorityError: QueuePriorityError | null
   /** Copy the session's share link. */
   copyLink: (slotKey: string) => void
   /** Move to a folder (or root for null) — shared optimistic move + rollback. */
@@ -132,6 +160,7 @@ export function useSessionActions(mode?: string, opts?: {
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   const moveSlotToFolder = useMoveSlotToFolder()
+  const [queuePriorityError, setQueuePriorityError] = useState<QueuePriorityError | null>(null)
 
   const finishPinMutation = useCallback(async (
     batch: PinMutationBatch, entry: PinMutationEntry, succeeded: boolean,
@@ -417,6 +446,49 @@ export function useSessionActions(mode?: string, opts?: {
       : undefined,
   })
 
+  // Agent-queue priority (held in gateway memory, owner-only). Not optimistic:
+  // the row changes only when the gateway's `queue_priority` slot patch arrives,
+  // which the route pushes to every live slot of the lane once the tier changes.
+  // So there is no local tier to roll back or reconcile, and an older request,
+  // another dashboard's pick or a lost reply can never put a stale tier on the
+  // row. A failure only publishes a notice, and only for the slot's latest pick.
+  const queuePriorityMutation = useMutation({
+    mutationFn: ({ key, priority }: { key: string; priority: QueuePriority }) => setSlotQueuePriorityInOrder(key, priority),
+    onMutate: ({ key, priority }) => {
+      const seq = (queuePriorityPickSeq.get(key) ?? 0) + 1
+      queuePriorityPickSeq.set(key, seq)
+      return { key, priority, seq }
+    },
+    onSuccess: (_result, _vars, ctx) => {
+      if (!ctx || queuePriorityPickSeq.get(ctx.key) !== ctx.seq) return
+      setQueuePriorityError(error => error?.key === ctx.key ? null : error)
+    },
+    onError: (err, _vars, ctx) => {
+      if (!ctx || queuePriorityPickSeq.get(ctx.key) !== ctx.seq) return
+      // A refusal is "not saved". A transport failure may have committed: if it
+      // did, the slot patch moves the row anyway, so the notice only says the
+      // pick is not confirmed.
+      const unconfirmed = !(err instanceof ApiError)
+      setQueuePriorityError({
+        key: ctx.key,
+        // Always localized lines: the gateway's refusal text is English in
+        // every locale and names an internal term, and a transport failure
+        // ("Failed to fetch") says nothing a reader can act on. The title and
+        // the line come from the same outcome, so they never contradict.
+        title: unconfirmed
+          ? i18nT('components.queuePrioritySubmenu.change_unconfirmed_title')
+          : i18nT('components.queuePrioritySubmenu.change_failed'),
+        message: unconfirmed
+          ? i18nT('components.queuePrioritySubmenu.change_unconfirmed')
+          : i18nT('components.queuePrioritySubmenu.change_failed_retry'),
+        // The localized line matches no journal entry, so the hand-off would
+        // lose the endpoint, status and backend code: resolve it from the
+        // error itself while it is still in hand.
+        report: reportForError(err),
+      })
+    },
+  })
+
   // Session reload (relaunch the agent process in place). No optimistic state:
   // the success confirmation is the feed notice the backend appends, arriving
   // over the websocket (and lighting the row's unread indicator for a
@@ -442,6 +514,11 @@ export function useSessionActions(mode?: string, opts?: {
   const { mutate: pinMutate } = pinMutation
   const { mutate: muteFlagMutate } = muteFlagMutation
   const { mutate: reloadMutate } = reloadMutation
+  const { mutate: queuePriorityMutate } = queuePriorityMutation
+  const setQueuePriority = useCallback(
+    (slotKey: string, priority: QueuePriority) => { queuePriorityMutate({ key: slotKey, priority }) },
+    [queuePriorityMutate],
+  )
 
   // A second Fork of the same session while its first fork is in flight is
   // dropped, so a double click makes one fork. The same rule as the header New
@@ -500,5 +577,5 @@ export function useSessionActions(mode?: string, opts?: {
     if (prompt === null || confirm(prompt)) dispatch(deleteSlot(slotKey))
   }, [dispatch])
 
-  return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close }
+  return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, setQueuePriority, queuePriorityError, copyLink, move, reload, close }
 }

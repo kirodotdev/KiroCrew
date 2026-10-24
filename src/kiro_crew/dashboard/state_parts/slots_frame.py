@@ -831,6 +831,9 @@ def serialize_slot(
             "slack_linked": slack_linked,
             "slack_channel": slack_channel,
             "slack_thread_ts": slack_thread_ts,
+            # Stored per lane on the state, not on the slot: None marks a
+            # system-lane (cron- or hook-bound) chat that has no tier.
+            "queue_priority": self.queue_priority_of(slot),
         }
     )
     return payload
