@@ -321,6 +321,17 @@ class TestSourceCheckout:
         monkeypatch.setattr(cli_doctor.subprocess, "run", fake_run)
         assert cli_doctor._git_line(tmp_path, "rev-parse", "--abbrev-ref", "HEAD") == "main"
 
+    def test_git_line_returns_none_on_blank_output(self, monkeypatch, tmp_path) -> None:
+        """A zero exit that prints only whitespace is no answer, not an empty line."""
+        import subprocess as _sp
+
+        def fake_run(*a, **k):
+            return _sp.CompletedProcess(a, 0, stdout="  \n\n", stderr="")
+
+        monkeypatch.setattr(cli_doctor.platform_compat, "trusted_git_bin", lambda: "/usr/bin/git")
+        monkeypatch.setattr(cli_doctor.subprocess, "run", fake_run)
+        assert cli_doctor._git_line(tmp_path, "rev-parse", "HEAD") is None
+
     def test_git_line_returns_none_on_oserror(self, monkeypatch, tmp_path) -> None:
         def fake_run(*a, **k):
             raise OSError("git not found")

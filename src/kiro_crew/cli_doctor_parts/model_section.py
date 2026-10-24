@@ -151,10 +151,12 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
         try:
             bound_spec = agent_spec_path(bound, agents_dir=agents_dir)
         except ValueError:
-            # Two safe specs declare the name, so no single file IS the bound
-            # spec; the model resolver below refuses for the same reason and
-            # its tier shows as deferring. Reported as that, not as missing:
-            # kiro-cli still starts the agent, so no session is refused.
+            # Two or more safe specs declare the name, so no single file IS
+            # the bound spec. The model resolver below does not refuse: it
+            # reads the first spec, JSON files first, whose declared name or
+            # filename matches, and the bound-agent tier shows what that spec
+            # pins, if anything. Reported as ambiguous, not as missing: the
+            # name is declared.
             bound_spec = None
             bound_spec_ambiguous = True
         bound_spec_missing = bound_spec is None and not bound_spec_ambiguous
@@ -392,11 +394,10 @@ def _agent_spec_model_problems(
             correction = acp_id_correction(model)
             if not correction:
                 continue
+            raw_name = data.get("name")
             if project_scoped:
-                raw_name = data.get("name")
                 name = raw_name if isinstance(raw_name, str) and raw_name else path.stem
             else:
-                raw_name = data.get("name")
                 name = raw_name if isinstance(raw_name, str) else path.stem
             problems.append((name, model, correction))
     except Exception:

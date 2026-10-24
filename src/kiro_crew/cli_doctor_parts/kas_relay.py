@@ -253,11 +253,10 @@ def _report_kas_tool_vocabulary(issues: list[str]) -> None:
             f"  tool names:  ➖ vocabulary verified on kiro-cli {verified}; installed version unknown"
         )
         return
+    shown = ".".join(str(part) for part in version)
     if not drift:
-        shown = ".".join(str(part) for part in version)
         print(f"  tool names:  ✅ vocabulary verified on kiro-cli {verified} (installed {shown})")
         return
-    shown = ".".join(str(part) for part in version)
     if drift == "older":
         # Unverified, not compatible: the tables were read from the verified
         # releases and an older KAS may lack an id or spell it differently. Same
