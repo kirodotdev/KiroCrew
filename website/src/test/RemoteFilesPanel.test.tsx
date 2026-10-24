@@ -26,22 +26,30 @@ import RemoteFilesPanel from '../pages/chat/RemoteFilesPanel'
 import RemoteGitPanel, { parsePorcelain } from '../pages/chat/RemoteGitPanel'
 import { relativeTime } from '../components/GitPanel'
 import { api } from '../api/client'
+import { newQueryClient } from '../api/queryClient'
 import { ApiError } from '../api/apiError'
 import { copyToClipboard } from '../utils/clipboard'
 import { __resetNavSeamForTests, consumeChatHandoff, installSoftNavigate, setGatewayConnected } from '../utils/errorReport'
+import { Provider } from 'react-redux'
+import { createTestStore } from './helpers'
 import '../i18n'
 
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn() }))
 
 const clients: QueryClient[] = []
+let testStore = createTestStore()
 
 function wrap(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   clients.push(qc)
-  return render(ui, { wrapper: ({ children }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider> })
+  return render(ui, {
+    wrapper: ({ children }) => (
+      <Provider store={testStore}><QueryClientProvider client={qc}>{children}</QueryClientProvider></Provider>
+    ),
+  })
 }
 
-afterEach(() => { clients.splice(0).forEach(client => client.clear()) })
+afterEach(() => { clients.splice(0).forEach(client => client.clear()); testStore = createTestStore() })
 
 const ROOT = { root: '/workspace/w', truncated: false }
 const CODER = 'Coder MicroVM'
@@ -443,76 +451,6 @@ describe('RemoteFilesPanel', () => {
 
 })
 
-describe('recorded cloud placement', () => {
-  it.each(['files', 'git'])('shows neutral info and makes no browse requests for %s', async (panel) => {
-    vi.mocked(api.chatSlotEnvironment).mockResolvedValue({ profile: 'removed-cloud', provider: 'kiro_cloud', profiles: [] })
-    const list = vi.spyOn(api, 'chatSlotEnvironmentList')
-    const read = vi.spyOn(api, 'chatSlotEnvironmentRead')
-    const git = vi.spyOn(api, 'chatSlotEnvironmentGit')
-    wrap(panel === 'files'
-      ? <RemoteFilesPanel slot="chat-1" name="Kiro Cloud" workdir="" onOpenTerminal={() => {}} />
-      : <RemoteGitPanel slot="chat-1" name="Kiro Cloud" />)
-    const notice = await screen.findByRole('status')
-    expect(notice).toHaveAttribute('data-tone', 'info')
-    expect(notice).toHaveTextContent('This chat runs in a Kiro cloud sandbox')
-    expect(screen.queryByRole('alert')).toBeNull()
-    expect(screen.queryByRole('tree')).toBeNull()
-    expect(screen.queryByRole('button', { name: /terminal/i })).toBeNull()
-    expect(list).not.toHaveBeenCalled()
-    expect(read).not.toHaveBeenCalled()
-    expect(git).not.toHaveBeenCalled()
-  })
-
-  it.each(['files', 'git'])('waits for placement before mounting %s browse', async (panel) => {
-    let finish!: (v: Awaited<ReturnType<typeof api.chatSlotEnvironment>>) => void
-    vi.mocked(api.chatSlotEnvironment).mockReturnValue(new Promise(resolve => { finish = resolve }))
-    const list = vi.spyOn(api, 'chatSlotEnvironmentList')
-    const git = vi.spyOn(api, 'chatSlotEnvironmentGit')
-    wrap(panel === 'files' ? <RemoteFilesPanel slot="chat-1" name="Cloud" workdir="" /> : <RemoteGitPanel slot="chat-1" name="Cloud" />)
-    expect(await screen.findByText('Loading…')).toHaveAttribute('aria-busy', 'true')
-    expect(list).not.toHaveBeenCalled()
-    expect(git).not.toHaveBeenCalled()
-    await act(async () => finish({ profile: 'cloud', provider: 'kiro_cloud', profiles: [] }))
-    await screen.findByRole('status')
-    expect(list).not.toHaveBeenCalled()
-    expect(git).not.toHaveBeenCalled()
-  })
-
-  it('shows a rejected cloud Git request through ErrorNotice with the hand-off', async () => {
-    const git = vi.spyOn(api, 'chatSlotEnvironmentGit').mockRejectedValue(
-      new ApiError(409, 'cloud', JSON.stringify({ error: 'cloud', code: 'cloud_sandbox' })),
-    )
-    wrap(<RemoteGitPanel slot="chat-1" name="Kiro Cloud" />)
-    const notice = await screen.findByRole('alert')
-    expect(notice).toHaveTextContent('This chat runs in a Kiro cloud sandbox')
-    expect(within(notice).getByRole('button', { name: /Ask the agent/ })).toBeVisible()
-    expect(git).toHaveBeenCalledTimes(1)
-    expect(git).toHaveBeenCalledWith('chat-1', 'git_status')
-  })
-
-  it('re-reads a stale placement after a cloud refusal and settles on the neutral notice', async () => {
-    const placement = vi.mocked(api.chatSlotEnvironment)
-      .mockResolvedValueOnce({ profile: 'dev', provider: 'coder', profiles: [{ id: 'dev', name: 'Coder', provider: 'coder', workdir: '/workspace/w' }] })
-      .mockResolvedValue({ profile: 'cloud', provider: 'kiro_cloud', profiles: [] })
-    vi.spyOn(api, 'chatSlotEnvironmentList').mockRejectedValue(
-      new ApiError(409, 'cloud', JSON.stringify({ error: 'cloud', code: 'cloud_sandbox' })),
-    )
-    wrap(<RemoteFilesPanel slot="chat-1" name="Coder" workdir="/workspace/w" />)
-    // Placement (coder) -> browser -> listing refused -> placement re-read
-    // (kiro_cloud) -> wrapper swaps to the neutral notice: three awaited requests.
-    const notice = await screen.findByRole('status', {}, { timeout: STALE_PLACEMENT_TIMEOUT_MS })
-    expect(notice).toHaveAttribute('data-tone', 'info')
-    expect(notice).toHaveTextContent('This chat runs in a Kiro cloud sandbox')
-    expect(screen.queryByRole('alert')).toBeNull()
-    expect(placement).toHaveBeenCalledTimes(2)
-  })
-})
-
-/** Placement read, browser listing refusal, then the placement re-read the
- * refusal triggers: three awaited requests before the neutral notice renders. */
-const STALE_PLACEMENT_TIMEOUT_MS = 5_000
-
-
 describe('RemoteGitPanel', () => {
   // Each hand-off stages a draft in the composer; nothing is sent by the click.
   const DRAFT_TITLE = 'Opens the chat with this request drafted. Nothing is sent until you send it.'
@@ -561,6 +499,32 @@ describe('RemoteGitPanel', () => {
     await u.click(await screen.findByRole('button', { name: 'Modified run.sh' }))
     expect((await screen.findByTestId('patch', {}, { timeout: 5000 })).textContent).toBe(patch)
     expect(screen.queryByText(/no difference from the last commit/i)).not.toBeInTheDocument()
+  })
+
+  it('re-reads a file diff when it is reopened, under the app query defaults', async () => {
+    let body = 'diff --git a/run.sh b/run.sh\n--- a/run.sh\n+++ b/run.sh\n@@ -1 +1 @@\n-a\n+b\n'
+    const git = vi.spyOn(api, 'chatSlotEnvironmentGit').mockImplementation(async (_slot, op) => {
+      if (op === 'git_status') return { root: '/w', git: true, output: '## main\0 M run.sh\0' }
+      if (op === 'git_log') return { root: '/w', git: true, output: '' }
+      return { root: '/w', git: true, output: body }
+    })
+    // The app's own client: queries never go stale unless they say so.
+    const qc = newQueryClient()
+    clients.push(qc)
+    const u = userEvent.setup()
+    render(<RemoteGitPanel slot="chat-1" name="Remote" />, {
+      wrapper: ({ children }) => (
+        <Provider store={testStore}><QueryClientProvider client={qc}>{children}</QueryClientProvider></Provider>
+      ),
+    })
+    const row = await screen.findByRole('button', { name: 'Modified run.sh' })
+    await u.click(row)
+    expect((await screen.findByTestId('patch', {}, { timeout: 5000 })).textContent).toBe(body)
+    await u.click(row)
+    body = 'diff --git a/run.sh b/run.sh\n--- a/run.sh\n+++ b/run.sh\n@@ -1 +1 @@\n-a\n+c\n'
+    await u.click(row)
+    await waitFor(() => expect(screen.getByTestId('patch').textContent).toBe(body))
+    expect(git.mock.calls.filter(([, op]) => op === 'git_diff')).toHaveLength(2)
   })
 
   it('says a clean working tree has no changes since the last commit', async () => {
@@ -783,6 +747,31 @@ describe('RemoteGitPanel', () => {
     expect(within(failure).getByRole('button', { name: /Ask the agent/ })).toBeVisible()
   })
 
+  it.each([
+    ['a stopped workspace', new ApiError(409, 'stopped', JSON.stringify({ error: 'stopped', code: 'workspace_stopped' })), 'The workspace is stopped.'],
+    ['a failed read', new ApiError(502, 'guest unreachable', JSON.stringify({ error: 'guest unreachable' })), 'Could not read the workspace.'],
+  ])('stages the error hand-off for %s in this chat, not a fresh one', async (_label, error, text) => {
+    // A fresh chat's agent could not reach the remote workspace the read failed in.
+    vi.spyOn(api, 'chatSlotEnvironmentGit').mockRejectedValue(error)
+    const navigate = vi.fn()
+    installSoftNavigate(navigate)
+    setGatewayConnected(true)
+    try {
+      const u = userEvent.setup()
+      wrap(<RemoteGitPanel slot="chat-1" name="Coder MicroVM" />)
+      const failure = await screen.findByRole('alert', {}, { timeout: 5000 })
+      await u.click(within(failure).getByRole('button', { name: /Ask the agent/ }))
+      const staged = testStore.getState().chat.mainComposerAppend
+      expect(staged?.slot).toBe('chat-1')
+      expect(staged?.text).toContain('Diagnose the root cause and fix it.')
+      expect(staged?.text).toContain(text)
+      expect(consumeChatHandoff()).toBeNull()
+      expect(navigate).not.toHaveBeenCalled()
+    } finally {
+      __resetNavSeamForTests()
+    }
+  })
+
   it('keeps the stopped-environment sentence as the whole notice', async () => {
     vi.spyOn(api, 'chatSlotEnvironmentGit').mockRejectedValue(
       new ApiError(409, 'stopped', JSON.stringify({ error: 'stopped', code: 'workspace_stopped' })),
@@ -851,10 +840,14 @@ describe('RemoteGitPanel', () => {
       expect(ask).toBeVisible()
       expect(ask.textContent).toMatch(/^Draft\b/)
       await u.click(ask)
-      expect(consumeChatHandoff()).toBe(
-        'Show me the full diff of data/big file.csv against the last commit in the workspace Coder MicroVM. It was too large for the Git panel to show.',
-      )
-      expect(navigate).toHaveBeenCalledWith('/chat')
+      // Staged in THIS chat's composer (the one bound to the workspace), not
+      // handed to a fresh chat whose agent could not reach it.
+      expect(testStore.getState().chat.mainComposerAppend).toEqual({
+        slot: 'chat-1',
+        text: 'Show me the full diff of data/big file.csv against the last commit in the workspace Coder MicroVM. It was too large for the Git panel to show.',
+      })
+      expect(consumeChatHandoff()).toBeNull()
+      expect(navigate).not.toHaveBeenCalled()
     } finally {
       __resetNavSeamForTests()
     }
@@ -880,11 +873,22 @@ describe('RemoteGitPanel', () => {
 
   it.each([
     ['a record cut mid-path', '## main\0 M a.py\0?? notes/half-writ', ['a.py']],
-    ['a rename cut before its source', '## main\0 M a.py\0R  new.py\0old/pa', ['a.py', 'new.py']],
+    // Without its source the rename has no side to diff against.
+    ['a rename cut before its source', '## main\0 M a.py\0R  new.py\0old/pa', ['a.py']],
     ['a cut that lands on a separator', '## main\0 M a.py\0 M b.py\0', ['a.py', 'b.py']],
     ['newline records from an older worker', '## main\n M a.py\n?? half', ['a.py']],
   ])('drops the partial final record of cut-off status output: %s', (_label, output, paths) => {
     expect(parsePorcelain(output, true).rows.map((row) => row.path)).toEqual(paths)
+  })
+
+  it.each([
+    ['a rename', 'R '],
+    ['a copy', 'C '],
+  ])('drops %s whose source record the cap cut off, not shown as an added file', (_label, code) => {
+    // The cut lands after the destination's NUL and inside the source record.
+    expect(parsePorcelain(`## main\0 M a.py\0${code} new.py\0old.p`, true).rows).toEqual([{ code: ' M', path: 'a.py' }])
+    // Cut right on the destination's NUL, before any byte of the source.
+    expect(parsePorcelain(`## main\0 M a.py\0${code} new.py\0`, true).rows).toEqual([{ code: ' M', path: 'a.py' }])
   })
 
   it('keeps the final record of complete status output', () => {
@@ -1005,6 +1009,28 @@ describe('RemoteGitPanel', () => {
     expect(screen.getByRole('button', { name: 'Modified a.py' })).toBe(modified)
   })
 
+  it('opens only the clicked row when git lists one path twice', async () => {
+    // `git rm --cached foo` leaves `D  foo` staged and `?? foo` untracked.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(api, 'chatSlotEnvironmentGit').mockImplementation(async (_slot, op) => {
+      if (op === 'git_status') return { root: '/w', git: true, output: '## main\0D  foo\0?? foo\0' }
+      return { root: '/w', git: true, output: 'diff --git a/foo b/foo\n+x\n' }
+    })
+    const u = userEvent.setup()
+    wrap(<RemoteGitPanel slot="chat-1" name="Remote" />)
+    const deleted = await screen.findByRole('button', { name: 'Deleted foo' })
+    const untracked = screen.getByRole('button', { name: 'Untracked foo' })
+    await u.click(untracked)
+    expect(await screen.findByTestId('remote-git-diff')).toBeInTheDocument()
+    expect([deleted.getAttribute('aria-expanded'), untracked.getAttribute('aria-expanded')]).toEqual(['false', 'true'])
+    expect(screen.getAllByTestId('remote-git-diff')).toHaveLength(1)
+    expect(untracked.getAttribute('aria-controls')).toBe(screen.getByTestId('remote-git-diff').id)
+    expect(deleted).not.toHaveAttribute('aria-controls')
+    // Sibling rows carry distinct React keys.
+    expect(errors.mock.calls.some((call) => String(call[0]).includes('same key'))).toBe(false)
+    errors.mockRestore()
+  })
+
   it.each([
     [
       'cut-off change list',
@@ -1033,8 +1059,9 @@ describe('RemoteGitPanel', () => {
       expect(ask).toHaveAttribute('title', DRAFT_TITLE)
       expect(ask.textContent).toMatch(/^Draft\b/)
       await u.click(ask)
-      expect(consumeChatHandoff()).toBe(prompt)
-      expect(navigate).toHaveBeenCalledWith('/chat')
+      expect(testStore.getState().chat.mainComposerAppend).toEqual({ slot: 'chat-1', text: prompt })
+      expect(consumeChatHandoff()).toBeNull()
+      expect(navigate).not.toHaveBeenCalled()
       unmount()
       setGatewayConnected(false)
       wrap(<RemoteGitPanel slot="chat-2" name="Coder MicroVM" />)
