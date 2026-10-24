@@ -117,10 +117,27 @@ from kiro_crew.agent_sdk.backends import (
 # proven. goose has no tool that returns a file's text apart from its shell, and the
 # shell stays refused, so a goose side turn lists folders and views images.
 #
-# pi is NOT a member either. Every one of its tool calls does reach
-# ``session/request_permission``, but through Crew's gate extension rather than the
-# derived spec, and the extension expresses no read-only posture -- it asks about
-# everything and lets the host decide.
+# pi is a member through Crew's gate extension, and needs no derived spec: the
+# extension asks about EVERY tool call (pi runs every call without asking, by
+# design, and no allowedTools/autoApprove bypass exists), so every call reaches
+# the READ_ONLY gate with no pre-approval surface to close. Captured LIVE on
+# pi-acp 0.0.33 over pi 1.3.0, driving meta/muse-spark-1.3 through the confined
+# Side Chat launcher, and committed as
+# ``test/fixtures/acp_frames/pi/side-read-only-live.jsonl``: a read of an
+# absolute path (kind ``read``, the envelope-proving ``read`` builtin) and three
+# shell calls (kind ``execute``) each raised ``session/request_permission``
+# through the gate extension first, and ran after the client answered yes. The
+# read proof is the envelope's bare tool name (``PI_READ_ONLY_BUILTINS``:
+# read/grep/find/ls), and that name is proof only because the Side Chat
+# launcher passes ``--no-extensions --no-approve`` so an operator extension
+# cannot register those names; an MCP-rewritten title matches nothing. The
+# launcher also passes ``--exclude-tools bash,powershell``, added after that
+# capture: pi's user settings ``shellCommandPrefix`` and ``shellPath`` change what
+# a shell command runs, so the text the shell classifier reads would not bound
+# it, and a pi side session has no shell (driven on pi 0.99.2 and 1.4.0: neither
+# tool is registered). The capture's shell calls show the gate asking first;
+# they are not a tool a side turn has today. A side turn on pi therefore
+# runs the resolved agent under READ_ONLY, with no client confinement to build.
 #
 # deepseek is a member on measurement, and not through ``DSH_PERMISSION_MODE``:
 # that sandbox posture denies instead of asking, so it would produce no READ_ONLY
@@ -133,7 +150,14 @@ from kiro_crew.agent_sdk.backends import (
 # shadowed, MCP and command tools fail closed. The capture is
 # ``test/fixtures/acp_frames/deepseek/side-read-only-live.jsonl``.
 ACP_BACKENDS_SIDE_READONLY = frozenset(
-    {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE, ACP_BACKEND_DEEPSEEK}
+    {
+        ACP_BACKEND_KIRO,
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_PI,
+    }
 )
 
 # Harnesses opted into the fail-closed approval posture: a ``tool_call`` frame carrying

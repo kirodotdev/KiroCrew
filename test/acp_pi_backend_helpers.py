@@ -119,8 +119,14 @@ class _PiLaunchRig:
             _record("seal")
             return self.SEALED
 
-        def _launcher(pi_bin, extension_path, program=()):
-            _record("launcher", pi_bin, extension_path, *((program,) if program else ()))
+        def _launcher(pi_bin, extension_path, program=(), *, confine=False):
+            _record(
+                "launcher",
+                pi_bin,
+                extension_path,
+                *((program,) if program else ()),
+                *(("confine",) if confine else ()),
+            )
             return self.LAUNCHER
 
         async def _wrap(argv, **kwargs):

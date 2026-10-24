@@ -25,6 +25,7 @@ from kiro_crew.acp.harness_tool_names import (  # noqa: F401
     CLAUDE_READ_ONLY_BUILTINS,
     GOOSE_READ_ONLY_BUILTINS,
     MAX_HARNESS_TOOL_NAME_LEN,
+    PI_READ_ONLY_BUILTINS,
     qualified_harness_tool_id,
 )
 from kiro_crew.acp.types import (  # noqa: F401
