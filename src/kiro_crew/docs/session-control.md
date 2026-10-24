@@ -643,6 +643,7 @@ Refusals only a revive gives:
 | `resume_conflict` | HTTP 409: the session is being deleted. Try again |
 | `resume_session_deleted` | HTTP 409: the session was deleted while it was being resumed |
 | `reopen_failed` | HTTP 503: the session could not be reopened. Try again |
+| `reopen_retention_failed` | HTTP 503: the session's remote workspace is still scheduled for deletion and that could not be cancelled, so it was not reopened. Try again |
 | `reopen_rollback_failed` | HTTP 503: the revive was refused but the session's closed mark could not be put back, so it may come back as open. Close it again from the History tab |
 
 ### `session_history_list`

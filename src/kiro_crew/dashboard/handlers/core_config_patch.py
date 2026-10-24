@@ -14,6 +14,7 @@ import logging
 import math
 import re
 import shutil
+from collections.abc import Callable
 from typing import Any
 
 from aiohttp import web
@@ -116,8 +117,35 @@ def _session_environment_key_validators() -> dict[str, Any]:
     return {
         "default_profile": validate_default_profile,
         "kiro_cloud_profiles": _keep_kiro_cloud_profiles,
+        "sprites_profiles": _keep_vm_profiles("sprites_profiles"),
+        "boxd_profiles": _keep_vm_profiles("boxd_profiles"),
         "stop_on_shutdown": validate_stop_on_shutdown,
     }
+
+
+def _keep_vm_profiles(key: str) -> Callable[[object], list[dict[str, Any]]]:
+    """The saved Sprites or boxd profiles the loader keeps, entry by entry.
+
+    The same rule as :func:`_keep_kiro_cloud_profiles`: one malformed or duplicate
+    entry is dropped, the valid ones (and a default naming one) are carried.
+    """
+    from kiro_crew.config.session_environments import (
+        SessionEnvironmentsError,
+        load_boxd_profiles,
+        load_sprites_profiles,
+    )
+
+    load = {"sprites_profiles": load_sprites_profiles, "boxd_profiles": load_boxd_profiles}[key]
+
+    def keep(value: object) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            raise SessionEnvironmentsError(f"{key} must be a list")
+        kept = load({key: value})
+        if value and not kept:
+            raise SessionEnvironmentsError(f"{key} has no profile the loader keeps")
+        return kept
+
+    return keep
 
 
 def _keep_kiro_cloud_profiles(value: object) -> list[dict[str, Any]]:

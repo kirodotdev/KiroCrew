@@ -1,7 +1,9 @@
-"""Dashboard access to a remote session's workspace over ``coder ssh``: read-only
-``--browse``, a separate ``--write`` that refuses a stale ``expected``, the
-browse mode's read-only ``stats`` (:func:`session_health`), and an interactive
-shell. None autostarts a stopped workspace; requests go on stdin.
+"""Dashboard access to a remote session's workspace over ``coder ssh``, ``boxd
+machine exec`` or the Sprites exec API: read-only ``--browse``, a separate
+``--write`` that refuses a stale ``expected``, the browse mode's read-only
+``stats`` (:func:`session_health`), and an interactive shell. Browsing never
+autostarts a stopped workspace (a terminal may wake a sprite or a boxd machine);
+requests go on stdin.
 """
 
 from __future__ import annotations
@@ -55,12 +57,19 @@ class WorkdirChanged(LookupError):
 
 @dataclass(frozen=True)
 class _Target:
-    shell: CoderShell
+    #: A ``CoderShell``, ``BoxdShell`` or ``SpritesShell``.
+    shell: Any
     workdir: str
     binding_id: str
+    #: A sprite or boxd machine that is not on compute, resolved with
+    #: ``wake=False``: the caller reports it stopped instead of exec'ing into it.
+    stopped: bool = False
 
 
-async def _resolve(session_key: str) -> _Target:
+async def _resolve(session_key: str, *, wake: bool = True) -> _Target:
+    """The session's workspace target. ``wake=False`` is for a passive probe:
+    a sprite or boxd machine that is not running comes back ``stopped`` and
+    must not be exec'd, since an exec would wake it (Coder never autostarts)."""
     from kiro_crew.coder.registry import WorkspaceBindingRegistry
     from kiro_crew.coder.session_launch import (
         CoderSessionEnvironments,
@@ -81,14 +90,21 @@ async def _resolve(session_key: str) -> _Target:
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)
     section = config.session_environments
-    from kiro_crew.coder.session_launch import KIRO_CLOUD_PROVIDER_ID, chosen_provider
+    from kiro_crew.coder.session_launch import (
+        KIRO_CLOUD_PROVIDER_ID,
+        PROVIDER_ID,
+        chosen_provider,
+    )
 
-    if chosen_provider(section, profile_id, recorded_provider) == KIRO_CLOUD_PROVIDER_ID:
+    kind = chosen_provider(section, profile_id, recorded_provider) or PROVIDER_ID
+    if kind == KIRO_CLOUD_PROVIDER_ID:
         # The sandbox belongs to Kiro's cloud and only its own agent reaches it.
         raise CloudSandboxOnly(
             "this session runs in a Kiro cloud sandbox; its files and shell are reached "
             "only by its own agent, not from Kiro Crew"
         )
+    if kind != PROVIDER_ID:
+        return await _resolve_persistent(kind, section, home, owner, profile_id, wake=wake)
     # Resolved once, off the loop: the PATH search can stall on a slow mount.
     coder_bin = await asyncio.to_thread(resolve_coder_bin)
     provider = CoderSessionEnvironments(section, home, coder_bin=coder_bin)
@@ -126,6 +142,42 @@ async def _resolve(session_key: str) -> _Target:
     )
 
 
+async def _resolve_persistent(
+    kind: str, section: Any, home: Any, owner: str, profile_id: str, *, wake: bool = True
+) -> _Target:
+    """The session's sprite or boxd machine, identity-checked. Never creates one,
+    and with ``wake=False`` never wakes one either."""
+    environments: Any
+    if kind == "sprites":
+        from kiro_crew.sprites_session.launch import SpritesSessionEnvironments
+
+        environments = SpritesSessionEnvironments(section, home)
+    else:
+        from kiro_crew.boxd_session.launch import BoxdSessionEnvironments
+
+        environments = BoxdSessionEnvironments(section, home)
+    found = await environments.existing(owner, profile_id)
+    if found is None:
+        raise WorkspaceNotRunning("this session's workspace has not been created yet")
+    row, record = found
+    if record is None:
+        raise SessionEnvironmentUnavailable(
+            "this session's workspace was deleted outside Kiro Crew"
+        )
+    profile = environments.bound_profile(row)
+    workdir = environments.session_workdir(profile, row)
+    if not workdir:
+        # A blank profile folder is the login home its first start records.
+        raise WorkspaceNotRunning("this session's workspace has not started yet")
+    return _Target(
+        await environments.shell(profile, row),
+        workdir,
+        environments.binding_id(row),
+        # Named for the card but never exec'd: an exec would wake the VM.
+        stopped=not wake and not environments.record_running(record),
+    )
+
+
 async def _ask(target: _Target, mode: str, request: dict[str, Any]) -> dict[str, Any]:
     # The workdir is operator config, quoted; the request travels on stdin.
     command = (
@@ -135,6 +187,9 @@ async def _ask(target: _Target, mode: str, request: dict[str, Any]) -> dict[str,
     payload = json.dumps(request).encode("utf-8")
 
     async def once() -> bytes:
+        if not isinstance(target.shell, (CoderShell, *_command_shell_types())):
+            # A shell with no dial command (a sprite's exec API) runs it itself.
+            return await asyncio.wait_for(target.shell.run(command, payload), _BROWSE_TIMEOUT)
         return await run_collect(
             target.shell.argv(command),
             payload,
@@ -179,6 +234,13 @@ async def _ask(target: _Target, mode: str, request: dict[str, Any]) -> dict[str,
     if not isinstance(result, dict):
         raise SessionEnvironmentUnavailable("the remote workspace sent an invalid reply")
     return result
+
+
+def _command_shell_types() -> tuple[type, ...]:
+    """Shells reached by a local command, besides ``coder ssh``."""
+    from kiro_crew.boxd_session.shell import BoxdShell
+
+    return (BoxdShell,)
 
 
 def _check_path(path: str) -> str:
@@ -229,8 +291,10 @@ async def session_health(session_key: str) -> dict[str, Any]:
     Never starts compute: a stopped workspace reports ``state: stopped`` and no
     metrics, rather than being woken to be measured.
     """
-    target = await _resolve(session_key)
+    target = await _resolve(session_key, wake=False)
     base: dict[str, Any] = {"workspace": target.shell.workspace, "workdir": target.workdir}
+    if target.stopped:
+        return {**base, "state": "stopped"}
     request = {"op": "stats", "path": "."}
     try:
         stats = await _ask(target, "browse", request)
@@ -284,7 +348,9 @@ def summarize_unsaved(status_output: str) -> str | None:
 
 async def unsaved_work(session_key: str) -> str | None:
     """Unsaved work in a running workspace; None when stopped or unreachable (never woken)."""
-    target = await _resolve(session_key)
+    target = await _resolve(session_key, wake=False)
+    if target.stopped:
+        return None
     try:
         result = await _ask(target, "browse", {"op": "git_status", "path": "."})
     except (WorkspaceNotRunning, SessionEnvironmentUnavailable):
@@ -295,7 +361,29 @@ async def unsaved_work(session_key: str) -> str | None:
 
 
 async def remote_terminal_argv(session_key: str) -> list[str]:
-    """argv for a login shell in the workspace (the template sets its directory)."""
+    """argv for a login shell in the workspace (the template sets its directory).
+
+    Opening one is an explicit request, so a sprite or a boxd machine may wake.
+    """
     target = await _resolve(session_key)
+    from kiro_crew.sprites_session.shell import SpritesShell
+
+    if isinstance(target.shell, SpritesShell):
+        from kiro_crew import platform_compat
+        from kiro_crew.sprites_session.terminal import bridge_argv
+
+        if not platform_compat.IS_POSIX:
+            raise SessionEnvironmentUnavailable("a Sprites terminal needs a macOS or Linux gateway")
+        return bridge_argv(
+            target.shell.sprite,
+            target.shell.token_secret,
+            target.workdir,
+            sprite_id=target.shell.resource_id,
+        )
+    from kiro_crew.boxd_session.shell import BoxdShell
+
+    if isinstance(target.shell, BoxdShell):
+        # Opens in the folder Files and the agent use.
+        return target.shell.interactive_argv(target.workdir)
     # Coder never autostarts a stopped workspace here.
     return list(target.shell.interactive_argv())

@@ -209,6 +209,10 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     counts: { SegmentedControl: 2 },
     reason: 'the two channel SegmentedControls share manual: about.update-channel',
   },
+  'SessionEnvironmentsCard.tsx': {
+    counts: { input: 1, Input: 1 },
+    reason: 'transient: the provider radio only chooses which provider section is shown, and is not persisted; the Sprites API token is a vault credential field with Save/Remove semantics, never a config value',
+  },
   'ChatPanelLinkPatternsEditor.tsx': {
     counts: { Input: 2 },
     reason: "LinkPatternsEditor's per-row pattern/url fields — part of a composite the extractor indexes whole (chat.text-link-patterns)",
@@ -365,8 +369,8 @@ const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> 
       'rows sit on the Model page every chat.* model entry already deep-links to',
   },
   'SessionEnvironmentsCard.tsx': {
-    count: 5,
-    reason: 'Coder and Kiro Cloud per-profile CRUD fields, the per-profile template field (picker or free text) and the per-profile stop switch depend on configured rows and cannot be global deep links; the Session Environments page owns them',
+    count: 7,
+    reason: 'Coder, Kiro Cloud, Sprites and boxd per-profile CRUD fields, the Coder per-profile template field (picker or free text) and the per-profile stop switch depend on configured rows and cannot be global deep links; the Session Environments page owns them behind its provider choice',
   },
   'BotChannelPanel.tsx': {
     count: 16,

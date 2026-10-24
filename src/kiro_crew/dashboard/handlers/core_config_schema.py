@@ -477,6 +477,14 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "type": "normalized",
         "normalize": _session_environments.validate_kiro_cloud_profiles,
     },
+    "session_environments.sprites_profiles": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_sprites_profiles,
+    },
+    "session_environments.boxd_profiles": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_boxd_profiles,
+    },
     "session_environments.default_profile": {
         "type": "normalized",
         "normalize": _session_environments.validate_default_profile,

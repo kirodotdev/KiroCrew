@@ -3469,7 +3469,8 @@ screenshot.
 `session_environments` (`SessionEnvironmentsConfig` in `config/sections.py`)
 persists what the Settings UI needs to offer remote session environments, and
 nothing else: `coder_url`, `profiles`, and the optional `kiro_cloud_profiles`,
-`default_profile` and `stop_on_shutdown`. `config/session_environments.py` owns
+`sprites_profiles`, `boxd_profiles`, `default_profile` and `stop_on_shutdown`.
+`config/session_environments.py` owns
 every rule: its strict `validate_*` functions back the dashboard write gate (a
 400, nothing written) and its lenient `load_session_environments` backs
 `SessionEnvironmentsConfig.from_raw`, which keeps every valid part of a
@@ -3485,7 +3486,20 @@ duplicate or over-cap profile is dropped with a warning).
   digit then letters, digits, `_` or `-` (64 max, unique); `name` is 1-128
   characters, `template` 1-255, `workdir` an absolute POSIX path of at most
   1024. Text is whitespace-stripped and may not hold control characters.
-- `default_profile`: a saved profile id or `""` (this machine); a whole-section
+- `sprites_profiles` (Fly.io Sprites): at most 20 `{id, name, token_secret,
+  workdir}` records. `token_secret` names the Settings > Secrets entry holding
+  the Sprites API token (a letter or `_`, then letters, digits or `_`); the token
+  itself is never stored here.
+- `boxd_profiles`: at most 20 `{id, name, snapshot, vcpu, workdir}` records.
+  `snapshot` is `""` or a boxd snapshot name or id, `vcpu` one of 0 (the org
+  default), 1, 2, 4 or 8, and a profile naming both is refused (a snapshot keeps
+  its own size). `id`, `name` and `workdir` follow the Coder profile rules.
+- One id may not name profiles of two providers, since a session's choice
+  resolves by id. Leaf and whole-section saves check the final merged section
+  under the config write lock; a load keeps such a collision visible (the picker
+  omits the id and launch refuses it as ambiguous) and drops each malformed
+  entry individually.
+- `default_profile`: a saved profile id of any provider or `""` (this machine); a whole-section
   save refuses a default the same save drops.
 - `stop_on_shutdown`: a boolean, default `true`.
 - `kiro_cloud_profiles` (optional): at most 20 Kiro Cloud Sessions records,
@@ -3507,7 +3521,7 @@ refused. An absent or non-object section loads with every key at its default,
 and an unmodelled key inside it is preserved by `save()` and omitted from the
 GET.
 
-`PATCH /api/config/kirocrew` accepts `session_environments` and each of its six
+`PATCH /api/config/kirocrew` accepts `session_environments` and each of its eight
 keys as paths, all through the `"normalized"` spec type. Whole-section saves
 require the Coder keys; an omitted `SECTION_OPTIONAL_KEYS` key keeps its saved
 value under the config lock. A write goes through `update_config_locked`,

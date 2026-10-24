@@ -417,12 +417,21 @@ async def test_check_endpoint_reports_sign_in_and_each_profile(tmp_path, monkeyp
             "coder": {"ok": False, "error": "no Coder URL is saved"},
             "profiles": [],
             "git": git,
+            # No Sprites or boxd profile: their rows are empty, never omitted.
+            "sprites": [],
+            "boxd": [],
         }
         body = await (await client.post("/check")).json()
         # Coder's own words, not a guess that it is a sign-in problem (a timeout
         # or a bad identity reply needs a different fix); the card adds the
         # coder login hint itself.
-        assert body == {"coder": {"ok": False, "error": "signed out"}, "profiles": [], "git": git}
+        assert body == {
+            "coder": {"ok": False, "error": "signed out"},
+            "profiles": [],
+            "git": git,
+            "sprites": [],
+            "boxd": [],
+        }
         fake.signed_in = True
         body = await (await client.post("/check")).json()
         assert body["coder"] == {"ok": True, "owner": "devuser"}
@@ -453,6 +462,31 @@ async def test_check_endpoint_reports_a_missing_coder_cli_instead_of_failing(tmp
         assert body["coder"]["ok"] is False and "not installed" in body["coder"]["error"]
         assert body["profiles"] == []
         assert body["git"] == git
+
+
+@sync
+async def test_a_missing_coder_cli_keeps_the_other_providers_readiness(tmp_path, monkeypatch):
+    """No Coder CLI says nothing about Sprites or boxd: their failures still show."""
+
+    def missing(self):
+        raise SessionEnvironmentUnavailable("the coder CLI is not installed on this machine")
+
+    sprites_row = [{"id": "fly", "ok": False, "error": "no Sprites API token"}]
+    boxd_row = [{"id": "box", "ok": True}]
+    git = {"github.com": "signed_in"}
+    async with _client(tmp_path, monkeypatch) as client:
+        monkeypatch.setattr(
+            KiroCrewConfig, "load", lambda: SimpleNamespace(session_environments=_config())
+        )
+        monkeypatch.setattr(session_launch.CoderSessionEnvironments, "_client", missing)
+        monkeypatch.setattr(handlers, "_check_sprites", AsyncMock(return_value=sprites_row))
+        monkeypatch.setattr(handlers, "_check_boxd", AsyncMock(return_value=boxd_row))
+        monkeypatch.setattr(
+            "kiro_crew.remote_session.git_gateway.git_readiness", AsyncMock(return_value=git)
+        )
+        body = await (await client.post("/check")).json()
+    assert body["coder"]["ok"] is False
+    assert body["sprites"] == sprites_row and body["boxd"] == boxd_row and body["git"] == git
 
 
 class TemplateListingCoder:

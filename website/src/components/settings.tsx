@@ -406,6 +406,13 @@ function subscribeDeepLinkTarget(cb: () => void): () => void {
 const readDeepLinkTarget = () => deepLinkTarget
 const readDeepLinkOnServer = (): string | null => null
 
+/** The selector a settings deep link is still probing for, or null. For a
+ * panel that keeps rows mounted but hidden (a tab or disclosure of its own),
+ * so it can reveal the one holding the target before the probe rings it. */
+export function useSettingsDeepLinkTarget(): string | null {
+  return React.useSyncExternalStore(subscribeDeepLinkTarget, readDeepLinkTarget, readDeepLinkOnServer)
+}
+
 export function SettingsSection({ title, badge, collapsible, children }: SettingsSectionProps) {
   const [open, setOpen] = React.useState(false)
   const bodyId = React.useId()

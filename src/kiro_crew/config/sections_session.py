@@ -519,6 +519,24 @@ class SessionEnvironmentsConfig:
             "Kiro sign-in authenticates.",
         ),
     )
+    sprites_profiles: list[dict[str, Any]] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Sprites Profiles",
+            "Named Fly.io Sprites profiles (at most 20), each {id, name, token_secret, "
+            "workdir}. token_secret names the Settings > Secrets entry that holds the "
+            "Sprites API token; the token itself is never stored here.",
+        ),
+    )
+    boxd_profiles: list[dict[str, Any]] = field(
+        default_factory=list,
+        metadata=_meta(
+            "boxd Profiles",
+            "Named boxd machine profiles (at most 20), each {id, name, snapshot, vcpu, "
+            "workdir}. The gateway machine's own boxd auth login authenticates; no "
+            "credential is stored.",
+        ),
+    )
 
     default_profile: str = field(
         default="",
@@ -546,17 +564,23 @@ class SessionEnvironmentsConfig:
     def from_raw(cls, section: object) -> "SessionEnvironmentsConfig":
         """Build from the raw section, keeping every valid part (never raises)."""
         from kiro_crew.config.session_environments import (
+            load_boxd_profiles,
             load_default_profile,
             load_kiro_cloud_profiles,
             load_session_environments,
+            load_sprites_profiles,
             load_stop_on_shutdown,
         )
 
         coder_url, profiles = load_session_environments(section)
+        # Keep cross-provider collisions visible to the launch resolver: choosing
+        # one provider by list order could send an existing session elsewhere.
         return cls(
             coder_url=coder_url,
             profiles=[SessionEnvironmentProfileConfig(**p) for p in profiles],
             kiro_cloud_profiles=load_kiro_cloud_profiles(section),
+            sprites_profiles=load_sprites_profiles(section),
+            boxd_profiles=load_boxd_profiles(section),
             default_profile=load_default_profile(section),
             stop_on_shutdown=load_stop_on_shutdown(section),
         )

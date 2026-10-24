@@ -25,7 +25,7 @@ KEY = "dashboard:chat-gate"
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
-    section = SimpleNamespace(coder_url="", profiles=[])
+    section = SimpleNamespace(coder_url="", profiles=[], sprites_profiles=[], boxd_profiles=[])
     monkeypatch.setattr(paths, "data_home", lambda: tmp_path)
     monkeypatch.setattr(live, "snapshot", lambda: SimpleNamespace(session_environments=section))
     runtime = MagicMock(spawn=AsyncMock(side_effect=RuntimeError("spawn reached")))
@@ -50,6 +50,8 @@ def setup(tmp_path, monkeypatch):
         ("coder_url", "bad"),
         ("profiles", "bad"),
         ("kiro_cloud_profiles", "bad"),
+        ("sprites_profiles", "bad"),
+        ("boxd_profiles", "bad"),
         ("coder_url", "ready"),
     ],
 )
@@ -57,7 +59,11 @@ async def test_start_gate(setup, tmp_path, monkeypatch, backend, field, choice):
     section, provider, runtime = setup
     provider._client.backend = backend
     if field:
-        setattr(section, field, "https://coder.example" if field == "coder_url" else [object()])
+        value = {
+            "coder_url": "https://coder.example",
+            "profiles": [SimpleNamespace(id="other")],
+        }.get(field, [{"id": "other"}])
+        setattr(section, field, value)
     choices = session_launch.SessionEnvironmentChoices(tmp_path / "coder/session-choices.json")
     launch = MagicMock(workspace_server=AsyncMock(return_value={}))
     if choice == "absent":
@@ -134,3 +140,24 @@ async def test_an_adapter_backend_refuses_a_remote_session_before_its_engine(
         await acp_lifecycle.start(provider)
     assert str(raised.value) == (REMOTE_NEEDS_KAS if remote else "engine started")
     assert provider._client.ensure_ready.await_count == (not remote)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS])
+@pytest.mark.parametrize("remote_provider", ["sprites", "boxd"])
+async def test_removing_the_last_profile_never_starts_its_session_locally(
+    setup, tmp_path, backend, remote_provider
+):
+    section, provider, runtime = setup
+    provider._client.backend = backend
+    field = f"{remote_provider}_profiles"
+    setattr(section, field, [{"id": "saved-vm"}])
+    choices = session_launch.SessionEnvironmentChoices(tmp_path / "coder/session-choices.json")
+    choices.set(KEY, "saved-vm", remote_provider)
+    assert choices.resolve_choice(KEY)[2] == remote_provider
+    setattr(section, field, [])
+    with pytest.raises(SessionEnvironmentUnavailable, match="is no longer configured"):
+        await asyncio.wait_for(start._start_kiro_runtime_impl(provider, {}, {}), 30)
+    assert choices.get(KEY) == "saved-vm"
+    runtime.spawn.assert_not_awaited()
+    runtime.set_remote_workspace.assert_not_called()

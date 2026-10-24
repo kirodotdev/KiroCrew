@@ -265,13 +265,17 @@ _CODE_EXEC_SETTINGS: frozenset[str] = frozenset(
         "session.pool_agent",
         # The Coder deployment and the template a session's workspace is built
         # from decide which machine runs that session's commands, and the
-        # gateway proxies credentialed Git requests for it.
+        # gateway proxies credentialed Git requests for it. A Sprites profile also
+        # names the vault secret whose token the gateway sends to the Sprites API,
+        # and a boxd profile the snapshot a session's machine starts from.
         "session_environments",
         "session_environments.coder_url",
         # A Kiro Cloud profile moves a session's agent and tools into a Kiro
         # cloud sandbox outside Kiro Crew's tool gate, with the repositories
         # it names checked out there.
         "session_environments.kiro_cloud_profiles",
+        "session_environments.sprites_profiles",
+        "session_environments.boxd_profiles",
         # The default binds every new chat to a saved profile, which can be a
         # Kiro Cloud profile outside the tool gate or a Coder workspace.
         "session_environments.default_profile",
