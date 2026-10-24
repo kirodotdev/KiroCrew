@@ -442,4 +442,22 @@ async def process_slack_files(
     # Rejection notes ride along as prompt text, matching the previous behaviour
     # of inlining size and validation failures for the model to see.
     paths = [*result.image_paths, *result.file_paths]
-    return paths, [*result.text_blocks, *result.rejections]
+    locations = [image_location_note(p) for p in result.image_paths]
+    return paths, [*result.text_blocks, *locations, *result.rejections]
+
+
+def image_location_note(path: str) -> str:
+    """Tell the agent where an inlined Slack image is saved.
+
+    ``build_prompt_blocks`` replaces an inlined image's path with
+    ``[image: <name>]``, so the model sees the picture but not where the file
+    is, and its file tools cannot open the original. This note names the folder
+    and the file SEPARATELY: a whole path ending in an image suffix would be
+    rewritten to the marker again, while a folder alone matches no image path.
+    Slack only; other channels and the dashboard keep their prompt unchanged.
+    """
+    folder, name = os.path.split(path)
+    return (
+        f"[Image {name} is saved in the folder {folder}{os.sep} until this turn ends; "
+        "join the two to open the original file]"
+    )
