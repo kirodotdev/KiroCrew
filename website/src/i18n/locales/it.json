@@ -7170,6 +7170,7 @@
       "refusal_busy": "Sono in corso troppe importazioni. Riprova tra un momento.",
       "imported": "Importato",
       "imported_named": "Importato: {{title}}",
+      "open": "Apri",
       "unknown_error": "L'importazione non è riuscita"
     },
     "instanceTabBar": {

@@ -53,6 +53,7 @@ vi.mock('../store/chatSlice', () => ({
   createSlot: (arg: unknown) => ({ type: 'createSlot', arg }),
   switchSlot: (arg: unknown) => ({ type: 'switchSlot', arg }),
   deleteSlot: (arg: unknown) => ({ type: 'deleteSlot', arg }),
+  requestSlotFolderOpen: (arg: unknown) => ({ type: 'requestSlotFolderOpen', arg }),
 }))
 vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn() }))
 vi.mock('../api/client', () => ({ api: apiMock }))

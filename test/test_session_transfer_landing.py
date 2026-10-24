@@ -273,6 +273,8 @@ async def test_a_plain_json_arrival_is_filed_under_imported_from_sender(monkeypa
         "from mac": next(f["id"] for f in state._folders if f["name"] == "Imported"),
     }
     assert _filed_folder(state) == "from mac"
+    # The answer names that folder, so the importing tab can open its path.
+    assert json.loads(resp.body)["folder_id"] == state._imported_slot.folder_id != ""
 
 
 @pytest.mark.asyncio
@@ -318,6 +320,7 @@ async def test_an_app_scoped_arrival_lands_unfiled_and_creates_no_folder(monkeyp
     assert resp.status == 200, resp.body
     assert state._folders == []
     assert _filed_folder(state) == ""
+    assert json.loads(resp.body)["folder_id"] == ""
 
 
 @pytest.mark.asyncio

@@ -7046,6 +7046,7 @@
       "refusal_busy": "Es laufen derzeit zu viele Importe. Bitte versuchen Sie es in einem Moment erneut.",
       "imported": "Importiert",
       "imported_named": "Importiert: {{title}}",
+      "open": "Öffnen",
       "unknown_error": "Der Import ist fehlgeschlagen"
     },
     "instanceTabBar": {

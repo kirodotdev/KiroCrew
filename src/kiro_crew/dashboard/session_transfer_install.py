@@ -1119,5 +1119,8 @@ async def _install_arrived_bundle(
             # Resume fidelity, so the SENDER can say "Sent" vs "Sent (transcript
             # only)" instead of showing the same green row either way.
             "resume_mode": resume_mode,
+            # The arrival folder the import was filed in ("" when unfiled), so
+            # the importing tab can open a collapsed folder path to the row.
+            "folder_id": slot.folder_id,
         }
     )

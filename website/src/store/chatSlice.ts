@@ -904,10 +904,16 @@ const chatSlice = createSlice({
      *  inherits its source's folder, which can be collapsed or inside a collapsed
      *  parent) and by the header New tab gesture that opens the new chat in the
      *  foreground, which creates with `activate: false` and so skips createSlot's
-     *  own request. No-op for a session filed at the top level. */
-    requestSlotFolderOpen(state, action: PayloadAction<{ key: string; folder_id?: string | null }>) {
-      const { key, folder_id: folderId } = action.payload
+     *  own request. No-op for a session filed at the top level.
+     *
+     *  `onlyIfActive` is for a caller that asks after an await and cannot tell
+     *  from its own result whether the session took the view: a create the user
+     *  moved away from, or a run filed after the user left it. The request is
+     *  then made only while the session is the active one. */
+    requestSlotFolderOpen(state, action: PayloadAction<{ key: string; folder_id?: string | null; onlyIfActive?: boolean }>) {
+      const { key, folder_id: folderId, onlyIfActive } = action.payload
       if (!folderId) return
+      if (onlyIfActive && state.activeSlot !== key) return
       state.revealNonce += 1
       state.revealRequest = { kind: 'session', target: key, nonce: state.revealNonce, openFoldersOnly: true, folderId }
     },

@@ -6922,6 +6922,7 @@
       "refusal_busy": "当前正在进行的导入过多。请稍后重试。",
       "imported": "已导入",
       "imported_named": "已导入：{{title}}",
+      "open": "打开",
       "unknown_error": "导入失败"
     },
     "instanceTabBar": {

@@ -167,6 +167,19 @@ describe('ChatPage mobile header: new session in the same folder', () => {
     await waitFor(() => expect(api.chatSlotProject).toHaveBeenCalledWith('slot-new', '/work/repo'))
   })
 
+  it('opens the folder path of the new chat, which the drawer may have collapsed', async () => {
+    // createSlot opens the path only for a default-folder create, and the
+    // session on screen can sit in a collapsed folder after a search or a link.
+    const create = api.createChatSlot as unknown as ReturnType<typeof vi.fn>
+    create.mockResolvedValueOnce({ key: 'slot-new', title: '', folder_id: 'f-child' })
+    const { store } = renderChat({ key: 'slot-0', title: 'Session 0', folder_id: 'f-child' })
+    await waitFor(() => expect(api.chatFolders).toHaveBeenCalled())
+    await act(async () => {})
+    fireEvent.click(await newSessionItem())
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-new'))
+    await waitFor(() => expect(store.getState().chat.revealRequest).toMatchObject({ target: 'slot-new', openFoldersOnly: true, folderId: 'f-child' }))
+  })
+
   it('an unfiled session creates an unfiled, agent-less sibling (the server stamps the default custom agent)', async () => {
     renderChat({ key: 'slot-0', title: 'Session 0' })
     const item = await newSessionItem()

@@ -6922,6 +6922,7 @@
       "refusal_busy": "現在インポートの実行が多すぎます。少し待ってからもう一度お試しください。",
       "imported": "インポートしました",
       "imported_named": "インポートしました: {{title}}",
+      "open": "開く",
       "unknown_error": "インポートに失敗しました"
     },
     "instanceTabBar": {

@@ -4703,6 +4703,7 @@
       "refusal_busy": "Too many imports are running right now. Try again in a moment.",
       "imported": "Imported",
       "imported_named": "Imported: {{title}}",
+      "open": "Open",
       "unknown_error": "The import failed"
     },
     "instanceTabBar": {

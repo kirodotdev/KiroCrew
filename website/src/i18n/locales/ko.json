@@ -6922,6 +6922,7 @@
       "refusal_busy": "현재 실행 중인 가져오기가 너무 많습니다. 잠시 후 다시 시도하세요.",
       "imported": "가져왔습니다",
       "imported_named": "가져왔습니다: {{title}}",
+      "open": "열기",
       "unknown_error": "가져오기에 실패했습니다"
     },
     "instanceTabBar": {

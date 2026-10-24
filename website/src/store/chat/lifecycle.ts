@@ -192,7 +192,7 @@ export const resumeFromHistory = createAsyncThunk(
   async ({ key, title }: { key: string; title: string }, { dispatch }) => {
     const d = await api.resumeChatSlot(key, title)
     if (d.ok) {
-      dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }))
+      dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined, ...(d.folder_id ? { folder_id: d.folder_id } : {}) }))
       dispatch(updateSlot({ key: d.key, mode: d.mode, surface: d.surface ?? d.mode }))
     }
     // Without a cursor this response cannot be paged, so do not advertise more:
@@ -203,7 +203,7 @@ export const resumeFromHistory = createAsyncThunk(
     // shows default/orchestrator, see isChatPageSurface) can tell a
     // silently-unusable resume apart from a genuinely failed one (#3624) --
     // the request succeeds either way, so `ok` alone cannot distinguish them.
-    return { ok: d.ok, key: d.key, surface: d.surface ?? d.mode, nextBefore: cursor ?? 0, messages: filterMessages(d.messages || []), hasMore: cursor !== null && (d.has_more || false), total: d.total || 0 }
+    return { ok: d.ok, key: d.key, surface: d.surface ?? d.mode, nextBefore: cursor ?? 0, messages: filterMessages(d.messages || []), hasMore: cursor !== null && (d.has_more || false), total: d.total || 0, folderId: typeof d.folder_id === 'string' ? d.folder_id : '' }
   },
 )
 
@@ -534,6 +534,14 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
         state.lastChunkSeq = resumedRun?.lastChunkSeq
         state.lastChunkGen = resumedRun?.lastChunkGen
         enterActiveSlot(state, action.payload.key)
+        // A history session keeps the folder it was filed in, which can be
+        // collapsed: open that path so the row of the session now in view
+        // shows. Placed on the activation, so a resume that does not take the
+        // view asks for nothing.
+        if (action.payload.folderId) {
+          state.revealNonce += 1
+          state.revealRequest = { kind: 'session', target: action.payload.key, nonce: state.revealNonce, openFoldersOnly: true, folderId: action.payload.folderId }
+        }
         state.messages = mergePreservedPastes(state.messages, action.payload.messages)
         state.slotState = 'idle'
         state.pendingTurnSlot = null

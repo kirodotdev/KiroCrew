@@ -258,6 +258,9 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fet
         title: string
         messages: number
         resume_mode: string
+        // The folder the import was filed in; '' when unfiled, absent from an
+        // older gateway.
+        folder_id?: string
       }
     },
     sendSessionToInstance: (id: string, slot: string) =>

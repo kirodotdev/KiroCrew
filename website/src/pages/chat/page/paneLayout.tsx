@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, useMemo, useCallback, type Dispatch, type 
 import type { HoverIntent } from '../../../hooks/useHoverIntent'
 import type { AppDispatch } from '../../../store'
 import type { ChatSlot, ChatFolder } from '../../../types'
-import { openActivityPanel, createSlot, deleteSlot, setSidePanelAlwaysOpen } from '../../../store/chatSlice'
+import { openActivityPanel, createSlot, deleteSlot, requestSlotFolderOpen, setSidePanelAlwaysOpen } from '../../../store/chatSlice'
 import { safeSetItem } from '../../../utils/safeStorage'
 import { notePanelShown } from '../../../hooks/usePanelTabs'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
@@ -379,12 +379,18 @@ export function usePanelLayout({
     mobileNewSessionInFlightRef.current = true
     setMobileNewSessionBusy(true)
     try {
-      await dispatch(createSlot({
+      const slot = await dispatch(createSlot({
         agent,
         mode: mode || '',
         ...(folderId ? { folder_id: folderId } : {}),
         ...(project ? { project } : {}),
       })).unwrap()
+      // The current session can sit in a collapsed folder when it was opened
+      // from search or a link, and createSlot opens the folder path only for a
+      // default-folder create. Open it here, or the drawer shows no row for the
+      // new chat. Only while it is active: a user who moved away keeps the
+      // sidebar they had.
+      dispatch(requestSlotFolderOpen({ key: slot.key, folder_id: slot.folder_id, onlyIfActive: true }))
     } catch (error) {
       // Same stale-project-dir sentence as the drawer's folder `+`, as the
       // notice title: it is the one create failure the user can fix, so name

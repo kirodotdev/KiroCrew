@@ -31,6 +31,8 @@ const holder = vi.hoisted(() => ({
 }))
 vi.mock('../store', () => ({
   useAppDispatch: () => (a: unknown) => holder.dispatch!(a),
+  // The user stays on the origin throughout, so the import may open.
+  useAppStore: () => ({ getState: () => ({ chat: { activeSlot: 'origin' } }) }),
 }))
 const switched = vi.hoisted(() => [] as unknown[])
 // The slot keys the list held at the moment each switch was built.
@@ -41,6 +43,9 @@ vi.mock('../store/chatSlice', () => ({
     listedAtSwitch.push(holder.listed?.() ?? [])
     return { type: 'test/switchSlot' }
   },
+  captureForkOrigin: () => ({ activeSlot: 'origin', moves: 0, autoMoves: 0 }),
+  forkMayOpen: () => true,
+  requestSlotFolderOpen: () => ({ type: 'test/requestSlotFolderOpen' }),
 }))
 
 import dashboard, { sseSlots } from '../store/dashboardSlice'

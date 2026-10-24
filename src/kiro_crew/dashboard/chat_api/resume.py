@@ -281,6 +281,7 @@ async def _live_slot_resume_payload(state, existing) -> dict:
         "memory_mode": existing.memory_mode,
         "mode": existing.mode,
         "surface": existing.mode,
+        "folder_id": existing.folder_id,
     }
 
 
@@ -745,6 +746,10 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             "memory_mode": slot.memory_mode,
             "mode": slot.mode,
             "surface": slot.mode,
+            # The folder the session is filed in, so the client can open a
+            # collapsed folder path and show the resumed row it switched to.
+            # The slots push carries it too, but can arrive after the switch.
+            "folder_id": slot.folder_id,
         }
     )
 
