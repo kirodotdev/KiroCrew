@@ -4,11 +4,11 @@
 // the single import-outcome notice mount). App.test.tsx covers routing; the
 // module mocks and the matchMedia / ResizeObserver stubs below are copied from it
 // word for word.
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { screen, act, fireEvent, waitFor, within } from '@testing-library/react'
-import { renderWithProviders } from './helpers'
+import { renderWithProviders, createTestStore } from './helpers'
 import App from '../App'
 import { ApiError } from '../api/client'
 
@@ -362,6 +362,38 @@ describe('onCycleAgent keyboard shortcut', () => {
     } finally {
       vi.useRealTimers()
       ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    }
+  })
+})
+
+describe('refused-filing notice in the App shell', () => {
+  // A test that times out never reaches its finally, so the fake clock is
+  // also put back here, before the next test can inherit it.
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  // The refused-filing notice is its own notice: it stays until dismissed,
+  // while a switch failure shown in the same window still expires at 6 s.
+  it('keeps a refused filing while a switch failure beside it expires', async () => {
+    const store = createTestStore()
+    const { setAgentSwitchNotice } = await import('../store/chatSlice')
+    const { SESSION_NOT_FILED_EVENT } = await import('../lib/sessionFolderNotice')
+    const { i18nT } = await import('../i18n/t')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      renderWithProviders(<App />, { route: '/chat', store })
+      await act(async () => {
+        window.dispatchEvent(new Event(SESSION_NOT_FILED_EVENT))
+        store.dispatch(setAgentSwitchNotice(REAL_FAILURE))
+      })
+      expect(screen.getByText(REAL_FAILURE)).toBeInTheDocument()
+      await act(async () => { await vi.advanceTimersByTimeAsync(60000) })
+      expect(screen.queryByText(REAL_FAILURE)).not.toBeInTheDocument()
+      expect(screen.getByTestId('session-not-filed-notice')).toHaveTextContent(i18nT('store.chatSlice.session_not_filed_untitled_folder_gone'))
+    } finally {
+      vi.useRealTimers()
+      store.dispatch(setAgentSwitchNotice(null))
     }
   })
 })

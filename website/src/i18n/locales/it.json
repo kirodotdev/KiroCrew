@@ -19484,7 +19484,11 @@
       "session_gone_open_failed_named": "“{{name}}” è stata eliminata e non può essere aperta.",
       "truncated_chars": "…({{count}} caratteri troncati: riapri la sessione per vedere l'output completo)",
       "truncated": "…(troncato)",
-      "session_folder_unavailable": "Questa chat non ha potuto ottenere una propria cartella, quindi si è aperta nella cartella di progetto predefinita. Controlla Nuove cartelle di sessione nelle impostazioni."
+      "session_folder_unavailable": "Questa chat non ha potuto ottenere una propria cartella, quindi si è aperta nella cartella di progetto predefinita. Controlla Nuove cartelle di sessione nelle impostazioni.",
+      "session_not_filed": "\"{{title}}\" si è aperta fuori da qualsiasi cartella perché non è stato possibile metterla nella cartella \"{{folder}}\".",
+      "session_not_filed_untitled": "Una nuova chat si è aperta fuori da qualsiasi cartella perché non è stato possibile metterla nella cartella \"{{folder}}\".",
+      "session_not_filed_folder_gone": "\"{{title}}\" si è aperta fuori da qualsiasi cartella perché la sua cartella non esiste più.",
+      "session_not_filed_untitled_folder_gone": "Una nuova chat si è aperta fuori da qualsiasi cartella perché la sua cartella non esiste più."
     }
   },
   "utils": {

@@ -73,21 +73,25 @@ async def wait_for_unwinding_turns(state: DashboardState | None) -> None:
     save, and the exit or exec would otherwise beat it.
 
     Bounded by ``DASHBOARD_TURN_UNWIND_SECS``, and never cancelling: a turn still
-    running at the deadline is left to the exit.
+    running at the deadline is left to the exit. The cron pending store's
+    writers are then joined the same way, within ``CRON_PENDING_WRITER_JOIN_SECS``.
     """
-    slots = getattr(state, "_slots", None)
-    if not isinstance(slots, dict):
-        return
-    unwinding = {
-        task
-        for task in (getattr(slot, "task", None) for slot in list(slots.values()))
-        if isinstance(task, asyncio.Future) and not task.done()
-    }
-    if not unwinding:
-        return
     from kiro_crew import gateway_shutdown_budget
+    from kiro_crew.dashboard import cron_pending
 
-    await asyncio.wait(unwinding, timeout=gateway_shutdown_budget.DASHBOARD_TURN_UNWIND_SECS)
+    slots = getattr(state, "_slots", None)
+    unwinding = (
+        {
+            task
+            for task in (getattr(slot, "task", None) for slot in list(slots.values()))
+            if isinstance(task, asyncio.Future) and not task.done()
+        }
+        if isinstance(slots, dict)
+        else set()
+    )
+    if unwinding:
+        await asyncio.wait(unwinding, timeout=gateway_shutdown_budget.DASHBOARD_TURN_UNWIND_SECS)
+    await cron_pending.join_writers(gateway_shutdown_budget.CRON_PENDING_WRITER_JOIN_SECS)
 
 
 # Transient/streaming roles that are never persisted (mirrors
@@ -124,8 +128,11 @@ def _save_slot_to_history(
     slot refuse a stale queue snapshot or a replaced slot, as the full save
     does. Only the periodic flush passes it, because it re-runs a refused pass
     on its next tick. The forced route saves (tag, folder, pin, transfer) keep
-    committing their merge unconditionally, so none of them can newly report an
-    acknowledged edit as refused.
+    committing their merge over a stale queue snapshot, so none of them can
+    newly report an acknowledged edit as refused. A forced save that names its
+    slot with ``expected_slot_name`` is still refused when the map holds a
+    different object under that name: its edit was made on a slot that is no
+    longer registered, and the replacement shares the transcript.
 
     The session file is modeled as **frozen prefix + live window**:
 
@@ -283,8 +290,18 @@ def _save_slot_to_history(
                 # unconditionally, as it does on main: its callers ignore a
                 # refused save, so a refusal would leave an open-shaped line
                 # that a restart resurrects.
+                # A caller that names its slot (``expected_slot_name``) is refused
+                # on a replaced slot here too: a same-key replacement shares the
+                # transcript, so committing would write this slot's metadata onto
+                # it. The stale-queue refusal stays the periodic flush's alone.
                 refusal_under_lock=(
-                    _refusal_under_lock if refuse_stale_empty_merge and not closed else None
+                    _refusal_under_lock
+                    if refuse_stale_empty_merge and not closed
+                    else (
+                        (lambda _meta: _replaced_refusal())
+                        if expected_slot_name is not None and not closed
+                        else None
+                    )
                 ),
                 # A route save (tag, folder, pin, transfer) is not refused, but
                 # an older queue snapshot must not overwrite a newer committed

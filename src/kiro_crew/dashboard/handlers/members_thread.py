@@ -30,6 +30,7 @@ from kiro_crew.dashboard.handlers.members_access import (
     _member_names_for_slug,
     _sel,
 )
+from kiro_crew.dashboard.slot_create_transaction import open_named_slot
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
 from kiro_crew.members import MemberSlugError
 
@@ -302,19 +303,18 @@ async def api_member_thread(request: web.Request) -> web.Response:
         # Resolve before publication, then re-check: another opener can create
         # the slot while path validation waits; that slot is kept and bound to
         # the same workspace below (both openers derive it from one config).
-        slot = state._slots.get(slot_key)
-        if slot is None:
+        _pre_assigned = ""
+        if state._slots.get(slot_key) is None:
             # Pin the v2 private store BEFORE minting the slot.  A refused
             # pin returns without ever creating a slot, leaving nothing
             # registered or broadcast.  A concurrent opener can still create
-            # the slot during the awaits below, so we re-check after them:
-            # if it is already there we fall through to the non-minted path,
-            # which validates it under the slot lock as usual.
+            # the slot during the awaits below: the open after them then
+            # returns that slot, and the non-minted path validates it under
+            # the slot lock as usual.
             _pre_member_store = getattr(cfg.agents[member_name], "memory_store", "")
             _pre_store_record = (
                 cfg.memory_stores.get(_pre_member_store) if _pre_member_store else None
             )
-            _pre_assigned = ""
             if _pre_store_record is not None and _pre_store_record.memory_version == 2:
                 _pre_canonical = members_mod.member_thread_session_alias(slug, generation)
                 _pre_assigned, _pre_err = await _guard_and_pin_private_store(
@@ -327,27 +327,30 @@ async def api_member_thread(request: web.Request) -> web.Response:
                 )
                 if _pre_err is not None:
                     return _pre_err
-            # Re-check: a concurrent opener may have published the same key
-            # during the awaits above.  If so, fall through to the non-minted
-            # path so the lock does its full existing-slot validation.
-            slot = state._slots.get(slot_key)
-            if slot is None:
-                minted = True
-                with state.suspend_slots_push():
-                    slot = state.get_or_create_slot(
-                        name=slot_key,
-                        agent=member_name,
-                        workspace=member_workspace,
-                        mode=members_mod.DM_SLOT_MODE,
-                        origin=request_slot_origin(request.get("app", "")),
-                    )
-                    slot.project = project
-                    if _pre_assigned:
-                        # Stamp synchronously before the slot is visible:
-                        # no await follows inside this block, so no other
-                        # code can observe the slot before the assignment.
-                        slot._memory_assignment_from_history = True
-                        slot.memory_store = _pre_assigned
+        # A dashboard create of this key can begin during those awaits too: the
+        # open waits (bounded) for it with no await between the wait and the
+        # open, so it finds its slot or the key free.
+        minted_slots: list[Any] = []
+
+        def mint(new_slot: Any) -> None:
+            new_slot.project = project
+            if _pre_assigned:
+                # Stamped synchronously inside the open, before the slot is
+                # visible, so no other code observes it unassigned.
+                new_slot._memory_assignment_from_history = True
+                new_slot.memory_store = _pre_assigned
+            minted_slots.append(new_slot)
+
+        slot = await open_named_slot(
+            state,
+            slot_key,
+            on_create=mint,
+            agent=member_name,
+            workspace=member_workspace,
+            mode=members_mod.DM_SLOT_MODE,
+            origin=request_slot_origin(request.get("app", "")),
+        )
+        minted = bool(minted_slots)
     if slot.mode != members_mod.DM_SLOT_MODE:
         # The derived key is already occupied by a foreign slot (mode is set at
         # creation only, so a pre-existing non-member slot keeps its own). Never

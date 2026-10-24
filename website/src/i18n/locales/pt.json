@@ -19484,7 +19484,11 @@
       "session_gone_open_failed_named": "“{{name}}” foi excluída e não pode ser aberta.",
       "truncated_chars": "…({{count}} caracteres truncados — reabra a sessão para ver a saída completa)",
       "truncated": "…(truncado)",
-      "session_folder_unavailable": "Este chat não conseguiu obter sua própria pasta, então foi aberto na sua pasta de projeto padrão. Verifique Novas pastas de sessão nas configurações."
+      "session_folder_unavailable": "Este chat não conseguiu obter sua própria pasta, então foi aberto na sua pasta de projeto padrão. Verifique Novas pastas de sessão nas configurações.",
+      "session_not_filed": "\"{{title}}\" foi aberto fora de qualquer pasta porque não pôde ser colocado na pasta \"{{folder}}\".",
+      "session_not_filed_untitled": "Um novo chat foi aberto fora de qualquer pasta porque não pôde ser colocado na pasta \"{{folder}}\".",
+      "session_not_filed_folder_gone": "\"{{title}}\" foi aberto fora de qualquer pasta porque a pasta dele não existe mais.",
+      "session_not_filed_untitled_folder_gone": "Um novo chat foi aberto fora de qualquer pasta porque a pasta dele não existe mais."
     }
   },
   "utils": {

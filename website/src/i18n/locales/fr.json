@@ -19484,7 +19484,11 @@
       "session_gone_open_failed_named": "« {{name}} » a été supprimée et ne peut pas être ouverte.",
       "truncated_chars": "…({{count}} caractères tronqués — rouvre la session pour voir la sortie complète)",
       "truncated": "…(tronqué)",
-      "session_folder_unavailable": "Ce chat n’a pas pu obtenir son propre dossier ; il s’est donc ouvert dans ton dossier de projet par défaut. Vérifie Nouveaux dossiers de session dans les paramètres."
+      "session_folder_unavailable": "Ce chat n’a pas pu obtenir son propre dossier ; il s’est donc ouvert dans ton dossier de projet par défaut. Vérifie Nouveaux dossiers de session dans les paramètres.",
+      "session_not_filed": "«{{title}}» s’est ouvert hors de tout dossier, car il n’a pas pu être rangé dans le dossier «{{folder}}».",
+      "session_not_filed_untitled": "Un nouveau chat s’est ouvert hors de tout dossier, car il n’a pas pu être rangé dans le dossier «{{folder}}».",
+      "session_not_filed_folder_gone": "«{{title}}» s’est ouvert hors de tout dossier, car son dossier n’existe plus.",
+      "session_not_filed_untitled_folder_gone": "Un nouveau chat s’est ouvert hors de tout dossier, car son dossier n’existe plus."
     }
   },
   "utils": {

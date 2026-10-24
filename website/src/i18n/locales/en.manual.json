@@ -9322,7 +9322,11 @@
       "session_gone_open_failed_named": "“{{name}}” was deleted and cannot be opened.",
       "truncated_chars": "…({{count}} characters truncated — reopen the session to see the full output)",
       "truncated": "…(truncated)",
-      "session_folder_unavailable": "This chat could not get its own folder, so it opened in your default project folder. Check New Session Folders in Settings."
+      "session_folder_unavailable": "This chat could not get its own folder, so it opened in your default project folder. Check New Session Folders in Settings.",
+      "session_not_filed": "\"{{title}}\" opened outside any folder because it could not be filed into \"{{folder}}\".",
+      "session_not_filed_untitled": "A new chat opened outside any folder because it could not be filed into \"{{folder}}\".",
+      "session_not_filed_folder_gone": "\"{{title}}\" opened outside any folder because its folder no longer exists.",
+      "session_not_filed_untitled_folder_gone": "A new chat opened outside any folder because its folder no longer exists."
     }
   },
   "lib": {

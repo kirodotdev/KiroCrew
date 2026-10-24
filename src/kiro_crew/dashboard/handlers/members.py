@@ -132,6 +132,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
         require_owner_dashboard_request,
     )
+    from kiro_crew.dashboard.slot_create_transaction import (  # noqa: F401
+        open_named_slot,
+    )
     from kiro_crew.dashboard.state import (  # noqa: F401
         DashboardState,
         request_slot_origin,

@@ -12,6 +12,7 @@ import logging
 import math
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard import cron_pending
 from kiro_crew.dashboard.chat_persistence import (
     _restore_dismissed_source_links,
     _validate_turn_timeout_secs,
@@ -624,6 +625,10 @@ def _bind_cron_slot(
     # registry, and a created-but-unpublished slot silently fails those gates
     # until some unrelated slot change happens to republish. (Same invariant as
     # channel_slots.reconcile — see the comment there.)
+    if slot.linked_session_key == f"cron:{job.id}":
+        # Runs kept while the tab could not be bound (``_keep_run_in_transcript``)
+        # whose append the hydration above may not have read.
+        cron_pending.merge_into(state, job.id, slot)
     from kiro_crew.dashboard.chat_utils import _sync_dashboard_slots
 
     _sync_dashboard_slots(state)
@@ -715,10 +720,19 @@ def inject_cron_result_to_dashboard(
     stamped on the result row so the chat footer shows the run's usage the same
     way it does for a chat turn. ``None`` (the to-chat replay path) stamps nothing.
     """
-    slot = _bind_cron_slot(state, job, history, dismissed)
+    try:
+        slot = _bind_cron_slot(state, job, history, dismissed)
+    except ValueError:
+        # The tab's key is still under construction past the async callers'
+        # bounded wait (``wait_for_pending_create``). The run is held and
+        # written to the job's transcript; the next bind shows it either way.
+        logger.warning(
+            "cron %s: its tab is still being built; the run is kept in its transcript", job.id
+        )
+        _keep_run_in_transcript(state, job, result_text, include_prompt, turn_stats)
+        return
     if slot is None:
         return
-    safe_name = _safe_job_name(job)
 
     # Rows this call owes the durable transcript, in the order they happened.
     # Collected rather than written per row: the pair is flushed once, below,
@@ -782,58 +796,10 @@ def inject_cron_result_to_dashboard(
         )
 
     if result_text:
-        stamp = run_stamp(job)
-        # Identity, separate from the displayed stamp -- see run_marker.
-        marker = run_marker(job)
-        # Prompt first, so the transcript reads in the order it happened and a
-        # replay pairs each result with the instruction that produced it. Gated
-        # on the result: a lone prompt row would be a run boundary with nothing
-        # behind it, which is what ``/to-chat`` on a job that has never produced
-        # one would otherwise write.
-        # Stored VERBATIM. ``.strip()`` belongs in the emptiness test, not in
-        # the stored value: the executor sends ``job.message`` as written, so
-        # persisting a trimmed copy records a prompt the run was never given --
-        # and leading indentation is not decoration in a message carrying a
-        # fenced block or an indented snippet. The strip still decides whether a
-        # prompt EXISTS, so a whitespace-only message writes no row (dropping it
-        # entirely would emit a run boundary whose body is blank).
-        raw_prompt = job.message or ""
-        prompt = raw_prompt if include_prompt and raw_prompt.strip() else ""
-        if prompt:
-            # A persistent cron carries ONE message for its whole life, so the
-            # verbatim text is stored only when the transcript does not already
-            # hold it -- see _prompt_already_recorded. The row itself is written
-            # every run regardless: it carries the stamp and the marker, so the
-            # run boundary and the user/assistant alternation hold whichever body
-            # it gets. Redacted BEFORE the comparison, because the redacted form
-            # is what a previous run stored.
-            safe_prompt, _ = redact_exfiltration_urls(prompt)
-            safe_prompt, _ = redact_credentials(safe_prompt)
-            if _prompt_already_recorded(slot, safe_prompt, marker):
-                # Mark the row a reference STRUCTURALLY: the invisible
-                # _REFERENCE_MARKER rides in the header's protected block right
-                # after the run marker (which is non-empty here -- suppression
-                # only fires for a run that carries one), so the scan above can
-                # tell this from a verbatim row whose text merely reads like the
-                # placeholder. See _REFERENCE_MARKER.
-                header_marker = f"{marker}{_REFERENCE_MARKER}"
-                prompt_body = _UNCHANGED_PROMPT_BODY
-            else:
-                header_marker = marker
-                prompt_body = safe_prompt
-            _reflect(
-                "user",
-                f"# Cron Run: {safe_name}{stamp}{header_marker}\n\n{prompt_body}",
-                "msg msg-u",
-            )
-        safe_result, _ = redact_exfiltration_urls(result_text)
-        safe_result, _ = redact_credentials(safe_result)
-        _reflect(
-            "assistant",
-            f"# Cron Job Result: {safe_name}{stamp}{marker}\n\n{safe_result}",
-            "msg msg-a",
-            meta={"turn_stats": dict(turn_stats)} if turn_stats else None,
-        )
+        for role, content, cls, meta in _run_rows(
+            job, result_text, include_prompt, turn_stats, slot=slot
+        ):
+            _reflect(role, content, cls, meta)
         # After BOTH rows are queued, so the pair lands as one write.
         _flush_durable_rows()
     if context_reading:
@@ -849,6 +815,103 @@ def inject_cron_result_to_dashboard(
             payload["reset"] = True
         state.broadcast_context_usage(slot.key, payload)
     state.push_slots_update()
+
+
+def _run_rows(
+    job: "CronJob",
+    result_text: str,
+    include_prompt: bool,
+    turn_stats: dict[str, Any] | None,
+    *,
+    slot: Any = None,
+) -> list[tuple[str, str, str, dict[str, Any] | None]]:
+    """A run's prompt and result rows as ``(role, content, cls, meta)``, in order.
+
+    The one builder both writers use: :func:`inject_cron_result_to_dashboard`
+    for a bound tab, and :func:`_keep_run_in_transcript` for a run whose tab
+    cannot be bound yet. *slot* is the bound tab, used only to tell whether its
+    transcript already holds the prompt verbatim; with no tab the prompt is
+    always stored verbatim.
+    """
+    if not result_text:
+        return []
+    safe_name = _safe_job_name(job)
+    stamp = run_stamp(job)
+    # Identity, separate from the displayed stamp -- see run_marker.
+    marker = run_marker(job)
+    rows: list[tuple[str, str, str, dict[str, Any] | None]] = []
+    # Prompt first, so the transcript reads in the order it happened and a
+    # replay pairs each result with the instruction that produced it. Gated
+    # on the result: a lone prompt row would be a run boundary with nothing
+    # behind it, which is what ``/to-chat`` on a job that has never produced
+    # one would otherwise write.
+    # Stored VERBATIM. ``.strip()`` belongs in the emptiness test, not in
+    # the stored value: the executor sends ``job.message`` as written, so
+    # persisting a trimmed copy records a prompt the run was never given --
+    # and leading indentation is not decoration in a message carrying a
+    # fenced block or an indented snippet. The strip still decides whether a
+    # prompt EXISTS, so a whitespace-only message writes no row (dropping it
+    # entirely would emit a run boundary whose body is blank).
+    raw_prompt = job.message or ""
+    prompt = raw_prompt if include_prompt and raw_prompt.strip() else ""
+    if prompt:
+        # A persistent cron carries ONE message for its whole life, so the
+        # verbatim text is stored only when the transcript does not already
+        # hold it -- see _prompt_already_recorded. The row itself is written
+        # every run regardless: it carries the stamp and the marker, so the
+        # run boundary and the user/assistant alternation hold whichever body
+        # it gets. Redacted BEFORE the comparison, because the redacted form
+        # is what a previous run stored.
+        safe_prompt, _ = redact_exfiltration_urls(prompt)
+        safe_prompt, _ = redact_credentials(safe_prompt)
+        if slot is not None and _prompt_already_recorded(slot, safe_prompt, marker):
+            # Mark the row a reference STRUCTURALLY: the invisible
+            # _REFERENCE_MARKER rides in the header's protected block right
+            # after the run marker (which is non-empty here -- suppression
+            # only fires for a run that carries one), so the scan above can
+            # tell this from a verbatim row whose text merely reads like the
+            # placeholder. See _REFERENCE_MARKER.
+            header_marker = f"{marker}{_REFERENCE_MARKER}"
+            prompt_body = _UNCHANGED_PROMPT_BODY
+        else:
+            header_marker = marker
+            prompt_body = safe_prompt
+        rows.append(
+            (
+                "user",
+                f"# Cron Run: {safe_name}{stamp}{header_marker}\n\n{prompt_body}",
+                "msg msg-u",
+                None,
+            )
+        )
+    safe_result, _ = redact_exfiltration_urls(result_text)
+    safe_result, _ = redact_credentials(safe_result)
+    rows.append(
+        (
+            "assistant",
+            f"# Cron Job Result: {safe_name}{stamp}{marker}\n\n{safe_result}",
+            "msg msg-a",
+            {"turn_stats": dict(turn_stats)} if turn_stats else None,
+        )
+    )
+    return rows
+
+
+def _keep_run_in_transcript(
+    state: DashboardState,
+    job: "CronJob",
+    result_text: str,
+    include_prompt: bool,
+    turn_stats: dict[str, Any] | None,
+) -> None:
+    """Keep a run whose tab cannot be bound yet, and write it to its transcript.
+
+    The rows :func:`_run_rows` builds are held in the disk-backed pending store
+    (:mod:`kiro_crew.dashboard.cron_pending`) and appended to ``cron:{id}``,
+    with a lock timeout retried. The next bind of the tab merges the held rows,
+    and their entry is deleted once the tab's save confirms.
+    """
+    cron_pending.admit(state, job, _run_rows(job, result_text, include_prompt, turn_stats))
 
 
 def _app_owned(slot: Any) -> bool:
@@ -969,18 +1032,35 @@ async def ensure_cron_slot(state: DashboardState, job: "CronJob") -> None:
     """
     if not (job.persistent_session and not job.hide_in_chat):
         return
+    from kiro_crew.dashboard.slot_create_transaction import wait_for_pending_create
+
+    # A dashboard create of this key still building it: wait (bounded) so the
+    # bind opens its slot, as it did when the create registered up front.
+    await wait_for_pending_create(state, f"cron-{job.id}")
     slot = state.get_slot(f"cron-{job.id}")
     if _app_owned(slot):
         # Never adopted (see _bind_cron_slot). Returned before any read, and with
         # no audit row: the result injection records the one refusal per run.
         return
+    # Runs held while the tab could not be bound, read off the loop for the
+    # merge below or in the bind.
+    await cron_pending.load(state, job.id)
     if slot is not None and slot.linked_session_key:
+        if state.get_slot(slot.key) is slot and slot.linked_session_key == f"cron:{job.id}":
+            cron_pending.merge_into(state, job.id, slot)
         await prefetch_cron_dismissed(state, job.id)
         await restore_cron_turn_timeout(state, job.id)
         return
     history = await prefetch_cron_history(state, job.id)
     dismissed = await prefetch_cron_dismissed(state, job.id)
-    _bind_cron_slot(state, job, history, dismissed)
+    try:
+        _bind_cron_slot(state, job, history, dismissed)
+    except ValueError:
+        # The key is still under construction past the bounded wait: the same
+        # fallback the result injection takes. A run start has no rows yet, so
+        # there is nothing to keep; its result is kept in the job's transcript
+        # (``_keep_run_in_transcript``) and the next bind opens the tab.
+        logger.warning("cron %s: its tab is still being built; the run starts without one", job.id)
     await restore_cron_turn_timeout(state, job.id)
 
 

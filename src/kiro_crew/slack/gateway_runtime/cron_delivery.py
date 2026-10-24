@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         GatewayOrchestrator,
         LLMProvider,
         build_cron_ack_block,
+        cron_pending,
         inject_cron_result_to_dashboard,
         logger,
         prefetch_cron_history,
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
         redact_exfiltration_urls,
         render_for_slack,
         sel,
+        wait_for_pending_create,
     )
 
 
@@ -94,6 +96,9 @@ async def _deliver_cron_agent_result(
                 downstream_service="none",
             )
             # Still inject into dashboard slot even when Slack is suppressed
+            if self.dashboard_state:
+                await wait_for_pending_create(self.dashboard_state, f"cron-{job.id}")
+                await cron_pending.load(self.dashboard_state, job.id)
             if (
                 self.dashboard_state
                 and job.persistent_session
@@ -120,6 +125,9 @@ async def _deliver_cron_agent_result(
             downstream_service="none",
         )
         # Still inject into dashboard slot even when silent
+        if self.dashboard_state:
+            await wait_for_pending_create(self.dashboard_state, f"cron-{job.id}")
+            await cron_pending.load(self.dashboard_state, job.id)
         if (
             self.dashboard_state
             and job.persistent_session
@@ -151,6 +159,10 @@ async def _deliver_cron_agent_result(
         # paths above only re-inject into an already-existing slot via has_slot(), so
         # they self-no-op when hide_in_chat is True.
         if job.persistent_session and not job.hide_in_chat:
+            # A dashboard create of the tab's key still building it:
+            # wait (bounded) so the result lands on its slot.
+            await wait_for_pending_create(self.dashboard_state, f"cron-{job.id}")
+            await cron_pending.load(self.dashboard_state, job.id)
             history = (
                 await asyncio.to_thread(
                     self.dashboard_state.conversation_log.read_messages,

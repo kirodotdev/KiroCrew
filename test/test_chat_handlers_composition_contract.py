@@ -858,7 +858,7 @@ prompt_queue | api_chat_slot_queue_cancel | async function | (request: 'web.Requ
 prompt_queue | api_chat_slot_queue_edit | async function | (request: 'web.Request') -> 'web.Response'
 prompt_queue | api_chat_slot_queue_reorder | async function | (request: 'web.Request') -> 'web.Response'
 slot_create | _default_template_stamp | function | (cfg: 'KiroCrewConfig') -> 'str'
-slot_create | _persist_app_agent_owner | async function | (state: 'DashboardState', slot: '_ChatSlot') -> 'bool'
+slot_create | _persist_app_agent_owner | async function | (state: 'DashboardState', slot: '_ChatSlot', *, create: 'PendingSlotCreate | None' = None) -> 'bool'
 slot_create | api_chat_slot_create | async function | (request: 'web.Request') -> 'web.Response'
 handover_drain | _HandoverDrainResult | class
 handover_drain | _owed_prompts_lost_on_line | async function | (state: 'DashboardState', name: 'str', slot: '_ChatSlot', history_key: 'str') -> 'int'

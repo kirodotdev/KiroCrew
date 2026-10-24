@@ -8,9 +8,11 @@ refuses nothing.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -24,6 +26,7 @@ from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.apps import bridges, manager
 from kiro_crew.apps.agent_launch import app_agent_launch_name
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.execution_context import read_session_execution
 
 
 class _KiroProvider(ScriptedProvider):
@@ -496,21 +499,25 @@ async def test_create_stamps_the_owner_on_a_template_pick(tmp_path, monkeypatch)
 async def test_create_fails_when_the_owner_cannot_be_persisted(tmp_path, monkeypatch, outcome):
     from test_chat_agent_selection import TEMPLATE, _template_chat
 
-    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.dashboard import chat_persistence
 
     state, _slot, _store = await _template_chat(tmp_path, monkeypatch, first_turn=False)
+    before = read_session_execution("dashboard:owned")
+    at_write: list[Any] = []
 
     def failing_birth_write(*_a, **_kw):
+        at_write.append(read_session_execution("dashboard:owned"))
         if outcome == "raised":
             raise OSError("disk full")
         return False
 
-    async def failing_save(*_a, **kw):
-        assert kw.get("best_effort") is False
+    def failing_save(*_a, **kw):
+        assert kw.get("force") is True
+        at_write.append(read_session_execution("dashboard:owned"))
         return False
 
     monkeypatch.setattr(state.conversation_log, "update_metadata_if", failing_birth_write)
-    monkeypatch.setattr(chat_handlers, "save_slot_off_loop", failing_save)
+    monkeypatch.setattr(chat_persistence, "_save_slot_to_history", failing_save)
     app = _make_app_with_agent_routes(state)
     async with TestClient(TestServer(as_owner(app))) as client:
         response = await client.post(
@@ -524,20 +531,71 @@ async def test_create_fails_when_the_owner_cannot_be_persisted(tmp_path, monkeyp
         )
         assert response.status == 503, await response.text()
         assert (await response.json())["code"] == "app_agent_owner_unpersisted"
-    # The newborn is retracted, not left behind: a slot the caller was told did
-    # not get created must not be broadcast, must not be minted twice by the
-    # retry, and -- message-less, so a dirty re-save writes no line -- must not
-    # come back unbound after a restart.
+    # Nothing was published, so nothing is left behind: a slot the caller was
+    # told did not get created must not be broadcast, must not be minted twice
+    # by the retry, and -- message-less, so a dirty re-save writes no line --
+    # must not come back unbound after a restart.
     assert "owned" not in state._slots
+    # The selection the create recorded was live while the write ran, and the
+    # refusal puts back what the key held before the create.
+    assert at_write and all(record is not None for record in at_write)
+    assert read_session_execution("dashboard:owned") == before
 
 
 @pytest.mark.asyncio
-async def test_a_create_cancelled_mid_write_retracts_the_newborn(tmp_path, monkeypatch):
-    # A shutdown that cancels the handler while the binding is being written
-    # must not leave a published, unbound newborn behind (the twin in
-    # session_control.py catches CancelledError for the same reason).
-    import asyncio
+async def test_the_owner_is_written_before_the_newborn_is_published(tmp_path, monkeypatch):
+    # The birth write can refuse the create, so it runs while the slot is still
+    # private: a refusal leaves no registered slot and no frame carrying it.
+    from test_chat_agent_selection import TEMPLATE, _template_chat
 
+    from kiro_crew.dashboard import chat_handlers
+
+    state, _slot, _store = await _template_chat(tmp_path, monkeypatch, first_turn=False)
+    before = read_session_execution("dashboard:owned")
+    registered_at_write: list[bool] = []
+    selection_at_write: list[Any] = []
+    frames: list[list[str]] = []
+    broadcast = state._do_slots_broadcast
+
+    async def refusing_write(state_arg, slot, **_kw):
+        registered_at_write.append(slot.key in state_arg._slots)
+        selection_at_write.append(
+            await asyncio.to_thread(read_session_execution, "dashboard:owned")
+        )
+        return False
+
+    def counting_broadcast(*args, **kwargs):
+        frames.append(sorted(state._slots))
+        return broadcast(*args, **kwargs)
+
+    monkeypatch.setattr(chat_handlers, "_persist_app_agent_owner", refusing_write)
+    monkeypatch.setattr(state, "_do_slots_broadcast", counting_broadcast)
+    app = _make_app_with_agent_routes(state)
+    async with TestClient(TestServer(as_owner(app))) as client:
+        response = await client.post(
+            "/api/chat/slots",
+            json={
+                "name": "owned",
+                "agent": TEMPLATE,
+                "agent_kind": "template",
+                "app_agent_owner": "pr-bulk-ops",
+            },
+        )
+        assert response.status == 503, await response.text()
+    assert registered_at_write == [False]
+    assert all("owned" not in frame for frame in frames)
+    assert "owned" not in state._slots
+    assert "owned" not in state._slots_under_construction
+    # The settle undoes the selection the create recorded before the write.
+    assert len(selection_at_write) == 1 and selection_at_write[0] is not None
+    assert read_session_execution("dashboard:owned") == before
+
+
+@pytest.mark.asyncio
+async def test_a_create_cancelled_mid_write_publishes_nothing(tmp_path, monkeypatch):
+    # A shutdown that cancels the handler while the binding is being written
+    # publishes nothing: the slot was never registered, and the cancellation
+    # releases the key's construction mark on its way out.
     import aiohttp
     from test_chat_agent_selection import TEMPLATE, _template_chat
 
@@ -562,6 +620,7 @@ async def test_a_create_cancelled_mid_write_retracts_the_newborn(tmp_path, monke
                 },
             )
     assert "owned" not in state._slots
+    assert "owned" not in state._slots_under_construction
 
 
 @pytest.mark.asyncio
@@ -689,3 +748,180 @@ def test_the_manifest_never_vouches_for_a_skill_view_name(tmp_path):
     data = {"contributes": {"commands": [{"id": "c", "agent": view}]}}
     contain_command_agents(data, ["agents/x.json"], tmp_path)
     assert "agent" not in data["contributes"]["commands"][0]
+
+
+async def _create_while_a_close_puts_back(
+    tmp_path, monkeypatch, *, put_back_at: str, eol: bytes = b"\n"
+):
+    """Create ``owned`` while a close whose archive failed puts its slot back.
+
+    The close has popped its slot (``owned``, with a title, a pin, an owner and
+    a turn on its transcript) and the create reserved the free key. The put-back
+    lands at *put_back_at*: ``selection`` while the create awaits its selection
+    write, ``publish`` after the birth write committed and before publication.
+    Every line of the transcript is first re-terminated with *eol*, so a CRLF
+    file is exercised on every OS, not only on the runner that writes one.
+    Returns the put-back slot, the transcript bytes before the create, the
+    transcript path, the create's response status and the transcript bytes as
+    the publish began, if it began. No sleeps: each put-back runs inline in the
+    step it follows.
+    """
+    from test_chat_agent_selection import TEMPLATE, _template_chat
+
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+    from kiro_crew.dashboard.chat_utils import slot_history_key
+
+    state, _slot, _store = await _template_chat(tmp_path, monkeypatch, first_turn=False)
+    kept = state.get_or_create_slot("owned")
+    kept.title = "Kept title"
+    kept.pinned = True
+    kept.app_agent_owner = "kept-app/kept-agent"
+    kept.append("user", "an earlier turn")
+    await asyncio.to_thread(_save_slot_to_history, state, kept, force=True)
+    path = state.conversation_log._path(slot_history_key(kept))
+    path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", eol))
+    state.conversation_log._invalidate_cache(slot_history_key(kept))
+    before = path.read_bytes()
+    assert b"Kept title" in before and b"kept-app/kept-agent" in before
+    # The close pops its slot before the archive that will fail.
+    state._slots.pop("owned")
+
+    def put_back() -> None:
+        state._slots["owned"] = kept
+
+    if put_back_at == "selection":
+        real_record = chat_handlers._record_explicit_agent_selection
+
+        async def record_then_put_back(*args, **kwargs):
+            change = await real_record(*args, **kwargs)
+            put_back()
+            return change
+
+        monkeypatch.setattr(chat_handlers, "_record_explicit_agent_selection", record_then_put_back)
+    at_publish: list[bytes] = []
+    real_publish = chat_handlers._publish_pending_create
+
+    async def publish(*args, **kwargs):
+        if put_back_at == "publish":
+            put_back()
+        at_publish.append(path.read_bytes())
+        return await real_publish(*args, **kwargs)
+
+    monkeypatch.setattr(chat_handlers, "_publish_pending_create", publish)
+    app = _make_app_with_agent_routes(state)
+    async with TestClient(TestServer(as_owner(app))) as client:
+        response = await asyncio.wait_for(
+            client.post(
+                "/api/chat/slots",
+                json={
+                    "name": "owned",
+                    "agent": TEMPLATE,
+                    "agent_kind": "template",
+                    "app_agent_owner": "pr-bulk-ops",
+                },
+            ),
+            30,
+        )
+        status = response.status
+    return state, kept, before, path, status, at_publish
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("eol", [b"\n", b"\r\n"], ids=["lf", "crlf"])
+@pytest.mark.parametrize("put_back_at", ["selection", "publish"])
+async def test_a_create_refused_by_a_close_put_back_leaves_its_transcript_byte_identical(
+    tmp_path, monkeypatch, put_back_at, eol
+):
+    # A close whose archive failed puts its slot back under the key the create
+    # reserved. The put-back wins and the create answers 409; the transcript the
+    # put-back slot owns keeps its title, pin and app-agent owner byte for byte.
+    #
+    # Mutation pins: drop the birth write's fence (the holder check under the
+    # transcript lock) and the ``selection`` case writes the line before the
+    # restore puts it back; drop the compare-and-set restore on the create's
+    # settle and the ``publish`` case leaves the newborn's title, pin and owner
+    # on the line. Both together are the unfenced write before publication.
+    state, kept, before, path, status, at_publish = await _create_while_a_close_puts_back(
+        tmp_path, monkeypatch, put_back_at=put_back_at, eol=eol
+    )
+    assert status == 409
+    if put_back_at == "selection":
+        # Fenced: refused before it wrote, so no publish ran and nothing changed.
+        assert at_publish == []
+    else:
+        # Written before the put-back landed, then put back on the settle.
+        assert at_publish and at_publish[0] != before
+    assert state._slots["owned"] is kept
+    assert "owned" not in state._slots_under_construction
+    assert path.read_bytes() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("closed_mode", ["incognito", "temporary"])
+async def test_a_recreated_restricted_key_is_restricted_when_it_is_published(
+    tmp_path, monkeypatch, closed_mode
+):
+    # The key's closed transcript is incognito or temporary. The create's birth
+    # write folds that mode into the newborn, and the newborn is not registered
+    # yet, so the fold can only land when the slot is published. At the moment
+    # publication returns, before any opener or push can run, the slot reports
+    # the restricted mode and the key refuses artifact creation.
+    #
+    # Mutation pin: drop the fold (or the ``slot.is_restricted`` marker term)
+    # from ``DashboardState.publish_slot`` and the slot is published persistent
+    # with artifact creation allowed.
+    from unittest.mock import AsyncMock, MagicMock
+
+    from test_chat_agent_selection import TEMPLATE, _template_chat
+
+    from kiro_crew.dashboard import slot_create_transaction
+    from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+    from kiro_crew.dashboard.handlers.artifacts import api_artifacts_create
+
+    state, _slot, _store = await _template_chat(tmp_path, monkeypatch, first_turn=False)
+    closed = state.get_or_create_slot("owned", memory_mode=closed_mode)
+    closed.append("user", "an earlier turn")
+    await asyncio.to_thread(_save_slot_to_history, state, closed, force=True)
+    # Closed: the slot is gone and its key marker with it, as a close leaves them.
+    state._slots.pop("owned")
+    state._restricted_keys.discard("dashboard:owned")
+
+    at_publication: list[tuple[str, bool, int]] = []
+    real_publish = slot_create_transaction.PendingSlotCreate.publish
+
+    def observing_publish(self):
+        slot = real_publish(self)
+        request = MagicMock()
+        request.headers = {"X-Session-Key": "dashboard:owned"}
+        request.app = {"state": state}
+        request.read = AsyncMock(return_value=b'{"name": "leak", "content": "x"}')
+        # The handler refuses before its first await, so this runs to its
+        # answer synchronously, inside the publish step.
+        refusal = api_artifacts_create(request)
+        try:
+            refusal.send(None)
+        except StopIteration as stop:
+            status = stop.value.status
+        else:
+            refusal.close()
+            status = 0
+        at_publication.append((slot.memory_mode, slot.is_restricted, status))
+        return slot
+
+    monkeypatch.setattr(slot_create_transaction.PendingSlotCreate, "publish", observing_publish)
+    app = _make_app_with_agent_routes(state)
+    async with TestClient(TestServer(as_owner(app))) as client:
+        response = await client.post(
+            "/api/chat/slots",
+            json={
+                "name": "owned",
+                "agent": TEMPLATE,
+                "agent_kind": "template",
+                "app_agent_owner": "pr-bulk-ops",
+            },
+        )
+        assert response.status == 200, await response.text()
+    assert at_publication == [(closed_mode, True, 403)]
+    assert state._slots["owned"].memory_mode == closed_mode
+    assert "dashboard:owned" in state._restricted_keys

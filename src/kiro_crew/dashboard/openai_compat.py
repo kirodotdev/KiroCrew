@@ -33,6 +33,7 @@ from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_ERROR,
     is_relay_archive,
 )
+from kiro_crew.dashboard.slot_create_transaction import open_named_slot, pending_create_app
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key, load_window_off_loop
 from kiro_crew.dashboard.turn_dispatch import chat_turn_timeout_secs
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -132,6 +133,48 @@ def _redact(text: str) -> str:
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
     return text
+
+
+def _app_unscoped_refusal(request_app: str, key: str) -> web.Response:
+    """The 403 an app gets for a key it may not reach: an unscoped slot, or no slot at all."""
+    sel().log_api_access(
+        caller=request_app,
+        operation="openai_compat.chat",
+        outcome="denied",
+        source="app_isolation",
+        resources=f"slot={key}",
+        error="app cannot access unscoped slots",
+    )
+    return web.json_response(
+        {"error": {"message": "app cannot reach unscoped slots", "type": "forbidden"}},
+        status=403,
+    )
+
+
+def _app_meets_a_key_under_construction(
+    state: DashboardState, request_app: str, key: str, exc: ValueError
+) -> web.Response:
+    """Answer an app whose key is still being built or restored.
+
+    Its own slot is answered with a retryable 409 ``slot_under_construction``.
+    Any other key gets the answer a key with no slot gets, the unscoped 403, so
+    an app cannot tell a create or restore in flight from a key nobody holds.
+    """
+    if pending_create_app(state, key) == request_app or (
+        getattr(state._slots.get(key), "_app", None) == request_app
+    ):
+        return web.json_response(
+            {
+                "error": {
+                    "message": str(exc),
+                    "type": "invalid_request_error",
+                    "code": "slot_under_construction",
+                },
+                "code": "slot_under_construction",
+            },
+            status=409,
+        )
+    return _app_unscoped_refusal(request_app, key)
 
 
 async def api_completions(request: web.Request) -> web.StreamResponse:
@@ -332,16 +375,29 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
     if slot_id:
         # A thread restored as a sidebar row loads its window here, with the
         # read off the loop, before the turn below appends to it; the slot is
-        # looked up again after the await.
+        # looked up again after the await. It runs before the pending-create
+        # wait so nothing awaits between that wait and the lookup.
         if (_pending := state._slots.get(_normalize_slot_key(slot_id))) is not None:
             await load_window_off_loop(_pending)
-        # Membership must be checked on the canonical (filename-charset) key —
-        # get_or_create_slot folds unsafe chars, so a raw slot_id may map to an
-        # existing slot even when the raw string is absent from _slots.
-        freshly_created = _normalize_slot_key(slot_id) not in state._slots
+        request_app = request.get("app", "") or ""
         try:
-            slot = state.get_or_create_slot(slot_id)
+            if request_app:
+                # An app is judged on the key as it stands: it never waits
+                # behind a create, so a key under construction refuses here.
+                known = state._slots.get(_normalize_slot_key(slot_id))
+                slot = state.get_or_create_slot(slot_id)
+                freshly_created = slot is not known
+            else:
+                # A dashboard create of this key still building it: the open
+                # waits (bounded) for its slot. Only an app's slot is ever
+                # retracted below, so the dashboard open need not say whether
+                # it created the slot.
+                slot = await open_named_slot(state, slot_id)
+                freshly_created = False
         except ValueError as exc:
+            key = _normalize_slot_key(slot_id)
+            if request_app and key in getattr(state, "_slots_under_construction", ()):
+                return _app_meets_a_key_under_construction(state, request_app, key, exc)
             # The constructor's refusals (member-* key reservation,
             # memory-mode mismatch) map to a 409 in the OpenAI error shape —
             # the same translation the send and slot-create paths perform.
@@ -525,20 +581,9 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
     is_dashboard_caller = request_app == ""
     if not is_dashboard_caller:
         if not slot._app:
-            sel().log_api_access(
-                caller=request_app,
-                operation="openai_compat.chat",
-                outcome="denied",
-                source="app_isolation",
-                resources=f"slot={slot.key}",
-                error="app cannot access unscoped slots",
-            )
             if slot_id and freshly_created:
                 state._slots.pop(slot.key, None)
-            return web.json_response(
-                {"error": {"message": "app cannot reach unscoped slots", "type": "forbidden"}},
-                status=403,
-            )
+            return _app_unscoped_refusal(request_app, slot.key)
         if request_app != slot._app:
             sel().log_api_access(
                 caller=request_app,

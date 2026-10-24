@@ -10,6 +10,30 @@
 
 export const SESSION_FOLDER_UNAVAILABLE_EVENT = 'kc-session-folder-unavailable'
 
+/** A create that asked for a folder answered with a different `folder_id`: the
+ * gateway opened the chat but could not file it there (the folder was deleted,
+ * or a concurrent move placed it), so it opened outside any folder. Announced
+ * on `window` for the App shell's notice, like the session folder notice. */
+export const SESSION_NOT_FILED_EVENT = 'kc-session-not-filed'
+
+/** Which create opened outside its folder: the notice names the chat and the
+ * folder, because the create may come from another pane or an app, where
+ * "this chat" has nothing to point at. */
+export interface NotFiledDetail {
+  key: string
+  /** The chat's title, empty when the create had none. */
+  title: string
+  /** The folder the create asked for. */
+  folderId: string
+}
+
+/** Announce a create that opened outside the folder it asked for. */
+export function announceNotFiled(detail: NotFiledDetail): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent<NotFiledDetail>(SESSION_NOT_FILED_EVENT, { detail }))
+  }
+}
+
 /** Strip the notice from a create response and announce it when present. */
 export function takeSessionFolderNotice<T>(created: T): T {
   if (created && typeof created === 'object' && 'session_folder_notice' in created) {

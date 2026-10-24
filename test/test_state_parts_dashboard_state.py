@@ -444,6 +444,18 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, slot_key: 'str', questions: 'list[dict]', *, native: 'bool' = " "False) -> 'int'",
     ),
+    "prepare_slot": (
+        "function",
+        False,
+        False,
+        "(self, name: 'str | None' = None, agent: 'str' = '', workspace: 'str' "
+        "= 'default', model: 'str' = '', mode: 'str' = '', memory_mode: 'str | "
+        "None' = None, ephemeral: 'bool | None' = None, app: 'str' = '', "
+        "linked_session_key: 'str' = '', channel_origin: 'bool' = False, "
+        "origin: 'str | None' = None, *, count_user_session: 'bool' = False) "
+        "-> 'tuple[_ChatSlot | None, PendingSlot | None]'",
+    ),
+    "publish_slot": ("function", False, False, "(self, pending: 'PendingSlot') -> '_ChatSlot'"),
     "push_artifact_update": (
         "function",
         False,

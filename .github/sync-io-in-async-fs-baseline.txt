@@ -35,7 +35,6 @@
 3 src/kiro_crew/cli_server.py
 2 src/kiro_crew/dashboard/agent_admin/agent_config.py
 2 src/kiro_crew/dashboard/chat_api/session_relaunch.py
-2 src/kiro_crew/dashboard/chat_api/slot_create.py
 1 src/kiro_crew/dashboard/file_api/desktop.py
 3 src/kiro_crew/dashboard/file_api/outbox.py
 2 src/kiro_crew/dashboard/file_api/uploads.py

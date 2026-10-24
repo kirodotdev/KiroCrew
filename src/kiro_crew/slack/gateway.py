@@ -147,7 +147,7 @@ from kiro_crew.cron import (
     effective_wake_budget,
 )
 from kiro_crew.cron_script import delivery_fingerprint, run_command_sandboxed, run_script_sandboxed
-from kiro_crew.dashboard import cautious_boot, start_dashboard, token_secret
+from kiro_crew.dashboard import cautious_boot, cron_pending, start_dashboard, token_secret
 from kiro_crew.dashboard.chat_persistence import (
     rehydrate_slot_from_history_async,
     wait_for_unwinding_turns,
@@ -207,6 +207,7 @@ from kiro_crew.dashboard.persistence_watchdog import (
     shutdown_exit_code as persistence_lost_exit_code,
 )
 from kiro_crew.dashboard.sign_in_refresher import drain_sign_in_refresher, run_sign_in_refresher
+from kiro_crew.dashboard.slot_create_transaction import wait_for_pending_create
 from kiro_crew.dashboard.stale_asset_watchdog import (
     run_stale_asset_watchdog,
     shutdown_exit_code,

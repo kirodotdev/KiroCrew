@@ -45,6 +45,8 @@ from kiro_crew.history_projection_contract import (
     METADATA_LINE_CORRUPT,
     TranscriptRevisionChanged,
     _history_facade,
+    join_first_line,
+    split_first_line,
 )
 from kiro_crew.jsonl_util import (
     bounded_raw_records,
@@ -437,11 +439,14 @@ class SessionMetadataProjection:
         """
         path = self._log._path(key)
         previous_mtime = _history_facade()._safe_mtime(path)
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True) if path.exists() else []
+        # Bytes, not text: only the first line is rewritten, so its terminator and
+        # every row after it are written back exactly as read (split_first_line).
+        existing = path.read_bytes() if path.exists() else b""
         healing_corrupt_line = False
-        if lines:
+        if existing:
+            first, terminator, rest = split_first_line(existing)
             try:
-                metadata = json.loads(lines[0])
+                metadata = json.loads(first.decode("utf-8"))
             except json.JSONDecodeError:
                 _HISTORY_LOGGER.warning(
                     "history: metadata line for %s is corrupt (not JSON); rewriting it "
@@ -466,19 +471,18 @@ class SessionMetadataProjection:
                 "created_at": _history_facade().metadata_now_iso(),
                 "last_consolidated": 0,
             }
-            lines = [""]
+            terminator, rest = b"\n", b""
 
         metadata.update(fields)
         if healing_corrupt_line:
             metadata["memory_mode"] = STRICTEST_MEMORY_MODE
             metadata.pop("memory_store", None)
-        lines[0] = json.dumps(metadata) + "\n"
 
         # This hot one-line edit remains crash-atomic without paying for an
         # fsync while every other writer of the session is excluded.
         import tempfile
 
-        data = "".join(lines).encode("utf-8")
+        data = join_first_line(json.dumps(metadata), terminator, rest)
         descriptor, temporary = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
         try:
             try:
@@ -502,6 +506,46 @@ class SessionMetadataProjection:
         self._log._invalidate_cache(key)
         return True
 
+    def first_line_bytes_locked(self, key: str) -> bytes | None:
+        """The session file's first line as stored, newline included; the lock is held.
+
+        ``None`` when the file does not exist. The metadata writes above rewrite
+        this line and nothing after it, so it is what a caller snapshots to put a
+        line back exactly as it found it (:meth:`restore_first_line_if`).
+        """
+        path = self._log._path(key)
+        if not path.exists():
+            return None
+        with path.open("rb") as handle:
+            return handle.readline()
+
+    def restore_first_line_if(self, key: str, written: bytes, prior: bytes | None) -> bool:
+        """Put *prior* back as the first line while the line is still *written*.
+
+        A compare-and-set: a line anyone rewrote since *written* landed is left
+        alone, and so is every row after the line. *prior* ``None`` means the
+        file did not exist, so a file holding nothing but *written* is removed.
+        False when the line was not ours to restore. Read, compare and write are
+        all bytes (:func:`split_first_line`), so *prior* goes back with the
+        terminator it was read with and the rows after it are not re-terminated.
+        """
+        with self._log._locked(key):
+            path = self._log._path(key)
+            if not path.exists():
+                return False
+            data = path.read_bytes()
+            first, terminator, rest = split_first_line(data)
+            if first + terminator != written:
+                return False
+            previous_mtime = _history_facade()._safe_mtime(path)
+            if prior is None and not rest:
+                path.unlink()
+            else:
+                atomic_write(path, (prior or b"") + rest, fsync=False)
+                _history_facade()._restore_mtime(path, previous_mtime)
+            self._log._invalidate_cache(key)
+        return True
+
     def mtime_of(self, key: str) -> float | None:
         """Return a session file mtime without reading its contents."""
         try:
@@ -521,11 +565,12 @@ class SessionMetadataProjection:
             if not path.exists():
                 return
             previous_mtime = _history_facade()._safe_mtime(path)
-            lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-            if not lines:
+            existing = path.read_bytes()
+            if not existing:
                 return
+            first, terminator, rest = split_first_line(existing)
             try:
-                metadata = json.loads(lines[0])
+                metadata = json.loads(first.decode("utf-8"))
             except json.JSONDecodeError:
                 return
             if not isinstance(metadata, dict):
@@ -544,8 +589,7 @@ class SessionMetadataProjection:
                     return
             metadata.pop("closed", None)
             metadata.pop("closed_at", None)
-            lines[0] = json.dumps(metadata) + "\n"
-            atomic_write(path, "".join(lines), fsync=False)
+            atomic_write(path, join_first_line(json.dumps(metadata), terminator, rest), fsync=False)
             _history_facade()._restore_mtime(path, previous_mtime)
             # Invalidate before releasing the lock so no preserved-mtime fill
             # can publish the pre-clear metadata under the current generation.

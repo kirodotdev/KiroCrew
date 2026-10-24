@@ -686,6 +686,9 @@ if TYPE_CHECKING:  # names it serves from outside the owner family, from their h
     from kiro_crew.dashboard.chat_utils import (  # noqa: F401
         slot_history_key,
     )
+    from kiro_crew.dashboard.slot_create_transaction import (  # noqa: F401
+        open_named_slot,
+    )
     from kiro_crew.safety_override import (  # noqa: F401
         safety_override,
     )

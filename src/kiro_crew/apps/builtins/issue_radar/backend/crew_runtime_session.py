@@ -17,6 +17,7 @@ from typing import Any
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.dashboard.slot_create_transaction import open_named_slot
 from kiro_crew.safety_override import safety_override
 
 from . import crew_model, crew_store, provider
@@ -193,8 +194,11 @@ async def ensure_crew_session(state: Any, owner: str, repo: str, crew: dict[str,
     operator's last word.
     """
     slot_key = _slot_key(crew)
-    slot = state.get_or_create_slot(
-        name=slot_key,
+    # A dashboard create of this key that has not published yet: wait (bounded)
+    # for its slot, as every opener of a named key does.
+    slot = await open_named_slot(
+        state,
+        slot_key,
         agent=str(crew.get("agent") or "kirocrew"),
         workspace=str(crew.get("workspace") or "default"),
         model=str(crew.get("model") or ""),

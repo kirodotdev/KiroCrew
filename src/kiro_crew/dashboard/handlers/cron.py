@@ -165,6 +165,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.cron_service.model import (  # noqa: F401
         validate_auto_pause_after_failures,
     )
+    from kiro_crew.dashboard import (  # noqa: F401
+        cron_pending,
+    )
     from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
         _restore_dismissed_source_links,
     )
@@ -193,6 +196,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
         is_owner_dashboard_request,
+    )
+    from kiro_crew.dashboard.slot_create_transaction import (  # noqa: F401
+        open_named_slot,
+        wait_for_pending_create,
     )
     from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
         app_holds_gateway_key,

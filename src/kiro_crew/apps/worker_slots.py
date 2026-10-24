@@ -54,6 +54,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from kiro_crew.apps.audit_sdk import AuditSDK
+from kiro_crew.dashboard.slot_create_transaction import open_named_slot
 from kiro_crew.dashboard.state import SlotOrigin
 from kiro_crew.safety_override import safety_override
 from kiro_crew.sel import sel
@@ -373,7 +374,9 @@ async def acquire_worker_slot(
     cond = _registry.condition()
     lease: WorkerSlotLease | None = None
     try:
-        slot = state.get_or_create_slot(name=key, agent=agent, app=app, model=model)
+        # A same-key create still building its slot finishes (or gives up) first,
+        # so this opens the slot it published rather than meeting its mark.
+        slot = await open_named_slot(state, key, agent=agent, app=app, model=model)
         owner = str(getattr(slot, "_app", "") or "")
         if owner and owner != app:
             raise ValueError(f"slot {key!r} belongs to app {owner!r}")

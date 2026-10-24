@@ -18900,7 +18900,11 @@
       "session_gone_open_failed_named": "“{{name}}”已被删除，无法打开。",
       "truncated_chars": "…（已截断 {{count}} 个字符 —— 重新打开会话可查看完整输出）",
       "truncated": "…（已截断）",
-      "session_folder_unavailable": "此聊天无法获得专属文件夹，因此已在默认项目文件夹中打开。请检查设置中的“新会话文件夹”。"
+      "session_folder_unavailable": "此聊天无法获得专属文件夹，因此已在默认项目文件夹中打开。请检查设置中的“新会话文件夹”。",
+      "session_not_filed": "“{{title}}”已在所有文件夹之外打开，因为无法放入文件夹“{{folder}}”。",
+      "session_not_filed_untitled": "新聊天已在所有文件夹之外打开，因为无法放入文件夹“{{folder}}”。",
+      "session_not_filed_folder_gone": "“{{title}}”已在所有文件夹之外打开，因为其文件夹已不存在。",
+      "session_not_filed_untitled_folder_gone": "新聊天已在所有文件夹之外打开，因为其文件夹已不存在。"
     }
   },
   "utils": {

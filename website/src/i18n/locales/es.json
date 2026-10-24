@@ -19484,7 +19484,11 @@
       "session_gone_open_failed_named": "«{{name}}» se eliminó y no se puede abrir.",
       "truncated_chars": "…({{count}} caracteres truncados: vuelve a abrir la sesión para ver la salida completa)",
       "truncated": "…(truncado)",
-      "session_folder_unavailable": "Este chat no pudo obtener su propia carpeta, así que se abrió en tu carpeta de proyecto predeterminada. Revisa Carpetas de sesión nuevas en Configuración."
+      "session_folder_unavailable": "Este chat no pudo obtener su propia carpeta, así que se abrió en tu carpeta de proyecto predeterminada. Revisa Carpetas de sesión nuevas en Configuración.",
+      "session_not_filed": "\"{{title}}\" se abrió fuera de cualquier carpeta porque no se pudo guardar en la carpeta \"{{folder}}\".",
+      "session_not_filed_untitled": "Un chat nuevo se abrió fuera de cualquier carpeta porque no se pudo guardar en la carpeta \"{{folder}}\".",
+      "session_not_filed_folder_gone": "\"{{title}}\" se abrió fuera de cualquier carpeta porque su carpeta ya no existe.",
+      "session_not_filed_untitled_folder_gone": "Un chat nuevo se abrió fuera de cualquier carpeta porque su carpeta ya no existe."
     }
   },
   "utils": {

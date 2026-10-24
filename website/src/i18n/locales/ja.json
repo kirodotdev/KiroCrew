@@ -18900,7 +18900,11 @@
       "session_gone_open_failed_named": "「{{name}}」は削除されたため開けません。",
       "truncated_chars": "…({{count}} 文字を省略 — セッションを開き直すと全文を表示できます)",
       "truncated": "…(省略)",
-      "session_folder_unavailable": "このチャットには専用のフォルダーを用意できなかったため、既定のプロジェクトフォルダーで開きました。設定の「新しいセッションフォルダー」を確認してください。"
+      "session_folder_unavailable": "このチャットには専用のフォルダーを用意できなかったため、既定のプロジェクトフォルダーで開きました。設定の「新しいセッションフォルダー」を確認してください。",
+      "session_not_filed": "「{{title}}」はどのフォルダーにも属さない状態で開きました。フォルダー「{{folder}}」に入れられなかったためです。",
+      "session_not_filed_untitled": "新しいチャットはどのフォルダーにも属さない状態で開きました。フォルダー「{{folder}}」に入れられなかったためです。",
+      "session_not_filed_folder_gone": "「{{title}}」はどのフォルダーにも属さない状態で開きました。そのフォルダーがもう存在しないためです。",
+      "session_not_filed_untitled_folder_gone": "新しいチャットはどのフォルダーにも属さない状態で開きました。そのフォルダーがもう存在しないためです。"
     }
   },
   "utils": {

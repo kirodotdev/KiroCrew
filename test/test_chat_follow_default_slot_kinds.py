@@ -38,7 +38,11 @@ import kiro_crew
 #: production slot creators.
 _SKIP_DIRS = frozenset({"tests", "container_tests", "testing"})
 
-_CREATORS = frozenset({"get_or_create_slot", "_ChatSlot"})
+#: The calls that mint a slot. ``open_named_slot`` (the bounded wait a named
+#: opener runs before its open) and ``prepare_slot`` (a create's private build,
+#: published later) take ``get_or_create_slot``'s arguments, so a site calling
+#: either is classified like one calling it.
+_CREATORS = frozenset({"get_or_create_slot", "open_named_slot", "prepare_slot", "_ChatSlot"})
 
 _RESTORED = (
     "excluded: the persisted line's own origin, app, member mode and channel_origin "
@@ -68,7 +72,7 @@ SLOT_CREATORS: dict[tuple[str, str], str] = {
         "with no app token and no attested cron creator (else APP with app=, or CRON)"
     ),
     ("dashboard/chat_api/resume.py", "_materialise_slot_from_history"): _RESTORED,
-    ("dashboard/chat_api/slot_create.py", "api_chat_slot_create"): (
+    ("dashboard/chat_api/slot_create.py", "_create_chat_slot"): (
         "person: the New chat tab; request_slot_origin is USER only with no app token "
         "and no attested cron creator (else APP with app=, or CRON)"
     ),
@@ -108,6 +112,14 @@ SLOT_CREATORS: dict[tuple[str, str], str] = {
         "no kept model: the constructor behind every entry here; it keeps the caller's model= "
         "and origin=, which are judged at that caller's own entry"
     ),
+    ("dashboard/state_parts/slot_directory.py", "prepare_slot"): (
+        "no kept model: the private build behind get_or_create_slot and the New chat create; "
+        "it keeps the caller's model= and origin=, which are judged at that caller's own entry"
+    ),
+    ("dashboard/slot_create_transaction.py", "open_named_slot"): (
+        "no kept model: the bounded wait a named opener runs before its open; it forwards the "
+        "caller's model= and origin=, which are judged at that caller's own entry"
+    ),
     ("dashboard/workflow_inject.py", "inject_workflow_result"): (
         "excluded: linked_session_key, assigned right after the mint with no await between"
     ),
@@ -128,7 +140,8 @@ SLOT_CREATORS: dict[tuple[str, str], str] = {
 _CALLS_PER_SITE: dict[tuple[str, str], int] = {
     ("dashboard/handlers/cron_runs.py", "api_cron_to_chat"): 2,
     ("dashboard/handlers/taskrunner.py", "_open_result_slot"): 2,
-    ("dashboard/openai_compat.py", "api_completions"): 2,
+    ("dashboard/openai_compat.py", "api_completions"): 3,
+    ("dashboard/slot_create_transaction.py", "open_named_slot"): 2,
 }
 
 _VERDICT_PREFIXES = ("person: ", "excluded: ", "no kept model: ")
@@ -176,7 +189,7 @@ def _slot_creators() -> dict[tuple[str, str], list[dict[str, str]]]:
         if _SKIP_DIRS.intersection(rel.parts[:-1]):
             continue
         text = path.read_text(encoding="utf-8")
-        if "get_or_create_slot" in text or "_ChatSlot" in text:
+        if any(name in text for name in _CREATORS):
             _CreatorVisitor(rel.as_posix(), found).visit(ast.parse(text))
     return found
 

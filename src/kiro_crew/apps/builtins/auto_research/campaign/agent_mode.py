@@ -39,6 +39,7 @@ from kiro_crew.apps.builtins.auto_research.session_keys import (
 from kiro_crew.autonudge import AUTONUDGE_STOP_REASON
 from kiro_crew.autonudge import get_instance as _autonudge_instance
 from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.dashboard.slot_create_transaction import open_named_slot
 from kiro_crew.platform_compat import is_link_or_junction, unlink_link_or_junction
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -263,8 +264,11 @@ async def _launch_loop(request: web.Request, cid: str, *, prepared: bool = False
     # through the campaign list/detail payloads instead.
     campaign_model = row["model"] or ""
     slot_key = research_slot_key(cid)
-    slot = state.get_or_create_slot(
-        name=slot_key,
+    # A dashboard create of this key that has not published yet: wait (bounded)
+    # for its slot, as every opener of a named key does.
+    slot = await open_named_slot(
+        state,
+        slot_key,
         agent=_RESEARCH_AGENT,
         app=AUTO_RESEARCH_APP,
         model=campaign_model,

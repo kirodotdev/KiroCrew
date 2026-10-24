@@ -27,6 +27,7 @@ from kiro_crew.history_consolidation import (
     AttemptedSpan,
 )
 from kiro_crew.history_files import _restore_mtime, _safe_mtime, transcript_lock_stems
+from kiro_crew.history_projection import join_first_line, split_first_line
 from kiro_crew.history_schema import metadata_now_iso
 
 if TYPE_CHECKING:
@@ -194,14 +195,16 @@ def mark_consolidated(
         if not path.exists():
             return
         prev_mtime = _safe_mtime(path)
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-        if not lines:
+        data = path.read_bytes()
+        if not data:
             return
-        meta = json.loads(lines[0])
+        # Bytes, so only the first line is re-terminated (split_first_line).
+        first, terminator, rest = split_first_line(data)
+        meta = json.loads(first.decode("utf-8"))
         # Reconcile the caller's absolute *offset* against the messages
         # actually present now. Line 0 is the metadata line; every other
         # non-blank line is a message.
-        msg_count = sum(1 for ln in lines[1:] if ln.strip())
+        msg_count = sum(1 for ln in rest.decode("utf-8").splitlines() if ln.strip())
         current_generation = int(meta.get("rotation_generation", 0) or 0)
         if generation is not None and current_generation != generation:
             # PRIMARY signal: the content under this consolidation changed
@@ -280,13 +283,12 @@ def mark_consolidated(
         # would otherwise seek into whatever message next lands at the marker.
         for _sub_key in _CONSOLIDATION_SUBOFFSET_META_KEYS:
             meta.pop(_sub_key, None)
-        lines[0] = json.dumps(meta) + "\n"
         # Reduce lock hold for this one-line metadata rewrite: skip the
         # fsync (fsync=False). ``last_consolidated`` is recoverable
         # bookkeeping — if a crash loses it we simply re-consolidate a few
         # messages — so paying a disk flush while holding the cross-process
         # lock (blocking every other writer of this session) isn't worth it.
-        atomic_write(path, "".join(lines), fsync=False)
+        atomic_write(path, join_first_line(json.dumps(meta), terminator, rest), fsync=False)
         # Housekeeping bookkeeping — must not advance the session's mtime
         # (see _restore_mtime). Otherwise consolidation floats stale sessions
         # to the top of list_sessions on every gateway restart.
@@ -337,10 +339,11 @@ def advance_consolidation_sub_offset(
         if not path.exists():
             return
         prev_mtime = _safe_mtime(path)
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-        if not lines:
+        data = path.read_bytes()
+        if not data:
             return
-        meta = json.loads(lines[0])
+        first, terminator, rest = split_first_line(data)
+        meta = json.loads(first.decode("utf-8"))
         current_generation = int(meta.get("rotation_generation", 0) or 0)
         if current_generation != generation:
             logger.info(
@@ -380,11 +383,10 @@ def advance_consolidation_sub_offset(
         for _acct_key in _CONSOLIDATION_META_KEYS:
             meta.pop(_acct_key, None)
         meta["updated_at"] = metadata_now_iso()
-        lines[0] = json.dumps(meta) + "\n"
         # Same cheap, mtime-preserving, no-fsync write as mark_consolidated:
         # a lost sub-offset only re-slices the head from its start, which is
         # correct behaviour, so it is not worth a disk flush under the lock.
-        atomic_write(path, "".join(lines), fsync=False)
+        atomic_write(path, join_first_line(json.dumps(meta), terminator, rest), fsync=False)
         _restore_mtime(path, prev_mtime)
         self._invalidate_cache(key)
 

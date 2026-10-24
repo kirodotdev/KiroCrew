@@ -202,9 +202,17 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
     deny_session_approval_caller,
 )
 from kiro_crew.dashboard.chat_api.slot_create import (  # noqa: F401
+    _birth_default_project,
+    _check_new_slot_assignment,
+    _create_chat_slot,
+    _create_lock_wait_ran_out,
     _created_slot_row,
     _default_template_stamp,
+    _file_published_create,
     _persist_app_agent_owner,
+    _pin_newborn_store,
+    _publish_pending_create,
+    _put_back_won,
     api_chat_slot_create,
 )
 from kiro_crew.dashboard.chat_api.slot_detail import (  # noqa: F401
@@ -405,6 +413,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     restore_replacement_if_handover_did_not_land,
+    run_to_completion,
     slot_history_key,
     slot_transcript_key,
     subagents_attached_async,
@@ -440,6 +449,16 @@ from kiro_crew.dashboard.slot_buffers import (  # noqa: F401
     DeferredHoldRebound,
     note_hold_durable,
     persist_deferred_notes_sync,
+)
+from kiro_crew.dashboard.slot_create_transaction import (  # noqa: F401
+    CreateDeadline,
+    PendingSlotCreate,
+    acquire_by,
+    acquire_slot_create_name,
+    binding_before_write,
+    current_execution_record,
+    name_held_by_another,
+    wait_for_pending_create,
 )
 from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
     SESSION_CONTROL_DENIED,
@@ -1163,6 +1182,9 @@ _MAX_DEFERRED_NOTES = MAX_DEFERRED_NOTES
 # Distinguishes "key absent" from an explicit JSON null, which `body.get("maxAge")`
 # alone cannot: both yield None, so the two cannot mean different things without it.
 _UNSET = object()
+
+#: The memory store a slot carries at birth, before any assignment pins one.
+_NEW_SLOT_MEMORY_STORE = ""
 
 # Source label bounds. The label is interpolated into the
 # ``[Background context from "{source}"]`` prompt frame at drain, so disallow

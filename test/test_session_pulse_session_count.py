@@ -148,11 +148,23 @@ def _opted_in_call_counts() -> dict[str, int]:
                 continue
             func = node.func
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            if name != "get_or_create_slot":
+            # ``prepare_slot`` builds what ``get_or_create_slot`` registers, for
+            # a create that publishes later; it carries the same flag.
+            if name not in ("get_or_create_slot", "prepare_slot"):
                 continue
             for kw in node.keywords:
-                if kw.arg == "count_user_session" and not (
-                    isinstance(kw.value, ast.Constant) and kw.value.value is False
+                # The state's own forward (``get_or_create_slot`` to
+                # ``prepare_slot`` in state_parts/slot_directory.py) passes its
+                # caller's flag through.
+                forwarded = (
+                    path.relative_to(_SRC).as_posix() == "dashboard/state_parts/slot_directory.py"
+                    and isinstance(kw.value, ast.Name)
+                    and kw.value.id == "count_user_session"
+                )
+                if (
+                    kw.arg == "count_user_session"
+                    and not forwarded
+                    and not (isinstance(kw.value, ast.Constant) and kw.value.value is False)
                 ):
                     n += 1
         if n:

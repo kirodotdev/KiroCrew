@@ -217,6 +217,30 @@ def append_off_loop(
     loop.run_in_executor(None, _do).add_done_callback(_report)
 
 
+def append_rows_if_absent(
+    conversation_log: "ConversationLog",
+    key: str,
+    rows: "Sequence[tuple[str, str, str, str | None]]",
+    *,
+    agent: str | None = None,
+    row_meta: "Sequence[dict[str, Any] | None] | None" = None,
+) -> None:
+    """Append *rows* to *key* in order, as ONE ``atomic_appends`` group.
+
+    The blocking write behind :func:`append_rows_if_absent_off_loop`, for a
+    caller that runs it off the loop itself and must see the outcome: a lock
+    timeout raises :class:`HistoryLockTimeout` and an I/O error raises, instead
+    of only being logged. Each row keeps ``append_if_absent``'s idempotence, so
+    a retry after a partial failure skips the rows that already landed.
+    """
+    with conversation_log.atomic_appends(key):
+        for i, (role, content, cls, mid) in enumerate(rows):
+            extra = row_meta[i] if row_meta and i < len(row_meta) else None
+            conversation_log.append_if_absent(
+                key, role, content, agent=agent, cls=cls, mid=mid, extra_meta=extra
+            )
+
+
 def append_rows_if_absent_off_loop(
     conversation_log: "ConversationLog",
     key: str,
@@ -254,12 +278,7 @@ def append_rows_if_absent_off_loop(
     """
 
     def _do() -> None:
-        with conversation_log.atomic_appends(key):
-            for i, (role, content, cls, mid) in enumerate(rows):
-                extra = row_meta[i] if row_meta and i < len(row_meta) else None
-                conversation_log.append_if_absent(
-                    key, role, content, agent=agent, cls=cls, mid=mid, extra_meta=extra
-                )
+        append_rows_if_absent(conversation_log, key, rows, agent=agent, row_meta=row_meta)
 
     try:
         loop = asyncio.get_running_loop()

@@ -121,6 +121,7 @@ from kiro_crew.history_files import (  # noqa: F401 - facade re-exports
     ARCHIVE_DIR_NAME,
     ARCHIVE_RETENTION_DAYS,
     ARCHIVE_SEGMENT_DELIMITER,
+    CRON_PENDING_DIR_NAME,
     SESSIONS_DIR_NAME,
     CacheIdentity,
     _archive_dir,
@@ -155,6 +156,7 @@ from kiro_crew.history_offload import (  # noqa: F401 - facade re-exports
     allow_on_loop_persist,
     append_if_absent_off_loop,
     append_off_loop,
+    append_rows_if_absent,
     append_rows_if_absent_off_loop,
     on_loop_persist_strict,
     update_metadata_off_loop,
@@ -594,6 +596,10 @@ class ConversationLog:
         """Return True if a conversation log file exists for *key*."""
         return self._path(key).exists()
 
+    def cron_pending_dir(self, job_id: str) -> Path:
+        """Directory of the runs held for cron *job_id*'s tab (``dashboard/cron_pending.py``)."""
+        return self._dir / CRON_PENDING_DIR_NAME / _safe_key(job_id)
+
     def has_messages(self, key: str) -> bool:
         """Return True if *key*'s transcript holds at least one message row.
 
@@ -881,6 +887,12 @@ class ConversationLog:
 
     def _update_metadata_locked(self, key: str, fields: dict) -> bool:
         return self._metadata_projection._update_metadata_locked(key, fields)
+
+    def first_line_bytes_locked(self, key: str) -> bytes | None:
+        return self._metadata_projection.first_line_bytes_locked(key)
+
+    def restore_first_line_if(self, key: str, written: bytes, prior: bytes | None) -> bool:
+        return self._metadata_projection.restore_first_line_if(key, written, prior)
 
     def mtime_of(self, key: str) -> float | None:
         return self._metadata_projection.mtime_of(key)

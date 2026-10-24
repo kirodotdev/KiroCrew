@@ -1094,6 +1094,8 @@ class DashboardState:
     link_slack = _slot_directory.link_slack
     _link_slack_persisted = _slot_directory._link_slack_persisted
     get_or_create_slot = _slot_directory.get_or_create_slot
+    prepare_slot = _slot_directory.prepare_slot
+    publish_slot = _slot_directory.publish_slot
     live_slot_count = _slot_directory.live_slot_count
     creator_slot_count = _slot_directory.creator_slot_count
     begin_slot_construction = _slot_directory.begin_slot_construction

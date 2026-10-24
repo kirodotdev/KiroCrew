@@ -327,6 +327,147 @@ crew and opened here through its window. A slot already on disk with
 continue or checklist write, and a change of agent, model, effort or workspace, answer
 `409 relay_archive_read_only` (`dashboard/relay_archive.py`).
 
+A `POST /api/chat/slots` that is refused or fails leaves no tab behind. For an
+owner create, the member assignment's resolution and member identity check run
+once before anything is built (`_check_new_slot_assignment`), so the common
+refusal builds nothing. Otherwise the create builds its slot privately
+(`DashboardState.prepare_slot`) and reserves the key with the same
+`_slots_under_construction` mark the import path holds across its unregistered
+tail: no other create can open a slot under the key, and every by-name route
+answers as it does for a missing slot. An async opener that is not a create
+(a send, a cron result, a workflow fallback, a dashboard OpenAI-compatible
+call, a resume) first waits for the pending create (`wait_for_pending_create`, bounded
+at 30 s, which folds the key it is given as the registry does), then opens the slot the create published or the free key, as it did
+when the create registered up front. An opener that opens right after the
+wait calls `open_named_slot(state, name, **kwargs)`, which waits and then
+calls `get_or_create_slot` with nothing suspending between them, so the
+ordering lives in one place and not at each call site. A channel thread is surfaced on the
+reconciler's next pass. `PendingSlotCreate` (`dashboard/slot_create_transaction.py`) publishes
+the slot with its indexes (`DashboardState.publish_slot`) only after the last
+step that can refuse, under the session-switch lock on the owner path, and
+before the slot-push suspension flushes. Leaving the create before that (a
+refusal, an exception or a cancellation) drops the private slot, releases the
+key, and puts back by compare-and-set only the binding writes made under the
+reserved key's own session. That undo runs to completion as one unit, so a
+cancellation that lands while it puts a line back is held until the bindings
+are put back too. A stricter memory mode that a save folded into the private
+slot (the birth write over a recreated incognito or temporary key's transcript)
+is applied by `publish_slot` before it registers the slot and its restricted
+marker. A new slot asked for a folder publishes UNFILED,
+and is then filed as a separate step through the ordinary folder-move path
+(`chat_folders.file_slot_into_folder`, the body of
+`PATCH /api/chat/slots/{slot}/folder`) with that path's authorization, claim,
+un-hide, audit and errors. The filing runs after every lock the create holds is
+released and before the slot-push suspension flushes, so the one coalesced
+frame shows the slot filed when the filing succeeds. A refused create writes
+nothing to the folder. A filing the move path refuses leaves the slot
+published and unfiled, and the create still answers 200 with the slot, whose
+`folder_id` is empty: a new slot publishes with no folder and only a successful
+filing sets one. The gateway logs the refusal's cause. The filing
+files the create's OWN slot object: right before the dispatch the create checks
+that the key still maps to it, and leaves it unfiled when a delete plus a
+same-key open replaced it during the birth save. The
+move path re-checks the object after its un-hide await and its save refuses a
+replaced object at the locked commit, so a replacement during the move also
+leaves the slot unfiled. The refusals that pass the create's preflight and
+can still refuse the filing are a folder deleted meanwhile, the move path's
+ownership checks refusing the caller, and a replaced slot.
+Consumers compare the answered `folder_id` with the folder they asked for:
+`ScriptContext.open_session` returns the key and logs one WARNING, the dashboard
+client's `createChatSlot` logs one warning, shows the App shell's notice
+(`store.chatSlice.session_not_filed`, a `role="status"` live region) and
+returns the slot, and the Issue
+Radar and Auto Improvement session hooks record the folder the answer names
+(empty when unfiled). Tags and a
+project the newborn inherits from the folder are read before publication and
+stay when the filing is refused. A filed create is not atomic: that is a
+non-goal. A close does not hold its key: a close whose archive failed puts its
+own slot back, as before this change, and an opener that minted the key between
+the close's pop and that put-back loses its slot to it. That race spans every
+opener and is tracked with #18540, beside the other register-then-pop sites. No transcript is deleted: a refusal after the
+member pin can leave a metadata-only transcript with no title, which History
+does not list. A create that names an app agent's owner writes the slot's
+birth metadata line (`_persist_app_agent_owner`) before the publish, because
+that write can refuse: its 503 `app_agent_owner_unpersisted` leaves no
+registered slot. The write is fenced and recorded. It holds the transcript lock
+across a check that no other slot holds the key, the write, and a read-back of
+the line it wrote; while a close's put-back holds the key it writes nothing and
+the create answers the 409 `slot_under_construction`. A create that then does
+not publish (the put-back landed after the write, a later refusal, a
+cancellation) puts the line back on its way out by compare-and-set on the
+bytes it wrote: the put-back slot's line comes back byte for byte, a transcript
+only this write created is removed, and a line anyone rewrote since is left
+alone. Creates of one name run one at a time behind a bounded per-name
+wait (`acquire_slot_create_name`), so the second sees the slot published or
+absent. An app caller's ownership is judged before that wait, and the gate
+records which principal each create acts for: an app never waits behind
+another principal's create of the name (`name_held_by_another`), and gets the
+same 404, at once, as for a slot it may not use. The create's own
+session-switch and tag-lock waits are bounded by the same 30 s budget. Inherited
+folder tags are filtered again, and the slot published, under the tag-write
+lock (taken inside the session-switch lock, never the reverse), so a tag
+deleted while the create waited is not published.
+
+The opener-wait rule: every path that opens a slot by a key a caller names
+awaits `wait_for_pending_create(state, key)` before the open, or has a named
+fallback around it (a `try` that catches the "still being built" ValueError),
+or is reached only from openers that do. An app on `/v1/chat/completions`
+never waits: it is judged on the key as it stands. Its own pending create, or
+its own registered slot under a construction mark, answers a retryable 409
+`slot_under_construction`. Any other key under construction answers the 403 a
+key with no slot gets, its own retracted resume or import included. `test_every_opener_of_a_named_key_waits_for_a_pending_create`
+in `test/test_slot_create_opener_scan.py` finds, from the source tree,
+every named `get_or_create_slot`, `_rehydrate_slot_from_history` and
+`_bind_cron_slot` call and every direct `_slots[k] = ...` write, sync and async,
+checks that the wait or the fallback dominates the open in the function body
+(it sits in the open's statement list or one enclosing it, with no suspension
+between, and a construction-mark `if` counts only when its body returns or
+raises), and fails on one that has neither and is not named, with its reason, in
+`_OPENERS_THAT_DO_NOT_WAIT`: the two boot restores (they run before the
+dashboard serves a create), the task-review opener (its key carries a fresh
+token), the registry's own write, and import (it mints its key and holds it
+under its own mark). An open that a wait reaches on every path without
+dominating it, the spec builder's worker-slot open, is named in
+`_OPENS_WAITED_ON_EVERY_PATH`. A synchronous opener cannot wait, so it needs the
+fallback: the channel reconciler skips the key and surfaces it on its next
+pass, and the cron injector writes the run's rows to a disk-backed pending store
+(`dashboard/cron_pending.py`, one atomic file per run under the transcripts'
+`.cron-pending/<job>/`, keyed by the run's result timestamp so a retry lands on
+the same entry) and appends them to the `cron:{id}` transcript, retrying a lock
+timeout within a bound. Memory keeps references only. The next bind reads the
+job's entries off the loop (on the first bind after a restart it lists them),
+hydrates the tab and merges any held row it lacks, so a run whose append failed
+(logged at ERROR with the run id) still reaches the tab, and an entry is deleted
+only once the tab's save confirms. The store refuses rather than evicts: a run
+past `PENDING_RUNS_PER_JOB` (10) unwritten runs, or whose entry is over
+`PENDING_RUN_MAX_BYTES` (1 MiB), is not held, an ERROR names the job and the
+run, and the job's stored result is left as it is; a run whose append confirmed
+may make room. The refusal is logged only: the cron UI shows no run state it
+could join. Shutdown joins the store's writers within
+`CRON_PENDING_WRITER_JOIN_SECS`. The cron run-start bind (`ensure_cron_slot`) waits and
+then falls back the same way past the bound. The wait is bounded at 30 s, and covers a second create of the key that begins
+before the waiter resumes. That bound is the residual: an
+opener can stand up to 30 s behind a create that hangs in a step it cannot
+time out (the member pin and the selection write run to completion, because a
+timeout would leave the write landing after the create gave the key back),
+then proceeds and meets that refusal. Bounding those two steps is tracked in #18540.
+
+The rule for an opener that still cannot bind past the wait: it refuses, or it
+writes what it carries to the key's own durable transcript, and it keeps no store
+of its own. Work the caller can retry gets the retryable 409
+`slot_under_construction`; the channel reconciler skips the key and surfaces it on
+its next pass; a result delivered once goes to the transcript the tab hydrates
+from on its next bind. `.cron-pending/` is the one store, and it is temporary:
+it exists because a cron run's result has no other tab-visible copy when its
+`cron:{id}` append fails or lands after the bind's hydration read. #20819 removes
+the cause (it reserves the scheduler-owned `cron-` names on create, so no create
+can hold a cron tab's key) and then the store. That removal drains before it
+deletes: once at boot, each entry still under `.cron-pending/<job>/` has its
+rows appended to `cron:{id}` with `append_rows_if_absent` (a row already there is
+skipped, so an entry whose append confirmed adds nothing), and an entry is
+removed only after its append confirms. A run held on disk at upgrade therefore
+still reaches its transcript and, through the bind's hydration, its tab.
+
 Cross-boundary calls that were observable on `SessionManager` route back through
 the facade, and patchable module dependencies are resolved through injected
 call-time functions. Persistence remains owned by the existing `SessionMap`

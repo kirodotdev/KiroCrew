@@ -77,6 +77,7 @@ if TYPE_CHECKING:
         start_queue_persist,
         steer_into_running_turn,
         subagents_hold_user_messages,
+        wait_for_pending_create,
         warm_project_agent_names,
         warn_if_not_durable,
     )
@@ -301,11 +302,17 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         if denied is not None:
             return denied
     # A tab restored as a sidebar row loads its window here, with the transcript
-    # read off the loop, before anything below reads its rows. The live slot is
-    # read again after the await, so a close or a replacement during the load is
-    # what the rest of this handler sees.
+    # read off the loop, before anything below reads its rows. It runs before
+    # the pending-create wait so nothing awaits between that wait and the
+    # lookup: the live slot read below is what the rest of this handler sees,
+    # including a close or a replacement during the load.
     if _requested_key and (_pending := state._slots.get(_requested_key)) is not None:
         await load_window_off_loop(_pending)
+    if _requested_key and not (request_app and slot_name):
+        # A create of this key still building it: wait for it to publish or give
+        # up (bounded), so the send lands on its slot as it did when the create
+        # registered up front. An app was refused a key under construction above.
+        await wait_for_pending_create(state, _requested_key)
     existing = state._slots.get(_requested_key) if _requested_key else None
     # An app's auto-created slot must not land on a transcript it does not own:
     # its first save would stamp the app onto that transcript's metadata line.

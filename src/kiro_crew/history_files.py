@@ -28,6 +28,11 @@ SESSIONS_DIR_NAME = "sessions"
 ARCHIVE_DIR_NAME = "archive"
 ARCHIVE_RETENTION_DAYS = 7
 
+#: Directory beside the transcripts holding the cron runs whose dashboard tab
+#: could not take them yet, one subdirectory per job
+#: (``dashboard/cron_pending.py``).
+CRON_PENDING_DIR_NAME = ".cron-pending"
+
 # Separates a transcript's stem from an archive segment's timestamp. NOT a dot,
 # because session keys legitimately contain dots (a Slack thread_ts), which would
 # make a right-most-dot parse attribute a segment to the wrong session.

@@ -19192,7 +19192,11 @@
       "session_gone_open_failed_named": "„{{name}}“ wurde gelöscht und kann nicht geöffnet werden.",
       "truncated_chars": "…({{count}} Zeichen gekürzt — öffne die Sitzung erneut, um die vollständige Ausgabe zu sehen)",
       "truncated": "…(gekürzt)",
-      "session_folder_unavailable": "Dieser Chat konnte keinen eigenen Ordner erhalten und wurde daher in deinem Standard-Projektordner geöffnet. Prüfe „Neue Sitzungsordner“ in den Einstellungen."
+      "session_folder_unavailable": "Dieser Chat konnte keinen eigenen Ordner erhalten und wurde daher in deinem Standard-Projektordner geöffnet. Prüfe „Neue Sitzungsordner“ in den Einstellungen.",
+      "session_not_filed": "„{{title}}“ wurde außerhalb aller Ordner geöffnet, weil es nicht im Ordner „{{folder}}“ abgelegt werden konnte.",
+      "session_not_filed_untitled": "Ein neuer Chat wurde außerhalb aller Ordner geöffnet, weil er nicht im Ordner „{{folder}}“ abgelegt werden konnte.",
+      "session_not_filed_folder_gone": "„{{title}}“ wurde außerhalb aller Ordner geöffnet, weil sein Ordner nicht mehr existiert.",
+      "session_not_filed_untitled_folder_gone": "Ein neuer Chat wurde außerhalb aller Ordner geöffnet, weil sein Ordner nicht mehr existiert."
     }
   },
   "utils": {

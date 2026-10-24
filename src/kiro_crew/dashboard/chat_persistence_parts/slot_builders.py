@@ -640,6 +640,11 @@ async def rehydrate_slot_from_history_async(
     if not state.conversation_log:
         return None
     slot_name = _normalize_slot_key(slot_name)
+    from kiro_crew.dashboard.slot_create_transaction import wait_for_pending_create
+
+    # A dashboard create of this key still building it: wait (bounded) for it
+    # to publish or give up, so the check below sees its slot or the free key.
+    await wait_for_pending_create(state, slot_name)
     if slot_name in state._slots:
         return state._slots[slot_name]
     history_key = slot_transcript_key(slot_name)
@@ -680,6 +685,11 @@ async def rehydrate_slot_from_history_async(
         _read_mcp_app_claims,
         session_key_for(slot_name, str(meta.get("linked_session_key") or "")),
     )
+    # A create can begin during the reads above, after the wait at the top: wait
+    # again after the last await, so nothing suspends between this and the build.
+    await wait_for_pending_create(state, slot_name)
+    if slot_name in state._slots:
+        return state._slots[slot_name]
     # Tab-close race. The user can click ✕ while the read above is in flight.
     # The close pops the slot and records a tombstone synchronously on the loop,
     # but persists the ``closed`` flag only after its own awaits — so the

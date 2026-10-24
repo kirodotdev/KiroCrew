@@ -111,6 +111,36 @@ def _iter_splitlines(handle: IO[str]) -> Iterator[str]:
         yield "".join(carry)
 
 
+def split_first_line(data: bytes) -> tuple[bytes, bytes, bytes]:
+    """Split a session file's bytes into (first line, its terminator, every byte after it).
+
+    The one newline rule for every writer that rewrites a session file's first
+    line: read the file as bytes, rewrite only the line, and keep the line's own
+    terminator (``\\r\\n``, ``\\n``, or none at end of file) and every later byte
+    unchanged. A text-mode read turns ``\\r\\n`` into ``\\n`` across the whole
+    file and a text-mode write turns ``\\n`` into the platform's separator, so a
+    first-line edit done that way re-terminated every row of the transcript.
+    On Windows, where rows are appended with ``\\r\\n``, that meant
+    :meth:`SessionMetadataProjection.restore_first_line_if` could not put a file
+    back byte for byte.
+    """
+    end = data.find(b"\n")
+    if end < 0:
+        return data, b"", b""
+    if data[end - 1 : end] == b"\r":
+        return data[: end - 1], b"\r\n", data[end + 1 :]
+    return data[:end], b"\n", data[end + 1 :]
+
+
+def join_first_line(line: str, terminator: bytes, rest: bytes) -> bytes:
+    """Rebuild a session file from a new first line and :func:`split_first_line`'s parts.
+
+    A line that had no terminator (the whole file was that one line) gets ``\\n``,
+    which is what every first-line writer here has always written.
+    """
+    return line.encode("utf-8") + (terminator or b"\n") + rest
+
+
 #: ``(key, file stamp or None when the file does not exist, generation)`` per chain member.
 ChainRevision = tuple[tuple[str, FileStamp | None, int], ...]
 

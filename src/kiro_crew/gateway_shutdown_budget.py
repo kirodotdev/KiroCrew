@@ -53,3 +53,9 @@ UPDATE_INSTALLER_STOP_SECS = UPDATE_INSTALLER_TERM_GRACE_SECS + UPDATE_INSTALLER
 #: its user watched stream before it ends, and the exit or exec that follows would
 #: otherwise beat that save.
 DASHBOARD_TURN_UNWIND_SECS = GRACEFUL_SHUTDOWN_SECS * 0.2
+
+#: How long shutdown and the in-process restarts then wait for the cron pending
+#: store's writers (``dashboard/cron_pending.py``): a run held for a tab that
+#: was still being built is written to disk first, and the exit would otherwise
+#: beat that write.
+CRON_PENDING_WRITER_JOIN_SECS = GRACEFUL_SHUTDOWN_SECS * 0.1
