@@ -2712,6 +2712,15 @@ them reads the tier off a cached row:
   finish anyway; rows past it stay cold, and because every batch walks the index
   in order from the top a stable tail past the cap stays cold on later fetches
   too, so the overflow is logged once per batch with the index size and the cap.
+  Inside the cap the workers take the kept rows cold-first (#22090): a row whose
+  declared art is all in the blob cache (or recorded unobtainable) and that is not
+  warm only because its manifest cache aged out goes after every row whose art is
+  missing, index order kept inside each group (`_stale_row_art_present`, which
+  reads the manifest cache file past its TTL through the pinned sidecar read, only
+  to rank the row). An explicit refresh expires every manifest cache before it
+  prewarms, so without this each refresh re-cloned the head of the index until the
+  budget ran out and rows further down never got their art; stale rows still
+  re-warm when the budget allows.
   Each retained candidate is slimmed to the fields a fetch and its
   caches read (`name`/`gitUrl`/`repo`/`branch`/`subdirectory`/`commit`/`_registry`),
   so a row's large `description` is not held for the batch's life; a retained field

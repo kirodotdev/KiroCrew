@@ -176,8 +176,10 @@ def _gc_manifest_cache_dir() -> None:
     churns its coordinates every refresh would otherwise grow the cache dir
     without bound. Reclaim is age-based and read-invisible: only files older
     than every TTL plus a grace window are removed, and ``_read_manifest_cache``
-    already answers ``None`` for anything past ``_MANIFEST_CACHE_TTL`` (there
-    is no ``ignore_ttl`` read of a manifest file), so deleting them changes no
+    already answers ``None`` for anything past ``_MANIFEST_CACHE_TTL`` (the only
+    read past the TTL is the store-art prewarm's batch ranking,
+    ``_stale_row_art_present``, which never serves the manifest and ranks a row
+    whose file is gone as cold, its pre-ranking order), so deleting them changes no
     read result. Only the ``by-source/`` subdirectory is scanned: registry
     index caches live at the cache-dir ROOT, so the boundary between "GC may
     reclaim" and "GC never touches" is structural — an index cannot spell a

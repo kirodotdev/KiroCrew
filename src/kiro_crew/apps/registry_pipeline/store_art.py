@@ -506,7 +506,9 @@ def _read_unobtainable_art(entry: dict[str, Any], manifest_mtime: float) -> froz
         return frozenset()
     try:
         recorded = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        # RecursionError: a record under the size cap can still nest deeply enough
+        # to exhaust the decoder's stack; it is malformed like any other.
         return frozenset()
     if not isinstance(recorded, list):
         return frozenset()
@@ -668,7 +670,19 @@ def _store_assets_warm(entry: dict[str, Any], manifest: Any) -> bool:
         return False
     if time.time() - manifest_mtime > _REWARM_AGE:
         return False
-    unobtainable = _read_unobtainable_art(entry, manifest_mtime)
+    return _declared_art_present(entry, manifest, manifest_mtime)
+
+
+def _declared_art_present(entry: dict[str, Any], manifest: dict[str, Any], mtime: float) -> bool:
+    """True when every art path *manifest* declares is satisfied for *entry*.
+
+    Satisfied means its bytes are in the blob cache, or it is recorded as
+    unobtainable against the manifest cache whose mtime is *mtime*
+    (:func:`_read_unobtainable_art`), or the proxy would refuse the path anyway. The
+    manifest's age is not this function's question: :func:`_store_assets_warm` adds
+    the age bound, and :func:`_stale_row_art_present` deliberately leaves it out.
+    """
+    unobtainable = _read_unobtainable_art(entry, mtime)
     for asset in _declared_store_art(manifest):
         cache_path = _store_art_cache_path(entry, asset)
         if cache_path is None:
@@ -679,6 +693,36 @@ def _store_assets_warm(entry: dict[str, Any], manifest: Any) -> bool:
             continue
         return False
     return True
+
+
+def _stale_row_art_present(entry: dict[str, Any]) -> bool:
+    """True when *entry* is not warm only because its manifest cache aged out.
+
+    Reads the manifest cache file past its TTL -- the refresh's expiry backdates it
+    and keeps it on disk as a fallback (``_expire_cache_file``) -- and answers whether
+    every art path it declares is still satisfied (:func:`_declared_art_present`).
+    Used ONLY to rank rows inside one prewarm batch: a row this answers True
+    for has its art and needs a clone just to renew its manifest, so it goes after the
+    rows whose art is missing. The manifest is never served or merged from here. The
+    file sits in an agent-writable directory, so it is read once through the same
+    no-follow, size-bounded descriptor as the sidecars (:func:`_read_pinned_sidecar`);
+    a missing, refused, oversize or malformed file answers False, which ranks the row
+    with the cold rows, the order every row had before this ranking existed.
+    """
+    result = _read_pinned_sidecar(_manifest_cache_path(entry), max_bytes=_MANIFEST_MAX_BYTES)
+    if result is None:
+        return False
+    data, mtime = result
+    try:
+        manifest = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        # RecursionError: a body under the size cap can still nest deeply enough
+        # to exhaust the decoder's stack. It is one more malformed file, so the row
+        # ranks as cold rather than failing the whole batch and the refresh.
+        return False
+    if not isinstance(manifest, dict) or not manifest:
+        return False
+    return _declared_art_present(entry, manifest, mtime)
 
 
 def _open_pinned_asset_stat(
@@ -1482,9 +1526,11 @@ async def _prewarm_owner_tier_store_assets(reg: Any, entries: list[dict[str, Any
     build-pinned index rather than to an agent-writable cache). Both call sites --
     the listing path's cache miss and the explicit refresh -- pass exactly that.
     Any other registry tier returns 0 without a clone. Rows already warm are
-    skipped; every failure is per-row and logged, never raised, because the store
-    listing that triggered the fetch must render whatever art did land. The batch as
-    a whole is bounded by :data:`_PREWARM_BATCH_BUDGET`, for the same reason.
+    skipped, and rows whose art is missing are queued ahead of rows that are only
+    stale (:func:`_stale_row_art_present`); every failure is per-row and logged,
+    never raised, because the store listing that triggered the fetch must render
+    whatever art did land. The batch as a whole is bounded by
+    :data:`_PREWARM_BATCH_BUDGET`, for the same reason.
 
     Returns the number of rows whose manifest was fetched this call.
     """
@@ -1504,6 +1550,9 @@ async def _prewarm_owner_tier_store_assets(reg: Any, entries: list[dict[str, Any
     # read once here and each row is then a pure lookup.
     claims = await asyncio.to_thread(_prewarm_foreign_claims, registry_name)
     todo: list[dict[str, Any]] = []
+    # Rows that are not warm only because their manifest cache aged out; queued
+    # after every row whose art is missing (see the ranking below).
+    stale: list[dict[str, Any]] = []
     overflow = 0
     field_rejects = 0
     examined = 0
@@ -1597,7 +1646,19 @@ async def _prewarm_owner_tier_store_assets(reg: Any, entries: list[dict[str, Any
         if slim is None:
             field_rejects += 1
             continue
-        todo.append(slim)
+        # Rank before queueing. A row whose art is all in the blob cache and
+        # that is not warm only because its manifest aged out -- every row, right
+        # after an explicit refresh expired the manifest caches -- needs a clone just
+        # to renew display info, so it waits behind the rows whose art is missing.
+        # In plain index order a refresh would re-clone the head of the index on
+        # every batch until the budget ran out, and rows further down would never
+        # get their art. Index order is kept inside each group, and stale rows still
+        # re-warm when the budget allows.
+        if await asyncio.to_thread(_stale_row_art_present, entry):
+            stale.append(slim)
+        else:
+            todo.append(slim)
+    todo.extend(stale)
     if field_rejects:
         logger.warning(
             "store art prewarm: registry %r skipped %d row(s) with a non-string or "
