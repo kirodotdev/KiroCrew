@@ -338,6 +338,32 @@ def _capability_denied(session_key: str | None, *, local: bool = False) -> bool:
     return True
 
 
+def _targets_denied(
+    config: Any | None, session_key: str | None, point: str, model: str, lane: str
+) -> bool:
+    """Whether the ceiling's ``points`` / ``models`` / ``endpoints`` lists refuse this
+    request. Filesystem IO; never raises (an error denies).
+
+    The ``models`` and ``endpoints`` lists bind the decision PROVIDER, which only
+    the Jev lane uses. The judge's LLM lane sends to the session's own model
+    provider through the session runner, which picks the served model itself, so
+    it is asked about its point only.
+    """
+    from kiro_crew.decisions.capability import DASHBOARD_SURFACE_KEY, targets_denied
+
+    try:
+        jev = lane == LANE_JEV
+        return targets_denied(
+            session_key or DASHBOARD_SURFACE_KEY,
+            point=point,
+            model=model if jev else None,
+            endpoint=configured_endpoint(config) if jev else None,
+        )
+    except Exception as exc:
+        logger.debug("decisions: %s target check failed (%s)", point, type(exc).__name__)
+        return True
+
+
 def _consented_for(
     config: Any | None,
     session_key: str | None = None,
@@ -1137,6 +1163,12 @@ async def decide(
     # For every lane but the judge's LLM one this is ``provider.model`` with the
     # same fallback ``JevOracle`` applies, unchanged.
     model = lane_model(cfg, lane=lane)
+    # The fleet's lists: which points, models and endpoints the seam may use. Like
+    # the capability row in ``_consented_for``, a refusal here writes no decision
+    # row (its audit is the SEL ``governance_decision`` row) and costs nothing on
+    # an unconsented install, which never reaches this line.
+    if await asyncio.to_thread(_targets_denied, cfg, session_key, point, model, lane):
+        return None
     refusal = scrub_reason(state, questions, model=model)
     if refusal is not None:
         await _write(latency_ms=0, answers=None, error=refusal)
