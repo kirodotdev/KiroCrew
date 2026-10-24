@@ -517,6 +517,40 @@ def test_only_a_matching_footer_after_a_pem_begin_closes_it(footer):
     assert "opaque" not in output
 
 
+@pytest.mark.parametrize(
+    "opener",
+    [
+        "key: " + _PEM_BEGIN_RSA,
+        '  "private_key": "' + _PEM_BEGIN_RSA,
+        "ssh_key=" + _PEM_BEGIN_RSA,
+    ],
+)
+def test_a_field_prefixed_unclosed_pem_is_withheld(opener):
+    """An opener after a field prefix, with no footer, is still withheld through
+    EOF: the shared redactor masks the header line but not a 32-column body."""
+    import base64
+    import secrets
+
+    from kiro_crew.security import REDACTED_CREDENTIAL_TAG
+
+    blob = base64.b64encode(secrets.token_bytes(600)).decode()
+    key_lines = ["  " + blob[i : i + 32] for i in range(0, len(blob), 32)]
+    body = "config:\n" + opener + "\n" + "\n".join(key_lines) + "\n"
+    reply = {"git": True, "old": None, "new": body}
+    output = session_browse._git_diff_from_bodies(reply, "f")["output"]
+    assert "+config:\n" in output
+    assert output.endswith(("+" + REDACTED_CREDENTIAL_TAG + "\n") * (len(key_lines) + 1))
+    assert not any(line.strip() in output for line in key_lines)
+
+
+def test_a_field_prefixed_footer_closes_its_pem():
+    """A closed block is left to the shared redactor: nothing after it is withheld."""
+    body = "a: " + _PEM_BEGIN_RSA + "\n  opaque\nb: " + _PEM_END_RSA + "\nafter\n"
+    assert session_browse._withhold_unclosed_pem(body) == body
+    reply = {"git": True, "old": None, "new": body}
+    assert "+after\n" in session_browse._git_diff_from_bodies(reply, "f")["output"]
+
+
 @pytest.mark.parametrize("renamed", [False, True])
 def test_many_short_repeated_lines_have_a_bounded_diff(renamed):
     import time

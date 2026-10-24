@@ -134,14 +134,21 @@ def test_a_command_runs_under_coreutils_timeout_when_present(tmp_path, monkeypat
     assert seen[0][-3:] == ["/bin/sh", "-c", "true"]
 
 
+@pytest.mark.parametrize("platform", ["linux", "win32"])
 @pytest.mark.parametrize("op", ["git_status", "git_log", "git_bodies"])
-def test_a_timed_out_git_read_stops_under_timeout_then_reaps(tmp_path, monkeypatch, op):
+def test_a_timed_out_git_read_stops_under_timeout_then_reaps(tmp_path, monkeypatch, op, platform):
+    # Both branches run on every runner: the guest's own platform is pinned.
+    # POSIX wraps the read in coreutils timeout, which signals its group; Windows
+    # runs it unwrapped on its own deadline and ends the whole tree.
     events = []
     grace = wt._KILL_GRACE_SECS
+    posix = platform != "win32"
+    monkeypatch.setattr(wt, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(wt, "_stop_tree", lambda proc: events.append("tree stopped"))
 
     def communicate(**kwargs):
-        # The read waits out timeout's own expiry and its KILL grace first.
-        assert kwargs == {"timeout": 30 + 2 * grace}
+        # Under timeout the read waits out its expiry and KILL grace first.
+        assert kwargs == {"timeout": 30 + 2 * grace if posix else 30}
         raise subprocess.TimeoutExpired("git", 30)
 
     process = SimpleNamespace(
@@ -156,15 +163,19 @@ def test_a_timed_out_git_read_stops_under_timeout_then_reaps(tmp_path, monkeypat
     )
 
     def spawn(argv, **kwargs):
-        # coreutils timeout, not the guest, signals the read's process group.
-        assert argv[:5] == ["/usr/bin/timeout", "-k", str(grace), "30", "git"]
+        if posix:
+            # coreutils timeout, not the guest, signals the read's process group.
+            assert argv[:5] == ["/usr/bin/timeout", "-k", str(grace), "30", "git"]
+        else:
+            # A `timeout` on Windows may be System32's unrelated wait command.
+            assert argv[0] == "git"
         assert kwargs["start_new_session"] is True
         return process
 
     monkeypatch.setattr(wt.shutil, "which", lambda name, path=None: f"/usr/bin/{name}")
     monkeypatch.setattr(wt.subprocess, "Popen", spawn)
     result = wt.browse(wt.Workspace(str(tmp_path)), {"op": op})
-    assert events == ["stopped", "reaped"]
+    assert events == (["stopped", "reaped"] if posix else ["tree stopped", "reaped"])
     assert result["code"] == "git_failed"
     process.stdout.close.assert_called_once()
     process.stderr.close.assert_called_once()
