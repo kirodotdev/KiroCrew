@@ -664,6 +664,23 @@ def _resolve_tool_policy(
                     resources=f"session_key={session_key}",
                 )
                 return ToolPolicy(frozenset(), "policy_unreadable", _reason)
+            from kiro_crew.enterprise_gate import GATE_CLOSED_CODE
+
+            if http_exc.code == 403 and _http_error_body(http_exc)[0] == GATE_CLOSED_CODE:
+                # An enterprise gateway whose login gate is closed refuses every
+                # route but sign-in, this read included. That is not a decision
+                # about this caller: the exclusion list is unread, so the call is
+                # refused (``gateway_locked`` is in ``_UNRESOLVED_REFUSES_CALL``)
+                # until the gate reopens. Not cached, so it clears on the first
+                # read after the gate opens.
+                sel().log_api_access(
+                    caller=session_key,
+                    operation="tool_policy.gateway_locked",
+                    outcome="unresolved",
+                    source="mcp_shared",
+                    resources=f"session_key={session_key}",
+                )
+                return ToolPolicy(frozenset(), "gateway_locked")
             if http_exc.code in (400, 403):
                 # The gateway ANSWERED and declined to tell this caller. 403 is
                 # ``member_session_unverified`` from ``internal_memory_scope``:
@@ -913,6 +930,10 @@ def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
 #   ``identity_unattested``, before the request rather than after it. Kept
 #   separate only so the refusal text does not claim a gateway read that never
 #   happened.
+# * ``gateway_locked`` -- an enterprise gateway's login gate is closed and it
+#   answered the read with 403 ``enterprise_gate_closed``. The policy was never
+#   consulted, so the exclusion set is unknown; the 403 is the gate's, not a
+#   decision about this caller, so it is kept out of ``policy_forbidden``.
 # * ``resolution_failed`` -- no usable answer reached this process: nothing came
 #   back, the gateway answered ``5xx`` to say it is broken, or the resolve itself
 #   raised. Every ``4xx`` returns before that arm, decided by status CLASS, so this
@@ -946,7 +967,13 @@ def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
 # the 404 to distinguish registering from unmappable, which is a change to the
 # endpoint's contract rather than to this read.
 _UNRESOLVED_REFUSES_CALL = frozenset(
-    {"policy_unreadable", "identity_unattested", "identity_unattestable", "resolution_failed"}
+    {
+        "policy_unreadable",
+        "identity_unattested",
+        "identity_unattestable",
+        "resolution_failed",
+        "gateway_locked",
+    }
 )
 
 #: The directory this package's own code lives in. A tool handler whose code is

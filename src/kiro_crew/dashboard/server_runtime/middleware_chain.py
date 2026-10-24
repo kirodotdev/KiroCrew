@@ -239,6 +239,7 @@ def _install_dashboard_middlewares(
         slot_ownership_middleware,
         spa_fallback,
     ]
+    _insert_enterprise_gate(app, spa_shell_handler=handlers.index)
 
     # Verify security invariant: if dashboard_url expands the CSRF origin
     # set for a remote URL, token auth middleware MUST be active.
@@ -353,3 +354,24 @@ def _install_api_middlewares(
         # per-slot route registered on this server is decided the same way.
         slot_ownership_middleware,
     ]
+    _insert_enterprise_gate(app, spa_shell_handler=None)
+
+
+def _insert_enterprise_gate(app: web.Application, *, spa_shell_handler: Any) -> None:
+    """Put the enterprise gate right after token auth. Nothing in an ``oss`` build.
+
+    Inner to token auth so it only narrows what token auth admitted, and outer
+    to the SEL request audit so its raised 403 is recorded by ``deny_audit``.
+    """
+    from kiro_crew.dashboard.enterprise_gate_middleware import enterprise_gate_middleware_for
+
+    gate_mw = enterprise_gate_middleware_for(app, spa_shell_handler=spa_shell_handler)
+    if gate_mw is None:
+        return
+    index = next(
+        (i for i, mw in enumerate(app.middlewares) if getattr(mw, "_is_token_auth", False)),
+        None,
+    )
+    if index is None:
+        raise RuntimeError("enterprise build: no token auth middleware to place the gate after")
+    app.middlewares.insert(index + 1, gate_mw)

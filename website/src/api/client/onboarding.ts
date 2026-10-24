@@ -28,6 +28,12 @@ export interface KiroPrerequisiteStatus {
   bundled_cli: boolean
   setup_allowed: boolean
   /**
+   * Enterprise build only: the gateway's login gate is closed, so it refuses
+   * every API except sign-in. Absent on an oss build. While true the gate shows
+   * the Kiro sign-in screen whatever else the status or another harness says.
+   */
+  enterprise_login_required?: boolean
+  /**
    * True when the CLI binary is present and executable but could not be
    * VERIFIED because this host cannot build a sandbox (verification runs the
    * binary inside it). A categorically different condition from a missing

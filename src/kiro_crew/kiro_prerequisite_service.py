@@ -219,7 +219,13 @@ class KiroPrerequisiteService:
         # dir — otherwise spawn-count assertions vary by machine.
         self._spec_lister = spec_lister or _default_spec_lister
         self._clock = clock or time.monotonic
-        self._assume_ready = assume_ready
+        # An enterprise build never assumes readiness: its login gate reads this
+        # service's verdict, and an assumed one (`--test-mode`) would open the
+        # gate with no kiro login at all.
+        from kiro_crew.edition import is_enterprise
+
+        self._assume_ready = assume_ready and not is_enterprise()
+        assume_ready = self._assume_ready
         # `assume_ready` must hold from CONSTRUCTION, not from the first probe:
         # readiness is now a latch that `session_ready()` reads without probing,
         # so an offline/test gateway that never probes would otherwise report
@@ -731,6 +737,43 @@ class KiroPrerequisiteService:
                 logger.warning("Kiro verification probe failed; denying", exc_info=True)
                 return False
         return bool(self._status.ready)
+
+    @property
+    def authenticated(self) -> bool:
+        """The latched sign-in verdict. Never probes.
+
+        The enterprise login gate reads this on every request, so it must stay a
+        field read. False before the first probe answers, which is what keeps an
+        enterprise gateway closed until a probe has seen a login.
+        """
+
+        return bool(self._status.authenticated)
+
+    async def login_verified(self, *, max_age_secs: float) -> bool:
+        """Return the sign-in verdict, re-probing when it may be stale.
+
+        For the enterprise login gate's background check (docs/request-for-change/
+        rfc-crew-enterprise-edition.md, "Enterprise gate"), which must notice an
+        expired or lost login with no chat turn to surface it. The probe re-runs
+        when the last one is older than *max_age_secs*, or when the identity store
+        now names a different account (or none) than the latch: that read is
+        local, so a sign-out or a fresh sign-in shows up without waiting out the
+        age. This is the same ``whoami`` probe the setup gate uses, not a second
+        login check. Fails closed: a probe that cannot run answers False.
+        """
+
+        if self._assume_ready:
+            return bool(self._status.authenticated)
+        try:
+            stale = not self._has_probed or self._clock() - self._last_probe_at >= max_age_secs
+            if stale or await self.identity_changed_since_probe():
+                await self._probe(force=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Kiro login check failed; treating as signed out", exc_info=True)
+            return False
+        return bool(self._status.authenticated)
 
     async def session_ready(self) -> bool:
         """Return the latched readiness. Never probes; never blocks a turn.

@@ -333,6 +333,28 @@ class TestLongCacheFailures:
         ops = [c.kwargs.get("operation") for c in fake_sel.log_api_access.call_args_list]
         assert "tool_policy.forbidden" in ops
 
+    def test_403_from_a_closed_enterprise_gate_refuses_the_call(
+        self, fake_sel, patch_session_setup, monkeypatch
+    ):
+        """The enterprise gate's 403 is not a decision about this caller.
+
+        It refuses every route while closed, this read included, so the exclusion
+        list is unread: the call must be refused, not served as ``policy_forbidden``.
+        Not cached, so the first read after the gate reopens succeeds.
+        """
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
+        body = b'{"error": "locked", "code": "enterprise_gate_closed", "reason": "login_required"}'
+        urlopen = MagicMock(side_effect=_make_http_error(403, body))
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
+            policy = mcp_shared._resolve_tool_policy()
+        assert policy.excluded == set()
+        assert policy.unresolved == "gateway_locked"
+        assert policy.unresolved in mcp_shared._UNRESOLVED_REFUSES_CALL
+        assert mcp_shared._last_failure_time == 0.0
+        assert mcp_shared._last_startup_race_time == 0.0
+        ops = [c.kwargs.get("operation") for c in fake_sel.log_api_access.call_args_list]
+        assert "tool_policy.gateway_locked" in ops
+
     def test_409_member_identity_unavailable_is_identity_unattested(
         self, fake_sel, patch_session_setup, monkeypatch
     ):
