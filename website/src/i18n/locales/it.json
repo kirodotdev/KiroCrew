@@ -2669,7 +2669,13 @@
             "triage_model_change": "Cambia modello di triage",
             "triage_model_unavailable": "{{model}} non disponibile: questo account non può usarlo, quindi ogni controllo usa il Modello ({{workModel}}). Scegli un altro modello di triage o disattivalo.",
             "work_log": "Registro di lavoro",
-            "work_log_hint": "ultime 24h evidenziate"
+            "work_log_hint": "ultime 24h evidenziate",
+            "retire": "Ritira crew",
+            "retire_hint": "Una crew ritirata smette di lavorare per sempre ed esce dall’elenco delle crew. Il suo record, il registro di lavoro e la prenotazione del nome restano conservati, quindi il nome non può essere riutilizzato.",
+            "retire_confirm_title": "Ritirare «{{name}}»?",
+            "retire_failed": "Impossibile ritirare la crew. Riprova.",
+            "retiring": "Ritiro in corso…",
+            "retired_notice": "«{{name}}» è stata ritirata. Il record e il registro di lavoro restano conservati."
           },
           "rail_section": "Crew",
           "status_idle": "inattiva",

@@ -2759,7 +2759,13 @@
             "triage_model_change": "Changer le modèle de tri",
             "triage_model_unavailable": "{{model}} indisponible : ce compte ne peut pas l’utiliser, donc chaque vérification tourne sur le Modèle ({{workModel}}). Choisis un autre modèle de tri ou désactive-le.",
             "work_log": "Journal de travail",
-            "work_log_hint": "24 h mises en évidence"
+            "work_log_hint": "24 h mises en évidence",
+            "retire": "Retirer l’équipe",
+            "retire_hint": "Une équipe retirée cesse définitivement de travailler et quitte la liste des équipes. Son enregistrement, son journal de travail et la réservation de son nom sont conservés, donc son nom ne peut pas être réutilisé.",
+            "retire_confirm_title": "Retirer « {{name}} » ?",
+            "retire_failed": "Impossible de retirer l’équipe. Réessaie.",
+            "retiring": "Retrait en cours…",
+            "retired_notice": "« {{name}} » a été retirée. Son enregistrement et son journal de travail sont conservés."
           },
           "rail_section": "Équipes",
           "status_idle": "inactive",

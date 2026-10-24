@@ -937,7 +937,13 @@
             "triage_model_change": "Change triage model",
             "triage_model_unavailable": "{{model}} unavailable: this account cannot run it, so every check runs on the Model ({{workModel}}). Pick another triage model or turn it off.",
             "work_log": "Work log",
-            "work_log_hint": "24h highlighted"
+            "work_log_hint": "24h highlighted",
+            "retire": "Retire crew",
+            "retire_hint": "Retiring stops this crew for good and removes it from the crews list. Its record, work log and name reservation are kept, so its name can’t be reused.",
+            "retire_confirm_title": "Retire “{{name}}”?",
+            "retire_failed": "Couldn’t retire the crew. Try again.",
+            "retiring": "Retiring…",
+            "retired_notice": "“{{name}}” was retired. Its record and work log are kept."
           },
           "rail_section": "Crews",
           "status_idle": "idle",

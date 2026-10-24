@@ -2669,7 +2669,13 @@
             "triage_model_change": "Cambiar modelo de triaje",
             "triage_model_unavailable": "{{model}} no disponible: esta cuenta no puede usarlo, así que cada revisión usa el Modelo ({{workModel}}). Elige otro modelo de triaje o desactívalo.",
             "work_log": "Registro de trabajo",
-            "work_log_hint": "24 h destacadas"
+            "work_log_hint": "24 h destacadas",
+            "retire": "Retirar equipo",
+            "retire_hint": "Al retirarlo, este equipo deja de trabajar para siempre y sale de la lista de equipos. Se conservan su registro, su historial de trabajo y la reserva de su nombre, así que su nombre no se puede reutilizar.",
+            "retire_confirm_title": "¿Retirar “{{name}}”?",
+            "retire_failed": "No se pudo retirar el equipo. Inténtalo de nuevo.",
+            "retiring": "Retirando…",
+            "retired_notice": "“{{name}}” se retiró. Se conservan su registro y su historial de trabajo."
           },
           "rail_section": "Equipos",
           "status_idle": "inactivo",

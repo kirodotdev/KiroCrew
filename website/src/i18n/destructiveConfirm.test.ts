@@ -177,6 +177,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'apps.awsControl.page.forget_key_confirm', // key-name operand, quoted per locale
   'apps.codeReviewSage.components.learningRail.confirm_delete', // quoted since #4653
   'apps.crewCompanion.gallery.deleteConfirm', // ASCII quotes → locale pair #4821
+  'apps.issueRadar.views.crews.page.retire_confirm_title', // crew-name operand of the Retire crew confirmation, quoted per locale
   'apps.mdNotebook.row.deleteTitle', // already quoted; pin + fr NNBSP fix #5725
   'apps.meetings.list.deleteConfirm', // already quoted; pin + fr/it glyph fix #4821
   'apps.mochi.gallery.delete_confirm', // ASCII quotes → locale pair #4821

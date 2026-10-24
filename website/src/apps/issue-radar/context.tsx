@@ -367,6 +367,11 @@ export interface IssueRadarContextValue {
    * shape as `openSettings(target?)`, so a rail row can navigate in one call
    * instead of setting the page and the view separately. */
   openCrews: (view?: CrewView) => void
+  /** The name of the crew this tab just retired, for the notice the crews column
+   * shows wherever the selection lands next (another crew, or the empty state).
+   * Cleared by dismissing it or by switching repo. */
+  retiredCrewName: string | null
+  setRetiredCrewName: (name: string | null) => void
   /** Which pane a narrow viewport is showing, for the list-detail drill-down.
    * Hosted here rather than in the shell because the row handlers that drill in
    * live in the list components, which already consume this context — passing a
@@ -477,6 +482,15 @@ export function IssueRadarProvider({
   const [crewFilter, setCrewFilter] = useState<CrewFilter>(restoredCrewUi.crewFilter)
   const [crewSortKey, setCrewSortKey] = useState<CrewSortKey>(restoredCrewUi.crewSortKey)
   const [crewSortDir, setCrewSortDir] = useState<SortDir>(restoredCrewUi.crewSortDir)
+  // Session-only, deliberately not in CREW_UI_KEY: a retire notice is about this
+  // tab's own action and means nothing after a reload. Held with the repo it was
+  // raised in and shown only while that repo is active, so a repo switch clears
+  // it without an effect.
+  const [retiredCrew, setRetiredCrew] = useState<{ name: string, scope: string } | null>(null)
+  const retiredCrewName = retiredCrew?.scope === scopeKey ? retiredCrew.name : null
+  const setRetiredCrewName = useCallback((name: string | null) => {
+    setRetiredCrew(name === null ? null : { name, scope: scopeKey })
+  }, [scopeKey])
 
   // ── pull-request view state (parallels the issue filters/sort/selection) ──
   const [prQuery, setPrQuery] = useState(restored.prQuery ?? '')
@@ -1389,6 +1403,7 @@ export function IssueRadarProvider({
     crewsError: (crewsQuery.error as Error) ?? null,
     crewView, setCrewView, crewFilter, setCrewFilter, openCrews,
     crewSortKey, crewSortDir, cycleCrewSort,
+    retiredCrewName, setRetiredCrewName,
     listDetail,
   }), [
     listDetail,
@@ -1427,6 +1442,7 @@ export function IssueRadarProvider({
     crews, crewCounts, crewsQuery.data, crewsQuery.isLoading, crewsQuery.error,
     crewView, setCrewView, crewFilter, setCrewFilter, openCrews,
     crewSortKey, crewSortDir, cycleCrewSort,
+    retiredCrewName, setRetiredCrewName,
   ])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

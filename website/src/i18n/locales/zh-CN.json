@@ -2545,7 +2545,13 @@
             "triage_model_change": "更改分诊模型",
             "triage_model_unavailable": "{{model}} 不可用：此账户无法运行它，因此每次检查都使用“模型”（{{workModel}}）。请选择其他分诊模型，或将其关闭。",
             "work_log": "工作日志",
-            "work_log_hint": "高亮显示最近 24h"
+            "work_log_hint": "高亮显示最近 24h",
+            "retire": "退役小队",
+            "retire_hint": "退役后，这个小队会永久停止工作并从小队列表中移除。它的记录、工作日志和名称保留都会保留，因此这个名称不能再次使用。",
+            "retire_confirm_title": "要退役“{{name}}”吗？",
+            "retire_failed": "无法退役该小队。请重试。",
+            "retiring": "正在退役…",
+            "retired_notice": "“{{name}}”已退役。它的记录和工作日志都会保留。"
           },
           "rail_section": "小队",
           "status_idle": "空闲",
