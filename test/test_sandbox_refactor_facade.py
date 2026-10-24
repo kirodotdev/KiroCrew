@@ -307,6 +307,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         name_scope_unit _CGROUP_TOTAL_MEMORY_FRACTION _CGROUP_FALLBACK_MAX_TOTAL_MEMORY_MB
         _CGROUP_DEFAULT_MAX_TOTAL_TASKS _default_max_total_memory_mb
         _slice_limits_from_config _SLICE_LIMITS_APPLIED ensure_agents_slice_limits
+        _slice_limits_unit _slice_limits_dir _read_slice_limits
+        _unbounded_parent_properties _backfill_unbounded_parent
         _USER_MANAGER_CGROUP_BASE _agents_slice_cgroup_dir _read_cgroup_counters
         read_cgroup_int _SLICE_THROTTLE_PROBE_SEEN _SLICE_THROTTLE_EDGE_AT
         _SLICE_THROTTLE_EDGE_HOLD_SECS agents_slice_throttling _SLICE_OOM_SEEN

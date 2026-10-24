@@ -601,11 +601,53 @@ def _slice_limits_from_config() -> tuple[int, int]:
 _SLICE_LIMITS_APPLIED = False
 
 
+def _slice_limits_unit() -> str:
+    """The slice this instance puts its aggregate ceiling on.
+
+    The parent :data:`_CGROUP_AGENTS_SLICE` has one fixed name for every
+    gateway under this user, so a write to it replaces the ceiling every
+    co-resident gateway's agents run under. A pod (``KIROCREW_POD``, the same
+    marker :func:`kiro_crew.config.paths.shared_kiro_settings_writable` keys
+    on) boots from an empty home, so its limits describe a throwaway instance,
+    not the host; writing them to the parent silently lowers the operator's
+    configured ceiling. A pod therefore bounds only its own child slice
+    (:func:`_agents_slice_name`). cgroup v2 enforces the minimum limit along
+    the ancestor chain, so the pod's agents still get its ceiling while the
+    parent keeps the value the host's own gateway set.
+    """
+    if os.environ.get("KIROCREW_POD"):
+        return _agents_slice_name()
+    return _CGROUP_AGENTS_SLICE
+
+
+def _slice_limits_dir(unit: str) -> Path | None:
+    """The cgroup directory of *unit* (the parent or a direct child), or None."""
+    parent = _agents_slice_cgroup_dir()
+    if parent is None or unit == _CGROUP_AGENTS_SLICE:
+        return parent
+    return parent / unit
+
+
+def _read_slice_limits(unit: str) -> tuple[str, str] | None:
+    """``(pids.max, memory.max)`` currently on *unit*, or None when unreadable."""
+    d = _slice_limits_dir(unit)
+    if d is None:
+        return None
+    try:
+        return (
+            (d / "pids.max").read_text().strip(),
+            (d / "memory.max").read_text().strip(),
+        )
+    except OSError:
+        return None
+
+
 def ensure_agents_slice_limits() -> bool:
     """Apply the aggregate cgroup ceiling to the agents slice. Idempotent.
 
-    Runs ``systemctl --user set-property --runtime`` on
-    :data:`_CGROUP_AGENTS_SLICE`, setting ``MemoryMax`` (aggregate across ALL
+    Runs ``systemctl --user set-property --runtime`` on the slice
+    :func:`_slice_limits_unit` names (the shared parent, or a pod's own
+    child), setting ``MemoryMax`` (aggregate across ALL
     concurrent agent scopes), ``MemorySwapMax=0`` (consistent with the
     per-scope property: a true RSS ceiling, no swap escape), and ``TasksMax``
     (aggregate fork-bomb ceiling). Called once at gateway startup.
@@ -634,6 +676,7 @@ def ensure_agents_slice_limits() -> bool:
         _warn_cgroup_unavailable(reason)
         return False
     total_mem_mb, total_tasks = _slice_limits_from_config()
+    unit = _slice_limits_unit()
     # PATH can legitimately lead with agent-writable directories (a worktree
     # venv's bin, ~/.local/bin), so a bare "systemctl" would let a planted
     # shim run with the gateway's environment. Resolve from fixed system
@@ -644,7 +687,7 @@ def ensure_agents_slice_limits() -> bool:
         logger.warning(
             "could not apply the aggregate cgroup ceiling to %s: no trusted "
             "systemctl binary — per-scope ceilings still apply.",
-            _CGROUP_AGENTS_SLICE,
+            unit,
         )
         return False
     cmd = [
@@ -652,11 +695,12 @@ def ensure_agents_slice_limits() -> bool:
         "--user",
         "set-property",
         "--runtime",
-        _CGROUP_AGENTS_SLICE,
+        unit,
         f"MemoryMax={total_mem_mb}M",
         "MemorySwapMax=0",
         f"TasksMax={total_tasks}",
     ]
+    previous = _read_slice_limits(unit)
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15
@@ -666,7 +710,7 @@ def ensure_agents_slice_limits() -> bool:
             "could not apply the aggregate cgroup ceiling to %s: %s — "
             "per-scope ceilings still apply, but N concurrent spawns may "
             "collectively exceed host RAM.",
-            _CGROUP_AGENTS_SLICE,
+            unit,
             exc,
         )
         return False
@@ -675,20 +719,108 @@ def ensure_agents_slice_limits() -> bool:
             "could not apply the aggregate cgroup ceiling to %s (rc=%d): %s — "
             "per-scope ceilings still apply, but N concurrent spawns may "
             "collectively exceed host RAM.",
-            _CGROUP_AGENTS_SLICE,
+            unit,
             proc.returncode,
             (proc.stderr or "").strip(),
         )
         return False
     _SLICE_LIMITS_APPLIED = True
-    logger.info(
-        "aggregate cgroup ceiling on %s: MemoryMax=%dM MemorySwapMax=0 TasksMax=%d "
+    prev_tasks, prev_mem = previous if previous is not None else ("unknown", "unknown")
+    # A lower ceiling than the slice already had is the write that starves
+    # live agents (EAGAIN on fork once the slice fills), so it is logged at
+    # WARNING where default log levels keep it; a same-or-higher write is INFO.
+    lowered = (prev_tasks.isdigit() and int(prev_tasks) > total_tasks) or (
+        prev_mem.isdigit() and int(prev_mem) > total_mem_mb * 1024 * 1024
+    )
+    logger.log(
+        logging.WARNING if lowered else logging.INFO,
+        "aggregate cgroup ceiling on %s: MemoryMax=%dM MemorySwapMax=0 TasksMax=%d, "
+        "was pids.max=%s memory.max=%s, set by the instance at %s "
         "(per-scope ceilings unchanged)",
-        _CGROUP_AGENTS_SLICE,
+        unit,
         total_mem_mb,
         total_tasks,
+        prev_tasks,
+        prev_mem,
+        os.environ.get("KIROCREW_HOME") or "the default home",
     )
+    if unit != _CGROUP_AGENTS_SLICE:
+        _backfill_unbounded_parent(systemctl, total_mem_mb, total_tasks)
     return True
+
+
+def _unbounded_parent_properties(systemctl: str, total_mem_mb: int, total_tasks: int) -> list[str]:
+    """The ``set-property`` arguments that would bound whichever of the shared
+    parent's ``MemoryMax`` / ``TasksMax`` is unset, or ``[]``.
+
+    Read from systemd's configured unit properties rather than the cgroup
+    files: an inactive parent has no cgroup directory yet still carries the
+    ``--runtime`` value the host's gateway set, which must be left alone.
+    Unreadable reads as "nothing to fill", so a failed read never writes.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                systemctl,
+                "--user",
+                "show",
+                "--property=MemoryMax",
+                "--property=TasksMax",
+                _CGROUP_AGENTS_SLICE,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+    shown = dict(line.split("=", 1) for line in (proc.stdout or "").splitlines() if "=" in line)
+    props: list[str] = []
+    if shown.get("MemoryMax") == "infinity":
+        props += [f"MemoryMax={total_mem_mb}M", "MemorySwapMax=0"]
+    if shown.get("TasksMax") == "infinity":
+        props.append(f"TasksMax={total_tasks}")
+    return props
+
+
+def _backfill_unbounded_parent(systemctl: str, total_mem_mb: int, total_tasks: int) -> None:
+    """Give the shared parent a hard ceiling when nothing has set one.
+
+    A pod bounds only its own child slice, so on a host that runs only pods
+    the parent would carry no aggregate hard cap and several pods together
+    could still exhaust host RAM. Each property is filled only while it is
+    unset: a finite value, whoever wrote it, is never lowered or replaced, and
+    the host's own gateway overwrites the pod's value when it starts.
+    """
+    props = _unbounded_parent_properties(systemctl, total_mem_mb, total_tasks)
+    if not props:
+        return
+    cmd = [systemctl, "--user", "set-property", "--runtime", _CGROUP_AGENTS_SLICE, *props]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("could not bound the unbounded %s: %s", _CGROUP_AGENTS_SLICE, exc)
+        return
+    if proc.returncode != 0:
+        logger.warning(
+            "could not bound the unbounded %s (rc=%d): %s",
+            _CGROUP_AGENTS_SLICE,
+            proc.returncode,
+            (proc.stderr or "").strip(),
+        )
+        return
+    logger.info(
+        "aggregate cgroup ceiling on %s was unset; set %s from the pod at %s",
+        _CGROUP_AGENTS_SLICE,
+        " ".join(props),
+        os.environ.get("KIROCREW_HOME") or "the default home",
+    )
 
 
 # cgroup v2 directory of the systemd user manager's subtree (transient
@@ -845,20 +977,34 @@ def check_agents_slice_pressure() -> str | None:
     # applied it before: a host that never passed the delegation gate must
     # not start shelling out from the sampler.
     if _SLICE_LIMITS_APPLIED:
+        # Checked on the slice the ceiling was written to: a pod writes its
+        # own child, and the parent may legitimately read "max" there.
+        applied = _slice_limits_dir(_slice_limits_unit()) or slice_dir
         try:
-            if (slice_dir / "memory.max").read_text().strip() == "max":
+            if (applied / "memory.max").read_text().strip() == "max":
                 _SLICE_LIMITS_APPLIED = False
                 ensure_agents_slice_limits()
         except OSError:
             pass
     events = _read_cgroup_counters(slice_dir / "memory.events")
     local = _read_cgroup_counters(slice_dir / "memory.events.local")
-    current = {"oom_kill": events.get("oom_kill", 0), "max": local.get("max", 0)}
+    # A pod's aggregate ceiling sits on its own child (_slice_limits_unit), so
+    # a breach there counts in the child's local "max", not the parent's.
+    pod_dir = _slice_limits_dir(_slice_limits_unit())
+    if pod_dir == slice_dir:
+        pod_dir = None
+    pod_local = _read_cgroup_counters(pod_dir / "memory.events.local") if pod_dir else {}
+    current = {
+        "oom_kill": events.get("oom_kill", 0),
+        "max": local.get("max", 0),
+        "pod_max": pod_local.get("max", 0),
+    }
     if _SLICE_OOM_SEEN is None:
         _SLICE_OOM_SEEN = current
         return None
     new_kills = current["oom_kill"] - _SLICE_OOM_SEEN["oom_kill"]
     slice_max_hits = current["max"] - _SLICE_OOM_SEEN["max"]
+    pod_max_hits = current["pod_max"] - _SLICE_OOM_SEEN.get("pod_max", 0)
     _SLICE_OOM_SEEN = current
     if new_kills <= 0:
         return None
@@ -888,20 +1034,26 @@ def check_agents_slice_pressure() -> str | None:
                         _record_if_killed(grandchild)
     except OSError:
         pass
+    # Report the counters of the slice whose ceiling engaged: the pod's own
+    # child when its local "max" moved and the parent's did not.
+    engaged_dir = (
+        pod_dir if pod_dir is not None and pod_max_hits > 0 >= slice_max_hits else slice_dir
+    )
     mem_current = -1
     try:
-        mem_current = int((slice_dir / "memory.current").read_text().strip())
+        mem_current = int((engaged_dir / "memory.current").read_text().strip())
     except (OSError, ValueError):
         pass
     try:
-        mem_max = (slice_dir / "memory.max").read_text().strip()
+        mem_max = (engaged_dir / "memory.max").read_text().strip()
     except OSError:
         mem_max = "?"
+    engaged = slice_max_hits > 0 or pod_max_hits > 0
     message = (
         f"cgroup OOM kill inside {_CGROUP_AGENTS_SLICE}: {new_kills} new kill(s); "
-        f"slice memory.current={mem_current} memory.max={mem_max}; "
+        f"slice {engaged_dir.name} memory.current={mem_current} memory.max={mem_max}; "
         f"slice-level aggregate ceiling engaged: "
-        f"{'yes' if slice_max_hits > 0 else 'no (a scope hit its own per-tree limit)'}; "
+        f"{'yes' if engaged else 'no (a scope hit its own per-tree limit)'}; "
         f"scopes with recorded kills: {victims or '(already reaped)'}"
     )
     logger.warning("%s", message)

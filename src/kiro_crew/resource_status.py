@@ -329,9 +329,10 @@ def _read_agent_slice_tasks() -> tuple[int, int, int]:
     the ceiling while its process count looks unremarkable.
 
     The aggregate is read from the SHARED ``kirocrew-agents.slice``, because that
-    is where the ceiling lives: a per-instance child slice carries no ``pids.max``
-    of its own, so a per-instance count alone cannot say how close the host is to
-    the wall. Reading the shared parent is sound where operating on it would not
+    is where the host's ceiling lives, so a per-instance count alone cannot say how
+    close the host is to the wall. A pod puts its own ``pids.max`` on its child
+    slice instead; when that wall is nearer, the child's count and ceiling are
+    reported, because those are what fail this instance's next fork. Reading the shared parent is sound where operating on it would not
     be — a count attributes nothing to anyone, while a kill needs an owner — and
     the instance's own child is read as a separate figure so an install can tell
     its contribution from a co-resident gateway's.
@@ -368,6 +369,14 @@ def _read_agent_slice_tasks() -> tuple[int, int, int]:
             else:
                 own_current = sandbox.read_cgroup_int(child / _PIDS_CURRENT)
                 own = -1 if own_current is None else own_current
+                # A pod puts its ceiling on its own child slice. When that wall
+                # is nearer than the parent's, it is the one this instance's
+                # agents hit first, so it is the figure to report.
+                child_limit = _read_pids_max(child / _PIDS_MAX)
+                if child_limit > 0 and own >= 0:
+                    parent_room = (limit - current) if limit > 0 and current is not None else None
+                    if parent_room is None or child_limit - own < parent_room:
+                        return own, child_limit, own
         return (-1 if current is None else current), limit, own
     except Exception:  # pragma: no cover - defensive; the probe must never raise
         logger.debug("agent-slice task probe failed", exc_info=True)

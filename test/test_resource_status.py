@@ -414,6 +414,21 @@ def test_slice_tasks_released_child_is_a_true_zero(tmp_path, monkeypatch) -> Non
     assert _REAL_SLICE_PROBE() == (29500, 32768, 0)
 
 
+def test_slice_tasks_reports_a_pods_own_child_ceiling(tmp_path, monkeypatch) -> None:
+    """A pod's ceiling sits on its child slice; with no parent wall it is the one reported."""
+    slice_dir = _slice_tree(tmp_path, current="9000\n", limit="max\n", own="30000\n")
+    (slice_dir / _TOKEN / "pids.max").write_text("32768\n", encoding="utf-8")
+    _patch_slice(monkeypatch, slice_dir)
+    assert _REAL_SLICE_PROBE() == (30000, 32768, 30000)
+
+
+def test_slice_tasks_keeps_the_parent_wall_when_it_is_nearer(tmp_path, monkeypatch) -> None:
+    slice_dir = _slice_tree(tmp_path, current="32000\n", limit="32768\n", own="100\n")
+    (slice_dir / _TOKEN / "pids.max").write_text("32768\n", encoding="utf-8")
+    _patch_slice(monkeypatch, slice_dir)
+    assert _REAL_SLICE_PROBE() == (32000, 32768, 100)
+
+
 def test_slice_tasks_unreadable_child_count_is_unknown(tmp_path, monkeypatch) -> None:
     """A child directory whose count will not parse is unknown, not zero."""
     _patch_slice(monkeypatch, _slice_tree(tmp_path, own="not-a-number\n"))

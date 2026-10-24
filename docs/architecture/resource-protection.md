@@ -299,7 +299,13 @@ with no single cgroup ever breaching its own limit — and `compute_max_subagent
 exactly that concurrency (up to 32 subagents by default). cgroup v2 bounds a descendant by
 the **minimum** effective limit of itself and all its ancestors, so the parent slice every
 scope already nests under is the natural aggregate boundary.
-`sandbox.ensure_agents_slice_limits()` puts a ceiling on it at gateway startup:
+`sandbox.ensure_agents_slice_limits()` puts a ceiling on it at gateway startup. A pod
+(`KIROCREW_POD`) is the exception: it writes the same properties on its own per-instance
+child slice (`kirocrew-agents-<token>.slice`), so a throwaway instance never replaces the
+ceiling the host's gateway set on the shared parent. When the parent's `MemoryMax` or
+`TasksMax` is unset in systemd, the pod also fills that property on the parent, so a host
+running only pods keeps an aggregate hard cap; a value already set is never replaced. Each write is logged with the previous
+`pids.max` and `memory.max`, at WARNING when it lowers either:
 
 - **`MemoryMax`** plus **`MemorySwapMax=0`** on `kirocrew-agents.slice`, default **80% of
   physical RAM** (`_CGROUP_TOTAL_MEMORY_FRACTION`; 12288 MB fallback when RAM cannot be
