@@ -12,7 +12,7 @@ import { copyToClipboard } from '../../../utils/clipboard'
 import ShareCard, { CARD_W } from './ShareCard'
 import {
   SHARE_REPO_URL, X_POST_LIMIT, buildIntentUrl, clampExcerpt, copyImageWithText,
-  scanSensitive, type SensitiveKind,
+  readShareSites, scanSensitive, type SensitiveKind, type ShareSite,
 } from './shareSupport'
 
 /**
@@ -91,6 +91,21 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText, 
   // value at click time, but the answer can change while the export awaits.
   const shareEnabledRef = useRef(shareEnabled)
   shareEnabledRef.current = shareEnabled
+  // The policy's `sites` list: only these sites get a button. `null` while the
+  // first read is in flight: both buttons are drawn disabled, so the row keeps
+  // its shape and nothing can be pressed before the server has answered.
+  const [sites, setSites] = useState<readonly ShareSite[] | null>(null)
+  const siteShown = (site: ShareSite) => sites === null || sites.includes(site)
+  const [sitesError, setSitesError] = useState<string | null>(null)
+  const applySites = (read: { sites: ShareSite[]; failed: boolean }) => {
+    setSites(read.sites)
+    setSitesError(read.failed ? i18nT('pages.chat.share.sites_unavailable') : null)
+  }
+  useEffect(() => {
+    let live = true
+    void readShareSites().then((read) => { if (live) applySites(read) })
+    return () => { live = false }
+  }, [shareEnabled])
   const [textCopy, setTextCopy] = useState<'idle' | 'copied' | 'failed'>('idle')
   const captionRef = useRef<HTMLTextAreaElement>(null)
 
@@ -196,7 +211,7 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText, 
    *  navigation), its opener severed, and it is pointed at the composer once
    *  the export has settled. A blocker that still refuses leaves the copy
    *  done and the composer one click away — never data. */
-  const openIntent = async (platform: 'x' | 'linkedin') => {
+  const openIntent = async (platform: ShareSite) => {
     const url = buildIntentUrl(platform, caption)
     const tab = window.open('', '_blank')
     if (tab) tab.opener = null
@@ -223,6 +238,14 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText, 
     // navigation that hands the caption to the third-party site. The tab that
     // was pre-opened to dodge the popup blocker is closed instead of left blank.
     if (!shareEnabledRef.current) {
+      tab?.close()
+      return
+    }
+    // The site list is asked again just before the caption leaves: the list the
+    // buttons were drawn from may be older than the policy now in force.
+    const read = await readShareSites()
+    applySites(read)
+    if (!shareEnabledRef.current || !read.sites.includes(platform)) {
       tab?.close()
       return
     }
@@ -312,8 +335,8 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText, 
                 <Btn disabled={busy !== null || !shareEnabled} onClick={handleCopy} data-testid="share-copy">
                   {busy === 'copy' ? <Loader2 size={14} className="animate-spin lucide-inline" /> : feedback === 'copied' ? <Check size={14} className="lucide-inline text-ok" /> : <Copy size={14} className="lucide-inline" />} {i18nT('pages.chat.share.copy_image_text')}
                 </Btn>
-                <Btn disabled={busy !== null || !shareEnabled} onClick={() => openIntent('x')} data-testid="share-x">{i18nT('pages.chat.share.share_on_x')}</Btn>
-                <Btn disabled={busy !== null || !shareEnabled} onClick={() => openIntent('linkedin')} data-testid="share-linkedin">{i18nT('pages.chat.share.share_on_linkedin')}</Btn>
+                {siteShown('x') && <Btn disabled={busy !== null || !shareEnabled || sites === null} onClick={() => openIntent('x')} data-testid="share-x">{i18nT('pages.chat.share.share_on_x')}</Btn>}
+                {siteShown('linkedin') && <Btn disabled={busy !== null || !shareEnabled || sites === null} onClick={() => openIntent('linkedin')} data-testid="share-linkedin">{i18nT('pages.chat.share.share_on_linkedin')}</Btn>}
               </div>
 
               {/* No hand-off: the caption textarea and the edited card text
@@ -324,6 +347,13 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText, 
                 message={exportError}
                 onDismiss={() => setExportError(null)}
                 testId="share-export-error"
+              />
+              {/* No hand-off either: the same unsaved edits are on screen. */}
+              <ErrorNotice
+                variant="inline"
+                message={sitesError}
+                onDismiss={() => setSitesError(null)}
+                testId="share-sites-error"
               />
 
               {shareEnabled && !exportError && (

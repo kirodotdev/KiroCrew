@@ -11796,6 +11796,7 @@
         "sensitive_in_card": "공유 전 확인하세요 — 카드에 다음이 포함되어 있습니다: {{kinds}}",
         "sensitive_in_caption": "공유 전 확인하세요 — 게시물 텍스트에 다음이 포함되어 있습니다: {{kinds}}",
         "withdrawn_by_policy": "정책에 따라 공유가 꺼졌습니다. 텍스트를 남기려면 지금 복사하세요 — 이 대화 상자를 닫으면 저장되지 않습니다.",
+        "sites_unavailable": "공유할 수 있는 사이트를 확인하지 못해 표시하지 않습니다. 나중에 다시 시도하세요.",
         "copy_text_only": "텍스트 복사",
         "copied_text": "복사되었습니다",
         "copy_text_failed": "복사하지 못했습니다",
