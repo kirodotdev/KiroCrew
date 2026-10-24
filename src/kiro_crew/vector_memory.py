@@ -1068,6 +1068,8 @@ class VectorMemoryStore:
         relevance_filter: bool = False,
         *,
         recall_query: _RecallQuery | None = None,
+        conversation_id: str = "",
+        recency_boost: float = 0.0,
     ) -> list[dict]:
         """Search episodic memories by vector similarity with decay scoring."""
         return _episodic_search.search_episodic(
@@ -1079,6 +1081,8 @@ class VectorMemoryStore:
             tag_filter,
             relevance_filter,
             recall_query=recall_query,
+            conversation_id=conversation_id,
+            recency_boost=recency_boost,
         )
 
     def _search_episodic_v2(
@@ -1089,10 +1093,13 @@ class VectorMemoryStore:
         mmr: bool,
         tag_filter: list[str] | None,
         relevance_filter: bool,
+        conversation_id: str = "",
+        recency_boost: float = 0.0,
     ) -> list[dict]:
         """Fuse both evidence sources before admission and the result budget."""
         return _episodic_search.search_episodic_v2(
-            self, query_embedding, query_text, limit, mmr, tag_filter, relevance_filter
+            self, query_embedding, query_text, limit, mmr, tag_filter, relevance_filter,
+            conversation_id=conversation_id, recency_boost=recency_boost,
         )
 
     def _sqlite_vector_search(
@@ -1541,9 +1548,14 @@ class VectorMemoryStore:
         cap: int = 3000,
         project_dir: str | Path | None = None,
         keep: Callable[[list[dict]], list[dict] | None] | None = None,
+        conversation_id: str = "",
+        recency_boost: float = 0.0,
     ) -> dict:
         """Compute once; discard mixed-space results and retry keyword-only once."""
-        return _recall.recall(self, query_text, cap=cap, project_dir=project_dir, keep=keep)
+        return _recall.recall(
+            self, query_text, cap=cap, project_dir=project_dir, keep=keep,
+            conversation_id=conversation_id, recency_boost=recency_boost,
+        )
 
     def _recall_once(
         self,
@@ -1553,8 +1565,11 @@ class VectorMemoryStore:
         project_dir: str | Path | None,
         query: _RecallQuery,
         keep: Callable[[list[dict]], list[dict] | None] | None = None,
+        conversation_id: str = "",
+        recency_boost: float = 0.0,
     ) -> dict:
         """Bounded on-demand member context with the evidence actually selected."""
         return _recall.recall_once(
-            self, query_text, cap=cap, project_dir=project_dir, query=query, keep=keep
+            self, query_text, cap=cap, project_dir=project_dir, query=query, keep=keep,
+            conversation_id=conversation_id, recency_boost=recency_boost,
         )

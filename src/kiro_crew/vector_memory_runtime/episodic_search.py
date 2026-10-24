@@ -136,6 +136,8 @@ def search_episodic(
     relevance_filter: bool = False,
     *,
     recall_query: _RecallQuery | None = None,
+    conversation_id: str = "",
+    recency_boost: float = 0.0,
 ) -> list[dict]:
     """Search episodic memories by vector similarity with decay scoring.
 
@@ -160,11 +162,13 @@ def search_episodic(
         with store._db_lock:
             store._check_recall_query(recall_query)
             return store.search_episodic(
-                recall_query.vector, query_text, limit, mmr, tag_filter, relevance_filter
+                recall_query.vector, query_text, limit, mmr, tag_filter, relevance_filter,
+                conversation_id=conversation_id, recency_boost=recency_boost,
             )
     if store.algorithm_version == "v2":
         return store._search_episodic_v2(
-            query_embedding, query_text, limit, mmr, tag_filter, relevance_filter
+            query_embedding, query_text, limit, mmr, tag_filter, relevance_filter,
+            conversation_id=conversation_id, recency_boost=recency_boost,
         )
     if (
         store._faiss_index is not None
@@ -314,12 +318,19 @@ def search_episodic_v2(
     mmr: bool,
     tag_filter: list[str] | None,
     relevance_filter: bool,
+    conversation_id: str = "",
+    recency_boost: float = 0.0,
 ) -> list[dict]:
     """Fuse both evidence sources before admission and the result budget.
 
     Scanning the active private population also includes rows awaiting an
     embedding and avoids the FAISS top-k/tag-filter starvation of V1. No
     model calls happen inside this scan or while holding the store lock.
+
+    When *conversation_id* is non-empty, episodic entries from the same
+    conversation receive a session-affinity boost (always on). When
+    *recency_boost* > 0, entries also receive a bounded multiplicative
+    recency boost (opt-in via ``memory.recency_boost`` config key).
     """
     from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
 
@@ -351,9 +362,15 @@ def search_episodic_v2(
         if created.tzinfo is None:
             created = created.replace(tzinfo=timezone.utc)
         days_old = max(0, (now - created).days)
+        same_session = bool(
+            conversation_id and row.get("conversation_id") == conversation_id
+        )
         score = memory_v2.rank_score(
             evidence,
             importance=row["importance"],
+            same_session=same_session,
+            recency_boost=recency_boost,
+            age_days=float(days_old),
         )
         row.pop("embedding", None)
         row.update(score=score, retrieval={**evidence, "age_days": days_old})

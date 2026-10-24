@@ -120,6 +120,8 @@ def recall(
     cap: int = 3000,
     project_dir: str | Path | None = None,
     keep: Callable[[list[dict]], list[dict] | None] | None = None,
+    conversation_id: str = "",
+    recency_boost: float = 0.0,
 ) -> dict:
     """Compute once; discard mixed-space results and retry keyword-only once.
 
@@ -142,17 +144,18 @@ def recall(
     query = _RecallQuery(vector, generation, signature)
     try:
         return store._recall_once(
-            query_text, cap=cap, project_dir=project_dir, query=query, keep=keep
+            query_text, cap=cap, project_dir=project_dir, query=query, keep=keep,
+            conversation_id=conversation_id, recency_boost=recency_boost,
         )
     except _RecallSpaceChanged:
-        # No inference on the retry, even when the first inference failed.
-        # Keyword ranking cannot mix vector spaces during another switch.
         return store._recall_once(
             query_text,
             cap=cap,
             project_dir=project_dir,
             query=_RecallQuery(None, None, None),
             keep=keep,
+            conversation_id=conversation_id,
+            recency_boost=recency_boost,
         )
 
 
@@ -164,6 +167,8 @@ def recall_once(
     project_dir: str | Path | None,
     query: _RecallQuery,
     keep: Callable[[list[dict]], list[dict] | None] | None = None,
+    conversation_id: str = "",
+    recency_boost: float = 0.0,
 ) -> dict:
     """Bounded on-demand member context with the evidence actually selected.
 
@@ -220,6 +225,8 @@ def recall_once(
         limit=store._episodic_limit,
         relevance_filter=True,
         recall_query=query,
+        conversation_id=conversation_id,
+        recency_boost=recency_boost,
     )
 
     for episode in episodes:
