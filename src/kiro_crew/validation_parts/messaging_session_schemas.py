@@ -567,3 +567,31 @@ SESSION_SUMMARY_SCHEMA = ToolSchema(
         FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
     ],
 )
+
+# A queue id is ``uuid4().hex[:12]`` (``slot_queue_repository``); the pattern is
+# looser than that on purpose, so an id minted by another provider still reads,
+# but it keeps the value a bare token rather than free text.
+QUEUE_ENTRY_ID_MAX_CHARS = 64
+_QUEUE_ENTRY_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+SESSION_QUEUE_SCHEMA = ToolSchema(
+    tool_name="session_queue",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec(
+            "action",
+            str,
+            required=False,
+            allowed=frozenset({"list", "move"}),
+            default="list",
+        ),
+        FieldSpec(
+            "entry",
+            str,
+            required=False,
+            max_len=QUEUE_ENTRY_ID_MAX_CHARS,
+            pattern=_QUEUE_ENTRY_ID_RE,
+        ),
+        FieldSpec("position", int, required=False, min_val=0, max_val=10_000),
+    ],
+)

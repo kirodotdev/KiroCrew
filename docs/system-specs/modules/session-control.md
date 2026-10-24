@@ -38,6 +38,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_release` | `POST /api/session-control/release` | Let a session the caller holds, or the caller itself, out from under its parent; the released session keeps its own subtree |
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
 | `session_summary` | `GET /api/session-control/summary` | Read another session's cached intent summary + liveness, authorized as `session_read_message` is; never generates one |
+| `session_queue` | `POST /api/session-control/queue` | List or move queue entries on a session the caller created; move reaches only entries the caller queued (sender stamp), and a move earlier may pass only the caller's own entries |
 
 `session_adopt` and `session_release` reshape the session tree, so both go
 through `authorize_target` like every other verb and add tree checks of their
@@ -87,7 +88,15 @@ other caller, keeps `target_not_found`.
 **Two verbs here write into another session's conversation: `session_send` and
 `session_broadcast`.** Reading returns a transcript tail, stopping cancels a turn
 the way the Stop button does, creating opens an empty session, and sending
-delivers a message that the target runs as its next turn. Delivery is the
+delivers a message that the target runs as its next turn. `session_queue` adds
+no new content to the target: its `move` arm reorders an entry already in the
+target's queue, and the queued transcript row that mirrors it, and only for
+entries the caller itself queued. It has no `cancel`, because a queued send to a
+ledger-bound worker can already be the recorded hand-back. `move` takes the queue
+card's own path (`PUT .../queue/order`): the change
+lands in memory, the same tab frame is broadcast, and the periodic flush saves
+it, so the verb makes no durability promise the card does not. Nothing in
+`queue_target` suspends between the gate and the reply. Delivery is the
 sharpest verb and is bounded accordingly: the body is redacted through
 `sanitize_outbound` before it is persisted, it is prefixed with a `[sent by
 session <caller> via <verb>]` envelope so the target's transcript can never

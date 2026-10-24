@@ -452,6 +452,7 @@ class TestRouteOps:
             "/api/session-control/adopt": "adopt",
             "/api/session-control/release": "release",
             "/api/session-control/read": "read_message",
+            "/api/session-control/queue": "other",
             "/api/session-control/summary": "summary",
         }
 

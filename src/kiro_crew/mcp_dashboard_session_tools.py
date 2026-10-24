@@ -23,6 +23,7 @@ from kiro_crew.mcp_dashboard_session_runs import (
     _run_session_fork,
     _run_session_generate_title,
     _run_session_history_list,
+    _run_session_queue,
     _run_session_read_message,
     _run_session_release,
     _run_session_reload,
@@ -877,5 +878,52 @@ def _session_tools() -> tuple[Tool, ...]:
             run=_run_session_summary,
             identity="strict",
             routes=("GET /api/session-control/summary",),
+        ),
+        Tool(
+            name="session_queue",
+            description=(
+                "See and reorder the messages waiting in the queue of a session YOU created. "
+                "session_send to a busy session queues the message (started: false); this is "
+                "how you see where it sits and reorder your entries by priority. A correction to "
+                "an earlier message should stay AFTER it, so the target reads it last. "
+                "action=list returns the first 50 queued entries in run order (the "
+                "rest are counted in `omitted`, not listed), each with its id, its position (0 "
+                "runs next), a redacted excerpt and whether YOU queued it. action=move puts one "
+                "entry at `position`; it applies ONLY to entries you queued with session_send: "
+                "a person's queued message, or another session's, is never movable here. A "
+                "move to an earlier position may pass only your own entries; a move later is "
+                "always allowed. Entries queued before a gateway restart lose their sender "
+                "stamp and list as not yours."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "move"],
+                        "description": "list (default) or move.",
+                        "default": "list",
+                    },
+                    "entry": {
+                        "type": "string",
+                        "description": "Queue entry id from action=list. Required for move.",
+                    },
+                    "position": {
+                        "type": "integer",
+                        "description": (
+                            "move only: the 0-based position to put the entry at (0 runs next). "
+                            "A position past the end moves it to the back."
+                        ),
+                    },
+                },
+                "required": ["target"],
+            },
+            run=_run_session_queue,
+            identity="strict",
+            routes=("POST /api/session-control/queue",),
         ),
     )

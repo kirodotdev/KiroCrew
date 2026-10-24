@@ -131,6 +131,35 @@ class TestQueueReorderEndpoint:
         assert slot.messages[0]["role"] == "user"
 
     @pytest.mark.asyncio
+    async def test_reorder_reseats_an_app_twin_row(self):
+        """An app twin carries its id in ``meta.queueId``, not in ``cls``; the card's
+        reorder seats it in the new order instead of leaving it at the back."""
+        state = _make_state()
+        slot = state.get_or_create_slot("chat-1")
+        id1 = slot.queue_append("typed")
+        id2 = slot.queue_append("from the app")
+        slot.append("queued", "typed", json.dumps({"queue_id": id1}))
+        slot.messages.append(
+            {
+                "role": "queued",
+                "content": "from the app",
+                "cls": "msg msg-queued",
+                "meta": {"queueId": id2},
+            }
+        )
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.put(
+                "/api/chat/slots/chat-1/queue/order", json={"order": [id2, id1]}
+            )
+            assert resp.status == 200
+
+        queued = [m for m in slot.messages if m.get("role") == "queued"]
+        assert [m["content"] for m in queued] == ["from the app", "typed"]
+        assert [q["content"] for q in slot._queue] == ["from the app", "typed"]
+
+    @pytest.mark.asyncio
     async def test_reorder_slot_not_found(self):
         state = _make_state()
         app = _make_app(state)

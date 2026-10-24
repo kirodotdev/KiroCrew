@@ -385,6 +385,7 @@ class TestAdvertisedSet:
             "session_status",
             "session_read_message",
             "session_summary",
+            "session_queue",
             "session_adopt",
             "session_release",
         }
