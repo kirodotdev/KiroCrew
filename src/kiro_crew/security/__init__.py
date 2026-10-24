@@ -197,6 +197,7 @@ _EXPORTS: dict[str, str] = {
     "_shell_payload_sources": "argv_floor",
     "_ssh_family_verb": "argv_floor",
     "_static_substitution_output": "argv_floor",
+    "_static_substitution_words": "argv_floor",
     "_unmask_separators": "argv_floor",
     # denied_rules
     "BUILTIN_DENIED_RULES": "denied_rules",
@@ -637,6 +638,7 @@ _EXPORTS: dict[str, str] = {
     "_push_token_redirection": "shell_normalizer_walk",
     "_push_token_shell_read": "shell_normalizer_walk",
     "_redirect_consumes_next": "shell_normalizer_walk",
+    "_redirect_word_prefix": "shell_normalizer_walk",
     "_resolve_param_defaults": "shell_normalizer_walk",
     "_shell_join_continuations": "shell_normalizer_walk",
     "_shell_quote_walk": "shell_normalizer_walk",
@@ -860,6 +862,7 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _shell_payload_sources,
         _ssh_family_verb,
         _static_substitution_output,
+        _static_substitution_words,
         _unmask_separators,
     )
     from kiro_crew.security.denied_rules import (  # noqa: F401
@@ -1314,6 +1317,7 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _push_token_redirection,
         _push_token_shell_read,
         _redirect_consumes_next,
+        _redirect_word_prefix,
         _resolve_param_defaults,
         _shell_join_continuations,
         _shell_quote_walk,

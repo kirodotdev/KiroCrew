@@ -100,6 +100,7 @@ from .shell_normalizer_walk import (  # noqa: F401  (also re-exported for import
     _push_token_redirection,
     _push_token_shell_read,
     _redirect_consumes_next,
+    _redirect_word_prefix,
     _resolve_param_defaults,
     _resolved_word_view,
     _shell_join_continuations,

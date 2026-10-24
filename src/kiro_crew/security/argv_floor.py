@@ -172,6 +172,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.security.argv_floor_self import (  # noqa: F401
         _DEV_MODE_CONFIRM_FLAG,
+        _ECHO_OPTION_RE,
         _RAW_ASSIGNMENT_RE,
         _SELF_CLOUD_DESTRUCTIVE_VERBS,
         _SELF_FLOOR_MACHINERY_RE,
@@ -179,7 +180,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SELF_FLOOR_QUOTE_JUNK_RE,
         _SELF_IMPORT_RE,
         _SELF_MODULE_SPELLINGS,
+        _STATIC_OUTPUT_UNSAFE_CHARS,
         _bare_kill_raw_bodies,
+        _glued_command_tail,
+        _is_command_amp,
         _is_credential_mint,
         _is_dev_mode_out_of_root_confirm,
         _is_kill_by_name_program,
@@ -204,6 +208,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SelfModuleScan,
         _shell_payload_sources,
         _static_substitution_output,
+        _static_substitution_words,
+        _word_before_glued_separator,
     )
     from kiro_crew.security.argv_floor_ssh import (  # noqa: F401
         _ARITH_INT_LITERAL_RE,
@@ -301,6 +307,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _push_token_redirection,
         _push_token_shell_read,
         _redirect_consumes_next,
+        _redirect_word_prefix,
         _resolve_param_defaults,
         _shell_join_continuations,
         _shell_payload_walk,

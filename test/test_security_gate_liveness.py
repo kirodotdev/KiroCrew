@@ -488,6 +488,7 @@ def _url_payload_command(n: int) -> str:
 #: the agent file tools and read-allowed so the dashboard can serve pasted images.
 #: Data, not rule logic: the matcher and every other entry are unchanged.
 #:
+#:
 #: Raised again for the ``rm_floor`` reads of a backtick body inside
 #: double quotes and of a redirection glued to an operand, and for the floor-error
 #: path naming ``rm`` as a word (``_names_rm_word``, on the raw text and with
@@ -503,7 +504,16 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 8, from 32,518, for one ``_WRITE_PROTECTED_HOME_PATHS`` entry in
 #: ``paths_lists``: the crewmate agent folder, write-denied to the agent file tools
 #: like ``~/.kiro/agents``. Data, not rule logic: the matcher is unchanged.
-_PACKAGE_LINE_BUDGET = 32_526
+#:
+#: Raised for the shared shell reader the argv floors read. ``_redirect_word_prefix``
+#: keeps the literal word in front of a glued redirection as an operand, and the
+#: self-subcommand operand reader keeps the word in front of a separator glued before
+#: a redirection without letting a redirection end the argv; ``_self_program_index``
+#: reads a CLI named after a separator glued into a redirection
+#: (``status>x&&<cli>``) as the next command's program. ``_static_substitution_words``
+#: expands a literal ``echo``/``printf`` substitution in program position to every
+#: word it prints.
+_PACKAGE_LINE_BUDGET = 32_709
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

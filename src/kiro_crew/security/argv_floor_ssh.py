@@ -27,7 +27,11 @@ import re
 # keep resolving the unpatched object and the instrument would count nothing.
 from . import shell_normalizer as _shell_normalizer
 from .argv_floor_hosts import _GLOB_CHARS, _host_is_self
-from .argv_floor_self import _self_token_frames, _static_substitution_output
+from .argv_floor_self import (
+    _self_token_frames,
+    _static_substitution_output,
+    _static_substitution_words,
+)
 from .shell_normalizer import (
     _argv_programs,
     _cut_at_operator,
@@ -954,9 +958,14 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     # literals; every other body keeps its original text (the ``$(hostname``
     # hints below read it) and stays the documented run-time residual.  A
     # single-quoted spelling resolves too -- an over-approximation toward
-    # deny, accepted for a deny floor.
+    # deny, accepted for a deny floor.  A body whose whole output is a literal
+    # line (``$(echo ssh localhost id)``) is spliced as every word it prints,
+    # so a program-position substitution reads as the argv it expands to.
     def _splice_static_substitution(match: "re.Match[str]") -> str:
         body = match.group(1) if match.group(1) is not None else match.group(2)
+        words = _static_substitution_words(body)
+        if words is not None:
+            return words
         out = _static_substitution_output(body)
         return match.group(0) if out == "\x00" else out
 

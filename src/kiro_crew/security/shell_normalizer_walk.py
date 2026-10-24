@@ -448,6 +448,47 @@ def _redirect_consumes_next(token: str) -> "tuple[bool, bool]":
     return (True, token[cut:].lstrip("<>&") == "")
 
 
+#: A named file-descriptor prefix (``{fd}>file``): bash allocates the descriptor
+#: and stores it in the variable, so the braces belong to the redirection.
+_NAMED_FD_PREFIX_RE = re.compile(r"\{[a-z_][a-z0-9_]*\}\Z")
+
+
+#: A word made only of literal characters: no expansion, quoting, glob or brace
+#: syntax, so the text is exactly the argv word bash passes.
+_LITERAL_WORD_RE = re.compile(r"[a-z0-9_./:@%+=,-]+\Z", re.IGNORECASE)
+
+
+def _redirect_word_prefix(token: str) -> str:
+    """The argv word in front of a redirection glued to it, else ``""``.
+
+    A redirection needs no whitespace before it, so ``restart>/tmp/log`` is the
+    word ``restart`` followed by the redirection ``>/tmp/log``: bash passes
+    ``restart`` in argv and removes the rest. :func:`_redirect_consumes_next`
+    classifies the whole token as a redirection; this returns the word the
+    shell still passes, so an operand reader keeps it.
+
+    ``""`` is returned when the prefix is empty, all digits (a file descriptor,
+    ``2>err``) or a named descriptor (``{fd}>err``), all of which belong to the
+    redirection; when the operator opens a process substitution (``x<(cmd)``);
+    and when the prefix is not a plain literal word (:data:`_LITERAL_WORD_RE`),
+    because an expansion or glob in it decides at run time what bash passes. A
+    trailing ``&`` is the first character of the ``&>`` operator, not part of
+    the word.
+    """
+    cut = min((token.find(c) for c in "<>" if c in token), default=-1)
+    if cut <= 0 or token.startswith("(", cut + 1):
+        return ""
+    head = token[:cut]
+    if head.endswith("&"):
+        # ``&`` never belongs to an argv word: it is the ``&>`` operator's first
+        # character, or a background separator before the operator (``restart&<f``
+        # runs ``restart`` backgrounded, and ``<f`` applies to the next command).
+        head = head.rstrip("&")
+    if not head or head.isdigit() or _NAMED_FD_PREFIX_RE.match(head):
+        return ""
+    return head if _LITERAL_WORD_RE.match(head) else ""
+
+
 # ── Feature-branch push gate ──
 # ``_is_git_publish`` only detects that a command IS a ``git push``.  The
 # decision of whether to ALLOW it is made by ``_is_push_to_protected_branch``
