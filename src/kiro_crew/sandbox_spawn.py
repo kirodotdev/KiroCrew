@@ -47,7 +47,11 @@ from kiro_crew.sandbox_unavailable import (
     SandboxUnavailableError,
     launcher_refusal,
 )
-from kiro_crew.sandbox_wrap import detect_backend, wrap_argv
+from kiro_crew.sandbox_wrap import (
+    _set_inherited_userns_failure,
+    detect_backend,
+    wrap_argv,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -721,6 +725,7 @@ def sandboxed_spawn_argv(
     # -- see ``runtime_reconcile.RuntimeReconciler._unowned``. Stamping it here is
     # therefore safe for any argv: it never decides an exclusion on its own.
     scrubbed[KIROCREW_SANDBOX_TOOL_ENV] = KIROCREW_SANDBOX_TOOL_VALUE
+    _set_inherited_userns_failure(scrubbed)
     return wrapped, scrubbed, cleanup
 
 
