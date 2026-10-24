@@ -152,6 +152,149 @@ class TestSubstitutionCloserReadsCommandGrammar:
         assert f"printf {self.VERB}" in body, body
 
 
+class TestParameterExpansionHoldsItsOwnParens:
+    """A ``)`` inside ``${...}`` is the expansion's text, not a closer.
+
+    ``$(: ${v:-)}; ...)`` runs every command up to the LAST ``)`` in bash, so the
+    span walk must not stop at the ``)`` inside the default word, or the commands
+    behind it go unscanned.  Every shape here was measured in bash.
+    """
+
+    VERB = "tok" + "en"
+    NAME = "kiro" + "crew"
+
+    @pytest.mark.parametrize(
+        ("command", "body"),
+        [
+            ("kill $(echo ${v:-)}; pgrep -f x)", "echo ${v:-)}; pgrep -f x"),
+            # Quoting runs through the span: a quoted ``}`` does not close it.
+            ('kill $(echo ${v:-"})"}; pgrep -f x)', 'echo ${v:-"})"}; pgrep -f x'),
+            ("kill $(echo ${v:-'})'}; pgrep -f x)", "echo ${v:-'})'}; pgrep -f x"),
+            # A nested ``${`` opens another level.
+            ("kill $(echo ${a:-${b:-)}}; pgrep -f x)", "echo ${a:-${b:-)}}; pgrep -f x"),
+            # A bare ``{`` opens nothing: ``${v:-{)}`` closes at the first ``}``.
+            ("kill $(echo ${v:-{)}}; pgrep -f x)", "echo ${v:-{)}}; pgrep -f x"),
+            ("kill $(echo ${v:-{}) tail", "echo ${v:-{}"),
+            ("kill $(printf %s ${p//{/}) tail", "printf %s ${p//{/}"),
+            # Inside the expansion a ``#`` is its own text, not a comment.
+            ("kill $(echo ${v:-x #)}; pgrep -f x)", "echo ${v:-x #)}; pgrep -f x"),
+            # A backtick body is opaque: its ``${`` and ``)`` are the inner command's.
+            ("kill $(echo `echo ${`; pgrep -f x)", "echo `echo ${`; pgrep -f x"),
+            ("kill $(echo `echo )`; pgrep -f x)", "echo `echo )`; pgrep -f x"),
+            # ``$$[`` is the PID and a literal ``[``: no arithmetic frame opens.
+            ("kill $(echo ${v:-$$[}) tail", "echo ${v:-$$[}"),
+            # A process substitution inside the expansion owns its ``}``.
+            ("kill $(: ${v:-<(: })}; pgrep -f x)", ": ${v:-<(: })}; pgrep -f x"),
+            ("kill $(: ${v:->(: })}; pgrep -f x)", ": ${v:->(: })}; pgrep -f x"),
+            # A ``}`` inside a nested substitution belongs to that command.
+            ("kill $(echo ${v:-$(echo })}; pgrep -f x)", "echo ${v:-$(echo })}; pgrep -f x"),
+            ("kill $(echo ${v:-`echo }`)}; pgrep -f x)", "echo ${v:-`echo }`)}; pgrep -f x"),
+            # ``$${`` is the PID followed by a literal brace -- no expansion.
+            ("kill $(echo $${) tail", "echo $${"),
+            # An escaped ``\\$`` is data and pairs with nothing, so the next ``$`` opens.
+            ("kill $(echo \\$${v:-)}; pgrep -f x)", "echo \\$${v:-)}; pgrep -f x"),
+        ],
+    )
+    def test_the_body_runs_to_the_real_closer(self, command: str, body: str) -> None:
+        assert security._substitution_bodies(command) == [body]
+
+    @pytest.mark.parametrize("tail", [" # <<", " <<< x", "; echo '<<'", "; cat <<E\nx\nE"])
+    def test_a_here_document_after_the_closer_keeps_the_expansion_frame(self, tail: str) -> None:
+        """Only a ``<<`` the walk reaches before the closer turns expansion frames off."""
+        command = f"T=$(: ${{v:-)}}; printf {self.VERB}); {self.NAME} $T{tail}"
+        body, *_ = security._substitution_bodies(command)
+        assert f"printf {self.VERB}" in body, body
+        assert security.is_denied(command) is not None
+
+    def test_a_here_string_inside_the_body_keeps_the_expansion_frame(self) -> None:
+        command = f"T=$(cat <<< x; : ${{v:-)}}; printf {self.VERB}); {self.NAME} $T"
+        (body,) = security._substitution_bodies(command)
+        assert f"printf {self.VERB}" in body, body
+
+    @pytest.mark.parametrize("word", [")", "$[ (}) ]"])
+    def test_a_hidden_verb_behind_an_expansion_paren_is_refused(self, word: str) -> None:
+        """The ``printf`` behind ``${v:-)}`` is scanned, so the command is refused.
+
+        ``$[ (}) ]`` takes the paren-only span, which reaches the ``printf`` too.
+        """
+        command = f"T=$(: ${{v:-{word}}}; printf {self.VERB}); {self.NAME} $T"
+        (body,) = security._substitution_bodies(command)
+        assert f"printf {self.VERB}" in body, body
+        assert security.is_denied(command) is not None
+
+    @pytest.mark.parametrize(
+        "inner",
+        ["$(echo })", "`echo }`", "$(echo ${w:-}})"],
+    )
+    def test_a_brace_in_a_nested_substitution_keeps_the_refusal(self, inner: str) -> None:
+        """A ``}`` inside a nested substitution cannot close the expansion early."""
+        command = f"T=$(: ${{v:-{inner})}}; printf {self.VERB}); {self.NAME} $T"
+        assert security.is_denied(command) is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # bash closes ``${v:-{}`` at its first ``}``, so the ``rm`` after it runs.
+            'echo "$(echo ${v:-{})" ; rm -rf "$HOME" ; echo "} )"',
+            # ``$$[`` opens no arithmetic, so the ``}`` closes the expansion.
+            'echo "$(echo ${v:-$$[})"; rm -fr "$HOME"; echo "]}"',
+            # A ``${`` inside backticks cannot open a frame past the backtick.
+            'echo "$(echo `echo ${`)"; rm -fr ~; echo "})"',
+            # The ``}`` inside ``<(...)`` cannot close the expansion early.
+            'echo "$(: ${v:-<(: })}; rm -fr "$HOME")"',
+            # A substitution inside an expansion is a new command: an open
+            # ``case`` around it cannot swallow its ``)``.
+            'echo "$(case x in x) printf %s ${v:-$(printf 123)};; esac)"; rm -fr ~',
+            'echo "$(case a in a) echo ${v:-$(echo x)} ;; esac)" ; rm -rf "$HOME" ; echo "})"',
+            'echo "$(case a in a) echo ${v:-<(echo x)} ;; esac)" ; rm -rf "$HOME" ; echo "})"',
+            # A ``${`` on a here-document line is data, not an expansion.
+            'echo "$(cat <<\'E\'\n${\nE\n)" ; rm -rf "$HOME" ; echo "})"',
+            'echo "$(cat <<E\n${\nE\n)" ; rm -rf "$HOME" ; echo "})"',
+        ],
+    )
+    def test_a_misread_frame_cannot_hide_a_home_wipe(self, command: str) -> None:
+        assert security.is_denied(command) is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo $(printf ${v:-)})",
+            "echo $(printf ${HOME}) done",
+            'echo $(printf "${v:-}}") done',
+            f"p=123; kill $(printf %s ${{p//{{/}}); echo $(pgrep -f {NAME})",
+        ],
+    )
+    def test_benign_expansions_stay_allowed(self, command: str) -> None:
+        assert security.is_denied(command) is None
+
+    def test_deep_nesting_does_not_exhaust_the_stack(self) -> None:
+        """The walk keeps its frames in a list, so nesting depth costs no recursion."""
+        depth = 3000  # past the default interpreter recursion limit
+        command = "echo $(" + ": ${v:-$(" * depth + ":" + ")}" * depth + ") tail"
+        (body,) = security._substitution_bodies(command)
+        assert body.endswith(")}" * depth), body[-20:]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # Unclosed expansions and backticks.
+            "$(${",
+            "$(${v:-)",
+            "$(${v:-$(",
+            "$(${v:-`)",
+            "$(echo `x)",
+            # bash builds disagree on whether ``$[`` nests inside ``${``.
+            "$(echo ${v:-$[ (}) ]}; pgrep -f x)",
+            # A here-document line is data, so its ``${`` opens nothing.
+            "$(cat <<E\n${\nE\n)",
+        ],
+    )
+    def test_an_unreadable_expansion_falls_back_to_the_paren_only_span(self, text: str) -> None:
+        from kiro_crew.security.shell_normalizer_walk import _close_paren_walk
+
+        assert security._matching_close_paren(text, 2) == _close_paren_walk(text, 2, False)
+
+
 class TestCaseArmingRequiresCommandPosition:
     """``case`` is a reserved word only in COMMAND POSITION, so the
     pattern-paren rule must not arm on the word as data. Every vector is
