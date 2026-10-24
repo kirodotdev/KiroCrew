@@ -35,6 +35,39 @@ def test_flag_off_means_every_session_runs_here(choices, monkeypatch):
     assert choices.inherit("subagent:child", "dashboard:remote") is None
 
 
+@pytest.mark.asyncio
+async def test_flag_off_reaches_no_workspace_so_no_credentialed_git(choices, monkeypatch):
+    """Credentialed git runs only inside a prepared remote session: the start calls
+    ``begin_git_proxy`` from ``attach_remote_workspace`` for a session
+    ``prepare_for_session`` returned. With the flag off a bound choice prepares
+    nothing, so no workspace relay and no git proxy start; with it on the same
+    choice reaches the Coder provider."""
+    from kiro_crew.coder import session_launch
+
+    reached: list[str] = []
+
+    class Reached(Exception):
+        pass
+
+    class Provider:
+        def __init__(self, *_a, **_k):
+            reached.append("coder")
+            raise Reached
+
+    section = SimpleNamespace(coder_url="https://c.example", profiles=[], kiro_cloud_profiles=[])
+    monkeypatch.setattr(
+        "kiro_crew.config.live.snapshot", lambda: SimpleNamespace(session_environments=section)
+    )
+    monkeypatch.setattr(session_launch, "CoderSessionEnvironments", Provider)
+    monkeypatch.setattr(session_launch, "chosen_provider", lambda *_a: session_launch.PROVIDER_ID)
+    with pytest.raises(Reached):
+        await session_launch.prepare_for_session("dashboard:remote")
+    assert reached == ["coder"]
+    monkeypatch.delenv("KIROCREW_DEV_MODE")
+    assert await session_launch.prepare_for_session("dashboard:remote") is None
+    assert reached == ["coder"]
+
+
 def test_flag_off_starts_no_coder_subsystem(monkeypatch):
     monkeypatch.delenv("KIROCREW_DEV_MODE", raising=False)
     monkeypatch.setattr(gateway, "_CODER_RETENTION_TASK", None)

@@ -458,6 +458,10 @@ class AcpSessionProvider(LLMProvider):
         self._runtime_lease = None
         await RUNTIME_OWNERSHIP.release(lease)
 
+    @property
+    def turn_survives_disconnect(self) -> bool:
+        return self._runtime.is_cloud_sandbox is True
+
     async def shutdown(self) -> None:
         """Destroy the session and optionally kill the runtime.
 
@@ -523,7 +527,7 @@ class AcpSessionProvider(LLMProvider):
             # `~/.kiro/sessions/cli/{sid}.json(+.jsonl)`, as the comment below
             # says. Nothing retries: every caller drops the provider afterwards.
             try:
-                if self._handle.is_turn_active:
+                if self._handle.is_turn_active and not self.turn_survives_disconnect:
                     try:
                         await asyncio.wait_for(self._handle.cancel(), timeout=5.0)
                     except Exception:

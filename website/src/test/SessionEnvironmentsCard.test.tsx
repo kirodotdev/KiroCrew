@@ -19,6 +19,7 @@ interface Section {
   coder_url: string
   profiles: typeof profile[]
   default_profile?: string
+  kiro_cloud_profiles?: { id: string; name: string; repositories: string[] }[]
 }
 let stored: { session_environments?: Section }
 let reads: number
@@ -76,6 +77,9 @@ async function mounted() {
   await screen.findByLabelText('Coder URL')
   return view
 }
+/** The status glyph of the check line holding `node`. */
+const glyph = (node: HTMLElement) => node.closest('li')!.querySelector('svg')!
+const SANDBOX_LINK = 'Change the agent sandbox (Developer → Config)'
 
 describe('Session Environments configuration preview', () => {
   it('indexes the opt-in but hides the URL search result until enabled', () => {
@@ -517,13 +521,14 @@ describe('Coder setup and saved profile management', () => {
 })
 
 describe('Session Environments readiness and workspaces', () => {
-  it('runs the read-only check and reports Coder and each template', async () => {
+  it('runs the read-only check and reports Coder, each template and each git host', async () => {
     let checks = 0
     server.use(http.post('*/api/session-environments/check', () => {
       checks++
       return HttpResponse.json({
         coder: { ok: true, owner: 'devuser' },
         profiles: [{ id: 'dev', ok: false, error: 'Coder template is unavailable' }],
+        git: { 'github.com': 'signed_in', 'dev.azure.com': 'not_signed_in', 'bitbucket.org': 'unchecked' },
       })
     }))
     await mounted()
@@ -535,11 +540,122 @@ describe('Session Environments readiness and workspaces', () => {
     const failure = within(results).getByRole('alert')
     expect(failure).toHaveTextContent('Development: Coder template is unavailable')
     expect(within(failure).getByRole('button', { name: /Ask the agent/ })).toBeVisible()
+    expect(results).toHaveTextContent('GitHub: signed in on this machine')
+    expect(results).toHaveTextContent(
+      'Azure DevOps: not signed in on this machine. To sign in, run az login in a terminal on this machine.',
+    )
+    expect(results).toHaveTextContent(
+      "Bitbucket: can't be checked from here; git will use this machine's saved Bitbucket login if there is one. If git can't sign in, clone a private Bitbucket repository over HTTPS in a terminal on this machine; git's credential helper saves the login it asks for.",
+    )
+    // No bare `git credential approve`: typed alone it waits on stdin.
+    expect(results).not.toHaveTextContent('git credential approve')
+    // Bitbucket has a display name of its own, like the other hosts.
+    expect(results).not.toHaveTextContent('bitbucket.org')
+    // The sign-in command reads as a command the reader copies, untranslated.
+    const command = within(results).getByText('az login')
+    expect(command.tagName).toBe('CODE')
+    expect(command).toHaveAttribute('translate', 'no')
+    // A git host is optional: signed out is a muted state ring, never the
+    // danger cross the blocking Coder and template failures use, and never an
+    // arrow that reads as a sign-in button.
+    const signedOut = glyph(command)
+    expect(signedOut).toHaveClass('lucide-circle-dashed', 'text-muted')
+    expect(signedOut).not.toHaveClass('lucide-log-in')
+    expect(signedOut).not.toHaveClass('text-danger')
+    expect(results.querySelector('svg.text-danger, svg.lucide-x, svg.lucide-log-in')).toBeNull()
+    expect(within(results).queryAllByRole('button').filter(b => !b.closest('[role="alert"]'))).toEqual([])
+    const unchecked = glyph(within(results).getByText(/^Bitbucket: can't be checked/))
+    expect(unchecked).toHaveClass('lucide-minus', 'text-muted')
+    expect(glyph(within(results).getByText('GitHub: signed in on this machine'))).toHaveClass('lucide-check', 'text-ok')
+    // Nothing was withheld, so there is no sandbox to point at.
+    expect(screen.queryByRole('link', { name: SANDBOX_LINK })).toBeNull()
     expect(writes).toEqual([])
   })
 
+  it('says once that a Windows gateway that cannot verify its account shares no git login, with no sandbox link', async () => {
+    server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
+      coder: { ok: true, owner: 'devuser' }, profiles: [],
+      git: { 'github.com': 'unsupported', 'gitlab.com': 'unsupported', 'bitbucket.org': 'unsupported', 'dev.azure.com': 'unsupported' },
+    })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(check())
+    const results = await screen.findByRole('list', { name: 'Check results' })
+    within(results).getByText(
+      "This machine can't verify its own Windows account, so its git logins aren't shared with remote sessions. Each workspace uses its own git login.",
+    )
+    expect(within(results).getAllByRole('listitem')).toHaveLength(2)
+    expect(results).not.toHaveTextContent(/GitHub|GitLab|Bitbucket|Azure DevOps|signed in on this machine/)
+    // The sandbox tier is not the reason, so nothing points at it.
+    expect(screen.queryByRole('link', { name: SANDBOX_LINK })).toBeNull()
+  })
+
+  it('says once that a strict sandbox shares no git login and links to where the sandbox is set', async () => {
+    server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
+      coder: { ok: true, owner: 'devuser' }, profiles: [],
+      git: { 'github.com': 'withheld', 'gitlab.com': 'withheld', 'bitbucket.org': 'withheld', 'dev.azure.com': 'withheld' },
+    })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(check())
+    const results = await screen.findByRole('list', { name: 'Check results' })
+    const withheld = within(results).getByText(
+      "Git logins aren't shared while the agent sandbox is set to strict. Each workspace uses its own git login.",
+    )
+    // One line for every host, not four identical ones.
+    expect(within(results).getAllByRole('listitem')).toHaveLength(2)
+    expect(results).not.toHaveTextContent(/GitHub|GitLab|Bitbucket|Azure DevOps|signed in on this machine/)
+    // Withheld has a glyph of its own, distinct from the unchecked dash.
+    expect(glyph(withheld)).toHaveClass('lucide-lock', 'text-muted')
+    expect(glyph(withheld)).toHaveAttribute('aria-hidden', 'true')
+    const link = screen.getByRole('link', { name: SANDBOX_LINK })
+    expect(link).toHaveAttribute('href', '/developer?tab=config&highlight=key%3Aagent.sandbox')
+    expect(results).not.toContainElement(link)
+  })
+
+  it('keeps per-host rows when only some hosts are withheld', async () => {
+    server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
+      coder: { ok: true, owner: 'devuser' }, profiles: [], git: { 'github.com': 'withheld', 'gitlab.com': 'unchecked' },
+    })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(check())
+    const results = await screen.findByRole('list', { name: 'Check results' })
+    expect(glyph(within(results).getByText("GitHub: not shared with remote sessions under the 'strict' sandbox"))).toHaveClass('lucide-lock')
+    expect(glyph(within(results).getByText(/^GitLab: can't be checked/))).toHaveClass('lucide-minus')
+    expect(results).not.toHaveTextContent(/Git logins aren't shared/)
+    expect(screen.getByRole('link', { name: SANDBOX_LINK })).toBeVisible()
+  })
+
+  it('renders the Coder and profile rows from a gateway that sends no git field', async () => {
+    server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
+      coder: { ok: true, owner: 'devuser' }, profiles: [{ id: 'dev', ok: true }],
+    })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(check())
+    const results = await screen.findByRole('list', { name: 'Check results' })
+    expect(results).toHaveTextContent('Signed in to Coder as devuser')
+    expect(results).toHaveTextContent('Development: template python-dev is available')
+    expect(within(results).getAllByRole('listitem')).toHaveLength(2)
+    expect(results).not.toHaveTextContent(/GitHub|Git logins|signed in on this machine/)
+    expect(screen.queryByRole('link', { name: SANDBOX_LINK })).toBeNull()
+  })
+
+  it('says the readiness check also reads git sign-ins, and leaves the Manage hint to p1', async () => {
+    mount()
+    await screen.findByLabelText('Coder URL')
+    // The readiness rows say how git signs in; the Manage hint does not repeat it.
+    expect(screen.queryByText(/Git to GitHub, GitLab, Bitbucket and Azure DevOps/)).toBeNull()
+    // The readiness check says it also reads which git hosts this machine is signed in to.
+    expect(screen.getByText(
+      "Checks that the Coder CLI on this machine is signed in, that each profile's template exists, and which git hosts this machine is signed in to. Nothing is started and no credential is read.",
+    )).toBeVisible()
+    expect(screen.queryByText(/which keeps the credentials/)).toBeNull()
+  })
+
   it('surfaces failed Coder checks with a safe hand-off and drops them while editing', async () => {
-    checkAnswers({ coder: { ok: false, error: 'Coder login expired' }, profiles: [] })
+    checkAnswers({ coder: { ok: false, error: 'Coder login expired' }, profiles: [], git: {} })
     await mounted()
     fireEvent.click(check())
     const results = await screen.findByRole('list', { name: 'Check results' })
@@ -750,5 +866,132 @@ describe('Session Environments readiness and workspaces', () => {
       expect(reopen).toBeDisabled()
       expect(reopen).toHaveAccessibleDescription('Save or discard your changes first.')
     }
+  })
+})
+
+describe('Kiro Cloud Sessions profiles', () => {
+  it('adds a cloud profile with its repositories, and offers it as the default', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], kiro_cloud_profiles: [], default_profile: '' } }
+    mount()
+    const add = await screen.findByRole('button', { name: 'Add Kiro Cloud profile' })
+    // The Kiro Cloud list needs no Coder URL.
+    fireEvent.click(add)
+    const field = screen.getByRole('group', { name: 'kiro-cloud-1' })
+    fireEvent.change(within(field).getByLabelText('Profile name'), { target: { value: 'Cloud' } })
+    // A trailing comma while typing is kept, then dropped on save.
+    fireEvent.change(within(field).getByLabelText('Repositories'), { target: { value: 'acme/web, ' } })
+    expect(within(field).getByLabelText('Repositories')).toHaveValue('acme/web, ')
+    fireEvent.click(screen.getByRole('switch', { name: 'Start new chats on a profile' }))
+    fireEvent.click(save())
+    expect(await screen.findByText(SAVED)).toBeVisible()
+    expect(writes).toEqual([{ path: 'session_environments', value: {
+      coder_url: '', profiles: [], default_profile: 'kiro-cloud-1',
+      kiro_cloud_profiles: [{ id: 'kiro-cloud-1', name: 'Cloud', repositories: ['acme/web'] }],
+    } }])
+  })
+
+  it('carries the default along when a cloud profile id is renamed', async () => {
+    stored = {
+      session_environments: {
+        coder_url: 'https://coder.example.test', profiles: [{ ...profile }], default_profile: 'cloud',
+        kiro_cloud_profiles: [{ id: 'cloud', name: 'Cloud', repositories: [] }],
+      },
+    }
+    await mounted()
+    expand('Cloud')
+    const cloudId = within(screen.getByRole('group', { name: 'Cloud' })).getByLabelText('Profile ID')
+    fireEvent.change(cloudId, { target: { value: 'cloud-2' } })
+    // Clearing the id to retype it keeps the default for the retyped id.
+    fireEvent.change(cloudId, { target: { value: '' } })
+    fireEvent.change(cloudId, { target: { value: 'cloud-3' } })
+    // A Coder id passing through empty does not take a cloud default.
+    expand('Development')
+    const coder = screen.getByRole('button', { name: /^Development/ }).closest('div')!.parentElement!
+    fireEvent.change(within(coder).getByLabelText('Profile ID'), { target: { value: '' } })
+    fireEvent.change(within(coder).getByLabelText('Profile ID'), { target: { value: 'dev-2' } })
+    fireEvent.click(save())
+    await waitFor(() => expect(writes).toHaveLength(1))
+    expect((writes[0] as { value: Section }).value).toMatchObject({
+      default_profile: 'cloud-3',
+      profiles: [{ ...profile, id: 'dev-2' }],
+      kiro_cloud_profiles: [{ id: 'cloud-3', name: 'Cloud', repositories: [] }],
+    })
+  })
+
+  it('moves a removed cloud default to another cloud profile, and leaves it on a Coder removal', async () => {
+    stored = {
+      session_environments: {
+        coder_url: 'https://coder.example.test', profiles: [{ ...profile }], default_profile: 'cloud',
+        kiro_cloud_profiles: [
+          { id: 'cloud', name: 'Cloud', repositories: [] },
+          { id: 'scratch', name: 'Scratch', repositories: [] },
+        ],
+      },
+    }
+    await mounted()
+    const defaults = screen.getByRole('region', { name: 'Global defaults' })
+    // Removing a Coder profile leaves a cloud default alone, with no notice.
+    expand('Development')
+    const coder = screen.getByRole('button', { name: /^Development/ }).closest('div')!.parentElement!
+    fireEvent.click(within(coder).getByRole('button', { name: 'Remove profile' }))
+    expect(defaults).not.toHaveTextContent('the default profile was removed')
+    // Removing the cloud default moves it to the other cloud profile, and says so.
+    expand('Cloud')
+    // Only the expanded row shows its Remove button.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Kiro Cloud profile' }))
+    expect(defaults).toHaveTextContent('Now Scratch: the default profile was removed. Discard changes to undo.')
+    fireEvent.click(save())
+    await waitFor(() => expect(writes).toHaveLength(1))
+    expect((writes[0] as { value: Section }).value).toMatchObject({
+      default_profile: 'scratch', profiles: [],
+      kiro_cloud_profiles: [{ id: 'scratch', name: 'Scratch', repositories: [] }],
+    })
+  })
+
+  it('says Kiro Cloud profiles are not checked ahead of time, without pointing at the Coder steps', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], kiro_cloud_profiles: [], default_profile: '' } }
+    mount()
+    // The readiness check probes Coder and git hosts only, so the cloud list says
+    // so in words that stand on their own: its reader cannot see the Coder steps.
+    expect(await screen.findByText(/These profiles aren't checked ahead of time/)).toBeVisible()
+    expect(screen.getByText(/If a cloud chat can't start, the chat explains why/)).toBeVisible()
+  })
+
+  it('keeps Kiro Cloud outside the numbered Coder steps, with its cost in plain view', async () => {
+    stored = {
+      session_environments: {
+        coder_url: '', profiles: [], default_profile: '',
+        kiro_cloud_profiles: [{ id: 'cloud', name: 'Cloud', repositories: [] }],
+      },
+    }
+    mount()
+    const cloud = await screen.findByRole('region', { name: 'Kiro Cloud Sessions' })
+    const configure = screen.getByRole('region', { name: '1. Connect and configure' })
+    const manage = screen.getByRole('region', { name: '3. Manage' })
+    expect(configure.contains(cloud)).toBe(false)
+    // After the last numbered step, not between step 1 and step 2.
+    expect(manage.compareDocumentPosition(cloud) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // What opting in gives up is not folded inside the setup instructions.
+    const limits = within(cloud).getByText(/runs commands without asking you first, and can't use the tools and connections you set up in/)
+    expect(limits).toBeVisible()
+    expect(limits.closest('details')).toBeNull()
+    // The cost of opting in reads as a warning, not body text.
+    expect(limits.closest('[data-tone]')).toHaveAttribute('data-tone', 'warn')
+    // The setup step names the backend by the label the Agent Harness picker shows.
+    expect(within(cloud).getByText(/choose the Kiro Agent backend/)).toHaveTextContent('Settings → Agent Harness')
+    // Its controls are named for it, so they are not twins of the Coder ones.
+    expect(within(cloud).getByRole('button', { name: 'Add Kiro Cloud profile' })).toBeEnabled()
+    expect(within(cloud).getByText('Kiro Cloud setup instructions')).toBeInTheDocument()
+    expect(within(cloud).queryByRole('button', { name: 'Add Coder profile' })).toBeNull()
+    fireEvent.click(within(cloud).getByRole('button', { name: /^Cloud/, expanded: false }))
+    expect(within(cloud).getByRole('button', { name: 'Remove Kiro Cloud profile' })).toBeInTheDocument()
+  })
+
+  it('hides the Kiro Cloud list for a gateway that does not report it', async () => {
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expect(screen.queryByText('Kiro Cloud Sessions')).not.toBeInTheDocument()
+    expect(screen.queryByText(/These profiles aren't checked ahead of time/)).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Add Coder profile' })).toHaveLength(1)
   })
 })

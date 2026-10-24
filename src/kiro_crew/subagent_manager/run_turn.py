@@ -316,6 +316,12 @@ async def _run_inner_impl(
     extra_kwargs: dict[str, Any] = {
         "crew_agent": execution.selection_name if kind == "member" else "",
     }
+    # The owning app the spawn was vetted for (``_vet_spawn_governance`` above)
+    # is the child session's app too: its provider's ``owning_app`` is what
+    # the child's own governance reads, its git proxy's egress checks among
+    # them, so an app-owned chat's subagent keeps the app's profile.
+    if info.app:
+        extra_kwargs["app_name"] = info.app
     # An explicit per-spawn model wins; otherwise fall back to the
     # configured sub-agent role model (agent.role_models['subagent']). When
     # that role is unpinned the helper returns "" so we omit the kwarg and

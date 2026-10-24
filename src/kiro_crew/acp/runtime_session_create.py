@@ -345,6 +345,11 @@ async def create_session(
         mcp_servers=wire_servers,
         kas_custom_agents=kas_agents,
     )
+    # The host's last word on the request and on the agent it activates
+    # (harness-parity H13): every served host returns both unchanged.
+    params, agent = self._harness.session_request(
+        METHOD_SESSION_NEW, params, agent, agent_capabilities=self._agent_capabilities
+    )
 
     projected_sources: dict[str, str] = {}
     if self._member_context:
@@ -453,30 +458,40 @@ async def create_session(
     finally:
         buffered_init = self._finish_session_init(session_id)
 
-    return await self._finish_create_session(
-        session_id,
-        resp,
-        buffered_init=buffered_init,
-        memory_mode=memory_mode,
-        agent=agent,
-        crew_agent=crew_agent,
-        kas_agents=kas_agents,
-        mcp_servers=wire_servers,
-        budget=budget,
-        stub_token=stub_token,
-        denied_tools=denied_tools,
-        mirrored_snapshot=mirrored_snapshot,
-        consumed_spec=consumed_spec,
-        mirror_used=mirrored is not None,
-        ref_spec=ref_spec,
-        active_agent=active_agent,
-        session_work_dir=session_work_dir,
-        projected_sources=projected_sources,
-        payload_snapshot=payload_snapshot,
-        session_key=session_key,
-        member_dispatch_mounted=member_mounted,
-        request_sent_at=request_sent_at,
-    )
+    # session/new succeeded: the session exists on the host and, until the
+    # handle is returned, nothing else records its id. Any exit before then,
+    # a cancellation included, tears it down. ``terminate_session`` discards the
+    # id, so an arm inside that already tore it down is not repeated. Shielded
+    # so a second cancel cannot skip the host-side teardown.
+    try:
+        return await self._finish_create_session(
+            session_id,
+            resp,
+            buffered_init=buffered_init,
+            memory_mode=memory_mode,
+            agent=agent,
+            crew_agent=crew_agent,
+            kas_agents=kas_agents,
+            mcp_servers=wire_servers,
+            budget=budget,
+            stub_token=stub_token,
+            denied_tools=denied_tools,
+            mirrored_snapshot=mirrored_snapshot,
+            consumed_spec=consumed_spec,
+            mirror_used=mirrored is not None,
+            ref_spec=ref_spec,
+            active_agent=active_agent,
+            session_work_dir=session_work_dir,
+            projected_sources=projected_sources,
+            payload_snapshot=payload_snapshot,
+            session_key=session_key,
+            member_dispatch_mounted=member_mounted,
+            request_sent_at=request_sent_at,
+        )
+    except BaseException:
+        if session_id in self._unclaimed_new_sessions:
+            await asyncio.shield(self.terminate_session(session_id))
+        raise
 
 
 def _collect_late_start(
@@ -620,6 +635,8 @@ async def _teardown_late_session(self: AcpRuntime, session_id: str) -> None:
     """
     if self._dead or self._process is None:
         return
+    # A late ``session/new`` answer nobody adopted: nothing records the id.
+    self._unclaimed_new_sessions.add(session_id)
     await self.terminate_session(session_id)
 
 
@@ -667,6 +684,9 @@ async def _finish_create_session(
     self._session_cwds[session_id] = str(session_work_dir)
     for msg in buffered_init:
         queue.put_nowait(msg)
+    # Unclaimed until the handle is returned: every refusal arm below tears
+    # the session down, and with no handle out nothing could reopen it.
+    self._unclaimed_new_sessions.add(session_id)
 
     # Resolve the watchdog snapshot OFF the loop before constructing the
     # handle: the load is config file reads + jsonschema validation on a
@@ -895,6 +915,7 @@ async def _finish_create_session(
         await self.terminate_session(session_id)
         raise
 
+    self._unclaimed_new_sessions.discard(session_id)
     logger.info("Created session %s on runtime PID %d", session_id, self._pid or 0)
     return handle
 
@@ -1014,7 +1035,9 @@ async def probe_advertised_models(
         finally:
             if session_id:
                 # Evict the probe session from the shared process; never
-                # raises (best-effort by contract).
+                # raises (best-effort by contract). Nothing records the probe's
+                # id, so it is freed on the backend even where teardown is local.
+                self._unclaimed_new_sessions.add(session_id)
                 await self.terminate_session(session_id)
         # A non-empty answer updates the stored result and its OWN clock, so
         # it is replayed until that clock expires. An empty answer leaves the

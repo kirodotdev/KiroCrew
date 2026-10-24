@@ -31,6 +31,7 @@ from kiro_crew.acp import runtime_tree_kill as _rt_tree
 from kiro_crew.acp import runtime_wire as _rt_wire
 from kiro_crew.acp.client import CLIENT_NAME
 from kiro_crew.acp.harness import HarnessAdapter, harness_for
+from kiro_crew.acp.harness.kas_cloud import KasCloudSandboxHarness
 from kiro_crew.acp.runtime_liveness import _DEFAULT_MAX_AGE_SECS, _DEFAULT_MAX_RSS_MB
 from kiro_crew.acp.runtime_process_tree import ChildRecord
 from kiro_crew.acp.runtime_start import _INIT_NOTIFICATION_BUFFER_LIMIT, StartCollector
@@ -259,6 +260,8 @@ class AcpRuntime:
     _write_remote_token = _rt_remote._write_remote_token
     _remote_session_servers = _rt_remote._remote_session_servers
     _remote_workspace_agents = _rt_remote._remote_workspace_agents
+    set_cloud_sandbox = _rt_remote.set_cloud_sandbox
+    hold_cloud_resume = _rt_remote.hold_cloud_resume
 
     #: See ``__init__``. Set on the class too, so a runtime built without
     #: ``__init__`` (a test double, a restored instance) reads as having none.
@@ -733,6 +736,25 @@ class AcpRuntime:
     @property
     def pid(self) -> int | None:
         return self._pid
+
+    @property
+    def is_cloud_sandbox(self) -> bool:
+        return isinstance(self._harness_resolved, KasCloudSandboxHarness)
+
+    @property
+    def _unclaimed_new_sessions(self) -> set[str]:
+        """Ids a ``session/new`` answered that no caller holds a handle for yet.
+
+        Tearing one down frees it on the backend even under a local-only teardown
+        policy: nothing records the id, so nothing could reopen it. ``session/load``
+        never adds here, so a failed reopen keeps its session. Created on first
+        use, like the projection counter, so a runtime built without
+        ``__init__`` reads an empty set.
+        """
+        found = self.__dict__.get("_unclaimed_new_session_ids")
+        if found is None:
+            found = self.__dict__["_unclaimed_new_session_ids"] = set()
+        return found
 
     @property
     def spawn_monotonic(self) -> float | None:

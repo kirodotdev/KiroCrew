@@ -171,6 +171,9 @@ async def _spawn_answer_task(
     At capacity the shared admission wait either observes progress or
     marks the runtime dead so the requester cannot remain unanswered.
     """
+    # Asked before the capacity wait, so the host answers from its state at
+    # the moment the frame arrived.
+    answer = self._harness.unroutable_permission(self, msg, session_id, reason=reason)
     if not await self._wait_for_answer_capacity(
         msg,
         request_kind="permission",
@@ -178,7 +181,7 @@ async def _spawn_answer_task(
         audit_reason="answer_task_cap_runtime_dead",
     ):
         return
-    _t = asyncio.ensure_future(self._answer_unroutable_permission(msg, session_id, reason=reason))
+    _t = asyncio.ensure_future(answer())
     self._answer_tasks.add(_t)
     _t.add_done_callback(self._answer_tasks.discard)
 

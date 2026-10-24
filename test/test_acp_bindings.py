@@ -152,6 +152,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "supports_steer": ("property", False, "a6632a57e602", "acp"),
     "tool_search_settings": ("property", False, "da838953900b", "acp"),
     "touch_activity": ("function", False, "b60c5fea256e", "acp"),
+    "turn_survives_disconnect": ("property", False, "a6632a57e602", "acp"),
     "uses_kiro_identity_store": ("property", False, "a6632a57e602", "acp"),
     "wait_for_compaction": ("function", True, "1d8ef804d52e", "acp_turns"),
     "wait_for_declared_mcp": ("function", True, "921c3727b83c", "acp"),

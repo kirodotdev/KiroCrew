@@ -282,6 +282,18 @@ describe('SessionEnvironmentChip', () => {
     expect(put).not.toHaveBeenCalled()
   })
 
+  it('names a Kiro Cloud profile by its repositories, or the sandbox when it has none', async () => {
+    const cloud = { id: 'cloud', name: 'Kiro Cloud', provider: 'kiro_cloud', workdir: '', repositories: ['acme/web', 'acme/api'] }
+    const empty = { ...cloud, id: 'blank', name: 'Empty sandbox', repositories: [] }
+    vi.spyOn(api, 'chatSlotEnvironment').mockResolvedValue(envResponse(null, [DEV, cloud, empty]))
+    const u = userEvent.setup()
+    wrap(<SessionEnvironmentChip slot="chat-1" />)
+    await u.click(await screen.findByRole('button', { name: 'Runs on This machine' }))
+    expect(await screen.findByRole('menuitemradio', { name: /Kiro Cloud/ })).toHaveTextContent('acme/web, acme/api')
+    // No repositories and no directory: the row says the workspace starts empty.
+    expect(screen.getByRole('menuitemradio', { name: /Empty sandbox/ })).toHaveTextContent('Empty workspace')
+  })
+
   it('keeps a fixed LOCAL chip a plain muted status with no card', async () => {
     mockEnv({ ...envResponse(null), locked: true })
     const health = vi.spyOn(api, 'chatSlotEnvironmentHealth')
@@ -291,6 +303,23 @@ describe('SessionEnvironmentChip', () => {
     expect(el.querySelector('.lucide-lock')).not.toBeNull()
     expect(el).toHaveClass('text-muted')
     expect(screen.queryByRole('button', { name: /This machine/ })).toBeNull()
+    expect(health).not.toHaveBeenCalled()
+  })
+
+  it('keeps a fixed Kiro Cloud chip a plain status with no metrics card', async () => {
+    // Only the sandbox's own agent reaches it, so there are no metrics to show.
+    const cloud = { id: 'cloud', name: 'Kiro Cloud', provider: 'kiro_cloud', workdir: '', repositories: ['acme/web'] }
+    mockEnv({ ...envResponse('cloud', [DEV, cloud]), provider: 'kiro_cloud', locked: true })
+    const health = vi.spyOn(api, 'chatSlotEnvironmentHealth')
+    const u = userEvent.setup()
+    chip()
+    const el = await screen.findByTestId('composer-environment-chip')
+    expect(el.tagName).toBe('SPAN')
+    expect(el).toHaveTextContent('Kiro Cloud')
+    expect(el.querySelector('.lucide-lock')).not.toBeNull()
+    await u.hover(el)
+    await u.click(el)
+    expect(screen.queryByTestId('environment-health-card')).toBeNull()
     expect(health).not.toHaveBeenCalled()
   })
 

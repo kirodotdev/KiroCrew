@@ -803,3 +803,19 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
     if not is_slash:
         _xs_reply = _cross_surface_reply_text(_turn_reply_segments(turn), turn.assistant_text)
         await _deliver_cross_surface_reply(state, session_key, _xs_reply, slot=slot)
+
+
+def _surface_startup_notice(state: DashboardState, slot: _ChatSlot, provider: Any) -> None:
+    """Show a start problem the provider recorded, once, as a transcript error row.
+
+    The start went on (a failed reopen started a new sandbox), but something the
+    user had was not reopened, so it is an error, not routine news. ``meta.kind``
+    names it, so the error card shows the localized sentence; the text is the
+    channel fallback.
+    """
+    notice = getattr(provider, "startup_notice", None)
+    if not isinstance(notice, tuple) or len(notice) != 2:
+        return
+    token, text = notice
+    append_and_surface(state, slot, "error", text, "msg msg-err", meta={"kind": token})
+    provider.startup_notice = None

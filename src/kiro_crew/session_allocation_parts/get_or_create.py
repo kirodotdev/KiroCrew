@@ -745,6 +745,8 @@ async def _get_or_create_impl(
         cast(Any, provider).memory_mode = memory_mode
         if self._deps.is_acp_provider(provider):
             cast(Any, provider).member_context = member_context
+            # Trusted: the caller's slot app, never transcript metadata.
+            cast(Any, provider).owning_app = app_name
         try:
             if self._deps.is_acp_provider(provider):
                 claim_kwarg = extra_factory_kwargs.get("crew_agent")
@@ -893,6 +895,8 @@ async def _get_or_create_impl(
         if self._deps.is_acp_provider(provider):
             cast(Any, provider).member_context = member_context
             cast(Any, provider).app_launch_agent = app_launch_agent
+            # Trusted: the caller's slot app, never transcript metadata.
+            cast(Any, provider).owning_app = app_name
         if memory_mode != "persistent":
             resume_sid = None
         provider_switched = False

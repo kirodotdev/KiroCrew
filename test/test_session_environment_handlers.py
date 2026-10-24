@@ -72,6 +72,7 @@ async def _client(tmp_path, monkeypatch, *, owner=True):
     app.router.add_get("/s/{slot}", handlers.api_chat_slot_environment_get)
     app.router.add_put("/s/{slot}", handlers.api_chat_slot_environment_put)
     app.router.add_get("/b/{slot}", handlers.api_chat_slot_environment_browse)
+    app.router.add_get("/h/{slot}", handlers.api_chat_slot_environment_health)
     app.router.add_put("/w/{slot}", handlers.api_chat_slot_environment_file_put)
     app.router.add_post("/check", handlers.api_session_environments_check)
     app.router.add_get("/ws", handlers.api_session_environments_workspaces_get)
@@ -405,13 +406,23 @@ async def test_check_endpoint_reports_sign_in_and_each_profile(tmp_path, monkeyp
             KiroCrewConfig, "load", lambda: SimpleNamespace(session_environments=next(configs))
         )
         monkeypatch.setattr(session_launch.CoderSessionEnvironments, "_client", lambda self: fake)
+        # Git login rows come from their own reader; pinned here so this test reads
+        # only the Coder half (the stubbed config iterator feeds the Coder reads).
+        git = {"github.com": "signed_in"}
+        monkeypatch.setattr(
+            "kiro_crew.remote_session.git_gateway.git_readiness", AsyncMock(return_value=git)
+        )
         body = await (await client.post("/check")).json()
-        assert body == {"coder": {"ok": False, "error": "no Coder URL is saved"}, "profiles": []}
+        assert body == {
+            "coder": {"ok": False, "error": "no Coder URL is saved"},
+            "profiles": [],
+            "git": git,
+        }
         body = await (await client.post("/check")).json()
         # Coder's own words, not a guess that it is a sign-in problem (a timeout
         # or a bad identity reply needs a different fix); the card adds the
         # coder login hint itself.
-        assert body == {"coder": {"ok": False, "error": "signed out"}, "profiles": []}
+        assert body == {"coder": {"ok": False, "error": "signed out"}, "profiles": [], "git": git}
         fake.signed_in = True
         body = await (await client.post("/check")).json()
         assert body["coder"] == {"ok": True, "owner": "devuser"}
@@ -431,11 +442,17 @@ async def test_check_endpoint_reports_a_missing_coder_cli_instead_of_failing(tmp
             KiroCrewConfig, "load", lambda: SimpleNamespace(session_environments=_config())
         )
         monkeypatch.setattr(session_launch.CoderSessionEnvironments, "_client", missing)
+        # The git login rows do not depend on Coder: they come back here too.
+        git = {"github.com": "withheld"}
+        monkeypatch.setattr(
+            "kiro_crew.remote_session.git_gateway.git_readiness", AsyncMock(return_value=git)
+        )
         resp = await client.post("/check")
         assert resp.status == 200
         body = await resp.json()
         assert body["coder"]["ok"] is False and "not installed" in body["coder"]["error"]
         assert body["profiles"] == []
+        assert body["git"] == git
 
 
 class TemplateListingCoder:
@@ -736,3 +753,18 @@ async def test_a_shell_still_opening_when_its_chat_is_bound_is_closed(tmp_path, 
         assert "abc123" not in app["state"]._terminal_sessions
     finally:
         await client.close()
+
+
+@sync
+async def test_health_of_a_cloud_sandbox_is_a_409_not_a_failure(tmp_path, monkeypatch):
+    """Only a Kiro Cloud sandbox's own agent reaches it, so a health read is answered
+    with ``cloud_sandbox`` (the browse routes' code), never the 502 of a broken read."""
+    async with _client(tmp_path, monkeypatch) as client:
+
+        async def cloud(_key):
+            raise session_browse.CloudSandboxOnly("runs in a Kiro cloud sandbox")
+
+        monkeypatch.setattr(session_browse, "session_health", cloud)
+        resp = await client.get("/h/main")
+        assert resp.status == 409
+        assert (await resp.json())["code"] == "cloud_sandbox"

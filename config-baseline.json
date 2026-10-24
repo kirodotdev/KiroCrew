@@ -3373,6 +3373,7 @@
       "defaultValue": {
         "coder_url": "",
         "profiles": [],
+        "kiro_cloud_profiles": [],
         "default_profile": "",
         "stop_on_shutdown": true
       }
@@ -3488,6 +3489,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "session_environments.kiro_cloud_profiles",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Kiro Cloud Profiles",
+      "help": "Named Kiro Cloud Sessions profiles (at most 20), each {id, name, repositories}. The session runs in a Kiro cloud sandbox through KAS, without Kiro Crew's tools, MCP servers or governance gate; the gateway's Kiro sign-in authenticates.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "session_environments.kiro_cloud_profiles.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "session_environments.default_profile",

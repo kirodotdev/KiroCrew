@@ -50,6 +50,7 @@ __all__ = [
     "SpawnContext",
     "SpawnPlan",
     "TeardownPolicy",
+    "UnroutablePermissionRelay",
 ]
 
 
@@ -337,6 +338,20 @@ class TeardownPolicy:
     host that knows it.
     """
 
+    local_only: bool = False
+    """Unregister without the destructive verb unless privacy requires deletion."""
+
+
+# ── Unroutable permission answer ──
+
+
+class UnroutablePermissionRelay(Protocol):
+    """The runtime's audited fail-closed answer for an unroutable permission request."""
+
+    async def _answer_unroutable_permission(
+        self, msg: Any, session_id: str, *, reason: str
+    ) -> None: ...
+
 
 # ── Seam 9: reclaim ──
 
@@ -570,6 +585,53 @@ class HarnessAdapter(LaunchAdapter):
         A host that takes its tools from an agent spec returns ``requested``
         unchanged, which is what keeps its wire byte-identical.
         """
+
+    def session_request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        agent: str | None,
+        *,
+        agent_capabilities: dict[str, Any],
+    ) -> tuple[dict[str, Any], str | None]:
+        """The ``session/new`` / ``session/load`` params to send, and the agent to activate.
+
+        Asked after the runtime built the request and before it goes out. Every host
+        the backend table serves sends what the runtime built and activates the agent
+        the caller asked for, so this answer returns BOTH of the caller's objects
+        unchanged, and the request stays byte-identical to one built without this
+        seam. A host that places the session where Kiro Crew's agent does not exist
+        (:class:`~kiro_crew.acp.harness.kas_cloud.KasCloudSandboxHarness`) reshapes
+        the request and activates nothing. Raising ``AcpRuntimeError`` here refuses
+        the start before anything is sent.
+        """
+        return params, agent
+
+    def holds_replayed_permission(self, session_id: str) -> bool:
+        """Whether a permission request for *session_id* arrived inside a resume hold.
+
+        Read by the runtime's reader for a permission request that names a session.
+        Every host the backend table serves answers ``False``, so the request is
+        routed to the session's queue as before.
+        """
+        return False
+
+    def unroutable_permission(
+        self,
+        runtime: UnroutablePermissionRelay,
+        msg: Any,
+        session_id: str,
+        *,
+        reason: str,
+    ) -> Callable[[], Awaitable[None]]:
+        """How a permission request no session queue reads gets its answer.
+
+        Asked on the reader, before the answer task is admitted, so a host can
+        snapshot its own state at the moment the frame arrived. Every host the
+        backend table serves answers with the runtime's audited fail-closed reject,
+        unchanged.
+        """
+        return lambda: runtime._answer_unroutable_permission(msg, session_id, reason=reason)
 
     def activation_refusal(self, agent: str, resp: dict[str, Any]) -> str | None:
         """Why *agent* must NOT be activated on the session *resp* just opened, or ``None``.

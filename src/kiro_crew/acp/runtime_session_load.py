@@ -306,6 +306,14 @@ async def load_session(
         load_params["mcpServers"] = wire_servers
         kas_agents = self._remote_workspace_agents(kas_agents, wire_servers)
         attach_kas_custom_agents(load_params, kas_agents)
+        # The same last word session/new gets, asked inside this branch so the
+        # kiro resume path still stops at the comparison above.
+        load_params, agent = self._harness.session_request(
+            METHOD_SESSION_LOAD,
+            load_params,
+            agent,
+            agent_capabilities=self._agent_capabilities,
+        )
     budget = await self._session_start_budget()
     self._session_inits_in_flight += 1
     loaded_session_id = ""

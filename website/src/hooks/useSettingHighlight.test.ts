@@ -3,7 +3,7 @@ import { renderHook, act } from '@testing-library/react'
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { createElement } from 'react'
-import { DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR, KIRO_SIGN_IN_HIGHLIGHT_ANCHOR, useSettingHighlight } from './useSettingHighlight'
+import { AGENT_SANDBOX_HIGHLIGHT_ANCHOR, DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR, KIRO_SIGN_IN_HIGHLIGHT_ANCHOR, useSettingHighlight } from './useSettingHighlight'
 
 // Mock scrollIntoView (not available in jsdom)
 beforeEach(() => {
@@ -163,6 +163,9 @@ describe('useSettingHighlight against the real registry and catalogs', () => {
     // The Default crewmate row (Developer → Config) mounts after its config
     // query the same way; the roster's `default` badge deep-links to it.
     { name: 'the late-mounting default-crewmate row with no registry entry', highlight: `key:${DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR}`, target: { configKey: DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR }, sibling: { configKey: 'stt.provider' } },
+    // The Sandbox select (Developer → Config) also mounts after the config
+    // query; Settings → Session Environments links to it under 'strict'.
+    { name: 'the late-mounting agent sandbox row with no registry entry', highlight: `key:${AGENT_SANDBOX_HIGHLIGHT_ANCHOR}`, target: { configKey: AGENT_SANDBOX_HIGHLIGHT_ANCHOR }, sibling: { configKey: 'stt.provider' } },
   ])('waits for the exact cold provider during $name', async ({ highlight, target, sibling }) => {
     vi.useFakeTimers()
     const otherProvider = settingControl('Provider', sibling)

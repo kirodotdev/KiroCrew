@@ -222,9 +222,7 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "session.pool_size",
         "session.pool_ttl_secs",
         "session.timeout_secs",
-        # Shutdown only decides how long the operator's own workspaces run; the
-        # default picks among saved profiles.
-        "session_environments.default_profile",
+        # Shutdown only decides how long the operator's own workspaces run.
         "session_environments.stop_on_shutdown",
         "session_summary.enabled",
         # Listed for exactly-one completeness, not because a card can reach it: a card
@@ -266,9 +264,17 @@ _CODE_EXEC_SETTINGS: frozenset[str] = frozenset(
         "dashboard.terminal.shell",
         "session.pool_agent",
         # The Coder deployment and the template a session's workspace is built
-        # from decide which machine runs that session's commands.
+        # from decide which machine runs that session's commands, and the
+        # gateway proxies credentialed Git requests for it.
         "session_environments",
         "session_environments.coder_url",
+        # A Kiro Cloud profile moves a session's agent and tools into a Kiro
+        # cloud sandbox outside Kiro Crew's tool gate, with the repositories
+        # it names checked out there.
+        "session_environments.kiro_cloud_profiles",
+        # The default binds every new chat to a saved profile, which can be a
+        # Kiro Cloud profile outside the tool gate or a Coder workspace.
+        "session_environments.default_profile",
     }
 )
 

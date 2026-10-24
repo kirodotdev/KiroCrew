@@ -2223,7 +2223,7 @@ reported/skipped; import success never implies a governance grant.
 ### `vet_and_audit` — the audited-decision seam for governed outbound messaging
 
 `governance_profiles.vet_and_audit(scope, item, *, session_key, tool_name,
-app="", fail_closed=False, log_warning=True)` evaluates ONE permission
+agent="", app="", fail_closed=False, log_warning=True)` evaluates ONE permission
 decision via `governance_permits` AND writes its SEL
 `log_governance_decision` record — **grant and denial alike** — from a
 single code path, then returns the Decision. Any chokepoint whose outcome
@@ -2537,6 +2537,15 @@ denials leave the same forensic trail.
   PTY, which is an ungoverned plane by design (see below). A deployment that
   needs an actual bound on where the host can reach should treat the example
   as a starting point for defense-in-depth, not as sufficient on its own.
+  One gateway-side egress is governed by host besides the fetch tool: the
+  remote session git proxy (`remote_session/git_gateway.py`) asks
+  `vet_and_audit("network.egress", <host>, agent=<calling agent>, fail_closed=True)` (`github.com`,
+  `gitlab.com`, `bitbucket.org` or `dev.azure.com`) before every request it
+  carries upstream on a remote session's behalf, because there the GATEWAY is
+  the one reaching out, with its own credential. `AcpProvider` supplies the
+  calling agent to proxy startup; the channel keeps it independently of guest
+  frames. Missing identity refuses forwarding, and the audited seam passes it
+  into the existing task-profile resolution before intersecting the policy ceiling.
   Separately: once a `commands` deny pattern is adopted into policy, it
   becomes a force-pin via `resolve_pinned_commands` (ceiling pins ∪ profile
   pins, union not override) — a user cannot locally opt out of a pinned rule
@@ -2696,8 +2705,24 @@ chokepoints, every layer honoured; see below), and `capabilities.decisions` (the
 Jev decision seam's paid external egress — the consent PUT plus the gate's own
 keystone read, every layer honoured; see below), and
 `capabilities.decisions_local` (a local decision-model preset, which only narrows
-`capabilities.decisions`; see [the Jev decision seam](#the-jev-decision-seam--capabilitiesdecisions)). Only the live `approval_mode`
-clamp remains reserved.
+`capabilities.decisions`; see [the Jev decision seam](#the-jev-decision-seam--capabilitiesdecisions)), and
+`capabilities.kiro_cloud_sessions` (opt-in, `capability_default=False`: a Kiro
+Cloud session runs its agent and tools in Kiro's cloud, outside every scope of
+this ceiling. `coder.session_launch.kiro_cloud_governance_refusal` refuses
+the start with `SessionEnvironmentUnavailable` when the policy or the session's
+profile governs any scope other than this row (no second scope list, so a
+scope added to the catalog later is covered), unless the POLICY enables this
+row and no profile withdraws it; a profile alone
+cannot grant it. Resolution receives the provider's execution agent and the
+app that owns the chat (the chat slot's own `slot._app`, the one the tool gate
+passes, carried by session allocation onto the provider as `owning_app`; never
+read from transcript metadata), so an app-bound profile applies first, then
+an agent-bound task profile, then the surface binding. A policy or profile
+denial of this capability refuses even on an otherwise ungoverned host, and
+an unreadable ceiling or profile fails closed. Every grant, denial and evaluation
+error is emitted through `sel().log_governance_decision`, including the session,
+agent, capability and reason; audit failures never change the permission result).
+Only the live `approval_mode` clamp remains reserved.
 
 The `commands` scope now **doubles as the enterprise force-pin** for built-in
 denied-command rules. A deny-mode `commands` ScopedRuleset's `deny` patterns are

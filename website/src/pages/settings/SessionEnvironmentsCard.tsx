@@ -2,11 +2,13 @@ import { useId, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Trans, useTranslation } from 'react-i18next'
 import { Link, useNavigate } from 'react-router-dom'
-import { Check, ChevronRight, ExternalLink, Minus, Plus, Trash2 } from 'lucide-react'
+import { Check, ChevronRight, CircleDashed, ExternalLink, Lock, Minus, Plus, Trash2 } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { ReactNode } from 'react'
 
 import { api, type SessionEnvironmentsCheck } from '../../api/client'
+import { AGENT_SANDBOX_PATH } from '../overview/agentSandboxLink'
+import { ACP_BACKEND_KAS, acpBackendName } from '../../api/acpBackend'
 import { fmtDateTime } from '../../i18n/format'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { isMemberThreadSlot, memberSlugOfSlot } from '../../hooks/unreadOnAttention'
@@ -15,6 +17,7 @@ import { reportForError } from '../../utils/errorReport'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
+import StatusNotice from '../../components/StatusNotice'
 import { SettingsCombobox, SettingsField, SettingsInput, SettingsSelect, SettingsToggle } from '../../components/settings'
 import { Btn, PanelSectionHeader } from '../../components/ui'
 
@@ -27,23 +30,47 @@ interface EnvironmentProfile {
    * the card writes it only once toggled, so an older gateway never sees it. */
   compute_survives_stop?: boolean
 }
+/** A Kiro Cloud Sessions profile: the repositories its cloud sandbox opens. */
+interface KiroCloudProfile {
+  id: string
+  name: string
+  repositories: string[]
+}
+/** Mirrors KIRO_CLOUD_REPOSITORIES_MAX in config/session_environments.py. */
+const KIRO_CLOUD_REPOSITORIES_MAX = 10
 /** How often the card re-reads the workspace list. */
 const WORKSPACES_POLL_MS = 15_000
 type ProfileTextKey = 'id' | 'name' | 'template' | 'workdir'
 interface EnvironmentSettings {
   coder_url: string
   profiles: EnvironmentProfile[]
+  /** Kiro Cloud Sessions profiles. Older gateways omit it. */
+  kiro_cloud_profiles?: KiroCloudProfile[]
   /** Profile id new chats start on; "" is this machine. Older gateways omit it. */
   default_profile?: string
   /** Stop every remote environment when the gateway shuts down. Older gateways omit it. */
   stop_on_shutdown?: boolean
 }
 /** A removed profile cannot stay the default (the gateway refuses that save),
- * so removing the default moves it to the first remaining profile, or to this
- * machine when none is left. */
-function withoutDefault(next: EnvironmentSettings, removedId: string): EnvironmentSettings {
+ * so removing the default moves it to the first remaining profile of the same
+ * provider, then of the other one, or to this machine when none is left. */
+function withoutDefault(next: EnvironmentSettings, removedId: string, kind: 'coder' | 'cloud'): EnvironmentSettings {
   if (next.default_profile !== removedId) return next
-  return { ...next, default_profile: next.profiles.find(p => p.id)?.id ?? '' }
+  const coder = next.profiles
+  const cloud = next.kiro_cloud_profiles ?? []
+  const order = kind === 'cloud' ? [...cloud, ...coder] : [...coder, ...cloud]
+  return { ...next, default_profile: order.find(p => p.id)?.id ?? '' }
+}
+/** Every profile a default can name: Coder and Kiro Cloud alike. */
+const allProfiles = (s: EnvironmentSettings) => [...s.profiles, ...(s.kiro_cloud_profiles ?? [])]
+/** The repositories field is edited as one comma-separated line; blanks left by
+ * a trailing comma are dropped only when saving, so typing is not fought. */
+function withCleanRepositories(next: EnvironmentSettings): EnvironmentSettings {
+  if (!next.kiro_cloud_profiles) return next
+  return {
+    ...next,
+    kiro_cloud_profiles: next.kiro_cloud_profiles.map(p => ({ ...p, repositories: p.repositories.filter(r => r) })),
+  }
 }
 interface ConfigResponse {
   session_environments?: EnvironmentSettings
@@ -86,14 +113,43 @@ function ProfileDisclosure({ title, subtitle, open, onToggle, children }: {
   )
 }
 
-/** One passed check: a check mark and its text, announced as a list item. */
-function CheckLine({ children }: { children: ReactNode }) {
+/** How a check line's glyph reads. Only `ok` is coloured: a git host is
+ * optional, so a signed-out or withheld one is never shown as a failure (the
+ * blocking Coder and template failures render through ErrorNotice instead).
+ * Each non-ok state has a glyph of its own; the text carries the meaning.
+ * Signed-out is a dashed ring, a state rather than an arrow or button shape,
+ * since the line itself is not something to click. */
+type CheckLineStatus = 'ok' | 'signIn' | 'withheld' | 'unknown'
+const CHECK_LINE_ICONS = { ok: Check, signIn: CircleDashed, withheld: Lock, unknown: Minus } as const
+
+/** One check line: a status glyph and its text, announced as a list item. */
+function CheckLine({ status, children }: { status: CheckLineStatus; children: ReactNode }) {
+  const Icon = CHECK_LINE_ICONS[status]
+  const tone = status === 'ok' ? 'text-ok' : 'text-muted'
   return (
     <li className="flex min-w-0 items-start gap-2 text-[13px] text-text">
-      <Check size={14} className="mt-0.5 shrink-0 text-ok" aria-hidden="true" />
+      <Icon size={14} className={`mt-0.5 shrink-0 ${tone}`} aria-hidden="true" />
       <span className="min-w-0 break-words">{children}</span>
     </li>
   )
+}
+
+/** Display names for git hosts whose brand is a do-not-translate term; any
+ * other host is shown as its host name. */
+const GIT_HOST_NAMES: Record<string, string> = {
+  'github.com': 'GitHub',
+  'gitlab.com': 'GitLab',
+  'bitbucket.org': 'Bitbucket',
+  'dev.azure.com': 'Azure DevOps',
+}
+
+/** The gateway-machine command that signs each git host in. A host with no
+ * CLI here (Bitbucket) falls back to git's credential helper and is reported
+ * unchecked, never signed out. Commands, not prose: never translated. */
+const GIT_SIGN_IN_COMMANDS: Record<string, string> = {
+  'github.com': 'gh auth login',
+  'gitlab.com': 'glab auth login',
+  'dev.azure.com': 'az login',
 }
 
 /** What the readiness check found, in the order a person fixes things. */
@@ -103,10 +159,20 @@ function CheckResults({ result, profiles }: {
 }) {
   const { t } = useTranslation()
   const names = new Map(profiles.map(p => [p.id, p]))
+  // A gateway that predates the git rows sends no `git` at all.
+  const git = Object.entries(result.git ?? {})
+  // The sandbox tier lives on Developer → Config; link there only when it is
+  // what withheld a login, since otherwise nothing here is the sandbox's doing.
+  const withheld = git.some(([, status]) => status === 'withheld')
+  // 'strict' withholds every host alike, so one line says it once instead of
+  // repeating the same sentence per host.
+  const allWithheld = withheld && git.every(([, status]) => status === 'withheld')
+  const unsupported = git.length > 0 && git.every(([, status]) => status === 'unsupported')
   return (
+    <>
     <ul aria-label={t('sessionEnvironments.checkResults')} className="space-y-1.5">
       {result.coder.ok ? (
-        <CheckLine>{t('sessionEnvironments.checkCoderOk', { owner: result.coder.owner ?? '' })}</CheckLine>
+        <CheckLine status="ok">{t('sessionEnvironments.checkCoderOk', { owner: result.coder.owner ?? '' })}</CheckLine>
       ) : (
         <li>
           <ErrorNotice variant="inline" message={t('sessionEnvironments.checkCoderFailed')} askAgent askAgentLabel={t('sessionEnvironments.askAgentFix')} />
@@ -132,14 +198,48 @@ function CheckResults({ result, profiles }: {
         const profile = names.get(row.id)
         const name = profile?.name || row.id
         return row.ok ? (
-          <CheckLine key={row.id}>
+          <CheckLine key={row.id} status="ok">
             {t('sessionEnvironments.checkTemplateOk', { name, template: profile?.template ?? '' })}
           </CheckLine>
         ) : (
           <li key={row.id}><ErrorNotice variant="inline" message={t('sessionEnvironments.checkTemplateFailed', { name, error: row.error ?? '' })} askAgent askAgentLabel={t('sessionEnvironments.askAgentFix')} /></li>
         )
       })}
+      {allWithheld && <CheckLine status="withheld">{t('sessionEnvironments.checkGitWithheldAll')}</CheckLine>}
+      {/* A Windows gateway lends nothing, so one line says so; no sandbox link applies. */}
+      {unsupported && <CheckLine status="withheld">{t('sessionEnvironments.checkGitUnsupported')}</CheckLine>}
+      {!allWithheld && !unsupported && git.map(([host, status]) => {
+        const name = GIT_HOST_NAMES[host] ?? host
+        // Signed out names a sign-in command; a host with none reads as unchecked.
+        const signedOut = status === 'not_signed_in' && !!GIT_SIGN_IN_COMMANDS[host]
+        return (
+          <CheckLine key={host} status={status === 'signed_in' ? 'ok' : signedOut ? 'signIn' : status === 'withheld' ? 'withheld' : 'unknown'}>
+            {status === 'signed_in'
+              ? t('sessionEnvironments.checkGitSignedIn', { name })
+              : signedOut
+                ? (
+                  <Trans
+                    i18nKey="sessionEnvironments.checkGitSignedOut"
+                    values={{ name, command: GIT_SIGN_IN_COMMANDS[host] }}
+                    components={{ code: <code className="rounded bg-bg-elevated px-1 font-mono text-[12px] text-text" translate="no" /> }}
+                  />
+                )
+                : status === 'withheld'
+                  ? t('sessionEnvironments.checkGitWithheld', { name })
+                  : t('sessionEnvironments.checkGitUnchecked', { name })}
+          </CheckLine>
+        )
+      })}
     </ul>
+    {withheld && (
+      <p className="text-[13px]">
+        <Link to={AGENT_SANDBOX_PATH} className="inline-flex min-w-0 items-center gap-0.5 rounded text-accent hover:underline focus-ring">
+          <span className="min-w-0">{t('sessionEnvironments.checkGitSandboxLink')}</span>
+          <ChevronRight size={13} aria-hidden="true" className="shrink-0" />
+        </Link>
+      </p>
+    )}
+    </>
   )
 }
 
@@ -302,6 +402,7 @@ export function SessionEnvironmentsCard() {
     return next
   })
   const removeRow = (index: number) => setOpenRows(rows => rows.filter((_, i) => i !== index))
+  const [openCloudRows, setOpenCloudRows] = useState<boolean[]>([])
   const mutation = useMutation({
     mutationFn: (value: EnvironmentSettings) => api.patchConfig('session_environments', value) as Promise<ConfigResponse>,
     onMutate: () => qc.cancelQueries({ queryKey: ['kirocrewConfig'] }),
@@ -327,10 +428,10 @@ export function SessionEnvironmentsCard() {
   // turns it off when none is left: say which, beside the switch.
   const savedDefault = query.data?.session_environments?.default_profile
   const defaultGone = !!draft && removed && !!savedDefault
-    && !draft.profiles.some(p => p.id === savedDefault)
+    && !allProfiles(draft).some(p => p.id === savedDefault)
   const defaultDropped = defaultGone && !draft?.default_profile
   const movedTo = defaultGone && draft?.default_profile
-    ? (draft.profiles.find(p => p.id === draft.default_profile)?.name || draft.default_profile)
+    ? (allProfiles(draft).find(p => p.id === draft.default_profile)?.name || draft.default_profile)
     : ''
   // The check reads the SAVED configuration on the gateway, so it is offered
   // only with no unsaved draft, and its answer is dropped when one appears.
@@ -390,19 +491,49 @@ export function SessionEnvironmentsCard() {
   ]
   // Per-profile like the fields above, so not a searchable settings row.
   const survivesStopLabel = t('sessionEnvironments.computeSurvivesStop')
-  const updateProfile = (index: number, field: ProfileTextKey, value: string) => {
-    const old = config.profiles[index]?.id
+  // Renaming the default's id carries the default along: a dangling one is
+  // refused on save. A rename that passes through an empty id keeps the old
+  // default until the row has an id again, so retyping it does not drop it.
+  // The default may name a Coder or a Kiro Cloud profile, so "orphaned" looks
+  // at both lists.
+  const defaultFollows = (old: string | undefined, value: string) => {
     const current = config.default_profile
-    // Renaming the default's id carries the default along: a dangling one is
-    // refused on save. A rename that passes through an empty id keeps the old
-    // default until the row has an id again, so retyping it does not drop it.
-    const orphaned = !!current && !config.profiles.some(profile => profile.id === current)
-    const follows = field === 'id' && !!value && (old ? old === current : orphaned)
+    const orphaned = !!current && !allProfiles(config).some(profile => profile.id === current)
+    return !!value && (old ? old === current : orphaned)
+  }
+  const updateProfile = (index: number, field: ProfileTextKey, value: string) => {
+    const follows = field === 'id' && defaultFollows(config.profiles[index]?.id, value)
     change({
       ...config,
       ...(follows ? { default_profile: value } : {}),
       profiles: config.profiles.map((profile, i) => i === index ? { ...profile, [field]: value } : profile),
     })
+  }
+  const cloudProfiles = config.kiro_cloud_profiles
+  // Per-record rows, like the Coder ones: not indexed as settings of their own.
+  const cloudFields: { key: keyof KiroCloudProfile; label: string; description?: string }[] = [
+    { key: 'id', label: t('sessionEnvironments.id') },
+    { key: 'name', label: t('sessionEnvironments.name') },
+    {
+      key: 'repositories',
+      label: t('sessionEnvironments.kiroCloud.repositories'),
+      description: t('sessionEnvironments.kiroCloud.repositoriesHint', { max: KIRO_CLOUD_REPOSITORIES_MAX }),
+    },
+  ]
+  const updateCloud = (index: number, patch: Partial<KiroCloudProfile>) => {
+    const follows = patch.id !== undefined && defaultFollows(cloudProfiles?.[index]?.id, patch.id)
+    change({
+      ...config,
+      ...(follows ? { default_profile: patch.id } : {}),
+      kiro_cloud_profiles: (cloudProfiles ?? []).map((p, i) => i === index ? { ...p, ...patch } : p),
+    })
+  }
+  const addCloudProfile = () => {
+    const taken = new Set([...config.profiles, ...(cloudProfiles ?? [])].map(p => p.id))
+    let n = 1
+    while (taken.has(`kiro-cloud-${n}`)) n++
+    setOpenCloudRows(rows => { const next = [...rows]; next[(cloudProfiles ?? []).length] = true; return next })
+    change({ ...config, kiro_cloud_profiles: [...(cloudProfiles ?? []), { id: `kiro-cloud-${n}`, name: '', repositories: [] }] })
   }
   const addProfile = () => {
     let n = 1
@@ -414,7 +545,7 @@ export function SessionEnvironmentsCard() {
   return (
     <form className="min-w-0 space-y-3 pt-3" onSubmit={event => {
       event.preventDefault()
-      if (draft && !mutation.isPending) mutation.mutate(draft)
+      if (draft && !mutation.isPending) mutation.mutate(withCleanRepositories(draft))
     }}>
       {/* The two words the page uses, defined once where the reader starts. */}
       <p className="text-[13px] text-muted">{t('sessionEnvironments.intro')}</p>
@@ -484,7 +615,7 @@ export function SessionEnvironmentsCard() {
                 <Btn type="button" onClick={() => {
                   removeRow(index)
                   setRemoved(true)
-                  change(withoutDefault({ ...config, profiles: config.profiles.filter((_, i) => i !== index) }, profile.id))
+                  change(withoutDefault({ ...config, profiles: config.profiles.filter((_, i) => i !== index) }, profile.id, 'coder'))
                 }}>
                   <Trash2 size={14} aria-hidden="true" />{t('sessionEnvironments.remove')}
                 </Btn>
@@ -526,7 +657,7 @@ export function SessionEnvironmentsCard() {
         * steps, which a first setup walks in order. Older gateways omit
         * either key, and then its control stays hidden. */}
       {(config.default_profile !== undefined || config.stop_on_shutdown !== undefined) && (() => {
-        const all = config.profiles.filter(p => p.id)
+        const all = [...config.profiles, ...(config.kiro_cloud_profiles ?? [])].filter(p => p.id)
         const defaultOn = !!config.default_profile
         return (
           <section aria-label={t('sessionEnvironments.globalDefaults')} className="space-y-3 pt-3">
@@ -564,6 +695,53 @@ export function SessionEnvironmentsCard() {
           </section>
         )
       })()}
+      {/* Its own section, outside Coder's numbered steps: none of them applies. */}
+      {cloudProfiles !== undefined && (
+        <section aria-label={t('sessionEnvironments.kiroCloud.title')} className="space-y-3 pt-3">
+          <PanelSectionHeader label={t('sessionEnvironments.kiroCloud.title')} />
+          {/* What opting in gives up, as a warning in plain view rather than folded away. */}
+          <StatusNotice tone="warn" message={t('sessionEnvironments.kiroCloud.limits')} />
+          <details className="rounded-lg border border-border p-3">
+            <summary className="cursor-pointer text-[13px] font-semibold text-text">{t('sessionEnvironments.kiroCloud.setup')}</summary>
+            <ol className="list-decimal pl-5 space-y-2 pt-3 text-[13px] text-muted">
+              {/* The backend by the label its picker shows, so the step matches the screen. */}
+              <li>{t('sessionEnvironments.kiroCloud.setup1', { tab: t('settings.tabs.agent.label'), backend: acpBackendName({ id: ACP_BACKEND_KAS }) })}</li>
+              <li>{t('sessionEnvironments.kiroCloud.setup2')}</li>
+            </ol>
+          </details>
+          <fieldset disabled={mutation.isPending} className="min-w-0 space-y-3">
+            <SettingsField configKey="session_environments.kiro_cloud_profiles" label={t('sessionEnvironments.kiroCloud.profiles')}
+              description={t('sessionEnvironments.kiroCloud.profilesHint')}>
+              <div className="min-w-0 space-y-3">
+                {/* The readiness check above probes Coder and git hosts only. */}
+                <p className="text-[12px] text-muted">{t('sessionEnvironments.kiroCloud.notVerified')}</p>
+                {cloudProfiles.map((profile, index) => (
+                  <ProfileDisclosure key={index} title={profile.name || profile.id} subtitle={profile.repositories.filter(r => r).join(', ')}
+                    open={!!openCloudRows[index]} onToggle={() => setOpenCloudRows(rows => { const next = [...rows]; next[index] = !next[index]; return next })}>
+                    {cloudFields.map(field => (
+                      <SettingsInput key={field.key} label={field.label} description={field.description}
+                        value={field.key === 'repositories' ? profile.repositories.join(', ') : profile[field.key]}
+                        onChange={value => updateCloud(index, field.key === 'repositories'
+                          ? { repositories: value.split(',').map(r => r.trim()) }
+                          : { [field.key]: value })} />
+                    ))}
+                    <Btn type="button" onClick={() => {
+                      setOpenCloudRows(rows => rows.filter((_, i) => i !== index))
+                      setRemoved(true)
+                      change(withoutDefault({ ...config, kiro_cloud_profiles: cloudProfiles.filter((_, i) => i !== index) }, profile.id, 'cloud'))
+                    }}>
+                      <Trash2 size={14} aria-hidden="true" />{t('sessionEnvironments.kiroCloud.remove')}
+                    </Btn>
+                  </ProfileDisclosure>
+                ))}
+                <Btn type="button" disabled={cloudProfiles.length >= 20} onClick={addCloudProfile}>
+                  <Plus size={14} aria-hidden="true" />{t('sessionEnvironments.kiroCloud.add')}
+                </Btn>
+              </div>
+            </SettingsField>
+          </fieldset>
+        </section>
+      )}
       {/* Last, after the defaults, and stuck to the bottom of the panel while
         * there are unsaved edits, so Save stays in view from every section. */}
       <div data-testid="session-environments-save-bar"
@@ -574,6 +752,7 @@ export function SessionEnvironmentsCard() {
           setSaved(false)
           setRemoved(false)
           setOpenRows([])
+          setOpenCloudRows([])
           mutation.reset()
         }}>{t('sessionEnvironments.discard')}</Btn>
         {(saved || (removed && draft)) && <span role="status" className="text-[13px] text-muted">

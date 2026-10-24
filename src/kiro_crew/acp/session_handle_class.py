@@ -292,6 +292,7 @@ class AcpSessionHandle:
         # continuability: the transcript is spawn_continue's resume material).
         self.keep_transcript = False
         self.memory_mode = "persistent"
+        self._cloud_replayed_permissions: set[str | int | None] = set()
         # Token carried by THIS session's injected broker-stub entries
         # (``mcp_gateway.claim.mint_stub_session_token``), set by the runtime
         # that created the session. It is what a later claim-push names so

@@ -637,7 +637,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MOVED_CONFIG_FIELDS,
         _beacon_governance_pinned_off,
         _ConfigKeyAlreadySet,
+        _keep_kiro_cloud_profiles,
         _keep_omitted_session_environment_keys,
+        _profile_ids,
+        _session_environment_key_validators,
         _tailnet_governance_pinned_off,
         api_kirocrew_config_patch,
     )

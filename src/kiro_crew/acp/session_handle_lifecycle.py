@@ -272,7 +272,10 @@ async def destroy(self: AcpSessionHandle) -> None:
         if not _flag.done():
             _flag.set_result(False)
     try:
-        await self._runtime.terminate_session(self._session_id)
+        if self._runtime.is_cloud_sandbox is True and self.memory_mode != "persistent":
+            await self._runtime.terminate_session(self._session_id, delete_cloud_session=True)
+        else:
+            await self._runtime.terminate_session(self._session_id)
     finally:
         if self.memory_mode != "persistent" or not getattr(self, "keep_transcript", False):
             self._cleanup_transcript()

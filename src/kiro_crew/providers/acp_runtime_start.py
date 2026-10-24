@@ -10,11 +10,11 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_client``, ``_defer_replay_sid_promotion``,
-``_history_replay_needed``, ``_shared_scratch``.
+``_history_replay_needed``, ``_shared_scratch``, ``startup_notice``.
 
 Instance fields read: ``_child_fidelity_aware``, ``_crew_agent``, ``_on_gate_acquired``,
 ``_on_gate_queued``, ``_tool_search``, ``member_context``, ``memory_mode``,
-``start_priority``.
+``owning_app``, ``start_priority``.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_scope
 from kiro_crew.acp.client import (
@@ -200,6 +200,30 @@ def _launch_agent(provider: AcpProvider) -> str:
     """
     launch = getattr(provider, "app_launch_agent", "")
     return launch if isinstance(launch, str) and launch and provider.is_kiro_backend else ""
+
+
+#: Strong references to the end-watchers of cloud runtimes: asyncio keeps weak ones.
+_CLOUD_END_WATCHERS: set[asyncio.Future[Any]] = set()
+
+
+def _forget_cloud_placement_when_ended(session_key: str, runtime: Any) -> None:
+    """Forget a cloud runtime's placement entry once it ends.
+
+    A Coder runtime's entry goes with its workspace relay
+    (``close_relay_when_ended``); a cloud session has no relay, so this is the
+    same end-watch without one, keeping the bounded table to live runtimes.
+    """
+    from kiro_crew.coder.remote_worker import _RUNTIME_END_POLL_SECONDS
+    from kiro_crew.session_environment import forget_remote_workspace
+
+    async def watch() -> None:
+        while runtime.is_alive():
+            await asyncio.sleep(_RUNTIME_END_POLL_SECONDS)
+        forget_remote_workspace(session_key, owner=runtime)
+
+    task = asyncio.ensure_future(watch())
+    _CLOUD_END_WATCHERS.add(task)
+    task.add_done_callback(_CLOUD_END_WATCHERS.discard)
 
 
 def _choices_file_may_exist(session_key: str | None = None) -> bool:
@@ -594,7 +618,7 @@ async def _start_kiro_runtime_impl(
     # layer for this start (rule: ``kiro_crew.start_priority``).
     start_priority = self.start_priority
     # Persisted choices, including inherited subagent choices, outlive configuration.
-    from kiro_crew.coder.session_launch import prepare_for_session
+    from kiro_crew.coder.session_launch import PreparedCloudSession, prepare_for_session
     from kiro_crew.config import live
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.session_environment import report_start_stage, session_environments_enabled
@@ -603,19 +627,35 @@ async def _start_kiro_runtime_impl(
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)
     section = config.session_environments
+    # Who governance judges: a crew member runs on a template, and its own name
+    # is what a task profile binds to; a template-only session is its template.
+    governed_agent = self._crew_agent or agent or "kirocrew"
     remote = (
         await prepare_for_session(
-            session_key, before_compute=runtime.check_remote_workspace_supported
+            session_key,
+            agent=governed_agent,
+            app=getattr(self, "owning_app", "") or "",
+            before_compute=runtime.check_remote_workspace_supported,
         )
         if session_environments_enabled()
         and (
-            bool(section.coder_url or section.profiles)
+            bool(
+                section.coder_url
+                or section.profiles
+                or getattr(section, "kiro_cloud_profiles", None)
+            )
             or await asyncio.to_thread(_choices_file_may_exist, session_key)
         )
         else None
     )
 
     async def attach_remote_workspace(target: AcpRuntime) -> None:
+        if isinstance(remote, PreparedCloudSession):
+            # Kiro Cloud Sessions: KAS places the session in a cloud sandbox at
+            # session/new. No workspace server and no git proxy.
+            target.set_cloud_sandbox(remote.repositories)
+            report_start_stage(session_key, "starting_agent")
+            return
         # A fresh guest worker per runtime: the bridge spends its one-use secret.
         assert remote is not None
         target.check_remote_workspace_supported()
@@ -633,6 +673,14 @@ async def _start_kiro_runtime_impl(
                 "close": functools.partial(remote.launch.close_relay, relay),
             }
         )
+        # GitHub git from the workspace goes through this gateway, which holds
+        # the credential (remote_session/git_gateway.py). In the background:
+        # it never delays the start, and a failure only costs git access.
+        begin_git_proxy = getattr(remote.launch, "begin_git_proxy", None)
+        if callable(begin_git_proxy) and session_key:
+            begin_git_proxy(
+                session_key, agent=governed_agent, app=getattr(self, "owning_app", "") or ""
+            )
         report_start_stage(session_key, "starting_agent")
 
     from kiro_crew.session_environment import (
@@ -643,8 +691,18 @@ async def _start_kiro_runtime_impl(
     if remote is not None:
         await attach_remote_workspace(runtime)
         # Per-message context names the guest directory, not the gateway project.
-        remember_remote_workspace(session_key, remote.profile_name, remote.workdir, owner=runtime)
-        if remote.created and getattr(self._client, "_resume_session_id", None):
+        remember_remote_workspace(
+            session_key,
+            remote.profile_name,
+            # Empty for a cloud sandbox: Kiro Crew never sees its directory.
+            "" if isinstance(remote, PreparedCloudSession) else remote.workdir,
+            owner=runtime,
+        )
+        if (
+            not isinstance(remote, PreparedCloudSession)
+            and remote.created
+            and getattr(self._client, "_resume_session_id", None)
+        ):
             # A conversation that already ran got a new, empty workspace.
             from kiro_crew.session_environment import mark_workspace_recreated
 
@@ -697,13 +755,16 @@ async def _start_kiro_runtime_impl(
     finally:
         # subprocess launch + ACP `initialize` handshake
         phases["spawn_init"] = (time.monotonic() - _t_spawn) * 1000.0
-        if remote is not None:
+        if remote is not None and not isinstance(remote, PreparedCloudSession):
             # Closed once this runtime ends (at once if the spawn failed); its
             # placement entry goes with it, so the bounded table holds live ones.
+            # A cloud session has no workspace relay.
             remote.launch.close_relay_when_ended(
                 runtime.is_alive,
                 functools.partial(forget_remote_workspace, session_key, owner=runtime),
             )
+        elif isinstance(remote, PreparedCloudSession) and session_key:
+            _forget_cloud_placement_when_ended(session_key, runtime)
 
     # Everything AFTER a successful spawn() must be guarded: until the
     # AcpSessionProvider is constructed and assigned to self._client, NOTHING
@@ -755,6 +816,14 @@ async def _start_kiro_runtime_impl(
                 # crash, OOM, drain timeout) — it never depends on the dead
                 # holder cooperating.
                 _t_load = time.monotonic()
+                # A cloud reopen holds the approvals KAS replays during the load
+                # until the handle is registered. Only the cloud start takes this
+                # step; every other resume calls the unchanged load (H13).
+                cloud_hold = (
+                    runtime.hold_cloud_resume(resume_sid)
+                    if isinstance(remote, PreparedCloudSession)
+                    else None
+                )
                 try:
                     handle = await self._load_session_with_retry(
                         runtime,
@@ -767,6 +836,8 @@ async def _start_kiro_runtime_impl(
                         channel_id=self._owning_channel_id() or "",
                     )
                 finally:
+                    if cloud_hold is not None:
+                        cloud_hold.settle(handle)
                     phases["session_load"] = (time.monotonic() - _t_load) * 1000.0
                 resumed = handle is not None
                 meta["resume_outcome"] = "loaded" if resumed else "fallback_replay"
@@ -820,7 +891,10 @@ async def _start_kiro_runtime_impl(
                 if remote is not None:
                     await attach_remote_workspace(runtime)
                     remember_remote_workspace(
-                        session_key, remote.profile_name, remote.workdir, owner=runtime
+                        session_key,
+                        remote.profile_name,
+                        "" if isinstance(remote, PreparedCloudSession) else remote.workdir,
+                        owner=runtime,
                     )
                 try:
                     await runtime.spawn(
@@ -844,11 +918,13 @@ async def _start_kiro_runtime_impl(
                         _name_credential_mask(runtime, exc)
                     raise
                 finally:
-                    if remote is not None:
+                    if remote is not None and not isinstance(remote, PreparedCloudSession):
                         remote.launch.close_relay_when_ended(
                             runtime.is_alive,
                             functools.partial(forget_remote_workspace, session_key, owner=runtime),
                         )
+                    elif isinstance(remote, PreparedCloudSession) and session_key:
+                        _forget_cloud_placement_when_ended(session_key, runtime)
             try:
                 handle = await runtime.create_session(
                     cwd=session_cwd,
@@ -884,6 +960,24 @@ async def _start_kiro_runtime_impl(
                 # so a successful resume never reports a near-zero session_new
                 # that would understate the phase's real distribution.
                 phases["session_new"] = (time.monotonic() - _t_sess) * 1000.0
+
+        if isinstance(remote, PreparedCloudSession) and session_key:
+            # Kiro's cloud now holds this session, so its environment is
+            # fixed from here on (the dashboard's choice lock reads this).
+            from kiro_crew.coder.session_launch import record_cloud_session
+
+            try:
+                await record_cloud_session(
+                    session_key, handle.session_id, profile_id=remote.profile_id
+                )
+            except BaseException:
+                if not resumed:
+                    # A sandbox this start created and could not record would be
+                    # left in Kiro's cloud with nothing pointing at it. It holds
+                    # no conversation yet, so it is deleted (bounded, best
+                    # effort) before the start fails. A reopened session is kept.
+                    await runtime.terminate_session(handle.session_id, delete_cloud_session=True)
+                raise
 
         # Apply the configured model override (mirrors AcpClient handshake).
         # DEFAULT_MODEL ("auto") means "let kiro-cli pick per agent config".
@@ -1005,6 +1099,18 @@ async def _start_kiro_runtime_impl(
         if self._child_fidelity_aware:
             provider.child_fidelity_aware = True
         self._client = provider  # type: ignore[assignment]
+        if (
+            isinstance(remote, PreparedCloudSession)
+            and meta.get("resume_outcome") == "fallback_replay"
+        ):
+            self.startup_notice = (
+                "cloud_session_replayed",
+                "Couldn't reopen the cloud session, so a new cloud session started "
+                "with this conversation carried over. Files and changes from the "
+                "earlier session aren't in it. The earlier session is still listed "
+                "in Kiro Web (app.kiro.dev).",
+            )
+            logger.warning(self.startup_notice[1])
         # The tree this session ACTUALLY has, read off the live process:
         # the runtime drops an inherited window that was swept and falls
         # back to its own directory, so the value handed in at

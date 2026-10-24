@@ -451,7 +451,13 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 # Broadcasting a known-but-unregistered session's frame to
                 # every other session would be cross-talk.
                 queue = self._session_queues.get(session_id)
-                if queue is not None:
+                if (
+                    msg.id is not None
+                    and msg.is_method(METHOD_REQUEST_PERMISSION)
+                    and self._harness.holds_replayed_permission(session_id)
+                ):
+                    await self._spawn_answer_task(msg, session_id)
+                elif queue is not None:
                     if msg.is_method(METHOD_AGENT_SWITCHED):
                         self._note_switched_model(session_id, msg.params)
                     await queue.put(msg)

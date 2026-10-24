@@ -464,7 +464,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # Session Environments holds credential-free profiles only, so the masked GET
     # may return it. ``normalize`` is the loader's own validator, so this gate
     # refuses what a load would drop; leaf paths update one scalar key alone.
-    # Profiles have no leaf path: only the whole section writes them.
+    # Coder profiles have no leaf path: only the whole section writes them.
     "session_environments": {
         "type": "normalized",
         "normalize": _session_environments.validate_session_environments,
@@ -472,6 +472,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "session_environments.coder_url": {
         "type": "normalized",
         "normalize": _session_environments.validate_coder_url,
+    },
+    "session_environments.kiro_cloud_profiles": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_kiro_cloud_profiles,
     },
     "session_environments.default_profile": {
         "type": "normalized",
