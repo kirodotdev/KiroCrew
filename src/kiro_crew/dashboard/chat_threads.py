@@ -122,7 +122,7 @@ THREAD_BOUNDARY_PROMPT = (
 )
 
 #: The read-only boundary for a thread session with no shell tool (claude, which
-#: starts it with only its read built-ins).
+#: starts it with only its read built-ins, and pi, launched without its shell tools).
 THREAD_BOUNDARY_PROMPT_NO_SHELL = (
     "This thread is read-only: lookups work here, but changes don't. Reading "
     "files, searching the codebase, and searching or fetching web pages run "
@@ -1072,7 +1072,8 @@ async def _thread_turn_body(
         # pi joins the Side Chat shape too, not the derived-spec branch: a pi
         # thread turn runs READ_ONLY with ``side_read_only``, so its launcher
         # passes ``--no-extensions`` and an operator extension cannot register
-        # the read names the gate trusts. The derived-spec branch would run the
+        # the read names the gate trusts, and ``--exclude-tools bash,powershell``, so the
+        # thread has no shell. The derived-spec branch would run the
         # same READ_ONLY policy under an unconfined launcher.
         pi_thread = tools_available and backend == ACP_BACKEND_PI
         session_kwargs: dict[str, Any] = {}
@@ -1112,7 +1113,7 @@ async def _thread_turn_body(
         # BASH_ENV, an ambiguous PATH) each one is declined and a thread has no
         # card to fall back to, so the boundary names no shell. The check stats
         # files, so it runs off the loop.
-        shell_available = not (claude_thread or goose_thread or strands_thread)
+        shell_available = not (claude_thread or goose_thread or strands_thread or pi_thread)
         if tools_available and shell_available:
             shell_available = await asyncio.to_thread(name_grant.environment_refusal) is None
         message = build_thread_message(

@@ -111,8 +111,9 @@ from kiro_crew.agent_sdk.backends import (
 #   first. A read is proven from the envelope's bare tool name
 #   (``PI_READ_ONLY_BUILTINS``: read/grep/find/ls), which is proof only because
 #   the Side Chat launcher passes ``--no-extensions --no-approve``, so no
-#   operator extension can register those names; the shell is judged by
-#   ``is_read_only_bash``.
+#   operator extension can register those names. The same launcher passes
+#   ``--exclude-tools bash,powershell``, so pi registers no shell tool: pi's own
+#   ``shellCommandPrefix``/``shellPath`` settings change what a shell call runs.
 #
 # Off this set (and on goose off POSIX) the side turn runs ``REJECT_ALL`` and its
 # footer says tools are unavailable:

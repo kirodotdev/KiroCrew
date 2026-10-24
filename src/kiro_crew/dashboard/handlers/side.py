@@ -611,10 +611,11 @@ async def _run_side_turn(
             # Pi reads no kiro agent spec and takes no client confinement: the
             # extension leaves no pre-approval surface (no allowedTools, no
             # autoApprove), so every call reaches the READ_ONLY gate, where the
-            # envelope-proven read builtins auto-approve and the shell is judged
-            # by ``is_read_only_bash``. The side session runs under the resolved
-            # agent with READ_ONLY; ``side_read_only`` marks its events for the
-            # harness-builtin proof.
+            # envelope-proven read builtins auto-approve. Its launcher starts pi
+            # with no shell tool (``--exclude-tools bash,powershell``), because pi's own
+            # settings can change what a shell command runs. The side session
+            # runs under the resolved agent with READ_ONLY; ``side_read_only``
+            # marks its events for the harness-builtin proof.
             side_agent = kiro_agent or slot_agent
             approval_policy = ToolApprovalPolicy.READ_ONLY
             binding = (side_agent or "", project or "", "pi_read_only")
@@ -757,7 +758,7 @@ async def _run_side_turn(
         # card to fall back to, so the boundary names no shell. The check stats
         # files, so it runs off the loop and only for a turn that sends the
         # boundary.
-        shell_available = not (claude_side or goose_side or strands_side)
+        shell_available = not (claude_side or goose_side or strands_side or pi_side)
         if send_envelope and shell_available:
             shell_available = await asyncio.to_thread(name_grant.environment_refusal) is None
         message = build_side_message(

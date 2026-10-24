@@ -26,7 +26,7 @@ SIDE_BOUNDARY_PROMPT = (
 )
 
 #: The read-only boundary for a side session with no shell tool (claude, which
-#: starts it with only its read built-ins). Naming shell commands there would
+#: starts it with only its read built-ins, and pi, launched without its shell tools). Naming shell commands there would
 #: send the model after a tool the session does not have.
 SIDE_BOUNDARY_PROMPT_NO_SHELL = (
     "You are answering an ephemeral side question. Use the conversation "
