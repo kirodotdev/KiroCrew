@@ -286,11 +286,17 @@ class TestDashboardConfigEndpoint:
             assert (await (await client.get("/api/dashboard/config")).json())[
                 "social_share_enabled"
             ] is True
-            assert len(_governance_rows(fake_sel)) == 3 * len(_ENDPOINT_SCOPES)
-            assert [r["outcome"] for r in _rows_for(fake_sel, _SCOPE)] == [
-                "denied",
-                "denied",
-                "allowed",
+            # A permitted entry also asks each site of the ``sites`` list (one row
+            # each); a withdrawn entry asks none, so the two pinned reads had none.
+            assert len(_governance_rows(fake_sel)) == 3 * len(_ENDPOINT_SCOPES) + len(
+                social_share.SHARE_SITES
+            )
+            share_rows = _rows_for(fake_sel, _SCOPE)
+            assert [r["outcome"] for r in share_rows] == ["denied", "denied", "allowed"] + [
+                "allowed"
+            ] * len(social_share.SHARE_SITES)
+            assert [r["item"] for r in share_rows[3:]] == [
+                f"sites:{s}" for s in social_share.SHARE_SITES
             ]
 
     @pytest.mark.asyncio

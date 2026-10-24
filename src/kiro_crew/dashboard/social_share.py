@@ -87,6 +87,39 @@ def is_share_denied() -> bool:
     return not getattr(decision, "permitted", False)
 
 
+#: The share sites the dialog offers, by the id a policy's ``sites`` list names.
+SHARE_SITES = ("x", "linkedin")
+
+
+def permitted_sites() -> list[str]:
+    """The :data:`SHARE_SITES` ids the ceiling permits, in order. Blocking.
+
+    Each id is asked of :data:`SOCIAL_SHARE_SCOPE` as ``sites:<id>`` on the same
+    pinned surface, audited and fail-closed like :func:`is_share_denied`. A gate
+    pinned off permits none; a policy with no ``sites`` list permits all, as
+    before the list existed. The dashboard draws a site's button only when its id
+    is here, and asks again just before it opens the site.
+    """
+    sites = []
+    for site in SHARE_SITES:
+        try:
+            decision = vet_and_audit(
+                SOCIAL_SHARE_SCOPE,
+                f"sites:{site}",
+                session_key=DASHBOARD_SURFACE_KEY,
+                tool_name=AUDIT_TOOL,
+                log_warning=False,
+                fail_closed=True,
+            )
+        except Exception:
+            logger.debug("social share site governance probe failed; denying", exc_info=True)
+            _audit_unevaluable()
+            continue
+        if getattr(decision, "permitted", False):
+            sites.append(site)
+    return sites
+
+
 def _audit_unevaluable() -> None:
     """Best-effort SEL record for the path ``vet_and_audit`` never reached. Never raises."""
     try:

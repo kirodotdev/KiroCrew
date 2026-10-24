@@ -12160,6 +12160,7 @@
         "sensitive_in_card": "Avant de partager — la carte contient : {{kinds}}",
         "sensitive_in_caption": "Avant de partager — le texte de la publication contient : {{kinds}}",
         "withdrawn_by_policy": "Le partage a été désactivé par la politique. Copie ton texte maintenant si tu veux le garder — il n'est pas enregistré à la fermeture de cette boîte de dialogue.",
+        "sites_unavailable": "Impossible de vérifier sur quels sites tu peux partager, donc aucun n'est proposé. Réessaie plus tard.",
         "copy_text_only": "Copier le texte",
         "copied_text": "Copié",
         "copy_text_failed": "Échec de la copie",
