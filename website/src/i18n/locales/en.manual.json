@@ -4524,7 +4524,8 @@
       "subagents": "Subagents",
       "summary": "Summary",
       "workflows": "Workflows",
-      "crewlog": "Crew log"
+      "crewlog": "Crew log",
+      "sessions": "Sessions"
     }
   },
   "nav": {
@@ -5087,6 +5088,8 @@
         "menu_side_desc": "Ask without interrupting the main agent",
         "menu_subagents": "Subagents",
         "menu_subagents_desc": "Live agent activity & transcripts",
+        "menu_sessions": "Sessions",
+        "menu_sessions_desc": "Every session, its driver, model and status",
         "menu_summary": "Summary",
         "menu_summary_desc": "What this session is about and what needs you",
         "menu_workflows": "Workflows",
@@ -5987,6 +5990,24 @@
       "chat_with_folder": "Chat with {{folder}} folder",
       "chat_with_folder_desc": "The chat that started this folder's other chats",
       "conductor_tag": "conductor"
+    },
+    "panelSessions": {
+      "filter_label": "Filter sessions by status",
+      "filter_all": "All",
+      "status_active": "Active",
+      "status_blocked": "Blocked",
+      "status_complete": "Complete",
+      "col_drive": "Driver",
+      "col_model": "Model",
+      "col_template": "Template",
+      "action_jump": "Open",
+      "action_close": "Close",
+      "action_stop_run": "Stop run",
+      "close_slot_confirm": "Close session “{{title}}”? Its transcript stays in history.",
+      "close_run_confirm": "Stop this run? It cannot be resumed.",
+      "close_failed": "Couldn't close the session.",
+      "empty_title": "No sessions",
+      "empty_hint": "Start a chat or a subagent to see it here."
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",

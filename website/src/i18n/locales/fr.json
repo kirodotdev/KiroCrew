@@ -10388,7 +10388,8 @@
       "subagents": "Sous-agents",
       "summary": "Résumé",
       "workflows": "Workflows",
-      "crewlog": "Journal de session"
+      "crewlog": "Journal de session",
+      "sessions": "Sessions"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "Tous les emplacements sont occupés",
@@ -11762,7 +11763,9 @@
         "this_app_render_is_no_longer_available": "Ce rendu d'application n'est plus disponible. Exécutez à nouveau l'outil pour l'afficher.",
         "turn_diff": "Diff du tour",
         "menu_crewlog": "Journal de session",
-        "menu_crewlog_desc": "Ce que cette session a fait et ce qu'elle a coûté : état, consommation, chronologie, outils, validations, sous-agents"
+        "menu_crewlog_desc": "Ce que cette session a fait et ce qu'elle a coûté : état, consommation, chronologie, outils, validations, sous-agents",
+        "menu_sessions": "Sessions",
+        "menu_sessions_desc": "Chaque session, son pilote, son modèle et son statut"
       },
       "stopEventCard": {
         "stop_declined_compacting": "Arrêt refusé : le contexte se compactait",
@@ -19314,6 +19317,24 @@
     "layoutEditorHarness": {
       "title": "Banc d’essai de l’éditeur de disposition",
       "reset": "Réinitialiser la disposition"
+    },
+    "panelSessions": {
+      "filter_label": "Filtrer les sessions par statut",
+      "filter_all": "Toutes",
+      "status_active": "Active",
+      "status_blocked": "Bloquée",
+      "status_complete": "Terminée",
+      "col_drive": "Pilote",
+      "col_model": "Modèle",
+      "col_template": "Template",
+      "action_jump": "Ouvrir",
+      "action_close": "Fermer",
+      "action_stop_run": "Arrêter",
+      "close_slot_confirm": "Fermer la session « {{title}} » ? Sa transcription reste dans l’historique.",
+      "close_run_confirm": "Arrêter cette exécution ? Elle ne pourra pas reprendre.",
+      "close_failed": "Impossible de fermer la session.",
+      "empty_title": "Aucune session",
+      "empty_hint": "Démarre une discussion ou un sous-agent pour le voir ici."
     }
   },
   "privacyDisclosure": {

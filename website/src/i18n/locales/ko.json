@@ -10098,7 +10098,8 @@
       "subagents": "서브에이전트",
       "summary": "요약",
       "workflows": "워크플로",
-      "crewlog": "세션 기록"
+      "crewlog": "세션 기록",
+      "sessions": "세션"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "모든 슬롯이 사용 중입니다",
@@ -11430,7 +11431,9 @@
         "this_app_render_is_no_longer_available": "이 앱 렌더링은 더 이상 사용할 수 없습니다. 도구를 다시 실행해 확인하세요.",
         "turn_diff": "턴 차이",
         "menu_crewlog": "세션 기록",
-        "menu_crewlog_desc": "이 세션이 한 일과 비용: 상태, 사용량, 타임라인, 도구, 승인, 서브에이전트"
+        "menu_crewlog_desc": "이 세션이 한 일과 비용: 상태, 사용량, 타임라인, 도구, 승인, 서브에이전트",
+        "menu_sessions": "세션",
+        "menu_sessions_desc": "모든 세션과 담당자, 모델, 상태"
       },
       "stopEventCard": {
         "stop_declined_compacting": "중지 거부됨: 컨텍스트가 압축 중이었습니다",
@@ -18730,6 +18733,24 @@
     "layoutEditorHarness": {
       "title": "레이아웃 편집기 하네스",
       "reset": "레이아웃 초기화"
+    },
+    "panelSessions": {
+      "filter_label": "상태별로 세션 필터링",
+      "filter_all": "전체",
+      "status_active": "활성",
+      "status_blocked": "차단됨",
+      "status_complete": "완료",
+      "col_drive": "담당자",
+      "col_model": "모델",
+      "col_template": "템플릿",
+      "action_jump": "열기",
+      "action_close": "닫기",
+      "action_stop_run": "중지",
+      "close_slot_confirm": "세션 ‘{{title}}’을(를) 닫으시겠습니까? 트랜스크립트는 기록에 남습니다.",
+      "close_run_confirm": "이 실행을 중지하시겠습니까? 다시 시작할 수 없습니다.",
+      "close_failed": "세션을 닫지 못했습니다.",
+      "empty_title": "세션이 없습니다",
+      "empty_hint": "여기에 표시하려면 채팅이나 서브에이전트를 시작하세요."
     }
   },
   "privacyDisclosure": {

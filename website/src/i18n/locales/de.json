@@ -10243,7 +10243,8 @@
       "subagents": "Subagenten",
       "summary": "Zusammenfassung",
       "workflows": "Workflows",
-      "crewlog": "Sitzungsprotokoll"
+      "crewlog": "Sitzungsprotokoll",
+      "sessions": "Sitzungen"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "Alle Slots sind belegt",
@@ -11596,7 +11597,9 @@
         "this_app_render_is_no_longer_available": "Diese App-Darstellung ist nicht mehr verfügbar. Führen Sie das Tool erneut aus, um sie anzuzeigen.",
         "turn_diff": "Zug-Diff",
         "menu_crewlog": "Sitzungsprotokoll",
-        "menu_crewlog_desc": "Was diese Sitzung getan und gekostet hat: Status, Verbrauch, Verlauf, Tools, Freigaben, Subagenten"
+        "menu_crewlog_desc": "Was diese Sitzung getan und gekostet hat: Status, Verbrauch, Verlauf, Tools, Freigaben, Subagenten",
+        "menu_sessions": "Sitzungen",
+        "menu_sessions_desc": "Jede Sitzung mit Fahrer, Modell und Status"
       },
       "stopEventCard": {
         "stop_declined_compacting": "Stopp abgelehnt: der Kontext wurde komprimiert",
@@ -19022,6 +19025,24 @@
     "layoutEditorHarness": {
       "title": "Layout-Editor-Testumgebung",
       "reset": "Layout zurücksetzen"
+    },
+    "panelSessions": {
+      "filter_label": "Sitzungen nach Status filtern",
+      "filter_all": "Alle",
+      "status_active": "Aktiv",
+      "status_blocked": "Blockiert",
+      "status_complete": "Abgeschlossen",
+      "col_drive": "Fahrer",
+      "col_model": "Modell",
+      "col_template": "Vorlage",
+      "action_jump": "Öffnen",
+      "action_close": "Schließen",
+      "action_stop_run": "Lauf stoppen",
+      "close_slot_confirm": "Sitzung „{{title}}“ schließen? Das Transkript bleibt im Verlauf.",
+      "close_run_confirm": "Diesen Lauf stoppen? Er kann nicht fortgesetzt werden.",
+      "close_failed": "Die Sitzung konnte nicht geschlossen werden.",
+      "empty_title": "Keine Sitzungen",
+      "empty_hint": "Starte einen Chat oder einen Subagenten, um ihn hier zu sehen."
     }
   },
   "privacyDisclosure": {

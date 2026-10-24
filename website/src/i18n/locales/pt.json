@@ -10388,7 +10388,8 @@
       "subagents": "Subagentes",
       "summary": "Resumo",
       "workflows": "Workflows",
-      "crewlog": "Registro da sessão"
+      "crewlog": "Registro da sessão",
+      "sessions": "Sessões"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "Todos os slots estão ocupados",
@@ -11762,7 +11763,9 @@
         "this_app_render_is_no_longer_available": "Esta renderização do app não está mais disponível. Execute a ferramenta novamente para vê-la.",
         "turn_diff": "Diff do turno",
         "menu_crewlog": "Registro da sessão",
-        "menu_crewlog_desc": "O que esta sessão fez e quanto custou: estado, consumo, cronologia, ferramentas, aprovações, subagentes"
+        "menu_crewlog_desc": "O que esta sessão fez e quanto custou: estado, consumo, cronologia, ferramentas, aprovações, subagentes",
+        "menu_sessions": "Sessões",
+        "menu_sessions_desc": "Cada sessão com responsável, modelo e estado"
       },
       "stopEventCard": {
         "stop_declined_compacting": "Parada recusada: o contexto estava sendo compactado",
@@ -19314,6 +19317,24 @@
     "layoutEditorHarness": {
       "title": "Ambiente de teste do editor de layout",
       "reset": "Redefinir layout"
+    },
+    "panelSessions": {
+      "filter_label": "Filtrar sessões por estado",
+      "filter_all": "Todas",
+      "status_active": "Ativa",
+      "status_blocked": "Bloqueada",
+      "status_complete": "Concluída",
+      "col_drive": "Responsável",
+      "col_model": "Modelo",
+      "col_template": "Template",
+      "action_jump": "Abrir",
+      "action_close": "Fechar",
+      "action_stop_run": "Interromper",
+      "close_slot_confirm": "Fechar a sessão “{{title}}”? A transcrição permanece no histórico.",
+      "close_run_confirm": "Interromper esta execução? Não poderá ser retomada.",
+      "close_failed": "Não foi possível fechar a sessão.",
+      "empty_title": "Nenhuma sessão",
+      "empty_hint": "Inicie um chat ou um subagente para vê-lo aqui."
     }
   },
   "privacyDisclosure": {

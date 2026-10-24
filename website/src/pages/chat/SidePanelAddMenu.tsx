@@ -12,7 +12,7 @@
  * callers import from there. This module never imports `SidePanel.tsx`.
  */
 import { forwardRef, type ComponentPropsWithoutRef, type ElementRef, type ReactNode } from 'react'
-import { Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitPullRequest, GitBranch, History, Component, Globe, CircleDot, Folders, Link as LinkIcon, PanelRight, Layers, ListTree, Pin } from 'lucide-react'
+import { Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitPullRequest, GitBranch, History, Component, Globe, CircleDot, Folders, Link as LinkIcon, PanelRight, Layers, ListTree, Pin, LayoutDashboard } from 'lucide-react'
 import type { ViewKind } from '../../hooks/usePanelTabs'
 import { PINNED_VIEWS } from '../../hooks/usePanelTabs'
 import { DropdownMenuItem } from '../../components/ui/dropdown-menu'
@@ -41,6 +41,7 @@ export const NEW_MENU_LABEL_KEY: Record<ViewKind | 'terminal', string> = {
   links: 'pages.chat.sidePanel.menu_links',
   artifacts: 'pages.chat.sidePanel.menu_artifacts',
   subagents: 'pages.chat.sidePanel.menu_subagents',
+  sessions: 'pages.chat.sidePanel.menu_sessions',
   workflows: 'pages.chat.sidePanel.menu_workflows',
   logs: 'pages.chat.sidePanel.menu_logs',
   crewlog: 'pages.chat.sidePanel.menu_crewlog',
@@ -61,6 +62,7 @@ export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string> = {
   links: 'pages.chat.sidePanel.menu_links_desc',
   artifacts: 'pages.chat.sidePanel.menu_artifacts_desc',
   subagents: 'pages.chat.sidePanel.menu_subagents_desc',
+  sessions: 'pages.chat.sidePanel.menu_sessions_desc',
   workflows: 'pages.chat.sidePanel.menu_workflows_desc',
   logs: 'pages.chat.sidePanel.menu_logs_desc',
   crewlog: 'pages.chat.sidePanel.menu_crewlog_desc',
@@ -110,6 +112,7 @@ const NEW_MENU_GROUPS: { id: string; items: { kind: ViewKind | 'terminal'; icon:
       { kind: 'links', icon: <LinkIcon size={15} /> },
       { kind: 'artifacts', icon: <Component size={15} /> },
       { kind: 'subagents', icon: <Bot size={15} /> },
+      { kind: 'sessions', icon: <LayoutDashboard size={15} /> },
       { kind: 'workflows', icon: <Workflow size={15} /> },
       { kind: 'git', icon: <GitBranch size={15} /> },
     ],

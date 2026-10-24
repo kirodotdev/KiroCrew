@@ -10388,7 +10388,8 @@
       "subagents": "Subagenti",
       "summary": "Riepilogo",
       "workflows": "Workflow",
-      "crewlog": "Registro sessione"
+      "crewlog": "Registro sessione",
+      "sessions": "Sessioni"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "Tutti gli slot sono occupati",
@@ -11762,7 +11763,9 @@
         "this_app_render_is_no_longer_available": "Questo rendering dell'app non è più disponibile. Esegui di nuovo lo strumento per visualizzarlo.",
         "turn_diff": "Diff del turno",
         "menu_crewlog": "Registro sessione",
-        "menu_crewlog_desc": "Cosa ha fatto questa sessione e quanto è costata: stato, consumo, cronologia, strumenti, approvazioni, subagenti"
+        "menu_crewlog_desc": "Cosa ha fatto questa sessione e quanto è costata: stato, consumo, cronologia, strumenti, approvazioni, subagenti",
+        "menu_sessions": "Sessioni",
+        "menu_sessions_desc": "Ogni sessione con responsabile, modello e stato"
       },
       "stopEventCard": {
         "stop_declined_compacting": "Arresto rifiutato: il contesto era in compattazione",
@@ -19314,6 +19317,24 @@
     "layoutEditorHarness": {
       "title": "Banco di prova dell’editor di layout",
       "reset": "Reimposta layout"
+    },
+    "panelSessions": {
+      "filter_label": "Filtra le sessioni per stato",
+      "filter_all": "Tutte",
+      "status_active": "Attiva",
+      "status_blocked": "Bloccata",
+      "status_complete": "Completata",
+      "col_drive": "Responsabile",
+      "col_model": "Modello",
+      "col_template": "Template",
+      "action_jump": "Apri",
+      "action_close": "Chiudi",
+      "action_stop_run": "Interrompi",
+      "close_slot_confirm": "Chiudere la sessione «{{title}}»? La trascrizione resta nella cronologia.",
+      "close_run_confirm": "Interrompere questa esecuzione? Non potrà essere ripresa.",
+      "close_failed": "Impossibile chiudere la sessione.",
+      "empty_title": "Nessuna sessione",
+      "empty_hint": "Avvia una chat o un sottoagente per vederlo qui."
     }
   },
   "privacyDisclosure": {

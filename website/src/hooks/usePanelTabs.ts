@@ -12,7 +12,7 @@ import {
 import { pathBasename, stripTrailingSeparators } from '../utils/pathBasename'
 
 /** Singleton "view" tabs (opened from the + menu, one instance each). */
-export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'crewlog' | 'context' | 'side' | 'browser' | 'git' | 'summary' | 'pins' | 'command-center'
+export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 'subagents' | 'sessions' | 'workflows' | 'logs' | 'crewlog' | 'context' | 'side' | 'browser' | 'git' | 'summary' | 'pins' | 'command-center'
 /** All tab kinds: singleton views + on-demand document/terminal tabs. */
 /** `app` hosts an MCP App (a sandboxed iframe with a live JSON-RPC bridge).
  *  It is deliberately a TabKind and NOT a ViewKind: SidePanel unmounts
@@ -94,6 +94,7 @@ export const VIEW_DATA_SOURCE: Record<ViewKind, 'slot' | 'chat-transcript'> = {
   files: 'slot',
   artifacts: 'slot',
   subagents: 'slot',
+  sessions: 'slot',
   workflows: 'slot',
   logs: 'slot',
   crewlog: 'slot',
@@ -210,6 +211,7 @@ const VIEW_TITLE_KEY: Record<ViewKind, string> = {
   links: 'hooks.usePanelTabs.links',
   artifacts: 'hooks.usePanelTabs.artifacts',
   subagents: 'hooks.usePanelTabs.subagents',
+  sessions: 'hooks.usePanelTabs.sessions',
   workflows: 'hooks.usePanelTabs.workflows',
   logs: 'hooks.usePanelTabs.logs',
   crewlog: 'hooks.usePanelTabs.crewlog',

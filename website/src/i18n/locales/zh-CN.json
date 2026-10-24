@@ -10098,7 +10098,8 @@
       "subagents": "子代理",
       "summary": "摘要",
       "workflows": "工作流",
-      "crewlog": "会话记录"
+      "crewlog": "会话记录",
+      "sessions": "会话"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "所有槽位都已占用",
@@ -11430,7 +11431,9 @@
         "this_app_render_is_no_longer_available": "此应用渲染已不可用。请重新运行工具以查看。",
         "turn_diff": "本轮差异",
         "menu_crewlog": "会话记录",
-        "menu_crewlog_desc": "本会话做了什么、花了多少：状态、用量、时间线、工具、审批、子代理"
+        "menu_crewlog_desc": "本会话做了什么、花了多少：状态、用量、时间线、工具、审批、子代理",
+        "menu_sessions": "会话",
+        "menu_sessions_desc": "每个会话及其负责人、模型和状态"
       },
       "stopEventCard": {
         "stop_declined_compacting": "停止被拒绝：上下文正在压缩",
@@ -18730,6 +18733,24 @@
     "layoutEditorHarness": {
       "title": "布局编辑器测试台",
       "reset": "重置布局"
+    },
+    "panelSessions": {
+      "filter_label": "按状态筛选会话",
+      "filter_all": "全部",
+      "status_active": "进行中",
+      "status_blocked": "受阻",
+      "status_complete": "已完成",
+      "col_drive": "负责人",
+      "col_model": "模型",
+      "col_template": "模板",
+      "action_jump": "打开",
+      "action_close": "关闭",
+      "action_stop_run": "停止运行",
+      "close_slot_confirm": "关闭会话“{{title}}”？其对话记录将保留在历史记录中。",
+      "close_run_confirm": "停止此次运行？它将无法恢复。",
+      "close_failed": "无法关闭该会话。",
+      "empty_title": "暂无会话",
+      "empty_hint": "开始聊天或子代理以在此处查看。"
     }
   },
   "privacyDisclosure": {
