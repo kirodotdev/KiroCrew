@@ -73,7 +73,7 @@ describe('ChatPage – crew-bound offer gates', () => {
   })
 
   it('withholds the Regenerate offer on a crew-bound slot', () => {
-    expect(chatPageSrc).toMatch(/onRegenerate=\{i === lastTextIdxRef\.current && !slotRunning && !regenerating && activeSlot && !activeSlotRemoteBound \? handleRegenerate : undefined\}/)
+    expect(chatPageSrc).toMatch(/onRegenerate=\{i === lastTextIdxRef\.current && !slotRunning && !regenerating && activeSlot && !activeSlotRemoteBound \? stableRegenerate : undefined\}/)
   })
 
   it('does NOT gate onSwitchVariant — the server allows switch-variant on a bound slot (no relay_archive_refusal)', () => {

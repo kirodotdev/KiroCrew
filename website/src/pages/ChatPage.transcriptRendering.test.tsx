@@ -21,6 +21,7 @@ import { loadChatConfig } from './chat/ChatSettings'
 import type { DisplayItem, TurnItem } from './chat/types'
 import type { ChatMessage } from '../types'
 import { useTranscriptRendering } from './chat/page/transcriptRendering'
+import { UserMessage, AssistantMessage } from './chat'
 
 type Props = Parameters<typeof useTranscriptRendering>[0]
 
@@ -104,6 +105,88 @@ describe('renderTurnItem', () => {
 
     const noId: TurnItem = { kind: 'group', startIdx: 6, msgs: [msg('tool', '🔧 b', 't7')] }
     expect(el(el(result.current.renderTurnItem(noId, 0)).props.children).props.onApprove).toBe(p.approve)
+  })
+})
+
+/** The first element under `node` whose type is `type`, walking `props.children`. */
+function findByType(node: ReactNode, type: unknown): ReactElement<Record<string, unknown>> | null {
+  if (Array.isArray(node)) {
+    for (const child of node) { const hit = findByType(child, type); if (hit) return hit }
+    return null
+  }
+  if (!isValidElement(node)) return null
+  const e = node as ReactElement<Record<string, unknown>>
+  if (e.type === type) return e
+  return findByType(e.props.children as ReactNode, type)
+}
+
+describe('message row handlers', () => {
+  const user = msg('user', 'question', 'r1', { mid: 'm-user' })
+  const reply = msg('assistant', 'answer', 'r2', { mid: 'm-reply' })
+
+  function mount() {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    const first = props({ lastTextIdx: 1, messages: [user, reply], messagesRef: { current: [user, reply] } })
+    const hook = renderHook((p: Props) => useTranscriptRendering(p), { wrapper, initialProps: first })
+    const rows = () => ({
+      user: findByType(hook.result.current.renderMessage(0, user), UserMessage)!,
+      reply: findByType(hook.result.current.renderMessage(1, reply), AssistantMessage)!,
+    })
+    return { hook, first, rows }
+  }
+
+  it('keeps every row handler identity when a chunk flush rebuilds the page callbacks', () => {
+    const { hook, first, rows } = mount()
+    const before = rows()
+    // A flush replaces `messages`, which mints new handleEditResend and
+    // handleRegenerate; the pin and quote sources may change with it.
+    hook.rerender({
+      ...first, messages: [user, reply], handleEditResend: vi.fn(), handleRegenerate: vi.fn(),
+      quoteWholeMessage: vi.fn(), handleTogglePinForMessage: vi.fn(), handleJumpToQuote: vi.fn(),
+    })
+    const after = rows()
+    for (const key of ['onEditResend', 'onTogglePin', 'onQuoteMessage', 'onJumpToQuote']) {
+      expect(after.user.props[key], key).toBeTypeOf('function')
+      expect(after.user.props[key], key).toBe(before.user.props[key])
+    }
+    for (const key of ['onTogglePin', 'onQuoteMessage', 'onRegenerate']) {
+      expect(after.reply.props[key], key).toBeTypeOf('function')
+      expect(after.reply.props[key], key).toBe(before.reply.props[key])
+    }
+  })
+
+  it('calls the latest page callback with the row it was made for', () => {
+    const { hook, first, rows } = mount()
+    const latest = {
+      handleEditResend: vi.fn(), handleRegenerate: vi.fn(), quoteWholeMessage: vi.fn(),
+      handleTogglePinForMessage: vi.fn(), handleJumpToQuote: vi.fn(),
+    }
+    hook.rerender({ ...first, ...latest })
+    const { user: u, reply: r } = rows()
+    ;(u.props.onTogglePin as () => void)()
+    ;(r.props.onTogglePin as () => void)()
+    ;(u.props.onQuoteMessage as (s: string) => void)('shown')
+    ;(r.props.onQuoteMessage as (s: string) => void)('shown reply')
+    ;(u.props.onEditResend as (i: number, ts: string, c: string) => void)(0, 'r1', 'edited')
+    ;(u.props.onJumpToQuote as (q: unknown) => void)({ ts: 'r0' })
+    ;(r.props.onRegenerate as () => void)()
+    expect(latest.handleTogglePinForMessage.mock.calls).toEqual([['m-user', 'r1', 'user', 'question'], ['m-reply', 'r2', 'assistant', 'answer']])
+    expect(latest.quoteWholeMessage.mock.calls).toEqual([['user', 'shown', 'r1', 'm-user'], ['assistant', 'shown reply', 'r2', 'm-reply']])
+    expect(latest.handleEditResend).toHaveBeenCalledWith(0, 'r1', 'edited')
+    expect(latest.handleJumpToQuote).toHaveBeenCalledWith({ ts: 'r0' })
+    expect(latest.handleRegenerate).toHaveBeenCalledTimes(1)
+    expect(first.handleTogglePinForMessage).not.toHaveBeenCalled()
+  })
+
+  it('gives a replaced row object handlers over its new content', () => {
+    const { hook, first, rows } = mount()
+    const before = rows().user
+    const edited = msg('user', 'question, edited', 'r1', { mid: 'm-user' })
+    const row = findByType(hook.result.current.renderMessage(0, edited), UserMessage)!
+    expect(row.props.onTogglePin).not.toBe(before.props.onTogglePin)
+    ;(row.props.onTogglePin as () => void)()
+    expect(first.handleTogglePinForMessage).toHaveBeenCalledWith('m-user', 'r1', 'user', 'question, edited')
   })
 })
 
