@@ -65,6 +65,7 @@ citation to follow.
 #   ``projection_values`` -- the bounded coercions every fold applies to entry data
 #   ``projection_side_panel`` -- the ``status``, ``timeline``, ``tools`` and ``approvals`` folds
 #   ``projection_usage`` -- the ``usage`` fold and the credit table it bills by
+#   ``projection_usage_measured`` -- the agent engine's per-turn measurement in ``usage``
 #   ``projection_subagents`` -- the ``subagents`` fold
 #   ``projection_ledger`` -- the ``ledger`` slot fold (a session's work ledger)
 #   ``projection_internal`` -- the ``class`` and ``outline`` folds, which no panel draws
@@ -97,6 +98,7 @@ _OWNERS = (
     "kiro_crew.crew_log.projection_otel_usage",
     "kiro_crew.crew_log.projection_otel_session_tree",
     "kiro_crew.crew_log.projection_side_panel",
+    "kiro_crew.crew_log.projection_usage_measured",
     "kiro_crew.crew_log.projection_usage",
     "kiro_crew.crew_log.projection_subagents",
     "kiro_crew.crew_log.projection_ledger",
@@ -459,6 +461,30 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _usage_start,
         _usage_step,
     )
+    from kiro_crew.crew_log.projection_usage_measured import (  # noqa: F401
+        _HISTORY_KEYS,
+        _INDEX,
+        _NORMAL_STOPS,
+        _SLOTS,
+        _TTFT_KEYS,
+        FLAG_BREAKDOWN,
+        FLAG_COMPACTED,
+        FLAG_RERUN,
+        FLAG_RESET,
+        FLAG_SCHEMA_UNKNOWN,
+        MEASURED_FIELDS,
+        MEASURED_FORMAT,
+        MEASURED_UNKNOWN_LIMIT,
+        _decode_values,
+        _encode,
+        _note_unknown,
+        decode_measured,
+        measured_start,
+        measured_step,
+        note_closed,
+        note_composed,
+        note_unit_start,
+    )
     from kiro_crew.crew_log.projection_values import (  # noqa: F401
         ID_LIMIT,
         TEXT_LIMIT,
@@ -681,6 +707,13 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
         session_units_for_slot,
         unit_header_created_at,
         unit_opened_previous,
+    )
+    from kiro_crew.engine_context import (  # noqa: F401
+        BREAKDOWN_SCHEMA,
+        HISTORY_PARTS,
+        KNOWN_CATEGORIES,
+        MAX_COUNT,
+        count,
     )
     from kiro_crew.projection import (  # noqa: F401
         ProjectionRegistry,

@@ -1316,6 +1316,10 @@ class AcpPromptStats:
     # this turn, so ``carry_over()`` drops it -- a refusal that survived into
     # the next turn would brand an ordinary answer as declined.
     refusal: "RefusalInfo | None" = None
+    # The KAS engine's own measurement of this turn (``kas_profile`` module): the
+    # context breakdown and time to first token. PER-TURN, dropped by
+    # ``carry_over()``, so a replayed or late frame cannot reach a later turn.
+    kas_profile: "dict[str, Any] | None" = None
 
     def carry_over(self) -> "AcpPromptStats":
         """Return fresh per-turn stats carrying this turn's context state.

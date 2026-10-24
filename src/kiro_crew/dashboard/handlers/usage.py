@@ -763,6 +763,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CONTEXT_CACHE_TS,
         _CONTEXT_CACHE_TTL,
         _CONTEXT_TOP_SESSIONS,
+        _engine_view,
         _row_iso,
         context_occupancy,
         context_trace,

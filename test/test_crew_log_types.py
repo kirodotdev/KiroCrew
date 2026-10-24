@@ -110,6 +110,19 @@ CANONICAL: dict[str, dict] = {
         "tokens": 1000,
         "tokens_estimated": True,
     },
+    "context/measured": {
+        "turn": 3,
+        "turn_id": "e-01",
+        "breakdown": {
+            "schema": 1,
+            "categories": {"history": 4000, "toolSpecs": 2865},
+            "model_calls": 1,
+            "total_chars": 6865,
+            "compacted": True,
+            "history": {"user": 3990, "assistant": 5, "thinking": 5, "compaction_summary": 0},
+        },
+        "ttft": {"total_ms": 2870, "setup_ms": 59, "model_ms": 1534},
+    },
     "step/started": {"turn": 3, "step": 1},
     "step/completed": {"turn": 3, "step": 1, "ms": 900},
     "tool/called": {
@@ -404,7 +417,10 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # The two past that are a crewmate's own record for its Dashboard page:
     # ``dashboard/goal_recorded`` and ``dashboard/waiting_changed``, snapshots the gateway
     # appends when the goal record or the "waiting on you" list changes.
-    assert len(SESSION_ENTRY_TYPES) == 47
+    #
+    # The one past those is ``context/measured``: the agent engine's own measurement of
+    # a turn's context, which the ``usage`` fold attaches to that turn's composition row.
+    assert len(SESSION_ENTRY_TYPES) == 48
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.

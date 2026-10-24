@@ -136,6 +136,7 @@
         "background/completed",
         "compaction/applied",
         "context/composed",
+        "context/measured",
         "request/configured",
         "session/opened",
         "step/completed",

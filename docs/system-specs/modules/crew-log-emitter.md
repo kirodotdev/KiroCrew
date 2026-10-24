@@ -228,6 +228,7 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 | `message/chunk` | the overflow split ONLY | turn, step, one slice of an already-redacted body |
 | `request/configured` | `_turn_dispatch_gates` (`chat_turn/turn_dispatch_gates.py`), on change only | turn, model, provider, `context_window` |
 | `context/composed` | `_turn_dispatch_gates` (`chat_turn/turn_dispatch_gates.py`), from `slot_ctx_blocks` | turn, per-block `sources`, chars, estimated tokens, `phase` (`session_start` or `per_turn`) when known, and `omitted` (the budget cuts `context_omissions.collect` gathered around the build) when anything was cut |
+| `context/measured` | `_turn_close_crew_log` (`chat_turn/crew_log_attribution.py`), from `AcpPromptStats.kas_profile`, taken once and only when the per-turn stats object is not the one the turn started with (so a turn that sent no prompt never takes an earlier turn's), just before the turn's closers; nothing is written when the engine measured nothing | turn, the engine's `turn_id`, `breakdown` (`schema`, category -> characters for the turn's LAST model request, `model_calls`, `total_chars`, `compacted`, the `history` split), `ttft` (`total_ms`, `setup_ms`, `model_ms`) |
 | `step/started` | the stream opening, and each tool-group-to-text transition | turn, step |
 | `step/completed` | the next transition, and `EVENT_COMPLETE` | turn, step, ms |
 | `message/queued` | `chat_delivery.queue_for_next_turn` | source, bytes, queue id -- no turn |
@@ -440,6 +441,16 @@ derived from a request that a refused turn never assembled. The `@prompt` expans
 gate returns before the request is composed, the same as every other refusal gate,
 so it records the same pair rather than nothing -- the accepted input a reader most
 needs to see beside the refusal is still there.
+
+### The engine's measurement lands inside its turn
+
+`context/measured` is written after `turn/started` (so after every `context/composed`
+of the turn) and before the turn's `tool/completed` sweep, `step/completed` and
+`turn/completed`. The `usage` fold attaches it to the TAIL row of its context window
+and nowhere else, and a closer seals the rows it closes, so written after
+`turn/completed` it would find its row sealed and attach to nothing. It is written on
+both closer paths, measured and failed: a cancelled or failed turn whose engine footer
+arrived still has a real measurement.
 
 ### `session/closed` is a teardown, not the end of the file
 

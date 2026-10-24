@@ -203,6 +203,63 @@ TYPES: tuple[EntryType, ...] = (
         ),
     ),
     EntryType(
+        "context/measured",
+        "What the agent engine measured of a turn: its last request by category, and TTFT.",
+        (
+            _turn(),
+            Field("turn_id", JSON_STRING, note="The engine's turn id; repeats on a duplicate."),
+            Field(
+                "breakdown",
+                JSON_OBJECT,
+                fields=(
+                    Field("schema", JSON_INT, required=True, note="The engine's schema number."),
+                    Field(
+                        "categories",
+                        JSON_OBJECT,
+                        required=True,
+                        note=(
+                            "Category name to characters, for the turn's LAST model "
+                            "request. Every category the engine sent is kept, including "
+                            "ones this build does not know."
+                        ),
+                    ),
+                    Field("model_calls", JSON_INT, note="Model requests the turn made."),
+                    Field("total_chars", JSON_INT, note="Characters in the last request."),
+                    Field("compacted", JSON_BOOL, note="True when a compaction ran mid-turn."),
+                    Field(
+                        "history",
+                        JSON_OBJECT,
+                        fields=tuple(
+                            Field(name, JSON_INT, note=note)
+                            for name, note in (
+                                ("user", "User-role text, every turn still in context."),
+                                ("assistant", "Assistant text."),
+                                ("thinking", "Reasoning text."),
+                                ("compaction_summary", "The compaction summary."),
+                            )
+                        ),
+                        note="The history category's own split.",
+                    ),
+                ),
+                note="Absent when the engine sent no breakdown for the turn.",
+            ),
+            Field(
+                "ttft",
+                JSON_OBJECT,
+                fields=(
+                    Field("total_ms", JSON_INT, required=True, note="Turn start to first output."),
+                    Field("setup_ms", JSON_INT, note="Turn start to first model request."),
+                    Field("model_ms", JSON_INT, note="First request to first model content."),
+                ),
+                note="Absent when the turn showed no text or reasoning.",
+            ),
+        ),
+        note=(
+            "Characters, never tokens. Written only when breakdown or ttft is present, "
+            "just before the turn's turn/completed."
+        ),
+    ),
+    EntryType(
         "step/started",
         "Opens one model call inside a turn.",
         (_turn(), Field("step", JSON_INT, required=True, note="Model call ordinal, from 1.")),

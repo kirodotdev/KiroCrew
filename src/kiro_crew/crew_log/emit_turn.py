@@ -10,6 +10,7 @@ gateway made on the session's behalf outside any turn (``background/completed``)
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from typing import Any
 
 from kiro_crew.crew_log.emit_runtime import (
@@ -653,6 +654,39 @@ def on_context_composed(
         # only the vocabulary the entry declares, so it passes through as recorded.
         data["omitted"] = {str(kind): dict(entry) for kind, entry in omitted.items()}
     _write(session_id, "context/composed", data, src=_SRC_GATEWAY)
+
+
+def on_context_measured(
+    session_id: str,
+    turn: int,
+    *,
+    profile: "Mapping[str, Any] | None" = None,
+) -> None:
+    """Record what the agent engine measured of this turn, beside what it composed.
+
+    ``profile`` is :attr:`~kiro_crew.acp.types.AcpPromptStats.kas_profile`, already
+    reduced to numbers by :mod:`kiro_crew.acp.kas_profile`: ``breakdown`` is the
+    engine's split of the turn's LAST model request into categories, in characters,
+    and ``ttft`` its time to first displayed output. Either may be absent, and with
+    neither there is nothing to record, so nothing is written: a turn without a
+    measurement reads as unmeasured, never as a measurement of zero.
+
+    Written by the turn's closer just before ``turn/completed``, so the ``usage``
+    fold finds the turn's composition row still at the tail of its window.
+    """
+    if not session_id or not enabled() or not profile:
+        return
+    data: dict[str, Any] = {"turn": int(turn)}
+    for key in ("breakdown", "ttft"):
+        value = profile.get(key)
+        if isinstance(value, Mapping) and value:
+            data[key] = dict(value)
+    if len(data) == 1:
+        return
+    turn_id = profile.get("turn_id")
+    if isinstance(turn_id, str) and turn_id:
+        data["turn_id"] = turn_id
+    _write(session_id, "context/measured", data, src=_SRC_GATEWAY)
 
 
 def on_step_started(session_id: str, turn: int) -> int:

@@ -10,6 +10,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.state import CrewLogPrevious
+from kiro_crew.llm_helpers import _billing_stats
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -371,6 +372,24 @@ def _crew_log_class(state: Any, slot: Any) -> tuple[str, str, bool]:
     )
 
 
+def _take_engine_profile(turn: _ChatTurn) -> "dict[str, Any] | None":
+    """This turn's engine measurement (``AcpPromptStats.kas_profile``), taken once.
+
+    ``None`` when the per-turn stats object is still the one the turn started with
+    (``_turn_stats0``): the runtime installs a fresh one only when the prompt is sent,
+    so an unchanged object means this turn never sent one and anything on it belongs
+    to an earlier turn. Cleared after reading, so no later reader takes it again.
+    """
+    stats = _billing_stats(turn.client)
+    if stats is None or stats is turn._turn_stats0:
+        return None
+    profile = getattr(stats, "kas_profile", None)
+    if not isinstance(profile, dict) or not profile:
+        return None
+    stats.kas_profile = None
+    return profile
+
+
 async def _turn_close_crew_log(turn: _ChatTurn) -> None:
     """Close the turn's crew log, in the one order a reader can trust, and the streak's activity."""
     _crew_log_terminal: "dict | None"
@@ -394,6 +413,12 @@ async def _turn_close_crew_log(turn: _ChatTurn) -> None:
     # session with no routed turn in flight, which is every session while
     # ``decisions.model_route_derive`` is off.
     _settle_jev_route(session_key, _jev_route_turn_ok(turn._crew_log_terminal))
+    if turn._crew_log_terminal is not None or _crew_log_turn_open:
+        # Ahead of the turn's closers, so the ``usage`` fold finds this turn's
+        # composition row still at the tail and not yet sealed.
+        crew_log_emit.on_context_measured(
+            _crew_log_sid, _crew_log_turn_no, profile=_take_engine_profile(turn)
+        )
     if turn._crew_log_terminal is not None:
         # Any tool still open produced no result frame of its own. Closed
         # before the turn completes so a turn never completes with an open

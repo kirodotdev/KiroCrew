@@ -203,6 +203,8 @@ USAGE_TYPES: Final[frozenset[str]] = frozenset(
         # turns not shown" count both drift down and never self-correct.
         "turn/refused",
         "context/composed",
+        # The engine's measurement of a turn, attached to that turn's context row.
+        "context/measured",
         "compaction/applied",
         "step/completed",
         "subagent/completed",
@@ -272,6 +274,8 @@ def _usage_copy(state: dict[str, Any]) -> dict[str, Any]:
     # row: an in-place write would reach a projection already handed to a reader.
     grown["context_turns"] = list(state["context_turns"])
     grown["omitted_models"] = list(state["omitted_models"])
+    # Its rows are REPLACED, never edited, so a shallow copy of the map is enough.
+    grown["context_measured_unknown"] = dict(state["context_measured_unknown"])
     # ``context_turn_keys`` needs no copy: it is a str, which ``_count_turn_ordinal``
     # REPLACES rather than mutates, so the snapshot keeps the value it was handed.
     return grown
@@ -476,7 +480,10 @@ _FOLDS: Final[dict[str, _Fold]] = {
         # inflated count for the life of the unit.
         # Moved again for ``context_started`` and the per-row ``first_start``: a
         # savepoint without them would mark a later rebuild as the session's start.
-        state_version=_FOLD_STATE_VERSION_BASE + 11,
+        # Moved again for the engine-measured rows and the running sum of composed
+        # characters beside them: a savepoint without the sum would subtract nothing
+        # from the engine's user text for the rest of the unit.
+        state_version=_FOLD_STATE_VERSION_BASE + 12,
     ),
     # The panel's feed section reads this one, so it is pushed like the rest; its value
     # is bounded by ``TIMELINE_LIMIT`` whatever the session's length.

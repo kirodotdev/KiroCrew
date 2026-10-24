@@ -9,6 +9,14 @@ import math
 from typing import Any, Final
 
 from kiro_crew.context_blocks import PHASE_SESSION_START
+from kiro_crew.crew_log.projection_usage_measured import (
+    decode_measured,
+    measured_start,
+    measured_step,
+    note_closed,
+    note_composed,
+    note_unit_start,
+)
 from kiro_crew.crew_log.projection_values import _as_int, _as_str, _keyable, _note_omitted
 from kiro_crew.crew_log.schema import Entry
 
@@ -23,7 +31,9 @@ from kiro_crew.crew_log.schema import Entry
 #:
 #: Measured at the WORST CASE rather than reasoned about, since this is the fold's
 #: largest new state: 200 rows each holding :data:`CONTEXT_SOURCES_PER_TURN_LIMIT`
-#: sources whose labels sit at :data:`TEXT_LIMIT` is 808,912 bytes of Python objects.
+#: sources whose labels sit at :data:`TEXT_LIMIT`, and the engine's measurement at its
+#: cap (one string, see ``projection_usage_measured``), is 864,361 bytes of Python
+#: objects; the measurement is 55,449 of them.
 #: ``test_a_full_window_stays_under_the_slot_fold_cell_budget`` re-measures
 #: that same worst case, so the figure fails rather than rots -- and it measures the
 #: CAP, not a realistic row, because a realistic 40-source row is 511,192 and would
@@ -32,7 +42,8 @@ from kiro_crew.crew_log.schema import Entry
 #: It matters because this fold is read per SLOT, so its state lands in the slot-fold
 #: cache, whose own ceiling is stated against its largest member -- ``radar`` at
 #: 995,342 bytes. A full window plus a full ordinal memo (``context_turn_keys``, 120,042
-#: bytes at its widest) fits under that with 66,388 bytes to spare.
+#: bytes at its widest) fits under that with 10,939 bytes to spare, which is why a row's
+#: measurement is a string and not a dict: as a dict of its numbers it would not fit.
 #: The row shape is what buys that: the entry's own list of three-key dicts measures
 #: 3,319,357 at the same worst case and would breach the ceiling by 2.3 MB. See
 #: ``row_sources`` in ``_usage_step``.
@@ -188,6 +199,9 @@ def _usage_start() -> dict[str, Any]:
         "freed_pct": 0.0,
         "steps": 0,
         "step_ms": 0,
+        # The engine-measured half of the context rows (``context/measured``) and the
+        # running sum it subtracts Crew's share with; see ``projection_usage_measured``.
+        **measured_start(),
     }
 
 
@@ -333,6 +347,9 @@ def _usage_step(state: dict[str, Any], entry: Entry) -> None:
         state["context_unit"] += 1
         if data.get("resumed") is not True:
             state["context_key_unit"] = int(state.get("context_key_unit", 0)) + 1
+            # A new unit is a new engine session, whose context starts empty. A
+            # re-attachment picks the same engine session up again and keeps it.
+            note_unit_start(state)
         # The model/window stamps are scoped to the unit that was told them, so a new
         # unit must start without them. The successor restamps from its own
         # request/configured; until it does, a row reads absent rather than inheriting
@@ -471,6 +488,7 @@ def _usage_step(state: dict[str, Any], entry: Entry) -> None:
         # state as the first and advances again, and every later row carries a turn
         # number too high.
         _count_turn_ordinal(state, state["context_key_unit"], turn_no)
+        note_closed(state, state["context_key_unit"], turn_no, _as_str(data.get("stop_reason")))
     elif entry.type == "turn/refused":
         # A refused turn never reached the model, so it carries no cost and composes
         # nothing -- but it still OCCUPIED a position in the turn history (a dispatch
@@ -580,6 +598,7 @@ def _usage_step(state: dict[str, Any], entry: Entry) -> None:
         row["first_start"] = row["phase"] == PHASE_SESSION_START and not state["context_started"]
         if row["first_start"]:
             state["context_started"] = True
+        note_composed(state, state["context_key_unit"], row["turn"], row["chars"])
         turns_window = state["context_turns"]
         turns_window.append(row)
         if len(turns_window) > CONTEXT_TURNS_LIMIT:
@@ -608,6 +627,8 @@ def _usage_step(state: dict[str, Any], entry: Entry) -> None:
                 removed += 1
             if len(turns_window) > CONTEXT_TURNS_LIMIT:
                 del turns_window[: len(turns_window) - CONTEXT_TURNS_LIMIT]
+    elif entry.type == "context/measured":
+        measured_step(state, entry)
     elif entry.type == "request/configured":
         # Newest NON-ZERO wins. This entry is written only when the configuration
         # changed, and a provider that reports no window writes 0 -- taking that as
@@ -689,11 +710,19 @@ def _usage_render(state: dict[str, Any]) -> dict[str, Any]:
             # rows, and no reader asks for either.
             "turns": [
                 {
-                    **{k: v for k, v in row.items() if k not in ("_closed", "unit")},
+                    **{k: v for k, v in row.items() if k not in ("_closed", "unit", "measured")},
                     "sources": dict(row["sources"]),
+                    # The engine's own measurement of the turn, decoded from the row's
+                    # compact string; ``None`` when the turn has none.
+                    "measured": decode_measured(row.get("measured")),
                 }
                 for row in state["context_turns"]
             ],
+            # Engine categories this build does not know, by name, so a category a
+            # newer engine adds is shown rather than lost.
+            "measured_unknown": {
+                name: dict(row) for name, row in sorted(state["context_measured_unknown"].items())
+            },
             # NO session-wide occupancy pair here. The reading and its window ride on
             # each ROW (``used`` / ``used_window``), because the reader is bounded to a
             # TIME WINDOW and a maximum computed here could not be narrowed to it: the

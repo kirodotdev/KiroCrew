@@ -31,11 +31,13 @@ Instance fields read: ``_abandoned_steering``, ``_awaited_responses``,
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import kas_profile
 from kiro_crew.acp._dispatch import (
     is_unattributed_error_candidate,
     prompt_is_adapter_command,
@@ -55,6 +57,7 @@ from kiro_crew.acp.session_handle_lifecycle import _CANCEL_GRACE_SECS
 from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError
 from kiro_crew.acp.session_handle_watchdog import _WORKING_NEVER_LOGGED
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     EVENT_COMPACTION_STATUS,
@@ -180,7 +183,7 @@ async def prompt(
             self._session_id,
             summarize_prompt_structure(prompt_blocks),
         )
-        return METHOD_PROMPT, {
+        params: dict[str, Any] = {
             "sessionId": self._session_id,
             # An image reaches the model ONLY as an image block. Sending a
             # local image path as a single text block would ship a
@@ -190,6 +193,12 @@ async def prompt(
             # tool-openable reference rather than being dropped.
             "prompt": prompt_blocks,
         }
+        if getattr(self._runtime, "acp_backend", "") == ACP_BACKEND_KAS:
+            # The engine's per-turn context breakdown and time to first token
+            # (see ``kas_profile``). Positive KAS gate: no other harness is sent a
+            # ``_meta`` it never defined.
+            params["_meta"] = copy.deepcopy(kas_profile.PROMPT_META)
+        return METHOD_PROMPT, params
 
     # Explicit aclose in a finally: abandoning THIS wrapper (gen.aclose()
     # at any yield) must finalize the inner turn generator NOW — its

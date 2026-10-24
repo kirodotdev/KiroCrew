@@ -344,6 +344,9 @@ def context_trace(slot: str, days: int = 14) -> dict[str, Any]:
                 # The fold's mark for the session's real start, so the panel labels
                 # only that row "session start" and any later one a rebuild.
                 "first_start": row.get("first_start") is True,
+                # What the agent engine measured of the same turn, and its time to
+                # first output; ``None`` for a turn it did not measure.
+                **_engine_view(row.get("measured")),
             }
         )
         # The peak INSIDE the requested window, with the window that same reading was
@@ -385,6 +388,12 @@ def context_trace(slot: str, days: int = 14) -> dict[str, Any]:
         # still be told.
         "context_window": peak_window if peak_seen else _coerce_int(context.get("window")),
         "window_days": days,
+        # Engine categories this build does not know, by name; see ``_engine_view``.
+        "engine_unknown": (
+            context.get("measured_unknown")
+            if isinstance(context.get("measured_unknown"), dict)
+            else {}
+        ),
         # Whether the gateway is recording at all. An empty list cannot say, and the
         # two cases want different words: a session whose next turn will fill the
         # panel, and a gateway whose ``KIROCREW_CREW_LOG`` switched recording off, for
@@ -397,6 +406,53 @@ def context_trace(slot: str, days: int = 14) -> dict[str, Any]:
         # as the Crew Log panel's off state does.
         payload["env_file"] = env_file_display()
     return payload
+
+
+def _engine_view(measured: Any) -> dict[str, Any]:
+    """A row's engine measurement as the panel reads it: ``engine`` and ``ttft_ms``.
+
+    Every figure in ``engine`` is in CHARACTERS and describes the turn's LAST model
+    request, as the engine measured it. Its ``history.user`` covers the user text of
+    every turn still in the engine's context, and Kiro Crew composed most of it, so the
+    fold's running sum of composed characters (``crew_chars``) is subtracted to leave
+    ``user_other_chars``: user-role text Kiro Crew did not compose (steering, engine
+    wake-ups). The subtraction is clamped at zero AND reported: ``mismatch_chars`` is
+    how far Crew's own count exceeds the engine's, which happens when the engine
+    dropped user text Crew still counts (a rewind, a summary that absorbed the turn).
+    ``approximate`` says a turn was sent again since the sum restarted, which is
+    when that can happen. The engine counts UTF-16 code units and Crew counts code
+    points, so each character outside the Basic Multilingual Plane (most emoji) in
+    a prompt shows as one character of ``user_other_chars``.
+
+    ``engine`` is ``None`` when the turn carries no breakdown -- an older engine, a
+    non-KAS backend, a turn that failed before its footer -- so the panel says "not
+    measured" rather than drawing zeros. ``ttft_ms`` is ``None`` the same way.
+    """
+    if not isinstance(measured, dict):
+        return {"engine": None, "ttft_ms": None}
+    ttft = measured.get("ttft") if isinstance(measured.get("ttft"), dict) else None
+    if not measured.get("breakdown"):
+        return {"engine": None, "ttft_ms": ttft}
+    raw_history = measured.get("history")
+    history: dict[str, Any] = raw_history if isinstance(raw_history, dict) else {}
+    crew = _coerce_int(measured.get("crew_chars"))
+    user = history.get("user")
+    engine: dict[str, Any] = {
+        "total_chars": measured.get("total_chars"),
+        "model_calls": measured.get("model_calls"),
+        "categories": dict(measured.get("categories") or {}),
+        "history": dict(history),
+        "unknown_chars": _coerce_int(measured.get("unknown_chars")),
+        "compacted": measured.get("compacted") is True,
+        "schema_known": measured.get("schema_known") is not False,
+        # A turn was composed again (retry, regenerate, rewind) since the sum last
+        # restarted, so ``crew_chars`` may count an attempt the engine dropped.
+        "approximate": measured.get("rerun") is True,
+        "crew_chars": crew,
+        "user_other_chars": max(0, user - crew) if isinstance(user, int) else None,
+        "mismatch_chars": max(0, crew - user) if isinstance(user, int) else 0,
+    }
+    return {"engine": engine, "ttft_ms": ttft}
 
 
 def _row_iso(raw: Any) -> tuple[float, str] | None:

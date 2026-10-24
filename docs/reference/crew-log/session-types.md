@@ -40,6 +40,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`message/queued`](#messagequeued) | A message arrived while a turn was running. | live | `gateway` | — |
 | [`request/configured`](#requestconfigured) | The request configuration, when it changed. | live | `gateway` | — |
 | [`context/composed`](#contextcomposed) | What was put in front of the model, block by block. | live | `gateway` | — |
+| [`context/measured`](#contextmeasured) | What the agent engine measured of a turn: its last request by category, and time to first output. | live | `gateway` | — |
 | [`step/started`](#stepstarted) | Opens one model call inside a turn. | live | `gateway` | opener of `step/completed` |
 | [`step/completed`](#stepcompleted) | Closes one model call. | live | `gateway` | closer |
 | [`tool/called`](#toolcalled) | A tool call, arguments digested. | live | `acp` | opener of `tool/completed` |
@@ -735,6 +736,38 @@ figures are on [`turn/completed`](#turncompleted). An entry with no `step` is th
 turn's opening composition; attribute it to the turn's first model call.
 
 **Since** — #10091.
+
+### `context/measured`
+
+What the agent engine measured of a turn: its last model request by category, in
+characters, and how long the turn waited for its first output.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — By the turn's closer, after `turn/started` and before the turn's
+`turn/completed`, when the engine reported a breakdown or a time to first token for
+the prompt. Only the KAS backend asks for either, and nothing is written for a turn
+it did not measure, so a reader treats an absent entry as "not measured".
+
+**Pairing** — None. The `usage` fold attaches it to the same turn's `context/composed`
+row.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `turn` | int | required | Turn ordinal. | |
+| `turn_id` | string | optional | The engine's turn id. The same id twice is the same measurement. | |
+| `breakdown` | object | optional | `schema`, `categories` (category name to characters, every category the engine sent), `model_calls`, `total_chars`, `compacted` and `history` (`user`, `assistant`, `thinking`, `compaction_summary`). It describes the turn's LAST model request, not the turn as a whole. `history.user` covers the user text of every turn still in the engine's context. | |
+| `ttft` | object | optional | `total_ms` (turn start to first displayed output), and when the engine captured model timing `setup_ms` and `model_ms`. | |
+
+**Invariants** — Every figure in `breakdown` is in characters and describes the turn's last model request. `history.user` covers the user text of every turn still in the engine's context, which is why the `usage` fold keeps Kiro Crew's share as a running sum rather than reading this turn's composition alone.
+
+```json
+{"type":"context/measured","seq":14,"time":1789000004100,"src":"gateway","data":{"turn":3,"turn_id":"e-01","breakdown":{"schema":1,"categories":{"history":4000,"toolSpecs":2865},"model_calls":1,"total_chars":6865,"history":{"user":3990,"assistant":5,"thinking":5,"compaction_summary":0}},"ttft":{"total_ms":2870,"setup_ms":59,"model_ms":1534}}}
+```
+
+**Reader hint** — An absent entry means the engine measured nothing for the turn, never a measurement of zero.
+
+**Since** — #23648.
 
 ### `step/started`
 

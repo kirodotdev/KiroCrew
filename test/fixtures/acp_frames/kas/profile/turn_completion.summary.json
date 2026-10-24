@@ -1,0 +1,117 @@
+{
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+    "sessionId": "sess_4f063ee6-e4b0-4937-99fa-32b71e613e33",
+    "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+        "kiro": {
+          "promptTurnSummaries": [
+            {
+              "unit": "credit",
+              "unitPlural": "credits",
+              "usage": 0.07441041260364842
+            }
+          ],
+          "elapsedTime": 3498,
+          "status": "success",
+          "kind": "turn_completion",
+          "executionId": "ab047261-7694-4096-94c8-58dda42ea3dd",
+          "turnId": "ab047261-7694-4096-94c8-58dda42ea3dd",
+          "requestIds": [
+            "d940e4e3-1110-4792-80cc-fe36dd741088"
+          ],
+          "contextBreakdown": {
+            "schema": 1,
+            "modelCalls": 1,
+            "totalChars": 59333,
+            "window": {
+              "sizeTokens": 1000000,
+              "usagePercentage": 2.8667998
+            },
+            "categories": {
+              "kiroInstructions": {
+                "chars": 4290,
+                "percent": 7.2
+              },
+              "toolSpecs": {
+                "chars": 2865,
+                "percent": 4.8
+              },
+              "mcpTools": {
+                "chars": 6246,
+                "percent": 10.5
+              },
+              "agentsIndex": {
+                "chars": 0,
+                "percent": 0,
+                "count": 0
+              },
+              "skillsIndex": {
+                "chars": 14563,
+                "percent": 24.5,
+                "count": 28
+              },
+              "powersIndex": {
+                "chars": 0,
+                "percent": 0,
+                "count": 0
+              },
+              "steering": {
+                "chars": 18077,
+                "percent": 30.5
+              },
+              "skills": {
+                "chars": 0,
+                "percent": 0
+              },
+              "toolIO": {
+                "chars": 102,
+                "percent": 0.2,
+                "inputChars": 20,
+                "outputChars": 82
+              },
+              "history": {
+                "chars": 12192,
+                "percent": 20.6,
+                "userChars": 12173,
+                "assistantChars": 10,
+                "thinkingChars": 9,
+                "compactionSummaryChars": 0
+              },
+              "workspace": {
+                "chars": 939,
+                "percent": 1.6,
+                "fileTreeChars": 0,
+                "openFilesChars": 0,
+                "environmentChars": 939,
+                "repositoriesChars": 0
+              },
+              "memory": {
+                "chars": 0,
+                "percent": 0,
+                "learningsChars": 0,
+                "knowledgeChars": 0
+              },
+              "attachedFiles": {
+                "chars": 0,
+                "percent": 0
+              },
+              "other": {
+                "chars": 59,
+                "percent": 0.1
+              }
+            },
+            "media": {
+              "images": 0,
+              "imageBytes": 0,
+              "documents": 0,
+              "documentBytes": 0
+            }
+          }
+        }
+      }
+    }
+  }
+}

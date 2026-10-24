@@ -8,6 +8,7 @@ import ErrorNotice from '../components/ErrorNotice'
 import { fmtNumber } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import type { SubagentActivity } from '../types'
+import { EngineBreakdown, type EngineMeasurement, type EngineTtft } from './ContextEngineBreakdown'
 import { SessionBreakdownTree } from './SessionBreakdownTree'
 import { CATEGORY_FILL } from './contextSourceColors'
 
@@ -33,6 +34,11 @@ export interface ContextTurn {
   /** Whether this row is the session's real start rather than a later rebuild, as the
    *  backend fold marked it. Absent on a gateway older than the field. */
   first_start?: boolean
+  /** What the agent engine measured of this turn; null when it measured nothing.
+   *  Absent on a gateway older than the field. */
+  engine?: EngineMeasurement | null
+  /** The turn's wait for its first output; null when not measured. */
+  ttft_ms?: EngineTtft | null
 }
 
 export interface ContextTrace {
@@ -51,6 +57,8 @@ export interface ContextTrace {
   recording?: boolean
   /** The `.env` file the gateway reads, sent only while recording is off. */
   env_file?: string
+  /** Engine categories this version does not know, by name. */
+  engine_unknown?: Record<string, { chars: number; turns: number }>
 }
 
 /** The user's own text, and the labels the backend groups under one bucket. */
@@ -644,6 +652,8 @@ function ContextBreakdownCard({ trace, chartWidth }: { trace: ContextTrace; char
   const delta = deltaText(selectedChart.total, previous)
   const select = (n: number) => setPinned(n === newest ? null : n)
 
+  const engineSeen = trace.turns.some(t => t.engine || t.ttft_ms)
+
   const rows = CATEGORIES.map(cat => ({
     cat,
     chars: selectedChart.cats[cat],
@@ -723,6 +733,13 @@ function ContextBreakdownCard({ trace, chartWidth }: { trace: ContextTrace; char
         {rows.map(r => (
           <CategoryRow key={r.cat} cat={r.cat} chars={r.chars} blocks={r.blocks} />
         ))}
+        {/* Only once the engine has measured some turn of this trace: a backend that
+            never measures keeps the panel exactly as it was. */}
+        {engineSeen ? <EngineBreakdown
+            engine={selectedTurn.engine}
+            ttft={selectedTurn.ttft_ms}
+            unknownNames={Object.keys(trace.engine_unknown ?? {})}
+          /> : null}
       </div>
 
       <p className="m-0 mx-4 mt-4 mb-4 pt-3 border-t border-border text-[12px] text-muted">

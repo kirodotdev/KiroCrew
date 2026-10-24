@@ -1113,6 +1113,14 @@ _RUNTIME_PATH_MODULES = (
 #: :func:`test_every_runtime_path_identity_test_is_declared`.
 _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     (
+        "src/kiro_crew/acp/session_handle_turn.py",
+        "_build",
+    ): (
+        "the per-turn context breakdown and time-to-first-token opt-in is a "
+        "_meta.kiro key only the KAS engine defines; every other harness must be "
+        "sent a prompt without it"
+    ),
+    (
         "src/kiro_crew/acp/runtime_remote_workspace.py",
         "check_remote_workspace_supported",
     ): "A remote session environment is fenced by unmounting the built-in file and "

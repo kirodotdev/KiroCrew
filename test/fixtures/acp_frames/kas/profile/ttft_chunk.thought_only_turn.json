@@ -1,0 +1,111 @@
+{
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+    "sessionId": "sess_4f063ee6-e4b0-4937-99fa-32b71e613e33",
+    "update": {
+      "sessionUpdate": "agent_thought_chunk",
+      "content": {
+        "type": "text",
+        "text": "I"
+      },
+      "_meta": {
+        "kiro": {
+          "executionId": "c5162d13-fbec-49e3-8fe1-765038635c61",
+          "turnId": "c5162d13-fbec-49e3-8fe1-765038635c61",
+          "replayId": "c9fb4c84-ff83-453c-a6a8-c35433f0c384-say",
+          "ttft": {
+            "executionId": "c5162d13-fbec-49e3-8fe1-765038635c61",
+            "turnId": "c5162d13-fbec-49e3-8fe1-765038635c61",
+            "promptReceivedAt": 1792808428481,
+            "modelRequestSentAt": 1792808428538,
+            "firstTokenReceivedAt": 1792808429612,
+            "firstChunkEmittedAt": 1792808436733,
+            "agentOutput": {
+              "version": 1,
+              "startMs": 1131,
+              "endMs": 8252,
+              "coveredUntilMs": 8252,
+              "complete": true,
+              "reasons": [],
+              "intervals": [
+                {
+                  "id": "00ba81cd-e41d-49d4-86f9-b78f2d70b709",
+                  "startMs": 1131,
+                  "endMs": 1317,
+                  "ended": true,
+                  "kind": "model",
+                  "modelIndex": 1
+                },
+                {
+                  "id": "toolu_bdrk_01QVGpB7GJP9HQ9cxqTTjzPp",
+                  "startMs": 1313,
+                  "endMs": 1315,
+                  "ended": true,
+                  "kind": "tool",
+                  "toolName": "read_file"
+                },
+                {
+                  "id": "31211820-5fce-4cb9-961c-e8310fafac03",
+                  "startMs": 1366,
+                  "endMs": 3482,
+                  "ended": true,
+                  "kind": "model",
+                  "modelIndex": 2
+                },
+                {
+                  "id": "toolu_bdrk_01MfY6HFdYjJq2tQUpGmW1mD",
+                  "startMs": 3478,
+                  "endMs": 3480,
+                  "ended": true,
+                  "kind": "tool",
+                  "toolName": "read_file"
+                },
+                {
+                  "id": "d59d1378-7a9c-4056-b9f4-6c1c962e9a2a",
+                  "startMs": 3530,
+                  "endMs": 4871,
+                  "ended": true,
+                  "kind": "model",
+                  "modelIndex": 3
+                },
+                {
+                  "id": "toolu_bdrk_01PnqshLaWoExrWADDaBNzQP",
+                  "startMs": 4868,
+                  "endMs": 4869,
+                  "ended": true,
+                  "kind": "tool",
+                  "toolName": "read_file"
+                },
+                {
+                  "id": "3ac77e11-d348-4cf6-b8aa-345fb58dfde8",
+                  "startMs": 4920,
+                  "endMs": 6316,
+                  "ended": true,
+                  "kind": "model",
+                  "modelIndex": 4
+                },
+                {
+                  "id": "toolu_bdrk_016abVvJLZQDnowoNLEFZujE",
+                  "startMs": 6313,
+                  "endMs": 6314,
+                  "ended": true,
+                  "kind": "tool",
+                  "toolName": "read_file"
+                },
+                {
+                  "id": "19d8ae65-b787-44ee-9302-a367d06b82dd",
+                  "startMs": 6363,
+                  "endMs": 8252,
+                  "ended": false,
+                  "kind": "model",
+                  "modelIndex": 5
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

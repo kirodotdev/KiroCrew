@@ -252,6 +252,7 @@ opposite handling. The pair `(turn, attempt)` is therefore the identity a fold g
 | `message/queued` | `{source, bytes, queued_seq}` — arrived while a turn ran | yes |
 | `request/configured` | `{turn, model, provider, context_window, system?, system_bytes?}` — written on change only | yes |
 | `context/composed` | `{turn, step?, sources:[{kind, chars, tokens}], chars, tokens, tokens_estimated, phase?}` — `phase` is `session_start` or `per_turn` | yes |
+| `context/measured` | `{turn, turn_id?, breakdown?: {schema, categories, model_calls?, total_chars?, compacted?, history?}, ttft?: {total_ms, setup_ms?, model_ms?}}` -- the agent engine's own measurement of the turn, in characters | yes |
 | `step/started` | `{turn, step}` — one model call | yes |
 | `step/completed` | `{turn, step, ms}` | yes |
 

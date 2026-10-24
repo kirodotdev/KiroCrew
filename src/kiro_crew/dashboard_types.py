@@ -192,6 +192,7 @@ _NULLABLE: Final[dict[str, dict[str, Any]]] = {
 _OPAQUE: Final[dict[str, str]] = {
     "usage.by_model": "a model id",
     "usage.context.by_source": "a context source name",
+    "usage.context.measured_unknown": "a category name the agent engine reported",
     "tools.by_name": "a tool name",
     "approvals.by_decision": "a decision value",
     "subagents.by_id": "a subagent id",
