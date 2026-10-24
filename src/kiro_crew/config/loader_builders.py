@@ -82,6 +82,7 @@ from kiro_crew.config.sections import (
     coerce_role_models,
 )
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MAX, SUBAGENT_TIMEOUT_MIN
+from kiro_crew.edition_locks import sandbox_mode_floor, unsandboxed_exec_floor
 from kiro_crew.session_start_sizing import AUTO as _SESSION_START_AUTO
 from kiro_crew.session_start_sizing import is_auto as _session_start_is_auto
 
@@ -619,13 +620,16 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         # ``coerce_refusal_fallback_model`` above.
         deepseek_env=_sections.coerce_deepseek_env(section.get("deepseek_env")),
         sweep_agents_backups=section.read("sweep_agents_backups", _safe_bool),
-        sandbox=section.get("sandbox"),
+        sandbox=sandbox_mode_floor(section.get("sandbox"), section.default("sandbox")),
         sandbox_allow_no_isolation=bool(section.get("sandbox_allow_no_isolation")),
-        sandbox_allow_unsandboxed_exec=bool(
-            agent_data.get(
-                "sandbox_allow_unsandboxed_exec",
-                unsandboxed_exec_platform_default(),
-            )
+        sandbox_allow_unsandboxed_exec=unsandboxed_exec_floor(
+            bool(
+                agent_data.get(
+                    "sandbox_allow_unsandboxed_exec",
+                    unsandboxed_exec_platform_default(),
+                )
+            ),
+            unsandboxed_exec_platform_default(),
         ),
         apps_allow_third_party=section.read("apps_allow_third_party", _safe_bool),
         apps_trusted=(

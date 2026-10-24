@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any, Dict, List
 
+from kiro_crew.edition_locks import LOCKED_REASON, locked_off
 from kiro_crew.mcp_utils import registry_accepts_query
 
 if TYPE_CHECKING:
@@ -47,6 +48,20 @@ CAPABILITY_INSTALL_TIMEOUT = 600
 #: accumulate pending gateway tasks on every poll — the exact wedge class the
 #: seam bound exists to prevent — even though reads mutate nothing.
 CAPABILITY_READ_TIMEOUT = 30
+
+
+def _install_locked() -> "CapabilityResult":
+    """The refusal every install op returns in an enterprise build.
+
+    Installing is off there, so the extension signature and version rules that
+    only apply to an install are off with it (RFC enterprise edition, Red
+    "Signed extensions only" and "Extension versions"). Checked here, at the
+    seam every reader of ``current_context().capability_manager`` goes through,
+    so no call site can reach the companion's installer around it.
+    """
+    from kiro_crew.platform.interfaces import CapabilityResult
+
+    return CapabilityResult(ok=False, message=f"Installing extensions is {LOCKED_REASON}.")
 
 
 class BoundedCapabilityManager:
@@ -105,6 +120,8 @@ class BoundedCapabilityManager:
         return await asyncio.wait_for(call, timeout=CAPABILITY_READ_TIMEOUT)
 
     async def install_mcp(self, server_id: str) -> "CapabilityResult":
+        if locked_off():
+            return _install_locked()
         return await asyncio.wait_for(
             self._inner.install_mcp(server_id), timeout=CAPABILITY_INSTALL_TIMEOUT
         )
@@ -115,6 +132,8 @@ class BoundedCapabilityManager:
         )
 
     async def install_skill(self, package: str) -> "CapabilityResult":
+        if locked_off():
+            return _install_locked()
         return await asyncio.wait_for(
             self._inner.install_skill(package), timeout=CAPABILITY_INSTALL_TIMEOUT
         )
@@ -125,6 +144,8 @@ class BoundedCapabilityManager:
         )
 
     async def install_agent(self, package: str) -> "CapabilityResult":
+        if locked_off():
+            return _install_locked()
         return await asyncio.wait_for(
             self._inner.install_agent(package), timeout=CAPABILITY_INSTALL_TIMEOUT
         )
@@ -146,6 +167,8 @@ class BoundedCapabilityManager:
         # An INSTALL bound: reconciling drift can shell a package manager once
         # per drifted package, so it inherits the generous install budget rather
         # than the tight uninstall one.
+        if locked_off():
+            return _install_locked()
         return await asyncio.wait_for(
             self._inner.sync_plugins(), timeout=CAPABILITY_INSTALL_TIMEOUT
         )

@@ -29,6 +29,7 @@ from dataclasses import field as dataclass_field
 from typing import Protocol, runtime_checkable
 
 from kiro_crew import platform_compat, update_ownership
+from kiro_crew.edition_locks import locked_off
 from kiro_crew.gateway_shutdown_budget import (
     UPDATE_INSTALLER_KILL_REAP_SECS,
     UPDATE_INSTALLER_TERM_GRACE_SECS,
@@ -574,7 +575,13 @@ def resolve_provider() -> CommandProvider | None:
     or an ``apply_command`` (top-level or per-platform), a
     :class:`CommandProvider` is returned; otherwise ``None`` — the ungoverned
     default, where the gateway keeps its built-in update behaviour.
+
+    Always ``None`` in an enterprise build: managed update commands are off there
+    whatever the policy pins (RFC enterprise edition, Red "Managed update
+    commands").
     """
+    if locked_off():
+        return None
     try:
         from kiro_crew.platform.governance import active_update_pins
 

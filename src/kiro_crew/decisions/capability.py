@@ -221,6 +221,14 @@ def _answer_generation() -> int | None:
 
 def _row_denied(surface_key: str, scope: str) -> bool:
     """Evaluate and audit ONE capability row. Fail-closed; see :func:`is_decisions_denied`."""
+    from kiro_crew.edition_locks import LOCKED_REASON, locked_off
+
+    # Enterprise: no content is sent to a decision provider (RFC enterprise
+    # edition, Red "Content sent to external decisions"). The local side holds
+    # this deny too, as it holds any hosted deny.
+    if scope == DECISIONS_SCOPE and locked_off():
+        _audit_unevaluable(surface_key, scope, reason=LOCKED_REASON)
+        return True
     try:
         decision = vet_and_audit(
             scope,
@@ -241,8 +249,10 @@ def _row_denied(surface_key: str, scope: str) -> bool:
     return not getattr(decision, "permitted", False)
 
 
-def _audit_unevaluable(surface_key: str, scope: str = DECISIONS_SCOPE) -> None:
-    """Best-effort SEL record for the path ``vet_and_audit`` never reached. Never raises."""
+def _audit_unevaluable(
+    surface_key: str, scope: str = DECISIONS_SCOPE, *, reason: str = _UNEVALUABLE_REASON
+) -> None:
+    """Best-effort SEL record of a denial ``vet_and_audit`` did not write. Never raises."""
     try:
         # Local import is DELIBERATE (matches the other SEL sites): the test suite
         # patches ``kiro_crew.sel.sel``, which a load-time binding would bypass.
@@ -254,7 +264,7 @@ def _audit_unevaluable(surface_key: str, scope: str = DECISIONS_SCOPE) -> None:
             scope=scope,
             item="",
             outcome="denied",
-            reason=_UNEVALUABLE_REASON,
+            reason=reason,
         )
     except Exception:
         # SEL writes to a file, but an audit failure must never wedge the read.
