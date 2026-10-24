@@ -754,6 +754,96 @@ class TestCrossPlatform:
         assert "posix-only-approved" in _read("cross-platform.yml")
 
 
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None or shutil.which("git") is None,
+    reason="the scan step runs under bash on ubuntu-latest",
+)
+class TestCrossPlatformScope:
+    """Execute the real scan step over a throwaway repository: a line that trips a rule
+    is reported in a top-level module and a package module, and not in an excluded one."""
+
+    _LINE = 'PROBE_DIR = "/' + 'opt/probe"\n'
+
+    def _scan(self, tmp_path: Path, path: str) -> subprocess.CompletedProcess[str]:
+        wf = yaml.safe_load(_read("cross-platform.yml"))
+        steps = wf["jobs"]["cross-platform"]["steps"]
+        step = next(
+            s for s in steps if s.get("name") == "Scan added lines for non-portable patterns"
+        )
+        repo = tmp_path / "repo"
+        target = repo / path
+        target.parent.mkdir(parents=True)
+        target.write_text("VALUE = 1\n", encoding="utf-8", newline="\n")
+
+        def git(*args: str) -> str:
+            done = subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=True,
+                timeout=30,
+            )
+            return done.stdout.strip()
+
+        git("init", "-q")
+        git("add", "-A")
+        git("commit", "-q", "-m", "base")
+        base = git("rev-parse", "HEAD")
+        target.write_text("VALUE = 1\n" + self._LINE, encoding="utf-8", newline="\n")
+        git("commit", "-q", "-am", "head")
+        head = git("rev-parse", "HEAD")
+        summary = tmp_path / "summary.md"
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "LC_ALL": "C",
+            "BASE_SHA": base,
+            "HEAD_SHA": head,
+            "EXEMPT": "false",
+            "GITHUB_STEP_SUMMARY": str(summary),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "HOME": str(tmp_path),
+        }
+        return subprocess.run(
+            ["bash", "-c", step["run"]],
+            cwd=repo,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+        )
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "src/kiro_crew/top_level_probe.py",
+            "src/kiro_crew/pkg/probe.py",
+            "src/kiro_crew/kiro_prerequisite_probe.py",
+            "src/kiro_crew/_process_group_supervisor.py",
+        ],
+    )
+    def test_a_scanned_module_reports_the_added_line(self, tmp_path, path):
+        result = self._scan(tmp_path, path)
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Absolute POSIX path literal" in result.stdout, result.stdout
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "src/kiro_crew/platform_compat.py",
+            "src/kiro_crew/platform_compat_probe.py",
+            "src/kiro_crew/apps/builtins/demo/tests/test_probe.py",
+            "src/kiro_crew/_vendor/probe.py",
+        ],
+    )
+    def test_an_excluded_module_is_not_scanned(self, tmp_path, path):
+        result = self._scan(tmp_path, path)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "No added Python lines" in result.stdout, result.stdout
+
+
 class TestPrScope:
     """Scope breadth is advisory: it must never fail the build."""
 

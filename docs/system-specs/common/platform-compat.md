@@ -79,8 +79,8 @@ is defined in an owner module beside it. Import and patch every one as
 
 The Cross-Platform Portability gate excludes `platform_compat.py` and the
 `platform_compat_*.py` owners by name: they hold the POSIX primitives this layer exists
-to name, so the gate's rules do not apply to them. (Its `src/kiro_crew/**/*.py` pathspec
-also matches no module directly under `src/kiro_crew/`; see #21019.)
+to name, so the gate's rules do not apply to them. (Its pathspec covers the modules
+directly under `src/kiro_crew/` too, so these by-name excludes keep them out of it.)
 
 This is the contract. The Windows install and runtime story a user follows is
 [windows-install.md](../../guides/windows-install.md).
