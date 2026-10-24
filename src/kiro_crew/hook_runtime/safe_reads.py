@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         _opened_path_within_root,
         _screen_windows_links,
         is_sensitive_path,
+        is_tree_index_path,
         is_unc_shape,
         is_unverifiable_path_refusal,
         jsonl_util,
@@ -126,6 +127,8 @@ def screen_file_path(raw: str, *, classify_sensitive: bool = True) -> str | Path
     # `realpath` consumes the SAME string the walk inspected -- resolving a
     # different form would traverse a chain the walk never saw.
     path = os.path.realpath(target)
+    if is_tree_index_path(Path(path)):
+        return PathDecline.REFUSED
     if is_sensitive_path(path):
         if not classify_sensitive:
             return PathDecline.REFUSED
@@ -203,6 +206,8 @@ def safe_read_file(path: str) -> str:
     rather than crash.
     """
     resolved = os.path.realpath(os.path.expanduser(path))
+    if is_tree_index_path(Path(resolved)):
+        raise PermissionError(f"Blocked: access to scratch tree index: {resolved!r}")
     refusal = sensitive_path_refusal(resolved)
     if refusal:
         # {resolved!r}, not {resolved}: the resolved target is caller/attacker
@@ -218,6 +223,9 @@ def safe_read_file(path: str) -> str:
     def authorize(fd: int) -> None:
         if not _opened_file_matches_validated_path(fd, resolved):
             raise PermissionError(f"Blocked: opened file no longer matches safe path: {resolved!r}")
+        fd_real = _fd_real_path(fd)
+        if fd_real is not None and is_tree_index_path(Path(fd_real)):
+            raise PermissionError(f"Blocked: opened scratch tree index: {fd_real!r}")
 
     try:
         with jsonl_util.open_regular_nofollow(
@@ -477,7 +485,7 @@ def safe_read_file_bytes_nolink(
                 fd_real, within_root, root_is_canonical=within_root_is_canonical
             ):
                 return None  # opened inode escapes the approved tree
-            if is_sensitive_path(fd_real):
+            if is_sensitive_path(fd_real) or is_tree_index_path(Path(fd_real)):
                 return None
         with os.fdopen(fd, "rb") as fh:
             data = fh.read(read_limit + 1)

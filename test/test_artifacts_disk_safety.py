@@ -16,10 +16,12 @@ import errno
 import os
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
-from kiro_crew import artifacts
+from conftest import requires_symlinks
+from kiro_crew import agent_scratch, artifacts
 from kiro_crew.artifacts import ArtifactError, ArtifactStore
 
 
@@ -68,6 +70,25 @@ class TestATornWriteIsNotObservable:
                 f"sequence was {[w for w, _ in order]}"
             )
 
+    def test_a_failed_pinned_rename_removes_its_staging_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import artifacts_disk, pinned_fs
+
+        if not pinned_fs.supports_pinned_walk():
+            pytest.skip("requires dir_fd-anchored artifact writes")
+        destination = tmp_path / "content.html"
+        destination.write_text("previous")
+        rename = Mock(side_effect=OSError(errno.EIO, "rename failed"))
+        monkeypatch.setattr(artifacts_disk.os, "replace", rename)
+        with pytest.raises(OSError, match="rename failed"):
+            artifacts_disk._write_tmp_then_publish(
+                destination, lambda fh: fh.write("new"), "w", encoding="utf-8"
+            )
+        assert rename.call_args.kwargs["src_dir_fd"] == rename.call_args.kwargs["dst_dir_fd"]
+        assert not list(tmp_path.glob(".*.tmp"))
+        assert destination.read_text() == "previous"
+
 
 class TestDiskFullFailsClosed:
     """A full disk leaves the last good version in place and says so.
@@ -93,7 +114,7 @@ class TestDiskFullFailsClosed:
         def refusing_prepare(resolved: Path, *, owner_only: bool) -> Any:
             real_prepare(resolved, owner_only=owner_only)
 
-            def opener(path: str, flags: int) -> int:
+            def opener(path: str, flags: int, **_anchor: Any) -> int:
                 raise OSError(errno.ENOSPC, "No space left on device")
 
             return opener
@@ -268,3 +289,49 @@ class TestAWriteNeverLandsThroughALink:
         assert (
             target.read_text(encoding="utf-8") == "untouched"
         ), "the write followed a link and landed outside the store"
+
+
+class TestScratchIndexReadFence:
+    @requires_symlinks
+    def test_index_replacement_during_identity_check_cannot_expose_snapshot(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        import kiro_crew.artifacts_disk as artifacts_module
+
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        index = scratch / agent_scratch.TREE_INDEX_FILENAME
+        index.write_text('{"chat:1": "first-tree"}', encoding="utf-8")
+        replacement = scratch / "replacement"
+        content = '{"chat:2": "another-conversation"}'
+        replacement.write_text(content, encoding="utf-8")
+        monkeypatch.setattr(agent_scratch, "scratch_root", lambda: scratch)
+        art = store.create(name="replaced-index", content="innocent")
+        current = store._artifact_dir(art.slug) / "current.html"
+        current.unlink()
+        current.symlink_to(index)
+        real_stat = os.stat
+        real_fence = artifacts_module._is_tree_index_path
+        observed = []
+
+        def replace_after_first_stat(path, *args, **kwargs):
+            result = real_stat(path, *args, **kwargs)
+            if Path(path) == index:
+                observed.append(result)
+                if len(observed) == 1:
+                    replacement.replace(index)
+            return result
+
+        def replace_during_index_check(path: Path) -> bool:
+            if path != index:
+                return real_fence(path)
+            with monkeypatch.context() as race:
+                race.setattr(agent_scratch.os, "stat", replace_after_first_stat)
+                return real_fence(path)
+
+        monkeypatch.setattr(artifacts_module, "_is_tree_index_path", replace_during_index_check)
+        with pytest.raises(ArtifactError, match="scratch tree index"):
+            store.get(art.slug)
+        assert len(observed) == 2
+        assert not os.path.samestat(*observed)
+        assert index.read_text(encoding="utf-8") == content

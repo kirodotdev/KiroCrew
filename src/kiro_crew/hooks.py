@@ -38,6 +38,7 @@ from typing import Any, Literal, NamedTuple
 from kiro_crew import jsonl_util, pinned_fs, platform_compat, security, webhooks  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew._facade_compose import rebind as _facade_rebind
+from kiro_crew.agent_scratch import is_tree_index_path  # noqa: F401
 
 # The xattr ACL-carry policy is shared with atomic_write.atomic_write: both
 # install a fresh inode and must reproduce the source's access controls or

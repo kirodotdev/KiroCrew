@@ -263,6 +263,7 @@ class _Ev:
 
 class FakeProvider:
     supports_steer, cwd = True, os.getcwd()
+    work_scratch_dir = None
 
     def __init__(self, reply: str = "Answer") -> None:
         self._reply = reply

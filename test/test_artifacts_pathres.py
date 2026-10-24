@@ -228,7 +228,7 @@ class TestTheDecisionMovedGatesNotVerdicts:
             store._write_bytes(fenced, b"overwritten")
         # Refused means untouched: the payload was not written, not even as a temp.
         assert fenced.read_text(encoding="utf-8") == "secret"
-        assert not (fenced.parent / (fenced.name + ".tmp")).exists()
+        assert not [p for p in fenced.parent.iterdir() if p.name.endswith(".tmp")]
 
         # Conditional, not a blanket break: the sibling still reads and writes.
         assert store._read_text(benign) == "public"

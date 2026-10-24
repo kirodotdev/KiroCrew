@@ -12,6 +12,7 @@ import os
 import re
 import stat as _stat
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
         _opened_path_within_root,
         _should_carry_xattr,
         is_sensitive_path,
+        is_tree_index_path,
         logger,
         platform_compat,
         validate_file_path,
@@ -113,7 +115,7 @@ def _pinned_replace(
                 return None  # cannot verify containment -> fail closed
             if not _opened_path_within_root(fd_real, within_root):
                 return None  # opened inode escapes the approved tree
-            if is_sensitive_path(fd_real):
+            if is_sensitive_path(fd_real) or is_tree_index_path(Path(fd_real)):
                 return None
 
         # (st_dev, st_ino): the staged rename re-resolves `base` against a
