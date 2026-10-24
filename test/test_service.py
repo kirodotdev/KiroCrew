@@ -400,7 +400,7 @@ class TestLinuxUnitRendering:
             for c in called
             if len(c) >= 9
             and c[:2] == ["sudo", "install"]
-            and c[-1] == f"/etc/systemd/system/{SERVICE_NAME}.service"
+            and c[-1] == str(svc_linux.UNIT_PATH)
         ]
         assert install_calls, f"expected sudo install of unit path; got {called}"
         # The destination must be set with root ownership and 0644 mode so
