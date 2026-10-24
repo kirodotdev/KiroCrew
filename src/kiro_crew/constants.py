@@ -476,6 +476,9 @@ _MARKER_CLOSE_CLASS = "[" + re.escape(MARKER_CLOSERS) + "]"
 #: by construction rather than by which opener happens to carry the guard.
 MARKER_OPENERS = "[\u3010\uff3b\u3014"
 _MARKER_OPEN_CLASS = "[" + re.escape(MARKER_OPENERS) + "]"
+#: Its negation, derived from the same string: what a pattern that must apply a
+#: per-opener rule may consume WITHOUT applying it. Closers are not excluded.
+_MARKER_NON_OPEN_CLASS = "[^" + re.escape(MARKER_OPENERS) + "]"
 #: Every bracket the grammar knows -- all openers and all closers -- as the
 #: characters the body's NEGATED classes exclude. This is the disjointness
 #: invariant in one place: a character that can START a bracket form (an opener)
@@ -616,8 +619,8 @@ _MARKER_LABEL_CONTINUES = rf"(?=[ \t]*[|,]|{_MARKER_CLOSE_CLASS})"
 #: this disjoint from :data:`_MARKER_LABEL_CONTINUES` rather than an alternative
 #: spelling of it.
 #:
-#: Every opener carries the SAME ``(?!OPTIONS:)`` guard as the bare-opener
-#: alternative. It is load-bearing on the ``[`` alternative -- without it that
+#: Every opener carries the SAME head guard as the bare-opener alternative.
+#: It is load-bearing on the ``[`` alternative -- without it that
 #: form is the one place the union rule is LOOSER than the body it replaced,
 #: because it can open on a nested head and pair it with that head's own closer.
 #: ``Note [OPTIONS: see [OPTIONS: x] below | Skip]`` then matches from the OUTER
@@ -627,8 +630,13 @@ _MARKER_LABEL_CONTINUES = rf"(?=[ \t]*[|,]|{_MARKER_CLOSE_CLASS})"
 #: lookalike openers cannot spell the head, so the guard is a no-op on them; it
 #: rides them anyway so the alternatives are one shape and the property does not
 #: depend on which opener carries it.
+#: Spelled ONCE here for all three guards below, and confined to the heads this
+#: grammar defines: the singular ``[OPTION:`` is not one, so it stays label text.
+#: Case-SENSITIVE, as the shipped ``[OPTIONS:`` head has always been: nothing emits an
+#: action marker yet, so a second casing rule for one head would serve no emitter.
+_MARKER_BODY_TEMPER = r"(?!OPTION-ACTIONS:|OPTIONS:)"
 _MARKER_LABEL_PAIR = "|".join(
-    rf"{re.escape(_open)}(?!OPTIONS:)[^{_MARKER_BRACKETS}\n]*"
+    rf"{re.escape(_open)}{_MARKER_BODY_TEMPER}[^{_MARKER_BRACKETS}\n]*"
     rf"{re.escape(_close)}(?![ \t]*[|,]|{_MARKER_CLOSE_CLASS})"
     for _open, _close in zip(MARKER_OPENERS, MARKER_CLOSERS)
 )
@@ -663,17 +671,36 @@ _MARKER_WRAP_RUN = rf"{_MARKER_WRAP_CLASS}{{0,3}}"
 #: failed pair attempt scans at most to the next bracket. So there is never more
 #: than one way to consume a character, and each lookahead is entered only at a
 #: bracket and bounded by the run it scans.
+#: Both bracket alternatives refuse EVERY head, not just ``OPTIONS:``. A body that
+#: tempers against only its own head still consumes the other one: given
+#: ``"[OPTIONS: a | b]\n[OPTION-ACTIONS: close=X]"`` it crossed the second marker and
+#: captured its raw text as a BUTTON LABEL. :data:`_MARKER_BODY_TEMPER` is the temper's
+#: one spelling, and a test pins that it refuses every head this grammar defines.
 _MARKER_BODY_LINE = (
-    rf"(?:{_MARKER_LABEL_PAIR}|{_MARKER_OPEN_CLASS}(?!OPTIONS:)"
+    rf"(?:{_MARKER_LABEL_PAIR}|{_MARKER_OPEN_CLASS}{_MARKER_BODY_TEMPER}"
     rf"|{_MARKER_CLOSE_CLASS}{_MARKER_LABEL_CONTINUES}"
     rf"|[^{_MARKER_BRACKETS}\n])*"
 )
 _MARKER_BODY_TRAILER = (
-    rf"(?:{_MARKER_LABEL_PAIR}|{_MARKER_OPEN_CLASS}(?!OPTIONS:)"
+    rf"(?:{_MARKER_LABEL_PAIR}|{_MARKER_OPEN_CLASS}{_MARKER_BODY_TEMPER}"
     rf"|{_MARKER_CLOSE_CLASS}{_MARKER_LABEL_CONTINUES}"
     rf"|[^{_MARKER_BRACKETS}])*"
 )
-
+#: One nonempty ``close=`` entry whose label carries a non-whitespace character: a blank
+#: label strips to an empty pill. Paired brackets admitted; top-level ``|``/``,`` are not.
+#: The lookahead is spelled APART so the prefix probe can apply the same nonempty rule
+#: once a terminal closer has arrived, rather than re-deriving it and drifting.
+_MARKER_ACTION_LABEL_NONEMPTY = rf"(?=\s*[^\s|,{re.escape(MARKER_CLOSERS)}])"
+_MARKER_ACTION_KEY = rf"[ \t]*close={_MARKER_ACTION_LABEL_NONEMPTY}"
+#: The ONE spelling of what an action label may hold: the complete body is a run of
+#: these and so is the streaming probe, so neither can drift from the other.
+_MARKER_ACTION_BODY_ATOM = (
+    rf"{_MARKER_LABEL_PAIR}"
+    rf"|{_MARKER_OPEN_CLASS}{_MARKER_BODY_TEMPER}"
+    rf"|{_MARKER_CLOSE_CLASS}{_MARKER_LABEL_CONTINUES}"
+    rf"|[^{_MARKER_BRACKETS}|,]"
+)
+_MARKER_ACTION_BODY_TRAILER = rf"{_MARKER_ACTION_KEY}(?:{_MARKER_ACTION_BODY_ATOM})+"
 # The ``labels`` group is NAMED because the ``lwrap`` conditional group
 # necessarily precedes it, shifting positional numbering: consumers read
 # ``group("labels")`` (and iterate with ``finditer``, since ``findall`` on a
@@ -1270,13 +1297,51 @@ def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
     return text[: m.start()]
 
 
+# ── "[OPTION-ACTIONS: close=label]" — the zero-turn UI-action marker ─────────
+# A SIBLING of the OPTIONS marker, not an extension of it, and the distinct head
+# is the entire mechanism. Only the dashboard frontend acts on this one: it
+# renders a button that runs a LOCAL UI action (currently just ``close``) with no
+# LLM turn. Body is exactly ONE ``<action>=<label>`` entry, where the action is a
+# strict enum and the label — everything after the FIRST ``=`` — is free
+# text. Both consumer roles arrive with the consumer stack: the renderers will
+# STRIP the marker, and a presence check will answer whether it renders a chip.
+#
+# WHY a separate head instead of a reserved label or prefix inside ``[OPTIONS:]``:
+# option labels are model-emitted prose, so any in-band encoding means an agent
+# that merely WRITES ABOUT this feature would emit a live close button and tear
+# down the user's tab. The action therefore occupies its own field, and the label
+# is never load-bearing.
+#
+# Closers and anchors are shared with the OPTIONS pair (same ``MARKER_CLOSERS``
+# class with the CJK lookalikes, same stray markdown-link close), because a model
+# that writes ``】`` for ``]`` does so whichever head it just wrote.
+#
+# NON-COLLISION, in both directions, is the property the whole design rests on,
+# and it is structural rather than incidental: ``OPTIONS_RE_*`` requires the
+# literal ``OPTIONS:`` immediately after ``[``, and ``[OPTION-`` cannot supply it;
+# these patterns require the literal ``OPTION-ACTIONS:``, which a bare
+# ``[OPTIONS:`` cannot supply. Neither can ever parse the other's marker as its
+# own, so an action marker never yields content choices and a content marker
+# never yields an action.
+#: No LINE form: the suffix splitter is this grammar's only caller and it reads the
+#: trailer, so a LINE matcher lands with the change that first needs one.
+_RAW_OPTION_ACTIONS_RE_TRAILER = re.compile(
+    rf"\[OPTION-ACTIONS:(?P<labels>{_MARKER_ACTION_BODY_TRAILER})"
+    rf"{_MARKER_CLOSE_CLASS}{_MARKER_STRAY_TIC}\s*\Z",
+    re.DOTALL,
+)
+
+#: Wrapped like the ``OPTIONS`` pair, and the asymmetry was a hole: the body admits a
+#: bare closer, so a label's own bracket could otherwise terminate the marker.
+OPTION_ACTIONS_RE_TRAILER = _MarkerMatcher(_RAW_OPTION_ACTIONS_RE_TRAILER)
+
 #: Prefix closures of the marker grammars, for
 #: :func:`split_trailing_protocol_suffix`'s unfinished-marker probe: a tail is
 #: a STILL-STREAMING marker only when every byte it holds so far could extend
 #: into a complete marker. ``[OPTIONS`` must be followed by ``:`` and then a
-#: PREFIX CLOSURE of :data:`OPTIONS_RE_TRAILER`'s body (DOTALL; ``[`` admitted
-#: only when not opening a nested ``[OPTIONS:``) -- deliberately LOOSER than
-#: that body, and the one place the "spelled once" rule in
+#: PREFIX CLOSURE of :data:`OPTIONS_RE_TRAILER`'s body (DOTALL; EVERY opener
+#: admitted only when :data:`_MARKER_BODY_TEMPER` admits it) -- otherwise deliberately
+#: LOOSER than that body, and the one place the "spelled once" rule in
 #: :data:`_MARKER_BODY_LINE` does not apply. It has to be: a prefix of a legal
 #: body need not itself be a legal body. ``[OPTIONS: A ]`` mid-stream holds a
 #: closer that satisfies neither half of the closer rule YET, and becomes legal
@@ -1284,6 +1349,10 @@ def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
 #: that tail dead and publish the marker as raw text. Widening this to the
 #: grammar is what ``test_options_marker_closers.py``'s
 #: ``test_closer_inside_an_unfinished_label_is_still_unfinished`` forbids.
+#: The temper is the ONE part that must agree: a nested head sits at a position
+#: already in the buffer, so no continuation can rescue such a fragment.
+#: It rides EVERY opener because the body's does: a class excluding only ``[``
+#: held a lookalike-opened nested head that the body refused.
 #: ``[STEERING`` follows the steer-ack
 #: grammar (``messaging/driver.py``): whitespace gap, literal ``steer-``, a
 #: nonempty hex/dash id, then an optional ``:`` summary -- spelled as nested
@@ -1292,15 +1361,36 @@ def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
 #: acknowledgment``, ``steer-:``) is prose and stays visible. Case-sensitive
 #: on purpose: these probe the exact sentinels the detach walk locates.
 _OPTIONS_TAIL_PREFIX_RE = re.compile(
-    r"\[OPTIONS(?::(?:[^[]|\[(?!OPTIONS:))*)?\Z",
+    rf"\[OPTIONS(?::(?:{_MARKER_NON_OPEN_CLASS}"
+    rf"|{_MARKER_OPEN_CLASS}{_MARKER_BODY_TEMPER})*)?\Z",
     re.DOTALL,
 )
 _STEERING_TAIL_PREFIX_RE = re.compile(
     r"\[STEERING(?:\s+(?:s(?:t(?:e(?:e(?:r(?:-(?:[0-9a-f-]+(?:\s*(?::\s*.*)?)?)?)?)?)?)?)?)?)?\Z",
     re.DOTALL,
 )
+#: A run of the body's own atoms, plus two prefix-only relaxations: a final closer
+#: whose continues-lookahead needs a byte the buffer lacks, and a still-open pair.
+_MARKER_ACTION_KEY_PARTIAL = r"c(?:l(?:o(?:s(?:e)?)?)?)?"
+#: The open pair's interior is the COMPLETE pair's interior, so it admits the ``|`` and
+#: ``,`` a top-level atom refuses; without it ``close=Open [a | b`` streams as prose.
+_MARKER_ACTION_PREFIX_PAIR_OPEN = (
+    rf"{_MARKER_OPEN_CLASS}{_MARKER_BODY_TEMPER}[^{_MARKER_BRACKETS}\n]*"
+)
+_OPTION_ACTIONS_TAIL_PREFIX_RE = re.compile(
+    rf"\[OPTION-ACTIONS(?::[ \t]*(?:{_MARKER_ACTION_KEY_PARTIAL}"
+    rf"|close=(?:{_MARKER_ACTION_BODY_ATOM})*"
+    rf"(?:{_MARKER_ACTION_PREFIX_PAIR_OPEN})?"
+    rf"|close={_MARKER_ACTION_LABEL_NONEMPTY}(?:{_MARKER_ACTION_BODY_ATOM})*"
+    rf"{_MARKER_CLOSE_CLASS})?)?\Z",
+    re.DOTALL,
+)
+
 _MARKER_SENTINELS = (
     ("[STEERING", _STEERING_TAIL_PREFIX_RE),
+    # Its own entry, not a case of ``[OPTIONS``: the two literals diverge at ``S`` vs
+    # ``-``, so an action head is invisible to that sentinel.
+    ("[OPTION-ACTIONS", _OPTION_ACTIONS_TAIL_PREFIX_RE),
     ("[OPTIONS", _OPTIONS_TAIL_PREFIX_RE),
 )
 
@@ -1364,8 +1454,8 @@ def _leading_wrapper_start(text: str, idx: int) -> int:
 def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     """Detach protocol trailers before a renderer length-splits ``text``.
 
-    A still-streaming ``[STEERING`` or ``[OPTIONS`` fragment normally breaks
-    :data:`OPTIONS_RE_TRAILER`'s end-of-buffer anchor. If a complete OPTIONS
+    A still-streaming ``[STEERING``, ``[OPTIONS`` or ``[OPTION-ACTIONS``
+    fragment normally breaks the trailer regexes' end-of-buffer anchor. If a complete OPTIONS
     block immediately precedes that fragment, detaching only the unfinished
     marker leaves the complete block eligible for a mid-token chunk split.
     Return the visible prefix plus the entire protocol suffix so renderers can
@@ -1392,9 +1482,13 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     if idx != -1:
         suffix_start = _leading_wrapper_start(text, idx)
 
-    options = OPTIONS_RE_TRAILER.search(text[:suffix_start])
-    if options:
-        suffix_start = options.start()
+    # The two heads are mutually exclusive, so at most one matches the tail. Detaching
+    # a RUN of markers waits for the change that first EMITS one; nothing does yet.
+    for pattern in (OPTIONS_RE_TRAILER, OPTION_ACTIONS_RE_TRAILER):
+        trailer = pattern.search(text[:suffix_start])
+        if trailer:
+            suffix_start = trailer.start()
+            break
 
     # Control-tag lines are protocol too, and they can sit on EITHER side of
     # the OPTIONS trailer (both prompt rules say "final line"; a message that
