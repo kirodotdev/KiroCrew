@@ -172,6 +172,7 @@ def _refuse_managed_source(path: Path) -> None:
                 if top in {
                     "members",
                     "member-rules",
+                    "member-records",
                     "backups",
                     "trust",
                 } or top.startswith(("memory", "lessons")):

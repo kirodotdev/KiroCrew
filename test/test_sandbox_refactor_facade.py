@@ -207,7 +207,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _live_target_multilink_detail _live_target_symlink_detail _refuse_unless_sole_regular_link
         live_target_pointer_unfitness _md_notebook_degraded_mask_dirs
         _sweep_legacy_md_notebook_temps _MD_NOTEBOOK_STATE_COMPONENTS _open_dir_anchored
-        _migrate_md_notebook_legacy_state
+        _migrate_md_notebook_legacy_state _member_records_move
         _AUTH_STORE_PUBLISHED_KEY_LEAF _AUTH_STORE_LEGACY_TEMP_PREFIX
         _reconcile_auth_store_staging_links _sweep_legacy_auth_store_temps
         _sweep_one_md_notebook_state_dir _materialize_md_notebook_mask_targets

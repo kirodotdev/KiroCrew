@@ -1811,7 +1811,7 @@ drawn as a card from an empty value.
 Pressing a `request_capabilities` card writes the crewmate's own file in place
 (crew-mode.md, "Conductor and worker"). The worker does not mount it
 (`MATE_WORKER_EXCLUDED_TOOLS`).
-The crewmate's goal (`member_goals.py`, `trust/member-goals/<slug>.json`, never
+The crewmate's goal (`member_goals.py`, `member-records/member-goals/<slug>.json`, never
 `member-rules/`) splits the same way. `set_goal` and `set_key_results` are card
 asks (`crewmate.goal`, `crewmate.key_results`, applied and undone through
 `PUT /api/members/{slug}/goals/long-term|key-results` with an `expected`

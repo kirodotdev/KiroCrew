@@ -387,6 +387,9 @@ class TestSecretsAreMaskedInEveryMode:
         # Same model as ledger, two parties: the worker agent carries the full file
         # toolset, so an unmasked work-ledger lets it reach any conductor's records.
         "work-ledger",
+        # Each crewmate's rules, goals and DM binding: written by the gateway on a
+        # person's action and read by nothing in a sandbox.
+        "member-records",
         "backup",
         "browser-cookies.txt",
         "playwright-storage-state.json",

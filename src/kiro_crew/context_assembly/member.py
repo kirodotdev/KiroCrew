@@ -373,12 +373,12 @@ def build_member_section(
        (:data:`_MEMBER_HOW_YOU_WORK`), identical for every member except
        item 6, which follows whether layer 4 is injected and whether the
        member's spec can write its briefing.
-    3. ``[PERMANENT RULES]`` — user-owned. Read from the keystone-gated
-       ``member-rules/`` subtree, so the member's own file tools cannot rewrite
-       it; omitted entirely when the user has not written rules.
+    3. ``[PERMANENT RULES]`` — user-owned. Read from the gateway-only
+       ``member-records/member-rules/`` directory, so nothing the member runs can
+       rewrite it; omitted entirely when the user has not written rules.
     3b. ``[YOUR GOALS]`` — the goals (user-owned, numbered) and the key results'
        text, target and linked goal numbers (no readings, so a reading never
-       changes the section), from ``trust/member-goals/``
+       changes the section), from ``member-records/member-goals/``
        (:mod:`kiro_crew.member_goals`), bounded; omitted when there is none.
     4. ``[CURRENT ASSIGNMENT]`` — member-owned working memory, read
        (capped) from the member's own agent-writable briefing file. A member

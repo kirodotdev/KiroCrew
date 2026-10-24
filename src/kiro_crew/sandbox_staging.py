@@ -1095,3 +1095,18 @@ def _migrate_md_notebook_legacy_state() -> list[str]:
             exc,
         )
         return []
+
+
+def _member_records_move() -> bool:
+    """Run the crewmate records' one-time move out of ``trust/`` before this sandbox launches.
+
+    Spawn prep runs it so the move and its marker land before an agent of this build gets a
+    shell on a fresh upgrade; after that it is one ``stat``. The move lives in
+    :mod:`kiro_crew.member_records`, which every gateway-side reader also calls, so a spawn
+    is never its only chance. Never raises: a failed move keeps the old copies and is
+    retried by the next caller.
+    """
+    # Local, not top-level, for the reason the Notes move above gives.
+    from kiro_crew import member_records
+
+    return member_records.ensure_migrated()
