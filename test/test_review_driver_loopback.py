@@ -63,8 +63,8 @@ def _make_handler(sink):
             self.end_headers()
             self.wfile.write(body)
 
-        do_GET = _record_and_reply    # noqa: N815 - stdlib naming
-        do_POST = _record_and_reply   # noqa: N815 - stdlib naming
+        do_GET = _record_and_reply  # noqa: N815 - stdlib naming
+        do_POST = _record_and_reply  # noqa: N815 - stdlib naming
 
         def log_message(self, fmt, *args):
             pass  # keep pytest output clean
@@ -110,6 +110,16 @@ class TestReviewDriverLoopbackCallsIgnoreTheProxy:
     def test_api_request_does_not_proxy_the_secret(self, monkeypatch, listeners):
         monkeypatch.setattr(review_driver, "_gateway_base", lambda: listeners["gateway_base"])
         monkeypatch.setattr(review_driver, "_local_secret", lambda *_a: CANARY)
+        # The peer proof wraps the send; here the stand-in gateway is not a
+        # resolvable recorded peer, so stub the proof to delegate to the same
+        # no-proxy loopback opener. The proxy-bypass assertion below is unchanged:
+        # the real send still happens and must reach the gateway, not the proxy.
+        monkeypatch.setattr(
+            review_driver,
+            "_owner_verified_secret_urlopen",
+            lambda req, port, timeout, *, operation: review_driver.loopback_urlopen(req, timeout),
+            raising=False,
+        )
 
         # A real parse of the gateway's body proves the request landed there and
         # was not merely swallowed by _api_request's blanket except.
@@ -118,8 +128,14 @@ class TestReviewDriverLoopbackCallsIgnoreTheProxy:
         }
         _assert_reached_gateway_only(listeners)
 
-    def test_probe_does_not_proxy_the_secret(self, listeners):
+    def test_probe_does_not_proxy_the_secret(self, monkeypatch, listeners):
         """The multiplied site: one miss per candidate port, each a full send."""
+        monkeypatch.setattr(
+            review_driver,
+            "_owner_verified_secret_urlopen",
+            lambda req, port, timeout, *, operation: review_driver.loopback_urlopen(req, timeout),
+            raising=False,
+        )
         assert review_driver._probe(listeners["gateway_base"], CANARY) is True
         _assert_reached_gateway_only(listeners)
 
@@ -145,9 +161,9 @@ class TestReviewDriverLoopbackCallsIgnoreTheProxy:
             # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
             exec(compile(head, review_driver.__file__, "exec"), ns)  # noqa: S102
         fallback = ns["loopback_urlopen"]
-        assert fallback.__module__ == "review_driver_guard_probe", (
-            "the real helper was imported, so the fallback branch was never exercised"
-        )
+        assert (
+            fallback.__module__ == "review_driver_guard_probe"
+        ), "the real helper was imported, so the fallback branch was never exercised"
 
         req = urllib.request.Request(
             listeners["gateway_base"] + "/api/spawn", headers={SECRET_HEADER: CANARY}

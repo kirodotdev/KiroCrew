@@ -98,6 +98,35 @@ except ImportError:  # pragma: no cover - standalone fallback
         ).open(req, timeout=timeout)
 
 
+# The X-Internal-Secret above must reach ONLY this install's own gateway. A plain
+# loopback send writes it to whatever process currently holds the port, so every
+# credential-bearing call proves the connected peer IS this install's recorded
+# gateway before the first byte, reusing the gateway's own connection-bound proof
+# (``kiro_crew.cli_server_peer._owner_verified_secret_urlopen``). An unproven peer
+# raises ``_GatewayPeerRefused`` and nothing is sent. The standalone path (run with
+# no ``kiro_crew`` importable) keeps the proxy/redirect-disabled opener above: it
+# runs outside an install and has no recorded gateway to prove against.
+try:
+    from kiro_crew.cli_server_peer import (  # type: ignore
+        _GatewayPeerRefused,
+        _owner_verified_secret_urlopen,
+    )
+except ImportError:  # pragma: no cover - standalone fallback
+
+    class _GatewayPeerRefused(Exception):  # type: ignore
+        """Never raised standalone; the plain opener is used instead."""
+
+    def _verified_urlopen(req: urllib.request.Request, port: int, timeout: float, *, operation: str):  # type: ignore
+        return loopback_urlopen(req, timeout)
+
+else:
+
+    def _verified_urlopen(
+        req: urllib.request.Request, port: int, timeout: float, *, operation: str
+    ):
+        return _owner_verified_secret_urlopen(req, port, timeout, operation=operation)
+
+
 _APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _APP_ROOT not in sys.path:  # allow `python3 sage_lib/review_driver.py` (run as script)
     sys.path.insert(0, _APP_ROOT)
@@ -165,9 +194,11 @@ def _api_request(method: str, path: str, body: dict | None = None, timeout: int 
         headers["Content-Type"] = "application/json"
     try:
         req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
-        with loopback_urlopen(req, timeout=timeout) as resp:
+        with _verified_urlopen(req, base_port, timeout, operation="sage_api") as resp:
             raw = resp.read()
             return json.loads(raw) if raw else {}
+    except _GatewayPeerRefused:
+        return {"error": "gateway peer not verified; request not sent"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -703,13 +734,19 @@ def _probe(base: str, secret: str) -> bool:
     port, so a cold resolve that misses sends the secret up to len(candidates)
     times -- this is the highest-multiplicity secret-bearing send in the app."""
     try:
+        port = int(base.rsplit(":", 1)[1])
+    except (IndexError, ValueError):
+        return False
+    try:
         req = urllib.request.Request(
             base + "/api/spawn", headers={"X-Internal-Secret": secret} if secret else {}
         )
-        with loopback_urlopen(req, timeout=3) as resp:
+        with _verified_urlopen(req, port, 3, operation="sage_probe") as resp:
             return resp.status < 500
     except urllib.error.HTTPError:
         return True  # a gateway responded (e.g. 401/404) — it's the right port
+    except _GatewayPeerRefused:
+        return False  # the listener on this port is not this install's gateway
     except Exception:
         return False
 
