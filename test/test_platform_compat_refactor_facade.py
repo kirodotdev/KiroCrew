@@ -207,6 +207,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         """.split()),
     "kiro_crew.platform_compat_trust": tuple("""
         _folded_env_allowlist env_key_allowed _TRUSTED_SYSTEM_BIN_DIRS _WINDOWS_BIN_SUFFIXES
+        _TRUSTED_SYSTEM_LIB_DIRS _LD_SO_CONF _LD_CONF_MAX_DEPTH _ld_conf_dirs system_library_dirs
         _windows_system_dirs _FOLDERID_DOCUMENTS _POWERSHELL_USER_PROFILES windows_documents_dir
         windows_powershell_profile_paths _UNPINNED_TOOL_PROBED _log_tool_outside_trusted_dirs
         _WINDOWS_GIT_DIRS trusted_git_bin trusted_system_bin _trusted_bin_search

@@ -707,3 +707,137 @@ class TestShutdown:
 
         job = asyncio.run(_go())
         assert job["status"] == "interrupted"
+
+
+def _advisory_step(**overrides: Any) -> dict[str, Any]:
+    step: dict[str, Any] = {
+        "name": "verify-browser-libraries-chromium",
+        "ok": True,
+        "advisory": True,
+        "returncode": 0,
+        "advisory_prose": (
+            "Chromium downloaded, but 1 shared library it needs may be missing from "
+            "this host, and it will not launch without it: libgbm.so.1. "
+            "Install it with the command below."
+        ),
+        "advisory_command": "sudo dnf install -y mesa-libgbm",
+    }
+    step.update(overrides)
+    return step
+
+
+class TestTheLibraryAdvisoryReachesTheOperator:
+    """A computed advisory that nothing surfaces has no value.
+
+    The verify step ships ``ok: True``, and ``outcome_of`` reads a step only when
+    the install FAILED (and only the decisive last one). So without a dedicated
+    path the probe's whole point -- naming the libraries to install before the
+    operator meets a cryptic launch failure -- is computed and dropped.
+    """
+
+    def test_an_advisory_step_becomes_a_notice(self):
+        result = {
+            "ok": True,
+            "steps": [
+                {"name": "install-browser", "ok": True, "returncode": 0},
+                _advisory_step(),
+                {"name": "install-skills", "ok": True, "returncode": 0},
+            ],
+        }
+
+        notice, command = job_mod.notice_of(result)
+
+        assert notice is not None
+        assert "libgbm.so.1" in notice
+        # The step's internal name is NOT prefixed: this is a sentence about the
+        # operator's machine, not a log line naming a failing command.
+        assert not notice.startswith("verify-browser-libraries")
+        # The command comes back separately, for the `<pre>` + copy button.
+        assert command == "sudo dnf install -y mesa-libgbm"
+        assert "sudo dnf" not in notice
+
+    def test_an_advisory_without_a_command_has_no_command(self):
+        notice, command = job_mod.notice_of(
+            {"ok": True, "steps": [_advisory_step(advisory_command="")]}
+        )
+        assert notice is not None
+        assert command is None
+
+    def test_an_advisory_without_prose_is_skipped(self):
+        assert job_mod.notice_of({"ok": True, "steps": [_advisory_step(advisory_prose="  ")]}) == (
+            None,
+            None,
+        )
+
+    def test_an_install_with_no_advisory_produces_no_notice(self):
+        result = {"ok": True, "steps": [{"name": "install-browser", "ok": True}]}
+        assert job_mod.notice_of(result) == (None, None)
+
+    def test_a_failed_install_produces_no_notice(self):
+        """The error path owns that case; two banners for one event is noise."""
+        result = {
+            "ok": False,
+            "steps": [_advisory_step(ok=False, advisory_prose="boom")],
+        }
+        assert job_mod.notice_of(result) == (None, None)
+
+    def test_the_notice_is_redacted(self):
+        """Rendered verbatim in Settings, so it goes through the same redaction."""
+        result = {
+            "ok": True,
+            "steps": [
+                _advisory_step(
+                    advisory_prose=(
+                        "fetched via https://user:s3cret@proxy.example.com/ -- "
+                        "install libgbm.so.1"
+                    ),
+                    advisory_command="sudo dnf install -y https://u:t0ken@proxy.example.com/x",
+                )
+            ],
+        }
+
+        notice, command = job_mod.notice_of(result)
+
+        assert notice is not None and command is not None
+        assert "s3cret" not in notice
+        assert "t0ken" not in command
+        # The actionable part survives redaction.
+        assert "libgbm.so.1" in notice
+
+    @pytest.mark.parametrize(
+        ("result", "expected_notice"),
+        [
+            ({"ok": True, "steps": [_advisory_step()]}, True),
+            ({"ok": True, "steps": [{"name": "install-browser", "ok": True}]}, False),
+        ],
+        ids=["advisory", "clean"],
+    )
+    def test_the_status_route_reports_the_notice_apart_from_the_error(
+        self, monkeypatch, clock, result, expected_notice
+    ):
+        gate = _Gate(result=result)
+        # Released up front: this test reads the finished job, not a running one,
+        # so the installer never needs to park.
+        gate.release.set()
+        _wire(monkeypatch, gate)
+
+        async def _go() -> dict[str, Any]:
+            state = _state()
+            await msg.api_browser_engine_install(
+                _request(state, "/api/browser/engine", {"engine": "chromium"})
+            )
+            await state._browser_install_task
+            return _payload(
+                await msg.api_browser_install_get(_request(state, "/api/browser/install"))
+            )
+
+        got = asyncio.run(_go())
+
+        assert got["install_job"]["status"] == "succeeded"
+        assert got["last_error"] is None
+        if expected_notice:
+            assert "libgbm.so.1" in got["last_notice"]
+            assert got["last_notice_command"] == "sudo dnf install -y mesa-libgbm"
+        else:
+            assert got["last_notice"] is None
+            assert got["last_notice_command"] is None

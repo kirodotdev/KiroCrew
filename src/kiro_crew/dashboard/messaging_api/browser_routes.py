@@ -353,6 +353,12 @@ def _browser_install_status(state: DashboardState) -> dict[str, Any]:
         "installing": _browser_install_active(state),
         "install_job": job.snapshot() if job is not None else None,
         "last_error": job.error_detail if failed and job is not None else None,
+        # Separate from `last_error` on purpose: the install SUCCEEDED, so rendering
+        # this as a failure would tell the operator to retry a download that worked.
+        # The command lives in its own field so the panel can render it in a `<pre>`
+        # with a copy button; it must be transcribed exactly.
+        "last_notice": job.notice if job is not None else None,
+        "last_notice_command": job.notice_command if job is not None else None,
     }
 
 
@@ -428,6 +434,8 @@ def _start_browser_install_job(
         if scope.terminated and status != browser_install_job.STATUS_INTERRUPTED:
             status = browser_install_job.STATUS_INTERRUPTED
             code = browser_install_job.ERROR_INTERRUPTED
+        if status == browser_install_job.STATUS_SUCCEEDED:
+            job.notice, job.notice_command = browser_install_job.notice_of(result)
         job.finish(job.id, status, code, detail)
 
     state._browser_install_task = asyncio.create_task(_run())
