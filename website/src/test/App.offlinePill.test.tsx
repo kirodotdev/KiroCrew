@@ -105,13 +105,16 @@ describe('App offline capsule — auth-required accessible name + live region', 
     expect(statusText(dot)).toMatch(/reconnecting/i)
     expect(dot.getAttribute('title')).toMatch(/reconnecting/i)
     expect(dot.getAttribute('aria-label')).not.toMatch(/session expired/i)
-    // The dot also collapses/expands the readouts, so its accessible name
-    // names that action (matching title); the role="status" live region does
-    // NOT -- a status region announces the connection cause, not the toggle
+    // The dot also collapses/expands the readouts. While they are expanded its
+    // name is the connection cause alone (aria-expanded carries the toggle; the
+    // "click to expand" hint is added only once they are hidden), and the name
+    // matches the title. The role="status" live region never names the toggle
+    // either -- a status region announces the connection cause, not an
     // affordance (which would speak "collapse" on every reconnect).
-    expect(dot.getAttribute('aria-label')).toMatch(/collapse readouts/i)
+    expect(dot.getAttribute('aria-expanded')).toBe('true')
+    expect(dot.getAttribute('aria-label')).not.toMatch(/readouts/i)
     expect(dot.getAttribute('aria-label')).toBe(dot.getAttribute('title'))
-    expect(statusText(dot)).not.toMatch(/collapse readouts/i)
+    expect(statusText(dot)).not.toMatch(/readouts/i)
   })
 
   it('announces the session-expired cause (name + live region) when the auth banner is shown on mount', () => {

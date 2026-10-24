@@ -356,7 +356,11 @@ describe('AppsPage — query failures and empty states', () => {
     listRegistry.mockResolvedValue({ apps: [] })
     renderPage()
     expect(await screen.findByText('No apps available')).toBeInTheDocument()
-    expect(screen.getByText('Add an app source (Sources, top right) or install from a local path.')).toBeInTheDocument()
+    // The remedy is a button, not a sentence pointing at one: it opens the same
+    // Sources popover the rail's Add source does (the rail itself is not
+    // rendered on an empty catalog, so this is the only such button).
+    fireEvent.click(screen.getByRole('button', { name: 'Add source' }))
+    expect(await screen.findByText('Install from Path')).toBeInTheDocument()
   })
 
   it('shows the no-match state when the search excludes every row', async () => {

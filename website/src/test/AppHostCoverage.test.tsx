@@ -130,8 +130,10 @@ describe('AppHost — guard surfaces', () => {
   it('offers a way back to Apps when there is no app record at all', () => {
     renderHost(undefined as unknown as AppRecord)
 
-    expect(screen.getByTestId('page-title').textContent).toBe('App Not Found')
-    expect(screen.getByTestId('page-subtitle').textContent).toBe('"unknown" is not installed')
+    // The header says the one thing that matters, naming the app; no generic
+    // "App Not Found" title above it and no second line repeating it.
+    expect(screen.getByTestId('page-title').textContent).toBe("unknown isn't installed")
+    expect(screen.queryByTestId('page-subtitle')).toBeNull()
     expect(screen.getByText('Install it from Apps or via CLI')).toBeTruthy()
     expect(screen.queryByTestId('sdk-provider')).toBeNull()
 
@@ -143,7 +145,8 @@ describe('AppHost — guard surfaces', () => {
     renderHost(appRecord({ enabled: false }))
 
     expect(screen.getByTestId('page-title').textContent).toBe('Ledger Lens')
-    expect(screen.getByTestId('page-subtitle').textContent).toBe('This app is disabled')
+    // The body line below already says it is disabled; the header carries no subtitle.
+    expect(screen.queryByTestId('page-subtitle')).toBeNull()
     expect(screen.getByText('Enable this app from Apps to use it.')).toBeTruthy()
     expect(screen.queryByTestId('sdk-provider')).toBeNull()
 

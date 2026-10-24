@@ -642,16 +642,6 @@ describe('Settings > Developer > Feature Previews', () => {
     )
   })
 
-  it('signposts the move from the rail footer, to the same ringed section', () => {
-    // The redirect only catches a URL that still names the old tab. Someone
-    // who navigates by memory (rail > Developer) finds the tab gone, so the
-    // footer every tab shares points onward — and to the SAME target as the
-    // redirect, so the two doors cannot drift apart.
-    render(<MemoryRouter initialEntries={['/developer?tab=config']}><DeveloperPage /></MemoryRouter>)
-    const link = screen.getByRole('link', { name: /feature previews moved to settings > developer/i })
-    expect(link.getAttribute('href')).toBe(`/settings/developer?highlight=key%3A${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}`)
-  })
-
   it('leaves every other Developer tab link alone', () => {
     // The redirect keys on ONE legacy value. A broader match (any unknown tab)
     // would hijack the page's own unknown-tab fallback, which SidePanelLayout

@@ -70,6 +70,9 @@ export interface AppHostProps {
    *  `SessionControlHost` passes it. The routed `/apps/<name>` page uses the
    *  core API client's `dashboard:ui` page identity rather than a chat key. */
   sessionKey?: string
+  /** The name the route asked for, shown when `app` is absent. The not-found
+   *  title is "<name> isn't installed", so it needs the requested name. */
+  requestedName?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +172,7 @@ function AppNotFound({ name }: { name: string }) {
   const navigate = useNavigate()
   return (
     <>
-      <PageHeader title={i18nT('components.appHost.app_not_found')} subtitle={i18nT('components.appHost.not_installed', { name })} />
+      <PageHeader title={i18nT('components.appHost.not_installed', { name })} />
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center">
           <div className="text-[48px] mb-4 opacity-20"><Package size={48} /></div>
@@ -185,10 +188,7 @@ function AppDisabled({ app }: { app: AppHostProps['app'] }) {
   const navigate = useNavigate()
   return (
     <>
-      <PageHeader
-        title={appDisplayName(app)}
-        subtitle={i18nT('components.appHost.this_app_is_disabled')}
-      />
+      <PageHeader title={appDisplayName(app)} />
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center max-w-md">
           <PowerOff size={48} className="text-muted mx-auto mb-4 opacity-30" />
@@ -332,9 +332,9 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
   )
 }
 
-export default function AppHost({ app, entry, active, sessionKey }: AppHostProps) {
+export default function AppHost({ app, entry, active, sessionKey, requestedName }: AppHostProps) {
   // Guard: not installed
-  if (!app) return <AppNotFound name="unknown" />
+  if (!app) return <AppNotFound name={requestedName || 'unknown'} />
   // Guard: disabled
   if (app.enabled === false) return <AppDisabled app={app} />
   // Guard: no UI bundle. An explicit `entry` (a panel-tab body) is its own

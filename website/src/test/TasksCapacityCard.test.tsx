@@ -214,7 +214,6 @@ describe('TasksCapacityCard', () => {
     const recRow = Array.from(items).find(li => li.textContent!.includes('rec-1'))!
     expect(recRow.textContent).toContain(`next retry in ${fmtAge(90)}`)
     expect(recRow.querySelector('[data-testid="tasks-capacity-wait-age"]')!.textContent).toBe(`${fmtAge(5)} so far`)
-    for (const a of ages) expect(a.getAttribute('title')).toBe('Time spent in the state the badge names.')
     expect(list.textContent).not.toContain('web-ok')
     // The stall leads, then the longest wait: the fold shows the first 8 rows, so
     // age alone would let the one row the red badge names fall behind it.

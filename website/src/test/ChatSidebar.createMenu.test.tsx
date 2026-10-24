@@ -15,7 +15,7 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
-import { MemoryRouter, useLocation } from 'react-router-dom'
+import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import { SETTINGS_CREW_MEMBERS_PREVIEW_ID } from '../hooks/useSettingHighlight'
@@ -90,16 +90,9 @@ import {
 } from '../utils/errorReport'
 // Not mocked: the gate reads real localStorage, so the fixture that turns crew
 // on is the same write the Settings > Developer > Feature Previews toggle performs.
-import { PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT } from '../utils/previewFlags'
+import { PREVIEW_REMOTE_CREW_CHAT } from '../utils/previewFlags'
 import enManual from '../i18n/locales/en.manual.json'
 import { openCrewWindow, closeCrewWindow } from '../pages/chat/crew-window/crewWindowStore'
-
-/** Where the router is: the "Crew Members" entry navigates rather than creates,
- *  so its tests read the destination back instead of a create call. */
-function LocationProbe() {
-  const loc = useLocation()
-  return <div data-testid="location">{loc.pathname}{loc.search}</div>
-}
 
 function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: string; onOpenPeerSession?: (id: string, key: string) => void; connected?: boolean; folders?: ChatFolder[] } = {}) {
   const store = createTestStore({
@@ -132,7 +125,6 @@ function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: st
               history={[]} historyHasMore={false} defaultAgent={opts.defaultAgent ?? ''} installedAgents={[]}
               onOpenPeerSession={opts.onOpenPeerSession}
               />
-            <LocationProbe />
           </MemoryRouter>
         </ThemeProvider>
       </Provider>
@@ -195,18 +187,9 @@ describe('create-button caret menu', () => {
     expect(await findCreateMenuItem(/import a session from a file/i)).toBeTruthy()
   })
 
-  it('explains the Crew Members entry at the point of choice', async () => {
-    // The Members page is on, so the crew gloss describes the page itself.
-    localStorage.setItem(PREVIEW_CREW, '1')
-    renderSidebar()
-    openCreateMenu()
-    await findCreateMenuItem('New chat')
-    expect(screen.getByText(/Opens the Mates page/)).toBeTruthy()
-  })
-
   it('leaves the plain entries single-line', async () => {
-    // "New chat" / "New folder" need no gloss; only the Crew Members entry,
-    // which does not create a chat, carries one.
+    // "New chat" / "New folder" need no gloss; only the private modes, which
+    // say what they do with memory, carry one.
     renderSidebar()
     openCreateMenu()
     await findCreateMenuItem('New chat')
@@ -219,6 +202,26 @@ describe('create-button caret menu', () => {
     }
   })
 
+  it('orders the rows: the two everyday creates, a rule, then the other kinds of session', async () => {
+    // New chat and New folder first (the two things people make all day), one
+    // separator, then the private modes and import. No folders are seeded and no
+    // peer is warm, so these six are the whole menu.
+    renderSidebar()
+    openCreateMenu()
+    await findCreateMenuItem('New chat')
+    const menu = screen.getByRole('menu')
+    const rows = Array.from(menu.querySelectorAll('[role="menuitem"], [role="separator"]'))
+      .map(el => el.getAttribute('role') === 'separator' ? '---' : el.getAttribute('data-testid') ?? el.textContent?.trim())
+    expect(rows).toEqual([
+      'new-plain-chat',
+      'new-folder',
+      '---',
+      'new-incognito-chat',
+      'new-temporary-chat',
+      expect.stringMatching(/import a session from a file/i),
+    ])
+  })
+
   it('"New chat" creates a plain session', async () => {
     renderSidebar()
     openCreateMenu()
@@ -228,56 +231,32 @@ describe('create-button caret menu', () => {
     expect(mocks.createChatSlot.mock.calls.at(-1)?.[3]).toBe('')
   })
 
-  // "Crew Members" — Crew Mode retired, and the entry that used to create a
-  // `mode: 'crew'` session is now the door to the Members page. It is NOT
-  // preview-gated: the flag only decides where the click lands.
-  it('lists Crew Members whatever the preview flag says, and never creates a session', async () => {
-    // Asserted on a plain `localStorage.clear()` (the beforeEach), which is the
-    // state a fresh install is in — the state the old entry was hidden in.
+  // The Mates door is gone from this menu: every row here creates something and
+  // is named "New …"; a row that navigated instead read as an unnamed create
+  // action on every open. Mates is reached from the rail. The retired Crew Mode
+  // ingress stays gone too, whatever the preview flag says.
+  it('offers no Mates door and no Crew Mode ingress among the create entries', async () => {
+    // Asserted on a plain `localStorage.clear()` (the beforeEach): a fresh install.
     renderSidebar()
     openCreateMenu()
     // Anchor on a sibling entry first: an empty query below would also pass if
     // the menu simply failed to open.
     await findCreateMenuItem('New chat')
-    const item = screen.getByTestId('open-crew-members')
-    expect(item.textContent).toContain('Mates')
-    // The retired ingress and its experimental tag are gone, not merely hidden.
+    expect(screen.queryByTestId('open-crew-members')).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: /^Mates\b/ })).toBeNull()
+    expect(screen.queryByText(/Opens the Mates page/)).toBeNull()
+    expect(screen.queryByText(/Opens Settings first/)).toBeNull()
     expect(screen.queryByTestId('new-crew-chat')).toBeNull()
     expect(screen.queryByText('New Crew Mode chat')).toBeNull()
-    expect(item.querySelector('[data-testid="crew-experimental-tag"]')).toBeNull()
-    fireEvent.click(item)
-    await waitFor(() => expect(screen.getByTestId('location').textContent).not.toBe('/'))
+    expect(screen.queryByTestId('crew-experimental-tag')).toBeNull()
     expect(mocks.createChatSlot).not.toHaveBeenCalled()
   })
 
-  it('opens the Members page when the preview flag is on', async () => {
-    localStorage.setItem(PREVIEW_CREW, '1')
-    renderSidebar()
-    openCreateMenu()
-    fireEvent.click(await screen.findByTestId('open-crew-members'))
-    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/members'))
-  })
-
-  it('opens the Feature Previews card that turns the page on when the flag is off', async () => {
-    // Not a toast telling the user to go and find the switch: the click lands
-    // ON the switch, ringed, via the same `?highlight=` deep link Settings
-    // search uses.
-    renderSidebar()
-    openCreateMenu()
-    const item = await screen.findByTestId('open-crew-members')
-    // The gloss discloses the detour BEFORE the click, instead of promising the
-    // page and then landing somewhere else (UX review on #9519).
-    expect(item.textContent).toMatch(/Opens Settings first/)
-    expect(item.textContent).not.toMatch(/Opens the Mates page/)
-    fireEvent.click(item)
-    await waitFor(() => expect(screen.getByTestId('location').textContent)
-      .toBe(`/settings/developer?highlight=${SETTINGS_CREW_MEMBERS_PREVIEW_ID}`))
-  })
-
-  it('deep-links to an id the settings registry still knows', () => {
+  it('the Mates preview deep-link id still names a live settings entry', () => {
     // Registry ids derive from the card's LABEL, so a relabel silently breaks
-    // an inlined string — this pins the constant to a live entry on the
-    // developer tab, the same guard `SETTINGS_DEFAULT_MODEL_ID` carries.
+    // every `?highlight=` link that inlines the string — this pins the constant
+    // to a live entry on the developer tab, the same guard
+    // `SETTINGS_DEFAULT_MODEL_ID` carries.
     const entry = SETTINGS_REGISTRY.find(e => e.id === SETTINGS_CREW_MEMBERS_PREVIEW_ID)
     expect(entry, `no registry entry for ${SETTINGS_CREW_MEMBERS_PREVIEW_ID}`).toBeDefined()
     expect(entry?.tab).toBe('developer')

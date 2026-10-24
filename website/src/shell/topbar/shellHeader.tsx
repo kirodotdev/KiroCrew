@@ -465,7 +465,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             // region announces the connection cause, not the button's toggle
             // affordance, which would speak "click to collapse" on every
             // reconnect).
-            const capsuleActionMsg = `${gatewayStatusMsg} · ${capsuleCollapsed ? i18nT('app.click_to_expand_readouts') : i18nT('app.click_to_collapse_readouts')}`
+            const capsuleActionMsg = capsuleCollapsed ? `${gatewayStatusMsg} · ${i18nT('app.click_to_expand_readouts')}` : gatewayStatusMsg
             // whitespace-nowrap is the ladder's backstop for the BUILT-IN
             // segments that share this class string: if the group is ever
             // narrower than its contents (a locale wider than the measured

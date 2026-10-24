@@ -136,9 +136,8 @@ export function ChatPaneAboveRows({ slotKey, activeSlot, messages, paneMessages,
           liveness the status line and footer read): its current step
           is on screen, so "hasn't said anything" would sit under a
           line that shows it busy. */}
-      {messages.length === 0 && !(crewmate ? crewmateLive : running) && !slotDetailFailed && !hideEmptyHint && !crewmateQuietUnproven && (
-        <div className="text-center text-muted text-[13px] px-4 py-8" data-testid={crewmate && paneMessages.length > 0 ? 'crewmate-quiet-hint' : undefined}>
-          {crewmate && paneMessages.length > 0 ? (
+      {messages.length === 0 && !(crewmate ? crewmateLive : running) && !slotDetailFailed && !hideEmptyHint && !crewmateQuietUnproven && crewmate && paneMessages.length > 0 && (
+        <div className="text-center text-muted text-[13px] px-4 py-8" data-testid="crewmate-quiet-hint">
             <>
               <div>{i18nT('components.chatPane.crewmate_quiet', { name: crewmate.label || crewmate.name })}</div>
               {/* Where the work went: Profile > Sessions. A link when the host
@@ -157,9 +156,6 @@ export function ChatPaneAboveRows({ slotKey, activeSlot, messages, paneMessages,
                 <div className="mt-1" data-testid="crewmate-quiet-where">{i18nT('components.chatPane.crewmate_quiet_where')}</div>
               )}
             </>
-          ) : (
-            i18nT('components.chatPane.session_ready_type_a_message_to_start')
-          )}
         </div>
       )}
       {/* Suppressed on the active slot: that pane renders the store's full
