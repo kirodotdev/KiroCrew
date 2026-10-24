@@ -60,10 +60,11 @@ class SessionConfig:
             "still ends it. On the kiro-cli or KAS backend, a Kiro sign-out from the dashboard "
             "ends it at once, whatever account it signed in with. After any other switch or "
             "sign-out of the Kiro account it signed in with, the next dashboard chat turn ends "
-            "it, and so does the next agent cron run unless Kiro Crew then cannot tell which "
+            "it, and so does the next session start or reuse elsewhere, such as an agent cron "
+            "run, a channel reply or a task step, unless Kiro Crew then cannot tell which "
             "account is signed in, as with a social login. A session that "
             "is mid-turn then ends later instead, when its next turn starts or at a later "
-            "dashboard chat turn or agent cron run. At most 10 keys are kept.",
+            "dashboard chat turn or session start. At most 10 keys are kept.",
         ),
     )
     empty_response_auto_continue: bool = field(

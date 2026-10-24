@@ -561,11 +561,23 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
     ),
     "account_identity": (
+        ("_IdentityCheckRead", "class", ""),
         (
             "_retire_sessions_on_identity_change",
             "async function",
-            "(state: 'Any', *, unattended: 'bool' = False) -> 'None'",
+            "(state: 'Any', *, unattended: 'bool' = False) -> '_IdentityCheckRead | None'",
         ),
+        (
+            "_shared_check_still_covers",
+            "async function",
+            "(state: 'Any', shared: '_IdentityCheckRead') -> 'bool'",
+        ),
+        (
+            "_flag_stamp_mismatches_after_shared_check",
+            "async function",
+            "(state: 'Any', live: 'str') -> 'None'",
+        ),
+        ("_live_identity_fingerprint", "async function", "(state: 'Any') -> 'str | None'"),
         ("_mark_kiro_signed_out", "function", "(state: 'Any') -> 'None'"),
     ),
     "decisions_hooks": (

@@ -34,6 +34,7 @@ from telegram_helpers import (
 )
 
 from kiro_crew.acp.client import AcpError
+from kiro_crew.messaging.commands import COMPACT_ACCOUNT_CHANGED_TEXT
 from kiro_crew.messaging.queue_drain import person_tag
 from kiro_crew.messaging.renderer import session_provenance_tag
 from kiro_crew.messaging.session_resume import RoutingDecision
@@ -426,6 +427,22 @@ class TestDispatcher:
         assert any("try /compact" in s[0] for s in cli.sent)  # refused with notice
         assert not any("Compacting" in s[0] for s in cli.sent)  # never started
         assert sess.acquired == []  # semaphore never taken while busy
+
+    def test_compact_on_a_flagged_session_says_the_account_changed(self) -> None:
+        # The Kiro account check flagged the session without retiring it: try_acquire
+        # refuses it while has_session still answers True, and no reply is running.
+        d, cli, sess = _dispatcher({7})
+        sess.retiring = True
+
+        asyncio.run(
+            d.handle_message(
+                InboundMessage(
+                    channel_type="telegram", user_id="7", conversation_id="7", text="/compact"
+                )
+            )
+        )
+        assert cli.sent == [(COMPACT_ACCOUNT_CHANGED_TEXT, None)]
+        assert sess.acquired == [] and sess.released == []
 
     def test_compact_when_idle_holds_and_releases_semaphore(self) -> None:
         # When idle, /compact atomically acquires the per-session semaphore for
@@ -1443,7 +1460,18 @@ class TestModelPickerOutcomes:
                 f"⚠️ Couldn't switch this conversation to {label} (RuntimeError) — "
                 "it applies to your next conversation (/new)."
             ),
+            "retired": f"✅ Model set to {label} — it applies to your next message.",
         }
+
+        def _retire_then_refuse(sess: Any) -> Any:
+            # The acquire's Kiro account check retired the session: it held another
+            # account, so nothing is live by the time the lease would be taken.
+            async def _try_acquire(key: str) -> bool:
+                sess._has = False
+                return False
+
+            return _try_acquire
+
         for case, expected in cases.items():
             d, cli, sess = self._post()
             if case == "not-live":
@@ -1452,12 +1480,26 @@ class TestModelPickerOutcomes:
                 sess._busy = True
             elif case == "no-set-model":
                 sess._gp.client = SimpleNamespace()
+            elif case == "retired":
+                sess.try_acquire = _retire_then_refuse(sess)
             else:
                 sess._gp.set_model_error = RuntimeError("x")
             asyncio.run(d.on_callback(_press("m:2")))
             assert cli.edits[-1][1] == expected, case
             assert d._model_pref[("direct", "7")] == label, case
-            assert sess.released == ([] if case in ("not-live", "busy") else [self._KEY]), case
+            assert sess.released == (
+                [] if case in ("not-live", "busy", "retired") else [self._KEY]
+            ), case
+
+    def test_a_flagged_session_defers_to_the_next_message(self) -> None:
+        # The Kiro account check flagged the session without retiring it (an idle
+        # parent it spared for running sub-agents): refused, yet still registered.
+        d, cli, sess = self._post()
+        sess.retiring = True
+        asyncio.run(d.on_callback(_press("m:2")))
+        assert cli.edits[-1][1] == "✅ Model set to gpt-5.6-sol — it applies to your next message."
+        assert d._model_pref[("direct", "7")] == "gpt-5.6-sol"
+        assert sess.acquired == [] and sess.released == []
 
     def test_auto_outcomes_are_exact(self) -> None:
         d, cli, sess = self._post()
@@ -1490,6 +1532,38 @@ class TestModelPickerOutcomes:
             "⚠️ Couldn't switch this conversation to model-a (RuntimeError) — "
             "the resumed session was not changed."
         )
+
+    def test_a_resumed_session_the_account_check_retires_is_reported_unchanged(self) -> None:
+        d, _cli, sess = _dispatcher({7})
+        route = ("direct", "7")
+
+        async def _retire_then_refuse(key: str) -> bool:
+            # The acquire's Kiro account check retired the resumed session: it held
+            # another account, so nothing is live by the time the lease would be taken.
+            sess._has = False
+            return False
+
+        sess.try_acquire = _retire_then_refuse  # type: ignore[method-assign]
+
+        # A resumed session stores no route preference and restarts on its own model,
+        # so the pick reaches nothing: the answer must not promise the next message.
+        assert asyncio.run(d._apply_model(route, "model-a", "dashboard:x")) == (
+            "⚠️ Couldn't switch this conversation to model-a — the resumed "
+            "session was not changed."
+        )
+        assert route not in d._model_pref
+
+    def test_a_flagged_resumed_session_is_reported_unchanged(self) -> None:
+        # Flagged, not retired: still registered but refused. It restarts on its own
+        # model, so the pick reaches nothing, the same as for a retired one.
+        d, _cli, sess = _dispatcher({7})
+        route = ("direct", "7")
+        sess.retiring = True
+        assert asyncio.run(d._apply_model(route, "model-a", "dashboard:x")) == (
+            "⚠️ Couldn't switch this conversation to model-a — the resumed "
+            "session was not changed."
+        )
+        assert route not in d._model_pref and sess.acquired == []
 
 
 class TestCallbackRouting:

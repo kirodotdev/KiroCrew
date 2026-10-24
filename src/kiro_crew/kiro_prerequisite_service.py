@@ -135,6 +135,7 @@ class KiroPrerequisiteService:
     _maybe_latch_interim_identity = _identity_tracking._maybe_latch_interim_identity
     identity_changed_since_probe = _identity_tracking.identity_changed_since_probe
     identity_changed_since_sessions = _identity_tracking.identity_changed_since_sessions
+    identity_read_other_than = _identity_tracking.identity_read_other_than
     note_sessions_reconciled = _identity_tracking.note_sessions_reconciled
     seed_sessions_baseline = _identity_tracking.seed_sessions_baseline
     read_spawn_identity = _identity_tracking.read_spawn_identity
@@ -304,6 +305,14 @@ class KiroPrerequisiteService:
         # erase the only record that the account existed (a child spawned
         # under it may be unstamped and otherwise invisible).
         self._interim_identity_gen = 0
+        # Every fresh store read, numbered, with the fingerprint it returned. A
+        # shared acquire check reads it to learn whether any read after its own
+        # named another account (identity_read_other_than). The interim latch
+        # cannot answer that: it ignores reads equal to the baseline, and those
+        # are exactly the reads of the account a pending sweep switched away from.
+        self._identity_read_gen = 0
+        # Oldest first, trimmed to _IDENTITY_READ_HISTORY entries.
+        self._identity_read_history: list[tuple[int, str]] = []
 
     @property
     def initial_setup_complete(self) -> bool:
@@ -702,6 +711,12 @@ class KiroPrerequisiteService:
         """
 
         return self._interim_identity_gen
+
+    @property
+    def identity_read_generation(self) -> int:
+        """Count of fresh store reads so far, captured by a check right after its read."""
+
+        return self._identity_read_gen
 
     async def verified_ready(self, *, max_age_secs: float) -> bool:
         """Return readiness backed by a probe no older than *max_age_secs*.

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from kiro_crew.slack.handler import (
         _BANG_TO_SLASH,
+        COMPACT_ACCOUNT_CHANGED_TEXT,
         SESSIONS_INCLUDE_ENDED_ARGS,
         STOP_DECLINED_COMPACTING_TEXT,
         ConversationLog,
@@ -1169,7 +1170,9 @@ async def _handle_compact_command(
     # session; try_acquire() serializes against the in-flight turn and the
     # finally always releases.
     if not await sessions.try_acquire(session_key):
-        if sessions.has_session(session_key):
+        if sessions.is_retiring(session_key):
+            await slack.post_message(channel, COMPACT_ACCOUNT_CHANGED_TEXT, reply_ts)
+        elif sessions.has_session(session_key):
             await slack.post_message(
                 channel,
                 "⏳ Still working on your last message — try `!compact` once it finishes.",

@@ -909,9 +909,15 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # us, so drop the lock and claim again with the normal lease wait. The
     # re-projection below claims through the same site; the latch is
     # write-once, so the store it cites stays the one this turn found.
+    # ``identity_checked``: this turn ran the account check itself above, as
+    # the attended caller and before the switch-lock decision, so the claim
+    # skips the unattended check the manager runs for every other acquire.
     async def _claim_session(wait_if_busy: bool) -> tuple[Any, bool, bool]:
         return await state.sessions.get_or_create(
-            session_key, wait_if_busy=wait_if_busy, **_allocation_kwargs
+            session_key,
+            wait_if_busy=wait_if_busy,
+            identity_checked=True,
+            **_allocation_kwargs,
         )
 
     for _claim in (0, 1):

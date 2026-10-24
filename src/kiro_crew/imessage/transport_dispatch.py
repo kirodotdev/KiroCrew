@@ -36,6 +36,7 @@ from kiro_crew.imessage.renderer import IMessageRenderer
 from kiro_crew.imessage.rpc import RpcError, RpcTransportError
 from kiro_crew.imessage.transport import IMESSAGE_CAPABILITIES
 from kiro_crew.messaging.commands import (
+    COMPACT_ACCOUNT_CHANGED_TEXT,
     compact_refusal_plain_text,
     compact_unsupported_backend,
     context_recycle_warning,
@@ -449,7 +450,9 @@ class IMessageDispatcher:
         # busy session (ask the user to retry) from an absent one (nothing to
         # compact), and always release what we acquired.
         if not await self.sessions.try_acquire(session_key):
-            if self.sessions.has_session(session_key):
+            if self.sessions.is_retiring(session_key):
+                await self._notify(handle, f"ℹ️ {COMPACT_ACCOUNT_CHANGED_TEXT}")
+            elif self.sessions.has_session(session_key):
                 await self._notify(
                     handle,
                     "⏳ Still working on the previous message — try /compact again shortly.",

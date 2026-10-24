@@ -80,6 +80,7 @@ from kiro_crew.messaging.approval import PendingApprovals, SessionApprovalDecide
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
+    COMPACT_ACCOUNT_CHANGED_TEXT,
     compact_unsupported_backend,
     compact_unsupported_reply,
     context_recycle_warning,
@@ -1355,7 +1356,9 @@ class WebexDispatcher:
         # a busy session (ask the user to retry) from an absent one (nothing
         # to compact), and always release what we acquired.
         if not await self.sessions.try_acquire(session_key):
-            if self.sessions.has_session(session_key):
+            if self.sessions.is_retiring(session_key):
+                await self._reply(inbound, f"ℹ️ {COMPACT_ACCOUNT_CHANGED_TEXT}")
+            elif self.sessions.has_session(session_key):
                 await self._reply(
                     inbound,
                     "⏳ Still working on the previous message — try `/compact` again shortly.",

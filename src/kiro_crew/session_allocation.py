@@ -694,15 +694,34 @@ class SessionAllocationService:
             setter(provider, claim)
 
     async def try_acquire(self, key: str) -> bool:
-        """Acquire only an exact-key idle session; alias folding is intentional absent."""
+        """Acquire only an exact-key idle session; alias folding is intentional absent.
+
+        A session the Kiro account check flagged (``retire_on_identity_change``) is
+        refused, not taken, so the caller never runs on the wrong account's
+        credential. It is not evicted here: the sweep also flags an idle parent it
+        spared because its sub-agents are still running, and an eviction would shut
+        the provider down under them. The next real turn's claim retires it.
+        """
         session = self._sessions.get(key)
         if session is None or session.semaphore.locked():
+            return False
+        if session.retire_on_identity_change:
             return False
         # Idle Semaphore(1).acquire completes without suspending, keeping the
         # locked check and decrement atomic on the event loop.
         await session.semaphore.acquire()
         session.turn_owner = asyncio.current_task()
         return True
+
+    def is_retiring(self, key: str) -> bool:
+        """Whether the exact-key session is one ``try_acquire`` refuses for the account check.
+
+        The same lookup as ``try_acquire``, no alias folding: a caller refused by
+        ``try_acquire`` asks this to tell a session waiting to restart on the
+        current Kiro account from one a running reply holds.
+        """
+        session = self._sessions.get(key)
+        return session is not None and session.retire_on_identity_change
 
     def capability_runtime_view(self, member: str, saved_revision: str) -> dict[str, Any]:
         """Read capability adoption from this boundary's registry on the event loop."""

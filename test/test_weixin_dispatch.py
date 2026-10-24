@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from kiro_crew.messaging.commands import COMPACT_ACCOUNT_CHANGED_REPLY_ZH
 from kiro_crew.messaging.driver import APPROVAL_AUTO
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.session_allocation import SessionClosingError
@@ -147,8 +148,17 @@ class FakeSessions:
         return 10.0
 
     async def try_acquire(self, key):
+        if self.retiring:
+            return False
         self.acquired = True
         return True
+
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
 
     def has_session(self, key):
         return True
@@ -504,6 +514,18 @@ def test_compact_command_compacts_without_a_turn(tmp_path):
     assert provider.compacted is True
     assert provider.prompts == []
     assert sessions.released == 1  # acquired for compaction, then released
+
+
+def test_compact_on_a_flagged_session_says_the_account_changed(tmp_path):
+    # The Kiro account check flagged the session without retiring it, so try_acquire
+    # refuses it while has_session still answers True. No reply is running.
+    provider = FakeProvider()
+    d, client, sessions = _make(tmp_path, provider=provider)
+    sessions.retiring = True
+    asyncio.run(d.handle_message(_msg("/compact")))
+    assert provider.compacted is False
+    assert sessions.released == 0
+    assert [s["text"] for s in client.sent] == [COMPACT_ACCOUNT_CHANGED_REPLY_ZH]
 
 
 @pytest.mark.parametrize(

@@ -75,6 +75,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from kiro_crew.messaging.commands import COMPACT_ACCOUNT_CHANGED_TEXT as _ACCOUNT_CHANGED
 from kiro_crew.messaging.conversation import ConversationState  # noqa: F401
 
 
@@ -157,6 +158,9 @@ NEW_SESSION_TEXT = "Started a fresh session."
 COMPACTED_TEXT = "Context compacted."
 COMPACT_BUSY_TEXT = "Still working on the last message; try /compact again shortly."
 COMPACT_NOTHING_TEXT = "There's no conversation to compact yet."
+#: A session the Kiro account check flagged: no reply holds it, and the next
+#: message restarts the conversation on the current account.
+COMPACT_ACCOUNT_CHANGED_TEXT = _ACCOUNT_CHANGED
 COMPACT_FAILED_TEXT = "Couldn't compact the context; please try again."
 COMPACT_TIMED_OUT_TEXT = "Compaction timed out."
 #: The manual-``/compact`` refusals are NOT held here. This surface and iMessage

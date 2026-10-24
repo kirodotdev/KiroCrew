@@ -1070,6 +1070,25 @@ async def run_channel_agent(
             )
             orch_toplevel = agent.is_orchestrator and (is_toplevel_human or is_agent_report_back)
             tid = None if orch_toplevel else (msg.thread_id or msg.id)
+            # The member keeps the lease it took at spawn until it dies, so it never acquires
+            # again and a sweep only flags its session. The Kiro account check therefore runs
+            # here, before each message, and a session it flagged is replaced so the message
+            # runs on the current account instead of the previous account's process.
+            await sessions.run_identity_check()
+            if sessions.is_retiring(agent.session_key):
+                replacement = await _reset_busy_session(sessions, agent)
+                if replacement is None:
+                    await channel.post(
+                        agent.id,
+                        "❌ This agent's session could not be restarted on the current Kiro "
+                        "account. Wake it to try again.",
+                        from_role=agent.role,
+                        msg_type="system",
+                        thread_id=tid,
+                    )
+                    agent.state = "failed"
+                    break
+                client = replacement
             if sessions.get_provider(agent.session_key) is not client:
                 # IDENTITY, not presence: a clear-context discard pops this key and shuts the
                 # cached provider down, and a later claim can re-register a DIFFERENT one under it.
@@ -1196,7 +1215,9 @@ def _lost_give_up_text(agent: Any) -> str:
 
 
 async def _reset_busy_session(sessions: Any, agent: ChannelAgent) -> Any | None:
-    """Replace *agent*'s wedged session and return a lease on a cold one.
+    """Replace *agent*'s session and return a lease on a cold one.
+
+    The session is wedged, or the Kiro account check flagged it after an account switch.
 
     ``SessionManager.reset`` pops the registry entry and never awaits its
     semaphore, so resetting while ``run_channel_agent`` still holds the permit

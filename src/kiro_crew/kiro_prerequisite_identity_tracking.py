@@ -6,8 +6,9 @@ Bound into :class:`KiroPrerequisiteService`. Reads ``self._assume_ready``,
 ``self._identity_cache``, ``self._identity_cache_at``,
 ``self._identity_cache_absence_definitive``, ``self._identity_absence_run``,
 ``self._identity_absence_run_swept``, ``self._relocation_logged``,
-``self._session_identity``, ``self._interim_identity_observed`` and
-``self._interim_identity_gen``.
+``self._session_identity``, ``self._interim_identity_observed``,
+``self._interim_identity_gen``, ``self._identity_read_gen`` and
+``self._identity_read_history``.
 """
 
 from __future__ import annotations
@@ -44,6 +45,8 @@ logger = logging.getLogger("kiro_crew.kiro_prerequisite")
 # time.monotonic() rather than the service's injected clock: this is a real-time
 # rate bound, not part of the probe's testable timing contract.
 _AUTH_FINGERPRINT_CACHE_SECS = 5.0
+# How many of the latest fresh store reads identity_read_other_than can see.
+_IDENTITY_READ_HISTORY = 64
 
 
 # Upper bound on the boot-time baseline seed's store read. The seed sits on the
@@ -158,6 +161,9 @@ async def current_identity_fingerprint(
         # guessing "unchanged" is what keeps a stale account alive.
         logger.warning("Kiro identity fingerprint could not be read", exc_info=True)
         fingerprint, absence_is_definitive = _AUTH_FINGERPRINT_ABSENT, False
+    self._identity_read_gen += 1
+    self._identity_read_history.append((self._identity_read_gen, fingerprint))
+    del self._identity_read_history[:-_IDENTITY_READ_HISTORY]
     self._maybe_latch_interim_identity(fingerprint)
     if absence_is_definitive and not self._identity_cache_absence_definitive:
         # A proven sign-out after any other reading starts a new run; see
@@ -303,6 +309,23 @@ async def identity_changed_since_sessions(self: KiroPrerequisiteService) -> tupl
         # completes. See _maybe_latch_interim_identity.
         return (True, live)
     return (live != self._session_identity, live)
+
+
+def identity_read_other_than(
+    self: KiroPrerequisiteService, fingerprint: str, *, since: int
+) -> bool:
+    """Whether a fresh read newer than *since* returned anything but *fingerprint*.
+
+    Answers True when the record starts after *since*, because a read it
+    dropped may have returned something else.
+    """
+
+    if self._identity_read_gen <= since:
+        return False
+    history = self._identity_read_history
+    if not history or history[0][0] > since + 1:
+        return True
+    return any(gen > since and seen != fingerprint for gen, seen in history)
 
 
 def note_sessions_reconciled(

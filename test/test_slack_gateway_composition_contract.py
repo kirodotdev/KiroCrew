@@ -1219,7 +1219,6 @@ _GUARDED_TOKEN_HOMES: dict[str, frozenset[str]] = {
     "autonudge_state": frozenset({"nudge_wiring"}),
     "_run_chat": frozenset(
         {
-            "cron_fire",
             "gateway",
             "nudge_dashboard_fire",
             "result_egress",

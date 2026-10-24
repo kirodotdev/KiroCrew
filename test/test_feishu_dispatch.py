@@ -12,6 +12,7 @@ import pytest
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
 from kiro_crew.feishu.client import LarkInbound
 from kiro_crew.feishu.transport_dispatch import FeishuDispatcher
+from kiro_crew.messaging.commands import COMPACT_ACCOUNT_CHANGED_REPLY_ZH
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
@@ -124,6 +125,13 @@ class FakeSessions:
     async def try_acquire(self, key) -> bool:
         self.acquired.append(key)
         return self._acquire
+
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
 
     def has_session(self, key) -> bool:
         return self._has_session
@@ -890,6 +898,22 @@ class TestCommands:
         assert provider.compacted is False
         assert sessions.released == []
         assert client.replies == [("msg1", "⏳ 正在处理上一条消息，请稍后再试 /compact。")]
+
+    @pytest.mark.asyncio
+    async def test_compact_on_a_flagged_session_says_the_account_changed(self) -> None:
+        # The Kiro account check flagged the session without retiring it: try_acquire
+        # refuses it while has_session still answers True, and no reply is running.
+        provider = FakeProvider([])
+        sessions = FakeSessions(provider, acquire=False, has_session=True)
+        sessions.retiring = True
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/compact"))
+
+        assert provider.compacted is False
+        assert sessions.released == []
+        assert client.replies == [("msg1", COMPACT_ACCOUNT_CHANGED_REPLY_ZH)]
 
     @pytest.mark.asyncio
     async def test_compact_without_active_session(self) -> None:
