@@ -10,11 +10,27 @@ import tempfile
 import unittest
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+import pytest
 import yaml
 
 from scripts.ci_file_shards import file_shard
 
 ROOT = Path(__file__).resolve().parents[1]
+_DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 45
+# The slowest prior Windows (7) artifact measured this test's call at 42.251775s
+# (PR #23257, run 39911553168, windows-pytest-progress-7); 10x is 422.51775s,
+# rounded up to 425s. Another artifact measured 21.584452s (PR #23293,
+# run 39912227098, windows-pytest-progress-7).
+_WINDOWS_BACKEND_SCOPE_TIMEOUT_SECONDS = 425
+# Keep a readable subprocess timeout failure before pytest can kill the worker.
+pytestmark = pytest.mark.timeout(2 * _WINDOWS_BACKEND_SCOPE_TIMEOUT_SECONDS)
+
+
+def _backend_scope_timeout_seconds(*, windows: bool) -> int:
+    """Bound Windows scans from the measured shard time; others keep 45s."""
+    return (
+        _WINDOWS_BACKEND_SCOPE_TIMEOUT_SECONDS if windows else _DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
+    )
 
 
 class TestFileShards(unittest.TestCase):
@@ -40,7 +56,7 @@ class TestFileShards(unittest.TestCase):
         path.write_text(content, encoding="utf-8")
         return path
 
-    def run_python(self, *extra):
+    def run_python(self, *extra, timeout=_DEFAULT_SUBPROCESS_TIMEOUT_SECONDS):
         env = dict(os.environ)
         env.pop("PYTEST_ADDOPTS", None)
         env.pop("PYTEST_PLUGINS", None)
@@ -60,7 +76,7 @@ class TestFileShards(unittest.TestCase):
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=45,
+            timeout=timeout,
         )
 
     def run_pytest(self, *extra):
@@ -137,8 +153,19 @@ class TestFileShards(unittest.TestCase):
         self.assertCountEqual(all_files, {item.split("::")[0] for item in baseline})
         self.assertEqual(len(all_files), 26)
 
+    def test_reduced_backend_scope_timeout_accounts_for_windows(self):
+        self.assertEqual(
+            _backend_scope_timeout_seconds(windows=False), _DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
+        )
+        self.assertEqual(
+            _backend_scope_timeout_seconds(windows=True), _WINDOWS_BACKEND_SCOPE_TIMEOUT_SECONDS
+        )
+
     def test_reduced_backend_scope_populates_every_ci_shard(self):
-        result = self.run_python(str(ROOT / "scripts/ci-surface-tests.py"), "--surface", "backend")
+        timeout = _backend_scope_timeout_seconds(windows=os.name == "nt")
+        result = self.run_python(
+            str(ROOT / "scripts/ci-surface-tests.py"), "--surface", "backend", timeout=timeout
+        )
         self.assert_ok(result)
         files = result.stdout.splitlines()
         self.assertTrue(files)
