@@ -395,15 +395,19 @@ class TestListingStaysCheapOnTheEventLoop:
         path = _write(tmp_path / "skills", "one")
         loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
         mtime = path.stat().st_mtime
+        config_path = tmp_path / "config.json"
+        config_path.write_text("{}")
 
         calls: list[str] = []
         real_stat = Path.stat
 
         def counting_stat(self: Path, *a: object, **kw: object) -> object:
-            calls.append(str(self))
+            if self == path:
+                calls.append(str(self))
             return real_stat(self, *a, **kw)  # type: ignore[arg-type]
 
         monkeypatch.setattr(Path, "stat", counting_stat)
+        config_path.stat()  # An unrelated config lookup must not invalidate this assertion.
         meta = loader._cached_frontmatter(path, mtime=mtime, within=None)
 
         assert meta["name"] == "one"
