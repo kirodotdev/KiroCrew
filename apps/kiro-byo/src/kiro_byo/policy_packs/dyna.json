@@ -1,0 +1,60 @@
+{
+  "schema_version": 4,
+  "id": "dyna",
+  "enabled": false,
+  "display_name": "Dyna Policy Pack",
+  "short_name": "Dyna",
+  "localized_name": "戴拿",
+  "description": "Dyna 模式开发中：Flash、Strong、Miracle 三种形态只供预览，暂不支持选择、调用或路由。",
+  "default_policy": "flash",
+  "policies": [
+    {
+      "id": "flash",
+      "semantics": {
+        "display_name": "Flash Type",
+        "localized_name": "闪亮型",
+        "description": "开发中：Dyna 的平衡型占位形态；尚未设计或启用执行策略。",
+        "short_description": "平衡 · 开发中"
+      },
+      "execution": {
+        "routing": {
+          "quality": 0.34,
+          "speed": 0.33,
+          "economy": 0.33
+        }
+      }
+    },
+    {
+      "id": "strong",
+      "semantics": {
+        "display_name": "Strong Type",
+        "localized_name": "强壮型",
+        "description": "开发中：Dyna 的强力型占位形态；尚未设计或启用执行策略。",
+        "short_description": "强力 · 开发中"
+      },
+      "execution": {
+        "routing": {
+          "quality": 0.7,
+          "speed": 0.2,
+          "economy": 0.1
+        }
+      }
+    },
+    {
+      "id": "miracle",
+      "semantics": {
+        "display_name": "Miracle Type",
+        "localized_name": "奇迹型",
+        "description": "开发中：Dyna 的机动型占位形态；尚未设计或启用执行策略。",
+        "short_description": "机动 · 开发中"
+      },
+      "execution": {
+        "routing": {
+          "quality": 0.3,
+          "speed": 0.5,
+          "economy": 0.2
+        }
+      }
+    }
+  ]
+}
