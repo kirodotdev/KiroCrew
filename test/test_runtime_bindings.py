@@ -62,7 +62,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_REVIVE_ANSWER_DRAIN_TIMEOUT": ("data", False, "", "runtime_class"),
     "_ROOT_UNREACHED_REASON_BY_VERDICT": ("data", False, "", "runtime_class"),
     # Takes ``launch_agent``: the app launch copy kiro-cli is asked for (``apps.agent_launch``).
-    "__init__": ("function", False, "933ec8f4a25b", "runtime_class"),
+    "__init__": ("function", False, "d3ec678c208f", "runtime_class"),
     "_activate_mode_bracketed": ("function", True, "3dc699e8b0af", "runtime_mode_activation"),
     "_activates_agent_by_mode": ("function", False, "a6632a57e602", "runtime_mode_activation"),
     "_adopt_skill_projection": ("function", False, "5c4748bee6c5", "runtime_mode_activation"),
@@ -225,6 +225,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "send_request": ("function", True, "60d06c03f35b", "runtime_wire"),
     "send_request_for_answer": ("function", True, "f3fe127a3feb", "runtime_wire"),
     "send_response": ("function", True, "74f287d889d6", "runtime_wire"),
+    "session_activity_at": ("function", False, "8912ecd7f5d6", "runtime_session_registry"),
     "settle_stderr": ("function", True, "8fe4e298f96b", "runtime_liveness"),
     "spawn": ("function", True, "dbecd2a33a23", "runtime_spawn_entry"),
     "spawn_monotonic": ("property", False, "c2eec8a41739", "runtime_class"),
@@ -1025,6 +1026,7 @@ _INIT_HINTS = {
     "sandbox_mode": "<class 'str'>",
     "shared_scratch": "pathlib.Path | None",
     "launch_agent": "<class 'str'>",
+    "monotonic": "typing.Optional[typing.Callable[[], float]]",
     "tool_search": "kiro_crew.agent_sdk.tool_search.ToolSearchSettings | None",
     "work_dir": "str | pathlib.Path | None",
 }

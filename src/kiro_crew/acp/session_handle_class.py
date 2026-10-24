@@ -698,6 +698,11 @@ class AcpSessionHandle:
         return self._session_id
 
     @property
+    def session_activity_at(self) -> float | None:
+        """Monotonic time the runtime last routed a frame for this session."""
+        return self._runtime.session_activity_at(self._session_id)
+
+    @property
     def prompt_or_tool_seen(self) -> bool:
         """True once this session observed a text chunk or a tool call.
 
