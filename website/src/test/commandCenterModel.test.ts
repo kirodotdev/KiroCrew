@@ -58,13 +58,17 @@ describe('command center projection', () => {
     expect(model.settled).toBe(false)
     expect(buildCommandCenter(sources({ slots: [slot('root', { has_options: false, options: ['stale'] })] })).attention).toEqual([])
   })
-  it.each(['/clear', '  /model x'])('drops the slash-command follow-up label %j while keeping a safe choice', label => {
+  it.each(['/clear', '  /model x', 'Run $deploy now'])('drops the command-shaped follow-up label %j while keeping a safe choice', label => {
     const model = buildCommandCenter(sources({ slots: [slot('root', { has_options: true, options: [label, 'Keep it'] })] }))
     expect(model.attention).toHaveLength(1)
     expect(model.attention[0].question!.questions[0].options).toEqual([{ label: 'Keep it' }])
   })
-  it('omits a follow-up question when every option is a slash command', () => {
-    const model = buildCommandCenter(sources({ slots: [slot('root', { has_options: true, options: ['/clear'] })] }))
+  it('keeps a price in a label on the card', () => {
+    const model = buildCommandCenter(sources({ slots: [slot('root', { has_options: true, options: ['Approve $40 spend', 'Reject $40 spend'] })] }))
+    expect(model.attention[0].question!.questions[0].options).toEqual([{ label: 'Approve $40 spend' }, { label: 'Reject $40 spend' }])
+  })
+  it('omits a follow-up question when every option is command-shaped', () => {
+    const model = buildCommandCenter(sources({ slots: [slot('root', { has_options: true, options: ['/clear', 'Run $deploy now'] })] }))
     expect(model.attention).toEqual([])
   })
   it('keys identical options separately for each new reply but keeps the same reply stable', () => {

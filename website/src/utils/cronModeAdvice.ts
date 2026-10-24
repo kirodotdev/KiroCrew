@@ -11,6 +11,8 @@
  *  round trip.
  */
 
+import { SKILL_TOKEN_RE } from './skillToken'
+
 /** Work a program can settle with no reasoning.
  *
  *  Narrow on purpose. Widening this set produces MORE script suggestions, which
@@ -32,11 +34,9 @@ const JUDGEMENT =
 const NEEDS_CONTEXT =
   /\b(memor(?:y|ies)|remember|lessons?|preferences?|steering|knowledge base|previous session|past session|prior session|chat history|conversation history|my notes|project context|as we discussed)\b/i
 
-/** `$skill` inline tokens. A minimal-context run injects no skill at all, so a
- *  job naming one this way stops working. Mirrors the core's own token shape. */
-const SKILL_TOKEN = /(?<![\w$])\$([a-z0-9][a-z0-9/_-]*)/
 
-/** A skill named in prose, for a prompt that spells it out instead. */
+/** A skill named in prose, for a prompt that spells `$skill` out instead. A minimal-context
+ *  run injects no skill at all, so a job naming one either way stops working. */
 const SKILL_WORD = /\bskill\b/i
 
 /** Below this many characters a prompt is still being typed, and a hint that
@@ -64,7 +64,7 @@ export function adviseCronMode(message: string, minimalContext: boolean): CronMo
   // A job that reads its injected context cannot lose it, so neither mode
   // applies and there is nothing useful to say. Checked first: this is the one
   // signal that rules out both suggestions.
-  if (NEEDS_CONTEXT.test(text) || SKILL_TOKEN.test(text) || SKILL_WORD.test(text)) return 'none'
+  if (NEEDS_CONTEXT.test(text) || SKILL_TOKEN_RE.test(text) || SKILL_WORD.test(text)) return 'none'
   // Judgement outranks the mechanical signal, so a prompt carrying both is
   // never sent down the script path.
   if (JUDGEMENT.test(text)) return minimalContext ? 'none' : 'minimal-context'
