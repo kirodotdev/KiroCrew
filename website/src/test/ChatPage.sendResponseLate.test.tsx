@@ -323,3 +323,14 @@ describe('the footer running indicator while the trailing send is unconfirmed', 
     expect(messages().some(m => m.role === 'notice' || m.role === 'error')).toBe(false)
   })
 })
+
+// The composer must re-render from the draft store itself: nothing else
+// re-renders it after a send since #23423 (dd2799cf6).
+describe('↑ recall right after a send', { timeout: 20_000 }, () => {
+  it('↑ right after a delivered send puts the prompt back in the box', async () => {
+    const { input } = await sendPastTheDeadline({ confirmed: true })
+    expect(input.value).toBe('')
+    await act(async () => { fireEvent.keyDown(input, { key: 'ArrowUp' }) })
+    expect(input.value).toBe(SENT_TEXT)
+  })
+})
