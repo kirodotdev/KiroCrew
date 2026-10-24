@@ -174,6 +174,7 @@ from kiro_crew.config.section_builders import (  # noqa: F401
     _STT_MIN_PARTIAL_INTERVAL_MS,
     _STT_MIN_SILENCE_MS,
     _STT_MIN_TIMEOUT_SECS,
+    _build_code_channel_defaults,
     _build_computer_use_config,
     _build_cron_history_config,
     _build_discord_config,

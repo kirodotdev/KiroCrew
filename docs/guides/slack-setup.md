@@ -322,6 +322,63 @@ A suppressed phase removes any prior reaction but adds nothing new; stall reacti
 
 ---
 
+## Slack Code: Code Channels
+
+Settings → Channels → Slack → **Slack Code** has an opt-in switch, **Code channels**,
+marked **Preview**: the switch and the app update ship now, and the code-channel runtime
+arrives in a later release, so until then Slack works exactly as before. Turning it on
+needs a few more permissions for your Slack app, so an app you already installed needs an
+update and a reinstall. You can turn it off again, render the manifest without those
+lines and save that in Slack. Until the app has the new permissions, the switch changes
+nothing even when it is on, and the **Update your Slack app** panel says what is missing.
+
+Slack's own availability, as documented by Slack: the scope
+([`code_channels:manage`](https://docs.slack.dev/reference/scopes/code_channels.manage)),
+the manifest block
+([`features.code_channels`](https://docs.slack.dev/reference/app-manifest)), the event
+([`agent_session_stopped`](https://docs.slack.dev/reference/events/agent_session_stopped/))
+and the methods such as
+[`agents.conversations.listViews`](https://docs.slack.dev/reference/methods/agents.conversations.listViews/)
+are public ([Slack Code](https://docs.slack.dev/ai/slack-code/),
+[changelog](https://docs.slack.dev/changelog/2026/10/07/slack-code-for-devs)). Slack is
+rolling Slack Code out gradually, though: its
+[Help Center](https://slack.com/help/articles/54310833022355-Build-with-AI-as-a-team-using-Slack-Code)
+lists the supported agents, and
+[`agents.conversations.create`](https://docs.slack.dev/reference/methods/agents.conversations.create)
+answers `feature_disabled` when Slack does not yet recognize the app as an agent app or
+the user does not have the feature. A workspace in that state sees **Workspace not
+enabled** in the panel, and Slack keeps working as before.
+
+| Switch | Manifest additions |
+|---|---|
+| Code channels (`slack.code_channels`) | `features.code_channels.enabled: true`; bot scopes `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`; event `agent_session_stopped` |
+
+To update an existing app:
+
+1. Turn the switch on in Settings and **Save**.
+2. In the **Update your Slack app** panel, select **Copy manifest YAML**, then **Open App
+   Manifest** (or **App Config → App Manifest** on <https://api.slack.com/apps>).
+3. Replace the YAML with the copied manifest and select **Save Changes**. Replacing the
+   YAML replaces the app's whole configuration, so re-add anything you added by hand
+   (or add only the lines the panel lists). The copied manifest keeps your app's slash
+   command.
+4. Reinstall when Slack asks (**Install App → Reinstall to Workspace**). The bot token
+   usually stays the same; if Slack issues a new one, paste it in Settings.
+5. Select **Check again**. The panel reads **Up to date**, and the line under the switch
+   reads **Slack app prepared**. No gateway restart is needed.
+
+`kirocrew manifest` renders the same manifest for the switches saved in `config.json`.
+If the panel reads **Workspace not enabled**, the app has the scopes but Slack has not
+turned code channels on for your workspace; a workspace admin has to enable it.
+
+For code channels you can also set a default folder, agent, model and reasoning effort for
+new code channels; see [Slack integration](../../src/kiro_crew/docs/slack-integration.md#slack-code-code-channels).
+With nothing set, code channels go into a **Code channels** sidebar folder, created the first
+time one is needed and set to run `kirocrew-conductor`. To use another folder, pick it, or
+choose **New folder…** in the folder list to create one there.
+
+---
+
 ## Reusing the App in Another Workspace
 
 To install your app in a different Slack workspace, export the manifest and recreate the app there:

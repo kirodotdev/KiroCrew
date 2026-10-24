@@ -232,8 +232,10 @@ from kiro_crew.dashboard.messaging_api.run_views import (  # noqa: F401
 from kiro_crew.dashboard.messaging_api.slack_settings import (  # noqa: F401
     _slack_config_save_locked,
     _validate_slack_token,
+    api_slack_code_channel_agents,
     api_slack_config_get,
     api_slack_config_save,
+    api_slack_manifest_status,
 )
 from kiro_crew.dashboard.messaging_api.slack_workspace import (  # noqa: F401
     _missing_scope_message,
