@@ -16,10 +16,12 @@ import json
 
 import pytest
 from governance_distribution_helpers import _hermetic_governance_globals  # noqa: F401
+from governance_distribution_helpers import install_ceiling_fixture  # noqa: F401
 from governance_distribution_helpers import transport_fixture  # noqa: F401
 from governance_distribution_helpers import (
     _body,
     _cache,
+    _doc,
     _failing_fetcher,
     _static_fetcher,
     _write_policy,
@@ -222,3 +224,56 @@ class TestCacheOnlyChild:
         monkeypatch.setenv(pd.POLICY_CACHE_ONLY_ENV, "1")
         ceiling = pd.load_distributed_policy()
         assert ceiling is not None and json.loads(pd.read_cache().body)["identity"]
+
+
+class TestRunningProcess:
+    """The refresher, the CLI helpers and the posture read the same resolution.
+
+    ``install_ceiling`` comes before ``enterprise`` in each signature so its base
+    context is composed as oss, before the edition flips.
+    """
+
+    def _install(self, install_ceiling):
+        doc = _doc(
+            "running",
+            distribution={
+                "source": _ELSEWHERE,
+                "refresh_interval_secs": 900,
+                "max_cache_age_secs": 3600,
+                "on_unavailable": "degrade",
+            },
+        )
+        install_ceiling(governance.parse_policy(doc))
+
+    def test_refresh_fetches_the_build_source(
+        self, transport, install_ceiling, enterprise, monkeypatch
+    ):
+        self._install(install_ceiling)
+        _set_local_env(monkeypatch)
+        seen: list = []
+        _https(transport, _static_fetcher(pd.FetchedPolicy(body=_body("pushed")), seen))
+
+        assert pd.refresh_now().status == pd.REFRESH_APPLIED
+        assert [request.url for request in seen] == [pd.ENTERPRISE_POLICY_URL]
+
+    def test_cadence_and_bound_come_from_the_installed_document(
+        self, install_ceiling, enterprise, monkeypatch
+    ):
+        self._install(install_ceiling)
+        _set_local_env(monkeypatch)
+        assert pd.effective_refresh_interval() == 900
+        assert pd.effective_max_cache_age() == 3600
+
+    def test_the_posture_reports_the_build_source(self, install_ceiling, enterprise, monkeypatch):
+        self._install(install_ceiling)
+        _set_local_env(monkeypatch)
+        posture = pd.distribution_posture()
+        assert posture["configured"] is True
+        assert posture["source_scheme"] == "https"
+        assert posture["refresh_interval_seconds"] == 900
+        assert posture["on_unavailable"] == governance.UNAVAILABLE_FAIL_CLOSED
+
+    def test_with_nothing_installed_the_posture_is_still_configured(self, enterprise):
+        posture = pd.distribution_posture()
+        assert posture["configured"] is True
+        assert posture["refresh_interval_seconds"] == 0
