@@ -630,19 +630,21 @@ async def transcribe_audio_attachments(result: IngestResult, source: str) -> Ing
 
     for path in result.audio_paths:
         try:
-            stt_config = await asyncio.to_thread(transcribe.load_stt_config)
-            duration_cap = transcribe.batch_duration_cap_secs(stt_config)
-            if duration_cap is not None:
-                exceeds = await transcribe.audio_exceeds_secs(
-                    path, duration_cap, timeout_secs=stt_config.timeout_secs
-                )
-                if exceeds is not False:
-                    reason = "duration could not be verified"
-                    if exceeds:
-                        reason = f"exceeds the {duration_cap // 60}-minute transcription limit"
-                    result.rejections.append(f"[Audio attachment — {reason}]")
-                    continue
-            transcript = await transcribe.transcribe_audio(path, stt_config)
+            # Every model is claimed while the config is read, then the one it names,
+            # through the duration probe to the decode, so it cannot be removed meanwhile.
+            async with transcribe.claimed_stt_snapshot(transcribe.load_stt_config) as stt_config:
+                duration_cap = transcribe.batch_duration_cap_secs(stt_config)
+                if duration_cap is not None:
+                    exceeds = await transcribe.audio_exceeds_secs(
+                        path, duration_cap, timeout_secs=stt_config.timeout_secs
+                    )
+                    if exceeds is not False:
+                        reason = "duration could not be verified"
+                        if exceeds:
+                            reason = f"exceeds the {duration_cap // 60}-minute transcription limit"
+                        result.rejections.append(f"[Audio attachment — {reason}]")
+                        continue
+                transcript = await transcribe.transcribe_audio(path, stt_config)
         except Exception:
             logger.exception("%s: audio transcription raised", source)
             transcript = None

@@ -51,6 +51,7 @@ from kiro_crew.extras import install_hint  # noqa: F401
 # boot path; `stt.decoder` in turn imports THIS module only inside a function,
 # which is what keeps the pair acyclic.
 from kiro_crew.stt import decoder
+from kiro_crew.stt import models as stt_models  # noqa: F401
 
 # Re-exported: the hallucination filter lives in kiro_crew.stt.hallucinations so
 # the live session's final transcript and this batch path apply the SAME rules.
@@ -1212,5 +1213,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _make_temp_wav,
         _pcm_from_wav,
         _pcm_via_ffmpeg,
+        _transcribe_local_claimed,
         _whisper_language,
+        claimed_stt_snapshot,
+        local_model_claim,
     )

@@ -12,7 +12,6 @@ imports the facade. New voice-memo work goes here.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import re
@@ -31,6 +30,7 @@ from kiro_crew.slack.files import (
 from kiro_crew.transcribe import (
     audio_exceeds_secs,
     batch_duration_cap_secs,
+    claimed_stt_snapshot,
     load_stt_config,
     transcribe_audio,
 )
@@ -134,29 +134,31 @@ async def _transcribe_files(orch: "GatewayOrchestrator", files: list[dict]) -> l
                 source="transcribe",
                 resources=f.get("name", "?"),
             )
-            stt_config = await asyncio.to_thread(load_stt_config)
-            duration_cap = batch_duration_cap_secs(stt_config)
-            if duration_cap is not None:
-                exceeds = await audio_exceeds_secs(
-                    dest, duration_cap, timeout_secs=stt_config.timeout_secs
-                )
-                if exceeds is not False:
-                    note = VOICE_MEMO_DURATION_UNVERIFIED
-                    error = "audio_duration_unverified"
-                    if exceeds:
-                        note = VOICE_MEMO_TOO_LONG.format(minutes=duration_cap // 60)
-                        error = "audio_too_long"
-                    results.append(note)
-                    sel().log_api_access(
-                        caller="stt",
-                        operation="stt.transcribe",
-                        outcome="denied",
-                        source="transcribe",
-                        resources=f.get("name", "?"),
-                        error=error,
+            # Every model is claimed while the config is read, then the one it names,
+            # through the duration probe to the decode, so it cannot be removed meanwhile.
+            async with claimed_stt_snapshot(load_stt_config) as stt_config:
+                duration_cap = batch_duration_cap_secs(stt_config)
+                if duration_cap is not None:
+                    exceeds = await audio_exceeds_secs(
+                        dest, duration_cap, timeout_secs=stt_config.timeout_secs
                     )
-                    continue
-            transcript = await transcribe_audio(dest, stt_config)
+                    if exceeds is not False:
+                        note = VOICE_MEMO_DURATION_UNVERIFIED
+                        error = "audio_duration_unverified"
+                        if exceeds:
+                            note = VOICE_MEMO_TOO_LONG.format(minutes=duration_cap // 60)
+                            error = "audio_too_long"
+                        results.append(note)
+                        sel().log_api_access(
+                            caller="stt",
+                            operation="stt.transcribe",
+                            outcome="denied",
+                            source="transcribe",
+                            resources=f.get("name", "?"),
+                            error=error,
+                        )
+                        continue
+                transcript = await transcribe_audio(dest, stt_config)
             sel().log_api_access(
                 caller="stt",
                 operation="stt.transcribe",

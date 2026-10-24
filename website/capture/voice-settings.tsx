@@ -8,6 +8,7 @@
  * browser's own fake device (a beeping tone) feeds getUserMedia.
  *
  * Theme:  &theme=dark|light
+ * Remove: &refuse=stt_model_in_use (or any 409 code) refuses every Remove
  */
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -17,6 +18,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { initI18n } from '../src/i18n'
 import { store } from '../src/store'
 import { api } from '../src/api/client'
+import { ApiError } from '../src/api/apiError'
 import SttSettings from '../src/pages/settings/SttSettings'
 import '../src/index.css'
 
@@ -69,6 +71,13 @@ stub.saveSttConfig = async (patch: { model?: string }) => {
   return config()
 }
 stub.sttPrepare = async () => ({ model, download: status().download })
+// &refuse=<code> answers every Remove with that 409 code, to shoot the refusal row.
+const refuse = params.get('refuse')
+stub.sttDeleteModel = async (name: string) => {
+  if (refuse) throw new ApiError(409, 'refused', JSON.stringify({ error: 'refused', code: refuse }))
+  installed.delete(name)
+  return { model: name, removed: true }
+}
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 createRoot(document.getElementById('root')!).render(

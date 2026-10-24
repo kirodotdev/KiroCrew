@@ -15,7 +15,6 @@ import {
   CATALOG_MODEL_PROVIDERS,
   decoderDownloadLabel,
   decoderRepairPrompt,
-  downloadLabel,
   downloadRatio,
   FALLBACK_PROVIDERS,
   FALLBACK_STREAMING_PROVIDERS,
@@ -54,7 +53,19 @@ import {
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
+import { useConfirm } from '../../components/ConfirmDialog'
+import {
+  CUSTOM_MODEL,
+  DOWNLOAD_STEP_RUNNING,
+  SttModelTable,
+  type ModelRemoveError,
+  type SttDownload,
+  type SttModel,
+} from './SttModelTable'
 import { errMessage } from '../../utils/thunkError'
+
+// The table moved to its own module; this path keeps exporting it for callers.
+export { SttModelTable }
 
 interface SttConfig {
   enabled: boolean
@@ -102,30 +113,6 @@ interface SttConfig {
   transcribe_unsupported?: boolean
   bundled_interpreter?: boolean
   ffmpeg_missing?: boolean
-}
-
-/** One model the recogniser can load, as served by `GET /api/stt/status`. */
-interface SttModel {
-  name: string
-  /** Wire size of the weights. Rendered through `fmtBytes`, never preformatted
-   *  server-side, so the size follows the dashboard's language. */
-  size_bytes: number
-  /** Whether the file is already on the gateway's disk. */
-  present: boolean
-  /** Custom model only: why its file cannot be used, '' when it can. */
-  error?: string
-}
-
-/** Progress of the one model transfer a gateway runs at a time. */
-interface SttDownload {
-  /** `idle` | `downloading` | `ready` | `failed` | `skipped`. */
-  step: string
-  /** Which model this progress belongs to. The gateway runs one transfer at a
-   *  time, so after a mid-download switch it can be a model nobody is looking at. */
-  model: string
-  downloaded_bytes: number
-  total_bytes: number
-  error: string
 }
 
 /** Progress of the one decoder fetch a gateway runs at a time. */
@@ -208,15 +195,17 @@ interface SttStatus {
   code: string
   /** The backend's own sentence, shown only for a code this build cannot name. */
   detail: string
+  /** The catalog name the configured `stt.model` resolves to. A config still
+   *  holding a superseded name (`medium`) resolves here to `large-v3-turbo`. */
+  model?: string
+  /** The stored `stt.model` that `model` was resolved from. */
+  configured_model?: string
   models: SttModel[]
   download: SttDownload
   ffmpeg?: SttFfmpeg
   backend?: SttBackend
   timings?: SttTimings
 }
-
-const DOWNLOAD_STEP_RUNNING = 'downloading'
-const DOWNLOAD_STEP_FAILED = 'failed'
 
 /**
  * Decoder stages, which are the backend's `stage` values verbatim.
@@ -249,18 +238,6 @@ const CUSTOM_MODEL_ERROR_ID = 'stt-custom-model-error'
 
 /** Where whisper.cpp's own ggml model files are published, linked from step 1. */
 const WHISPER_MODELS_URL = 'https://huggingface.co/ggerganov/whisper.cpp'
-
-/**
- * The `stt.model` value that selects the user's own weights instead of a catalog
- * row, mirroring `stt.models.CUSTOM_MODEL`.
- *
- * A literal here rather than a served field, unlike the catalog itself: the
- * catalog's CONTENTS are the backend's to change, but this sentinel is a wire
- * constant on the same footing as `DOWNLOAD_STEP_RUNNING` above. The option it
- * adds is safe to hardcode for the same reason — it names no artifact, so it
- * cannot go stale against what the gateway can fetch.
- */
-const CUSTOM_MODEL = 'custom'
 
 /**
  * How often the status endpoint is re-read while a model transfer runs.
@@ -553,33 +530,12 @@ function TranscribeLanguagesPicker({
   )
 }
 
-/**
- * Byte progress for a model transfer in flight.
- *
- * A real determinate bar, not a pulse: the transfer is between 78 MB and 1.6 GB
- * and the whole reason this surface exists is that a silent download of that size
- * is indistinguishable from a hang. Percent AND absolute bytes, because percent
- * alone hides how much is left on a slow link.
- *
- * A zero `total_bytes` means the transfer has been announced but its size has not
- * been reported yet, so the bar stays at zero rather than dividing by it.
- */
-function ModelDownloadProgress({ download }: { download: SttDownload }) {
-  const progress = { done: download.downloaded_bytes, total: download.total_bytes }
-  return (
-    <div className="-mt-1 mb-1 animate-rise" aria-live="polite">
-      {/* The same sentence the recording chrome shows, from the same helper: two
-          copies of "downloading N of M" would be two keys a translator renders
-          differently for one event. */}
-      <p className="text-[12px] text-muted mb-1.5">{downloadLabel(progress)}</p>
-      <div className="h-1.5 bg-border rounded-full overflow-hidden">
-        <div
-          className="h-full bg-accent rounded-full transition-all duration-500"
-          style={{ width: `${Math.round(downloadRatio(progress) * 100)}%` }}
-        />
-      </div>
-    </div>
-  )
+/** The gateway's refusal codes for `DELETE /api/stt/models/{name}`, as catalog keys. */
+const MODEL_REMOVE_ERROR_KEY: Record<string, string> = {
+  stt_model_selected: 'pages.settings.sttSettings.model_remove_selected',
+  stt_model_in_use: 'pages.settings.sttSettings.model_remove_in_use',
+  stt_model_downloading: 'pages.settings.sttSettings.model_remove_downloading',
+  stt_model_loading: 'pages.settings.sttSettings.model_remove_loading',
 }
 
 /**
@@ -964,6 +920,32 @@ export default function SttSettings({ cardIndex }: {
     onSettled: () => qc.invalidateQueries({ queryKey: ['sttStatus'] }),
     onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.download_failed')),
   })
+  const { confirm, confirmDialog } = useConfirm()
+  // A refusal is shown on the row it was for, by code, so it can say what to do;
+  // any other failure falls back to the server's message.
+  const [removeErr, setRemoveErr] = useState<ModelRemoveError | null>(null)
+  const removeMut = useMutation({
+    mutationFn: (model: string) => api.sttDeleteModel(model),
+    onMutate: () => setRemoveErr(null),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['sttStatus'] }),
+    onError: (e: Error, model: string) => {
+      const code = e instanceof ApiError ? parseErrorCode(e.body) : undefined
+      const key = code ? MODEL_REMOVE_ERROR_KEY[code] : undefined
+      setRemoveErr({
+        model,
+        message: key ? i18nT(key) : (e.message || i18nT('pages.settings.sttSettings.model_remove_failed')),
+        error: e,
+      })
+    },
+  })
+  const removeModel = async (m: SttModel) => {
+    const ok = await confirm({
+      title: i18nT('pages.settings.sttSettings.model_remove_confirm_title', { name: m.name }),
+      body: i18nT('pages.settings.sttSettings.model_remove_confirm_body', { size: fmtBytes(m.size_bytes) }),
+      confirmLabel: i18nT('pages.settings.sttSettings.model_remove'),
+    })
+    if (ok) removeMut.mutate(m.name)
+  }
   const [restarting, setRestarting] = useState(false)
   const decoderMut = useMutation({
     mutationFn: () => api.sttFfmpegDownload(),
@@ -1041,9 +1023,27 @@ export default function SttSettings({ cardIndex }: {
   // shows no model rows instead of claiming a model is missing.
   const status = statusQ.data
   const models = status?.models ?? []
-  const selectedModel = models.find(m => m.name === stt.model)
+  // The stored choice decides the selected row. The gateway's RESOLVED name is
+  // used only when that status answer was resolved from the stored name now in
+  // the config: a superseded name such as `medium` loads `large-v3-turbo`, so
+  // that is the row in use. A status answer from before the last save (its
+  // refetch failed, or has not landed yet) names the old model and is ignored.
+  // `custom` always selects the Custom row: the gateway resolves a custom choice
+  // with no usable file to the default, but the user picked Custom.
+  const resolvedForStored = status?.configured_model === stt.model ? status?.model : undefined
+  const selectedName = stt.model === CUSTOM_MODEL ? CUSTOM_MODEL : (resolvedForStored || stt.model)
+  const selectedModel = models.find(m => m.name === selectedName)
   const customUnusable = selectedModel?.name === CUSTOM_MODEL && !selectedModel.present && !!selectedModel.error
+  // Based on the STORED model and the user's intent, not the resolved one: the
+  // custom rows are idle when the user picked a catalog model, whatever loads.
   const customIdle = stt.model !== CUSTOM_MODEL && !customIntended
+  // The table's rows: the served catalog, then `custom` LAST. The status endpoint
+  // lists `custom` only while it is configured, so the row is synthesised
+  // otherwise, as the dropdown it replaces always offered the option. It has no
+  // size (nothing is downloaded), so `size_bytes` is 0.
+  const customRow = models.find(m => m.name === CUSTOM_MODEL)
+    ?? { name: CUSTOM_MODEL, size_bytes: 0, present: false }
+  const modelRows = [...models.filter(m => m.name !== CUSTOM_MODEL), customRow]
   // Progress is only shown for the model on screen. The gateway runs one transfer
   // at a time, so switching models mid-download leaves the store reporting the
   // PREVIOUS model, and attributing that byte count to the new selection would
@@ -1052,7 +1052,7 @@ export default function SttSettings({ cardIndex }: {
   // body without it threw during render, and the error boundary then replaced the
   // entire settings page rather than this one card.
   const download =
-    status?.download?.model === stt.model ? status?.download : undefined
+    status?.download?.model === selectedName ? status?.download : undefined
   const downloading = download?.step === DOWNLOAD_STEP_RUNNING
   // Availability comes from the status endpoint when it has answered, because it
   // carries the machine-readable reason. The config's plain boolean is the
@@ -1079,7 +1079,7 @@ export default function SttSettings({ cardIndex }: {
     && !!backend
     && !backend.accelerated
     && backend.name !== BACKEND_UNKNOWN
-    && SLOW_WITHOUT_ACCELERATION.includes(stt.model)
+    && SLOW_WITHOUT_ACCELERATION.includes(selectedName)
 
   // The acceleration, as a badge beside Status. One glanceable fact, and the only
   // one of the engine readings that changes what a user would DO -- the threads and
@@ -1286,35 +1286,46 @@ export default function SttSettings({ cardIndex }: {
             than "the list has not arrived". */}
         {usesCatalogModel && models.length > 0 && (
           <>
-            {/* Options come from the served catalog, never a list in this file:
-                the sizes and the set of models are the backend's to change, and a
+            {/* Rows come from the served catalog, never a list in this file: the
+                sizes and the set of models are the backend's to change, and a
                 hardcoded copy here would offer a model the gateway cannot load.
-                The size rides in the option label so the download cost is visible
-                BEFORE the click that commits to it. `custom` is appended because
-                it is not a catalog artifact — it selects the file and digest in the
-                two rows below. */}
-            <SettingsSelect
-              label={i18nT('pages.settings.sttSettings.model')}
-              hint={i18nT('pages.settings.sttSettings.larger_models_are_more_accurate_but_slower_to_ru')}
-              value={stt.model}
-              options={[...models.filter(m => m.name !== CUSTOM_MODEL).map(m => m.name), CUSTOM_MODEL]}
-              optionLabels={[
-                ...models
-                  .filter(m => m.name !== CUSTOM_MODEL)
-                  .map(m => i18nT('pages.settings.sttSettings.model_option', { name: m.name, size: fmtBytes(m.size_bytes) })),
-                i18nT('pages.settings.sttSettings.model_option_custom'),
-              ]}
-              onChange={v => {
-                // Opening the rows is not undone by picking a catalog model again:
-                // configured weights stay visible so they can be corrected or
-                // cleared rather than silently remaining in config.
-                if (v === CUSTOM_MODEL) setCustomOpen(true)
-                setCustomIntended(v === CUSTOM_MODEL)
-                set({ model: v })
-              }}
-              disabled={saving}
-              configKey="stt.model"
-            />
+                The size is on every row, so the download cost is visible BEFORE
+                the click that commits to it. `custom` is the last row because it
+                is not a catalog artifact: it selects the file and digest in the
+                two rows below the table. */}
+              <SttModelTable
+                label={i18nT('pages.settings.sttSettings.model')}
+                hint={i18nT('pages.settings.sttSettings.larger_models_are_more_accurate_but_slower_to_ru')}
+                configKey="stt.model"
+                models={modelRows}
+                selected={selectedName}
+                download={status?.download}
+                saving={saving}
+                preparing={prepareMut.isPending}
+                removing={removeMut.isPending ? removeMut.variables ?? '' : ''}
+                onUse={name => {
+                  // Opening the rows is not undone by picking a catalog model again:
+                  // configured weights stay visible so they can be corrected or
+                  // cleared rather than silently remaining in config.
+                  if (name === CUSTOM_MODEL) setCustomOpen(true)
+                  setCustomIntended(name === CUSTOM_MODEL)
+                  set({ model: name })
+                }}
+                onDownload={name => prepareMut.mutate(name)}
+                removeError={removeErr}
+                onDismissRemoveError={() => setRemoveErr(null)}
+                onRemove={m => void removeModel(m)}
+                // The selected model is not on disk yet. Offered BEFORE the first
+                // dictation on purpose: otherwise the download starts while the user
+                // is already talking, where a multi-hundred-megabyte transfer is
+                // indistinguishable from a hang. Its Download button is on its row.
+                // Never for `custom`: there is nothing to download, and an unusable
+                // file is explained under the file row instead.
+                selectedNotice={selectedModel && selectedModel.name !== CUSTOM_MODEL
+                  && !selectedModel.present && !downloading
+                  ? i18nT('pages.settings.sttSettings.model_download_prompt', { size: fmtBytes(selectedModel.size_bytes) })
+                  : undefined}
+              />
             {/* The cost of THIS choice on THIS machine, before the download rather
                 than after the first dictation. Shown only when the build links no
                 acceleration and the build was readable, so it is a measured warning
@@ -1448,43 +1459,11 @@ export default function SttSettings({ cardIndex }: {
                 </div>
               </>
             )}
-            {downloading && download ? (
-              <ModelDownloadProgress download={download} />
-            ) : selectedModel?.present ? (
-              // Nothing. A model already on disk needs no line of its own: the
-              // absence of a download prompt IS the message, and a row that says
-              // "this is fine" for the ordinary case is the kind of reassurance
-              // that crowds out the warnings worth reading.
-              null
-            ) : selectedModel?.name === CUSTOM_MODEL ? (
-              // Nothing to download for a custom model; an unusable file is
-              // explained under the file row instead.
-              null
-            ) : selectedModel ? (
-              // Offered BEFORE the first dictation on purpose. The alternative is
-              // that the download starts when the user is already talking, where a
-              // multi-hundred-megabyte transfer is indistinguishable from a hang.
-              <div className="-mt-1 mb-1 flex flex-col gap-1.5 items-start">
-                <p className="text-[12px] text-muted">
-                  {i18nT('pages.settings.sttSettings.model_download_prompt', { size: fmtBytes(selectedModel.size_bytes) })}
-                </p>
-                <Btn onClick={() => prepareMut.mutate(selectedModel.name)} disabled={prepareMut.isPending}>
-                  <Download className="lucide-inline" /> {i18nT('pages.settings.sttSettings.download_model')}
-                </Btn>
-              </div>
-            ) : null}
-            {/* A finished-and-failed transfer (the job's own `error`). Status
-                panel with nothing editable in this block → hand-off on. */}
-            {download?.step === DOWNLOAD_STEP_FAILED && download.error && (
-              <ErrorNotice
-                variant="inline"
-                className="-mt-1 mb-1"
-                message={download.model === CUSTOM_MODEL
-                  ? download.error
-                  : i18nT('pages.settings.sttSettings.download_failed_reason', { error: download.error })}
-                askAgent
-              />
-            )}
+            {/* The selected model's download prompt is a row under that model inside
+                the table (`selectedNotice`), not a line here: below the table it read
+                as being about the last row. Progress and a failed transfer are rows
+                of the model they belong to as well. */}
+            {confirmDialog}
           </>
         )}
 

@@ -107,7 +107,7 @@ const API_KEY_ORDER = [
   'capabilityMcpInstall', 'capabilityMcpUninstall', 'capabilitySkillsList', 'capabilitySkillsInstall',
   'capabilitySkillsUninstall', 'capabilityAgentsList', 'capabilityAgentsInstall', 'capabilityAgentsUninstall',
   'capabilityPluginsList', 'capabilityPluginsSync', 'capabilityMcpRegistry', 'sttConfig',
-  'saveSttConfig', 'sttStatus', 'sttVocabularies', 'sttPrepare', 'sttFfmpegDownload',
+  'saveSttConfig', 'sttStatus', 'sttVocabularies', 'sttPrepare', 'sttDeleteModel', 'sttFfmpegDownload',
   'sttPrewarm', 'sttPolish', 'sttTranscribe', 'pullRequestSource',
   'pullRequestChecks', 'pullRequestStatuses', 'resolvePullRequestThread', 'unresolvePullRequestThread',
   'replyToPullRequestThread', 'commentOnPullRequest', 'enablePullRequestAutoMerge', 'markPullRequestReady',
