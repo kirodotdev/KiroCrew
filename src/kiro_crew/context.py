@@ -178,14 +178,18 @@ from kiro_crew.context_assembly.member_gates import (  # noqa: F401
 from kiro_crew.context_assembly.output_contract import (  # noqa: F401
     _CRITICAL_RULES,
     _CRITICAL_RULES_CHANNEL,
+    _CRITICAL_RULES_GOAL,
     _CRITICAL_RULES_HEAD,
     _CRITICAL_RULES_TAIL,
+    _CRITICAL_RULES_VARIANTS,
     _DIFF_RULE_CHANNEL,
     _DIFF_RULE_DASHBOARD,
+    _GOAL_RULE_DASHBOARD,
     _UI_LANGUAGE_CATALOGS,
     _UI_LANGUAGE_TAG_RE,
     _build_ui_language_section,
     _critical_rules_for,
+    _goal_card_surface,
     normalize_ui_language_tag,
 )
 from kiro_crew.context_assembly.replay import (  # noqa: F401

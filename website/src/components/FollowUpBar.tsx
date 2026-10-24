@@ -1,6 +1,7 @@
-import { memo, useRef, useState, useEffect, useLayoutEffect, useCallback } from 'react'
+import { memo, useRef, useState, useEffect, useLayoutEffect, useCallback, useId } from 'react'
 import { useScrollEdges } from '../hooks/useScrollEdges'
-import { ChevronLeft, ChevronRight, ArrowUp, Loader2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ArrowUp, Loader2, Goal } from 'lucide-react'
+import { Btn } from './ui'
 import { InstantTip, useInstantTip as useSharedInstantTip } from './InstantTip'
 import ErrorNotice from './ErrorNotice'
 import { Glass } from './Glass'
@@ -11,6 +12,20 @@ export type FollowUpLayout = 'multiline' | 'scroll'
 
 interface FollowUpBarProps {
   options: readonly string[]
+  /** A durable multi-turn objective rendered separately from ordinary reply pills. */
+  goal?: string | null
+  /** Opens the existing Set-a-goal review flow with `goal` prefilled. */
+  onGoal?: (goal: string) => void
+  /** Persistence failure for the suggested objective. */
+  goalError?: string | null
+  onDismissGoalError?: () => void
+  /** Keeps the suggestion visible but prevents a second incompatible automation. */
+  goalDisabledReason?: string
+  /** The session's active goal is this objective: the user already started it. */
+  goalStarted?: boolean
+  /** Opens the composer's goal control, which every blocked state and the
+   *  storage failure send the user to. */
+  onOpenGoal?: () => void
   picked: ReadonlySet<string>
   /**
    * Third argument is `sourceKey` AS IT WAS AT CLICK TIME (see `sourceKey`
@@ -810,16 +825,141 @@ function MultilineLayout({ options, picked, onSelect, onSend, quickSend, multi, 
   )
 }
 
-function FollowUpBar({ options, picked, onSelect, onSend, quickSend, multi = true, layout = 'multiline', sourceKey, pendingOptions, refusedOptions, error }: FollowUpBarProps) {
+function GoalSuggestionCard({
+  goal,
+  onGoal,
+  error,
+  onDismissError,
+  disabledReason,
+  started,
+  onOpenGoal,
+}: {
+  goal: string
+  onGoal?: (goal: string) => void
+  error?: string | null
+  onDismissError?: () => void
+  disabledReason?: string
+  started?: boolean
+  onOpenGoal?: () => void
+}) {
+  // The status line explains the card's actions, so it is their accessible
+  // description: a screen reader hears why Review & start is off with it.
+  const statusId = useId()
+  // After a storage failure Review & start can only fail again, so it is off
+  // and Open goal is the one way forward. Once started, Open goal is where
+  // the running goal is watched or stopped.
+  const startDisabled = !onGoal || !!disabledReason || !!error || !!started
+  const showOpenGoal = !!onOpenGoal && (!!started || !!disabledReason || !!error)
+  const status = started
+    ? i18nT('components.followUpBar.goal_started')
+    : disabledReason || i18nT('components.followUpBar.continues_across_turns_until_delivered_or_blocked')
+  return (
+    <div
+      data-testid="autonomous-goal-card"
+      data-state={started ? 'started' : disabledReason ? 'blocked' : error ? 'failed' : 'ready'}
+      className="mt-1 rounded-xl border border-accent/50 bg-accent-subtle p-3 text-text"
+    >
+      <div className="flex flex-col gap-3 min-[390px]:flex-row min-[390px]:items-center">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-accent">
+            <Goal className="lucide-inline" aria-hidden />
+            {i18nT('components.followUpBar.autonomous_goal')}
+          </div>
+          <div className="mt-1 text-[13px] font-medium leading-snug break-words">{goal}</div>
+          {/* Polite live region: a block appearing is announced. */}
+          <div
+            id={statusId}
+            role="status"
+            className={`mt-1 text-[11px] leading-relaxed ${started ? 'text-ok' : disabledReason ? 'text-warn' : 'text-muted'}`}
+          >
+            {status}
+          </div>
+        </div>
+        <div className="flex w-full shrink-0 flex-col gap-2 min-[390px]:w-auto">
+          {showOpenGoal ? (
+            <Btn
+              type="button"
+              primary
+              className="w-full min-[390px]:w-auto"
+              aria-describedby={statusId}
+              onClick={onOpenGoal}
+            >
+              {i18nT('components.followUpBar.open_goal')}
+            </Btn>
+          ) : null}
+          <Btn
+            type="button"
+            primary={!showOpenGoal}
+            className="w-full min-[390px]:w-auto"
+            disabled={startDisabled}
+            aria-describedby={statusId}
+            onClick={() => onGoal?.(goal)}
+          >
+            {i18nT('components.followUpBar.review_and_start')}
+          </Btn>
+        </div>
+      </div>
+      {/* No hand-off: the objective is still only in this card, kept visible
+          so it can be selected and pasted into the goal panel. */}
+      <ErrorNotice
+        message={error}
+        variant="inline"
+        onDismiss={onDismissError}
+        className="mt-2"
+        testId="goal-save-error"
+      />
+    </div>
+  )
+}
+
+function FollowUpBar({
+  options,
+  goal,
+  onGoal,
+  goalError,
+  onDismissGoalError,
+  goalDisabledReason,
+  goalStarted,
+  onOpenGoal,
+  picked,
+  onSelect,
+  onSend,
+  quickSend,
+  multi = true,
+  layout = 'multiline',
+  sourceKey,
+  pendingOptions,
+  refusedOptions,
+  error,
+}: FollowUpBarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Content-keyed, not identity-keyed: the caller rebuilds the array on every
   // render, so an identity comparison would restart the entrance constantly.
-  // \u0000 cannot occur inside an option label.
-  const animating = useChipEntrance(options.join('\u0000'))
-  if (layout === 'scroll') {
-    return <ScrollLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} multi={multi} animating={animating} sourceKey={sourceKey} pendingOptions={pendingOptions} refusedOptions={refusedOptions} error={error} />
-  }
-  return <MultilineLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} multi={multi} animating={animating} sourceKey={sourceKey} pendingOptions={pendingOptions} refusedOptions={refusedOptions} error={error} />
+  // \u0000 cannot occur inside an option label or goal objective.
+  const animating = useChipEntrance([goal ?? '', ...options].join('\u0000'))
+  // Without a goal the option layout renders exactly as before; a goal-only
+  // offer renders the card alone instead of an empty chip row.
+  const optionLayout = options.length > 0 || !goal
+    ? layout === 'scroll'
+      ? <ScrollLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} multi={multi} animating={animating} sourceKey={sourceKey} pendingOptions={pendingOptions} refusedOptions={refusedOptions} error={error} />
+      : <MultilineLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} multi={multi} animating={animating} sourceKey={sourceKey} pendingOptions={pendingOptions} refusedOptions={refusedOptions} error={error} />
+    : null
+  return (
+    <>
+      {goal ? (
+        <GoalSuggestionCard
+          goal={goal}
+          onGoal={onGoal}
+          error={goalError}
+          onDismissError={onDismissGoalError}
+          disabledReason={goalDisabledReason}
+          started={goalStarted}
+          onOpenGoal={onOpenGoal}
+        />
+      ) : null}
+      {optionLayout}
+    </>
+  )
 }
 
 export default memo(FollowUpBar)

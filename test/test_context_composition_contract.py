@@ -82,6 +82,7 @@ def _transcript(turns: int, *, size: int) -> list[dict]:
 _STABLE_TEXT = {
     "critical_rules": lambda: ctx._CRITICAL_RULES,
     "critical_rules_channel": lambda: ctx._CRITICAL_RULES_CHANNEL,
+    "critical_rules_goal": lambda: ctx._CRITICAL_RULES_GOAL,
     "member_how_you_work": lambda: ctx._MEMBER_HOW_YOU_WORK,
     # Item 7 included, because the ASSEMBLY includes it on this variant too: the
     # Dashboard tab is rendered from the instance store and does not depend on
@@ -105,6 +106,7 @@ _STABLE_TEXT_SHA256 = {
     "context_scope_all_withheld": "98ed04f8fca6f805d76f7fd3f518c63f221d5af6da6636fd30b28dc217207a0a",
     "critical_rules": "16827ce030089653769a3f16a6fb96e6c9fcda799ef4750630080011b5ac1647",
     "critical_rules_channel": "7b7ea4db70ccbc233959938b561281591e3b3c26544b383046942ce229eacf7e",
+    "critical_rules_goal": "d737eb99c6566136f268728c37d074117163c3c9d1e3d63d38c09d834dd43d34",
     "docs_section": "971b6008afbd9ff048c498c06cffecc6dafc7a58b0df75ff9db0b15cf9e26c09",
     "member_how_you_work": "eaecc5424f7093f793bb68228cd9231752f7f0ba6c75204d6d7a392ad3dca3f1",
     "member_how_you_work_unavailable": "8b763af41df7bf48da8ac0e6080746273ea8fcf2e2239c4467e1958041adf02f",
@@ -513,9 +515,9 @@ _SCENARIOS = {
 #: recorded before the assembly moved into owners.
 _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
     "background_overflow": (
-        "2c4855e1f2a3372fb61f2d9abac311aeb1e524374c11dddea87a6e50d396f7e5",
+        "17bbeffba7f034b9f5c6ae84fb60a930c5cc8949608e67d7573db3717ca953f1",
         [
-            ("unclassified", 173),
+            ("unclassified", 178),
             ("agent_identity", 25),
             ("surface", 197),
             ("memory", 31487),
@@ -530,10 +532,10 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "compressed_history_replay": (
-        "52ced419172acdf39e95df4137373db1a00ec3e6e0d52a05d91172444ee64b98",
+        "4e69f9644f58f8e1eb424600417c6e6c4aea5056ac04af3b6a23ad72339f1221",
         [
             ("agent_instructions", 1479),
-            ("session_wrapper", 288),
+            ("session_wrapper", 293),
             ("agent_identity", 25),
             ("surface", 197),
             ("workspace_identity", 371),
@@ -598,10 +600,10 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "fresh_custom_agent": (
-        "171cc02465cbe9fdf48c6302d458e8089426359eef2b0cb9bb77771dc4319172",
+        "58391e910b63abf3cf6da06b9425ea41c030dd9ed1105d9d69147916122dbf67",
         [
             ("agent_instructions", 74),
-            ("session_wrapper", 288),
+            ("session_wrapper", 293),
             ("agent_identity", 32),
             ("surface", 197),
             ("memory", 864),
@@ -627,10 +629,10 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "fresh_dashboard": (
-        "b2097c54e3c19b2c35f83afe4578a236eaa380dc373313db699bff7667750807",
+        "843d1ecb2161b2e00e49bab04b9ffe65dfff11ccfeaf6e00acf3ed47693a12cf",
         [
             ("agent_instructions", 1479),
-            ("session_wrapper", 288),
+            ("session_wrapper", 293),
             ("agent_identity", 25),
             ("surface", 197),
             ("workspace_identity", 371),
@@ -701,10 +703,10 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "profile_language_preferences": (
-        "5523005de0c44a3dd08872cfff06692a84c3ecc9275c0ee6186c0006244b9a41",
+        "0f510f2089a3d6131af31bdba8c790ebe6099eadf033a80107c154c965f93b3f",
         [
             ("agent_instructions", 1479),
-            ("session_wrapper", 288),
+            ("session_wrapper", 293),
             ("agent_identity", 25),
             ("surface", 698),
             ("workspace_identity", 371),
@@ -717,9 +719,9 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "resumed": (
-        "717f7958bafc0fed04fc72a2f398c037418309d20e31260a130eebe687135629",
+        "4978f9f2a1e614621efeb7450f61194f2b38a882df254719e017c86641e6b2cb",
         [
-            ("recovery", 303),
+            ("recovery", 308),
             ("agent_identity", 25),
             ("surface", 30),
             ("reply_format_rules", 1347),
@@ -738,9 +740,9 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "session_context_small_window": (
-        "8c31431aac6e64cfce18de592e62e3f9e25de84ed6893bf1380fd433e804eaf5",
+        "b8233bb6ad369e0fbdede652bac76e02f14022aef35aa7d3f0a86f1285532365",
         [
-            ("unclassified", 64),
+            ("unclassified", 69),
             ("agent_identity", 25),
             ("surface", 197),
             ("workspace_identity", 371),
@@ -769,10 +771,10 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "skills_discovery": (
-        "49adefe0518a63058e79669270f83428ab9223b46e113e16023ee62726e31e69",
+        "e26f53847b901287dc1df0da57a47cc83bb8da3db9db6d32c4c82025b9e16e60",
         [
             ("agent_instructions", 1479),
-            ("session_wrapper", 288),
+            ("session_wrapper", 293),
             ("agent_identity", 25),
             ("surface", 197),
             ("workspace_identity", 371),
@@ -824,10 +826,10 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "temporary_session": (
-        "13d7a7013b1c28a6898a4b13098b94f2b3b354a906b9a348cbd8905ef4b1a8a1",
+        "9a0c6c8271ff6dff0af6aaf8f9dfb2d4b677c02a470ceafe524d75afe7d4d7aa",
         [
             ("agent_instructions", 1479),
-            ("session_wrapper", 288),
+            ("session_wrapper", 293),
             ("agent_identity", 25),
             ("surface", 197),
             ("workspace_identity", 371),
@@ -838,9 +840,9 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "thread_history_compressed": (
-        "e88541bfb6a55d1401ef33dabd78419696ede499ef48f57f90bc80176df6ded4",
+        "2aee3f7016c2fb9a65c0afc21be310976e347685a5430fc72d3435b2d89f33c6",
         [
-            ("unclassified", 302),
+            ("unclassified", 307),
             ("agent_identity", 25),
             ("surface", 197),
             ("workspace_identity", 371),
@@ -850,9 +852,9 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "thread_history_fallback": (
-        "dd96f014ddfd744455d0ae2ccda78d4f3726fb7d687fc625bd182e7101443a67",
+        "9a14edbc5d7aa7a529ffcbb83357a87d768d074e4c6a14e95dbbaf3b8cdd2df4",
         [
-            ("unclassified", 191),
+            ("unclassified", 196),
             ("agent_identity", 25),
             ("surface", 197),
             ("workspace_identity", 371),
@@ -877,10 +879,10 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "widget_density_less": (
-        "9a80fa651ad6740b13b0b0556ca3b2be4772a717370622db68cd9e92c509dc59",
+        "fce17c307c80e406c448ef356da0939004011017319b495c0cfa7126afd10f7c",
         [
             ("agent_instructions", 792),
-            ("session_wrapper", 288),
+            ("session_wrapper", 293),
             ("agent_identity", 25),
             ("surface", 197),
             ("workspace_identity", 371),

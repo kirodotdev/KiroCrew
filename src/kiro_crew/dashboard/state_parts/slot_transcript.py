@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config.loader import resolve_effective_agent
-from kiro_crew.constants import OPTIONS_RE_LINE
+from kiro_crew.constants import OPTIONS_RE_LINE, strip_goal_marker_lines
 from kiro_crew.dashboard.state_parts.source_links import (
     _budgeted_source_links,
     _project_source_links,
@@ -165,10 +165,10 @@ _OPTIONS_HEAD = "[OPTIONS:"
 
 
 def _strip_options(text: str) -> str:
-    """*text* without its ``[OPTIONS: ...]`` marker lines, stripped."""
-    if _OPTIONS_HEAD not in text:
-        return text.strip()
-    return _OPTIONS_RE.sub("", text).strip()
+    """*text* without its ``[OPTIONS: ...]`` marker lines or standalone goal lines, stripped."""
+    if _OPTIONS_HEAD in text:
+        text = _OPTIONS_RE.sub("", text)
+    return strip_goal_marker_lines(text).strip()
 
 
 def _parse_options(text: str) -> list[str]:

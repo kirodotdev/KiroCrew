@@ -28,6 +28,16 @@ class TestSubagentOptionsExtraction:
         assert options == ["Commit and raise CR", "Spawn adversarial review", "Just commit"]
         assert "[OPTIONS:" not in reply_text
 
+    def test_goal_marker_is_not_mirrored_as_slack_prose(self):
+        reply_text, options = extract_options("Next step.\n[GOAL: Deliver it]")
+        assert reply_text == "Next step."
+        assert options == []
+
+    def test_marker_free_output_preserves_transport_whitespace(self):
+        reply_text, options = extract_options("partial output ")
+        assert reply_text == "partial output "
+        assert options == []
+
     def test_options_blocks_appended_to_footer(self):
         """Extracted options should produce Block Kit checkboxes + Send button."""
         options = ["Choice A", "Choice B"]

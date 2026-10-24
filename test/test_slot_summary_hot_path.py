@@ -18,6 +18,7 @@ import unicodedata
 import pytest
 
 from kiro_crew import preview_text
+from kiro_crew.constants import strip_goal_marker_lines
 from kiro_crew.dashboard import chat_utils as cu
 from kiro_crew.dashboard import chat_utils_display as cud
 from kiro_crew.dashboard import state as dashboard_state
@@ -85,11 +86,13 @@ def test_the_cf_drop_matches_a_per_character_walk_over_every_code_point():
         "inline [OPTIONS: a | b] mid-line text",
         "**[OPTIONS: wrapped | bold]**",
         "[OPTIONS:]",
+        "next\n[GOAL: ship it]\n[OPTIONS: yes | no]",
+        "[GOAL: no options here]\nprose",
     ],
 )
 def test_the_options_guard_answers_like_the_regex_scan(text):
     assert st._parse_options(text) == _scan_parse_options(text)
-    assert st._strip_options(text) == st._OPTIONS_RE.sub("", text).strip()
+    assert st._strip_options(text) == strip_goal_marker_lines(st._OPTIONS_RE.sub("", text)).strip()
 
 
 _PREVIEW_SAMPLES = [
@@ -221,7 +224,9 @@ def _reference(monkeypatch):
     monkeypatch.setattr(dashboard_state, "_redact", _battery)
     monkeypatch.setattr(dashboard_state, "_parse_options", _scan_parse_options)
     monkeypatch.setattr(st, "_last_message_preview", _direct_preview)
-    monkeypatch.setattr(st, "_strip_options", lambda t: st._OPTIONS_RE.sub("", t).strip())
+    monkeypatch.setattr(
+        st, "_strip_options", lambda t: strip_goal_marker_lines(st._OPTIONS_RE.sub("", t)).strip()
+    )
     assert st._redact is _battery and st._parse_options is _scan_parse_options
 
 

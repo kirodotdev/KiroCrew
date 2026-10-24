@@ -346,11 +346,7 @@ def build_message(
             # none of the other trusted framing uses these markers, so
             # scrubbing everything after the block is safe.
             _rules_prefix = next(
-                (
-                    rb
-                    for rb in (ctx._CRITICAL_RULES, ctx._CRITICAL_RULES_CHANNEL)
-                    if session_ctx.startswith(rb)
-                ),
+                (rb for rb in ctx._CRITICAL_RULES_VARIANTS if session_ctx.startswith(rb)),
                 None,
             )
             if _rules_prefix is not None:
@@ -368,7 +364,12 @@ def build_message(
                 # insurance against output-format drift. Same variant
                 # selection and per-agent opt-out gate as session start.
                 _resume_rules = (
-                    ctx._critical_rules_for(session_key, runtime_source)
+                    ctx._critical_rules_for(
+                        session_key,
+                        runtime_source,
+                        mode=mode,
+                        execution_context=execution_context,
+                    )
                     if ctx._agent_includes_crew_context(agent)
                     else ""
                 )

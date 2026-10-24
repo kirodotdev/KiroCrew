@@ -16,6 +16,12 @@
 // across a module boundary hands out mutable `lastIndex` state that breaks this module's own
 // parsing. In-tree callers that only ever `.replace()` with it import `./optionMarker` directly.
 export { stripPartialOptionMarker } from './optionMarker'
+// `parseGoalSuggestion` is deliberately NOT re-exported. `parseOptions` is the one reader
+// of the goal marker — it returns `goalSuggestion` beside `options` and strips both from
+// the same text — so a second entry point would let a surface read the goal while leaving
+// the option grammar un-applied, and the two would disagree about what the prose says.
+// `options.ts` and the in-tree hosts import goal-only helpers directly. They are
+// implementation details, not app SDK surface without an app consumer.
 export { parseOptions, deriveFollowUpOptions } from './options'
 export type { ParsedOptions, FollowUpDerivation } from './options'
 export { extractSteeringAcks } from './steering'

@@ -395,6 +395,8 @@ export interface ChatInputProps {
   /** Send-key mode. Omitted means the user's stored Settings -> Chat ->
    *  Composer preference; pass it only to override that (e.g. mobile). */
   sendOnEnter?: SendMode
+  /** Autonomous multi-turn objective from an assistant `[GOAL: ...]` marker. */
+  followUpGoal?: string | null
   /** Follow-up options from assistant message */
   followUpOptions?: readonly string[]
   /** Options the user has picked (visual highlight in FollowUpBar) */

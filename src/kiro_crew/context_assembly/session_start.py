@@ -282,7 +282,14 @@ def build_session_context(
     # them regardless); this only stops the host from MANDATING them where an
     # agent has declared it does not want them.
     if ctx._agent_includes_crew_context(agent):
-        append_required(ctx._critical_rules_for(session_key, runtime_source))
+        append_required(
+            ctx._critical_rules_for(
+                session_key,
+                runtime_source,
+                mode=mode,
+                execution_context=execution_context,
+            )
+        )
 
     # Current date/time — inject for ALL agents so the LLM knows "today".
     # Honour KiroCrewConfig.timezone (e.g. "Asia/Tokyo") so the LLM sees
@@ -633,11 +640,7 @@ def build_session_context(
 
     if essentials:
         prefix = next(
-            (
-                r
-                for r in (ctx._CRITICAL_RULES, ctx._CRITICAL_RULES_CHANNEL)
-                if context.startswith(r)
-            ),
+            (r for r in ctx._CRITICAL_RULES_VARIANTS if context.startswith(r)),
             "",
         )
         context = prefix + essentials + context[len(prefix) :]
