@@ -1088,7 +1088,7 @@ async def test_note_read_snapshots_mtime_before_content(fixtures, monkeypatch) -
         note = Path(vault["localPath"]) / "One.md"
         future = time.time() + 1000
 
-        real_read = server_mod.read_note_text
+        real_read = server_mod.read_note_snapshot
 
         async def racing_read(path: Path):
             # Simulate an external atomic save landing DURING the read by bumping
@@ -1096,7 +1096,7 @@ async def test_note_read_snapshots_mtime_before_content(fixtures, monkeypatch) -
             os.utime(note, (future, future))
             return await real_read(path)
 
-        monkeypatch.setattr(server_mod, "read_note_text", racing_read)
+        monkeypatch.setattr(server_mod, "read_note_snapshot", racing_read)
 
         status, body = await client.get("/api/note?path=One.md")
         assert status == 200

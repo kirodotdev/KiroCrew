@@ -5,8 +5,9 @@ disk: a vault's content root and ``safe_join``, the portable-name and linked-fol
 the trash and mutation paths, and the checked directory and staging writes a note writer
 makes under ``server.vault_write_lock`` (the attach route screens its own folder in
 ``server``). Beside them: the staged write a note save makes beside the note; listing,
-snapshotting and reading the notes; and the save guard -- the freshness checks a save
-re-runs before each publish attempt, and the attempt itself. Reached through ``server``,
+snapshotting and reading the notes; and the save guard -- the freshness checks (mtime, or
+content hash when the client sends one) a save re-runs before each publish attempt, and
+the attempt itself. Reached through ``server``,
 its facade.
 """
 
@@ -14,10 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import ntpath
 import os
 from pathlib import Path, PurePosixPath
-from typing import Any, Optional
+from typing import Any, NoReturn, Optional
 
 from kiro_crew import hooks, platform_compat
 from kiro_crew.apps.builtins.md_notebook import git_ops
@@ -597,14 +599,49 @@ async def read_note_text(path: Path) -> Optional[str]:
     return await asyncio.to_thread(_read_note_text_sync, path)
 
 
-def _read_note_text_sync(path: Path) -> Optional[str]:
-    """Read through the sensitive-path gate in the caller's filesystem worker."""
+async def read_note_snapshot(path: Path) -> Optional[tuple[str, str]]:
+    """``read_note_text`` plus the content hash of the bytes that text came from.
+
+    One read yields both, so the hash always describes exactly the text handed
+    back -- no stat-then-read ordering to get right, unlike the mtime token.
+    """
+    return await asyncio.to_thread(_read_note_snapshot_sync, path)
+
+
+def note_content_hash(data: bytes) -> str:
+    """The ``contentHash`` save-guard token: SHA-256 hex of a note's raw bytes.
+
+    Raw, not the line-ending-normalized text, so a CRLF -> LF rewrite on disk
+    still counts as a change. A save writes ``content.encode("utf-8")`` verbatim
+    (``newline=""``), so hashing those bytes gives the token of what it wrote.
+    """
+    return hashlib.sha256(data).hexdigest()
+
+
+def _read_note_bytes_sync(path: Path) -> Optional[bytes]:
+    """Raw note bytes through the sensitive-path gate, or None when refused."""
     try:
-        data = hooks.safe_read_file_bytes(str(path))
+        return hooks.safe_read_file_bytes(str(path))
     except (OSError, hooks.FileTooLargeError):
         return None
+
+
+def _read_note_snapshot_sync(path: Path) -> Optional[tuple[str, str]]:
+    data = _read_note_bytes_sync(path)
     if data is None:
         return None
+    return _decode_note_bytes(data), note_content_hash(data)
+
+
+def _read_note_text_sync(path: Path) -> Optional[str]:
+    """Read through the sensitive-path gate in the caller's filesystem worker."""
+    data = _read_note_bytes_sync(path)
+    if data is None:
+        return None
+    return _decode_note_bytes(data)
+
+
+def _decode_note_bytes(data: bytes) -> str:
     # Normalize line endings to "\n": the read is binary (through the sensitive
     # gate), so a note written with CRLF elsewhere (Obsidian on Windows, a repo
     # with autocrlf) would otherwise reach the block editor as "\r\n" and produce
@@ -612,14 +649,25 @@ def _read_note_text_sync(path: Path) -> Optional[str]:
     return data.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
-async def _assert_note_is_fresh(abs_path: Path, rel: str, base_mtime: object) -> None:
+async def _assert_note_is_fresh(
+    abs_path: Path, rel: str, base_mtime: object, base_hash: object = None
+) -> None:
     """Raise 409 ESTALE if the note changed on disk since the client read it.
 
     Split out of the save handler so its retry in ``server`` can re-run it. It must be
     cheap to repeat and must not mutate anything: it is the freshness half of a
     check-and-write, and a retry that skipped it would publish against a file it
     never revalidated.
+
+    A ``baseHash`` (the ``contentHash`` of the client's read) takes precedence
+    over ``baseMtime``: it catches an external write that kept the mtime --
+    ``os.utime``, ``rsync -t``, a coarse-timestamp filesystem, two writes in one
+    millisecond -- which the mtime comparison passes. A client that sends no
+    hash keeps the mtime-only check, so an older client is unaffected.
     """
+    if isinstance(base_hash, str):
+        await _assert_note_hash_matches(abs_path, rel, base_mtime, base_hash)
+        return
     if isinstance(base_mtime, (int, float)):
         current: Optional[float] = None
         try:
@@ -645,36 +693,100 @@ async def _assert_note_is_fresh(abs_path: Path, rel: str, base_mtime: object) ->
                     disk="",
                 )
         if current is not None and abs(current - base_mtime) > MTIME_TOLERANCE_MS:
-            # The conflict response hands this content back to the client, so
-            # it goes through the same gate as every other read: containment
-            # inside the vault says nothing about what the vault holds.
-            disk = await read_note_text(abs_path)
-            if disk is None:
-                raise ApiError(f"no such note: {rel}", 404, code="no_such_note")
-            raise ApiError(
-                "this note changed on disk since you opened it",
-                409,
-                code="ESTALE",
-                mtime=current,
-                disk=disk,
-            )
+            await _raise_note_changed(abs_path, rel, current)
 
 
-async def _observed_note_mtime(abs_path: Path) -> Optional[float]:
-    """The note's current mtime in ms, or None when it does not exist."""
+async def _raise_note_changed(
+    abs_path: Path, rel: str, current: float, snap: Optional[tuple[str, str]] = None
+) -> NoReturn:
+    """Raise the 409 ESTALE for a note that changed on disk, carrying the disk version.
+
+    The conflict response hands this content back to the client, so it goes
+    through the same gate as every other read: containment inside the vault says
+    nothing about what the vault holds. Its ``contentHash`` is what lets "keep
+    my version" retry against exactly the bytes the user was shown. A caller
+    that already read the note passes that *snap*, so the 409 carries the very
+    bytes its check compared.
+    """
+    if snap is None:
+        snap = await read_note_snapshot(abs_path)
+    if snap is None:
+        raise ApiError(f"no such note: {rel}", 404, code="no_such_note")
+    disk, disk_hash = snap
+    raise ApiError(
+        "this note changed on disk since you opened it",
+        409,
+        code="ESTALE",
+        mtime=current,
+        disk=disk,
+        contentHash=disk_hash,
+    )
+
+
+async def _assert_note_hash_matches(
+    abs_path: Path, rel: str, base_mtime: object, base_hash: str
+) -> None:
+    """The ``baseHash`` half of `_assert_note_is_fresh`: the hash alone decides.
+
+    A moved mtime over identical bytes is NOT a conflict -- a ``touch`` or a
+    checkout that rewrote the same content left nothing to lose. Deletion is
+    reported, and confirmed with ``baseMtime == -1``, exactly as on the mtime
+    path, so "keep mine" has one escape hatch whichever token was sent.
+    """
+    snap: Optional[tuple[str, str]] = None
     try:
-        return (await asyncio.to_thread(os.stat, abs_path)).st_mtime * 1000
+        current = (await asyncio.to_thread(os.stat, abs_path)).st_mtime * 1000
+        snap = await read_note_snapshot(abs_path)
+        if snap is None:
+            # The read found nothing. If the note is gone, it was deleted between
+            # the stat and the read: the same conflict as a deletion the stat saw.
+            await asyncio.to_thread(os.stat, abs_path)
+    except FileNotFoundError:
+        if base_mtime == _RECREATE_SENTINEL:
+            return
+        raise ApiError(
+            "this note was deleted on disk since you opened it",
+            409,
+            code="ESTALE",
+            mtime=_RECREATE_SENTINEL,
+            disk="",
+        )
+    if snap is None:
+        raise ApiError(f"no such note: {rel}", 404, code="no_such_note")
+    if snap[1] != base_hash:
+        await _raise_note_changed(abs_path, rel, current, snap)
+
+
+#: A note's sampled state for the tokenless save path: its mtime in ms and the
+#: content hash of its bytes (None when the read gate refused them).
+NoteState = tuple[float, Optional[str]]
+
+
+async def _observed_note_state(abs_path: Path) -> Optional[NoteState]:
+    """The note's current mtime and content hash, or None when it does not exist."""
+    try:
+        mtime = (await asyncio.to_thread(os.stat, abs_path)).st_mtime * 1000
     except FileNotFoundError:
         return None
+    snap = await read_note_snapshot(abs_path)
+    return mtime, snap[1] if snap is not None else None
 
 
-async def _assert_note_unchanged(abs_path: Path, rel: str, observed: Optional[float]) -> None:
+def _same_note_state(current: NoteState, observed: NoteState) -> bool:
+    """Whether two samples describe the same note: by hash when both have one."""
+    if current[1] is not None and observed[1] is not None:
+        return current[1] == observed[1]
+    return abs(current[0] - observed[0]) <= MTIME_TOLERANCE_MS
+
+
+async def _assert_note_unchanged(abs_path: Path, rel: str, observed: Optional[NoteState]) -> None:
     """Raise 409 ESTALE if the note moved off *observed* since it was sampled.
 
     The tokenless counterpart to `_assert_note_is_fresh`. A save with no
     ``baseMtime`` has no client-supplied baseline to revalidate against, so the
     server takes its OWN: the state the save was about to overwrite, sampled
-    before the first publish attempt.
+    before the first publish attempt. The sample carries a content hash too, so
+    an external edit that kept the mtime is caught here as on the guarded path.
 
     The note lock serializes API writers, but it says nothing about an editor
     writing the file directly -- Obsidian, `git pull`, an external script. That
@@ -685,14 +797,10 @@ async def _assert_note_unchanged(abs_path: Path, rel: str, observed: Optional[fl
     Only RETRIES consult it. The first attempt is what the caller asked for:
     overwriting the state sampled here is the save, not a conflict.
     """
-    current = await _observed_note_mtime(abs_path)
+    current = await _observed_note_state(abs_path)
     if current is None and observed is None:
         return
-    if (
-        current is not None
-        and observed is not None
-        and abs(current - observed) <= MTIME_TOLERANCE_MS
-    ):
+    if current is not None and observed is not None and _same_note_state(current, observed):
         return
     if current is None:
         # Deleted under us mid-retry. Reported with the same -1 sentinel the
@@ -705,13 +813,14 @@ async def _assert_note_unchanged(abs_path: Path, rel: str, observed: Optional[fl
             mtime=_RECREATE_SENTINEL,
             disk="",
         )
-    disk = await read_note_text(abs_path)
+    snap = await read_note_snapshot(abs_path)
     raise ApiError(
         "this note changed on disk while your save was retrying",
         409,
         code="ESTALE",
-        mtime=current,
-        disk=disk if disk is not None else "",
+        mtime=current[0],
+        disk=snap[0] if snap is not None else "",
+        contentHash=snap[1] if snap is not None else None,
     )
 
 
