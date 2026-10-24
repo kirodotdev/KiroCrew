@@ -144,6 +144,13 @@ class _PendingRequest:
     # ``_REHANDSHAKE_STUB_SENTINEL``): the ``attempt_id`` it was sent under, a
     # log join key read by no decision. Empty for every other request.
     attempt_id: str = ""
+    # Identity server only: a release of this subscribe's URI for its caller
+    # fell due while it was in flight (the caller's last routed stub left)
+    # and was left to its verdict (``Backend._hold_identity_release``). A
+    # grant that routes the stub discharges it; any other verdict releases,
+    # unless a stub of the caller is routed by then or another same-caller
+    # subscribe inherits it.
+    release_owed: bool = False
 
 
 # Named by the path callers import it from, as ``BackendGone`` is.

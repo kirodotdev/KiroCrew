@@ -498,6 +498,7 @@ class Backend:
     # The ``resources/subscribe`` lease broker of a shared ``Backend``: ``kiro_crew.mcp_gateway.backend_leases``.
     evict_stub_subscriptions = _backend_leases.evict_stub_subscriptions
     _handle_resource_subscription = _backend_leases._handle_resource_subscription
+    _hold_identity_release = _backend_leases._hold_identity_release
     _on_resource_subscription_response = _backend_leases._on_resource_subscription_response
     resource_subscription_uris = _backend_leases.resource_subscription_uris
     replay_resource_subscriptions = _backend_leases.replay_resource_subscriptions

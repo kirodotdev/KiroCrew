@@ -4951,9 +4951,22 @@ is recycled as on main. Notification attribution and the last-stub recycle
 log for it routes or drops exactly as for any pending request, and the last
 stub leaving after a cancel still recycles a backend whose synchronous tool kept
 running. A subscribe or unsubscribe is not marked, because its verdict settles
-the shared lease tables. The client side is gated on the declaration because a
-direct kiro-cli or an older gateway never asked, and would at best drop the
-frame as unattributable.
+the shared lease tables: its cancel is not forwarded at all, so the server
+answers it and the verdict settles the lease under the stub that sent it, as on
+main when a server answers a request it was asked to cancel. The client side is
+gated on the declaration because a direct kiro-cli or an older gateway never
+asked, and would at best drop the frame as unattributable.
+
+On an identity-capable server, the upstream release of a caller's subscription
+to a URI is held while another stub of that caller is routed for the URI, or
+while a same-caller subscribe for it is in flight
+(`Backend._hold_identity_release`), whether or not anything was cancelled. The
+unsubscribing stub is answered locally, and with no such stub routed the first
+same-caller subscribe in flight inherits the release
+(`_PendingRequest.release_owed`). A grant that routes a stub discharges it,
+because the caller's one upstream subscription now serves that stub, whose own
+departure releases it. A refusal, an unknown verdict or a grant that routes no
+stub has the gateway send it as that caller, unless the rule still holds.
 
 ### Checklist for a new tool
 
