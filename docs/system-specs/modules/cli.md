@@ -1013,8 +1013,10 @@ permission_request
   → may this invocation ask?        (command mode AND both streams a TTY)
       no   → SEL "denied" → reject_tool → stderr notice
   → prompt the human
-      exactly "a" → SEL "approval_pending" (critical) → approve_tool(always=False)
+      exactly "y" (or legacy "a") → SEL "approval_pending" (critical) → approve_tool(always=False)
                   → SEL "allowed", or "rejected_transport_floor" when the transport refused it
+      "t" → stdout notice (no session trust here) → SEL "denied" → reject_tool
+      "o" + a typed reply → SEL "denied" (user_replied) → reply steered into the turn → reject_tool
       anything else → SEL "denied" → reject_tool
 ```
 
@@ -1036,7 +1038,7 @@ dashboard is the safe direction.
 
 | Mode | stdin+stdout TTY | Behaviour |
 |---|---|---|
-| interactive REPL | yes | Prompt. Exactly `a` allows once; exactly `o` denies with a typed reply to the agent; anything else denies. |
+| interactive REPL | yes | Prompt. Exactly `y` (or the legacy `a`) allows once; exactly `o` denies with a typed reply to the agent; anything else denies. |
 | interactive REPL | no | Deny automatically, notice on stderr, stdin untouched. |
 | `-m` single message | either | Deny automatically, notice on stderr, stdin untouched. |
 
@@ -1047,12 +1049,33 @@ watching for. And a prompt nobody can see is a hang, not consent, so the REPL
 still needs a real terminal on both ends. The mode is passed explicitly rather
 than inferred from a TTY check, because only the caller knows which mode runs.
 
+**The keys match Kiro CLI's own prompt.** `kiro-cli chat` asks
+`[y/n/t]` (`crates/chat-cli/src/cli/chat/mod.rs`), so this prompt uses the same
+`y` to allow and `n` to deny, and a person moving between the two tools does not
+have a habitual `y` read as a refusal. Matching is exact and case-insensitive
+after trimming: `y` (or the legacy `a`) allows, and `yes`, `yank` or a blank line deny.
+
+| Answer | Result |
+|---|---|
+| `y` | Allow this call once |
+| `n`, blank, EOF, anything unrecognised | Deny |
+| `a` | Allow once. The pre-Kiro-CLI key, honoured but not advertised; removal after one release is tracked in #23475 |
+| `d` | Deny. The pre-Kiro-CLI key; it needs no special case because every unrecognised answer denies |
+| `t` | Deny, with a notice that trusting a tool for the session is not available here |
+| `o` | Deny, and send a typed reply to the agent (see below) |
+
+Kiro CLI's `t` approves the call and trusts that tool for the rest of the
+session. The CLI has no such grant on purpose (see below: no persistent
+approval), so `t` denies rather than silently approving once, which would
+leave the person believing later calls are trusted. The notice tells them to
+answer `y` per call.
+
 A shell call shows the command it is asking about:
 
 ```
 Permission required: Run a helpful script
 Command: git status --short
-   [a] allow once  [d] deny (default)  [o] other (reply to the agent):
+   [y] allow once  [n] deny (default)  [o] other (reply to the agent):
 ```
 
 **`o` answers with a typed reply instead of a bare approve or deny.** Exactly
@@ -1095,7 +1118,7 @@ consent to a verb:
 Permission required: Tidy up the notes
 Tool: fs_write
 Path: /home/tester/thesis.md
-   [a] allow once  [d] deny (default)  [o] other (reply to the agent):
+   [y] allow once  [n] deny (default)  [o] other (reply to the agent):
 ```
 
 The path is read from the request's own `raw_tool_params`, under the same
