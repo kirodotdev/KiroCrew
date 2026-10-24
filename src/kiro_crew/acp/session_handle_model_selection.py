@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry
@@ -238,18 +239,158 @@ def advertised_models_from_session(resp: dict[str, Any], backend: str) -> list[d
 # ── Session Configuration ──
 
 
+#: Passes a mid-session switch makes before its projection holds still: each pass
+#: checks the view the send will name, and a newer view adopted during that
+#: check's awaits gets a pass of its own (:meth:`AcpSessionHandle.set_mode`).
+_SWITCH_CHECK_ATTEMPTS = 3
+
+
+async def check_mode_frame(
+    mode_agent: str,
+    work_dir: str | Path | None,
+    projection: Any,
+    alias: str | None,
+    *,
+    bound_to: str | None = None,
+) -> None:
+    """Check one ``session/set_mode`` frame on kiro-cli, right before it is sent.
+
+    The ONE check for mode frames: the start bracket
+    (``AcpRuntime._check_mode_frame``) and a mid-session switch
+    (:meth:`AcpSessionHandle.set_mode`) both run it. It runs both checks a
+    session open on the same name or view runs:
+    :func:`~kiro_crew.agent.require_main_spec_projected` for *mode_agent*, then
+    the launch bound of what the frame names. A view *alias* *projection*
+    published is bound to the episode reading it was built against, as a
+    session open on a process launched on that view is, so a view built before
+    an episode is refused. A bare name, which kiro-cli resolves on its own, is
+    checked by name, and so is *bound_to*, a file the frame names outright (a
+    shared runtime's app launch copy, ``AcpRuntime._launch_copy_source``),
+    whatever the projection publishes: both are refused while an episode is
+    open. The frame activates an agent the process already holds, so the time
+    of its write cannot change which spec the session runs: one check before
+    the send is the whole decision.
+    """
+    from kiro_crew.agent import (
+        ForkGovernanceUnresolved,
+        require_main_spec_launch_bound,
+        require_main_spec_projected,
+    )
+
+    view_source: str | None = None
+    before: tuple[int, bool] | None = None
+    if (
+        bound_to is None
+        and projection is not None
+        and alias is not None
+        and alias in projection.aliases.values()
+    ):
+        view_source = projection.view_source(alias)
+        before = projection.view_episode(alias)
+
+    def _check() -> None:
+        require_main_spec_projected(mode_agent, work_dir)
+        if view_source is None:
+            require_main_spec_launch_bound(mode_agent, work_dir)
+        else:
+            # A switch recycles nothing: a view refused after the episode closed
+            # is replaced by the projection the next session start prepares.
+            require_main_spec_launch_bound(
+                mode_agent,
+                work_dir,
+                before=before,
+                view_source=view_source,
+                superseded="session",
+            )
+
+    try:
+        await asyncio.to_thread(_check)
+    except ForkGovernanceUnresolved as exc:
+        raise AcpRuntimeError(str(exc)) from exc
+
+
 async def set_mode(self: AcpSessionHandle, agent_name: str) -> None:
     """Activate an agent via session/set_mode.
 
     A stored skill-view name maps back to the agent it was built from first,
     so the projection sends that agent's CURRENT view, never the stored one.
+    The switched-to agent passes the main-spec part of a spawn's start gate
+    (``require_main_spec_projected``), since no spawn gate saw it. On
+    kiro-cli the frame is checked by the one mode-frame check
+    (:func:`check_mode_frame`) on the ``modeId`` the send will carry: a view
+    the projection decides is bound to the episode reading that view was
+    built on, exactly as the start bracket's frame is, and a name
+    it does not decide is bound by name. Both are bounded to the
+    unreadable-spec episode. The ``modeId`` is read with the projection's
+    pure lookup, so a refused switch writes one SEL denial: the check's,
+    or the send's own when the check admits a name the projection refuses.
+    A projection that is replaced on every attempt ends the switch with an
+    error and no frame written. That is projection churn, not a governance
+    answer, so it records no SEL denial.
     """
     from kiro_crew.acp.skill_projection import RetiredSkillView, resolve_source_agent
+    from kiro_crew.agent import ForkGovernanceUnresolved, require_main_spec_projected
 
     try:
         agent_name = await resolve_source_agent(agent_name)
     except RetiredSkillView as exc:
         raise AcpRuntimeError(str(exc)) from exc
+    work_dir = getattr(self._runtime, "_work_dir", None)
+    on_kiro = getattr(self._runtime, "acp_backend", ACP_BACKEND_KIRO) == ACP_BACKEND_KIRO
+    # The runtime sends its own agent as its app launch copy (``send_request``), a
+    # file Crew wrote, so that switch is checked by name, not as a view.
+    copy_source = getattr(self._runtime, "_launch_copy_source", None)
+    bound_to = copy_source(agent_name) if callable(copy_source) else None
+
+    async def _projected_only() -> None:
+        try:
+            await asyncio.to_thread(require_main_spec_projected, agent_name, work_dir)
+        except ForkGovernanceUnresolved as exc:
+            raise AcpRuntimeError(str(exc)) from exc
+
+    def _sent_mode(projection: Any) -> str | None:
+        """The modeId the send will translate *agent_name* to; None for the bare name.
+
+        None too when the projection decides the agent but cannot name a
+        view for it: the send then raises that refusal itself, and writes
+        nothing. A pure lookup (``mode_id``): it audits nothing.
+        """
+        if projection is None or not projection.decides(agent_name):
+            return None
+        try:
+            return str(projection.mode_id(agent_name))
+        except ValueError:
+            return None
+
+    if not on_kiro:
+        await _projected_only()
+    else:
+        for _attempt in range(_SWITCH_CHECK_ATTEMPTS):
+            projection = getattr(self._runtime, "_native_skill_projection", None)
+            sent = _sent_mode(projection)
+            if projection is not None and projection.decides(agent_name) and sent is None:
+                await _projected_only()
+            else:
+                await check_mode_frame(
+                    agent_name,
+                    work_dir,
+                    projection,
+                    sent,
+                    bound_to=bound_to,
+                )
+            # The check judged the view the send translates to only while
+            # the runtime still holds the same projection and it still names
+            # the same view: a newer view adopted during the check's awaits
+            # gets a check of its own. Nothing awaits between this
+            # comparison and the send's translation.
+            now = getattr(self._runtime, "_native_skill_projection", None)
+            if now is projection and _sent_mode(now) == sent:
+                break
+        else:
+            raise AcpRuntimeError(
+                f"agent {agent_name!r} may not start: its skill view kept changing "
+                "while the switch was being checked"
+            )
     # send_request only queues the request; it does not await a mode ACK.
     self.active_agent = ""
     take = getattr(self._runtime, "take_switched_model", None)

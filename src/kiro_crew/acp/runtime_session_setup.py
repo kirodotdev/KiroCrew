@@ -10,13 +10,19 @@ Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
 of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_session_start_timeout``, ``_start_collect_timeout``.
+Instance fields written: ``_launch_view_superseded``, ``_session_open_checks_in_flight``,
+``_session_start_timeout``, ``_start_collect_timeout``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_bound_workspace_fd``,
-``_expect_mcp_reports``, ``_launch_agent``, ``_launch_copy_spec``, ``_mcp_gateway_overlay``,
-``_mcp_gateway_socket``, ``_member_context``,
-``_native_launch_resources``, ``_native_launch_sources``, ``_native_launch_view_alias``,
-``_native_skill_projection``, ``_session_queues``, ``_tool_search_wire``, ``_wire_mode_id``,
+``_expect_mcp_reports``, ``_launch_agent``, ``_launch_copy_spec``,
+``_launch_unbound``,
+``_launch_view_episode``, ``_launch_view_source``,
+``_mcp_gateway_overlay``,
+``_mcp_gateway_socket``, ``_member_context``, ``_native_launch_resources``,
+``_native_launch_sources``, ``_native_launch_view_alias``, ``_native_skill_projection``,
+``_recycle_superseded_launch``, ``_require_launch_bound_for_session_open``,
+``_require_payload_built_on_current_episode``, ``_session_inits_in_flight``,
+``_session_queues``, ``_start_collectors``, ``_tool_search_wire``, ``_wire_mode_id``,
 ``_work_dir``.
 """
 
@@ -927,3 +933,134 @@ def _start_mount_check(
         opened_at=request_sent_at,
         alive=lambda: session_id in self._session_queues,
     )
+
+
+async def _require_launch_bound_for_session_open(self: AcpRuntime) -> None:
+    """Check a session opened on this process against the launch it runs on.
+
+    Every ``session/new`` and ``session/load`` starts on the agent the process
+    was launched as: a session that names no agent stays on it and sends no
+    ``set_mode``, and a named one runs on it until its ``set_mode``. When that
+    launch had no prepared view (``_launch_unbound``), kiro-cli resolves the
+    bare ``--agent`` name again for the new session and starts that spec's
+    MCP server commands, so the check the launch passed is run again
+    (:func:`kiro_crew.agent.require_main_spec_launch_bound`). When it had a
+    view, the session runs that view, which the process keeps for life, so
+    the same check runs against the episode revision it was built against
+    (``_launch_view_episode``; ``_launch_view_source`` marks the launch as a
+    view's): any view built before an episode opened is refused while it is
+    open and after a rebuild closes it, whatever file it was built from. A
+    refusal is the shared one: one SEL denial and the early retry.
+
+    A view refused once is refused for the process's life, so the refusal
+    also recycles the process (:meth:`_recycle_superseded_launch`).
+    """
+    # An unbound launch and an app's launch copy are checked by name: refused
+    # while an episode is open.
+    if getattr(self, "_launch_unbound", False) or getattr(self, "_launch_agent", None):
+        view_source = None
+    elif (view_source := getattr(self, "_launch_view_source", None)) is None:
+        return
+    from kiro_crew.agent import ForkGovernanceUnresolved, require_main_spec_launch_bound
+
+    try:
+        await asyncio.to_thread(
+            require_main_spec_launch_bound,
+            self._agent,
+            self._work_dir,
+            before=getattr(self, "_launch_view_episode", None),
+            view_source=view_source,
+        )
+    except ForkGovernanceUnresolved as exc:
+        if view_source is not None:
+            await self._recycle_superseded_launch()
+        raise AcpRuntimeError(str(exc)) from exc
+
+
+async def _require_launch_bound_before_setup(self: AcpRuntime) -> None:
+    """Run the launch-bound check early, as an open the recycle decision counts.
+
+    ``create_session`` and ``load_session`` check before their setup, ahead
+    of the init scope their request runs in. The refusal decides whether to
+    end the process (:meth:`_recycle_superseded_launch`) from the opens in
+    flight, so the early check is counted for its length
+    (``_session_open_checks_in_flight``): the decision then counts the
+    refused open exactly as it counts one refused in
+    :meth:`_send_session_open`, whose caller holds an init scope, and an
+    open whose request is still unanswered always reads as a co-tenant.
+    Every call of :meth:`_require_launch_bound_for_session_open` is counted
+    one way or the other.
+    """
+    # getattr: a runtime built without __init__ (a test seam) has no count.
+    self._session_open_checks_in_flight = getattr(self, "_session_open_checks_in_flight", 0) + 1
+    try:
+        await self._require_launch_bound_for_session_open()
+    finally:
+        self._session_open_checks_in_flight -= 1
+
+
+async def _recycle_superseded_launch(self: AcpRuntime) -> None:
+    """Retire a process whose launch view a session open was refused on.
+
+    Marked first, so a holder that asks staleness displaces it
+    (:meth:`_is_stale` answers ``"launch_view"``). When the refused open is
+    the only one in flight and no session is registered, the process is
+    ended through the attributed kill, so every holder's liveness check
+    launches a fresh view for its next open. The refused open is always
+    counted, in ``_session_inits_in_flight`` when it was refused in
+    :meth:`_send_session_open` (every caller holds an init scope) or in
+    ``_session_open_checks_in_flight`` when it was refused before its setup
+    (:meth:`_require_launch_bound_before_setup`), so a total above one is
+    another open, one whose request may already be on the wire. A
+    co-tenant keeps the process until it leaves: each later open is
+    refused, and the first one made with no co-tenant ends it.
+
+    One open is not counted. It passed its early check in
+    :meth:`_require_launch_bound_before_setup` and has not yet entered its
+    init scope (``create_session``'s admission step, ``load_session``'s
+    ``_session_start_budget``). A concurrent refusal can end the process
+    under it. That is safe: the open has no request on the wire, and its
+    own check at the chokepoint, :meth:`_send_session_open`, refuses it,
+    because the episode revision only grows and the view is refused for
+    the process's life. Never raises: the refusal is what the caller must
+    see.
+    """
+    self._launch_view_superseded = True
+    opens = self._session_inits_in_flight + getattr(self, "_session_open_checks_in_flight", 0)
+    if self._session_queues or opens > 1 or self._start_collectors:
+        return
+    try:
+        await self.kill(expected=True, reason="launch view predates a main-spec episode")
+    except Exception:
+        logger.warning("could not end a runtime whose launch view was refused", exc_info=True)
+
+
+async def _check_session_open(
+    self: AcpRuntime, built_on: tuple[int, bool] | None, built_for: str
+) -> None:
+    """The check :meth:`_send_session_open` runs right before its send."""
+    await self._require_launch_bound_for_session_open()
+    if built_on is not None:
+        await self._require_payload_built_on_current_episode(built_for, built_on)
+
+
+async def _require_payload_built_on_current_episode(
+    self: AcpRuntime, agent: str, built_on: tuple[int, bool]
+) -> None:
+    """Refuse an open whose wire payload was built before the current episode reading.
+
+    The host's own launch bound (``KasHarness.session_extras``), run again
+    against the reading the payload was built on. A healthy host passes at
+    once.
+    """
+    from kiro_crew.agent import ForkGovernanceUnresolved, require_main_spec_launch_bound
+
+    try:
+        await asyncio.to_thread(
+            require_main_spec_launch_bound,
+            agent,
+            self._work_dir,
+            before=built_on,
+        )
+    except ForkGovernanceUnresolved as exc:
+        raise AcpRuntimeError(str(exc)) from exc

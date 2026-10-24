@@ -1140,6 +1140,15 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "readiness wait; any other host may never report a spec server, and waiting there "
     "would cost every webhook and cron run the whole bound.",
     (
+        "src/kiro_crew/acp/session_handle_model_selection.py",
+        "set_mode",
+    ): "Only native Kiro resolves a bare agent name sent in a mid-session switch against "
+    "the agents directory on its own, after Crew's gate, so only there can a switch the "
+    "skill projection does not decide land on an unprojected main spec. KAS also "
+    "advertises modes it finds on disk, but it skips a profile written for kiro-cli, "
+    "which the main spec and its mirrors are, and its session spec is Crew's own "
+    "bound read. No harness property says 'this host resolves agent names from disk'.",
+    (
         "src/kiro_crew/acp/runtime_session_setup.py",
         "_unpooled_control_planes",
     ): "Kiro alone loads its native agent spec without a mirror or wire agent. "

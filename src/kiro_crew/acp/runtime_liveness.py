@@ -14,10 +14,10 @@ Instance fields written: ``_dead``, ``_death_expected``, ``_death_label``,
 ``_stall_turn_sessions``, ``_stderr_lines``,
 ``_stdin_stall_death``.
 
-Instance fields read: ``_first_session_ready``, ``_last_activity``, ``_max_age_secs``,
-``_max_rss_depth``, ``_max_rss_mb``, ``_pid``, ``_process``, ``_session_inits_in_flight``,
-``_session_queues``, ``_spawn_monotonic``, ``_spawn_start_token``, ``_stderr_task``,
-``_turn_active_sessions``, ``recording_allowed``.
+Instance fields read: ``_first_session_ready``, ``_last_activity``,
+``_launch_view_superseded``, ``_max_age_secs``, ``_max_rss_depth``, ``_max_rss_mb``, ``_pid``,
+``_process``, ``_session_inits_in_flight``, ``_session_queues``, ``_spawn_monotonic``,
+``_spawn_start_token``, ``_stderr_task``, ``_turn_active_sessions``, ``recording_allowed``.
 """
 
 from __future__ import annotations
@@ -200,7 +200,7 @@ def _stale_by_age(self: AcpRuntime) -> bool:
 
 
 async def _is_stale(self: AcpRuntime) -> str | None:
-    """Return the recycle reason ('age' or 'rss'), or None if not stale.
+    """Return the recycle reason ('launch_view', 'age' or 'rss'), or None if not stale.
 
     Distinct from is_alive(): a runtime can be perfectly healthy (process
     running, protocol responsive) yet still be "stale" — e.g. the
@@ -229,6 +229,10 @@ async def _is_stale(self: AcpRuntime) -> str | None:
     """
     if self._pid is None:
         return None
+    if getattr(self, "_launch_view_superseded", False):
+        # A session open on this process's launch view was refused, and
+        # every later one would be (_recycle_superseded_launch).
+        return "launch_view"
 
     if self._spawn_monotonic is not None:
         age = time.monotonic() - self._spawn_monotonic

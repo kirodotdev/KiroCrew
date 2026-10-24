@@ -1194,11 +1194,20 @@ async def test_set_mode_sends_the_fresh_alias_never_a_changed_spawn_one(
     import kiro_crew.agent as agent_module
     from kiro_crew.acp import runtime as runtime_module
 
-    spawn = projection.NativeSkillProjection({"crew": SPAWN_ALIAS})
+    def _view(aliases):
+        # What a preparation records beside each alias: the file it was built
+        # from and the episode reading taken before that read.
+        return projection.NativeSkillProjection(
+            aliases,
+            sources={name: (tmp_path / f"{name}.json").as_posix() for name in aliases},
+            episodes={name: agent_module.main_spec_episode() for name in aliases},
+        )
+
+    spawn = _view({"crew": SPAWN_ALIAS})
     if refreshed_alias == "same":
-        fresh = projection.NativeSkillProjection({"crew": SPAWN_ALIAS, "other": OTHER_ALIAS})
+        fresh = _view({"crew": SPAWN_ALIAS, "other": OTHER_ALIAS})
     elif refreshed_alias == "changed":
-        fresh = projection.NativeSkillProjection({"crew": CHANGED_ALIAS})
+        fresh = _view({"crew": CHANGED_ALIAS})
     else:
         fresh = None
     monkeypatch.setattr(projection, "prepare_native_skill_projection", lambda *a, **k: fresh)
@@ -1223,6 +1232,8 @@ async def test_set_mode_sends_the_fresh_alias_never_a_changed_spawn_one(
         _adopt_skill_projection = runtime_module.AcpRuntime._adopt_skill_projection
         _resolve_start_alias = runtime_module.AcpRuntime._resolve_start_alias
         _superseding_alias = runtime_module.AcpRuntime._superseding_alias
+        _check_mode_frame = runtime_module.AcpRuntime._check_mode_frame
+        _launch_copy_source = runtime_module.AcpRuntime._launch_copy_source
         _refuse_if_view_superseded = runtime_module.AcpRuntime._refuse_if_view_superseded
         _refuse_if_view_unverified = runtime_module.AcpRuntime._refuse_if_view_unverified
         _note_unadopted_skill_projection = (
@@ -1235,6 +1246,7 @@ async def test_set_mode_sends_the_fresh_alias_never_a_changed_spawn_one(
         # agent (it has an alias), so activating it must take the strict alias path
         # this test asserts, not the launched-agent allowance.
         _agent = "launcher"
+        _launch_agent = ""
 
         async def terminate_session(self, sid):
             terminated.append(sid)

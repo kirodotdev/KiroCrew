@@ -11,9 +11,9 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_last_activity``, ``_next_id``, ``_pending_requests``,
 ``_routed_requests``, ``_stdin_lock``.
 
-Instance fields read: ``_acp_backend``, ``_agent``, ``_dead``, ``_launch_agent``,
-``_native_skill_projection``,
-``_one_at_a_time_sent``, ``_process``, ``_session_queues``, ``_stderr_lines``.
+Instance fields read: ``_acp_backend``, ``_agent``, ``_check_session_open``, ``_dead``,
+``_launch_agent``, ``_native_skill_projection``, ``_one_at_a_time_sent``, ``_process``,
+``_session_queues``, ``_stderr_lines``.
 """
 
 from __future__ import annotations
@@ -90,6 +90,22 @@ class _PendingRequests(dict):
 # behind one therefore spends its own budget on the earlier request.
 _ONE_AT_A_TIME_METHODS = frozenset({METHOD_SESSION_NEW, METHOD_SESSION_LOAD, METHOD_SET_MODE})
 
+# The requests that open a session on the shared process. Each one is sent only
+# through AcpRuntime._send_session_open, which binds it to an unbound launch.
+# session/fork is deliberately absent: only claude forks at a message, and a
+# claude launch has no kiro launch to bind. Add it if a bound launch ever sends it.
+_SESSION_OPEN_METHODS = frozenset({METHOD_SESSION_NEW, METHOD_SESSION_LOAD})
+
+
+def _refuse_raw_session_open(method: str) -> None:
+    """Refuse a session-open method on a generic send path of the runtime.
+
+    ``session/new`` and ``session/load`` go only through
+    :meth:`AcpRuntime._send_session_open`, which binds them to an unbound launch.
+    """
+    if method in _SESSION_OPEN_METHODS:
+        raise ValueError(f"{method} is sent only through _send_session_open")
+
 
 class AcpRuntimeStdinStalled(AcpRuntimeDead):
     """The shared stdin made no progress for the response-write bound.
@@ -123,6 +139,7 @@ async def send_request(
     can suspend: the response can reach the session queue during that
     suspension, so a caller that must claim it registers the id by then.
     """
+    _refuse_raw_session_open(method)
     if not self._process or not self._process.stdin:
         raise AcpRuntimeDead("process not running")
     if self._dead:
@@ -175,6 +192,7 @@ async def send_notification(self: AcpRuntime, method: str, params: dict[str, Any
     so it leaves no _routed_requests entry to leak when the server (per the
     ACP spec) sends no response back (e.g. session/cancel).
     """
+    _refuse_raw_session_open(method)
     if not self._process or not self._process.stdin:
         raise AcpRuntimeDead("process not running")
     if self._dead:
@@ -419,7 +437,17 @@ async def send_request_for_answer(
     ``drain()`` can suspend: the reader may resolve the future during that
     suspension, so a caller that must see the answer in order with the frames
     after it has to hold the future by then.
+
+    It sends no session open (those go through :meth:`_send_session_open`) and
+    no ``set_mode``: a mode frame is checked right before its send
+    (:func:`~kiro_crew.acp.session_handle.check_mode_frame`) and goes out through
+    :meth:`send_request` or :meth:`_send_and_await`.
     """
+    _refuse_raw_session_open(method)
+    if method == METHOD_SET_MODE:
+        raise ValueError(
+            f"{method} is sent only after its check, through send_request or _send_and_await"
+        )
     if not self._process or not self._process.stdin:
         raise AcpRuntimeDead("process not running")
     if self._dead:
@@ -709,3 +737,35 @@ async def _send_and_await(
             queued_starts,
         )
     return result
+
+
+async def _send_session_open(
+    self: AcpRuntime,
+    method: str,
+    params: dict[str, Any],
+    *,
+    timeout: float,
+    built_on: tuple[int, bool] | None = None,
+    built_for: str = "",
+) -> dict[str, Any]:
+    """Send a ``session/new`` or ``session/load``: the one path either takes.
+
+    The launch-bound check runs here, right before the send, so no caller
+    can open a session on an unbound launch, or on a view built before an
+    episode, while an unreadable-main-spec episode is open. The open
+    activates the agent the process already holds: kiro-cli reads a spec
+    when it starts and again only when the file's content changes, never at
+    a frame, so the time the frame reaches stdin cannot change which spec
+    the session runs. ``test_acp_runtime`` holds a ratchet that no other
+    code in this module sends either method.
+
+    *built_on* is the episode reading a wire-registered host's payload was
+    built against (:attr:`SessionExtras.main_spec_episode`, KAS), for the
+    agent *built_for*: the open is also checked against it, so an episode
+    that opened after the payload was built refuses the open through the
+    host's own launch bound.
+    """
+    if method not in _SESSION_OPEN_METHODS:
+        raise ValueError(f"not a session-open method: {method}")
+    await self._check_session_open(built_on, built_for)
+    return await self._send_and_await(method, params, timeout=timeout)

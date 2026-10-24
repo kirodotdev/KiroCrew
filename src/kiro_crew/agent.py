@@ -76,6 +76,7 @@ from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME as _HEARTBEAT_AGENT_F
 from kiro_crew.agent_files import (
     OWNED_KIRO_AGENT_FILES,
     REQUIRED_KIRO_AGENT_FILES,
+    WORKER_AGENT_FILENAME,
 )
 from kiro_crew.agent_parts.kirocrew_launcher import (
     _KIROCREW_BIN,
@@ -189,6 +190,7 @@ from kiro_crew.agent_parts.spec_rebuild import (
     _hold_cause,
     _install_aim_capabilities,
     _install_heartbeat_agent,
+    _install_sibling_specs,
     _invalidate_projection_if_answer_moved,
     _lineage_unreadable_refusal,
     _pending_projection_warned_generation,
@@ -213,10 +215,45 @@ from kiro_crew.agent_parts.spec_rebuild import (
     retry_held_conductor_specs,
     sync_aim_packages,
 )
+from kiro_crew.agent_parts.spec_unreadable import (
+    _MAIN_SPEC_EARLY_RETRY_DELAYS,
+    _audit_main_spec_denial,
+    _declares_agent_name,
+    _first_main_spec_warning,
+    _governed_by_main_spec,
+    _is_main_spec_file,
+    _is_main_spec_source,
+    _main_spec_declared_name,
+    _main_spec_episode_lock,
+    _main_spec_episode_revision,
+    _main_spec_files,
+    _main_spec_own_names,
+    _main_spec_retry_attempts,
+    _main_spec_retry_stopped,
+    _main_spec_retry_timer,
+    _main_spec_retry_timer_factory,
+    _main_spec_skip_generation,
+    _main_spec_unreadable,
+    _main_spec_warned,
+    _note_main_spec_readable,
+    _run_main_spec_early_retry,
+    _schedule_main_spec_early_retry,
+    _skip_unreadable_main_spec,
+    _spec_hold_open,
+    _start_main_spec_retry_timer,
+    cancel_main_spec_early_retry,
+    main_spec_episode,
+    refuse_unprojected_main_spec_start,
+    require_main_spec_launch_bound,
+    require_main_spec_projected,
+    resume_main_spec_early_retry,
+    unprojected_main_spec_source,
+)
 from kiro_crew.agent_parts.spec_upgrades import (
     _claim_propagated_model,
     _hooks_sanitized_mtimes,
     _load_existing_config,
+    _read_existing_spec,
     _relocated_skill_uri,
     _sanitize_agent_hooks,
     clear_model_pin,
@@ -230,7 +267,7 @@ from kiro_crew.agent_spec_format import (
     is_markdown_spec,
     iter_agent_spec_files,
 )
-from kiro_crew.atomic_write import read_json_or, replace_with_retry
+from kiro_crew.atomic_write import read_bytes_with_retry, read_json_or, replace_with_retry
 from kiro_crew.config import config_dir
 from kiro_crew.config import config_path as _mc_config_path
 from kiro_crew.config.paths import (
@@ -504,6 +541,7 @@ _PARTS = (
     "kiro_crew.agent_parts.spec_lookup",
     "kiro_crew.agent_parts.spec_prompts",
     "kiro_crew.agent_parts.spec_rebuild",
+    "kiro_crew.agent_parts.spec_unreadable",
     "kiro_crew.agent_parts.spec_upgrades",
 )
 _facade_compose(globals(), [sys.modules[part] for part in _PARTS])
@@ -1364,6 +1402,27 @@ def _refresh_dynamic_fields(
 
 class ForkGovernanceUnresolved(RuntimeError):
     """A fork-backed agent may not start: fork governance is not projected."""
+
+
+class _AgentSpecUnreadable(Exception):
+    """The spec exists but could not be read, so it must not be rebuilt over.
+
+    Distinct from a missing or invalid spec: those rebuild from defaults, while
+    a read failure on a present file (a Windows sharing violation that outlasted
+    the read retry, a permission error, an I/O error) says nothing about its
+    contents.
+    """
+
+
+class _EarlyRetryRunning:
+    """Stands in :data:`_main_spec_retry_timer` while an early retry runs.
+
+    A refusal during that rebuild then finds a retry pending and schedules no
+    second, overlapping one; the run schedules its own successor when it ends.
+    """
+
+    def cancel(self) -> None:
+        """Nothing to cancel: the running retry checks the stop flag when it ends."""
 
 
 _KNOWLEDGE_SYSTEM_PROMPT = (

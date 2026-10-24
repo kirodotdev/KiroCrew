@@ -416,13 +416,19 @@ def prepare_native_skill_projection(
     aliases: dict[str, str] = {}
     specs: dict[str, dict[str, Any]] = {}
     sources: dict[str, str] = {}
+    episodes: dict[str, tuple[int, bool]] = {}
     errors: dict[str, str] = {}
     search_agents: set[str] = set()
     display_sizes: dict[str, tuple[int, str]] = {}
     # The skill trees an unmapped custom agent inherits. Crew supplies them through
     # its bounded directory, so such an agent needs the same search tool a mapped
-    # one gets -- see agent_discovery.inherited_skill_globs.
+    # one gets -- see agent_discovery.inherited_skill_globs. It reads settings and
+    # skill trees, not an agent spec, so it may precede each agent's episode
+    # reading below; an agent spec read must never move up here.
     inherited_globs = inherited_skill_globs(work_dir, kiro_home_dir=kiro_home())
+    main_spec_refused: set[str] = set()
+    from kiro_crew.agent import main_spec_episode, unprojected_main_spec_source
+
     for agent in list_agents(project_dir=str(work_dir)):
         if not agent.filename:
             continue
@@ -430,10 +436,19 @@ def prepare_native_skill_projection(
             project_agents_dir(str(work_dir)) if agent.scope == SCOPE_PROJECT else directory
         )
         source = source_dir / agent.filename
+        episode = main_spec_episode()
         spec = _read_agent_spec(source, operation="native_skill_projection", source="acp")
         if spec is None:
             # A spec ``list_agents`` yielded but the reader refuses here changed
             # between the two reads; skip it, exactly as an absent spec is skipped.
+            continue
+        if unprojected_main_spec_source(episode):
+            # The view is what kiro-cli runs, and no read during an unreadable
+            # episode can be shown not to be the kept main spec: refused,
+            # whatever file was read, and audited only if a start or switch asks
+            # for this agent.
+            main_spec_refused.add(agent.name)
+            errors[agent.name] = "read during an unreadable-main-spec episode"
             continue
         display_sizes[agent.name] = (_display_text_bytes(spec), source.absolute().as_posix())
         view, search, refusal = project_agent_view(
@@ -451,6 +466,7 @@ def prepare_native_skill_projection(
             search_agents.add(agent.name)
         specs[agent.name] = view
         sources[agent.name] = source.absolute().as_posix()
+        episodes[agent.name] = episode
 
     _warn_on_display_text(display_sizes)
     try:
@@ -586,6 +602,9 @@ def prepare_native_skill_projection(
                         specs,
                         errors,
                         search_agents,
+                        main_spec_refused=main_spec_refused,
+                        sources={name: sources[name] for name in aliases},
+                        episodes={name: episodes[name] for name in aliases},
                     )
                     _remember_view_sources(aliases)
                     # Releases the lease and prunes this home's unleased views

@@ -32,14 +32,23 @@ if TYPE_CHECKING:
         AGENT_FILENAME,
         AmbiguousAgentSpecError,
         ForkGovernanceUnresolved,
+        _AgentSpecUnreadable,
         _atomic_json_write,
         _background_agent_model,
         _background_cc_model,
         _claim_propagated_model,
         _decline_shared_agent_home,
+        _first_main_spec_warning,
         _load_existing_config,
+        _main_spec_episode_lock,
+        _main_spec_episode_revision,
+        _main_spec_unreadable,
+        _note_main_spec_readable,
+        _read_existing_spec,
         _read_spec_capped,
         _rebuild_spec_install_admitted,
+        _skip_unreadable_main_spec,
+        _spec_hold_open,
         _spec_path_is_safe,
         agent_spec_candidates,
         agent_spec_path,
@@ -62,6 +71,7 @@ if TYPE_CHECKING:
         migrate_relocated_skill_uris,
         project_agent_names,
         repair_agent_configs,
+        require_main_spec_projected,
         resolved_command_casing,
         service_agents,
         spec_path_key,
@@ -81,8 +91,9 @@ _projected_ceiling_generation: int | None = None
 _pending_projection_warned_generation: int | None = None
 
 
-#: Whether the LAST ``rebuild_agent_config`` left a conductor spec on disk unwritten
-#: (the verdict its ``_held_out`` out-parameter hands the caller that ran it). Kept
+#: Whether the LAST ``rebuild_agent_config`` left a conductor spec on disk unwritten,
+#: or skipped the whole cycle because the main spec could not be read (the verdict
+#: its ``_held_out`` out-parameter hands the caller that ran it). Kept
 #: here for the two readers that did not run the rebuild they have to know about:
 #: :func:`prime_ceiling_projection` seeds the ceiling baseline AFTER the boot rebuild,
 #: and a baseline seeded over a held spec would mark the current generation
@@ -137,7 +148,8 @@ def prime_ceiling_projection() -> None:
     rebuild it needed.
 
     Seeds nothing while the last rebuild left a conductor spec unwritten
-    (``_conductor_spec_held``): that spec's ``allowedTools`` still reflect whatever ceiling
+    (``_conductor_spec_held``), or while an unreadable-spec episode is open
+    (:func:`_spec_hold_open`): that spec's ``allowedTools`` still reflect whatever ceiling
     wrote them, so the current generation is NOT projected, and a seeded baseline would
     have the hook skip every poll until the ceiling moved again -- the one retry lost for
     the process lifetime. An unseeded baseline is the documented safe direction: the first
@@ -148,7 +160,7 @@ def prime_ceiling_projection() -> None:
     global _projected_ceiling_generation
     from kiro_crew.platform.governance_profiles import governance_answer_generation
 
-    if _conductor_spec_held:
+    if _spec_hold_open():
         _projected_ceiling_generation = None
         logger.warning(
             "the boot rebuild left a hold (%s), so the ceiling baseline stays unseeded: "
@@ -222,12 +234,13 @@ def _held_rebuild_would_repeat(generation: int) -> bool:
     did under *generation*. Such a file may be the one that declares a bound
     name, so the hold stands and the memo stays behind; but the rebuild would rewrite
     ``kirocrew.json`` and the owned specs kiro-cli watches and end held again, so the
-    ceiling hook and the maintenance wake skip it. A conductor installer's hold, or a
-    rebuild that raised, may clear with nothing on disk changing, so it is retried as
-    before. MAY BLOCK: the probe reads each held file once.
+    ceiling hook and the maintenance wake skip it. A conductor installer's hold, a
+    rebuild that raised, and an open unreadable-spec episode (which only a rebuild can
+    close) are retried as before. MAY BLOCK: the probe reads each held file once.
     """
     return (
         _conductor_spec_held
+        and not _main_spec_unreadable
         and not _conductor_installers_held
         and not _rebuild_incomplete
         and _rebuild_answer_generation == generation
@@ -308,7 +321,7 @@ def reproject_for_profile_change() -> None:
             # The last rebuild raised, possibly after writing grants derived under an
             # older answer, so no recorded projection can be trusted until one completes.
             _projected_ceiling_generation = None
-        if generation == _projected_ceiling_generation and not _conductor_spec_held:
+        if generation == _projected_ceiling_generation and not _spec_hold_open():
             _profile_watch_generation = None
             return
         now = _watch_clock()
@@ -323,7 +336,7 @@ def reproject_for_profile_change() -> None:
         if (
             generation == _projected_ceiling_generation
             and not _rebuild_incomplete
-            and not _conductor_spec_held
+            and not _spec_hold_open()
         ):
             _profile_watch_generation = None
             return
@@ -347,11 +360,16 @@ def retry_held_conductor_specs() -> bool:
     loading them, and nothing in the process was ever going to re-derive them. The
     boot warning and the installer's own name the hold; this closes it.
 
-    The hold is the rebuild's own verdict (``_conductor_spec_held``), so this is a
-    no-op on every wake of a healthy host. When a spec IS held, one reporting rebuild
+    The hold is the rebuild's own verdict (``_conductor_spec_held``) or an open
+    unreadable-spec episode (``_main_spec_unreadable``), read together
+    (:func:`_spec_hold_open`), so this is a no-op on every wake of a healthy host
+    and never one while an episode is open. When a spec IS held, one reporting rebuild
     runs: the memo is rewritten where the four conductor installers' verdicts settle,
     so it clears exactly when every spec was written and stays while any one is not,
-    and the next wake retries again. The ceiling baseline is left as it stands: a
+    and the next wake retries again. An overlapping rebuild may open an episode
+    while this one runs; the early retry's scheduler reads the flag again, under
+    the episode lock, after every run, so that episode keeps its pending retry.
+    The ceiling baseline is left as it stands: a
     standalone host never reads it, and on a distributed one an unseeded baseline has
     the next confirming poll rebuild once more -- the documented safe direction --
     rather than this path seeding a generation whose ceiling may have moved since the
@@ -359,7 +377,7 @@ def retry_held_conductor_specs() -> bool:
 
     Returns whether every conductor spec is written now.
     """
-    if not _conductor_spec_held:
+    if not _spec_hold_open():
         return True
     from kiro_crew.platform.governance_profiles import governance_answer_generation
 
@@ -376,6 +394,24 @@ def retry_held_conductor_specs() -> bool:
             "the current governance ceiling"
         )
         return True
+    with _main_spec_episode_lock:
+        unreadable = _main_spec_unreadable
+        first_warning = unreadable and _first_main_spec_warning("retry")
+    if unreadable:
+        # Never recommend ``--clean`` here: it writes defaults over the unreadable
+        # spec, dropping the MCP servers and model pin that keeping it preserves.
+        # WARNING on an episode's first failed retry, debug after: the early retry
+        # repeats every minute while the file stays unreadable. Decided in the
+        # critical section that read the flag, so a close cannot leave a stale key.
+        main_spec = kiro_agents_dir_path() / AGENT_FILENAME
+        (logger.warning if first_warning else logger.debug)(
+            "the main agent spec %s still cannot be read after the retry; main-agent "
+            "starts stay refused and its on-disk auto-approvals reflect the previous "
+            "ceiling until a rebuild reads it -- restore read access to the file, and "
+            "the next maintenance wake or a restart picks it up",
+            main_spec,
+        )
+        return False
     logger.warning(
         "an agent spec is still unwritten after the retry (%s); its on-disk "
         "auto-approvals reflect the previous ceiling until the next maintenance wake "
@@ -443,7 +479,7 @@ def _reproject_holding_the_lock() -> None:
     governance_generation = _answer_generation_after_profile_poll
 
     generation = governance_generation()
-    if _projected_ceiling_generation == generation and not _conductor_spec_held:
+    if _projected_ceiling_generation == generation and not _spec_hold_open():
         # A hold set after the baseline was seeded (the boot path's deferred
         # template pass) keeps an unchanged generation unprojected.
         return
@@ -571,7 +607,8 @@ def rebuild_agent_config(
         clean: If True, ignore existing config and regenerate from defaults.
         _wrote_out: private — when given, receives one bool: ``True`` after
             the write landed and the whole function returned, ``False`` when
-            the shared-home guard refused. Pass a FRESH empty list: the
+            the shared-home guard refused or the existing spec could not be
+            read (the cycle was skipped). Pass a FRESH empty list: the
             reader consumes the first element, so a reused list misreports.
         _held_out: private — when given, receives one bool: ``True`` when a
             conductor installer left its spec on disk unwritten — because the
@@ -581,7 +618,8 @@ def rebuild_agent_config(
             ``allowedTools`` list on disk was NOT re-derived and a moved
             ceiling must stay pending rather than be marked projected.
             ``False`` otherwise, including when the guard refused (nothing
-            ran). Same fresh-list rule as *_wrote_out*.
+            ran). Also ``True`` when the existing main spec could not be read
+            and the cycle was skipped. Same fresh-list rule as *_wrote_out*.
     """
     declined = _decline_shared_agent_home()
     if declined is not None:
@@ -599,6 +637,23 @@ def rebuild_agent_config(
     global _rebuild_answer_generation, _rebuild_incomplete
     answer_generation = _answer_generation_after_profile_poll()
     path = kiro_agents_dir_path() / AGENT_FILENAME
+
+    # The episode this rebuild starts under, read before it reads the spec: a skip that
+    # lands while it writes is a newer episode that its write must not close.
+    with _main_spec_episode_lock:
+        episode_revision = _main_spec_episode_revision
+
+    # Checked before any step writes, so a cycle that cannot read the main spec
+    # leaves the other user specs as they are: the migration below rewrites
+    # every spec in the directory (see :func:`_skip_unreadable_main_spec`). The
+    # load below reads the file again and takes the same exit if that read fails.
+    if not clean and path.exists():
+        try:
+            _read_existing_spec(path)
+        except _AgentSpecUnreadable as exc:
+            return _skip_unreadable_main_spec(
+                path, exc, refresh_forks, clean=clean, wrote_out=_wrote_out, held_out=_held_out
+            )
 
     # One-time (idempotent) self-heal: strip Kiro Crew bookkeeping keys from
     # every kiro agent spec into the sidecar so kiro-cli accepts them all.
@@ -624,7 +679,12 @@ def rebuild_agent_config(
     if not clean and path.exists():
         # Existing config — preserve user customizations, only refresh
         # security-critical and dynamic fields.
-        config, fresh_install = _load_existing_config(path, gated_off=gated_off)
+        try:
+            config, fresh_install = _load_existing_config(path, gated_off=gated_off)
+        except _AgentSpecUnreadable as exc:
+            return _skip_unreadable_main_spec(
+                path, exc, refresh_forks, clean=clean, wrote_out=_wrote_out, held_out=_held_out
+            )
     else:
         config = build_agent_config(gated_off=gated_off)
         fresh_install = True
@@ -761,6 +821,7 @@ def rebuild_agent_config(
     # that interleave and is not the gate: when it cannot be taken (an on-loop
     # caller under contention) the re-check still runs and the write proceeds
     # unserialized, because refusing would leave a fresh install with no spec.
+    unreadable: _AgentSpecUnreadable | None = None
     with contextlib.ExitStack() as spec_lock:
         try:
             spec_lock.enter_context(agents_spec_lock(kiro_agents_dir_path()))
@@ -773,289 +834,36 @@ def rebuild_agent_config(
             if _held_out is not None:
                 _held_out.append(False)
             return declined if declined is not None else path
-        default_spec_commit.write_default_spec(
-            path,
-            config,
-            clean=clean,
-            gated_off=gated_off,
-            sources=sources,
-            resolved=resolved,
-            app_owned_at_start=_app_owned_at_start,
+        try:
+            default_spec_commit.write_default_spec(
+                path,
+                config,
+                clean=clean,
+                gated_off=gated_off,
+                sources=sources,
+                resolved=resolved,
+                app_owned_at_start=_app_owned_at_start,
+            )
+        except _AgentSpecUnreadable as exc:
+            # The commit re-reads the spec inside its write lock
+            # (``mcp_aliases._durable_tool_aliases``); a failure there is the same
+            # unreadable file, found later, and nothing was written yet. The skip
+            # runs once the agent-spec lock is released, because it still writes
+            # the sibling specs.
+            unreadable = exc
+    if unreadable is not None:
+        return _skip_unreadable_main_spec(
+            path, unreadable, refresh_forks, clean=clean, wrote_out=_wrote_out, held_out=_held_out
         )
     logger.info("Installed agent config: %s", path)
+    _note_main_spec_readable(path, main_name, episode_revision)
     _claim_propagated_model(config, main_name)
     if guide_grant_pending:
         guide_platform.mark_guide_platform_granted()
     if mate_grant_pending:
         guide_platform.mark_mate_platform_granted()
 
-    # The guard ADMITTED this rebuild above, and that one decision now covers
-    # every derived spec it installs. Re-asking per write would answer a
-    # different question: ``write_default_spec`` has just created
-    # ``kirocrew.json``, and the temp-checkout arm declines precisely when a
-    # spec is present -- so each spec below would be refused against the file
-    # this rebuild wrote. See ``_rebuild_spec_install_admitted``.
-    #
-    # ``finally``, not a plain reset after the block: several of these calls can
-    # raise past their own arms, and a leaked flag would exempt every later
-    # write in the process -- a worker dispatch, a dashboard edit -- from the
-    # guard this change exists to add.
-    global _conductor_spec_held, _conductor_installers_held
-    _rebuild_admitted_token = _rebuild_spec_install_admitted.set(True)
-    try:
-        # Install Kiro Crew AIM capabilities package (includes kirocrew-lite)
-        _install_aim_capabilities()
-
-        # Install kirocrew-knowledge agent (used by Knowledge Library LLMPool)
-        try:
-            service_agents._install_knowledge_agent()
-        except Exception:
-            logger.debug("kirocrew-knowledge agent install failed", exc_info=True)
-
-        # Tracks a failed research rewrite the same way ``team_lead_held`` below tracks
-        # team-lead. ``_install_research_agent`` derives from ``build_agent_config()``,
-        # so its ``allowedTools`` is re-filtered through the governance ceiling on every
-        # boot -- a ceiling-TIGHTENING rebuild whose research rewrite failed leaves the
-        # previous list, with the now-revoked grants, on disk. Swallowing that at debug
-        # would let ``reproject_for_ceiling_change`` advance its generation memo so the
-        # next poll would NOT retry, and the stale grants would persist for the process
-        # lifetime. Mark the hold instead, exactly like team-lead and the conductor specs
-        # (GPT 6.1 F1 / First Principles Item 4: a ceiling-filtered installer must not be
-        # recorded as synced over an unrewritten grant list). Folded into ``conductor_held``
-        # beside ``team_lead_held`` below.
-        research_held = False
-
-        # Install kirocrew-research agent (used by the Research Lab campaign loop)
-        try:
-            service_agents._install_research_agent()
-        except Exception:
-            research_held = True
-            logger.warning(
-                "kirocrew-research agent install failed; marking the ceiling held so a "
-                "tightened ceiling is retried rather than recorded as synced over the "
-                "stale grant list left on disk",
-                exc_info=True,
-            )
-
-        # Tracks a failed mate-conductor rewrite the way ``research_held`` and
-        # ``team_lead_held`` do: ``_install_mate_conductor_agent`` also derives
-        # from ``build_agent_config()``, so a failed rewrite under a tightening
-        # ceiling must hold the memo rather than let it advance over a stale
-        # grant list on disk. Folded into ``conductor_held`` below.
-        mate_conductor_held = False
-
-        # Install kirocrew-mate-conductor agent (the agent a crewmate's own chat
-        # runs on) and kirocrew-mate-worker (what its worker sessions run on).
-        try:
-            service_agents._install_mate_conductor_agent()
-            service_agents._install_mate_worker_agent()
-        except Exception:
-            mate_conductor_held = True
-            logger.warning(
-                "kirocrew-mate-conductor agent install failed; marking the ceiling held so "
-                "a tightened ceiling is retried rather than recorded as synced over the "
-                "stale grant list left on disk",
-                exc_info=True,
-            )
-
-        # Tracks a failed team-lead rewrite the way ``conductor_held`` tracks the
-        # conductor specs. It is folded into ``_conductor_spec_held`` AFTER that flag
-        # is settled below, because the settle is a plain assignment that would
-        # otherwise clobber a hold set here (this installer runs before it).
-        team_lead_held = False
-
-        # Install kirocrew-team-lead agent (a default agent an operator selects like
-        # any other). Its ``allowedTools`` is re-filtered through the governance
-        # ceiling on every boot, exactly like the conductor specs above -- it derives
-        # from ``build_agent_config()`` and passes its added dispatch grants through
-        # the same ceiling filter before the write.
-        # So a ceiling-TIGHTENING rebuild whose team-lead rewrite failed (a read-only
-        # file, a refused ``os.replace``, a spec-lock timeout) leaves the previous
-        # list -- with the now-revoked grants -- on disk. Swallowing that at debug
-        # would let ``reproject_for_ceiling_change`` advance its generation memo and
-        # the next poll would NOT retry, so the stale grants would persist for the
-        # process lifetime (GPT 6.1 F1). Mark the hold instead, like the conductor
-        # specs and the dashboard-author below: ``prime_ceiling_projection`` then does
-        # not seed the ceiling as projected, and ``retry_held_conductor_specs`` retries
-        # the rewrite on the next maintenance poll. With the spec simply absent the
-        # lead is not offered and nothing else depends on it; the hold is only about
-        # not recording a tightened ceiling as synced over an unrewritten grant list.
-        try:
-            service_agents._install_team_lead_agent()
-        except Exception:
-            team_lead_held = True
-            logger.warning(
-                "kirocrew-team-lead agent install failed; marking the ceiling held so a "
-                "tightened ceiling is retried rather than recorded as synced over the "
-                "stale grant list left on disk",
-                exc_info=True,
-            )
-
-        # Install kirocrew-dashboard-manager agent (the subagent a crewmate hands page
-        # work to). Degrades to a debug line like the two above: with the spec absent a
-        # crewmate still has `dashboard_fields` and `dashboard_write`, so the page it has
-        # keeps working and only CHANGING the page is unavailable.
-        try:
-            service_agents._install_dashboard_manager_agent()
-        except Exception:
-            logger.debug("kirocrew-dashboard-manager agent install failed", exc_info=True)
-        # Every install, fresh or upgraded, creates its first crewmate once (a
-        # one-time marker, so a deleted one is never re-created). The reserved
-        # ``default`` member is never touched. Boot keeps going either way.
-        try:
-            first_crewmate.create_first_crewmate_once()
-        except Exception:
-            logger.warning("First crewmate creation failed", exc_info=True)
-
-        # Install kirocrew-heartbeat agent (used by HeartbeatService for unattended polling)
-        try:
-            _install_heartbeat_agent()
-        except Exception:
-            logger.debug("kirocrew-heartbeat agent install failed", exc_info=True)
-
-        # Install kirocrew-conductor agent (goal decomposition + session-control dispatch).
-        # ``clean`` is passed through: the conductor installers carry the user's own
-        # ``allowedTools`` entries forward across a rebuild, and a clean rebuild is the
-        # explicit reset that drops them, as it drops every customization above. Each
-        # reports whether it wrote: a spec left on disk because it could not be read
-        # is a list this rebuild did NOT re-derive, and so is one whose installer
-        # raised -- a failed write (a read-only file, a refused ``os.replace``) leaves
-        # the previous list on disk exactly as a refused read does -- and ``_held_out``
-        # must say so in both cases, or a moved ceiling is marked projected onto a
-        # list that still carries the old grants.
-        conductor_held = False
-        try:
-            conductor_held |= not conductor_agents._install_conductor_agent(clean=clean)
-        except Exception:
-            conductor_held = True
-            logger.debug("kirocrew-conductor agent install failed", exc_info=True)
-
-        # Install kirocrew-pipeline-conductor agent (repository pipeline fleet supervision)
-        try:
-            conductor_held |= not conductor_agents._install_pipeline_conductor_agent(clean=clean)
-        except Exception:
-            conductor_held = True
-            logger.debug("kirocrew-pipeline-conductor agent install failed", exc_info=True)
-
-        # Install the deprecated kirocrew-ledger-conductor alias (the same spec as
-        # kirocrew-conductor above, under its old name, for one release). EAGER for
-        # the same forced reason spelled out on the worker below: ``session_create``
-        # refuses an agent it cannot resolve, and resolution reads a boot-time
-        # in-memory snapshot that no spec write refreshes — so a lazily-materialized
-        # spec is invisible to the validation that runs ahead of the spawn. A session
-        # already running under the old name resolves it on every dispatch, which is
-        # what the alias exists to keep working.
-        try:
-            conductor_held |= not conductor_agents._install_ledger_conductor_agent(clean=clean)
-        except Exception:
-            conductor_held = True
-            logger.debug("kirocrew-ledger-conductor alias install failed", exc_info=True)
-
-        # Install kirocrew-security-conductor agent (one security audit's worker fleet)
-        try:
-            conductor_held |= not conductor_agents._install_security_conductor_agent(clean=clean)
-        except Exception:
-            conductor_held = True
-            logger.debug("kirocrew-security-conductor agent install failed", exc_info=True)
-        # Settled here, not at the end: ``prime_ceiling_projection`` seeds the ceiling
-        # baseline from this after the boot rebuild, and a rebuild that raises further
-        # down must still leave the installers' verdict behind, not the previous one.
-        # ``team_lead_held`` folds in here (not only into ``_conductor_spec_held``)
-        # because the end-of-rebuild ``_held_out.append`` reads ``conductor_held``.
-        # ``research_held`` and ``mate_conductor_held`` fold in for the same reason:
-        # all three derive from ``build_agent_config`` and must not be recorded
-        # synced over a stale grant list.
-        conductor_held = conductor_held or team_lead_held or research_held or mate_conductor_held
-        _conductor_spec_held = conductor_held
-        _conductor_installers_held = conductor_held
-
-        # Install kirocrew-dashboard-author agent (authors one dashboard template and lands
-        # it as a PR). EAGER for the same forced reason spelled out on the worker above:
-        # ``session_create`` refuses an agent it cannot resolve, resolution reads a boot-time
-        # in-memory snapshot that no spec write refreshes, so a lazily-materialized spec is
-        # invisible to the validation that runs ahead of the spawn -- a conductor could never
-        # dispatch it on a clean install. Being here also re-filters its grants through the
-        # governance ceiling on every boot, so the spec normally cannot outlive a tightened
-        # ceiling -- with one exception: a file at the stem that is NOT this installer's own
-        # (its bytes do not reproduce the installer-recorded ownership digest) is left untouched,
-        # so a hand-authored user spec at the once-user-creatable stem -- or a copy of another
-        # owned agent renamed onto it -- is never overwritten. Ownership is the digest the
-        # installer records in the ``agent_state`` sidecar for this name.
-        dashboard_author_install_error: Exception | None = None
-        try:
-            worker_agent._install_dashboard_author_agent()
-        except Exception as exc:
-            # Capture, do NOT swallow. An installer failure must not ABORT the independent
-            # repairs below (fork governance refresh, hook repair) -- those run for every other
-            # installer's failure too -- so we let them run first. But it must not be reported as
-            # a SUCCESSFUL rebuild either: this spec's ``allowedTools`` is re-filtered through the
-            # governance ceiling on every rebuild, so a ceiling-TIGHTENING rebuild whose
-            # author-spec rewrite failed (e.g. a Windows sharing violation, a spec-lock timeout)
-            # leaves the spec's forbidden auto-approvals live. If this rebuild then reported
-            # success, ``reproject_for_ceiling_change`` would advance its generation memo and the
-            # next poll would NOT retry -- the forbidden grants would persist for the process
-            # lifetime. So the failure is re-raised at the END of the rebuild (after the
-            # independent repairs), which (a) escapes before ``_wrote_out`` is marked True, so
-            # ``rebuild_agent_config_reporting`` does not report a write, and (b) leaves the
-            # reprojection memo behind so the next poll retries -- the safe direction the
-            # success contract already documents for a post-write exception.
-            dashboard_author_install_error = exc
-            # A tightened ceiling whose author-spec rewrite failed leaves revoked auto-
-            # approvals live. Mark the hold so ``prime_ceiling_projection`` does not seed
-            # the ceiling as projected, and ``retry_held_conductor_specs`` retries the
-            # rewrite on the next maintenance poll (GPT 6.1 F1: boot-time author install
-            # failures lose the governance retry).
-            _conductor_spec_held = True
-            _conductor_installers_held = True
-            logger.warning(
-                "kirocrew-dashboard-author agent install failed; completing independent repairs "
-                "then failing the rebuild so a tightened ceiling is retried, not marked synced",
-                exc_info=True,
-            )
-
-        # Install kirocrew-worker agent (the default toolset plus the work-ledger set).
-        #
-        # EAGER, like its six siblings above, and that placement is forced rather than
-        # chosen. ``session_create`` refuses an agent it cannot resolve
-        # (``agent_unresolved``), resolution runs through
-        # ``config.loader._materialized_kiro_agent``, and that is a pure IN-MEMORY
-        # snapshot refreshed at boot and by app (de)registration — never by a spec
-        # write. A spec materialized on the spawn path is therefore invisible to the
-        # validation that runs ahead of the spawn, so on a clean install a conductor
-        # cannot dispatch a worker at all. Measured: the name resolves False in the boot
-        # snapshot, and still False after a lazy write until a refresh nothing triggers.
-        #
-        # Being here also means every boot re-filters this spec's grants through the
-        # governance ceiling, exactly as it does for the six siblings, so the spec
-        # cannot outlive a tightened ceiling.
-        try:
-            worker_agent._install_worker_agent()
-        except Exception:
-            logger.debug("kirocrew-worker agent install failed", exc_info=True)
-
-        # Bidirectional sync: ensure packages installed for one provider
-        # are also available for the other (agents↔plugins, skills).
-        sync_aim_packages()
-
-        fork_refresh.refresh_after_rebuild(refresh_forks, gated_off)
-        if refresh_forks is True and fork_refresh._shared_template_held:
-            # A crew-bound shared template kept grants the ceiling may now deny
-            # because its rewrite failed. Held like a conductor spec, so the
-            # ceiling memo stays behind and the next poll or wake retries.
-            conductor_held = True
-            _conductor_spec_held = True
-
-        # Security: sanitize invalid hook keys in agent configs
-        repair_agent_configs()
-    finally:
-        _rebuild_spec_install_admitted.reset(_rebuild_admitted_token)
-
-    if dashboard_author_install_error is not None:
-        # The independent repairs have run; now fail the rebuild. ``_wrote_out`` is left
-        # UNMARKED (so the reporting wrapper returns ``wrote=False``-equivalent by never
-        # appending True) and the exception propagates, which is what keeps a tightened
-        # ceiling from being recorded as projected while the governed spec was not rewritten.
-        raise dashboard_author_install_error
+    conductor_held = _install_sibling_specs(refresh_forks, gated_off, clean=clean)
 
     _rebuild_answer_generation = answer_generation
     _rebuild_incomplete = False
@@ -1153,7 +961,9 @@ def require_fork_governance(agent: str | None, project_dir: str | Path | None = 
     A fork's ``allowedTools``/``autoApprove`` bypass the PreToolUse gate, so a
     session consuming a fork the refresh never re-filtered would run grants the
     ceiling has since tightened away. Non-fork agents never wait and never
-    raise. Raises :class:`ForkGovernanceUnresolved` only.
+    raise, except the main agent and its mirrors while their spec could not be
+    read (:func:`require_main_spec_projected`). Raises
+    :class:`ForkGovernanceUnresolved` only.
 
     *project_dir* is the cwd the backend will run with. kiro-cli resolves
     ``--agent`` against ``<cwd>/.kiro/agents`` BEFORE the global directory, so
@@ -1165,6 +975,7 @@ def require_fork_governance(agent: str | None, project_dir: str | Path | None = 
     """
     if not agent:
         return
+    require_main_spec_projected(agent, project_dir)
     # Each failure class gets its own refusal, because each is repaired
     # differently: a corrupt sidecar is fixed by restoring THAT file, an
     # unresolvable spec by looking at the agents directory. One message for
@@ -1268,13 +1079,311 @@ def require_fork_governance(agent: str | None, project_dir: str | Path | None = 
         )
 
 
+def _install_sibling_specs(
+    refresh_forks: bool | Literal["defer"],
+    gated_off: frozenset[str],
+    *,
+    clean: bool,
+    mirror_main: bool = True,
+) -> bool:
+    """The steps of :func:`rebuild_agent_config` that follow the main spec.
+
+    Each writes or re-filters a file other than ``kirocrew.json``, so they run
+    whether or not the main spec could be read: skipping them would leave the
+    conductor and service specs, the forks and the hook repair on grants an
+    earlier ceiling derived. *mirror_main* is False when the main spec could
+    not be read. The heartbeat and worker specs are derived from it, and a
+    read that failed would rewrite them without the user's servers, so they
+    are left as they are until a rebuild can read it.
+
+    Returns whether a conductor installer left its spec on disk unwritten, the
+    verdict the caller hands on through ``_held_out``.
+    """
+    global _conductor_spec_held, _conductor_installers_held
+    # The guard ADMITTED this rebuild above, and that one decision now covers
+    # every derived spec it installs. Re-asking per write would answer a
+    # different question: ``write_default_spec`` has just created
+    # ``kirocrew.json``, and the temp-checkout arm declines precisely when a
+    # spec is present -- so each spec below would be refused against the file
+    # this rebuild wrote. See ``_rebuild_spec_install_admitted``.
+    #
+    # ``finally``, not a plain reset after the block: several of these calls can
+    # raise past their own arms, and a leaked flag would exempt every later
+    # write in the process -- a worker dispatch, a dashboard edit -- from the
+    # guard this change exists to add.
+    _rebuild_admitted_token = _rebuild_spec_install_admitted.set(True)
+    try:
+        # Install Kiro Crew AIM capabilities package (includes kirocrew-lite)
+        _install_aim_capabilities()
+
+        # Install kirocrew-knowledge agent (used by Knowledge Library LLMPool)
+        try:
+            service_agents._install_knowledge_agent()
+        except Exception:
+            logger.debug("kirocrew-knowledge agent install failed", exc_info=True)
+
+        # Tracks a failed research rewrite the same way ``team_lead_held`` below tracks
+        # team-lead. ``_install_research_agent`` derives from ``build_agent_config()``,
+        # so its ``allowedTools`` is re-filtered through the governance ceiling on every
+        # boot -- a ceiling-TIGHTENING rebuild whose research rewrite failed leaves the
+        # previous list, with the now-revoked grants, on disk. Swallowing that at debug
+        # would let ``reproject_for_ceiling_change`` advance its generation memo so the
+        # next poll would NOT retry, and the stale grants would persist for the process
+        # lifetime (GPT 6.1 F1 / First Principles Item 4: a ceiling-filtered installer must
+        # not be recorded as synced over an unrewritten grant list). Folded into
+        # ``conductor_held`` beside ``team_lead_held`` below.
+        research_held = False
+
+        # Install kirocrew-research agent (used by the Research Lab campaign loop)
+        try:
+            service_agents._install_research_agent()
+        except Exception:
+            research_held = True
+            logger.warning(
+                "kirocrew-research agent install failed; marking the ceiling held so a "
+                "tightened ceiling is retried rather than recorded as synced over the "
+                "stale grant list left on disk",
+                exc_info=True,
+            )
+
+        # Tracks a failed mate-conductor rewrite the way ``research_held`` and
+        # ``team_lead_held`` do: ``_install_mate_conductor_agent`` also derives
+        # from ``build_agent_config()``, so a failed rewrite under a tightening
+        # ceiling must hold the memo rather than let it advance over a stale
+        # grant list on disk. Folded into ``conductor_held`` below.
+        mate_conductor_held = False
+
+        # Install kirocrew-mate-conductor agent (the agent a crewmate's own chat
+        # runs on) and kirocrew-mate-worker (what its worker sessions run on).
+        try:
+            service_agents._install_mate_conductor_agent()
+            service_agents._install_mate_worker_agent()
+        except Exception:
+            mate_conductor_held = True
+            logger.warning(
+                "kirocrew-mate-conductor agent install failed; marking the ceiling held so "
+                "a tightened ceiling is retried rather than recorded as synced over the "
+                "stale grant list left on disk",
+                exc_info=True,
+            )
+
+        # Tracks a failed team-lead rewrite the way ``conductor_held`` tracks the
+        # conductor specs. It is folded into ``_conductor_spec_held`` AFTER that flag
+        # is settled below, because the settle is a plain assignment that would
+        # otherwise clobber a hold set here (this installer runs before it).
+        team_lead_held = False
+
+        # Install kirocrew-team-lead agent (a default agent an operator selects like
+        # any other). Its ``allowedTools`` is re-filtered through the governance
+        # ceiling on every boot, exactly like the conductor specs above -- it derives
+        # from ``build_agent_config()`` and passes its added dispatch grants through
+        # the same ceiling filter before the write.
+        # So a ceiling-TIGHTENING rebuild whose team-lead rewrite failed (a read-only
+        # file, a refused ``os.replace``, a spec-lock timeout) leaves the previous
+        # list -- with the now-revoked grants -- on disk. Swallowing that at debug
+        # would let ``reproject_for_ceiling_change`` advance its generation memo and
+        # the next poll would NOT retry, so the stale grants would persist for the
+        # process lifetime (GPT 6.1 F1). Mark the hold instead, like the conductor
+        # specs and the dashboard-author below: ``prime_ceiling_projection`` then does
+        # not seed the ceiling as projected, and ``retry_held_conductor_specs`` retries
+        # the rewrite on the next maintenance poll. With the spec simply absent the
+        # lead is not offered and nothing else depends on it; the hold is only about
+        # not recording a tightened ceiling as synced over an unrewritten grant list.
+        try:
+            service_agents._install_team_lead_agent()
+        except Exception:
+            team_lead_held = True
+            logger.warning(
+                "kirocrew-team-lead agent install failed; marking the ceiling held so a "
+                "tightened ceiling is retried rather than recorded as synced over the "
+                "stale grant list left on disk",
+                exc_info=True,
+            )
+
+        # Install kirocrew-dashboard-manager agent (the subagent a crewmate hands page
+        # work to). Degrades to a debug line like the two above: with the spec absent a
+        # crewmate still has `dashboard_fields` and `dashboard_write`, so the page it has
+        # keeps working and only CHANGING the page is unavailable.
+        try:
+            service_agents._install_dashboard_manager_agent()
+        except Exception:
+            logger.debug("kirocrew-dashboard-manager agent install failed", exc_info=True)
+        # Every install, fresh or upgraded, creates its first crewmate once (a
+        # one-time marker, so a deleted one is never re-created). The reserved
+        # ``default`` member is never touched. Boot keeps going either way.
+        try:
+            first_crewmate.create_first_crewmate_once()
+        except Exception:
+            logger.warning("First crewmate creation failed", exc_info=True)
+
+        # Install kirocrew-heartbeat agent (used by HeartbeatService for unattended polling)
+        if mirror_main:
+            try:
+                _install_heartbeat_agent()
+            except Exception:
+                logger.debug("kirocrew-heartbeat agent install failed", exc_info=True)
+
+        # Install kirocrew-conductor agent (goal decomposition + session-control dispatch).
+        # ``clean`` is passed through: the conductor installers carry the user's own
+        # ``allowedTools`` entries forward across a rebuild, and a clean rebuild is the
+        # explicit reset that drops them, as it drops every customization above. Each
+        # reports whether it wrote: a spec left on disk because it could not be read
+        # is a list this rebuild did NOT re-derive, and so is one whose installer
+        # raised -- a failed write (a read-only file, a refused ``os.replace``) leaves
+        # the previous list on disk exactly as a refused read does -- and ``_held_out``
+        # must say so in both cases, or a moved ceiling is marked projected onto a
+        # list that still carries the old grants.
+        conductor_held = False
+        try:
+            conductor_held |= not conductor_agents._install_conductor_agent(clean=clean)
+        except Exception:
+            conductor_held = True
+            logger.debug("kirocrew-conductor agent install failed", exc_info=True)
+
+        # Install kirocrew-pipeline-conductor agent (repository pipeline fleet supervision)
+        try:
+            conductor_held |= not conductor_agents._install_pipeline_conductor_agent(clean=clean)
+        except Exception:
+            conductor_held = True
+            logger.debug("kirocrew-pipeline-conductor agent install failed", exc_info=True)
+
+        # Install the deprecated kirocrew-ledger-conductor alias (the same spec as
+        # kirocrew-conductor above, under its old name, for one release). EAGER for
+        # the same forced reason spelled out on the worker below: ``session_create``
+        # refuses an agent it cannot resolve, and resolution reads a boot-time
+        # in-memory snapshot that no spec write refreshes — so a lazily-materialized
+        # spec is invisible to the validation that runs ahead of the spawn. A session
+        # already running under the old name resolves it on every dispatch, which is
+        # what the alias exists to keep working.
+        try:
+            conductor_held |= not conductor_agents._install_ledger_conductor_agent(clean=clean)
+        except Exception:
+            conductor_held = True
+            logger.debug("kirocrew-ledger-conductor alias install failed", exc_info=True)
+
+        # Install kirocrew-security-conductor agent (one security audit's worker fleet)
+        try:
+            conductor_held |= not conductor_agents._install_security_conductor_agent(clean=clean)
+        except Exception:
+            conductor_held = True
+            logger.debug("kirocrew-security-conductor agent install failed", exc_info=True)
+        # Settled here, not at the end: ``prime_ceiling_projection`` seeds the ceiling
+        # baseline from this after the boot rebuild, and a rebuild that raises further
+        # down must still leave the installers' verdict behind, not the previous one.
+        # Never cleared while an unreadable-spec episode is open: an overlapping
+        # rebuild may have skipped since this one wrote the main spec, and its hold
+        # is what keeps the retry running. Read and written under the lock the skip
+        # takes, so the two flags are settled together.
+        # ``team_lead_held`` folds in here (not only into ``_conductor_spec_held``)
+        # because the end-of-rebuild ``_held_out.append`` reads ``conductor_held``.
+        # ``research_held`` and ``mate_conductor_held`` fold in for the same reason:
+        # all three derive from ``build_agent_config`` and must not be recorded
+        # synced over a stale grant list.
+        conductor_held = conductor_held or team_lead_held or research_held or mate_conductor_held
+        with _main_spec_episode_lock:
+            _conductor_spec_held = conductor_held or _main_spec_unreadable
+            _conductor_installers_held = conductor_held
+
+        # Install kirocrew-dashboard-author agent (authors one dashboard template and lands
+        # it as a PR). EAGER for the same forced reason spelled out on the worker above:
+        # ``session_create`` refuses an agent it cannot resolve, resolution reads a boot-time
+        # in-memory snapshot that no spec write refreshes, so a lazily-materialized spec is
+        # invisible to the validation that runs ahead of the spawn -- a conductor could never
+        # dispatch it on a clean install. Being here also re-filters its grants through the
+        # governance ceiling on every boot, so the spec normally cannot outlive a tightened
+        # ceiling -- with one exception: a file at the stem that is NOT this installer's own
+        # (its bytes do not reproduce the installer-recorded ownership digest) is left untouched,
+        # so a hand-authored user spec at the once-user-creatable stem -- or a copy of another
+        # owned agent renamed onto it -- is never overwritten. Ownership is the digest the
+        # installer records in the ``agent_state`` sidecar for this name.
+        dashboard_author_install_error: Exception | None = None
+        try:
+            worker_agent._install_dashboard_author_agent()
+        except Exception as exc:
+            # Capture, do NOT swallow. An installer failure must not ABORT the independent
+            # repairs below (fork governance refresh, hook repair) -- those run for every other
+            # installer's failure too -- so we let them run first. But it must not be reported as
+            # a SUCCESSFUL rebuild either: this spec's ``allowedTools`` is re-filtered through the
+            # governance ceiling on every rebuild, so a ceiling-TIGHTENING rebuild whose
+            # author-spec rewrite failed (e.g. a Windows sharing violation, a spec-lock timeout)
+            # leaves the spec's forbidden auto-approvals live. If this rebuild then reported
+            # success, ``reproject_for_ceiling_change`` would advance its generation memo and the
+            # next poll would NOT retry -- the forbidden grants would persist for the process
+            # lifetime. So the failure is re-raised at the END of the rebuild (after the
+            # independent repairs), which (a) escapes before ``_wrote_out`` is marked True, so
+            # ``rebuild_agent_config_reporting`` does not report a write, and (b) leaves the
+            # reprojection memo behind so the next poll retries -- the safe direction the
+            # success contract already documents for a post-write exception.
+            dashboard_author_install_error = exc
+            # A tightened ceiling whose author-spec rewrite failed leaves revoked auto-
+            # approvals live. Mark the hold so ``prime_ceiling_projection`` does not seed
+            # the ceiling as projected, and ``retry_held_conductor_specs`` retries the
+            # rewrite on the next maintenance poll (GPT 6.1 F1: boot-time author install
+            # failures lose the governance retry).
+            with _main_spec_episode_lock:
+                _conductor_spec_held = True
+                _conductor_installers_held = True
+            logger.warning(
+                "kirocrew-dashboard-author agent install failed; completing independent repairs "
+                "then failing the rebuild so a tightened ceiling is retried, not marked synced",
+                exc_info=True,
+            )
+
+        # Install kirocrew-worker agent (the default toolset plus the work-ledger set).
+        #
+        # EAGER, like its six siblings above, and that placement is forced rather than
+        # chosen. ``session_create`` refuses an agent it cannot resolve
+        # (``agent_unresolved``), resolution runs through
+        # ``config.loader._materialized_kiro_agent``, and that is a pure IN-MEMORY
+        # snapshot refreshed at boot and by app (de)registration — never by a spec
+        # write. A spec materialized on the spawn path is therefore invisible to the
+        # validation that runs ahead of the spawn, so on a clean install a conductor
+        # cannot dispatch a worker at all. Measured: the name resolves False in the boot
+        # snapshot, and still False after a lazy write until a refresh nothing triggers.
+        #
+        # Being here also means every boot re-filters this spec's grants through the
+        # governance ceiling, exactly as it does for the six siblings, so the spec
+        # cannot outlive a tightened ceiling.
+        if mirror_main:
+            try:
+                worker_agent._install_worker_agent()
+            except Exception:
+                logger.debug("kirocrew-worker agent install failed", exc_info=True)
+
+        # Bidirectional sync: ensure packages installed for one provider
+        # are also available for the other (agents↔plugins, skills).
+        sync_aim_packages()
+
+        fork_refresh.refresh_after_rebuild(refresh_forks, gated_off)
+        if refresh_forks is True and fork_refresh._shared_template_held:
+            # A crew-bound shared template kept grants the ceiling may now deny
+            # because its rewrite failed. Held like a conductor spec, so the
+            # ceiling memo stays behind and the next poll or wake retries.
+            conductor_held = True
+            with _main_spec_episode_lock:
+                _conductor_spec_held = True
+
+        # Security: sanitize invalid hook keys in agent configs
+        repair_agent_configs()
+    finally:
+        _rebuild_spec_install_admitted.reset(_rebuild_admitted_token)
+
+    if dashboard_author_install_error is not None:
+        # The independent repairs have run; now fail the rebuild. ``_wrote_out`` is left
+        # UNMARKED (so the reporting wrapper returns ``wrote=False``-equivalent by never
+        # appending True) and the exception propagates, which is what keeps a tightened
+        # ceiling from being recorded as projected while the governed spec was not rewritten.
+        raise dashboard_author_install_error
+    return conductor_held
+
+
 def rebuild_agent_config_reporting(*, _held_out: list[bool] | None = None) -> tuple[Path, bool]:
     """:func:`rebuild_agent_config`, reporting whether it actually wrote.
 
     Returns ``(path, wrote)``. ``wrote`` is ``False`` exactly when the
-    shared-home guard refused the write — the one non-raising path that ends
-    with no spec written — and ``path`` is then the spec path that was NOT
-    rewritten. ``wrote=True`` additionally requires the WHOLE rebuild to have
+    shared-home guard refused the write or the existing spec could not be
+    read — the two non-raising paths that end with no spec written — and
+    ``path`` is then the spec path that was NOT rewritten. ``wrote=True`` additionally requires the WHOLE rebuild to have
     returned: an exception after the write escapes instead, the memo a caller
     keeps stays behind, and the next poll rewrites — the safe direction. The
     verdict comes from the rebuild's own single guard evaluation, so no
