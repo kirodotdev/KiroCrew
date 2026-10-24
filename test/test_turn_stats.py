@@ -164,6 +164,33 @@ class TestAttachTurnStats:
         assert slot.messages[0]["meta"]["turn_stats"]["credits"] == 0.5
         assert "turn_stats" not in slot.messages[1].get("meta", {})
 
+    def test_stats_reach_the_active_variant_of_a_regenerated_row(self):
+        # Regression (review finding on #22749): a regenerate attaches stashed
+        # variants before the turn ends, and the segment builder adds the
+        # newest variant without stats because the figures only exist at
+        # attach time. adopt_variant_text restores the ACTIVE variant onto the
+        # row, so a switch to the newest reply deleted the row's stats and the
+        # deletion was what persisted. The stats must land in the active
+        # variant too.
+        from kiro_crew.dashboard.chat_utils_display import adopt_variant_text
+
+        slot = _ChatSlot("test-variant-stats")
+        row = slot.append("assistant", "regenerated answer", "msg msg-a", broadcast=False)
+        row["variants"] = [
+            {"content": "original answer", "ts": "t0", "turn_stats": {"credits": 0.1}},
+            {"content": "regenerated answer", "ts": "t1"},
+        ]
+        row["variant_idx"] = 1
+        _attach_turn_stats(slot, 3000, 0.5, 0.0, turn_boundary=0)
+
+        assert row["meta"]["turn_stats"]["credits"] == 0.5
+        assert row["variants"][1]["turn_stats"]["credits"] == 0.5
+        assert row["variants"][0]["turn_stats"] == {"credits": 0.1}
+
+        # Switching to the newest variant and back keeps the stats on the row.
+        adopt_variant_text(row, row["variants"][1])
+        assert row["meta"]["turn_stats"]["credits"] == 0.5
+
     def test_boundary_reset_after_clear_attaches_to_confirmation(self):
         # Regression (Codex MEDIUM): a clear-conversation turn empties
         # slot.messages then appends a "Conversation cleared" confirmation.
