@@ -32,6 +32,7 @@ from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.config import live
 from kiro_crew.config.loader import read_config_text
 from kiro_crew.config.paths import config_dir
+from kiro_crew.edition_locks import sandbox_mode_floor
 from kiro_crew.effort import (
     EFFORT_LEVELS,
     is_valid_effort,
@@ -178,7 +179,8 @@ def _get_sandbox_mode(config: Optional[dict] = None) -> str:
     if mode is None:
         return "auto"  # unset -> intended default (OS-level isolation engaged)
     if isinstance(mode, str) and mode in _VALID_SANDBOX_MODES:
-        return mode
+        # Enterprise: ``off`` reads as ``auto`` here too (Red "Minimum sandbox level").
+        return str(sandbox_mode_floor(mode, "auto"))
     return "auto"  # present but malformed -> fail secure, never silently unsandboxed
 
 

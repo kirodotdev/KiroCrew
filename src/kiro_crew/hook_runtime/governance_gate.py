@@ -175,8 +175,13 @@ def _script_hooks_capability_denied(session_key: str = "") -> str | None:
     (fail-closed CPP); any other error degrades to "no opinion" (None) so a
     transient governance glitch cannot wedge every hook.
     """
+    from kiro_crew.edition_locks import LOCKED_REASON, locked_off
     from kiro_crew.platform.context import PlatformCompositionError
 
+    # Enterprise: every hook, by any name, is off (RFC enterprise edition, Red
+    # "Hooks by name"). Checked before governance so no answer can lift it.
+    if locked_off():
+        return f"script_hooks {LOCKED_REASON}"
     try:
         from kiro_crew.platform.governance_profiles import governance_permits
 
