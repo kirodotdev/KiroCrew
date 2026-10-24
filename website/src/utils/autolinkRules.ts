@@ -653,10 +653,17 @@ export function configPatternRefused(entrySource: string): boolean {
 const CONFIG_SCAN_BUDGET_MS = 50
 let configBudgetPerDocMs = CONFIG_SCAN_BUDGET_MS
 let configBudgetLeftMs = CONFIG_SCAN_BUDGET_MS
+/** A second pool of the same size, for the link-preview check alone
+ *  (`useUnfurlHref`). That check only decides whether a link keeps its label,
+ *  so it must never spend the pool that decides whether text becomes a link:
+ *  a message of ordinary links would otherwise leave a later key plain text.
+ *  Being metered on its own keeps the per-message ceiling bounded. */
+let unfurlBudgetLeftMs = CONFIG_SCAN_BUDGET_MS
 
-/** Re-arm the pool; the top-level MarkdownRenderer calls this once per message render. */
+/** Re-arm both pools; the top-level MarkdownRenderer calls this once per message render. */
 export function rearmConfigScanBudget(): void {
   configBudgetLeftMs = configBudgetPerDocMs
+  unfurlBudgetLeftMs = configBudgetPerDocMs
 }
 
 export function configScanBudgetExhausted(): boolean {
@@ -676,6 +683,7 @@ export function drainConfigScanBudget(elapsedMs: number): void {
 export function setConfigScanBudgetForTest(ms?: number): void {
   configBudgetPerDocMs = ms ?? CONFIG_SCAN_BUDGET_MS
   configBudgetLeftMs = configBudgetPerDocMs
+  unfurlBudgetLeftMs = configBudgetPerDocMs
 }
 
 /**
@@ -691,19 +699,25 @@ export function setConfigScanBudgetForTest(ms?: number): void {
  * exhausted pool degrades the chip to its copy-only form rather than letting
  * spans re-run every rule outside the meter. Returns the destination href,
  * or null.
+ *
+ * `pool: 'unfurl'` meters the scan against the link-preview pool instead, so
+ * the preview check never starves the prose pass of a later block.
  */
-export function wholeMatchAutolinkHref(text: string): string | null {
+export function wholeMatchAutolinkHref(text: string, pool: 'prose' | 'unfurl' = 'prose'): string | null {
+  const unfurl = pool === 'unfurl'
   for (const rule of getAutolinkRules()) {
     if (rule.maxSubject === undefined) continue // edition rule: chip behavior unchanged
     if (text.length > rule.maxSubject) continue
     // Metered per RULE, not per call: one call over 50 rules costs up to
     // 50 ladder-bounded scans, which is exactly the multiplication the
     // budget exists to stop.
-    if (configScanBudgetExhausted()) return null
+    if (unfurl ? unfurlBudgetLeftMs <= 0 : configScanBudgetExhausted()) return null
     const scanStart = performance.now()
     rule.pattern.lastIndex = 0
     const m = rule.pattern.exec(text)
-    drainConfigScanBudget(performance.now() - scanStart)
+    const elapsed = performance.now() - scanStart
+    if (unfurl) unfurlBudgetLeftMs -= elapsed
+    else drainConfigScanBudget(elapsed)
     if (m && m.index === 0 && m[0].length === text.length) return autolinkHref(rule, m[0])
   }
   return null
