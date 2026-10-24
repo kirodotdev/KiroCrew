@@ -40,11 +40,6 @@ test/test_app_backend.py::TestShellDispatch::test_explicit_backend_type_exec_rou
 test/test_app_backend.py::TestShellDispatch::test_non_executable_bash_entry_honors_shebang
 test/test_app_backend.py::TestShellDispatch::test_non_executable_sh_entry_falls_back_to_bin_sh
 test/test_app_backend.py::TestShellEntryDetection::test_extensionless_non_executable_is_not_shell
-# Needs symlink-creation privilege to build the fixture: these exercise
-# copytree's handling of in-tree POSIX symlinks, which junctions cannot model.
-test/test_artifact_materialize.py::test_materialize_recorded_document_succeeds
-test/test_artifact_materialize.py::test_materialize_symlinked_request_resolves_to_recorded_inode
-test/test_artifact_materialize.py::test_safe_read_with_identity_authorized
 test/test_artifacts_handlers_actions.py::TestTeardown::test_manifest_expiry_success
 test/test_artifacts_handlers_actions.py::TestTeardown::test_missing_confirm_returns_400
 test/test_artifacts_handlers_actions.py::TestTeardown::test_not_found_returns_404
