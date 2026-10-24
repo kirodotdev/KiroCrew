@@ -67,7 +67,13 @@ const defaultMsg = () => i18nT('components.autoNudgePopover.default_goal', {
 })
 
 /** The paused line per persisted `stopped_reason` (`autoNudgeLoop.ts` lists
- *  the codes). An unlisted or absent reason renders the bare "Paused". */
+ *  the codes). An unlisted or absent reason renders the bare "Paused". Two of
+ *  the four failure reasons carry a dedicated line they ALREADY had
+ *  (`structural_terminal`, `session_start_failures` -> "the last cycle could not
+ *  run"); the other two (`consecutive_failures`, `model_refused`) keep the bare
+ *  "Paused" line they already had. No reason's copy changes here -- which line a
+ *  failure reason shows (and any recovery hint) is a product-copy decision left
+ *  to the maintainer. */
 const PAUSED_STATUS_KEY: Record<string, string> = {
   manual: 'components.autoNudgePopover.paused_manual',
   autonudge_stop: 'components.autoNudgePopover.paused_agent',
@@ -77,6 +83,24 @@ const PAUSED_STATUS_KEY: Record<string, string> = {
   structural_terminal: 'components.autoNudgePopover.paused_last_cycle_failed',
   session_start_failures: 'components.autoNudgePopover.paused_last_cycle_failed',
 }
+
+/** Every paused `stopped_reason` that means the last cycle FAILED, rather than a
+ *  clean stop (a manual pause, a cap, a budget) or a benign mid-fire restart
+ *  (`interrupted_cycle` -- the cycle is OWED, not spent: `store_loader.py`). The
+ *  backend's four system-imposed stand-downs (`autonudge_service/model.py`:
+ *  SESSION_START_FAILURE / CONSECUTIVE_FAILURE / STRUCTURAL_TERMINAL /
+ *  MODEL_REFUSED), named literally rather than derived from the copy map above:
+ *  the outcome is a failure whether or not the reason has its own line, so the
+ *  status surface renders all four through `ErrorNotice` -- `errors-use-error-notice`
+ *  -- while each keeps the copy it already had (two read "the last cycle could
+ *  not run", two the bare "Paused"), so no reason's wording changes. A new
+ *  failure reason on the backend is added here. */
+const FAILED_STOPPED_REASONS = new Set([
+  'session_start_failures',
+  'consecutive_failures',
+  'structural_terminal',
+  'model_refused',
+])
 
 /** The three editable fields, as every write of the form sends them. */
 type LoopFields = { message: string; idle_secs: number; max_cycles: number }
@@ -351,6 +375,14 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
    *  person. Its controls stay as running (Nudge now still fires a turn), but its
    *  status reads in the warn tone, because the next move is the user's. */
   const waitingOnPerson = runsNow && loop?.waiting_on_person === true
+  /** A PAUSED loop whose last cycle FAILED, rather than stopped cleanly. The
+   *  status line is the same `paused_last_cycle_failed` the warn branch would
+   *  show, but the outcome is a failure, so it renders through `ErrorNotice`
+   *  (alert semantics, the agent hand-off) instead of a plain `<p>` --
+   *  `errors-use-error-notice`. Only when paused: a running or finished loop is
+   *  not a failed cycle, whatever its `stopped_reason` reads. */
+  const isFailure = !!loop && !loop.active && !finished
+    && !!loop.stopped_reason && FAILED_STOPPED_REASONS.has(loop.stopped_reason)
   const pauseName = i18nT('components.autoNudgePopover.pause_loop')
   /** The fire control names what THIS press does: with no loop it creates and
    *  starts the loop (no fire); on a loop it fires now, resuming first when the
@@ -693,13 +725,32 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
           </button>
         </div>
         {loop && (
+          isFailure ? (
+            /* The last cycle FAILED, so the status is an error, not a plain
+               tone-boxed line: alert semantics and the structured context the
+               error journal recovers. `errors-use-error-notice`.
+               No hand-off: the popover holds the unsaved goal message, idle and
+               max-cycle inputs, and the hand-off would navigate to the chat and
+               discard them -- the established editable-field rule, so `askAgent`
+               stays off. Retry is not offered either: a failed cycle is
+               recovered by Play (resume), the control the row already carries. */
+            <ErrorNotice
+              variant="block"
+              testId="auto-nudge-status"
+              className="mb-2"
+              messageClassName="text-[11px] leading-relaxed"
+              message={statusText}
+            />
+          ) : (
           /* Boxed in the state's tone (ok while running, info once finished, warn
              while paused) so the state reads before the form does -- except while
              writes are disabled, where a green box beside the capability note would
              assert a fire this session cannot act on; the countdown then stays in the
-             note's neutral tone. Not an aria-live region: a running loop's line
-             ticks every second and would re-announce itself to a screen reader
-             each time. */
+             note's neutral tone. The ink is the `*-text` token, warn/ok/info text
+             sized to keep 4.5:1 on its own tint: `--warn-fg` / `--ok-fg` are black
+             in the dark themes and read near-invisible over the 12% wash. Not an
+             aria-live region: a running loop's line ticks every second and would
+             re-announce itself to a screen reader each time. */
           <p
             data-testid="auto-nudge-status"
             className={`mb-2 rounded-md border px-2 py-1.5 text-[11px] leading-relaxed ${
@@ -713,6 +764,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             {doneLine?.check && <Check size={12} className="lucide-inline mr-1" aria-hidden data-testid="auto-nudge-done-check" />}
             {statusText}
           </p>
+          )
         )}
         {onSetUpBoundedMonitor ? (
           <>
