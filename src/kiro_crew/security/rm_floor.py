@@ -36,6 +36,7 @@ _RM_WORD_RE = re.compile(r"(?<![\w.-])r[^\w\s/]*m(?![\w.-])")  # rm as its own w
 #: :func:`_segments` keeps a redirection and its fd prefix in one word (below).
 _HOME_WORDS = frozenset({"~", "$HOME", "${HOME}"})
 _CUT_CHARS = frozenset(";&|\n`()")
+_SUBST = "\1"  # a substitution: may expand to nothing, unlike a literal ``\0``
 #: A STANDALONE fd prefix (a bare number or ``{name}``) directly before a redirection
 #: operator: ``2>`` and ``{fd}>`` redirect fd 2 / a named fd, but the ``2`` in
 #: ``/tmp/2>x`` is part of the path, so the prefix counts only at a word boundary.
@@ -75,18 +76,24 @@ def _target_kind(word: str) -> "str | None":
     return "home" if base in _HOME_WORDS else None
 
 
-def _segments(command: str) -> "list[str]":
+def _segments(command: str, track: bool = True) -> "list[str]":
     """*command* cut at separators the shared quote machine marks live; stops at a heredoc."""
     out: list[str] = []
     seg: list[str] = []
     in_redirect = False
+    #: closers of open ``${…}`` / ``$[…]``: a ``#`` or ``<<`` there is data, so
+    #: neither a comment nor a heredoc starts until they close
+    expansion: list[str] = []
     pos, state = 0, 0
     while pos < len(command):
         text, resume, resume_state = command[pos:], len(command), 0
+        dollars = 0  # live ``$`` run ending here: ``$$`` is the PID, never an opener
         for step in _shell._iter_shell_chars(text, state):
-            if step.active and text.startswith("<<", step.offset):
+            dollars = dollars + 1 if step.active and step.char == "$" else 0
+            live_syntax = step.active and not expansion
+            if live_syntax and text.startswith("<<", step.offset):
                 break  # heredoc bodies are data; the rows and the sandbox own them
-            if step.active and step.char == "#" and _shell._opens_comment(text, step.offset):
+            if live_syntax and step.char == "#" and _shell._opens_comment(text, step.offset):
                 newline = text.find("\n", step.offset)  # a comment's quotes open nothing
                 resume = len(command) if newline < 0 else pos + newline
                 break
@@ -94,8 +101,8 @@ def _segments(command: str) -> "list[str]":
                 # bash reads "$(…)" from an unquoted start, then the double quote resumes
                 body = text[step.offset + 2 :]
                 close, proven = _shell._matching_close_paren(body, 0)
-                out.extend(_segments(body[: close - 1 if proven else close]))
-                seg.append("\0")
+                out.extend(_segments(body[: close - 1 if proven else close], track))
+                seg.append(_SUBST)
                 in_redirect = False
                 resume, resume_state = pos + step.offset + 2 + close, 2
                 break
@@ -104,11 +111,15 @@ def _segments(command: str) -> "list[str]":
                 closer = _shell._backtick_closer(text, step.offset + 1)
                 closed = closer != -1
                 end = closer + 1 if closed else len(text)
-                out.extend(_segments(text[step.offset + 1 : end - closed]))
-                seg.append("\0")
+                out.extend(_segments(text[step.offset + 1 : end - closed], track))
+                seg.append(_SUBST)
                 in_redirect = False
                 resume, resume_state = pos + end, 2
                 break
+            if track and dollars % 2 and text.startswith(("${", "$["), step.offset):
+                expansion.append("}" if text[step.offset + 1] == "{" else "]")
+            elif step.active and expansion and step.char == expansion[-1]:
+                expansion.pop()
             if step.active and in_redirect and step.char == "&":
                 seg.append(step.text)  # fd-dup operator (``2>&1``), not a command separator
             elif step.active and step.char in _CUT_CHARS:
@@ -138,11 +149,14 @@ def _segments(command: str) -> "list[str]":
 def _rm_wipe_targets(command: str) -> "set[str]":
     """The targets (``root`` / ``home``) a recursive-force ``rm`` in *command* wipes."""
     kinds: set[str] = set()
-    for segment in _segments(command):
+    # read with and without ``${…}`` tracking: the untracked reading is the
+    # base one, so tracking can only add refusals
+    for segment in [*_segments(command), *_segments(command, track=False)]:
         words = _shell._shell_tokens(segment)
         while words:
-            if ENV_ASSIGNMENT_RE.match(words[0]):
-                words = words[1:]
+            if ENV_ASSIGNMENT_RE.match(words[0]) or words[0] in _shell._KEEPS_COMMAND_POSITION:
+                # ``then`` / ``do`` / ``!`` / ``time`` … leave the next word the program
+                words = words[2:] if words[0] == "time" and words[1:2] == ["-p"] else words[1:]
                 continue
             is_redirection, consumes_next = _shell._push_token_redirection(words[0])
             if is_redirection:
@@ -151,6 +165,11 @@ def _rm_wipe_targets(command: str) -> "set[str]":
                 words = words[1:]
                 if consumes_next and words:
                     words = words[1:]
+                continue
+            if _SUBST in words[0]:
+                # a substitution in command position may expand to nothing
+                bare = words[0].replace(_SUBST, "")
+                words = [bare, *words[1:]] if bare else words[1:]
                 continue
             break
         if not words or _shell._program_basename(words[0]) != "rm":

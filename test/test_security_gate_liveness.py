@@ -526,7 +526,13 @@ def _url_payload_command(n: int) -> str:
 #: ``paths``: one import and one ``or`` clause on the write gate, plus the blank line
 #: isort puts after the import. The matcher lives outside the package
 #: (``kiro_crew.edition_install_fence``).
-_PACKAGE_LINE_BUDGET = 32_616
+#:
+#: Raised by 19, from 32,616, for the ``rm`` floor's own segment walk: reserved
+#: words (``then``, ``do``, ``!``, ``time`` …) keep command position, a quoted
+#: substitution may expand to nothing in the program word, and
+#: ``#`` / ``<<`` inside an unpaired ``${…}`` / ``$[…]`` open no comment or heredoc.
+#: Each command is read with and without that tracking. Deny-only: no allow widened.
+_PACKAGE_LINE_BUDGET = 32_635
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
