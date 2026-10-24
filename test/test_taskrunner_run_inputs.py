@@ -180,6 +180,33 @@ class TestWorkspaceDirValidation:
         run = await runner.plan(input_text="do X", source="text", workspace_dir=str(override))
         assert run.work_dir == str(override.resolve())
 
+    @pytest.mark.asyncio
+    async def test_execute_plan_override_clears_owns_task_dir(self, tmp_path):
+        # Regression: a plan made with NO workspace sets owns_task_dir=True (its
+        # work_dir is runner-created scratch). When execute_plan applies a
+        # user-supplied workspace override, the dir is user-owned, not runner
+        # scratch, so owns_task_dir MUST be False — otherwise init_workspace
+        # would git-init the user's own folder and redirect execution into an
+        # empty worktree that excludes the folder's existing files.
+        runner = TaskRunner(sessions=_make_mock_sessions(), auto_test=False, work_dir=tmp_path)
+        runner._decompose = AsyncMock(
+            return_value=[Step(index=1, title="step", description="desc")]
+        )
+        run = await runner.plan(input_text="do X", source="text")  # no override
+        assert run.owns_task_dir is True
+
+        override = tmp_path / "user-folder"
+        override.mkdir()
+        runner._execute_tasks = AsyncMock()  # don't actually run steps
+        await runner.execute_plan(run.task_id, workspace_dir=str(override))
+        await runner._tasks[run.task_id]
+
+        assert run.work_dir == str(override.resolve())
+        assert run.owns_task_dir is False, (
+            "a user-supplied override must clear owns_task_dir so the user's "
+            "folder is never git-init'd"
+        )
+
 
 class TestMaxParallelStepsClamp:
     """`compute_memory_sized_parallel_cap` is the host-safe ceiling; a positive

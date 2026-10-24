@@ -39,10 +39,20 @@ async def init_workspace(run: Project) -> None:
     - **Git repo** (including a nested subdirectory of one — ``--show-toplevel``
       resolves the root): create an isolated worktree on a task branch and run
       there, leaving the user's working tree untouched.
-    - **Non-git folder**: run in place. We do NOT ``git init`` — imposing version
-      control on a folder the user didn't set up as a repo is surprising. Git
-      isolation (per-step commit / revert / diff-review) is simply disabled for
-      the run via ``git_enabled = False``.
+    - **Runner-owned work dir, not a repo** (``run.owns_task_dir``): the runner
+      created this per-run scratch directory itself (no user workspace
+      override), so ``git init`` + an initial empty commit + the task branch
+      checked out IN PLACE surprises nobody and nothing it manages, and it turns
+      on the per-step commit / revert / diff-review verification that is the only
+      content-aware gate. No worktree is created: git runs directly in
+      ``work_dir`` (``git_in_place``), so the deliverable stays in ``plan_<id>/``
+      where the completion summary names it and ``finalize`` leaves it untouched.
+      This is the common case (upload a spec, generate tasks, no override).
+    - **User-supplied folder, not a repo**: run in place. We do NOT ``git init``
+      — imposing version control on a folder the user didn't set up as a repo
+      is surprising. Git isolation (per-step commit / revert / diff-review) is
+      simply disabled for the run via ``git_enabled = False``; the completion
+      summary says so loudly so the operator knows no step was diff-reviewed.
     """
     orig_dir = run.work_dir
     branch = f"kirocrew/task/{run.task_id}"
@@ -54,7 +64,24 @@ async def init_workspace(run: Project) -> None:
     run.git_enabled = False
 
     if not await _is_git_repo(orig_dir):
-        # General coding task on a non-git folder — run directly in it, no git.
+        if not run.owns_task_dir or not await _git_init_runner_dir(orig_dir, branch):
+            # A user-supplied non-git folder (never git-init'd), or a runner-owned
+            # dir whose init failed: run directly in it, no git coordination.
+            return
+        # Runner-owned scratch is now a fresh repo with an empty base commit and
+        # the task branch checked out IN PLACE. There is no user checkout to
+        # isolate from, so git runs directly in ``work_dir`` and NO worktree is
+        # created — the deliverable stays in ``plan_<id>/`` where the completion
+        # summary names it, and ``finalize`` (which only ever removes a
+        # worktree) leaves it untouched. ``worktree_path`` stays empty for that
+        # reason; ``git_in_place`` is what authorises git here (see
+        # ``_git_runs_in_own_worktree``).
+        run.base_branch = "main"
+        run.branch_name = branch
+        run.repo_root = orig_dir
+        run.worktree_path = ""
+        run.git_in_place = True
+        run.git_enabled = True
         return
 
     run.base_branch = (await _git(orig_dir, "rev-parse", "--abbrev-ref", "HEAD")).strip()
@@ -89,6 +116,48 @@ async def init_workspace(run: Project) -> None:
     run.git_enabled = True
 
 
+async def _git_init_runner_dir(path: str, branch: str) -> bool:
+    """``git init`` a runner-owned scratch dir and check out the task branch in place.
+
+    Returns True when *path* is left a repository with a HEAD commit and
+    *branch* checked out, False on any failure (the caller then continues
+    without git coordination — init is best-effort, never fatal).
+
+    Three things make this more than a bare ``git init``:
+
+    - **A local identity.** The git invocations run through the sandbox, which
+      scrubs the environment and HOME, so no global ``user.email`` / ``user.name``
+      is visible and a plain ``commit`` would abort with "Please tell me who you
+      are". A repo-local identity is set so the step commits downstream succeed.
+      ``kirocrew/task`` runs are disposable scratch, so the identity is a fixed
+      placeholder, never the user's.
+    - **An initial empty commit.** A commitless repo has an unborn HEAD, and the
+      step commits, diffs (``HEAD~1``) and reverts downstream all assume a base
+      commit exists. ``commit --allow-empty`` gives the branch that base.
+    - **The task branch, checked out in place.** Git runs directly in this
+      directory (no worktree), so the run executes on ``branch`` from the start;
+      ``finalize`` never removes the directory, so the committed work stays here.
+
+    Only ever called for ``run.owns_task_dir`` directories — the runner's own
+    per-run scratch — so initializing version control here is invisible to the
+    user and the directory is cleaned up with the run.
+    """
+    try:
+        await _git(path, "init", "-q", "-b", "main")
+        await _git(path, "config", "user.email", "taskrunner@kirocrew.invalid")
+        await _git(path, "config", "user.name", "Kiro Crew Task Runner")
+        # An empty base commit keeps any stub files already in scratch inside
+        # the first reviewable step's diff rather than baking them into the
+        # base, so a step that only touches an already-present stub still
+        # produces a diff the review (and the empty-diff fail-closed gate) sees.
+        await _git(path, "commit", "--allow-empty", "-q", "-m", "kirocrew: task runner base")
+        await _git(path, "checkout", "-q", "-b", branch)
+    except (RuntimeError, OSError):
+        logger.debug("git init of runner work dir %s failed; running without git", path)
+        return False
+    return True
+
+
 async def _branch_exists(repo_root: str, branch: str) -> bool:
     """True when ``refs/heads/<branch>`` resolves in ``repo_root``."""
     try:
@@ -101,15 +170,27 @@ async def _branch_exists(repo_root: str, branch: str) -> bool:
 def _git_runs_in_own_worktree(run: Project) -> bool:
     """True when a step may run git in ``run.work_dir``.
 
-    Git must be enabled AND ``work_dir`` must be the run's own worktree:
-    ``init_workspace`` and ``reinit_workspace_for_retry`` set ``work_dir`` and
-    ``worktree_path`` to the same path together, so any other state means the
-    directory may be the user's own checkout, where ``git add -A`` would commit
-    their uncommitted work and ``reset --hard`` would discard it. A pure string
-    comparison, so it costs no filesystem call on the event loop.
+    Git must be enabled AND ``work_dir`` must be safe to run git in. Two shapes
+    are safe:
+
+    - **Own worktree**: ``init_workspace`` / ``reinit_workspace_for_retry`` set
+      ``work_dir`` and ``worktree_path`` to the same path together, so a match
+      means git runs in the run's isolated worktree, never the user's checkout.
+    - **In place** (``git_in_place``): the runner git-init'd its OWN scratch
+      ``work_dir`` (``owns_task_dir``), so there is no user checkout to protect
+      and no worktree — git runs directly in ``work_dir``, which is where the
+      deliverable must stay. This flag is set ONLY inside ``init_workspace``'s
+      runner-owned branch, never for a user-supplied directory.
+
+    Any other state means ``work_dir`` may be the user's own checkout, where
+    ``git add -A`` would commit their uncommitted work and ``reset --hard``
+    would discard it. A pure string comparison, so it costs no filesystem call
+    on the event loop.
     """
     if not run.git_enabled:
         return False
+    if run.git_in_place and run.owns_task_dir:
+        return True
     if run.worktree_path and os.path.normpath(run.work_dir) == os.path.normpath(run.worktree_path):
         return True
     logger.warning(
@@ -300,6 +381,23 @@ async def workspace_is_valid(run: Project) -> bool:
     """
     if not run.branch_name:
         return True
+    if run.git_in_place and run.owns_task_dir:
+        # In-place runner-owned git: no worktree, the repo IS ``work_dir``.
+        # Validity is simply that ``work_dir`` is still a git repo rooted at
+        # itself, on the run's branch, with the run's recorded commits intact.
+        # There is nothing to recover (``reinit_workspace_for_retry`` is a
+        # worktree operation), so a lost in-place repo fails closed via the
+        # caller rather than being recreated.
+        try:
+            toplevel = (await _git(run.work_dir, "rev-parse", "--show-toplevel")).strip()
+            current_branch = (await _git(run.work_dir, "branch", "--show-current")).strip()
+        except (RuntimeError, OSError):
+            return False
+        if not toplevel or not await asyncio.to_thread(_same_dir, toplevel, run.work_dir):
+            return False
+        if current_branch != run.branch_name:
+            return False
+        return await _branch_history_intact(run.work_dir, run)
     expected = run.worktree_path or run.work_dir
     if not expected:
         return False
@@ -649,6 +747,14 @@ async def reinit_workspace_for_retry(run: Project) -> bool:
     False means the caller must not resume and should fail the run instead
     of continuing against a broken workspace.
     """
+    if run.git_in_place:
+        # In-place runner-owned git has no worktree to recreate: the repo IS
+        # ``work_dir``. Recovery here is a worktree operation and does not
+        # apply. ``workspace_is_valid`` already answered whether the in-place
+        # repo survived; if it did not, there is nothing to rebuild, so refuse
+        # and let the caller fail the run closed rather than mint a worktree
+        # inside the run's own scratch repo.
+        return False
     if not run.repo_root or not await _is_git_repo(run.repo_root):
         return False
     if not run.branch_name:
