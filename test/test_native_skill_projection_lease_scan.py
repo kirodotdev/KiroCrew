@@ -534,7 +534,7 @@ def test_workspace_settings_lock_failure_publishes_no_alias(native_tree, monkeyp
         raise OSError("test settings lock unavailable")
         yield
 
-    monkeypatch.setattr(projection, "workspace_cli_settings_lock", unavailable)
+    monkeypatch.setattr(projection, "locked_workspace_cli_settings", unavailable)
 
     assert projection.prepare_native_skill_projection(project) is None
     assert not list(agents.glob(f"{projection.NATIVE_SKILL_ALIAS_PREFIX}*.json"))

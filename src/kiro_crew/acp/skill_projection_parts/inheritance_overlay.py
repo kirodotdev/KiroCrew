@@ -17,10 +17,25 @@ import time
 from pathlib import Path
 from typing import Any
 
+from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write, on_event_loop
 from kiro_crew.config.paths import kiro_home
-from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
+from kiro_crew.hooks import (
+    MAX_FILE_BYTES,
+    FileTooLargeError,
+    safe_read_file_bytes,
+    safe_read_file_bytes_nolink,
+)
 from kiro_crew.security import _PATH_RESOLVE_TIMEOUT_SECS
+from kiro_crew.workspace_cli_settings import (
+    CLI_JSON_REFUSED,
+    LockedCliSettings,
+    carry_effort_ownership,
+    pinned_cli_settings_fd,
+    publish_locked_cli_settings,
+    read_pinned_cli_json,
+    settings_json_text,
+)
 
 # Logs under the facade's name, which operators and tests filter on.
 logger = logging.getLogger("kiro_crew.acp.skill_projection")
@@ -48,8 +63,23 @@ _SETTINGS_READ_RETRY_PAUSES: tuple[float, ...] = (0.0, _PATH_RESOLVE_TIMEOUT_SEC
 _settings_read_sleep = time.sleep
 
 
-def _settings(path: Path, *, may_pause: bool = True) -> dict[str, Any]:
+def _settings(path: Path | LockedCliSettings, *, may_pause: bool = True) -> dict[str, Any]:
     """Read one Kiro ``cli.json`` through the credential gate; absence reads ``{}``.
+
+    See :func:`_settings_with_mtime` for the retry and pause rules.
+    """
+    return _settings_with_mtime(path, may_pause=may_pause)[0]
+
+
+def _settings_with_mtime(
+    path: Path | LockedCliSettings, *, may_pause: bool = True
+) -> tuple[dict[str, Any], int | None]:
+    """Read one Kiro ``cli.json`` and the whole-second mtime of the file version read.
+
+    The mtime is what :func:`carry_effort_ownership` validates Kiro Crew's effort
+    ownership record against when the document is written back; it is taken by a
+    no-follow stat right after the read, and is ``None`` for an absent file or
+    when the stat fails, which voids the record (the conservative side).
 
     Off the event loop a refused read is retried on
     :data:`_SETTINGS_READ_RETRY_PAUSES`: one immediate re-check, then one pause
@@ -61,12 +91,85 @@ def _settings(path: Path, *, may_pause: bool = True) -> dict[str, Any]:
     ``may_pause=False`` keeps the immediate re-check but drops the pause, for a
     caller holding a cross-process lock whose contenders give up after the same
     2 s: sleeping there would make a concurrent spawn lose its lock instead.
-    """
 
-    def read_once() -> bytes | object | None:
-        if not path.exists():
+    A locked read refuses every unsafe shape: a link, a hardlink, a non-regular
+    file, a descriptor whose real path escapes the settings directory, is
+    sensitive or cannot be resolved, and a read that fails. Once retries are
+    exhausted, a locked read raises ``OSError`` when its last attempt was
+    refused or saw the file change. Every other exhausted read raises
+    ``ValueError``.
+    """
+    cli_json = path.cli_json if isinstance(path, LockedCliSettings) else path
+    locked_refusal: OSError | None = None
+    locked_changed_while_read = False
+
+    def read_once() -> tuple[bytes, int | None] | object | None:
+        nonlocal locked_changed_while_read, locked_refusal
+        locked_refusal = None
+        locked_changed_while_read = False
+        if isinstance(path, LockedCliSettings):
+            settings_fd = pinned_cli_settings_fd(path)
+            if settings_fd is not None:
+                try:
+                    result = read_pinned_cli_json(settings_fd, cli_json, max_bytes=MAX_FILE_BYTES)
+                except OSError as exc:
+                    locked_refusal = exc
+                    return None
+                if result is None:
+                    return _ABSENT_SETTINGS
+                raw, before_read, after_read = result
+                before_version = (
+                    before_read.st_dev,
+                    before_read.st_ino,
+                    before_read.st_size,
+                    before_read.st_mtime_ns,
+                    before_read.st_ctime_ns,
+                )
+                after_version = (
+                    after_read.st_dev,
+                    after_read.st_ino,
+                    after_read.st_size,
+                    after_read.st_mtime_ns,
+                    after_read.st_ctime_ns,
+                )
+                if before_version != after_version:
+                    locked_changed_while_read = True
+                    return None
+                if len(raw) > MAX_FILE_BYTES:
+                    raise FileTooLargeError(
+                        f"File exceeds {MAX_FILE_BYTES // (1024 * 1024)} MB safety cap"
+                    )
+                return raw, int(after_read.st_mtime)
+            if not os.path.lexists(cli_json):
+                return _ABSENT_SETTINGS
+            refusal = OSError(f"workspace cli.json overlay {cli_json} {CLI_JSON_REFUSED}")
+            if platform_compat.is_link_or_junction(cli_json):
+                locked_refusal = refusal
+                return None
+            raw_by_name = safe_read_file_bytes_nolink(
+                str(cli_json),
+                within_root=str(path.settings_dir),
+                max_bytes=MAX_FILE_BYTES,
+                within_root_is_canonical=True,
+            )
+            if raw_by_name is None:
+                locked_refusal = refusal
+                return None
+            try:
+                file_mtime: int | None = int(os.stat(cli_json, follow_symlinks=False).st_mtime)
+            except OSError:
+                file_mtime = None
+            return raw_by_name, file_mtime
+        if not cli_json.exists():
             return _ABSENT_SETTINGS
-        return safe_read_file_bytes(str(path))
+        raw_by_name = safe_read_file_bytes(str(cli_json))
+        if raw_by_name is None:
+            return None
+        try:
+            file_mtime = int(os.stat(cli_json, follow_symlinks=False).st_mtime)
+        except OSError:
+            file_mtime = None
+        return raw_by_name, file_mtime
 
     raw = read_once()
     if raw is None and not on_event_loop():
@@ -79,14 +182,23 @@ def _settings(path: Path, *, may_pause: bool = True) -> dict[str, Any]:
             if raw is not None:
                 break
     if raw is None:
-        raise ValueError(f"Cannot read Kiro settings at {path}")
-    if not isinstance(raw, bytes):
+        if isinstance(path, LockedCliSettings):
+            if locked_refusal is not None:
+                raise locked_refusal
+            if locked_changed_while_read:
+                raise OSError(
+                    f"workspace cli.json overlay {cli_json} changed while it was read; "
+                    "left unchanged"
+                )
+        raise ValueError(f"Cannot read Kiro settings at {cli_json}")
+    if not isinstance(raw, tuple):
         # The absence sentinel: the file does not exist.
-        return {}
-    data = json.loads(raw)
+        return {}, None
+    content, file_mtime = raw
+    data = json.loads(content)
     if not isinstance(data, dict):
-        raise ValueError(f"Kiro settings must be an object: {path}")
-    return data
+        raise ValueError(f"Kiro settings must be an object: {cli_json}")
+    return data, file_mtime
 
 
 def _inheritance_preference(
@@ -139,8 +251,14 @@ def inherits_default_resources(work_dir: str | os.PathLike[str] | None) -> bool:
     return _inheritance_preference(local, global_settings)[0]
 
 
-def _restore_inheritance(path: Path, local: dict[str, Any]) -> None:
-    """Undo only our overlay; a changed or removed native setting wins."""
+def _restore_inheritance(
+    settings: LockedCliSettings, local: dict[str, Any], file_mtime: int | None
+) -> None:
+    """Undo only our overlay; a changed or removed native setting wins.
+
+    *file_mtime* is the mtime of the file version *local* was read from, so the
+    write carries Kiro Crew's effort ownership record exactly as it stood.
+    """
     inherited = local.get(_MANAGED_SETTING)
     source = local.get(_INHERIT_SOURCE)
     if not isinstance(inherited, bool) or source not in ("local", "global"):
@@ -154,7 +272,7 @@ def _restore_inheritance(path: Path, local: dict[str, Any]) -> None:
         or not isinstance(previous.get("present"), bool)
         or (previous["present"] and "value" not in previous)
     ):
-        raise ValueError(f"Cannot restore Crew's inheritance overlay at {path}")
+        raise ValueError(f"Cannot restore Crew's inheritance overlay at {settings.cli_json}")
     if local.get(_INHERIT_SETTING) is True:
         if previous["present"]:
             local[_INHERIT_SETTING] = previous["value"]
@@ -162,4 +280,7 @@ def _restore_inheritance(path: Path, local: dict[str, Any]) -> None:
             local.pop(_INHERIT_SETTING, None)
     for key in (_MANAGED_SETTING, _INHERIT_SOURCE, _PREVIOUS_INHERITANCE):
         local.pop(key, None)
-    atomic_write(path, json.dumps(local, indent=2))
+    stamp_ns = carry_effort_ownership(local, file_mtime)
+    publish_locked_cli_settings(
+        settings, settings_json_text(local), write=atomic_write, mtime_ns=stamp_ns
+    )

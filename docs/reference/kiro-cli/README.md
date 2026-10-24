@@ -13,6 +13,29 @@ a supported range, and a 3.x CLI satisfies all of them: `mcp_hot_reload.py`'s
 `kiro_cli.py`'s `SPEC_PERMISSIONS_MIN_VERSION` (2.23.0, the agent-spec
 `permissions` block) and `MANDATORY_MCPS_DROP_MIN_VERSION` (2.27.0, deferring
 Crew's MCP servers under Tool Search).
+None of these floors is effort-related: the `kirocrew.effortOwned` ownership
+record in the workspace `cli.json` counts only while its sibling
+`kirocrew.effortOwnedStamp` equals the file's whole-second mtime, so it depends
+on kiro-cli tolerating two keys it does not know when it loads workspace
+settings, verified on kiro-cli 2.27.1. The one tripwire is
+`test/test_kiro_cli_effort_ownership_pin.py`, which fails when the BUNDLED pin in
+`packaging/kiro-cli-version` is raised past that verified version; a `kiro-cli`
+the host installed itself is not covered by it. After a kiro-cli bump, re-verify two things
+on the new version. First, kiro-cli still loads a workspace `cli.json` carrying
+the `kirocrew.effortOwned` and `kirocrew.effortOwnedStamp` keys (`settings list`
+shows the workspace `chat.modelDefaults`, and a chat spawns and answers), and
+after a `kiro-cli settings --workspace` write the file's whole-second mtime no
+longer equals the recorded stamp, so Kiro Crew's readers treat the record as void
+instead of claiming the rewritten entries. Whether that write keeps or drops the
+two keys does not matter; a write that left the stamp equal to the new mtime
+would. Second, a live `/effort <level>` push still sets the
+session's effort: kiro-cli's next `_kiro.dev/metadata` notification reports that
+level, under `reasoning.effort` on kiro-cli 2.27.1. That push is how a chat keeps
+its own level over a shared overlay that holds another one, and kiro-cli 2.27.1's
+ACP command list marks `/effort` deprecated. If the push does not land, move every
+`/effort` sender to kiro-cli's replacement channel before the bump ships. Then raise
+`EFFORT_OWNERSHIP_VERIFIED_KIRO_CLI` in that test and update the
+verified-version note in `docs/system-specs/modules/providers.md`.
 So these pages describe what upstream published on the fetch date recorded per
 row, not a supported-version contract.
 

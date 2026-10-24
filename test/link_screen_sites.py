@@ -30,6 +30,7 @@ DECLARED_SITES = frozenset(
         ("acp/skill_projection_parts/alias_reclaim.py", "_migrate_legacy_side_files"),
         ("acp/skill_projection_parts/alias_reclaim.py", "_sweep_orphan_alias_locks"),
         ("acp/skill_projection_parts/alias_reclaim.py", "_sweep_orphan_sidecars_in"),
+        ("acp/skill_projection_parts/inheritance_overlay.py", "_settings_with_mtime.read_once"),
         ("acp/skill_projection_parts/side_files.py", "_ensure_real_directory"),
         ("acp/skill_projection_parts/side_files.py", "_hold_legacy_publication_lock"),
         ("acp/skill_projection_parts/side_files.py", "_probe_orphan_projection_holder"),
@@ -163,6 +164,7 @@ DECLARED_SITES = frozenset(
         ("pod/runtime_home.py", "orphan_homes"),
         ("pod/runtime_home.py", "write_pod_config"),
         ("portability.py", "apply_import_zip"),
+        ("providers/acp_cli_overlay.py", "_read_cli_overlay_document"),
         ("sandbox_argv.py", "cleanup_stale_sandbox_profiles"),
         ("seed.py", "copy_fixture_into_witnessed_dir"),
         ("seed.py", "copy_fixture_into_witnessed_dir._walk"),
@@ -219,6 +221,7 @@ DECLARED_SITES = frozenset(
         ("snapshot_restore.py", "_refuse_corrupt_source_databases"),
         ("snapshot_restore.py", "_restore_everything_from_rollback"),
         ("work_root.py", "sweep_work_root"),
-        ("workspace_cli_settings.py", "workspace_cli_settings_lock"),
+        ("workspace_cli_settings.py", "_settings_dir_within_work_dir"),
+        ("workspace_cli_settings.py", "locked_workspace_cli_settings"),
     }
 )

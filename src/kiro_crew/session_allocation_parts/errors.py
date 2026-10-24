@@ -10,6 +10,11 @@ and channel replies.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from kiro_crew.session_allocation import LLMProvider
+
 
 class SessionClosingError(RuntimeError):
     """A turn was requested after manager shutdown began."""
@@ -44,6 +49,13 @@ class SessionBusyError(RuntimeError):
     """A caller requested an immediate turn claim while the session was held."""
 
 
+class _WarmPoolEffortRewriteDiscard(RuntimeError):
+    """A claimed warm runtime crossed an explicit-Default rewrite before registration."""
+
+    def __init__(self, provider: LLMProvider) -> None:
+        self.provider = provider
+
+
 #: How long a claim or cold start waits at the door of ``get_or_create`` for a
 #: key's ending fence to lift before it is refused (:class:`SessionEndingError`).
 #: An independent caller-refusal bound, not a multiple of the fence's length: a
@@ -70,3 +82,4 @@ SessionClosingError.__module__ = "kiro_crew.session_allocation"
 SessionEndingError.__module__ = "kiro_crew.session_allocation"
 SessionBusyError.__module__ = "kiro_crew.session_allocation"
 SpeculativeResumeRefused.__module__ = "kiro_crew.session_allocation"
+_WarmPoolEffortRewriteDiscard.__module__ = "kiro_crew.session_allocation"

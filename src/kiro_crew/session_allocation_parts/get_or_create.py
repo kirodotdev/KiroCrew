@@ -19,9 +19,9 @@ Instance fields written: ``_allocation_reservations``, ``_sessions``, ``_startin
 
 Instance fields read: ``_closing``, ``_deps``, ``_lock``, ``_owner``, ``_start_sem``, ``state``.
 
-Through ``state`` it also changes the ending fence's and the capability records in place
-(``spawning_reservations``, ``invalidated_reservations``, ``refused_spawns``,
-``capability_failures``) and reads ``ending_keys``.
+Through ``state`` it also changes the ending fence's, the cold-start and the capability
+records in place (``spawning_reservations``, ``invalidated_reservations``, ``refused_spawns``,
+``cold_start_reservations``, ``capability_failures``) and reads ``ending_keys``.
 """
 
 from __future__ import annotations
@@ -53,6 +53,7 @@ from kiro_crew.session_allocation_parts.errors import (
     SessionClosingError,
     SessionEndingError,
     SpeculativeResumeRefused,
+    _WarmPoolEffortRewriteDiscard,
 )
 from kiro_crew.session_lifecycle import adopt_parked_queue
 from kiro_crew.start_priority import (
@@ -202,6 +203,27 @@ async def _crew_pins_effort(
         return False
 
 
+async def _save_applied_explicit_effort_default_clear(
+    service: SessionAllocationService, key: str
+) -> None:
+    """Clear and save an explicit effort Default the started provider just applied.
+
+    A failed save never fails the start: ``aflush`` restores the dirty mark, so
+    the map's next successful save retries this already-applied Default's clear.
+    """
+    owner = service._owner
+    owner.set_explicit_effort_default(key, False)
+    try:
+        await owner.aflush()
+    except Exception:
+        service._deps.logger.warning(
+            "Could not save the explicit effort Default clear for %s; "
+            "the Default already ran and the map's next save retries its clear",
+            key,
+            exc_info=True,
+        )
+
+
 def _dispatch_hard_kill(self: SessionAllocationService, provider: LLMProvider) -> None:
     """Dispatch blocking provider teardown away from the event-loop thread."""
     kill = self._deps.get_sync_kill_provider()
@@ -231,6 +253,7 @@ def _remove_reservation_now(self: SessionAllocationService, key: str, token: obj
     if token in self.state.spawning_reservations and key in self.state.ending_keys:
         self.state.refused_spawns[key] = self.state.refused_spawns.get(key, 0) + 1
     self.state.spawning_reservations.discard(token)
+    self.state.cold_start_reservations.discard(token)
     fence = self.state.ending_keys.get(key)
     if fence is not None:
         fence.discard(token)
@@ -345,22 +368,25 @@ async def get_or_create(
             fence_deadline = await self.wait_for_ending_fence(reserved_key, fence_deadline)
             continue
         try:
-            result = await self._get_or_create_impl(
-                reserved_key,
-                agent=agent,
-                channel_id=channel_id,
-                approval_policy=approval_policy,
-                model=model,
-                cwd=cwd,
-                extra_env=extra_env,
-                speculative=speculative,
-                speculative_resume=speculative_resume,
-                wait_if_busy=wait_if_busy,
-                _won_race_retries=_won_race_retries,
-                _reservation=token,
-                start_priority=start_priority,
-                **extra_factory_kwargs,
-            )
+            try:
+                result = await self._get_or_create_impl(
+                    reserved_key,
+                    agent=agent,
+                    channel_id=channel_id,
+                    approval_policy=approval_policy,
+                    model=model,
+                    cwd=cwd,
+                    extra_env=extra_env,
+                    speculative=speculative,
+                    speculative_resume=speculative_resume,
+                    wait_if_busy=wait_if_busy,
+                    _won_race_retries=_won_race_retries,
+                    _reservation=token,
+                    start_priority=start_priority,
+                    **extra_factory_kwargs,
+                )
+            finally:
+                self._release_explicit_effort_default(reserved_key)
         except SessionEndingError:
             # The key was fenced while this allocation was in flight: a door
             # of the body refused it -- at registration, with the provider
@@ -372,9 +398,25 @@ async def get_or_create(
             await self._remove_reservation_cancellation_drained(reserved_key, token)
             fence_deadline = await self.wait_for_ending_fence(reserved_key, fence_deadline)
             continue
+        except _WarmPoolEffortRewriteDiscard as discarded:
+            try:
+                await self._owner._discard_pool_provider(
+                    discarded.provider, "Warm pool effort registration discard"
+                )
+            finally:
+                await self._remove_reservation_cancellation_drained(reserved_key, token)
+            continue
         except BaseException:
             await self._remove_reservation_cancellation_drained(reserved_key, token)
             raise
+        if isinstance(result, asyncio.Event):
+            # Another same-key start holds the pending Default. Drop this token so
+            # the owner is not blocked by it, wait for the owner to register or
+            # fail, then retry: the retry reuses the owner's session or reserves
+            # the Default itself.
+            await self._remove_reservation_cancellation_drained(reserved_key, token)
+            await result.wait()
+            continue
         self._remove_reservation_now(reserved_key, token)
         # This task now holds the key's live permit. If it reset its previous
         # session on this key (a replay), the release it will make is for THIS
@@ -509,6 +551,11 @@ async def _get_or_create_impl(
                 if not owner._provider_factory:
                     raise RuntimeError("No provider factory configured")
                 factory = owner._provider_factory
+                if _reservation is not None:
+                    # From here this call reads the key's effort basis and
+                    # publishes a session built on it, so an effort pick that
+                    # would change the basis is refused until registration.
+                    self.state.cold_start_reservations.add(_reservation)
     finally:
         if stale_provider is not None:
             if stale_session is not None:
@@ -661,6 +708,46 @@ async def _get_or_create_impl(
         owner._pool_cwd,
     )
     provider_switched = False
+    # A pending explicit Default (the session map's one-shot flag) needs a
+    # cold start: a warm process read cli.json at its own spawn, and Default
+    # cannot be pushed to a live session. Read once, here: this call's
+    # reservation is marked a cold start (``cold_start_reservations``) from
+    # before this read until the session is registered, and the effort
+    # handler refuses a pick that would change the flag while it is
+    # (``SessionManager.effort_basis_locked``), so what this start reads is
+    # the basis the session it publishes runs on. A pick that passed that
+    # check before the mark may still be saving: wait for its write to settle first, so the value
+    # read is one a save kept (or the one a failed save put back), never
+    # one no save will keep. The count can only fall while this waits,
+    # because every later pick is refused or has nothing to write. A
+    # cancellation here propagates; nothing was read or written.
+    await owner.wait_for_effort_intent_writes(key)
+    explicit_effort_default = owner.explicit_effort_default_pending(key)
+    if explicit_effort_default and extra_factory_kwargs.get("reasoning_effort_override"):
+        # A start on a level its caller chose runs that level and does not
+        # apply or clear the pending Default. The flag is pending because
+        # the key's latest effort action was a Default pick (a level pick
+        # through the effort handler, or a level session_set_model commits
+        # at the turn start, clears it), and this override is not a newer
+        # one: a slot's level read before that pick landed, an alias slot's
+        # own level, or a caller's pin. The flag stays for the next start
+        # that takes no override, which applies and clears it. The start
+        # keeps the pool: the override is pushed to the claimed process
+        # below.
+        explicit_effort_default = False
+    if explicit_effort_default:
+        if _reservation is None:  # pragma: no cover - private implementation contract
+            raise RuntimeError("explicit Default allocation has no reservation token")
+        # Reserve before the pool decision and any provider exists, so a second
+        # start that read the same pending Default never runs unarmed beside it.
+        # Its Event goes back to the outer loop, which waits on it and retries.
+        explicit_effort_default = self._reserve_explicit_effort_default(key)
+        if not explicit_effort_default:
+            current = self.state.explicit_effort_default_reservations.get(
+                self._deps.canonical_key(key)
+            )
+            if current is not None:
+                return cast(Any, current[1])
     cwd_blocks_pool = bool(cwd and cwd != owner._pool_cwd)
     if not owner._pool_size:
         pool_decision = "disabled"
@@ -707,6 +794,8 @@ async def _get_or_create_impl(
         # ``""`` is a Kiro request, and under a non-Kiro default the pooled
         # child is on the wrong backend for it too.
         pool_decision = "bypass_backend_override"
+    elif explicit_effort_default:
+        pool_decision = "bypass_effort"
     elif await _session_runs_remotely(key):
         # A pooled child is a LOCAL engine: claiming it would run a remote session here.
         pool_decision = "bypass_remote_environment"
@@ -725,6 +814,7 @@ async def _get_or_create_impl(
         pool_decision = ""
 
     pooled = None if pool_decision else await owner._drain_and_claim(agent)
+    claim_spawn_time = owner._take_claim_spawn_time(pooled) if pooled is not None else None
     if not pool_decision:
         pool_decision = "hit" if pooled is not None else "miss_empty"
     owner._record_pool_decision(pool_decision, key)
@@ -975,21 +1065,33 @@ async def _get_or_create_impl(
                 if _reservation is not None:
                     self.state.spawning_reservations.add(_reservation)
                 pre_spawn = await pre_spawn_identity(getattr(owner, "spawn_identity_reader", None))
+                # The reservation only serializes starts; a Default revoked since
+                # it was taken must not authorize a rewrite. No await between this
+                # read and the arm below.
+                if explicit_effort_default and not owner.explicit_effort_default_pending(key):
+                    explicit_effort_default = False
+                if explicit_effort_default:
+                    provider.arm_explicit_effort_default(owner.fence_effort_overlay_rewrite)
                 await provider.start()
+                # Shield the published PID from the orphan sweep before the
+                # Default clear's flush or the stamp read below can suspend.
+                starting_pid = spawn_pid(provider)
+                if starting_pid is not None:
+                    self._starting_pids.add(starting_pid)
+                if explicit_effort_default and provider.explicit_effort_default_applied:
+                    await _save_applied_explicit_effort_default_clear(self, key)
             except (asyncio.CancelledError, Exception):
+                if explicit_effort_default and provider.explicit_effort_default_applied:
+                    # The projection ran before the failure. Keep its clear in
+                    # memory for the deferred map flush; never await here,
+                    # because this path also handles cancellation.
+                    owner.set_explicit_effort_default(key, False)
                 if preparation.revision:
                     self._remember_capability_failure(key, preparation)
                 owner._dispatch_hard_kill(provider)
+                if starting_pid is not None:
+                    self._starting_pids.discard(starting_pid)
                 raise
-            # start() has published the PID, and the stamp read below is a
-            # real suspension point before registry ownership becomes
-            # visible in the lock section further down -- shield the PID
-            # from the periodic orphan sweep for that whole span (on
-            # Windows the sweep has no age grace, so an unshielded child
-            # caught mid-stamp would be killed as an orphan).
-            starting_pid = spawn_pid(provider)
-            if starting_pid is not None:
-                self._starting_pids.add(starting_pid)
             # Record which account the store held as this child spawned
             # (first-stamp-wins, so a warm-pool claim keeps its fill-time
             # stamp). Best-effort: an unstamped child keeps the
@@ -1060,6 +1162,20 @@ async def _get_or_create_impl(
             # duplicate this call shuts down itself -- from here on it is not
             # a start an ending caller must be told about.
             self.state.spawning_reservations.discard(_reservation)
+
+            if (
+                pooled is not None
+                and claim_spawn_time is not None
+                and owner._may_predate_effort_overlay_rewrite(claim_spawn_time)
+            ):
+                # The post-claim rekey and model work await off the loop, so
+                # another session can rewrite cli.json after the first fence
+                # check. Refuse before this provider becomes a live session.
+                self._deps.logger.info(
+                    "Warm pool: explicit effort Default rewrote cli.json after claim, "
+                    "discarding before registration"
+                )
+                raise _WarmPoolEffortRewriteDiscard(provider)
 
             existing = self._sessions.get(key)
             recycling = existing is not None and owner._recycling.get(key) is existing
@@ -1204,6 +1320,8 @@ async def _get_or_create_impl(
                 session.turn_owner = asyncio.current_task()
                 self._deps.inc_session_created()
                 result = (provider, True, resumed)
+    except _WarmPoolEffortRewriteDiscard:
+        raise
     except BaseException:
         if preparation.revision:
             self._remember_capability_failure(key, preparation)
@@ -1234,6 +1352,9 @@ async def _get_or_create_impl(
                     key,
                     exc_info=True,
                 )
+        # A race loser claims the winner's live session, which reads no basis
+        # and can wait a whole turn, so it does not lock the key's effort basis.
+        self.state.cold_start_reservations.discard(_reservation)
         if await owner._reacquire_and_validate(
             key,
             won_race_session,

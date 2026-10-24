@@ -112,6 +112,21 @@ async def test_clearing_to_a_workspace_default_uses_the_config_option() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_post_spawn_reassert_leaves_kas_to_its_config_option() -> None:
+    """A KAS start pushes its level once, as ``effortLevel``, and never ``/effort``.
+
+    ``start()`` runs the kiro-cli ``/effort`` reassert before the config-option
+    push. KAS answers that command with -32603, so the reassert reads the
+    slash-command capability and skips KAS.
+    """
+    provider = _kas_provider(override="xhigh")
+    await provider._reassert_projected_effort()
+    await provider._apply_initial_effort()
+    provider._client.send_command.assert_not_awaited()
+    provider._client.set_config_option.assert_awaited_once_with("effortLevel", "xhigh")
+
+
+@pytest.mark.asyncio
 async def test_the_handle_adopts_the_options_a_config_write_returns() -> None:
     """``effortLevel`` appears only in the ``model`` write's result.
 

@@ -33,8 +33,18 @@ from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_runner import _eager_spawn, schedule_eager_spawn
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.session import FirstTurnState
-from kiro_crew.start_priority import StartPriority
-from kiro_crew.testing.wait import until_parked
+from kiro_crew.start_priority import START_QUEUE_COLD_START, StartPriority
+from kiro_crew.testing.wait import default_timeout, until_parked
+
+
+async def _await_test(awaitable, what: str):
+    try:
+        async with asyncio.timeout(default_timeout()) as deadline:
+            return await awaitable
+    except TimeoutError as exc:
+        if not deadline.expired():
+            raise
+        raise AssertionError(f"timed out waiting for {what}") from exc
 
 
 def _cfg_with_store(name: str, *, version: int, owner: str = "") -> KiroCrewConfig:
@@ -452,6 +462,140 @@ class TestEagerSpawn:
         state.sessions.release.assert_called_once_with(key)
 
     @pytest.mark.asyncio
+    async def test_default_pick_cannot_overtake_prefetch_effort_capture(self):
+        """A newer Default intent cannot be spent against a stale eager override."""
+        slot = _ChatSlot("effort-race")
+        slot.reasoning_effort = "max"
+        state = _mock_state(slot)
+        allocation_entered = asyncio.Event()
+        release_allocation = asyncio.Event()
+        picker_started = asyncio.Event()
+        captured_overrides: list[str | None] = []
+        default_pending = False
+        stale_override_spent = False
+
+        async def allocate(*_args, **kwargs):
+            nonlocal default_pending, stale_override_spent
+            captured_override = kwargs.get("reasoning_effort_override")
+            captured_overrides.append(captured_override)
+            allocation_entered.set()
+            await _await_test(release_allocation.wait(), "release_allocation")
+            if default_pending and captured_override:
+                default_pending = False
+                stale_override_spent = True
+            return MagicMock(), True, False
+
+        async def pick_default() -> None:
+            nonlocal default_pending
+            picker_started.set()
+            async with chat_runner.slot_switch_session_lock(
+                chat_runner.effective_session_key(slot)
+            ):
+                slot.reasoning_effort = ""
+                default_pending = True
+
+        state.sessions.get_or_create = AsyncMock(side_effect=allocate)
+        picker_task: asyncio.Task[None] | None = None
+        prefetch_task = asyncio.create_task(_eager_spawn(state, slot))
+        try:
+            await _await_test(allocation_entered.wait(), "the prefetch entering allocation")
+            picker_task = asyncio.create_task(pick_default())
+            await _await_test(picker_started.wait(), "the Default pick starting")
+            release_allocation.set()
+            await _await_test(prefetch_task, "the prefetch completion")
+            await _await_test(picker_task, "the Default pick completion")
+        finally:
+            release_allocation.set()
+            tasks = [prefetch_task]
+            if picker_task is not None:
+                tasks.append(picker_task)
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await _await_test(asyncio.gather(*tasks, return_exceptions=True), "task cleanup")
+
+        assert captured_overrides == ["max"]
+        assert stale_override_spent is False
+        assert default_pending is True
+
+    @pytest.mark.asyncio
+    async def test_a_prefetch_queued_in_the_start_gate_does_not_hold_the_switch_lock(self):
+        """A person's first turn takes the slot's switch lock before it allocates
+        (``_run_chat``'s dispatch lock). A prefetch waiting for a BACKGROUND
+        cold-start permit must have handed that lock off at the gate's entry, or
+        the turn waits out the prefetch's whole queued start instead of running
+        its own FOREGROUND start beside it."""
+        slot = _ChatSlot("gate-queued")
+        slot.reasoning_effort = "max"
+        state = _mock_state(slot)
+        queued_at_gate = asyncio.Event()
+        permit_granted = asyncio.Event()
+        lock = chat_runner.slot_switch_session_lock(chat_runner.effective_session_key(slot))
+        lock_free_while_queued: bool | None = None
+
+        async def allocate(*_args, **kwargs):
+            # ``get_or_create`` at its cold-start gate: the key's reservation is
+            # already held, the queue-entry hook fires, then the permit wait.
+            on_gate_queued = kwargs.get("on_gate_queued")
+            if on_gate_queued is not None:
+                on_gate_queued(START_QUEUE_COLD_START)
+            queued_at_gate.set()
+            await _await_test(permit_granted.wait(), "a background cold-start permit")
+            return MagicMock(), True, False
+
+        state.sessions.get_or_create = AsyncMock(side_effect=allocate)
+        prefetch_task = asyncio.create_task(_eager_spawn(state, slot))
+        try:
+            await _await_test(queued_at_gate.wait(), "the prefetch reaching the start gate")
+            # The turn's dispatch-lock acquire, while the prefetch is still queued.
+            await _await_test(lock.acquire(), "the turn's dispatch lock")
+            lock_free_while_queued = not prefetch_task.done()
+            lock.release()
+        finally:
+            permit_granted.set()
+            if not prefetch_task.done():
+                await _await_test(
+                    asyncio.gather(prefetch_task, return_exceptions=True), "prefetch cleanup"
+                )
+
+        assert lock_free_while_queued is True
+        assert state.sessions.get_or_create.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_the_switch_lock_is_released_once_when_the_gate_is_never_reached(self):
+        """An allocation that never fires the gate hook (a warm-pool claim, a
+        refusal ahead of the gate) releases the lock on exit; one that fired it
+        does not release it a second time. Observations are recorded, not
+        asserted, inside the allocation: an assertion raised there is a start
+        failure ``_eager_spawn`` logs and swallows."""
+        locked_inside: list[bool] = []
+
+        async def allocate_without_gate(*_args, **_kwargs):
+            locked_inside.append(lock.locked())
+            return MagicMock(), True, False
+
+        async def allocate_through_gate(*_args, **kwargs):
+            kwargs["on_gate_queued"](START_QUEUE_COLD_START)
+            locked_inside.append(lock.locked())
+            return MagicMock(), True, False
+
+        for name, allocate in (
+            ("gate-skipped", allocate_without_gate),
+            ("gate-passed", allocate_through_gate),
+        ):
+            slot = _ChatSlot(name)
+            state = _mock_state(slot)
+            lock = chat_runner.slot_switch_session_lock(chat_runner.effective_session_key(slot))
+            state.sessions.get_or_create = AsyncMock(side_effect=allocate)
+            await _await_test(_eager_spawn(state, slot), f"the {name} prefetch")
+            assert state.sessions.get_or_create.await_count == 1
+            assert not lock.locked()
+
+        # The effort read and the reservation ran under the lock; the gate's
+        # entry handed it off.
+        assert locked_inside == [True, False]
+
+    @pytest.mark.asyncio
     async def test_unchanged_bindings_keep_the_session(self, tmp_path):
         """The bindings guard must not tear down the common case."""
         slot = _ChatSlot("t1")
@@ -563,6 +707,31 @@ class TestSpeculativeGetOrCreate:
         await mgr.get_or_create(key, speculative=True)  # fast path, speculative
         mgr.release(key)
         assert mgr._sessions[key].first_turn is FirstTurnState.FRESH
+
+    @pytest.mark.asyncio
+    async def test_the_cold_start_gate_hook_fires_with_the_effort_basis_reserved(self, cfg):
+        """The handoff the eager prefetch makes at ``on_gate_queued`` rests on
+        this ordering: when the hook fires, the key's allocation reservation is
+        already held, so an effort pick that would change the basis is refused
+        (``effort_basis_locked``) from that point until registration."""
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:eager-gate"
+        basis_locked_at_gate: list[bool] = []
+        try:
+            assert mgr.effort_basis_locked(key) is False
+            await mgr.get_or_create(
+                key,
+                speculative=True,
+                on_gate_queued=lambda queue: basis_locked_at_gate.append(
+                    mgr.effort_basis_locked(key)
+                ),
+            )
+            mgr.release(key)
+        finally:
+            await mgr.close_all()
+        assert basis_locked_at_gate == [True]
 
     @pytest.mark.asyncio
     async def test_speculative_refuses_resumable_key(self, cfg, tmp_path, monkeypatch):

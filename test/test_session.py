@@ -27,7 +27,7 @@ from kiro_crew.acp.types import AcpPromptStats
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.session import BACKGROUND_KEY, CONSOLIDATE_KEY, SessionManager
 from kiro_crew.start_priority import StartPriority
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 #: Ceiling for a wait that only fails on a hang: these steps finish in
 #: milliseconds, so a test fails by name instead of losing the xdist worker.
@@ -433,6 +433,66 @@ class TestSessionManager:
 
         for t in pending:
             t.cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_cold_start_race_loser_waiting_on_the_winner_leaves_the_basis_unlocked(
+        self, cfg
+    ):
+        """The race loser shuts its duplicate down and then waits on the
+        winner's live lease, which can last a whole turn. It reads no effort
+        basis from there, so an effort pick made meanwhile is not refused as if
+        a session were starting."""
+        start_gate = asyncio.Event()
+        both_started = asyncio.Event()
+        started = 0
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            m = AsyncMock()
+
+            async def _start():
+                nonlocal started
+                started += 1
+                if started == 2:
+                    both_started.set()
+                await await_until(start_gate, what="the test releasing both cold starts")
+
+            m.start = _start
+            m.shutdown = AsyncMock()
+            m.disown_work_dir = MagicMock()
+            m.is_process_alive = lambda: True
+            m.is_alive = lambda: True
+            m.context_usage_pct = lambda: 0.0
+            return m
+
+        mgr = SessionManager(cfg, provider_factory=factory)
+        tasks = {
+            asyncio.create_task(mgr.get_or_create("A")),
+            asyncio.create_task(mgr.get_or_create("A")),
+        }
+        try:
+            await await_until(both_started, what="both cold starts entering start()")
+            assert mgr.effort_basis_locked("A") is True
+            start_gate.set()
+
+            winner = await await_until(
+                asyncio.ensure_future(asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)),
+                what="the race winner registering",
+            )
+            done, pending = winner
+            assert len(done) == 1 and len(pending) == 1
+            await async_wait_until(
+                lambda: not mgr.effort_basis_locked("A"),
+                describe=lambda: "the race loser still locks the effort basis",
+            )
+            assert mgr._has_allocation_reservation("A") is True
+            assert not next(iter(pending)).done()
+        finally:
+            start_gate.set()
+            for task in tasks:
+                task.cancel()
+            await await_until(
+                asyncio.gather(*tasks, return_exceptions=True), what="cold-start race cleanup"
+            )
 
     @pytest.mark.asyncio
     async def test_same_session_still_serializes(self, cfg):

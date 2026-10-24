@@ -34,6 +34,7 @@ from kiro_crew.acp.skill_projection_parts.inheritance_overlay import (
     _inheritance_preference,
     _restore_inheritance,
     _settings,
+    _settings_with_mtime,
 )
 from kiro_crew.acp.skill_projection_parts.native_projection import (
     NativeSkillProjection,
@@ -82,7 +83,14 @@ from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX, SKILL_VIEW_PR
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home, kiro_agents_dir, kiro_home, project_agents_dir
 from kiro_crew.user_json import copy_json_document
-from kiro_crew.workspace_cli_settings import workspace_cli_settings_lock
+from kiro_crew.workspace_cli_settings import (
+    admitted_workspace_cli_settings_dir,
+    carry_effort_ownership,
+    locked_workspace_cli_settings,
+    owned_document_unchanged,
+    publish_locked_cli_settings,
+    settings_json_text,
+)
 
 # Logs under the facade's name, which operators and tests filter on.
 logger = logging.getLogger("kiro_crew.acp.skill_projection")
@@ -303,7 +311,10 @@ def prepare_native_skill_projection(
     """Prepare native views after spec freshness admission, before spawning.
 
     Uses the existing workspace CLI settings channel. No home, identity store,
-    session store or authored agent file is relocated or rewritten.
+    session store or authored agent file is relocated or rewritten. The disabled
+    rollback admits the settings folder before its lock-free existence probe. If
+    a link names an outside or remote target, that target is not inspected and
+    the existing locked rollback reports that the file could not be changed.
 
     ``per_session_element`` says how ``kirocrew-core`` reaches a search agent's
     sessions with this session's identity. ``True`` is the shared runtime: the
@@ -389,14 +400,22 @@ def prepare_native_skill_projection(
                     "skill projection: ceiling-fallback prune skipped; lock or I/O error",
                     exc_info=True,
                 )
-        if not (work_dir / ".kiro" / "settings" / "cli.json").exists():
+        admitted_settings_dir = admitted_workspace_cli_settings_dir(work_dir)
+        if admitted_settings_dir is not None and not (admitted_settings_dir / "cli.json").exists():
             return None
         try:
-            with workspace_cli_settings_lock(work_dir) as locked_settings:
-                _restore_inheritance(locked_settings, _settings(locked_settings, may_pause=False))
+            with locked_workspace_cli_settings(work_dir) as locked_settings:
+                _restore_inheritance(
+                    locked_settings, *_settings_with_mtime(locked_settings, may_pause=False)
+                )
+        except RecursionError:
+            logger.warning(
+                "skill projection: workspace settings document is too deeply nested during "
+                "rollback; rollback skipped and file left unchanged"
+            )
         except OSError:
             logger.warning(
-                "skill projection: workspace settings lock unavailable during rollback",
+                "skill projection: workspace settings unavailable during rollback",
                 exc_info=True,
             )
         return None
@@ -477,13 +496,14 @@ def prepare_native_skill_projection(
         return None
     with alias_lock:
         try:
-            settings_lock = workspace_cli_settings_lock(work_dir)
+            settings_lock = locked_workspace_cli_settings(work_dir)
             with settings_lock as locked_settings:
                 # This is the authoritative read for both projected resources and
                 # the write below. Every in-product workspace cli.json writer uses
                 # the same sidecar lock, so no effort or Tool Search update can land
                 # between this read and commit.
-                local = _settings(locked_settings, may_pause=False)
+                local, local_mtime = _settings_with_mtime(locked_settings, may_pause=False)
+                read_local = copy_json_document(local)
                 inherited, preference_source, overlaid = _inheritance_preference(
                     local, global_settings
                 )
@@ -580,7 +600,21 @@ def prepare_native_skill_projection(
                     local[_MANAGED_SETTING] = inherited
                     local[_INHERIT_SOURCE] = preference_source
                     local[_INHERIT_SETTING] = True
-                    atomic_write(locked_settings, json.dumps(local, indent=2))
+                    # This republishes the whole document, effort keys included.
+                    # Kiro Crew's effort ownership record counts only while its
+                    # stamp equals the file's mtime, so the rewrite restamps a
+                    # record that was valid in the version read and drops one that
+                    # was not, instead of voiding the former or re-validating the latter.
+                    # A document equal to the owned file read, apart from the stamp,
+                    # is not written: the file keeps its mtime and the record stays valid.
+                    if not owned_document_unchanged(local, read_local, local_mtime):
+                        stamp_ns = carry_effort_ownership(local, local_mtime)
+                        publish_locked_cli_settings(
+                            locked_settings,
+                            settings_json_text(local),
+                            write=atomic_write,
+                            mtime_ns=stamp_ns,
+                        )
                     prepared = NativeSkillProjection(
                         aliases,
                         specs,
@@ -604,10 +638,18 @@ def prepare_native_skill_projection(
                 except BaseException:
                     lease_stack.close()
                     raise
+        except RecursionError:
+            logger.warning(
+                "skill projection: workspace settings document is too deeply nested; left "
+                "unchanged, retaining aliases and using authored agents"
+            )
+            return None
         except OSError as exc:
-            # Same routine contention as the alias-lock fallback above: the
-            # OSError names the real wait, so one warning line suffices and a
-            # traceback would only repeat the lock-helper frames.
+            # The OSError names its own cause: an unavailable lock, a refused or
+            # changing settings file, a settings folder that changed around the
+            # publish, or an alias write that failed. One warning line suffices;
+            # a traceback would obscure that cause with lock and file helper
+            # frames.
             logger.warning(
                 "skill projection: workspace settings or lease lock unavailable (%s); retaining "
                 "aliases and using authored agents",

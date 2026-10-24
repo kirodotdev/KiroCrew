@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew.executors import subprocess_executor
@@ -249,6 +250,16 @@ async def _drain_and_claim(self: SessionManager, agent: str | None) -> LLMProvid
     return await self._pool._drain_and_claim(agent)
 
 
+def _take_claim_spawn_time(self: SessionManager, provider: LLMProvider) -> float | None:
+    """Consume a warm claim's spawn timestamp before allocation awaits again."""
+    return self._pool._take_claim_spawn_time(provider)
+
+
+def _may_predate_effort_overlay_rewrite(self: SessionManager, spawn_time: float) -> bool:
+    """Return whether a runtime spawned before the current effort rewrite settled."""
+    return self._pool._may_predate_effort_overlay_rewrite(spawn_time)
+
+
 def _schedule_replenish(self: SessionManager) -> None:
     """Delegate owned refill-task scheduling."""
     self._pool._schedule_replenish()
@@ -346,6 +357,11 @@ async def _retire_kiro_warm_pool(self: SessionManager) -> bool:
 def _mark_identity_epoch(self: SessionManager) -> None:
     """Disqualify already-pooled providers from claims after an account change."""
     self._pool.mark_identity_epoch()
+
+
+def fence_effort_overlay_rewrite(self: SessionManager) -> AbstractContextManager[None]:
+    """Keep warm runtimes that may have read cli.json before an explicit Default's rewrite from claims."""
+    return self._pool.fence_effort_overlay_rewrite()
 
 
 async def drain_warm_pool(self: SessionManager) -> list:

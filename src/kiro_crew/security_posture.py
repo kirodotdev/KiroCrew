@@ -500,6 +500,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/runtime_host_requests.py",
         "acp/runtime_liveness.py",
         "acp/runtime_session_registry.py",
+        # Redacts a model key read from a work directory's `cli.json` before it
+        # is bounded into the unowned-effort WARNING and the removal INFO line in
+        # the gateway log. A local log line, like the one above, not an egress
+        # boundary.
+        "providers/acp_cli_overlay.py",
         "acp/session_handle_compaction.py",
         "acp/session_handle_dispatch.py",
         "acp/session_handle_kas.py",

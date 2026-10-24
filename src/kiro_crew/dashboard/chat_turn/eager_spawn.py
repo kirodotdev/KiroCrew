@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         DashboardState,
         KiroCrewConfig,
+        SessionBusyError,
         SessionClosingError,
         SpeculativeResumeRefused,
         _arm_generation,
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
         resolve_session_agent_bindings,
         select_provider_backend,
         shutdown_event,
+        slot_switch_session_lock,
         subprocess_executor,
     )
     from kiro_crew.dashboard.chat_turn.app_agent_binding import (
@@ -891,11 +893,25 @@ async def _spawn_admitted_prefetch(
         # which case the speculative session/load runs here and the
         # resumed=True observation is armed for the real turn. See
         # get_or_create's docstring.
-        # A slot or crew pin is the caller's own selection; with neither, the
-        # allocation resolves the default-model ladder itself, exactly as it
-        # will for the first real turn.
-        _requested_model = slot.model or agent_model or ""
+        # Effort switches save under this lock; it covers the effort read until the
+        # start's cold-start mark (then ``effort_basis_locked`` refuses a racing pick)
+        # and is handed off at gate entry so a queued start never stalls a first turn.
+        switch_lock = slot_switch_session_lock(session_key)
+        await switch_lock.acquire()
+        switch_lock_held = True
+
+        def _hand_off_switch_lock(*_queue: object) -> None:
+            # Released at most once; the provider's start queues fire it again.
+            nonlocal switch_lock_held
+            if switch_lock_held:
+                switch_lock_held = False
+                switch_lock.release()
+
         try:
+            if _slot_binding(slot) != _bound:
+                return
+            # A slot or crew pin is the caller's own pick; else the allocation resolves the ladder.
+            _requested_model = slot.model or agent_model or ""
             _, is_new, resumed = await sessions.get_or_create(
                 session_key,
                 agent=kiro_agent or slot.agent or None,
@@ -910,10 +926,20 @@ async def _spawn_admitted_prefetch(
                 speculative=True,
                 speculative_resume=allow_resume,
                 reasoning_effort_override=slot.reasoning_effort or None,
+                # A real turn can register while this prefetch is waiting for
+                # the switch lock. Never wait for its lease while holding the
+                # lock that its refusal fallback may need.
+                wait_if_busy=False,
                 start_priority=start_priority,
+                on_gate_queued=_hand_off_switch_lock,
                 **_app_allocation_kwargs(slot),
             )
-        except (SpeculativeResumeRefused, SessionClosingError, SessionEndingError):
+        except (
+            SpeculativeResumeRefused,
+            SessionBusyError,
+            SessionClosingError,
+            SessionEndingError,
+        ):
             # A refusal, a gateway shutdown, or a key being ended: no agent
             # start was attempted and failed, so none of them is counted.
             raise
@@ -926,6 +952,13 @@ async def _spawn_admitted_prefetch(
             if not _is_pre_spawn_refusal(exc):
                 _note_eager_spawn_failure(slot, exc)
             raise
+        finally:
+            # Every exit that never reached the gate: a binding that changed,
+            # a warm-pool claim, a refusal or failure ahead of the gate.
+            _hand_off_switch_lock()
+    except SessionBusyError:
+        logger.info("Eager spawn: %s left to active turn (busy)", session_key)
+        return
     except SpeculativeResumeRefused:
         # Two sources: the entry gate (resumable key, resume not
         # opted in — fresh eager spawn leaves it to the first turn)

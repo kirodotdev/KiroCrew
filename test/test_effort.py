@@ -3,14 +3,24 @@ ACP provider cli.json overlay helpers."""
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import json
 import logging
+import os
+import sys
+import tempfile
+import unittest
+import unittest.mock
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from effort_helpers import _UNPARSEABLE_OVERLAY_CONTENTS, _read_cli_overlay
 
+from kiro_crew.acp.types import ACP_BACKEND_KIRO
+from kiro_crew.apps.builtins.code_review_sage.sage_lib import review_pool as rp
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.effort import (
     EFFORT_LEVELS,
@@ -22,10 +32,47 @@ from kiro_crew.effort import (
 )
 from kiro_crew.providers import acp as acp_provider
 from kiro_crew.providers.acp import (
+    _KIROCREW_EFFORT_OWNED_KEY,
     _clear_cli_overlay_effort,
-    _read_cli_overlay,
     _write_cli_overlay,
 )
+from kiro_crew.testing.wait import default_timeout
+
+
+async def _await_test(awaitable, what: str):
+    try:
+        async with asyncio.timeout(default_timeout()) as deadline:
+            return await awaitable
+    except TimeoutError as exc:
+        if not deadline.expired():
+            raise
+        raise AssertionError(f"timed out waiting for {what}") from exc
+
+
+@pytest.mark.asyncio
+async def test_await_test_propagates_awaited_timeout():
+    async def raise_timeout():
+        raise TimeoutError("awaited operation timed out")
+
+    with pytest.raises(TimeoutError, match="awaited operation timed out"):
+        await _await_test(raise_timeout(), "inner timeout")
+
+
+@pytest.mark.asyncio
+async def test_await_test_reports_own_deadline_and_cancels_awaitable(monkeypatch):
+    cancelled = asyncio.Event()
+
+    async def never_finishes():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(sys.modules[__name__], "default_timeout", lambda: 0)
+
+    with pytest.raises(AssertionError, match="^timed out waiting for blocked test$"):
+        await _await_test(never_finishes(), "blocked test")
+    assert cancelled.is_set()
 
 
 class TestEffortVocabulary:
@@ -201,6 +248,463 @@ class TestCliOverlay:
         (settings_dir / "cli.json").write_text("{ not json")
         assert _read_cli_overlay(tmp_path) == {}
 
+    def test_read_undecodable_returns_empty(self, tmp_path):
+        settings_dir = tmp_path / ".kiro" / "settings"
+        settings_dir.mkdir(parents=True)
+        (settings_dir / "cli.json").write_bytes(b'{"x": "\xff"}')
+        assert _read_cli_overlay(tmp_path) == {}
+
+    @pytest.mark.parametrize(
+        "contents",
+        [
+            b"{ not json",
+            b'{"x": "\xff"}',
+            b"[1, 2]",
+            b'{"chat.modelDefaults": {"m": {"output_config": {"effort": "max"}}}, "n": '
+            + b"1" * 5000
+            + b"}",
+            b"[" * 200_000 + b"]" * 200_000,
+        ],
+        ids=["malformed", "undecodable", "non-object", "oversized-int-literal", "deeply-nested"],
+    )
+    def test_write_onto_an_unmergeable_file_raises_and_leaves_it_unchanged(
+        self, tmp_path, contents
+    ):
+        # A silent return here would let the caller report a persisted level the
+        # next respawn drops, and a reset to {} would destroy operator data. The
+        # file is neither.
+        settings_dir = tmp_path / ".kiro" / "settings"
+        settings_dir.mkdir(parents=True)
+        cli_json = settings_dir / "cli.json"
+        cli_json.write_bytes(contents)
+
+        with pytest.raises(ValueError, match="left unchanged"):
+            _write_cli_overlay(tmp_path, "claude-opus-4.7", "max")
+
+        assert cli_json.read_bytes() == contents
+        assert _read_cli_overlay(tmp_path) == {}
+
+    def test_write_onto_an_unreadable_file_raises_the_read_error(self, tmp_path, monkeypatch):
+        _write_cli_overlay(tmp_path, "claude-opus-4.7", "max")
+        cli_json = tmp_path / ".kiro" / "settings" / "cli.json"
+        before = cli_json.read_bytes()
+        real_read = acp_provider.safe_read_file_bytes_nolink
+
+        def _flaky_read(raw, *args, **kwargs):
+            if Path(raw).name == "cli.json":
+                raise OSError("sharing violation")
+            return real_read(raw, *args, **kwargs)
+
+        def _failed_pinned_read(_settings_fd, _cli_json):
+            raise OSError("sharing violation")
+
+        with monkeypatch.context() as temporary_patches:
+            temporary_patches.setattr(acp_provider, "safe_read_file_bytes_nolink", _flaky_read)
+            temporary_patches.setattr(acp_provider, "_read_pinned_cli_json", _failed_pinned_read)
+            with pytest.raises(OSError, match="sharing violation"):
+                _write_cli_overlay(tmp_path, "claude-opus-4.7", "low")
+
+        assert cli_json.read_bytes() == before
+
+    def test_projection_publishes_value_and_record_in_one_write(self, tmp_path, monkeypatch):
+        model = "claude-opus-4.7"
+        _write_cli_overlay(tmp_path, model, "max")
+        writes = []
+        real_atomic_write = acp_provider.atomic_write
+
+        def _record_write(target, content, **kwargs):
+            writes.append(target)
+            real_atomic_write(target, content, **kwargs)
+
+        monkeypatch.setattr(acp_provider, "atomic_write", _record_write)
+        _write_cli_overlay(tmp_path, model, "low")
+
+        assert [target.name for target in writes] == ["cli.json"]
+        data = json.loads(writes[0].read_text(encoding="utf-8"))
+        assert data["chat.modelDefaults"][model]["output_config"]["effort"] == "low"
+        assert data[_KIROCREW_EFFORT_OWNED_KEY] == {model: "low"}
+
+    def test_failed_projection_write_leaves_value_and_record_agreeing(self, tmp_path, monkeypatch):
+        model = "claude-opus-4.7"
+        _write_cli_overlay(tmp_path, model, "max")
+        cli_json = tmp_path / ".kiro" / "settings" / "cli.json"
+        before = cli_json.read_bytes()
+        writes = []
+
+        def _fail_write(target, content, **kwargs):
+            writes.append(target)
+            raise OSError("disk full")
+
+        monkeypatch.setattr(acp_provider, "atomic_write", _fail_write)
+        with pytest.raises(OSError, match="disk full"):
+            _write_cli_overlay(tmp_path, model, "low")
+
+        assert [target.name for target in writes] == ["cli.json"]
+        assert cli_json.read_bytes() == before
+        data = json.loads(before)
+        assert data["chat.modelDefaults"][model]["output_config"]["effort"] == "max"
+        assert data[_KIROCREW_EFFORT_OWNED_KEY] == {model: "max"}
+
+    def test_own_write_stamp_keeps_owned_clear_valid(self, tmp_path):
+        model = "claude-opus-4.7"
+        _write_cli_overlay(tmp_path, model, "max")
+        cli_json = tmp_path / ".kiro" / "settings" / "cli.json"
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+
+        assert data["kirocrew.effortOwnedStamp"] == int(cli_json.stat().st_mtime)
+        assert _clear_cli_overlay_effort(tmp_path, model, owned_only=True) is True
+        assert _read_cli_overlay(tmp_path) == {}
+
+    @staticmethod
+    def _stamp_clock(monkeypatch):
+        """Drive the stamp clock by hand, so a repeat write would take a different stamp."""
+        from types import SimpleNamespace
+
+        from kiro_crew import workspace_cli_settings
+
+        clock = [1_790_000_000.0]
+        monkeypatch.setattr(workspace_cli_settings, "time", SimpleNamespace(time=lambda: clock[0]))
+
+        def advance(seconds):
+            clock[0] += seconds
+
+        return advance
+
+    def test_same_level_write_leaves_cli_json_bytes_and_mtime_unchanged(
+        self, tmp_path, monkeypatch
+    ):
+        model = "claude-opus-4.7"
+        advance = self._stamp_clock(monkeypatch)
+        _write_cli_overlay(tmp_path, model, "max")
+        cli_json = tmp_path / ".kiro" / "settings" / "cli.json"
+        before = cli_json.read_bytes()
+        before_stat = cli_json.stat()
+        advance(10)
+
+        _write_cli_overlay(tmp_path, model, "max")
+
+        after_stat = cli_json.stat()
+        assert cli_json.read_bytes() == before
+        assert (after_stat.st_ino, after_stat.st_mtime_ns) == (
+            before_stat.st_ino,
+            before_stat.st_mtime_ns,
+        )
+        data = json.loads(before)
+        assert data["kirocrew.effortOwnedStamp"] == int(after_stat.st_mtime)
+        assert _clear_cli_overlay_effort(tmp_path, model, owned_only=True) is True
+        assert _read_cli_overlay(tmp_path) == {}
+
+    def test_level_change_writes_and_restamps(self, tmp_path, monkeypatch):
+        model = "claude-opus-4.7"
+        advance = self._stamp_clock(monkeypatch)
+        _write_cli_overlay(tmp_path, model, "max")
+        cli_json = tmp_path / ".kiro" / "settings" / "cli.json"
+        before = json.loads(cli_json.read_text(encoding="utf-8"))
+        advance(10)
+
+        _write_cli_overlay(tmp_path, model, "low")
+
+        after = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert after["chat.modelDefaults"][model]["output_config"]["effort"] == "low"
+        assert after[_KIROCREW_EFFORT_OWNED_KEY] == {model: "low"}
+        assert after["kirocrew.effortOwnedStamp"] == int(cli_json.stat().st_mtime)
+        assert after["kirocrew.effortOwnedStamp"] == before["kirocrew.effortOwnedStamp"] + 10
+        assert _clear_cli_overlay_effort(tmp_path, model, owned_only=True) is True
+        assert _read_cli_overlay(tmp_path) == {}
+
+    def test_same_level_write_after_outside_resave_drops_the_void_record(
+        self, tmp_path, monkeypatch
+    ):
+        model = "claude-opus-4.7"
+        advance = self._stamp_clock(monkeypatch)
+        _write_cli_overlay(tmp_path, model, "max")
+        cli_json = tmp_path / ".kiro" / "settings" / "cli.json"
+        resaved = cli_json.read_bytes()
+        cli_json.write_bytes(resaved)
+        assert json.loads(resaved)["kirocrew.effortOwnedStamp"] != int(cli_json.stat().st_mtime)
+        advance(10)
+
+        _write_cli_overlay(tmp_path, model, "max")
+
+        after = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert cli_json.read_bytes() != resaved
+        assert after["chat.modelDefaults"][model]["output_config"]["effort"] == "max"
+        assert _KIROCREW_EFFORT_OWNED_KEY not in after
+        assert "kirocrew.effortOwnedStamp" not in after
+        assert _clear_cli_overlay_effort(tmp_path, model, owned_only=True) is True
+        assert _read_cli_overlay(tmp_path) == {model: "max"}
+
+    def test_same_value_operator_rewrite_voids_owned_clear(self, tmp_path, caplog):
+        model = "claude-opus-4.7"
+        _write_cli_overlay(tmp_path, model, "max")
+        cli_json = tmp_path / ".kiro" / "settings" / "cli.json"
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        data["chat.modelDefaults"][model]["output_config"]["effort"] = "max"
+        cli_json.write_text(json.dumps(data), encoding="utf-8")
+        assert data["kirocrew.effortOwnedStamp"] != int(cli_json.stat().st_mtime)
+
+        with caplog.at_level(logging.WARNING, logger=acp_provider.__name__):
+            assert (
+                _clear_cli_overlay_effort(tmp_path, model, owned_only=True, warn_unowned=True)
+                is True
+            )
+        assert _read_cli_overlay(tmp_path) == {model: "max"}
+        assert any(
+            "holds an effort level Kiro Crew did not write" in record.getMessage()
+            for record in caplog.records
+        )
+        after = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert _KIROCREW_EFFORT_OWNED_KEY not in after
+
+    def test_unrelated_tool_search_write_drops_void_effort_ownership(self, tmp_path):
+        model = "claude-opus-4.7"
+        _write_cli_overlay(tmp_path, model, "max")
+        cli_json = tmp_path / ".kiro" / "settings" / "cli.json"
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        data["chat.modelDefaults"][model]["output_config"]["effort"] = "max"
+        cli_json.write_text(json.dumps(data), encoding="utf-8")
+
+        acp_provider._write_tool_search_overlay(tmp_path, True)
+
+        after_write = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert _KIROCREW_EFFORT_OWNED_KEY not in after_write
+        assert _clear_cli_overlay_effort(tmp_path, None, owned_only=True) is True
+        assert _read_cli_overlay(tmp_path) == {model: "max"}
+
+    def test_tool_search_write_preserves_valid_effort_ownership(self, tmp_path):
+        model = "claude-opus-4.7"
+        _write_cli_overlay(tmp_path, model, "max")
+
+        acp_provider._write_tool_search_overlay(tmp_path, True)
+        cli_json = tmp_path / ".kiro" / "settings" / "cli.json"
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert data["kirocrew.effortOwnedStamp"] == int(cli_json.stat().st_mtime)
+
+        assert _clear_cli_overlay_effort(tmp_path, model, owned_only=True) is True
+        assert _read_cli_overlay(tmp_path) == {}
+
+    def test_operator_save_after_publish_voids_owned_clear(self, tmp_path, monkeypatch):
+        model = "claude-opus-4.7"
+        real_atomic_write = acp_provider.atomic_write
+        operator_saves = []
+
+        def _publish_then_operator_save(target, content, **kwargs):
+            real_atomic_write(target, content, **kwargs)
+            Path(target).write_bytes(content)
+            operator_saves.append(Path(target))
+
+        with monkeypatch.context() as temporary_patches:
+            temporary_patches.setattr(acp_provider, "atomic_write", _publish_then_operator_save)
+            _write_cli_overlay(tmp_path, model, "max")
+
+        cli_json = tmp_path / ".kiro" / "settings" / "cli.json"
+        written = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert operator_saves == [cli_json]
+        assert written["kirocrew.effortOwnedStamp"] != int(cli_json.stat().st_mtime)
+
+        assert _clear_cli_overlay_effort(tmp_path, model, owned_only=True) is True
+        assert _read_cli_overlay(tmp_path) == {model: "max"}
+        after = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert _KIROCREW_EFFORT_OWNED_KEY not in after
+
+    @pytest.mark.parametrize(
+        "stored_mtime_quantum_ns",
+        [
+            pytest.param(1, id="nanosecond"),
+            pytest.param(2_000_000_000, id="fat-two-second"),
+        ],
+    )
+    def test_operator_save_one_clock_tick_behind_the_publish_voids_owned_clear(
+        self, tmp_path, monkeypatch, stored_mtime_quantum_ns
+    ):
+        from types import SimpleNamespace
+
+        from kiro_crew import workspace_cli_settings
+
+        model = "claude-opus-4.7"
+        publish_ns = 1_790_000_000_002_000_000
+        monkeypatch.setattr(
+            workspace_cli_settings, "time", SimpleNamespace(time=lambda: publish_ns / 1e9)
+        )
+        _write_cli_overlay(tmp_path, model, "max")
+        cli_json = tmp_path / ".kiro" / "settings" / "cli.json"
+        published = json.loads(cli_json.read_text(encoding="utf-8"))
+        if stored_mtime_quantum_ns == 2_000_000_000:
+            assert published["kirocrew.effortOwnedStamp"] % 2 == 0
+        cli_json.write_text(cli_json.read_text(encoding="utf-8"), encoding="utf-8")
+        # The kernel dates a save from a clock that can trail time.time() by one tick
+        # (about 16 ms on Windows), so a save just after a second boundary can be
+        # stored behind the publish clock.
+        lagging_save_ns = publish_ns - 16_000_000
+        stored_lagging_save_ns = (
+            lagging_save_ns // stored_mtime_quantum_ns * stored_mtime_quantum_ns
+        )
+        os.utime(cli_json, ns=(stored_lagging_save_ns, stored_lagging_save_ns))
+
+        assert _clear_cli_overlay_effort(tmp_path, model, owned_only=True) is True
+        assert _read_cli_overlay(tmp_path) == {model: "max"}
+
+    def test_recursive_document_clear_fails_closed_without_touching_file(self, tmp_path):
+        model = "claude-opus-4.7"
+        depth = sys.getrecursionlimit() * 3 // 5
+        raw = (
+            b'{"chat.modelDefaults":{"claude-opus-4.7":{"output_config":{"effort":"max"}}},'
+            b'"deep":' + b"[" * depth + b"0" + b"]" * depth + b"}"
+        )
+        parsed = json.loads(raw)
+        assert isinstance(parsed, dict), "the JSON reader must accept the recursive fixture"
+        with pytest.raises(RecursionError):
+            copy.deepcopy(parsed)
+
+        settings_dir = tmp_path / ".kiro" / "settings"
+        settings_dir.mkdir(parents=True)
+        cli_json = settings_dir / "cli.json"
+        cli_json.write_bytes(raw)
+        before = cli_json.read_bytes()
+        before_mtime = cli_json.stat().st_mtime_ns
+
+        assert _clear_cli_overlay_effort(tmp_path, model) is False
+        assert _clear_cli_overlay_effort(tmp_path, None) is False
+        provider = acp_provider.AcpProvider(
+            acp_backend=ACP_BACKEND_KIRO,
+            work_dir=tmp_path,
+            model="auto",
+        )
+        assert provider._apply_effort_overlay() is False
+        assert cli_json.read_bytes() == before
+        assert cli_json.stat().st_mtime_ns == before_mtime
+
+    def test_failed_clear_write_leaves_value_and_record_agreeing(self, tmp_path, monkeypatch):
+        model = "claude-opus-4.7"
+        _write_cli_overlay(tmp_path, model, "max")
+        cli_json = tmp_path / ".kiro" / "settings" / "cli.json"
+        before = cli_json.read_bytes()
+        writes = []
+
+        def _fail_write(target, content, **kwargs):
+            writes.append(target)
+            raise OSError("disk full")
+
+        monkeypatch.setattr(acp_provider, "atomic_write", _fail_write)
+        assert _clear_cli_overlay_effort(tmp_path, model) is False
+
+        assert [target.name for target in writes] == ["cli.json"]
+        assert cli_json.read_bytes() == before
+        data = json.loads(before)
+        assert data["chat.modelDefaults"][model]["output_config"]["effort"] == "max"
+        assert data[_KIROCREW_EFFORT_OWNED_KEY] == {model: "max"}
+
+    def test_same_operator_value_is_not_claimed_by_projection(self, tmp_path):
+        settings_dir = tmp_path / ".kiro" / "settings"
+        settings_dir.mkdir(parents=True)
+        cli_json = settings_dir / "cli.json"
+        cli_json.write_text(
+            json.dumps(
+                {"chat.modelDefaults": {"claude-opus-4.7": {"output_config": {"effort": "max"}}}}
+            ),
+            encoding="utf-8",
+        )
+
+        _write_cli_overlay(tmp_path, "claude-opus-4.7", "max")
+        provider = acp_provider.AcpProvider(
+            acp_backend=ACP_BACKEND_KIRO,
+            work_dir=tmp_path,
+            model="auto",
+        )
+        assert provider._apply_effort_overlay() is True
+
+        assert _read_cli_overlay(tmp_path) == {"claude-opus-4.7": "max"}
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert _KIROCREW_EFFORT_OWNED_KEY not in data
+
+    def test_projection_preserves_unowned_null_effort_byte_for_byte(self, tmp_path):
+        model = "claude-opus-4.7"
+        settings_dir = tmp_path / ".kiro" / "settings"
+        settings_dir.mkdir(parents=True)
+        cli_json = settings_dir / "cli.json"
+        cli_json.write_text(
+            json.dumps({"chat.modelDefaults": {model: {"output_config": {"effort": None}}}}),
+            encoding="utf-8",
+        )
+        before = cli_json.read_bytes()
+
+        _write_cli_overlay(tmp_path, model, "max")
+
+        assert cli_json.read_bytes() == before
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert data["chat.modelDefaults"][model]["output_config"]["effort"] is None
+        assert _KIROCREW_EFFORT_OWNED_KEY not in data
+
+    def test_owned_clear_preserves_unowned_null_effort_byte_for_byte(self, tmp_path):
+        model = "claude-opus-4.7"
+        settings_dir = tmp_path / ".kiro" / "settings"
+        settings_dir.mkdir(parents=True)
+        cli_json = settings_dir / "cli.json"
+        cli_json.write_text(
+            json.dumps({"chat.modelDefaults": {model: {"output_config": {"effort": None}}}}),
+            encoding="utf-8",
+        )
+        before = cli_json.read_bytes()
+
+        assert _clear_cli_overlay_effort(tmp_path, model, owned_only=True) is True
+
+        assert cli_json.read_bytes() == before
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert data["chat.modelDefaults"][model]["output_config"]["effort"] is None
+        assert _KIROCREW_EFFORT_OWNED_KEY not in data
+
+    @pytest.mark.parametrize("recorded", [None, ""], ids=["null", "empty-string"])
+    def test_malformed_record_entry_does_not_own_null_effort(self, tmp_path, recorded):
+        model = "claude-opus-4.7"
+        settings_dir = tmp_path / ".kiro" / "settings"
+        settings_dir.mkdir(parents=True)
+        cli_json = settings_dir / "cli.json"
+        cli_json.write_text(
+            json.dumps(
+                {
+                    "chat.modelDefaults": {model: {"output_config": {"effort": None}}},
+                    _KIROCREW_EFFORT_OWNED_KEY: {model: recorded},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        _write_cli_overlay(tmp_path, model, "max")
+        after_projection = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert after_projection["chat.modelDefaults"][model]["output_config"]["effort"] is None
+        assert _KIROCREW_EFFORT_OWNED_KEY not in after_projection
+
+        assert _clear_cli_overlay_effort(tmp_path, model, owned_only=True) is True
+        after_clear = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert after_clear["chat.modelDefaults"][model]["output_config"]["effort"] is None
+        assert _KIROCREW_EFFORT_OWNED_KEY not in after_clear
+
+    def test_same_operator_value_under_other_key_does_not_disown_projection(self, tmp_path):
+        settings_dir = tmp_path / ".kiro" / "settings"
+        settings_dir.mkdir(parents=True)
+        cli_json = settings_dir / "cli.json"
+        cli_json.write_text(
+            json.dumps(
+                {"chat.modelDefaults": {"claude-opus-4.7": {"reasoning": {"effort": "max"}}}}
+            ),
+            encoding="utf-8",
+        )
+
+        _write_cli_overlay(tmp_path, "claude-opus-4.7", "max")
+
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert data[_KIROCREW_EFFORT_OWNED_KEY] == {"claude-opus-4.7": "max"}
+        provider = acp_provider.AcpProvider(
+            acp_backend=ACP_BACKEND_KIRO,
+            work_dir=tmp_path,
+            model="auto",
+        )
+        assert provider._apply_effort_overlay() is True
+
+        assert _read_cli_overlay(tmp_path) == {"claude-opus-4.7": "max"}
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert _KIROCREW_EFFORT_OWNED_KEY not in data
+
     def test_clear_removes_only_target_model(self, tmp_path):
         _write_cli_overlay(tmp_path, "claude-opus-4.7", "max")
         _write_cli_overlay(tmp_path, "claude-opus-4.6", "high")
@@ -211,13 +715,68 @@ class TestCliOverlay:
         _clear_cli_overlay_effort(tmp_path, "claude-opus-4.7")  # must not raise
         assert _read_cli_overlay(tmp_path) == {}
 
+    def test_explicit_operator_clear_removes_an_unowned_entry(self, tmp_path):
+        settings = tmp_path / ".kiro" / "settings"
+        settings.mkdir(parents=True)
+        (settings / "cli.json").write_text(
+            json.dumps(
+                {"chat.modelDefaults": {"claude-opus-4.7": {"output_config": {"effort": "max"}}}}
+            ),
+            encoding="utf-8",
+        )
+
+        assert (
+            _clear_cli_overlay_effort(
+                tmp_path,
+                "claude-opus-4.7",
+                owned_only=False,
+            )
+            is True
+        )
+        assert _read_cli_overlay(tmp_path) == {}
+
     def test_clear_reports_success_only_when_the_file_stops_naming_the_model(self, tmp_path):
         # The postcondition is about the FILE, so an absent file and an absent
-        # entry are both successes -- there is nothing left to re-seed from.
+        # entry are both successes -- there is nothing left for a spawn to read.
         assert _clear_cli_overlay_effort(tmp_path, "claude-opus-4.7") is True
         _write_cli_overlay(tmp_path, "claude-opus-4.7", "max")
         assert _clear_cli_overlay_effort(tmp_path, "claude-opus-4.7") is True
         assert _read_cli_overlay(tmp_path) == {}
+
+    @_UNPARSEABLE_OVERLAY_CONTENTS
+    @pytest.mark.parametrize("model", ["claude-opus-4.7", None])
+    def test_clear_leaves_a_file_no_parser_can_read_unchanged(self, tmp_path, model, contents):
+        settings_dir = tmp_path / ".kiro" / "settings"
+        settings_dir.mkdir(parents=True)
+        cli_json = settings_dir / "cli.json"
+        cli_json.write_bytes(contents)
+
+        assert _clear_cli_overlay_effort(tmp_path, model) is True
+        assert cli_json.read_bytes() == contents
+
+    def test_clear_leaves_a_malformed_cli_json_unchanged(self, tmp_path):
+        settings_dir = tmp_path / ".kiro" / "settings"
+        settings_dir.mkdir(parents=True)
+        cli_json = settings_dir / "cli.json"
+        malformed = b"{ not json"
+        cli_json.write_bytes(malformed)
+
+        assert _clear_cli_overlay_effort(tmp_path, "claude-opus-4.7") is True
+        assert cli_json.read_bytes() == malformed
+
+    @pytest.mark.parametrize("model", ["claude-opus-4.7", None])
+    def test_clear_leaves_an_undecodable_cli_json_unchanged(self, tmp_path, model):
+        # Non-UTF-8 bytes fail in read_text, before json sees them. That is a
+        # ValueError like malformed JSON, not the OSError of a failed read, and
+        # the file names no effort for anyone, so the answer is the same no-op.
+        settings_dir = tmp_path / ".kiro" / "settings"
+        settings_dir.mkdir(parents=True)
+        cli_json = settings_dir / "cli.json"
+        undecodable = b'{"x": "\xff"}'
+        cli_json.write_bytes(undecodable)
+
+        assert _clear_cli_overlay_effort(tmp_path, model) is True
+        assert cli_json.read_bytes() == undecodable
 
     def test_clear_separates_a_malformed_file_from_a_failed_read(self, tmp_path, monkeypatch):
         # Two very different facts share one code path. A malformed file names no
@@ -231,17 +790,30 @@ class TestCliOverlay:
         (settings_dir / "cli.json").write_text("{ not json", encoding="utf-8")
         assert _clear_cli_overlay_effort(tmp_path, "claude-opus-4.7") is True
 
-        _write_cli_overlay(tmp_path, "claude-opus-4.7", "max")
-        real_read_text = Path.read_text
+        (settings_dir / "cli.json").write_text(
+            json.dumps(
+                {
+                    "chat.modelDefaults": {"claude-opus-4.7": {"output_config": {"effort": "max"}}},
+                    _KIROCREW_EFFORT_OWNED_KEY: {"claude-opus-4.7": "max"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        real_read = acp_provider.safe_read_file_bytes_nolink
 
-        def _flaky_read(self, *args, **kwargs):
-            if self.name == "cli.json":
+        def _flaky_read(raw, *args, **kwargs):
+            if Path(raw).name == "cli.json":
                 raise OSError("sharing violation")
-            return real_read_text(self, *args, **kwargs)
+            return real_read(raw, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "read_text", _flaky_read)
-        assert _clear_cli_overlay_effort(tmp_path, "claude-opus-4.7") is False
-        monkeypatch.undo()
+        def _failed_pinned_read(_settings_fd, _cli_json):
+            raise OSError("sharing violation")
+
+        with monkeypatch.context() as temporary_patches:
+            temporary_patches.setattr(acp_provider, "safe_read_file_bytes_nolink", _flaky_read)
+            temporary_patches.setattr(acp_provider, "_read_pinned_cli_json", _failed_pinned_read)
+            assert _clear_cli_overlay_effort(tmp_path, "claude-opus-4.7") is False
+
         assert _read_cli_overlay(tmp_path) == {"claude-opus-4.7": "max"}
 
     def test_clear_reports_failure_only_when_the_lock_is_genuinely_stuck(
@@ -261,9 +833,10 @@ class TestCliOverlay:
             raise OSError("lock busy")
             yield  # pragma: no cover - unreachable, keeps the generator shape
 
-        monkeypatch.setattr(acp_provider, "workspace_cli_settings_lock", _busy)
-        assert _clear_cli_overlay_effort(tmp_path, "claude-opus-4.7") is False
-        monkeypatch.undo()
+        with monkeypatch.context() as temporary_patches:
+            temporary_patches.setattr(acp_provider, "locked_workspace_cli_settings", _busy)
+            assert _clear_cli_overlay_effort(tmp_path, "claude-opus-4.7") is False
+
         assert seen["timeout"] == acp_provider.CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
         assert _read_cli_overlay(tmp_path) == {"claude-opus-4.7": "max"}
 
@@ -285,9 +858,17 @@ class TestCliOverlay:
             ("claude-opus-4.7", "output_config", "reasoning"),
         ],
     )
-    def test_write_removes_stale_other_family_effort(
+    def test_write_preserves_other_family_effort(
         self, tmp_path, model: str, current_key: str, stale_key: str
     ):
+        """The other family key's ``effort`` is left alone, not swept.
+
+        A sweep of that key would only matter to a reader that adopts whatever
+        ``effort`` the file holds, and no provider reads the overlay back into
+        its own effort map. kiro-cli ignores the wrong key, so the value there
+        is inert, and it may be the operator's: a sweep would be a destructive
+        write with nothing to protect.
+        """
         settings_dir = tmp_path / ".kiro" / "settings"
         settings_dir.mkdir(parents=True)
         cli = settings_dir / "cli.json"
@@ -299,10 +880,9 @@ class TestCliOverlay:
 
         _write_cli_overlay(tmp_path, model, "max")
 
-        assert _read_cli_overlay(tmp_path) == {model: "max"}
         model_cfg = json.loads(cli.read_text(encoding="utf-8"))["chat.modelDefaults"][model]
         assert model_cfg[current_key]["effort"] == "max"
-        assert model_cfg[stale_key] == {"preserved": True}
+        assert model_cfg[stale_key] == {"effort": "low", "preserved": True}
 
     def test_mixed_families_coexist(self, tmp_path):
         _write_cli_overlay(tmp_path, "claude-opus-4.7", "high")
@@ -320,6 +900,146 @@ class TestCliOverlay:
         cli = tmp_path / ".kiro" / "settings" / "cli.json"
         data = json.loads(cli.read_text(encoding="utf-8"))
         assert "gpt-5.6-luna" not in data.get("chat.modelDefaults", {})
+
+    def test_projection_keeps_different_operator_level_and_automatic_clear(self, tmp_path):
+        model = "claude-opus-4.7"
+        settings = tmp_path / ".kiro" / "settings"
+        settings.mkdir(parents=True)
+        cli_json = settings / "cli.json"
+        cli_json.write_text(
+            json.dumps(
+                {
+                    "chat.modelDefaults": {model: {"output_config": {"effort": "low"}}},
+                    "operator": {"kept": True},
+                }
+            ),
+            encoding="utf-8",
+        )
+        before = cli_json.read_bytes()
+
+        _write_cli_overlay(tmp_path, model, "max")
+        assert cli_json.read_bytes() == before
+
+        provider = acp_provider.AcpProvider(
+            acp_backend=ACP_BACKEND_KIRO,
+            work_dir=tmp_path,
+            model=model,
+        )
+        assert provider._apply_effort_overlay() is True
+        assert cli_json.read_bytes() == before
+        assert _read_cli_overlay(tmp_path) == {model: "low"}
+
+    def test_projection_drops_only_stale_ownership_when_operator_value_differs(self, tmp_path):
+        model = "claude-opus-4.7"
+        settings = tmp_path / ".kiro" / "settings"
+        settings.mkdir(parents=True)
+        cli_json = settings / "cli.json"
+        cli_json.write_text(
+            json.dumps(
+                {
+                    "chat.modelDefaults": {model: {"output_config": {"effort": "low"}}},
+                    _KIROCREW_EFFORT_OWNED_KEY: {model: "max"},
+                    "operator": {"kept": True},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        _write_cli_overlay(tmp_path, model, "high")
+
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert data["chat.modelDefaults"][model]["output_config"]["effort"] == "low"
+        assert data["operator"] == {"kept": True}
+        assert _KIROCREW_EFFORT_OWNED_KEY not in data
+
+    @pytest.mark.parametrize(
+        "document",
+        [
+            {"chat.modelDefaults": None},
+            {"chat.modelDefaults": "operator-note"},
+            {"chat.modelDefaults": {"claude-opus-4.7": "operator-note"}},
+            {"chat.modelDefaults": {"claude-opus-4.7": {"output_config": "operator-note"}}},
+            {"chat.modelDefaults": {"claude-opus-4.7": {"output_config": {"effort": 7}}}},
+        ],
+        ids=[
+            "model-defaults-null",
+            "model-defaults",
+            "model-entry",
+            "active-key",
+            "active-effort",
+        ],
+    )
+    def test_projection_keeps_present_non_object_operator_shapes(self, tmp_path, document):
+        settings = tmp_path / ".kiro" / "settings"
+        settings.mkdir(parents=True)
+        cli_json = settings / "cli.json"
+        cli_json.write_text(json.dumps(document), encoding="utf-8")
+        before = cli_json.read_bytes()
+
+        _write_cli_overlay(tmp_path, "claude-opus-4.7", "max")
+
+        assert cli_json.read_bytes() == before
+
+    @pytest.mark.parametrize(
+        ("document", "path"),
+        [
+            ({"chat.modelDefaults": None, "other.key": 1}, "chat.modelDefaults"),
+            ({"chat.modelDefaults": "operator-note", "other.key": 1}, "chat.modelDefaults"),
+            (
+                {
+                    "chat.modelDefaults": {"claude-opus-4.7": "operator-note"},
+                    "other.key": 1,
+                },
+                "chat.modelDefaults.claude-opus-4.7",
+            ),
+            (
+                {
+                    "chat.modelDefaults": {"claude-opus-4.7": {"output_config": "operator-note"}},
+                    "other.key": 1,
+                },
+                "chat.modelDefaults.claude-opus-4.7.output_config",
+            ),
+        ],
+        ids=["model-defaults-null", "model-defaults-string", "model-entry", "active-key"],
+    )
+    def test_explicit_default_refuses_a_non_object_parent_and_leaves_the_file(
+        self, tmp_path, document, path
+    ):
+        model = "claude-opus-4.7"
+        settings = tmp_path / ".kiro" / "settings"
+        settings.mkdir(parents=True)
+        cli_json = settings / "cli.json"
+        cli_json.write_text(json.dumps(document), encoding="utf-8")
+        before = cli_json.read_bytes()
+
+        with pytest.raises(acp_provider._OverlayParentNotAnObject, match=path):
+            _write_cli_overlay(tmp_path, model, "max", replace_unowned=True)
+
+        assert cli_json.read_bytes() == before
+
+    def test_explicit_default_replaces_a_non_object_effort_value_under_an_object_key(
+        self, tmp_path
+    ):
+        model = "claude-opus-4.7"
+        settings = tmp_path / ".kiro" / "settings"
+        settings.mkdir(parents=True)
+        cli_json = settings / "cli.json"
+        cli_json.write_text(
+            json.dumps(
+                {
+                    "chat.modelDefaults": {model: {"output_config": {"effort": 7}}},
+                    "other.key": 1,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        _write_cli_overlay(tmp_path, model, "max", replace_unowned=True)
+
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert data["chat.modelDefaults"][model]["output_config"]["effort"] == "max"
+        assert data[_KIROCREW_EFFORT_OWNED_KEY] == {model: "max"}
+        assert data["other.key"] == 1
 
 
 class TestFactoryEffortThreading:
@@ -778,3 +1498,68 @@ class TestFactoryDefaultEffortFallback:
             model_override="claude-opus-4.7",
         )
         assert kwargs.get("effort_per_model") == {}
+
+
+class TestCodeReviewSageOverlayKeepsAcpOwnership(unittest.TestCase):
+    """Code Review Sage's overlay writer against the `AcpProvider` ownership record."""
+
+    def test_write_effort_overlay_keeps_acp_owned_entry_owned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work_dir = Path(tmp)
+            first_model = "claude-opus-4.7"
+            second_model = "claude-sonnet-4.6"
+            acp_provider._write_cli_overlay(work_dir, first_model, "max")
+
+            rp._write_effort_overlay(tmp, second_model, "high")
+
+            cli_json = work_dir / ".kiro" / "settings" / "cli.json"
+            written = json.loads(cli_json.read_text(encoding="utf-8"))
+            self.assertEqual(written["kirocrew.effortOwnedStamp"], int(cli_json.stat().st_mtime))
+            self.assertTrue(
+                acp_provider._clear_cli_overlay_effort(work_dir, first_model, owned_only=True)
+            )
+            data = json.loads(
+                (work_dir / ".kiro" / "settings" / "cli.json").read_text(encoding="utf-8")
+            )
+            self.assertNotIn(first_model, data.get("chat.modelDefaults", {}))
+            self.assertEqual(
+                data["chat.modelDefaults"][second_model]["output_config"]["effort"],
+                "high",
+            )
+
+    def test_operator_save_after_publish_voids_acp_owned_clear(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work_dir = Path(tmp)
+            first_model = "claude-opus-4.7"
+            second_model = "claude-sonnet-4.6"
+            acp_provider._write_cli_overlay(work_dir, first_model, "max")
+            cli_json = work_dir / ".kiro" / "settings" / "cli.json"
+            real_atomic_write_text = rp.store.atomic_write_text
+            operator_saves = []
+
+            def _publish_then_operator_save(target, text, **kwargs):
+                real_atomic_write_text(target, text, **kwargs)
+                Path(target).write_text(text, encoding="utf-8")
+                operator_saves.append(Path(target))
+
+            with unittest.mock.patch.object(
+                rp.store, "atomic_write_text", _publish_then_operator_save
+            ):
+                rp._write_effort_overlay(tmp, second_model, "high")
+
+            written = json.loads(cli_json.read_text(encoding="utf-8"))
+            self.assertEqual([path.resolve() for path in operator_saves], [cli_json.resolve()])
+            self.assertNotEqual(written["kirocrew.effortOwnedStamp"], int(cli_json.stat().st_mtime))
+            self.assertTrue(
+                acp_provider._clear_cli_overlay_effort(work_dir, first_model, owned_only=True)
+            )
+            after = json.loads(cli_json.read_text(encoding="utf-8"))
+            self.assertEqual(
+                after["chat.modelDefaults"][first_model]["output_config"]["effort"],
+                "max",
+            )
+            self.assertEqual(
+                after["chat.modelDefaults"][second_model]["output_config"]["effort"],
+                "high",
+            )
+            self.assertNotIn("kirocrew.effortOwned", after)

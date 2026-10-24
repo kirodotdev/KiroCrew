@@ -18,11 +18,12 @@ import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from test_effort import _read_cli_overlay
 
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO, ACP_BACKEND_PI
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.providers.acp import AcpProvider, _read_cli_overlay, _write_cli_overlay
+from kiro_crew.providers.acp import AcpProvider, _write_cli_overlay
 
 _PI_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"]
 
@@ -32,9 +33,9 @@ def _provider(
 ) -> AcpProvider:
     """An unstarted provider whose client reports *served* once it is ready.
 
-    With *work_dir* the client is configured before construction, so the kiro
-    family seeds its effort map from a real overlay there, as on a reused
-    workspace.
+    With *work_dir* the client is configured before construction, as on a
+    reused workspace with a real overlay there, which construction does not
+    read.
     """
     with patch("kiro_crew.providers.acp.AcpClient") as client_cls:
         if work_dir is not None:
@@ -188,13 +189,13 @@ class TestProviderBindsTheLevel:
     @pytest.mark.asyncio
     async def test_kiro_family_pushes_over_a_different_level_the_overlay_left(self, tmp_path):
         # A reused workspace whose overlay holds another level for the served
-        # model seeds the map at construction; the requested level still wins,
+        # model: construction adopts none of it, and the requested level wins,
         # live and in the overlay the next spawn reads.
         _write_cli_overlay(tmp_path, "claude-opus-4.7", "high")
         provider = _provider(
             ACP_BACKEND_KIRO, unbound="low", served="claude-opus-4.7", work_dir=tmp_path
         )
-        assert provider._effort_per_model == {"claude-opus-4.7": "high"}
+        assert provider._effort_per_model == {}
         provider._client._resolved_model_id = "claude-opus-4.7"
         await provider._bind_unbound_effort()
         provider._client.send_command.assert_awaited_once_with("/effort", args={"level": "low"})
@@ -202,11 +203,11 @@ class TestProviderBindsTheLevel:
         assert _read_cli_overlay(tmp_path) == {"claude-opus-4.7": "low"}
 
     @pytest.mark.asyncio
-    async def test_kiro_family_skips_the_push_when_the_overlay_already_holds_the_level(
+    async def test_kiro_family_skips_the_bind_push_when_the_level_is_already_stored(
         self,
     ):
-        # kiro-cli read that level from the overlay at spawn, so the session
-        # already runs it.
+        # An earlier start stored the level, and the post-spawn push carries it
+        # on every later start, so the bind does not change it again.
         provider = _provider(ACP_BACKEND_KIRO, unbound="high", served="claude-opus-4.7")
         provider._client._resolved_model_id = "claude-opus-4.7"
         provider._effort_per_model["claude-opus-4.7"] = "high"
@@ -216,9 +217,9 @@ class TestProviderBindsTheLevel:
         assert provider._effort_per_model == {"claude-opus-4.7": "high"}
 
     @pytest.mark.asyncio
-    async def test_kiro_push_refused_over_an_overlay_level_keeps_the_spawned_level(self):
-        # The session was spawned at the overlay's level, so a refused push must
-        # leave the map and the overlay naming that level, not the requested one.
+    async def test_kiro_push_refused_over_a_stored_level_keeps_that_level(self):
+        # A refused push must leave the map and the overlay naming the level
+        # stored before the bind, not the requested one.
         provider = _provider(ACP_BACKEND_KIRO, unbound="low", served="claude-opus-4.7")
         provider._client._resolved_model_id = "claude-opus-4.7"
         provider._effort_per_model["claude-opus-4.7"] = "high"
@@ -228,6 +229,99 @@ class TestProviderBindsTheLevel:
         assert provider._effort_per_model == {"claude-opus-4.7": "high"}
         # Written once for the attempt and once more for the rollback.
         assert provider._apply_effort_overlay.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_kiro_restart_pushes_the_bound_level_after_spawn(self):
+        # A restart finds the level stored, so the bind pushes nothing. The
+        # post-spawn push reads the served model like every effort read, so the
+        # session runs the level whatever the file held at its spawn.
+        provider = _provider(ACP_BACKEND_KIRO, unbound="high", served="claude-opus-4.7")
+        provider._client._resolved_model_id = "claude-opus-4.7"
+        provider._effort_per_model["claude-opus-4.7"] = "high"
+        provider.change_effort = AsyncMock(return_value=True)
+        await provider._bind_unbound_effort()
+        await provider._reassert_projected_effort()
+        provider.change_effort.assert_not_awaited()
+        provider._client.send_command.assert_awaited_once_with("/effort", args={"level": "high"})
+
+    def test_kiro_restart_takes_the_auto_window_whatever_the_last_session_served(self):
+        # kiro-cli picks its model after it reads the overlay, so a restart with
+        # nothing pinned is projected as auto under the window fence, even when
+        # the last session served a model and its level is stored.
+        provider = _provider(ACP_BACKEND_KIRO, unbound="high", served="claude-opus-4.7")
+        provider._client._resolved_model_id = "claude-opus-4.7"
+        provider._effort_per_model["claude-opus-4.7"] = "high"
+        assert provider._effort_overlay_fence_mode() == "window"
+
+    @pytest.mark.asyncio
+    async def test_kiro_restart_sweeps_another_chats_level_for_the_next_model(
+        self, tmp_path, monkeypatch
+    ):
+        # The last session served opus; the next may serve sonnet, for which
+        # another chat left an owned level. The projection before the spawn
+        # must remove it, as an auto spawn does, rather than write opus's.
+        _write_cli_overlay(tmp_path, "claude-sonnet-4.5", "low")
+        provider = _provider(
+            ACP_BACKEND_KIRO, unbound="high", served="claude-sonnet-4.5", work_dir=tmp_path
+        )
+        provider._client._resolved_model_id = "claude-opus-4.7"
+        provider._effort_per_model["claude-opus-4.7"] = "high"
+        monkeypatch.setattr(provider, "_start_kiro_runtime", AsyncMock())
+        monkeypatch.setattr(provider, "_bind_unbound_effort", AsyncMock())
+        monkeypatch.setattr(provider, "_reassert_projected_effort", AsyncMock())
+        monkeypatch.setattr(provider, "_note_zero_tool_servers", AsyncMock())
+        await provider.start()
+        assert _read_cli_overlay(tmp_path) == {}
+
+    def test_kiro_restart_takes_the_auto_window_from_an_empty_client_model(self):
+        # After the first start the client is the swapped session provider,
+        # which records "" rather than the auto sentinel for a session with
+        # nothing pinned. The restart must still be projected as auto under the
+        # window fence; keying on the client's "" would fence nothing.
+        provider = _provider(ACP_BACKEND_KIRO, unbound="high", served="claude-opus-4.7")
+        provider._client._model = ""
+        provider._client._resolved_model_id = "claude-opus-4.7"
+        provider._effort_per_model["claude-opus-4.7"] = "high"
+        assert provider._effort_overlay_fence_mode() == "window"
+
+    @pytest.mark.asyncio
+    async def test_kiro_restart_from_an_empty_client_model_sweeps_another_chats_level(
+        self, tmp_path, monkeypatch
+    ):
+        # The same sweep as above, from the "" the swapped session provider
+        # records: the projection must still remove sonnet's owned level rather
+        # than leave the file untouched for lack of a model to key on.
+        _write_cli_overlay(tmp_path, "claude-sonnet-4.5", "low")
+        provider = _provider(
+            ACP_BACKEND_KIRO, unbound="high", served="claude-sonnet-4.5", work_dir=tmp_path
+        )
+        provider._client._model = ""
+        provider._client._resolved_model_id = "claude-opus-4.7"
+        provider._effort_per_model["claude-opus-4.7"] = "high"
+        monkeypatch.setattr(provider, "_start_kiro_runtime", AsyncMock())
+        monkeypatch.setattr(provider, "_bind_unbound_effort", AsyncMock())
+        monkeypatch.setattr(provider, "_reassert_projected_effort", AsyncMock())
+        monkeypatch.setattr(provider, "_note_zero_tool_servers", AsyncMock())
+        await provider.start()
+        assert _read_cli_overlay(tmp_path) == {}
+
+    @pytest.mark.asyncio
+    async def test_kiro_warm_conversation_binds_the_level_to_a_changed_served_model(self):
+        # A fresh session on the warm process can serve another default model;
+        # the requested level is bound to it before the push, so the session
+        # runs that level instead of none.
+        provider = _provider(ACP_BACKEND_KIRO, unbound="high", served="claude-opus-4.7")
+        provider._client._resolved_model_id = "claude-opus-4.7"
+        provider._effort_per_model["claude-opus-4.7"] = "high"
+        provider._apply_effort_overlay = MagicMock(return_value=True)
+
+        async def _fresh_session() -> None:
+            provider._client._resolved_model_id = "claude-sonnet-4.5"
+
+        provider._client.new_conversation = AsyncMock(side_effect=_fresh_session)
+        await provider.new_conversation()
+        assert provider._effort_per_model["claude-sonnet-4.5"] == "high"
+        provider._client.send_command.assert_any_await("/effort", args={"level": "high"})
 
     @pytest.mark.asyncio
     async def test_kiro_session_on_auto_still_offers_no_effort(self):

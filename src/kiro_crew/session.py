@@ -663,6 +663,8 @@ class SessionManager:
     _record_pool_decision = _runtimes._record_pool_decision
     _claim_from_pool = _runtimes._claim_from_pool
     _drain_and_claim = _runtimes._drain_and_claim
+    _take_claim_spawn_time = _runtimes._take_claim_spawn_time
+    _may_predate_effort_overlay_rewrite = _runtimes._may_predate_effort_overlay_rewrite
     _schedule_replenish = _runtimes._schedule_replenish
     _pool_pids = _runtimes._pool_pids
     _in_flight_pids = _runtimes._in_flight_pids
@@ -674,6 +676,7 @@ class SessionManager:
     recycle_heartbeat = _runtimes.recycle_heartbeat
     _retire_kiro_warm_pool = _runtimes._retire_kiro_warm_pool
     _mark_identity_epoch = _runtimes._mark_identity_epoch
+    fence_effort_overlay_rewrite = _runtimes.fence_effort_overlay_rewrite
     drain_warm_pool = _runtimes.drain_warm_pool
     warm_providers = _runtimes.warm_providers
     # -- Context budget, compaction and owed history (session_parts.turn_context).
@@ -699,6 +702,13 @@ class SessionManager:
     consume_replay_suppression = _turn_context.consume_replay_suppression
     _consume_persisted_replay_suppression = _turn_context._consume_persisted_replay_suppression
     suppress_replay_persistently = _turn_context.suppress_replay_persistently
+    set_explicit_effort_default = _turn_context.set_explicit_effort_default
+    effort_basis_locked = _turn_context.effort_basis_locked
+    _effort_intent_writes_in_flight = _turn_context._effort_intent_writes_in_flight
+    effort_intent_write = _turn_context.effort_intent_write
+    wait_for_effort_intent_writes = _turn_context.wait_for_effort_intent_writes
+    hold_explicit_effort_default = _turn_context.hold_explicit_effort_default
+    explicit_effort_default_pending = _turn_context.explicit_effort_default_pending
     _compaction_gate_decision = _turn_context._compaction_gate_decision
     _trigger_compaction = _turn_context._trigger_compaction
     _compact_session = _turn_context._compact_session
@@ -1174,6 +1184,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.session_parts.record import (  # noqa: F401
         StopOutcome,
+        _EffortIntentWrites,
     )
 
     # The owners annotate with these names, which the agent-SDK boundary lets only this
