@@ -14990,6 +14990,7 @@
         "approval_required_hint": "I candidati attendono qui la tua approvazione. Le skill di sola prosa possono essere pubblicate automaticamente quando <settingRef/> è disattivato — le skill che includono script richiedono sempre una revisione.",
         "approve": "Approva",
         "approve_failed_generic": "Approvazione rifiutata ({{reason}}).",
+        "approve_failed_changed": "Approvazione rifiutata: questo candidato è cambiato dopo che l'hai letto. È stato ricaricato. Controllalo, poi approvalo.",
         "approve_failed_live_exists": "Approvazione rifiutata: esiste già una skill attiva con questo nome.",
         "approve_failed_not_found": "Questo candidato non è più in attesa — è stato approvato o scartato in un’altra finestra o dal tuo agente {{productName}}, quindi non c’era più nulla da approvare.",
         "approve_failed_not_found_approved_named": "Il candidato “{{name}}” non è più in attesa — è già stato approvato in un’altra finestra o dal tuo agente {{productName}} e ora compare qui sotto in Skills, quindi non c’era più nulla da approvare.",

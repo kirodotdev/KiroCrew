@@ -120,8 +120,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.prompts_skill_pending import api_skills_pending  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_skill_pending import (  # noqa: F401
+        _CODE_CONTENT_SHA256_REQUIRED,
         _CODE_LIVE_SKILL_EXISTS,
         _CODE_PENDING_APPROVAL_REFUSED,
+        _CODE_PENDING_SKILL_CHANGED,
         _CODE_PENDING_SKILL_NOT_FOUND,
         _CODE_PENDING_SKILL_UNREADABLE,
         _CODE_SCRIPT_VALIDATION_FAILED,

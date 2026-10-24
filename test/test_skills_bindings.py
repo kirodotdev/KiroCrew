@@ -132,6 +132,7 @@ _MEMBERS: dict[str, tuple[str, object, str]] = {
     "_versions_root": ("function", False, "skills"),
     "_vet_unconfined_path": ("function", False, "skills"),
     "_write_skill_md": ("staticmethod", False, "skills"),
+    "approve_pending_as_read": ("function", False, "skills_review"),
     "approve_pending_skill_checked": ("function", False, "skills_review"),
     "approve_pending_update_checked": ("function", False, "skills_review"),
     "archive_auto_skill": ("function", False, "skills"),

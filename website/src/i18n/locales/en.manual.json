@@ -6848,6 +6848,7 @@
       "skillsTab": {
         "adds_new_requirements_to": "Adds new requirements to {{target}} — {{description}}",
         "approve_failed_generic": "Approval refused ({{reason}}).",
+        "approve_failed_changed": "Approval refused: this candidate changed after you read it. It has been read again. Review it, then approve.",
         "approve_failed_live_exists": "Approval refused: a live skill with this name already exists.",
         "approve_failed_not_found": "This candidate is no longer pending — it was approved or dismissed in another window or by your {{productName}} agent, so there was nothing left to approve.",
         "approve_failed_not_found_approved_named": "Candidate “{{name}}” is no longer pending — it was already approved in another window or by your {{productName}} agent and now appears in the Skills list below, so there was nothing left to approve.",

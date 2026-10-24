@@ -14510,6 +14510,7 @@
         "approval_required_hint": "候補はここで承認を待ちます。<settingRef/> がオフの場合、スクリプトを含まないスキルは自動的に公開できます — スクリプトを含むスキルは常にレビューが必要です。",
         "approve": "承認",
         "approve_failed_generic": "承認が拒否されました（{{reason}}）。",
+        "approve_failed_changed": "承認は拒否されました: 読んだ後にこの候補が変更されました。再読み込みしました。内容を確認してから承認してください。",
         "approve_failed_live_exists": "承認が拒否されました：この名前のライブスキルが既に存在します。",
         "approve_failed_not_found": "この候補はもう保留中ではありません — 別のウィンドウで、またはあなたの {{productName}} エージェントによって承認または却下されたため、承認できるものは残っていませんでした。",
         "approve_failed_not_found_approved_named": "候補「{{name}}」はもう保留中ではありません — 別のウィンドウで、またはあなたの {{productName}} エージェントによってすでに承認され、下の Skills 一覧に表示されているため、承認できるものは残っていませんでした。",

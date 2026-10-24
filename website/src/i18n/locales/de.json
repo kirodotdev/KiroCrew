@@ -14750,6 +14750,7 @@
         "approval_required_hint": "Kandidaten warten hier auf Ihre Genehmigung. Reine Prosa-Skills können automatisch live gehen, wenn <settingRef/> deaktiviert ist — Skills mit Skripten erfordern immer eine Überprüfung.",
         "approve": "Genehmigen",
         "approve_failed_generic": "Genehmigung abgelehnt ({{reason}}).",
+        "approve_failed_changed": "Genehmigung abgelehnt: Dieser Kandidat hat sich geändert, nachdem du ihn gelesen hast. Er wurde neu geladen. Prüfe ihn und genehmige dann.",
         "approve_failed_live_exists": "Genehmigung abgelehnt: Ein aktiver Skill mit diesem Namen existiert bereits.",
         "approve_failed_not_found": "Dieser Kandidat ist nicht mehr ausstehend — er wurde in einem anderen Fenster oder von deinem {{productName}} Agenten genehmigt oder verworfen, es gab also nichts mehr zu genehmigen.",
         "approve_failed_not_found_approved_named": "Kandidat „{{name}}“ ist nicht mehr ausstehend — er wurde bereits in einem anderen Fenster oder von deinem {{productName}} Agenten genehmigt und erscheint jetzt unten in der Skills-Liste unten, es gab also nichts mehr zu genehmigen.",

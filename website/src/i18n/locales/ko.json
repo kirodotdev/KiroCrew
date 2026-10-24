@@ -14510,6 +14510,7 @@
         "approval_required_hint": "후보는 여기서 승인을 기다립니다. <settingRef/>가 꺼져 있으면 스크립트가 없는 스킬은 자동으로 게시될 수 있습니다 — 스크립트가 포함된 스킬은 항상 검토가 필요합니다.",
         "approve": "승인",
         "approve_failed_generic": "승인 거부됨({{reason}}).",
+        "approve_failed_changed": "승인이 거부되었습니다: 읽은 후에 이 후보가 변경되었습니다. 다시 불러왔습니다. 검토한 후 승인하세요.",
         "approve_failed_live_exists": "승인 거부됨: 이 이름의 라이브 스킬이 이미 존재합니다.",
         "approve_failed_not_found": "이 후보는 더 이상 대기 중이 아닙니다 — 다른 창에서 또는 {{productName}} 에이전트에 의해 승인되거나 기각되어 승인할 대상이 남아 있지 않았습니다.",
         "approve_failed_not_found_approved_named": "‘{{name}}’ 후보는 더 이상 대기 중이 아닙니다 — 다른 창에서 또는 {{productName}} 에이전트에 의해 이미 승인되어 아래 Skills 목록에 표시되므로 승인할 대상이 남아 있지 않았습니다.",

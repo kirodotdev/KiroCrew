@@ -461,18 +461,12 @@ class TestUpdateRefusesAStaleBase:
         assert held == [True]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("kind", "loader_method"),
-        (("update", "approve_pending_update_checked"), ("new", "approve_pending_skill_checked")),
-    )
-    async def test_pending_approval_promotes_under_the_save_lock(
-        self, audit, monkeypatch, kind, loader_method
-    ):
+    async def test_pending_approval_promotes_under_the_save_lock(self, audit, monkeypatch):
         # An update promotion replaces a live SKILL.md, so it holds the lock
         # that spans the PUT's compare and write; the lifecycle bound does not.
         held: dict[str, bool] = {}
 
-        def promote(_slug):
+        def promote(_slug, _content_sha256):
             held["promote"] = prompts._SKILL_WRITE_LOCK.locked()
             return "auto/demo"
 
@@ -480,11 +474,12 @@ class TestUpdateRefusesAStaleBase:
             held["lifecycle"] = prompts._SKILL_WRITE_LOCK.locked()
 
         state, _ = _state_with_loader(
-            get_pending_skill=Mock(return_value={"kind": kind}),
+            approve_pending_as_read=promote,
             run_skill_lifecycle=lifecycle,
-            **{loader_method: promote},
         )
-        request = _Request({"user": "owner"}, state, method="POST")
+        request = _Request(
+            {"user": "owner"}, state, method="POST", body={"content_sha256": "a" * 64}
+        )
         request.match_info = {"slug": "cand"}
         response = await prompts.api_skill_pending_approve(request)
 

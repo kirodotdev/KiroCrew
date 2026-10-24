@@ -36,6 +36,9 @@ _CODE_PENDING_SKILL_UNREADABLE = "pending_skill_unreadable"
 _CODE_LIVE_SKILL_EXISTS = "live_skill_exists"
 _CODE_SCRIPT_VALIDATION_FAILED = "script_validation_failed"
 _CODE_PENDING_APPROVAL_REFUSED = "pending_approval_refused"
+# The candidate on disk is not the one the reviewer read.
+_CODE_PENDING_SKILL_CHANGED = "pending_skill_changed"
+_CODE_CONTENT_SHA256_REQUIRED = "content_sha256_required"
 
 
 # ── Auto-skill pending-approval queue (v2) ──
@@ -148,18 +151,9 @@ async def api_skill_pending_detail(request: web.Request) -> web.Response:
     # since the candidate was staged.
     _meta = detail.get("meta") if isinstance(detail.get("meta"), dict) else {}
     kind = detail.get("kind") or _meta.get("kind")
+    # The loader builds the preview from the same read ``content_sha256`` names.
+    pv = detail.pop("update_preview", None)
     if kind == "update":
-
-        def _preview() -> dict | None:
-            try:
-                return skills.preview_pending_update(slug)
-            except Exception:
-                return None
-
-        try:
-            pv = await asyncio.get_running_loop().run_in_executor(discovery_executor(), _preview)
-        except Exception:
-            pv = None
         detail["live_body"] = (pv or {}).get("live_body")
         detail["proposed_body"] = (pv or {}).get("proposed_body")
         detail["diff"] = (pv or {}).get("diff")
@@ -188,29 +182,41 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
             metadata={"slug": slug, "reason": "invalid_slug"},
         )
         return web.json_response({"error": "invalid slug"}, status=400)
+    # The approval names the bytes the reviewer read: the detail read's
+    # ``content_sha256``. Required, so an approval can never promote a candidate
+    # nobody saw.
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    seen_sha = body.get("content_sha256") if isinstance(body, dict) else None
+    if not isinstance(seen_sha, str) or not seen_sha:
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pending_approve",
+            tool_kind="skill",
+            outcome="rejected",
+            metadata={"slug": slug, "reason": "content_sha256_required"},
+        )
+        return web.json_response(
+            {
+                "error": "content_sha256 from the candidate detail is required",
+                "code": _CODE_CONTENT_SHA256_REQUIRED,
+            },
+            status=400,
+        )
 
     def _approve_and_bound() -> str | None:
-        # Route on candidate kind: an UPDATE candidate rewrites an existing live
-        # skill (approve_pending_update_checked); a NEW candidate is promoted fresh
-        # (approve_pending_skill_checked). kind is read from the candidate detail
-        # (top-level or nested ``meta``), defaulting to the new path.
-        kind = None
-        try:
-            _detail = skills.get_pending_skill(slug)
-        except Exception:
-            _detail = None
-        if isinstance(_detail, dict):
-            _meta_raw = _detail.get("meta")
-            _meta: dict = _meta_raw if isinstance(_meta_raw, dict) else {}
-            kind = _detail.get("kind") or _meta.get("kind")
         # Under the skill write lock: an update promotion replaces a live
         # SKILL.md, so it must not land between a PUT's compare and its write.
         # The lifecycle bound below archives other skills and stays outside it.
         with _SKILL_WRITE_LOCK:
-            if kind == "update":
-                nm = skills.approve_pending_update_checked(slug)
-            else:
-                nm = skills.approve_pending_skill_checked(slug)
+            # Holds the candidate, compares it with what the reviewer read, and
+            # promotes that same held copy (routing update vs new on its kind).
+            # A write after the reviewer's read is refused, never promoted.
+            nm = skills.approve_pending_as_read(slug, seen_sha)
         if nm:
             # Approving consumes a slot — enforce the bound (archive, never
             # delete). Best-effort; runs in the same off-loop executor job.
@@ -257,6 +263,14 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
                 {
                     "error": "a live skill with this name already exists",
                     "code": _CODE_LIVE_SKILL_EXISTS,
+                },
+                status=409,
+            )
+        if e.reason == "content_changed":
+            return web.json_response(
+                {
+                    "error": "the candidate changed after it was read; read it again",
+                    "code": _CODE_PENDING_SKILL_CHANGED,
                 },
                 status=409,
             )

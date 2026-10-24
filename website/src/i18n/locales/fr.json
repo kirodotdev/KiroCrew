@@ -14990,6 +14990,7 @@
         "approval_required_hint": "Les candidats attendent ici votre approbation. Les skills en prose seule peuvent être publiés automatiquement lorsque <settingRef/> est désactivé — les skills contenant des scripts nécessitent toujours une revue.",
         "approve": "Approuver",
         "approve_failed_generic": "Approbation refusée ({{reason}}).",
+        "approve_failed_changed": "Approbation refusée : ce candidat a changé après que tu l’as lu. Il a été relu. Vérifie-le, puis approuve-le.",
         "approve_failed_live_exists": "Approbation refusée : une compétence active porte déjà ce nom.",
         "approve_failed_not_found": "Ce candidat n’est plus en attente — il a été approuvé ou rejeté dans une autre fenêtre ou par votre agent {{productName}}, il n’y avait donc plus rien à approuver.",
         "approve_failed_not_found_approved_named": "Le candidat «{{name}}» n’est plus en attente — il a déjà été approuvé dans une autre fenêtre ou par votre agent {{productName}} et apparaît maintenant dans la liste Skills ci-dessous, il n’y avait donc plus rien à approuver.",

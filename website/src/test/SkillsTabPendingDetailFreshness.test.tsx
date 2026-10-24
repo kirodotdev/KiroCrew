@@ -81,12 +81,12 @@ describe('SkillsTab pending-review detail freshness', () => {
       .mockResolvedValueOnce({
         name: 'auto/fresh-skill',
         content: 'step one: the body as first loaded',
-        scripts: [],
+        scripts: [], content_sha256: 'c'.repeat(64),
       })
       .mockResolvedValue({
         name: 'auto/fresh-skill',
         content: 'step one: the body after the edit on disk',
-        scripts: [],
+        scripts: [], content_sha256: 'c'.repeat(64),
       })
 
     renderWithProductionCachePolicy()
@@ -112,7 +112,7 @@ describe('SkillsTab pending-review detail freshness', () => {
       .mockResolvedValueOnce({
         name: 'auto/fresh-skill',
         content: 'step one: the body as first loaded',
-        scripts: [],
+        scripts: [], content_sha256: 'c'.repeat(64),
       })
       .mockImplementation(() => new Promise(resolve => { releaseSecondRead = resolve }))
 
@@ -135,7 +135,7 @@ describe('SkillsTab pending-review detail freshness', () => {
     releaseSecondRead!({
       name: 'auto/fresh-skill',
       content: 'step one: the body after the edit on disk',
-      scripts: [],
+      scripts: [], content_sha256: 'c'.repeat(64),
     })
 
     expect(await screen.findByText(/the body after the edit on disk/)).toBeTruthy()
@@ -150,7 +150,7 @@ describe('SkillsTab pending-review detail freshness', () => {
       .mockResolvedValueOnce({
         name: 'auto/fresh-skill',
         content: 'step one: the body as first loaded',
-        scripts: [],
+        scripts: [], content_sha256: 'c'.repeat(64),
       })
       .mockRejectedValue(new Error('could not read the candidate'))
 

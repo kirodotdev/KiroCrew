@@ -14990,6 +14990,7 @@
         "approval_required_hint": "Los candidatos esperan aquí tu aprobación. Las habilidades de solo prosa pueden publicarse automáticamente cuando <settingRef/> está desactivado — las habilidades que incluyen scripts siempre requieren revisión.",
         "approve": "Aprobar",
         "approve_failed_generic": "Aprobación rechazada ({{reason}}).",
+        "approve_failed_changed": "Aprobación rechazada: este candidato cambió después de que lo leyeras. Se ha vuelto a cargar. Revísalo y luego apruébalo.",
         "approve_failed_live_exists": "Aprobación rechazada: ya existe una habilidad activa con este nombre.",
         "approve_failed_not_found": "Este candidato ya no está pendiente: fue aprobado o descartado en otra ventana o por tu agente de {{productName}}, así que no quedaba nada por aprobar.",
         "approve_failed_not_found_approved_named": "El candidato «{{name}}» ya no está pendiente: ya fue aprobado en otra ventana o por tu agente de {{productName}} y ahora aparece abajo en Skills, así que no quedaba nada por aprobar.",

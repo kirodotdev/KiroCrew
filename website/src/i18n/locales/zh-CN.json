@@ -14510,6 +14510,7 @@
         "approval_required_hint": "候选技能在此等待你的批准。当 <settingRef/> 关闭时，纯文本技能可以自动发布 — 包含脚本的技能始终需要审查。",
         "approve": "批准",
         "approve_failed_generic": "批准被拒绝（{{reason}}）。",
+        "approve_failed_changed": "批准被拒绝：你阅读后此候选项已更改。已重新读取。请先查看，再批准。",
         "approve_failed_live_exists": "批准被拒绝：已存在同名的正式技能。",
         "approve_failed_not_found": "该候选项已不在待审核状态 — 它已在其他窗口中或由 {{productName}} 智能体批准或驳回，因此已没有可批准的内容。",
         "approve_failed_not_found_approved_named": "候选项“{{name}}”已不在待审核状态 — 它已在其他窗口中或由 {{productName}} 智能体批准，现在显示在下方的 Skills 列表中，因此已没有可批准的内容。",
