@@ -146,4 +146,25 @@ describe('useConfirm', () => {
     unmount()
     await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(false))
   })
+
+  it('cancel() answers "no" so a caller can withdraw an ask whose subject is gone', async () => {
+    function CancelProbe({ onAnswer }: { onAnswer: (ok: boolean) => void }) {
+      const { confirm, cancel, confirmDialog } = useConfirm()
+      return (
+        <>
+          <button onClick={async () => onAnswer(await confirm({ title: 'Clear?', confirmLabel: 'Clear' }))}>ask</button>
+          <button onClick={cancel}>withdraw</button>
+          {confirmDialog}
+        </>
+      )
+    }
+    const onAnswer = vi.fn()
+    const user = userEvent.setup()
+    render(<CancelProbe onAnswer={onAnswer} />)
+    await user.click(screen.getByText('ask'))
+    await screen.findByRole('dialog')
+    await user.click(screen.getByText('withdraw'))
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(false))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
 })
