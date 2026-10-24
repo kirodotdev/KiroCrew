@@ -1063,10 +1063,10 @@ class TestConductorInstaller:
     def test_pr_checks_seed_may_name_the_prepare_pr_skill_by_path(self):
         """A ``pr_checks`` seed can point the worker at kirocrew-prepare-pr's SKILL.md.
 
-        ``kirocrew-worker`` is a custom agent: ``_skills_injection_plan`` gives it
-        no catalog and no trigger matching, so however a seed is worded nothing
-        auto-loads ``kirocrew-prepare-pr`` in the worker session. The conductor naming the
-        file is the only route. Pinned as an OPTIONAL hint, not a mandate: a user
+        ``kirocrew-worker`` gets no per-message trigger matching (``build_message`` gates
+        it on ``not is_custom``), so however a seed is worded nothing auto-loads
+        ``kirocrew-prepare-pr`` in the worker session. The conductor naming the file is
+        what makes the worker follow it. Pinned as an OPTIONAL hint, not a mandate: a user
         who does not want kirocrew-prepare-pr must not have it forced on every worker.
         """
         text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")

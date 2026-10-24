@@ -55,7 +55,7 @@ import kiro_crew.agent as _agent_module  # noqa: F401
 from kiro_crew import model_registry, resource_status  # noqa: F401
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent import _prompt_path, _shipped_prompt, is_managed_prompt  # noqa: F401
-from kiro_crew.agent_discovery import agent_skill_globs
+from kiro_crew.agent_discovery import WHOLE_CATALOG_TEMPLATES, agent_skill_globs
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, is_claude_code
 from kiro_crew.agent_spec_format import iter_agent_spec_files, parse_agent_spec_text  # noqa: F401
@@ -1303,7 +1303,11 @@ def _skills_injection_plan(
             else []
         )
     )
-    is_custom = bool(agent) and not is_kirocrew_default_agent(agent)
+    is_custom = (
+        bool(agent)
+        and not is_kirocrew_default_agent(agent)
+        and agent not in WHOLE_CATALOG_TEMPLATES
+    )
     return (bool(globs) or not is_custom), globs
 
 

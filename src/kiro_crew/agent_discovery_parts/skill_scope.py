@@ -39,6 +39,11 @@ class SkillScopeResolutionError(ValueError):
 # raised class as ``module.qualname``, so the owner module must not leak into it.
 SkillScopeResolutionError.__module__ = "kiro_crew.agent_discovery"
 
+#: The templates that see the whole catalog while they map no skill. The worker
+#: maps exactly the default's ``skill://`` entries (``_mirror_worker_skill_resources``),
+#: so an unmapped worker has an unmapped dispatcher and sees what it sees.
+WHOLE_CATALOG_TEMPLATES = frozenset({"kirocrew", "kirocrew-worker"})
+
 
 def skill_search_refusal(spec: dict[str, Any]) -> str | None:
     """Why *spec* withholds Crew's ``skill_search``, or ``None`` when it allows it.
@@ -177,7 +182,7 @@ def agent_skill_globs(
         rows = list_agents(agents_dir=agents_dir, project_dir=str(project_dir))
         winner = next((row for row in rows if row.name == agent), None)
         if winner is None or not winner.filename:
-            if strict and agent != "kirocrew":
+            if strict and agent not in WHOLE_CATALOG_TEMPLATES:
                 raise SkillScopeResolutionError(f"Cannot resolve skill scope for agent {agent!r}")
             return []
         if winner.scope == SCOPE_PROJECT:
@@ -198,7 +203,7 @@ def agent_skill_globs(
         if (
             not globs
             and inherit_defaults
-            and agent != "kirocrew"
+            and agent not in WHOLE_CATALOG_TEMPLATES
             and data is not None
             and can_inherit_skills(data)
         ):
@@ -211,10 +216,15 @@ def agent_skill_globs(
         if data.get("name") != agent and f.stem != agent:
             continue
         globs = [g for uri in skill_resource_uris(data) if (g := expand_skill_uri(uri, f))]
-        if not globs and inherit_defaults and agent != "kirocrew" and can_inherit_skills(data):
+        if (
+            not globs
+            and inherit_defaults
+            and agent not in WHOLE_CATALOG_TEMPLATES
+            and can_inherit_skills(data)
+        ):
             return inherited_skill_globs(project_dir)
         return globs
-    if strict and agent != "kirocrew":
+    if strict and agent not in WHOLE_CATALOG_TEMPLATES:
         raise SkillScopeResolutionError(f"Cannot resolve skill scope for agent {agent!r}")
     return []
 
@@ -275,4 +285,4 @@ def session_skill_globs(
             session_key=session_key,
         )
     )
-    return None if template == "kirocrew" and not mapped else mapped
+    return None if template in WHOLE_CATALOG_TEMPLATES and not mapped else mapped

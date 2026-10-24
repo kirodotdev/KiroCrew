@@ -92,6 +92,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         warm_project_agent_names,
     )
     from kiro_crew.agent_discovery_parts.skill_scope import (  # noqa: F401
+        WHOLE_CATALOG_TEMPLATES,
         SkillScopeResolutionError,
         agent_skill_globs,
         can_inherit_skills,

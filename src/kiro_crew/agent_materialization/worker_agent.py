@@ -694,9 +694,9 @@ def _mirror_worker_skill_resources(config: dict, installed_default: dict[str, An
     """Append the default's ``skill://`` mappings to *config*'s ``resources``, by merge.
 
     A skill reaches a generated spec ONLY through a ``skill://`` entry in its
-    ``resources``: the scoping rule gives an agent other than the ``kirocrew``
-    template exactly its own ``skill://`` entries, so a worker whose spec carries
-    none sees an empty ``skill_search`` scope and no startup skills directory. The
+    ``resources``, so this function carries the default's mappings to the worker:
+    with them the worker sees exactly the default's mapped set, and with none it
+    takes the default's whole catalog (``WHOLE_CATALOG_TEMPLATES``). The
     mirror copies ``tools``, ``allowedTools``, ``excludedTools``, ``mcpServers`` and
     ``model``, and ``resources`` is not among them, so this function carries the
     skill mappings separately.

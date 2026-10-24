@@ -476,14 +476,21 @@ ownership rule: [subagent](../system-specs/modules/subagent.md#one-kirocrew_scra
 One function decides, for both session start and post-compaction re-injection:
 `context.py` → `_skills_injection_plan`. It returns `(inject?, globs)` from two
 facts — whether the agent's JSON maps skills, and whether the agent is the
-built-in `kirocrew`. The backend is not one of them: it accepts `is_cc` and ignores
-it (steering, below, is the one block the backend does gate).
+built-in `kirocrew` or the `kirocrew-worker` derived from it
+(`WHOLE_CATALOG_TEMPLATES`). The harness matters for one row of the table: an
+unmapped custom agent on kiro-cli gets the skill trees kiro-cli lets it inherit,
+and nothing on any other harness (`src/kiro_crew/docs/agent-spec-fields.md` has
+the per-harness table). `is_cc` is accepted and ignored (steering, below, is the
+one block the backend does gate). A crewmate's conductor and worker are not
+custom either (`is_kirocrew_default_agent`), but they read their mapping from the
+crewmate folder (`mate_worker.mate_service_scope_spec`), so the table does not
+cover them.
 
 | Agent | `skill://` mapping | Skills it sees | Why |
 |---|---|---|---|
-| `kirocrew` | none | the whole catalog (bounded discovery) | the default path |
-| `kirocrew` | mapped | only the mapped set, on **either** backend | bounded directory and scoped activation |
-| custom | none | **nothing** | the agent is expected to bring its own |
+| `kirocrew`, `kirocrew-worker` | none | the whole catalog (bounded discovery) | the default path |
+| `kirocrew`, `kirocrew-worker` | mapped | only the mapped set, on **either** backend | bounded directory and scoped activation |
+| custom | none | **nothing**, or on kiro-cli the inherited trees | the agent is expected to bring its own |
 | custom | mapped | only the mapped set, on **either** backend | bounded directory and scoped activation |
 
 The plan hands `agent_skill_globs` the session's key, so a crewmate's worker
@@ -546,25 +553,24 @@ transport protocol. MCP Tool Search discovers tool schemas, not skill bodies.
 `agent_materialization/worker_agent.py` → `_write_worker_spec` derives the worker spec as
 `default + @kirocrew-work − cron scheduling − unassigned opt-in servers`. The
 mirrored keys are `_WORKER_MIRRORED_SHAPES`: `tools`, `allowedTools`,
-`excludedTools`, `mcpServers`, `model`. **`resources` is not mirrored**, so the
-worker inherits only the template's `file://` steering glob and carries no
-`skill://` entry.
+`excludedTools`, `mcpServers`, `model`. `resources` is not among them:
+`_mirror_worker_skill_resources` appends the default's `skill://` entries to the
+template's `file://` steering glob, so the worker maps exactly what the default maps.
 
-Its name is not `kirocrew`, so `_skills_injection_plan` reads it as a custom agent
-with no mapping — row 3 of the table. A dispatched worker therefore sees **no skill
-catalog, no `skill://` bodies and no trigger matching** (matching is gated on
-`not is_custom` for the same reason). A worker that needs a procedure must be told
-to read it: with an empty scope `skill_search` finds nothing and an exact read
-returns nothing either, so the instruction has to name the SKILL.md path in the
-brief. Memory, lessons, critical rules and hooks are
+`WHOLE_CATALOG_TEMPLATES` therefore puts the worker on the `kirocrew` rows of the
+table: with no mapping it sees the whole catalog its dispatcher sees, and with the
+default's mapping it sees that set, in its skill directory and in `skill_search`
+alike. Trigger matching is still gated on `not is_custom` in `build_message`, which
+reads `is_kirocrew_default_agent`, so per-message matching stays with the default
+agents and the worker is not one of them; a seed that wants a
+procedure followed names it. Memory, lessons, critical rules and hooks are
 unaffected: those are injected for every agent.
 
-The generated agents whose own prompt names a skill do not rely on a brief for it —
-each conductor, the team lead, the dashboard author and the dashboard manager carry
-a `skill://` entry for exactly the skills their prompt tells them to read
-(`agent_materialization/skill_resources.py`), which is row 4 of the table rather
-than row 3. The worker stays on row 3 on purpose: what it needs comes from the
-item it was dispatched for, not from its spec.
+The generated agents whose own prompt names a skill carry a `skill://` entry for
+exactly the skills their prompt tells them to read: each conductor, the team lead,
+the dashboard author and the dashboard manager
+(`agent_materialization/skill_resources.py`), which is row 4 of the table. The
+worker's prompt names none, so it maps nothing beyond the default's own entries.
 
 ## 5. Crew mode (Crew page)
 
