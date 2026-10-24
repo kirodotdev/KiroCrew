@@ -2244,6 +2244,19 @@ before its children do. The predicate fails closed on an unreadable probe: unkno
 children are not zero children. `skip_if_busy=True` on the discard remains the
 atomic backstop for a turn admitted after these guards answered False.
 
+The `slot_subagents_running` 409 (`chat_api/slot_guards._subagents_attached_response`,
+and Continue's `SlotContinueRefusal`) keeps `error` and `code` and names what keeps
+the session attached, one field per source the predicate reads
+(`_subagents_attached_detail`): `runs`, the unfinished in-memory runs as
+`{id, state}` with `state` `running` or `stalled` (`null` when that probe could not
+answer); `queued`, the accepted spawns with no run yet (`queued_runs_async`) as
+`{id, state}`, where `state` is the task-store state of the row (`queued`,
+`retry_wait`, `recovering`, `admitted`) or `queued` for a window entry with no row;
+`queued_partial`, true when that listing is capped, could not read the store or is
+unavailable; and `deliveries_inflight`, the results still being delivered to the
+slot. Ids and states only: no task text, agent name or result. The fields are read
+after the verdict, and a read that fails costs its own field, never the refusal.
+
 Eight properties are load-bearing on this boundary, and each fails toward the
 permissive answer if dropped. `edit-resend` carries all eight; the bullets name
 each one `rewind` does not carry, so nobody reads it as already shared:

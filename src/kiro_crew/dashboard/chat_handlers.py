@@ -236,6 +236,7 @@ from kiro_crew.dashboard.chat_api.slot_guards import (  # noqa: F401
     _record_explicit_agent_selection,
     _reset_slot_session_or_warn,
     _slot_replaced_while_queued,
+    _subagents_attached_detail,
     _subagents_attached_response,
     _switch_target_busy,
 )

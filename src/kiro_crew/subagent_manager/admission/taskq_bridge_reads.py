@@ -19,6 +19,7 @@ The manager fields this module uses. Writes: ``_queued_listing_partial``. Reads:
 
 from __future__ import annotations
 
+import dataclasses as _dataclasses
 import functools as _functools
 import logging as _logging
 from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
@@ -567,9 +568,10 @@ def _queued_run_from_row(
         resuming = RESUMING_AFTER_RESTART
     elif rec.state == _taskq.RETRY_WAIT and rec.attempts > 0:
         resuming = RESUMING_RETRY
-    return self._queued_run(
+    run = self._queued_run(
         rec.id, params, parent, rec.created_at, "" if resuming else detail, resuming
     )
+    return _dataclasses.replace(run, state=str(rec.state))
 
 
 def _queued_run(

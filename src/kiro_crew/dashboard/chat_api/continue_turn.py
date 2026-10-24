@@ -116,6 +116,8 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
     except SlotContinueRefusal as exc:
         if exc.code == "slot_not_found":
             return _slot_not_found()
+        if exc.response is not None:
+            return exc.response
         return web.json_response({"error": exc.message, "code": exc.code}, status=exc.status)
     return web.json_response({"ok": True, "slot": slot.key})
 
@@ -126,13 +128,25 @@ class SlotContinueRefusal(Exception):
     Raised by :func:`continue_slot_turn` so the Continue endpoint and
     session-control's ``retry_target`` map the same refusals the same way.
     ``code`` is the machine-readable contract; ``message`` is advisory prose.
+    ``response`` is the refusing guard's own response when it has one (the
+    ``slot_subagents_running`` 409, whose body also names the attached runs and
+    rows): the endpoint returns it as is, so those fields reach the caller, while
+    ``retry_target`` keeps reading ``message``, ``code`` and ``status``.
     """
 
-    def __init__(self, message: str, code: str, status: int = 409) -> None:
+    def __init__(
+        self,
+        message: str,
+        code: str,
+        status: int = 409,
+        *,
+        response: web.Response | None = None,
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.code = code
         self.status = status
+        self.response = response
 
 
 async def continue_slot_turn(
@@ -216,7 +230,9 @@ async def continue_slot_turn(
         if replaced is not None and replaced():
             raise SlotContinueRefusal("not found", "slot_not_found", status=404)
         if subagents_denied is not None:
-            raise SlotContinueRefusal("sub-agents are running", "slot_subagents_running")
+            raise SlotContinueRefusal(
+                "sub-agents are running", "slot_subagents_running", response=subagents_denied
+            )
         if not _has_conversation(slot):
             raise SlotContinueRefusal("nothing to continue", "slot_empty")
         # The same session start has already failed twice in a row with nothing

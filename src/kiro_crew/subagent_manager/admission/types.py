@@ -257,6 +257,10 @@ class QueuedRun:
     ``recovering`` row after a gateway restart (``RESUMING_AFTER_RESTART``) or a
     ``retry_wait`` row that ran before (``RESUMING_RETRY``). It is not "not
     started", and a reader must not call it that.
+
+    ``state`` is the task-store state of the row it was read from (``queued``,
+    ``retry_wait``, ``recovering``, ``admitted``), and empty for an entry held only
+    in memory, which has no row.
     """
 
     id: str
@@ -268,6 +272,7 @@ class QueuedRun:
     reason: str = ""
     reason_detail: str = ""
     resuming: str = ""
+    state: str = ""
 
 
 class QueuedReadUnavailable(Exception):

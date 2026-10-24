@@ -73,6 +73,10 @@ def subagents_attached(
     A state with no ``subagents`` registry answers False — there is no runtime
     for a child to be attached to.
 
+    The ``slot_subagents_running`` 409 names what each probe found
+    (``chat_api.slot_guards._subagents_attached_detail``), so a probe added here
+    needs a field there too.
+
     SYNCHRONOUS variant, for a caller with no event loop under it. The queued
     probe counts rows that live only in the task store, so it takes the SQLite
     connection: a caller ON the gateway loop takes
