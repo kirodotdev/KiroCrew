@@ -191,6 +191,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
       browserRail={railUsable ? (
         <FileBrowserRail
           projectDir={projectDir}
+          active={active}
           onAddToContext={onAddToContext}
           onOpenFolder={onFolderOpen}
           selectedPath={tab.path || null}

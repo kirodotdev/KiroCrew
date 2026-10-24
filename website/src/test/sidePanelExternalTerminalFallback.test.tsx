@@ -127,7 +127,8 @@ describe('side panel: the external terminal fallback note', () => {
     // This note sends the user nowhere, so it carries no Settings link.
     expect(screen.queryByTestId('side-panel-external-terminal-settings')).toBeNull()
     await waitFor(() => expect(screen.getByTestId('cli-panel')).toBeInTheDocument(), EXTERNAL_ROW_WAIT)
-    expect(screen.queryByLabelText('Project actions')).toBeNull()
+    // The Files tab stays mounted behind the terminal, out of view.
+    expect(screen.getByLabelText('Project actions')).not.toBeVisible()
 
     fireEvent.click(within(note).getByRole('button', { name: /dismiss/i }))
     expect(screen.queryByTestId('side-panel-external-terminal-fallback')).toBeNull()

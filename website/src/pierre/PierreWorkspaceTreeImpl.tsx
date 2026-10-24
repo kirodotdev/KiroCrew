@@ -422,7 +422,7 @@ function dedupeTreePaths(paths: string[]): string[] {
 /** Open loaded folders one whole-tree poll re-reads, at most. */
 const FOLDER_REREADS_PER_POLL = 3
 
-export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext, searchQuery, mode = 'all', selectedPath, persistExpansion = false, onOpenFolder, reveal, onRevealed }: {
+export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext, searchQuery, mode = 'all', selectedPath, persistExpansion = false, onOpenFolder, reveal, onRevealed, active = true }: {
   projectDir: string
   onFileOpen?: (absPath: string) => void
   /** Right-click "Add to context" on a row: hands the host the ABSOLUTE path
@@ -454,6 +454,10 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   /** Called once a reveal has been acted on, so the host can clear it: a
    *  remount (a mode toggle) must not replay it over the user's later collapse. */
   onRevealed?: () => void
+  /** Whether the user can see the tree. False stops every read it makes, for
+   *  a host that keeps it mounted while hidden; true again re-reads what is
+   *  stale. Defaults to true. */
+  active?: boolean
 }) {
   // Whether any app contributes a 'tree-context' row at all — gates whether the
   // tree wires a context menu (per-node `when` filtering happens in the menu).
@@ -463,10 +467,13 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   // inside it would unmount with the thing that raised it.
   const [actionError, setActionError] = useState<string | null>(null)
   const qc = useQueryClient()
+  // `active` gates by `enabled`, not by the poll settings alone: a disabled
+  // observer keeps its data and asks for nothing, not a poll, not a window
+  // focus, and becoming enabled again re-reads a stale query once.
   const { data: baseTree, dataUpdatedAt: baseTreeUpdatedAt } = useQuery({
     queryKey: ['project-tree', projectDir],
     queryFn: () => api.projectTree(projectDir),
-    enabled: !!projectDir,
+    enabled: !!projectDir && active,
     // No poll while the read is failing: `api.projectTree` runs under a deadline, so a
     // wedged gateway would otherwise be re-walked every interval for as long as the tree
     // is mounted, each pass rejecting on the same deadline. A failed read recovers through
@@ -484,7 +491,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   const { data: status, error: statusError } = useQuery({
     queryKey: ['git-status', projectDir],
     queryFn: () => api.projectGitStatus(projectDir),
-    enabled: !!projectDir && (mode === 'changed' || !!baseTree?.repo),
+    enabled: !!projectDir && active && (mode === 'changed' || !!baseTree?.repo),
     refetchInterval: 5_000,
     refetchOnWindowFocus: true,
   })
@@ -512,7 +519,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
     queries: (mode === 'all' ? loadedFolders : []).map(folder => ({
       queryKey: ['project-tree', projectDir, 'dir', folder],
       queryFn: () => api.projectTree(projectDir, folder) as Promise<FolderListing>,
-      enabled: !!projectDir,
+      enabled: !!projectDir && active,
       retry: false,
       staleTime: 10_000,
     })),
@@ -1036,6 +1043,29 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
       model.resetPaths(paths)
     }
   }, [ready, paths, pathsKey, model, remembersExpansion, projectDir, searching])
+  // A host that keeps the tree mounted while hidden skips the restore above on
+  // return, since the payload is unchanged, while another tree of the same
+  // project may have opened or closed folders in the shared memory meanwhile.
+  // Left alone, this model's next expand would write its stale set back over
+  // theirs. So a tree shown again first matches the memory, folder by folder:
+  // only a folder that differs moves, which leaves the scroll position alone
+  // when nothing changed.
+  const shownRef = useRef(active)
+  useLayoutEffect(() => {
+    const returned = active && !shownRef.current
+    shownRef.current = active
+    if (!returned || !ready || !remembersExpansion || searching) return
+    const dirs = payloadDirsRef.current
+    if (!dirs) return
+    const remembered = new Set(recallExpandedPaths(projectDir))
+    for (const dir of dirs) {
+      const item = model.getItem(dir) as { isExpanded?: () => boolean; expand?: () => void; collapse?: () => void } | null
+      if (!item || typeof item.isExpanded !== 'function') continue
+      const open = item.isExpanded()
+      if (remembered.has(dir) && !open) item.expand?.()
+      else if (!remembered.has(dir) && open) item.collapse?.()
+    }
+  }, [active, ready, remembersExpansion, searching, model, projectDir])
   useEffect(() => {
     model.setGitStatus(statusEntries)
   }, [statusEntries, model])
@@ -1276,7 +1306,9 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
     onRevealedRef.current?.()
   }, [reveal, mode, loadFolder])
   useLayoutEffect(() => {
-    if (!pendingReveal || !ready) return
+    // A hidden tree holds the reveal until it is shown, so it neither moves
+    // nor takes focus while another tab is selected.
+    if (!pendingReveal || !ready || !active) return
     let target = pendingReveal
     if (!model.getItem(target)) {
       // The folder's own listing can settle without giving it a row (git
@@ -1306,7 +1338,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
     model.getItem(target)?.select()
     setPendingReveal(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingReveal, ready, pathsKey, model, folderListingsKey, retryFolders.join('\n')])
+  }, [pendingReveal, ready, active, pathsKey, model, folderListingsKey, retryFolders.join('\n')])
 
   // Row context menu. Ref-backed so the callback identity stays stable across
   // handler/prop changes (Pierre re-reads it only when the menu opens) while
