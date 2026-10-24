@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.aws_project_profiles import configured_project_profiles, resolve_project_profile
+from kiro_crew.config.paths import resolved_cwd
 from kiro_crew.messaging.queue_drain import entry_channel, wake_other_drains
 from kiro_crew.metrics.sessions import discard_session_start, record_session_started
 from kiro_crew.runtime_ownership import PidRefcount
@@ -41,6 +42,7 @@ from kiro_crew.session_allocation_parts.errors import (
     SessionEndingError,
 )
 from kiro_crew.session_lifecycle import adopt_parked_queue
+from kiro_crew.session_map import PROJECT_CLEARED_FLAG
 from kiro_crew.start_priority import PrioritySemaphore, StartPriority
 
 if TYPE_CHECKING:
@@ -229,6 +231,9 @@ class SessionRegistryState:
     #: left a process alive behind a record that said ``reaped``. Cleared by
     #: ``end_ending``, once the caller has written its record.
     refused_spawns: dict[str, int] = field(default_factory=dict)
+    # Key -> the resolved cwd its next claim must be bound to, armed when the project changed.
+    # Keyed by string so a cold start that has not registered yet is covered too.
+    retire_arms: dict[str, str] = field(default_factory=dict)
 
 
 class InboundCallbackReservation:
@@ -300,6 +305,7 @@ class _AllocationOwner(Protocol):
         *,
         wait_if_busy: bool = True,
         reservation: object | None = None,
+        cwd: str | None = None,
     ) -> bool: ...
 
     async def _evict_stale_session(self, key: str, session: Any) -> None: ...
@@ -477,6 +483,48 @@ class SessionAllocationService:
 
     def has_session(self, key: str) -> bool:
         return self._owner._fold_key(key) in self._sessions
+
+    def spend_retire_arm(self, key: str) -> None:
+        """Drop *key*'s retirement arm, for a teardown that ENDS the slot (``destroy``).
+
+        No successor can arrive to pay it, so the only claim left is a different slot
+        recreated under the same name, which must not inherit the previous project.
+        """
+        folded = self._owner._fold_key(key)
+        self.state.retire_arms.pop(folded, None)
+        self._owner._session_map.set_flag(folded, PROJECT_CLEARED_FLAG, False)
+
+    def discard_all_retire_arms(self) -> None:
+        """Drop every arm, for a shutdown that retires all keys at once."""
+        self.state.retire_arms.clear()
+
+    def mark_retire_on_next_claim(self, key: str, cwd: str | None) -> None:
+        """Arm *key* so its next claim is not served a session bound anywhere but *cwd*.
+
+        Records the KEY, not just the object: a cold start holds no registry entry until it
+        finishes, so a provider bound to the pre-change directory may still be on its way.
+        A turn already streaming keeps its provider; no LATER turn is served the stale one.
+        ``None`` arms no directory, and only flags the registered session.
+        """
+        folded = self._owner._fold_key(key)
+        if cwd is None:
+            self.state.retire_arms.pop(folded, None)
+        else:
+            self.state.retire_arms[folded] = resolved_cwd(cwd, folded)
+        self._owner._session_map.set_flag(folded, PROJECT_CLEARED_FLAG, False)
+        session = self._sessions.get(folded)
+        if session is not None:
+            session.retire_on_identity_change = True
+
+    def drop_resume_outside(self, key: str, default_cwd: str) -> None:
+        """Drop *key*'s resume SID unless stored in *default_cwd*: an arm does not survive a restart."""
+        folded = self._owner._fold_key(key)
+        session_map = self._owner._session_map
+        stored = session_map.get_cwd(folded)
+        if not stored or resolved_cwd(stored) != default_cwd:
+            session_map.clear_sid(folded)
+            session_map.set(folded, "", cwd=default_cwd)
+        session_map.set_flag(folded, PROJECT_CLEARED_FLAG, True)
 
     def get_provider(self, key: str) -> LLMProvider | None:
         session = self._sessions.get(self._owner._fold_key(key))
@@ -845,7 +893,7 @@ class SessionAllocationService:
                 if approval_policy:
                     existing.approval_policy = approval_policy
         if existing is not None:
-            if await owner._reacquire_and_validate(key, existing):
+            if await owner._reacquire_and_validate(key, existing, cwd=cwd):
                 return existing.provider, False, False
             await owner._evict_stale_session(key, existing)
 
@@ -921,6 +969,7 @@ class SessionAllocationService:
                         agent=agent or "",
                     )
                     session.capability_member = prepared.member
+                    session.claimed_cwd = cwd
                     self._install_work_dir_claim_probe(key, provider)
                     self._sessions[key] = session
                     self.advance_ownership_generation(key)
@@ -955,7 +1004,7 @@ class SessionAllocationService:
                     "open_task_session: duplicate session teardown failed",
                     exc_info=True,
                 )
-            if await owner._reacquire_and_validate(key, session):
+            if await owner._reacquire_and_validate(key, session, cwd=cwd):
                 return session.provider, False, False
             await owner._evict_stale_session(key, session)
             maximum = self._deps.constants.won_race_max_retries

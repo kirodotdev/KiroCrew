@@ -16,12 +16,14 @@ Instance fields read: none.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew import shutdown_event
+from kiro_crew.config.paths import resolved_cwd
 from kiro_crew.session_allocation import SessionAllocationService, _collect_parent_runtime_kwargs
 from kiro_crew.session_allocation import parent_work_scratch_dir as _parent_work_scratch_dir
 from kiro_crew.session_parts.policy import BACKGROUND_AGENT, BACKGROUND_KEY
@@ -88,6 +90,35 @@ def mark_lifecycle_lease(self: SessionManager, key: str) -> bool:
 def has_session(self: SessionManager, key: str) -> bool:
     """Return whether a live session exists for the folded key."""
     return self._allocation_boundary().has_session(key)
+
+
+async def resolve_arm_cwd(self: SessionManager, key: str, cwd: str) -> str:
+    """Resolve an arm's target off-thread, for the CLEARED case that touches disk.
+
+    Resolves only -- it arms nothing, so the caller's arm or transfer stays synchronous
+    and atomic in its own commit window. A cleared project resolves to the per-session
+    default, which stats, mkdirs and realpaths the workspace root; on a symlinked or
+    network root that blocks in the kernel, and every arm site is reached from an async
+    handler. A non-empty project needs no filesystem work and is handed straight back.
+    """
+    if cwd:
+        return cwd
+    return await asyncio.to_thread(resolved_cwd, cwd, self._fold_key(key))
+
+
+def mark_retire_on_next_claim(self: SessionManager, key: str, cwd: str | None) -> None:
+    """Mark a live session invalid for reuse without disturbing its turn.
+
+    Synchronous by design. Pass ``cwd`` already resolved for a cleared project -- see
+    :meth:`resolve_arm_cwd` -- because resolving it here would put filesystem work on
+    the event loop.
+    """
+    self._allocation_boundary().mark_retire_on_next_claim(key, cwd)
+
+
+async def drop_resume_outside(self: SessionManager, key: str, default_cwd: str) -> None:
+    """On the loop, like every other session-map write: an off-thread write could race them."""
+    self._allocation_boundary().drop_resume_outside(key, default_cwd)
 
 
 def get_provider(self: SessionManager, key: str) -> LLMProvider | None:
@@ -167,6 +198,7 @@ async def _reacquire_and_validate(
     *,
     wait_if_busy: bool = True,
     reservation: object | None = None,
+    cwd: str | None = None,
 ) -> bool:
     """Acquire outside the registry lock, revalidate identity and meet the key's ending fence again."""
     return await self._allocation_boundary()._reacquire_and_validate(
@@ -174,6 +206,7 @@ async def _reacquire_and_validate(
         sess,
         wait_if_busy=wait_if_busy,
         reservation=reservation,
+        cwd=cwd,
     )
 
 

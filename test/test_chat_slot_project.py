@@ -9,6 +9,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.config.paths import CWD_CLEARED
 from kiro_crew.dashboard.chat import api_chat_slot_project
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
@@ -35,6 +36,8 @@ def _mock_state(slot: _ChatSlot | None = None) -> DashboardState:
     state.sessions.get_provider = MagicMock(return_value=None)
     state.sessions.session_keys = MagicMock(return_value=frozenset())
     state.sessions.resumable_hint = MagicMock(return_value=False)
+    state.sessions.resolve_arm_cwd = AsyncMock(side_effect=lambda key, cwd: cwd or "/w/_default")
+    state.sessions.drop_resume_outside = AsyncMock()
     state.file_indexes = MagicMock()
     state.file_indexes.acquire = AsyncMock()
     state.file_indexes.release = AsyncMock()
@@ -70,6 +73,65 @@ class TestChatSlotProject:
             )
             assert resp.status == 200
             assert slot.project == ""
+            assert slot.project_cleared is True
+            assert slot._dirty is True
+            assert slot.claim_cwd == CWD_CLEARED
+            state.sessions.mark_retire_on_next_claim.assert_called_once_with(
+                "dashboard:test", "/w/_default"
+            )
+            state.sessions.drop_resume_outside.assert_awaited_once_with(
+                "dashboard:test", "/w/_default"
+            )
+
+            resp = await client.post(
+                "/api/chat/slots/test/project", json={"project": str(tmp_path)}
+            )
+            assert resp.status == 200
+            assert slot.project_cleared is False
+
+    @pytest.mark.asyncio
+    async def test_a_directive_landing_during_the_save_is_not_overwritten(self, tmp_path):
+        slot = _ChatSlot("test")
+        state = _mock_state(slot)
+
+        def _directive_commits(_path):
+            slot.project = "/newer"
+
+        with patch(
+            "kiro_crew.dashboard.chat_handlers._save_recent_project", side_effect=_directive_commits
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/project", json={"project": str(tmp_path)}
+                )
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "project_superseded"
+        assert slot.project == "/newer"
+        state.sessions.mark_retire_on_next_claim.assert_not_called()
+        assert slot._pending_reset_history_key is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("race", [("replaced", 404), ("newer project", 409)])
+    async def test_a_slot_changed_while_the_clear_resolves_is_not_armed(self, tmp_path, race):
+        slot = _ChatSlot("test")
+        slot.project = str(tmp_path)
+        state = _mock_state(slot)
+        newer = str(tmp_path / "b")
+
+        async def _resolve_then_race(key, cwd):
+            if race[0] == "replaced":
+                state._slots["test"] = _ChatSlot("test")
+            else:
+                slot.project = newer
+            return "/w/_default"
+
+        state.sessions.resolve_arm_cwd = _resolve_then_race
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/project", json={"project": ""})
+            assert resp.status == race[1]
+        assert slot.project == (str(tmp_path) if race[0] == "replaced" else newer)
+        assert slot.project_cleared is False
+        state.sessions.mark_retire_on_next_claim.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_nonexistent_dir_returns_400(self):

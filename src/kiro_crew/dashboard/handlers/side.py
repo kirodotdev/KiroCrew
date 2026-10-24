@@ -443,7 +443,8 @@ async def _run_side_turn(
         # project and the spawn happen in the new one, loading a file the check
         # never saw. A change is picked up by the NEXT turn, whose binding then
         # differs and cold-starts under its own derivation.
-        project: str | None = slot.project or None
+        claim_cwd = slot.claim_cwd
+        project: str | None = claim_cwd or None
         slot_agent: str | None = slot.agent or None
         # The READ_ONLY policy's classifier is the gateway's ONE live hook gate,
         # the same object the main chat consults (``chat_runner`` reads
@@ -641,7 +642,7 @@ async def _run_side_turn(
             # turn's _turn_admit, which passes the same cwd for the same
             # reason. The derived spec itself lives in the user-level registry,
             # which kiro-cli searches after the project scope.
-            cwd=project,
+            cwd=claim_cwd,
             start_priority=start_priority,
             **side_session_kwargs,
         )

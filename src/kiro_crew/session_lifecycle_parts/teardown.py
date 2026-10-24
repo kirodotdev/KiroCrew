@@ -629,6 +629,9 @@ async def destroy(
         # conditional mode preserves this independently owned sidecar.
         if not preserve_autocompact_override:
             owner.set_autocompact_pct(key, None)
+        # The slot itself is gone -- the session-map entry goes with it -- so no
+        # successor can arrive to pay the arm and it must not outlive them.
+        owner._allocation_boundary().spend_retire_arm(key)
         # _origin_links deliberately survives destroy; existing callers
         # rely on the historical asymmetry with reset/remove.
         # The map delete is the destructive persistence linearization point.
