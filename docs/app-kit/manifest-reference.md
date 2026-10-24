@@ -541,6 +541,12 @@ installed at runtime.
 At most **10** rows per app.
 
 On activation core POSTs `{ item_id, surface, path, kind?, root? }` to `endpoint`.
+A successful JSON response may include a nonempty string `message` and an optional
+`url` (`link` is also accepted). Core shows the message as plain text in a local
+host toast with a clickable HTTP(S) link. Unsafe URLs, including script/data
+schemes and credential-bearing URLs, are not linked. An absent, empty, or
+non-string message produces no toast. HTTP failures keep the existing host error
+notice; a toast neither grants access nor changes the endpoint's approval flow.
 
 **The file's PATH is sent, never its CONTENT.** A contributed row needs no
 permission to exist, so shipping file bytes with every activation would hand any
