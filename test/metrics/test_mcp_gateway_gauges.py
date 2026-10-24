@@ -409,7 +409,8 @@ def test_compose_telemetry_provider_applies_the_boot_security_floor(gatewayd_env
     gatewayd, edition, composed, readers, set_config, _ = gatewayd_env
     set_config(True)
     cfg = KiroCrewConfig.load()
-    assert bootstrap.compose_telemetry_provider(cfg) is edition
+    # Wrapped only to carry the companion's ceiling; the provider is the edition's.
+    assert bootstrap.compose_telemetry_provider(cfg)._inner is edition
 
     def _weak(profile, cfg, *, entry_points=None, policy=None):
         base = build_default_context(cfg)

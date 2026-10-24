@@ -202,7 +202,10 @@ change to them applies at the next start.
 **pluggable**. `_build_recorder` asks the active `TelemetryProvider` for them via
 `otlp_destinations(cfg)` and attaches one `PeriodicExportingMetricReader` per
 returned destination that names the `"metrics"` signal (`provider._otlp_destinations`
-resolves, `provider._build_otlp_reader` builds one reader). The public
+resolves, `provider._build_otlp_reader` builds one reader). Each destination's
+host must also pass the security policy's `capabilities.telemetry` `otlp_hosts`
+list (`otlp_governance.governed_destinations` before the reader is built and `otlp_governance.gate_exporter` before each export; see [governance.md](governance.md)), and a
+policy that pins `capabilities.telemetry` off drops every destination. The public
 `DefaultTelemetryProvider` turns a non-empty `otlp_endpoint` into exactly one
 destination and returns none when it is empty, so a standalone build behaves as it
 did when this module constructed that exporter itself. Readers are appended AFTER

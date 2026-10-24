@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence, cast
 
 from kiro_crew.platform.context import (
     CONTRACT_VERSION,
@@ -136,7 +136,35 @@ def compose_telemetry_provider(cfg: "KiroCrewConfig") -> "TelemetryProvider":
         return DefaultTelemetryProvider()
     companion = _checked_companion(profile, cfg, eps)
     assert_security_floor(companion.security)
-    return companion.telemetry
+    # The calling process installs no context, so the core cannot read a ceiling
+    # for these destinations: the provider carries the companion's own.
+    return cast(
+        "TelemetryProvider",
+        _PolicyBoundTelemetry(
+            companion.telemetry,
+            getattr(companion, "governance", None),
+            getattr(getattr(companion, "credentials", None), "redact", None),
+        ),
+    )
+
+
+class _PolicyBoundTelemetry:
+    """The companion's telemetry provider, plus the ceiling its OTLP export obeys.
+
+    ``governance_ceiling`` is what ``metrics.provider`` holds destinations and each
+    export to in a process with no context, and ``governance_redact`` is the
+    companion's credential redaction its SEL rows go through there. Every other
+    attribute, including ``otlp_destinations`` (or its absence), is the wrapped
+    provider's own.
+    """
+
+    def __init__(self, inner: object, ceiling: object | None, redact: object = None) -> None:
+        self._inner = inner
+        self.governance_ceiling = ceiling
+        self.governance_redact = redact
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
 
 
 def _checked_companion(
