@@ -6,8 +6,9 @@ into an indexed accessibility tree, then act on an element by index (press,
 type, set a value, scroll, perform a named action) or — for UI that exposes no
 addressable element — on a screen point (click, drag). macOS and Windows both drive the
 full tool set, differing in how input is delivered rather than in what is
-supported (see [The Windows driver](#the-windows-driver)); Linux reports a typed
-refusal.
+supported (see [The Windows driver](#the-windows-driver)); Linux drives the full
+tool set on X11 (see [The Linux driver](#the-linux-driver)) and reports a typed
+refusal on a Wayland-only or headless session.
 
 Two things this module is NOT, stated up front because both are load-bearing
 product decisions rather than implementation gaps:
@@ -1829,7 +1830,7 @@ values.**
 |---|---|
 | macOS | Supported. ApplicationServices AX + CoreGraphics + ImageIO via ctypes. |
 | Windows | **Full tool set.** UIAutomationCore over raw ctypes COM (no `comtypes`) + `PrintWindow`/GDI+. Element-addressed actions go through UIA control patterns and move neither the pointer nor focus; the pointer and keyboard routes exist but are opt-in by name, because Windows has no per-process input delivery. See [The Windows driver](#the-windows-driver). |
-| Linux | `LinuxBackend(UnsupportedBackend)` — typed refusal. The plan is AT-SPI over D-Bus; Wayland has no unprivileged window capture (it needs xdg-desktop-portal), so a first cut may be tree-only, which `SnapshotRequest.want_image` already accommodates. |
+| Linux | **Full tool set on X11.** AT-SPI 2 over ctypes for reading, XTest + `XSendEvent` for input, `XGetImage` + gdk-pixbuf for capture. Element-addressed actions go through AT-SPI and move neither the pointer nor focus; the pointer (`global`, XTest) and per-window (`app_post`, `XSendEvent`) routes are opt-in by name, because XTest is global and `XSendEvent` is toolkit-dependent. See [The Linux driver](#the-linux-driver). **Wayland is unsupported** (no unprivileged capture or global input); a Wayland-only session reports unsupported. Launching an application is a later cut. |
 
 Every unimplemented path **refuses rather than raises**, mirroring how
 `dashboard/handlers/terminal.py` handles the Windows PTY, and names what is
@@ -2264,7 +2265,200 @@ the title tier the already-running check never fires (the model opens a second c
 the post-launch poll burns its whole timeout reporting "no window appeared" for a window
 that is on screen.
 
-### Permission probes are ADVISORY, never a gate
+### The Linux driver
+
+Reading and input both work on **X11** through AT-SPI 2 and XTest, and the whole
+layer above the driver (the keystone, schema validation, the snapshot index,
+fingerprint drift, redaction, the SEL audit) runs unchanged. Files:
+`linux_ffi.py` (the import path and patch surface for the ONLY code touching
+Linux-native libraries — pure ctypes, no `gi`/PyGObject — a `_facade_mirror` facade
+over its owners `linux_ffi_core.py`, `linux_ffi_atspi.py` and `linux_ffi_x11.py`), `apps_linux.py`, `snapshot_linux.py`, `capture_linux.py`,
+`input_linux.py`, `linux_driver.py`.
+
+The safety posture is X11's, and it is the same SHAPE as the Windows one for the
+same reason: there is no reliable per-window input delivery. XTest
+(`xtest_key`/`xtest_button`/`xtest_motion`) is GLOBAL — it moves the real pointer
+and takes the real keyboard focus, exactly as `SendInput` does — and `XSendEvent`
+is per-window but toolkits may discard a synthetic event (GTK4 does). So:
+
+- **AT-SPI actions are the safe form, and the only one `auto` resolves to.** A
+  `do_action` is performed by the toolkit inside the target widget, so an
+  element-addressed click moves neither the pointer nor focus. `input_linux`
+  walks an action ladder by SPECIFICITY — `click` / `press` / `activate`, then
+  `toggle` for a checkbox, then the element's sole action — and a rung is tried
+  only when the previous action is ABSENT, never when it was present and FAILED
+  (falling onward performs a different gesture, the Windows ladder's rule). The
+  winning action is NAMED in the result.
+- **The pointer path is opt-in by name.** `auto` + coordinates REFUSES, because
+  the only coordinate route that leaves the pointer alone is `app_post`
+  (`XSendEvent`, which toolkits may ignore) and `auto` must never resolve onto the
+  pointer-moving `global`. `sky_click` refuses by name (a macOS private-window
+  route). A non-left button on the element path refuses, because an accessibility
+  action is a left activation and there is no action that opens a context menu —
+  the right-button route is `global` with coordinates.
+- **`app_post` is a real per-window route here, unlike Windows.** `XSendEvent`
+  posts a button or wheel event to the target window with no pointer movement, so
+  `app_post` click, scroll and drag are served — and the result SAYS the toolkit
+  may have ignored the event rather than claiming the gesture landed. `global`
+  (XTest) is the real-cursor route and must be named; a drag defaults to the macOS
+  `app_post` (`moves_pointer` False), and on Linux that is a valid per-window drag,
+  so unlike Windows the default is not refused — only a method with no X11 drag
+  route (`sky_click`) is.
+- **Every pointer gesture is confined to the authorized window**, by comparing the
+  top-level X window the point lands on (`apps_linux.window_owns_point` →
+  `linux_ffi.x_window_at`) against `app.window_id` — a HANDLE comparison, because a
+  point names whatever owns the pixel. A drag confines EVERY point of its path, so
+  a curved stroke that bows off the chord cannot travel over the window beside it.
+- **The keyboard verbs take focus and SAY SO**, and a focus failure REFUSES rather
+  than typing — keystrokes past a failed aim reach whatever the app had focused,
+  possibly the password field the policy check refused. An editable element is
+  written through the AT-SPI `EditableText` interface with NO focus change, which
+  the result states; only the keystroke FALLBACK (`type_text_via_xtest`) takes
+  focus. A character the keyboard layout cannot reach is SKIPPED, never
+  substituted, and a short count is reported as a partial write.
+- **Focus is VERIFIED BY STATE, never by `grab_focus`'s return, and the window
+  must be the ACTIVE X window.** Both keystroke verbs (`press_key`, and
+  `type_text`'s XTest fallback) decide in one place,
+  `LinuxBackend._verify_keyboard_target`, so they cannot drift. It reads
+  `ATSPI_STATE_FOCUSED` back before grabbing and again after, exactly as the Windows
+  driver's `element_has_focus` does, for two measured reasons. GTK 4.16's
+  `atspi_component_grab_focus` FAILS (`atspi_error 1`) when the element ALREADY holds
+  focus, so trusting the return refused every keystroke into the one field a user
+  would type into; and in the other direction an accepted request is not a moved
+  focus. Then, because XTest is GLOBAL, the X server delivers synthesized keys to the
+  ACTIVE toplevel, not to the one the model named, and every toplevel remembers its
+  own focused widget — so an element can hold focus inside a window that is behind
+  another. Measured live: `press_key(calculator, None, "9")` reported success while
+  the calculator sat behind a text editor and the editor's document gained the `9`.
+  The verb now compares `_NET_ACTIVE_WINDOW` against `app.window_id` by HANDLE and
+  refuses otherwise, naming the remedy (`_ERR_WINDOW_NOT_ACTIVE`); when the property
+  is ABSENT (measured: gnome-shell publishes none while the Activities overview is
+  up) nothing can be proven and nothing is sent. The `EditableText` route is exempt,
+  because it never goes through the keyboard. Pinned by a negative control that
+  drives the real caller shape with the window inactive and asserts no XTest key
+  was synthesized.
+- **`press_key` resolves through the platform-free `keymap.parse_spec`**, then
+  `input_linux.KEYSYMS` (one X keysym per canonical key, pinned by a test that
+  iterates every canonical name in `keymap.KEY_ALIASES.values()`, the set
+  `parse_spec` emits) and `_MODIFIER_KEYSYMS` (Control_L/Shift_L/Alt_L and
+  Super_L for `win`). `cmd`/`super`/`meta` already fold to `ctrl` in `keymap`, so a
+  chord presses Control_L, never the logo key. A chord presses modifiers then key
+  and releases key then modifiers in REVERSE, leaving none stuck down. **`capslock`
+  and `fn` are refused** — `capslock` toggles a machine-wide lock whose flip
+  outlives the call (so it would capitalize everything the operator types next, and
+  releasing it would not undo it), and `fn` is handled in keyboard firmware below
+  the OS; both stay valid in the shared vocabulary because macOS serves them.
+- **The secure-field floor is re-read LIVE at the driver.** A field can flip plain
+  to password on the application's own timer between the walk the model was shown
+  and the write, and this module is reachable without the dispatch chokepoint. Every
+  write path addresses with `for_write=True`, and `snapshot_linux.addressed` raises
+  `SecureTargetError` (the Linux twin of `snapshot_windows.SecureTargetError`) on a
+  live `PASSWORD_TEXT` read — fail closed, since an unreadable role is treated as
+  secure. There is **no `ATSPI_STATE_PROTECTED`** in at-spi2 2.54, so `secure` is
+  role-driven: GTK, Qt and Firefox all expose a password box as role
+  `PASSWORD_TEXT`.
+- **`perform_action` takes the element's OWN advertised actions as its vocabulary.**
+  AT-SPI action names are toolkit strings, so there is no fixed table like the
+  Windows one; an action is accepted only if the live element lists it, which keeps
+  this from being a free-form write path.
+- **A window that shows but exposes no accessibility tree is the Linux failure mode
+  that LOOKS like a working app with no controls** — a disabled toolkit
+  accessibility bridge. The reading layer attaches `types.LINUX_NO_A11Y_BRIDGE_NOTE`
+  to such a snapshot, naming the three bridge env vars (`GTK_MODULES=gail:atk-bridge`,
+  `QT_ACCESSIBILITY=1`, `NO_AT_BRIDGE` unset), and `probe_permissions`'s
+  `responsible_hint` names the same, so an operator can fix it rather than reading
+  the empty tree as "this app has no controls".
+- **`launch_app` is not implemented in this cut** — a typed `DriverResult(ok=False)`
+  pointing at the already-running path, never a raise. Resolving a `.desktop` entry
+  and bounding its `Exec` target the way `launch_windows`/`launch_macos` bound a
+  catalog lookup is a later change; starting a process without that bound would be
+  the "run an arbitrary program" hole the launch verb's whole design closes.
+
+**No native library loads at import OR at construction.** Every `CDLL` /
+`XOpenDisplay` / `atspi_init` lives behind a function in `linux_ffi`, and
+`LinuxBackend.status()` caches `linux_ffi.available()` lazily on first call —
+exactly as the Windows driver caches `_available`. This is a hard CI requirement:
+the whole upstream Linux fleet runs with no `DISPLAY`, so after the gate change
+`select_default_backend()` there builds a real `LinuxBackend` whose `status()` must
+report `supported=False` with the no-display reason (`linux_ffi.unavailable_reason()`,
+e.g. `no X display (DISPLAY unset)`, a Wayland-only session, an unreachable bus)
+without loading anything. `_compute_availability` therefore checks the SESSION first
+and loads nothing on that path: `DISPLAY` unset returns the no-display reason, or —
+when `WAYLAND_DISPLAY` is set or `XDG_SESSION_TYPE=wayland` — a reason that NAMES
+Wayland, which is what the packaged doc promises the Settings pane shows; only a
+host that has a `DISPLAY` reaches the library load (a missing soname then names
+itself), the `XOpenDisplay`, and `atspi_init`. Pinned by a test that counts
+`ctypes.CDLL` calls on the no-`DISPLAY` path and requires zero. A Wayland session WITH
+XWayland has `DISPLAY` set and proceeds as X11. `backend.LINUX_REASON` is the FALLBACK for a failed driver
+IMPORT (a partial install), distinct from the live reason the loaded driver reports.
+
+**No native call happens before availability is proven — Xlib dereferences a
+NULL `Display*` instead of reporting it.** The merged tree segfaulted on a host with
+no `DISPLAY`: a `drag` went `linux_driver` → `apps_linux.window_owns_point` →
+`x_window_at` → `x_root` → `XDefaultRootWindow(NULL)` and killed the process, past
+every error guard, because the `_guarded` wrapper catches exceptions and a signal is
+not one. Every X11/XTest helper in `linux_ffi` funnels through `_display_ptr()` and
+every AT-SPI handle helper through the guarded `_atspi()` accessor, and each of those
+two chokepoints calls `_require_available()`, which raises `ComputerUseError` with
+`unavailable_reason()` BEFORE touching the library; only `atspi_init`/`atspi_exit`
+keep the raw accessor. So an unavailable host gets the same typed refusal from every
+verb, and the two chokepoints are the whole surface a reviewer has to check.
+`apps_linux.window_owns_point` RE-RAISES that `ComputerUseError` rather than folding
+it into its fail-closed `False`, so a coordinate verb on an unavailable host also
+reports the unavailable reason instead of "another window owns the point" with a
+"bring it to the front" remedy that cannot apply; every other exception there still
+refuses. Pinned by
+`TestNoNativeCallBeforeAvailability`, which drives 17 public helpers plus the exact
+caller shape that crashed and asserts the fake library's X11/AT-SPI entry points were
+never invoked (18 tests fail with the guards removed).
+
+**The reading-layer tests patch the contract functions on the REAL `linux_ffi`
+module per test** (`test/fake_linux_ffi.py`, autouse), never a fake module in
+`sys.modules`: a module substitution leaks into every other test on the same xdist
+worker (the ffi suite then saw a module with no `reset_libraries`). The fake keeps the
+loud-stub semantics — an un-wired function raises, so a new code path cannot pass
+through a silent default — and refuses a `COORD_SCREEN` extents read outright, so
+the GTK 4 frame defect below cannot return quietly.
+
+**Capture reads the ROOT window over the target's CONTENT rect** (`XGetImage`), so
+an overlapping window shows through — unlike Windows's `PrintWindow`, which the spec
+notes does not. The first cut accepts that; the capture layer documents it honestly
+in its module docstring. `want_image` remains a request rather than a requirement,
+so a capture failure degrades to a tree-only snapshot.
+
+**Frames are read in WINDOW coordinates and published verbatim; the window rect is
+the client-side-decoration CONTENT rect.** Both are measured facts about GTK 4, not
+design preferences. GTK 4 answers an AT-SPI `COORD_SCREEN` extents read with
+`x = y = 0` for EVERY widget, the toplevel included, so the original
+screen-minus-origin arithmetic gave every control the window's own origin (measured:
+all 70 calculator elements at `(61, 23)`). `linux_ffi.extents` takes the coord type
+and `snapshot_linux` reads `COORD_WINDOW`, the type every toolkit implements against
+its own surface and already the `ElementRec.frame` contract. Separately, a CSD
+toplevel's X geometry INCLUDES the shadow band (measured: `482x748` at `(-61, -23)`
+around a `360x626` calculator), so `apps_linux.window_bounds` subtracts
+`_GTK_FRAME_EXTENTS` (`linux_ffi.x_gtk_frame_extents`) to the content rect and
+`capture_linux` captures that same rect. The invariant the model relies on holds as
+a result: an image pixel and a window-local frame coordinate are the SAME number.
+Server-side-decorated windows carry no property and are unchanged.
+
+**`ElementRec.value` reads the Text interface FIRST, Value second, and NEVER on a
+secure node.** The first cut consulted only the numeric Value interface, so every
+text field read as empty (measured: after `7 + 8 =` the result field, role `TEXT`,
+carried `15` in its Text interface and the model saw `""`). `text_limit` is honoured
+on the Text read. A password node's Text is not read at all — pinned by a spy test
+on the `linux_ffi.text` seam that asserts the read does NOT happen on the secure
+handle, rather than happening and being discarded.
+
+**Live-measured limits of this cut, all stated in results or docstrings:**
+`app_post` clicks are posted but GTK 4 ignores synthetic `XSendEvent` button events,
+and the result says so rather than claiming the gesture landed (the AT-SPI action
+path is what works on GTK 4, with no pointer movement); `_NET_ACTIVE_WINDOW` can be
+absent (gnome-shell with the Activities overview up), which the keyboard verbs treat
+as "unproven, refuse", never as "no window is active, so any is fine"; root-window
+capture shows overlapping windows through; `launch_app` is a typed refusal; Wayland
+is unsupported.
+
+
 
 `AXIsProcessTrusted()` + `CGPreflightScreenCaptureAccess()` only. Never
 `CGRequestScreenCaptureAccess` — it pops a system dialog from a background
@@ -2617,7 +2811,15 @@ computer use.
 | `computer_use/capture_windows.py` | `PW_RENDERFULLCONTENT` into a 32bpp DIB sized to what the window renders + GDI+ JPEG encode, with pixel validation because a blank capture reports success. No `BitBlt` fallback: it reads the screen |
 | `computer_use/launch_windows.py` | `computer_launch_app`'s Windows resolver: the `App Paths` catalog (read including the writable hive) verified against protected install roots + a basename match, the shell-target refusal, and the no-arguments spawn |
 | `computer_use/launch_macos.py` | The macOS resolver: `.app` bundles under the conventional roots, handed to `/usr/bin/open -a` (pinned absolute) with no document and no arguments |
-| `computer_use/linux_driver.py` | Typed refusal + the implementation plan |
+| `computer_use/linux_driver.py` | `LinuxBackend`: observation + all input verbs on X11 — the AT-SPI action ladder, pointer confinement (`global` XTest, `app_post` XSendEvent), focus-free `EditableText` writes with a keystroke fallback that takes focus, the live secure re-read (every write verb, `perform_action` included — its AT-SPI vocabulary carries clipboard/selection content verbs), and lazy `status()` that loads nothing on the no-`DISPLAY` path. `launch_app` is a typed refusal in this cut |
+| `computer_use/input_linux.py` | The X keysym table (one per canonical `keymap` key), the modifier → `*_L` keysym map (with the `capslock`/`fn` refusals), the AT-SPI action ladder (`perform_activate`), XTest chord/keystroke synthesis, and the focus-free `EditableText` write |
+| `computer_use/linux_ffi.py` | The Linux native layer's import path and patch surface: a `_facade_mirror` facade over `linux_ffi_core`, `linux_ffi_atspi` and `linux_ffi_x11` (lowest layer first), with the curated `__all__`. Every name is read and patched as `linux_ffi.<name>` and a patch reaches every owner that binds it |
+| `computer_use/linux_ffi_core.py` | Owner: sonames, pinned AT-SPI role/state ids and X11 constants, every ctypes structure at module scope, the flat function table with `argtypes`/`restype` on every row, the once-per-process loader/binder, the X error handler, GError/ownership helpers, and the availability verdict + lifecycle. Holds EVERY run-time-rebound global of the family with all its readers, behind the guarded `_atspi()` / `_display_ptr()` / `_lib_*()` accessors that `_require_available()` fronts |
+| `computer_use/linux_ffi_atspi.py` | Owner: AT-SPI tree/state/component/action/text/editable-text helpers over raw handles, and the AT-SPI GLOBAL input generators; pure functions over `_atspi()` |
+| `computer_use/linux_ffi_x11.py` | Owner: X11 root/screen/window reads (EWMH, geometry, hit test), `XGetImage` capture, `XSendEvent` button/motion/key + keymap, XTest GLOBAL input, gdk-pixbuf JPEG encode; pure functions over `_display_ptr()`
+| `computer_use/apps_linux.py` | AT-SPI application enumeration (frames with a SHOWING window), pid via AT-SPI, `window_id` matched against `x_client_list`, `window_owns_point` (handle comparison via `x_window_at`) |
+| `computer_use/snapshot_linux.py` | Iterative depth-first AT-SPI walk, ATSPI role → human role vocabulary, role-driven `secure` (no `ATSPI_STATE_PROTECTED` in 2.54), `addressed` with the live `for_write` secure re-read, `SecureTargetError` |
+| `computer_use/capture_linux.py` | `XGetImage` over the window's root rect + gdk-pixbuf JPEG encode, the same suppression gates as the other platforms; captures through overlapping windows (documented) |
 | `computer_use/macos_skylight.py` | The quarantined private SkyLight ABI behind `click_method: "sky_click"` (a click on a window behind others, without raising it or moving the pointer); the only module allowed to touch undocumented Apple ABI, never reached from `auto`, and reported unavailable (`available()`) when a symbol is missing |
 | `computer_use/macos_ffi.py` | The in-gateway macOS ctypes surface's import path and patch surface (a `_facade_mirror` facade over the four owners below), and key/scroll/mouse event synthesis |
 | `computer_use/macos_ffi_bind.py` | ABI constants, structs, `_FN_SPECS` and the one bind pass, the cached framework handles, type ids and private event source |
