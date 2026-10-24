@@ -148,6 +148,8 @@ _BASE_DEFINED = frozenset("""
     sanitize_response sanitize_string strip_hidden_unicode validate_api_body
     validate_ask_user_question validate_field validate_jsonrpc_request validate_jsonrpc_response
     validate_judge_spec validate_mcp_tool_arguments validate_string_field validate_tool_args
+    APP_REQUEST_METHODS APP_REQUEST_SCHEMA _APP_REQUEST_APP_RE _APP_REQUEST_MAX_BODY
+    _APP_REQUEST_PATH_RE _validate_app_request
     """.split())
 
 #: Every name the one-module file's import statements bound. They stay bound on the
