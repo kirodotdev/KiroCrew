@@ -536,6 +536,8 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "regenerate_hint",
         "_on_consumed",
         "_on_irreversibly_consumed",
+        "_on_discarded",
+        "_on_lifecycle_recovery_retained",
         "monitor_completion",
         "_current_message",
     ]

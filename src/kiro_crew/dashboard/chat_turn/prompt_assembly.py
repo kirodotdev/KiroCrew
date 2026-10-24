@@ -675,6 +675,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         if slot._pending_subagent_failures:
             failures = slot._pending_subagent_failures[:]
             slot._pending_subagent_failures.clear()
+            turn._drained_subagent_failures = failures
             settle_drained_subagent_notices(state, slot, failures)
             message = "\n\n".join(failures) + "\n\n" + message
             turn.message = message

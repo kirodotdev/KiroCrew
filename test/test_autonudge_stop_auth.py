@@ -46,6 +46,7 @@ from kiro_crew.autonudge import (
 from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 from kiro_crew.mcp_core import _call_tool, _call_tool_inner
 from kiro_crew.mcp_tools._limits import _MONITOR_DEFAULT_MAX_CYCLES
+from kiro_crew.testing.wait import await_until
 from kiro_crew.validation import ValidationError
 
 # ── Tool-contract fixtures ────────────────────────────────────────────────────
@@ -945,6 +946,320 @@ def test_applier_autonudge_stop_records_tombstone_for_loop_resolved_by_binding(m
     assert svc.removed == []
     assert "stopped" in result.lower()
     assert "done" in result
+
+
+@pytest.mark.parametrize("slot", (_fake_slot(), None), ids=("dashboard", "channel"))
+def test_applier_autonudge_stop_refuses_while_subagent_work_is_attached(monkeypatch, slot):
+    """An agent cannot strand child work by removing its parent goal driver."""
+
+    class _Subagents:
+        def __init__(self):
+            self.probed: list[str] = []
+
+        def running_agents_for(self, session_key):
+            self.probed.append(session_key)
+            return ["child-1"]
+
+        def _queued_depth(self, session_key):
+            return 0
+
+    class _State:
+        pass
+
+    state = _State()
+    state.subagents = _Subagents()
+    svc = _FakeSvc(_FakeLoop("loop-with-child"))
+    _install_svc(monkeypatch, svc)
+
+    result = asyncio.run(
+        apply_session_directive(
+            state,
+            slot,
+            _SESSION,
+            "autonudge_stop",
+            {"reason": "subagents will report automatically"},
+        )
+    )
+
+    assert result.startswith("Error:")
+    assert "sub-agent work is still attached" in result
+    # The refusal names the probe that holds the fence, through the same shared
+    # evaluation the dashboard's 409 surface reports (no second probe copy).
+    assert "(running child work)" in result
+    assert state.subagents.probed == [_SESSION]
+    assert svc.removed == []
+    assert svc.updated == []
+
+
+def test_applier_autonudge_stop_refuses_slotless_terminal_delivery(monkeypatch):
+    """A completed child stays attached until its channel report lands."""
+
+    class _Subagents:
+        def running_agents_for(self, session_key):
+            return []
+
+        def _queued_depth(self, session_key):
+            return 0
+
+        def terminal_delivery_inflight_for(self, session_key):
+            return True
+
+    class _State:
+        pass
+
+    state = _State()
+    state.subagents = _Subagents()
+    svc = _FakeSvc(_FakeLoop("loop-with-delivery"))
+    _install_svc(monkeypatch, svc)
+
+    result = asyncio.run(
+        apply_session_directive(
+            state,
+            None,
+            _SESSION,
+            "autonudge_stop",
+            {"reason": "child already finished"},
+        )
+    )
+
+    assert result.startswith("Error:")
+    assert "(terminal child report delivery)" in result
+    assert svc.removed == []
+    assert svc.updated == []
+
+
+@pytest.mark.parametrize(
+    "session_key",
+    (
+        "slack:1755000000.1",
+        "discord:kirocrew:direct:42",
+        "webex:person@example.com:room-1",
+    ),
+    ids=("slack", "discord", "webex"),
+)
+@pytest.mark.parametrize("retained", (True, False), ids=("retained", "settled"))
+def test_slotless_channel_stop_observes_transferred_completion_ownership(
+    monkeypatch, session_key, retained
+):
+    """Channel stop follows manager ownership even with no materialized slot."""
+
+    class _Subagents:
+        def running_agents_for(self, _session_key):
+            return []
+
+        def _queued_depth(self, _session_key):
+            return 0
+
+        def terminal_delivery_inflight_for(self, _session_key):
+            return retained
+
+    state = type("_State", (), {"subagents": _Subagents()})()
+    svc = _FakeSvc(_FakeLoop("loop-with-transferred-delivery"))
+    _install_svc(monkeypatch, svc)
+
+    result = asyncio.run(
+        apply_session_directive(
+            state,
+            None,
+            session_key,
+            "autonudge_stop",
+            {"reason": "completion handoff settled"},
+            producer_is_channel=True,
+        )
+    )
+
+    if retained:
+        assert result.startswith("Error:")
+        assert svc.removed == []
+        assert svc.updated == []
+    else:
+        assert "stopped" in result.lower()
+        assert svc.removed == ["loop-with-transferred-delivery"]
+
+
+def test_applier_autonudge_stop_refuses_until_completion_retry_settles(
+    monkeypatch,
+):
+    """An accepted completion stays child work until the parent consumes it."""
+
+    class _Subagents:
+        def running_agents_for(self, _session_key):
+            return []
+
+        def _queued_depth(self, _session_key):
+            return 0
+
+        def terminal_delivery_inflight_for(self, _session_key):
+            return True
+
+    class _State:
+        pass
+
+    slot = _fake_slot()
+    state = _State()
+    state.subagents = _Subagents()
+    svc = _FakeSvc(_FakeLoop("loop-with-retained-completion"))
+    _install_svc(monkeypatch, svc)
+
+    result = asyncio.run(
+        apply_session_directive(
+            state,
+            slot,
+            _SESSION,
+            "autonudge_stop",
+            {"reason": "completion is already handled"},
+        )
+    )
+
+    assert result.startswith("Error:")
+    assert "sub-agent work is still attached" in result
+    assert "(terminal child report delivery)" in result
+    assert svc.removed == []
+    assert svc.updated == []
+
+
+@pytest.mark.parametrize("operation", ("autonudge_stop", "monitor_stop"))
+@pytest.mark.asyncio
+async def test_agent_stop_refuses_while_the_last_failed_child_finalizes(
+    monkeypatch, tmp_path, operation
+):
+    """A failed child is ``done`` before its terminal report exists.
+
+    ``_run`` flips ``info.done`` and then awaits the off-thread result cap
+    before it registers the report task. In that gap nothing is running or
+    queued and no report owns the parent, but the child's result has not
+    reached it yet: an agent stop there deactivated the goal early. The stop
+    must stay refused until the report is registered and delivered.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from kiro_crew.subagent import SubagentInfo, SubagentManager
+    from kiro_crew.subagent_persistence import create_agent_folder
+
+    monkeypatch.setattr("kiro_crew.subagent_persistence._SUBAGENTS_DIR", tmp_path)
+    sessions = MagicMock()
+    sessions.release = MagicMock()
+    sessions.reset = AsyncMock()
+    manager = SubagentManager(sessions=sessions, ctx_builder=MagicMock())
+    info = SubagentInfo(id="last-child", task="t", parent_session_key=_SESSION)
+    create_agent_folder(info.id, task="t")
+    manager._agents[info.id] = info
+    manager._running_count = 1
+
+    async def _fail(*_a, **_kw):
+        raise RuntimeError("child failed")
+
+    capping, release_cap = asyncio.Event(), asyncio.Event()
+    coordinator = type(manager._run_events)
+    real_cap = coordinator._cap_unclaimed_result_impl
+
+    async def _held_cap(self, held_info):
+        capping.set()
+        await release_cap.wait()
+        await real_cap(self, held_info)
+
+    # The coordinator has ``__slots__``, so the hold goes on its class.
+    monkeypatch.setattr(coordinator, "_cap_unclaimed_result_impl", _held_cap)
+
+    delivering, release_delivery = asyncio.Event(), asyncio.Event()
+
+    async def _held_on_done(*_a, **_kw):
+        delivering.set()
+        await release_delivery.wait()
+
+    svc = _FakeSvc(_FakeLoop("loop-finalizing-child"))
+    _install_svc(monkeypatch, svc)
+    state = type("_State", (), {"subagents": manager})()
+    slot = _fake_slot()
+
+    async def _stop() -> str:
+        return await apply_session_directive(
+            state, slot, _SESSION, operation, {"reason": "the child already finished"}
+        )
+
+    with (
+        patch.object(manager, "_run_inner", _fail),
+        patch.object(manager, "_on_done", _held_on_done),
+        patch.object(manager, "_fire_event", new_callable=AsyncMock),
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+    ):
+        run = asyncio.create_task(manager._run(info))
+        manager._tasks[info.id] = run
+        try:
+            await await_until(capping, what="the failed child's result cap")
+            assert info.done and info.error
+            assert manager.running_agents_for(_SESSION) == []
+            assert not manager._report_owners
+
+            result = await _stop()
+            assert result.startswith("Error:"), result
+            assert "(terminal child report delivery)" in result
+            assert svc.removed == [] and svc.updated == []
+
+            release_cap.set()
+            await await_until(delivering, what="the terminal report's delivery")
+            assert "(terminal child report delivery)" in await _stop()
+            assert svc.removed == []
+
+            release_delivery.set()
+            await await_until(run, what="the child run")
+            reports = tuple(manager._report_owners)
+            await await_until(asyncio.gather(*reports), what="the terminal reports")
+        finally:
+            release_cap.set()
+            release_delivery.set()
+            if not run.done():
+                run.cancel()
+                await asyncio.gather(run, return_exceptions=True)
+
+        assert manager.terminal_delivery_inflight_for(_SESSION) is False
+        result = await _stop()
+    assert not result.startswith("Error:"), result
+    assert svc.removed == ["loop-finalizing-child"]
+
+
+@pytest.mark.parametrize("operation", ("autonudge_stop", "monitor_stop"))
+@pytest.mark.asyncio
+async def test_agent_stop_refuses_a_child_queued_while_the_store_count_is_read(
+    monkeypatch, operation
+):
+    """A spawn admitted while the stop's store count is awaited still holds the fence.
+
+    The stop's queued probe reads the task store off the loop. Admission can put
+    an accepted spawn in the in-memory window during that await, and an
+    incognito child keeps no store row to be counted instead. The window has to
+    be read after the store count returns, or the stop ends the loop while that
+    child still waits to start.
+    """
+    from unittest.mock import MagicMock
+
+    from kiro_crew.subagent import SubagentManager
+
+    manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+    admitted: list[str] = []
+
+    async def _store_count_while_a_spawn_lands(_self, parent_session_key=None):
+        manager._queue.append({"id": "late-child", "parent_session_key": parent_session_key})
+        admitted.append(parent_session_key)
+        return 0
+
+    # The admission coordinator has ``__slots__``, so the double goes on its class.
+    monkeypatch.setattr(
+        type(manager._admission), "taskq_overflow_async", _store_count_while_a_spawn_lands
+    )
+    svc = _FakeSvc(_FakeLoop("loop-late-child"))
+    _install_svc(monkeypatch, svc)
+    state = type("_State", (), {"subagents": manager})()
+
+    result = await apply_session_directive(
+        state, _fake_slot(), _SESSION, operation, {"reason": "no child is running"}
+    )
+
+    assert admitted == [_SESSION]
+    assert result.startswith("Error:"), result
+    assert "(queued child work)" in result
+    assert svc.removed == [] and svc.updated == []
 
 
 def test_applier_autonudge_stop_removes_ordinary_monitor_loop(monkeypatch):

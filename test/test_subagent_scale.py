@@ -895,10 +895,11 @@ class TestWaveDigest:
         slot.task = None
         slot._subagent_deliveries_inflight = 0
         slot._subagents_inline_collected = set()
+        slot._queue = []
         queued: list[dict] = []
-        slot.queue_append = MagicMock(
-            side_effect=lambda content, kind="", meta=None: (
-                queued.append({"content": content, "kind": kind, "meta": meta}) or "qid"
+        slot.queue_insert = MagicMock(
+            side_effect=lambda index, content, **kwargs: (
+                queued.append({"index": index, "content": content, **kwargs}) or "qid"
             )
         )
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -940,6 +941,27 @@ class TestWaveDigest:
         held = [members[i].id for i in range(9)]
         assert list(ledger.keys()) == [queued[0]["content"]]
         assert [d.agent_id for d in ledger[queued[0]["content"]]] == [members[9].id] + held
+        mgr.retain_completion_delivery.assert_called_once_with(
+            members[9].parent_session_key, members[9].id
+        )
+        discard = queued[0].get("on_discarded")
+        assert callable(discard), "queued completion has no terminal discard owner"
+
+        with patch(
+            "kiro_crew.slack.gateway.read_tombstone",
+            return_value={"cause": "delivered"},
+        ):
+            discard()
+            await _settle(lambda: bool(settled), what="queued completion discard settled")
+
+        mgr.release_completion_delivery.assert_called_once_with(
+            members[9].parent_session_key, members[9].id
+        )
+        assert ledger == {}
+        assert settled == [[members[9].id] + held]
+        discard()
+        await asyncio.sleep(0)
+        assert settled == [[members[9].id] + held], "discard settlement duplicated"
 
     @pytest.mark.asyncio
     async def test_an_auth_required_turn_is_not_a_confirmed_hand_off(self):

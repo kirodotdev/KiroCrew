@@ -534,8 +534,7 @@ async def stop_slot_turn(
         # acknowledged as queued; a clear after the await would discard it with
         # nothing settled and nothing said. The kill discards what was queued
         # when it was pressed, and a later send stays queued for the next turn.
-        discarded = list(slot._queue)
-        slot._queue.clear()
+        discarded = slot.queue_discard_all()
         # A cross-session delivery among the taken entries has a sender holding a
         # "queued, will run later" receipt; nothing else here reaches that sender.
         # Told before the settle can suspend, so a cancellation of this stop

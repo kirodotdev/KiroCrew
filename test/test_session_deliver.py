@@ -96,6 +96,78 @@ class TestRunning:
         assert cards == expected
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ("autonudge_stop", "monitor_stop"))
+    async def test_a_full_queue_keeps_a_retained_completion_and_releases_it_once(
+        self, state, monkeypatch, tmp_path, operation
+    ):
+        """A full queue never evicts a sub-agent completion for a cron card.
+
+        A sub-agent completion queued with ``on_discarded`` holds one
+        manager-ledger count. Dropping it without that callback would leave the
+        count held, so every later agent goal stop would be refused as terminal
+        delivery. A cron eviction gives way only to another cron notification, so
+        the completion stays queued with its count, the cron card is refused, and
+        the agent's stop stays refused until the completion is delivered or
+        discarded.
+        """
+        from kiro_crew.dashboard.chat_utils_slots import effective_session_key
+        from kiro_crew.dashboard.session_directive_apply import apply_session_directive
+        from kiro_crew.subagent import SubagentManager
+
+        monkeypatch.setattr("kiro_crew.subagent_persistence._SUBAGENTS_DIR", tmp_path / "subs")
+        slot = _running_slot(state)
+        parent = effective_session_key(slot)
+        manager = SubagentManager(sessions=MagicMock(), ctx_builder=None)
+        state.subagents = manager
+        manager.retain_completion_delivery(parent, "child-1")
+        released: list[str] = []
+
+        def _discarded() -> None:
+            released.append("child-1")
+            manager.release_completion_delivery(parent, "child-1")
+
+        slot.queue_insert(0, "child-1 result", on_discarded=_discarded)
+        assert manager.terminal_delivery_inflight_for(parent) is True
+
+        with patch("kiro_crew.dashboard.slot_queue_repository.MAX_LIVE_QUEUE_ENTRIES", 1):
+            out = await sd.deliver(state, slot, CRON_TEXT, sd.cron("nightly"), evict_oldest=True)
+
+        assert out == sd.QUEUE_FULL
+        assert [q["content"] for q in slot._queue] == ["child-1 result"]
+        assert released == []
+        assert manager.terminal_delivery_inflight_for(parent) is True
+
+        # Once the completion is dropped through the repository, its callback
+        # releases the count exactly once and the agent's stop is honoured.
+        slot.queue_discard_all()
+        assert released == ["child-1"]
+        assert manager.terminal_delivery_inflight_for(parent) is False
+        assert manager._retained_completion_owners == {}
+
+        class _Svc:
+            def __init__(self) -> None:
+                self.removed: list[str] = []
+
+            def get_by_slot(self, _key):
+                return type("_Loop", (), {"id": "loop-1", "monitor": None, "gate": False})()
+
+            def list_all(self):
+                return []
+
+            async def remove(self, loop_id, **_kw):
+                self.removed.append(loop_id)
+                return True
+
+        svc = _Svc()
+        monkeypatch.setattr("kiro_crew.autonudge.get_instance", lambda: svc)
+        result = await apply_session_directive(state, slot, parent, operation, {"reason": "done"})
+        assert not result.startswith("Error:"), result
+        assert svc.removed == ["loop-1"]
+        # A later retirement pass cannot release the count a second time.
+        slot.queue_discard_all()
+        assert released == ["child-1"]
+
+    @pytest.mark.asyncio
     async def test_a_running_slot_queues_an_app_message_with_its_admission(self, state):
         slot = _running_slot(state)
         admission = {"queued_containment": {"x": 1}}

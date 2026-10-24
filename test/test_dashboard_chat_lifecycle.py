@@ -869,6 +869,8 @@ class TestBulkCleanup:
         stale = state.get_or_create_slot("stale1")
         stale.append("user", "old msg", ts=old_ts)
         stale.drain()
+        discarded: list[str] = []
+        stale.queue_insert(0, "completion", on_discarded=lambda: discarded.append("completion"))
 
         fresh = state.get_or_create_slot("fresh1")
         fresh.append("user", "new msg", ts=fresh_ts)
@@ -892,6 +894,7 @@ class TestBulkCleanup:
         assert "stale1" not in state._slots
         assert "fresh1" in state._slots
         assert "pinned1" in state._slots
+        assert discarded == ["completion"]
 
     @pytest.mark.asyncio
     async def test_cleanup_skips_active_slot(self, tmp_path, monkeypatch):

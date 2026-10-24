@@ -27,17 +27,16 @@ transcript / WS / hook surfaces, it does NOT replace the model's tool result.
 That is why the tool bodies phrase their own message to not over-claim an effect
 this consumer applies (and may refuse) after the fact.
 
-IMPORTS ARE DELIBERATELY FUNCTION-LOCAL here, except for the shared session and
-Research ownership contracts plus the immutable ``AUTONUDGE_STOP_REASON``
-constant. ``sel`` is a genuine cycle
+IMPORTS ARE DELIBERATELY FUNCTION-LOCAL here, except for the shared session,
+child-work, and Research ownership contracts plus the immutable
+``AUTONUDGE_STOP_REASON`` constant. ``sel`` is a genuine cycle
 (``sel`` -> config -> apps -> dashboard, and chat_runner imports this module
-before it imports sel). The rest (autonudge, autonudge_authz, chat_utils,
-security, chat_handlers, chat_persistence, chat_tags, chat_tag_grants) are
-deferred on purpose: they keep this module cheap to
-import from the turn loop's import graph, and they resolve the symbol at CALL
-time so patching the SOURCE module is what tests (and any runtime override)
-actually observe — a module-scope ``from X import name`` would freeze a stale
-binding and silently bypass it.
+before it imports sel). The rest (autonudge, autonudge_authz, security,
+chat_handlers, chat_persistence, chat_tags, chat_tag_grants) are deferred on
+purpose: they keep this module cheap to import from the turn loop's import graph,
+and they resolve the symbol at CALL time so patching the SOURCE module is what
+tests (and any runtime override) actually observe — a module-scope ``from X
+import name`` would freeze a stale binding and silently bypass it.
 """
 
 from __future__ import annotations
@@ -296,6 +295,7 @@ async def apply_session_directive_outcome(
             )
         elif kind == "monitor_stop":
             result = await _monitor_stop(
+                state,
                 slot,
                 session_key,
                 args,
@@ -303,6 +303,7 @@ async def apply_session_directive_outcome(
             )
         elif kind == "autonudge_stop":
             result = await _autonudge_stop(
+                state,
                 slot,
                 session_key,
                 args,
@@ -461,6 +462,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.autonudge_judge import (  # noqa: F401
         screen_phrase,
+    )
+    from kiro_crew.dashboard.chat_utils import (  # noqa: F401
+        SUBAGENT_ATTACHMENT_RECOVERY_GUIDANCE,
+        subagent_attachment_detail_async,
     )
     from kiro_crew.messaging.link import (  # noqa: F401
         is_channel_session_key,

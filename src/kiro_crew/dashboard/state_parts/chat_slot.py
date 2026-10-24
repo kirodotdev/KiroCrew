@@ -1105,6 +1105,10 @@ class _ChatSlot:
     _note_enqueue = _slot_turns._note_enqueue
     queue_insert = _slot_turns.queue_insert
     queue_pop = _slot_turns.queue_pop
+    queue_pop_many = _slot_turns.queue_pop_many
+    queue_discard_all = _slot_turns.queue_discard_all
+    queue_retire_all = _slot_turns.queue_retire_all
+    queue_discard_by_ids = _slot_turns.queue_discard_by_ids
     note_pending_subagent_delivery = _slot_turns.note_pending_subagent_delivery
     owes_subagent_delivery = _slot_turns.owes_subagent_delivery
     take_pending_subagent_deliveries = _slot_turns.take_pending_subagent_deliveries

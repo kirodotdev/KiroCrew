@@ -95,6 +95,7 @@ async def maybe_start_teams(orch: "GatewayOrchestrator") -> "TeamsClient | None"
             # identity is configured (see teams/session_resume.py).
             allowed_emails=allowed_emails,
         )
+        dispatcher.subagent_manager = getattr(orch, "subagent_mgr", None)
         client = TeamsClient(
             app_id=app_id,
             app_password=app_password,

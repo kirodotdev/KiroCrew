@@ -198,6 +198,12 @@ SYNTHETIC_RECOVERY_KIND = "synthetic_recovery"
 #: user's original request.  It is recovery orchestration (so it breaks merges and
 #: can be purged), but its ``RecoveryPayload.ORIGINAL`` remains user-authored.
 FALSE_TOOL_BLOCKER_REPLAY_KIND = "false_tool_blocker_replay"
+#: Structural queue-entry kind for a popped lifecycle-owned completion whose
+#: model turn failed before consumption. Unlike an ordinary synthetic recovery,
+#: this row is internal delivery state: containment changes cannot reinterpret it
+#: as replayed user speech and discard it. Explicit Stop/removal/rewind/teardown
+#: still retire its one-shot callback through the queue ownership contract.
+LIFECYCLE_RECOVERY_KIND = "lifecycle_recovery"
 
 #: Row-level kind for the `error` notice appended when a recovery has ALREADY
 #: been queued, so the frontend can tell a pending retry from a terminal failure.
@@ -328,7 +334,9 @@ APP_MESSAGE_PREFIX = "[MCP app message from "
 APP_MESSAGE_END = "[End of MCP app message]"
 
 #: Queue-entry kinds that can carry sub-agent delivery debt.
-SUBAGENT_DELIVERY_KINDS = frozenset((SUBAGENT_COMPLETION_KIND, SYNTHETIC_RECOVERY_KIND))
+SUBAGENT_DELIVERY_KINDS = frozenset(
+    (SUBAGENT_COMPLETION_KIND, SYNTHETIC_RECOVERY_KIND, LIFECYCLE_RECOVERY_KIND)
+)
 
 
 #: All system-injection kinds (for set-membership checks).
@@ -362,10 +370,15 @@ def is_synthetic_recovery_item(item: dict) -> bool:
     The false-tool-blocker replay carries the authenticated user's own text, but
     its distinct kind still identifies the runner-owned retry for queue ordering
     and late-cancellation purge. Payload provenance remains a separate question.
+    Lifecycle recoveries retain a popped completion's one-shot callbacks after a
+    pre-consumption failure; they render and drain as recovery orchestration
+    and, unlike the other two, are exempt from user-prompt containment
+    revalidation.
     """
     return item.get("kind") in (
         SYNTHETIC_RECOVERY_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
+        LIFECYCLE_RECOVERY_KIND,
     )
 
 
@@ -429,12 +442,12 @@ def is_system_injection_item(item: dict) -> bool:
     over content-prefix inspection. Content fallback is removed to fully close
     the spoofing gap — classification is exclusively by kind tag.
 
-    Synthetic recovery instructions are orchestration, not user speech: they
-    must BREAK a user-message merge (folding one into a "[N queued messages
-    merged]" turn would flip it back into user-authored, persisted,
-    channel-mirrored history), keep draining during sub-agent runs, and never
-    consume the session-reset notice — same treatment as sub-agent completion
-    and cron injections."""
+    Synthetic recovery instructions and lifecycle-owned completion retries are
+    orchestration, not user speech: they must BREAK a user-message merge (folding
+    one into a "[N queued messages merged]" turn would flip it back into
+    user-authored, persisted, channel-mirrored history), keep draining during
+    sub-agent runs, and never consume the session-reset notice — same treatment
+    as sub-agent completion and cron injections."""
     kind = item.get("kind", "")
     if kind in _SYSTEM_INJECTION_KINDS:
         return True
@@ -540,7 +553,7 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
                 break
             to_merge.append(item)
         if len(to_merge) > 1:
-            del slot._queue[: len(to_merge)]
+            to_merge = slot.queue_pop_many(len(to_merge))
             merged = "\n\n".join(item["content"] for item in to_merge)
             return f"[{len(to_merge)} queued messages merged]\n\n{merged}", to_merge
     item = slot.queue_pop(0)

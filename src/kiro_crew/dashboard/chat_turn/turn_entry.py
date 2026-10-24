@@ -7,12 +7,13 @@ the batch latch and the file changes)."""
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
-from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT
+from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PREFIX, SUBAGENT_SYNTHESIS_PROMPT
 from kiro_crew.security import StreamRedactor
 
 if TYPE_CHECKING:
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
         _session_stop_generation_for,
     )
     from kiro_crew.dashboard.chat_turn.segment_flush import _reset_segment_copy
+    from kiro_crew.dashboard.chat_turn.turn_ledgers import _settle_unconsumed_completion
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
     from kiro_crew.dashboard.chat_turn.turn_stats import _turn_clock
 
@@ -95,6 +97,26 @@ def _stop_pressed(turn) -> bool:
         or getattr(slot, "_stop_generation", _stop_gen_at_entry) != _stop_gen_at_entry
         or _session_stop_generation(turn) != _session_stop_gen_at_entry
         or (_responsive_turn.owner is _responsive_owner and _responsive_turn.interrupted)
+    )
+
+
+def _explicit_stop_pressed(turn) -> bool:
+    """A Stop recorded for this turn, read LIVE: :func:`_stop_pressed` without the pause.
+
+    The same three reads, of the places a Stop records itself: the slot's stop
+    state, the slot's stop count and the session manager's count for this turn's
+    key. A person's send that pauses the turn (``responsive_chat._cancel_owned``)
+    records none of them; it only marks the turn ``interrupted``, which is the
+    gateway's scheduling rather than a decision about the work. A reader that has
+    to tell the two apart reads this.
+    """
+    _session_stop_gen_at_entry = turn._session_stop_gen_at_entry
+    _stop_gen_at_entry = turn._stop_gen_at_entry
+    slot = turn.slot
+    return (
+        bool(getattr(slot, "_stopping", False))
+        or getattr(slot, "_stop_generation", _stop_gen_at_entry) != _stop_gen_at_entry
+        or _session_stop_generation(turn) != _session_stop_gen_at_entry
     )
 
 
@@ -507,6 +529,28 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # stays consumed.
     turn._consumed_reported = False
     turn._irreversible_consumption_reported = False
+    turn._discard_transferred = False
+    # Failure notices this turn drained into its prompt, so a requeue of the raw
+    # completion announce can hand back the ones the model never read.
+    turn._drained_subagent_failures = []
+
+    # Runner-authored continuations are orchestration, not user input, and the
+    # post-fan-out synthesis prompt is one too: never mirror either to linked
+    # surfaces (Slack/Telegram) as if the user typed it — only the assistant reply
+    # is delivered. A recovery that replays the user's own message is NOT covered,
+    # because that text is the user's; the queue entry distinguishes the two so a
+    # user who types a marker verbatim still counts as ordinary user speech.
+    # Bound before the settlement below is registered, because its requeue reads
+    # both: a replay vetoed at the consume seam settles before either veto returns.
+    _is_synthetic = _synthetic_payload or message.startswith(SUBAGENT_SYNTHESIS_PREFIX)
+    turn._is_synthetic = _is_synthetic
+    _is_refusal_retry_turn = ReplayFamily.CONTENT_FILTER in _replay
+    turn._is_refusal_retry_turn = _is_refusal_retry_turn
+    # Registered before the turn's first exit. A replay vetoed at the consume
+    # seam returns above the main try, and a popped completion it carried must
+    # still end with a retry row or an explicit discard, or its count in the
+    # completion ledger is never released.
+    turn_exit.settle_completion = functools.partial(_settle_unconsumed_completion, turn)
 
     # The drain validated a claimed replay before spawning the guarded task, but
     # task scheduling creates another revocation window. Re-check the same records
@@ -547,8 +591,6 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # otherwise replay the user's prompt into a superseding or newly bound session.
     if await _replay_vetoed_at_consume(state, slot, _replay, "after_allowances"):
         return _Flow.END
-    _is_refusal_retry_turn = ReplayFamily.CONTENT_FILTER in _replay
-    turn._is_refusal_retry_turn = _is_refusal_retry_turn
     await _rearm_turn_episode(
         slot,
         message,

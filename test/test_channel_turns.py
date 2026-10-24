@@ -1563,7 +1563,14 @@ def test_a_dispatcher_without_directives_builds_no_consumer(monkeypatch, drift, 
     _answer(_turns(FakeSessions(), dispatcher=dispatcher, drift=drift))
 
     assert built == (
-        [{"session_key": KEY, "sessions": built[0]["sessions"], "dispatcher": dispatcher}]
+        [
+            {
+                "session_key": KEY,
+                "sessions": built[0]["sessions"],
+                "dispatcher": dispatcher,
+                "subagents": None,
+            }
+        ]
         if consumes
         else []
     )

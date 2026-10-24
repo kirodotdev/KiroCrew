@@ -17,6 +17,7 @@ from kiro_crew.dashboard.chat_delivery import (
 from kiro_crew.dashboard.chat_utils import (
     AUTOMATION_NOTICE_KIND,
     CRON_NOTIFICATION_KIND,
+    LIFECYCLE_RECOVERY_KIND,
     MCP_APP_MESSAGE_KIND,
     STEER_INTENT_META,
     STEER_POSSIBLY_DELIVERED_META,
@@ -440,9 +441,9 @@ def _queue_entry_is_orchestration(item: dict) -> bool:
     must NOT block or purge a pending recovery.
 
     Classification is PURELY STRUCTURAL — the `kind` tag stamped at enqueue, never
-    the message text. `is_system_injection_item` covers the three orchestration
-    kinds (`CRON_NOTIFICATION_KIND`, `SUBAGENT_COMPLETION_KIND`,
-    `SYNTHETIC_RECOVERY_KIND`); `is_synthetic_payload_item` additionally covers a
+    the message text. `is_system_injection_item` covers cron notifications,
+    sub-agent completions, ordinary synthetic recoveries, and lifecycle-owned
+    completion retries; `is_synthetic_payload_item` additionally covers a
     recovery entry that replays runner-authored text. There is deliberately NO
     content match: a `CRON_NOTIFY_RE.match` / prefix test is prefix-anchored and
     therefore spoofable — a user could queue
@@ -530,13 +531,14 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
     links — as do all other constraints (see
     `session_control.newly_held_constraints`).
 
-    Structural exemption is narrow: cron notifications and sub-agent
-    completions only (`CRON_NOTIFICATION_KIND` / `SUBAGENT_COMPLETION_KIND`) —
-    runner machinery minted fresh by trusted internal producers, which
-    channel-born sessions receive by design. Synthetic-recovery entries are
-    NOT exempt: a recovery replays externally admitted content verbatim, so it
-    is re-validated like any plain entry against the admission stamp its
-    requeue recorded (`_queue_recovery`), failing closed when unmarked.
+    Structural exemption is narrow: cron notifications, sub-agent completions,
+    and lifecycle-owned completion retries (`CRON_NOTIFICATION_KIND` /
+    `SUBAGENT_COMPLETION_KIND` / `LIFECYCLE_RECOVERY_KIND`) — runner machinery
+    minted for this slot's own turn lifecycle, which channel-born sessions
+    receive by design. Ordinary synthetic-recovery entries are NOT exempt: they
+    replay externally admitted content verbatim and are re-validated like any
+    plain entry against the admission stamp their requeue recorded
+    (`_queue_recovery`), failing closed when unmarked.
 
     Runs at the top of the drain with no suspension point between the snapshot
     and the dequeue (everything below is synchronous on the event loop), so the
@@ -565,16 +567,21 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
     _mirror_unverified = bool(now.get("mirror_unverified"))
     doomed: list[tuple[dict, list[str]]] = []
     for q in slot._queue:
-        # Exempt ONLY cron notifications and sub-agent completions: both are
-        # minted fresh by trusted internal producers for THIS slot's own turn
-        # lifecycle, and channel-born sessions receive them by design. A
+        # Exempt cron notifications, sub-agent completions, and an exact
+        # lifecycle-owned retry of a completion popped for a failed turn: all are
+        # internal delivery state for THIS slot's own turn lifecycle, and
+        # channel-born sessions receive them by design. An ordinary
         # synthetic-recovery entry is deliberately NOT exempt — it replays
         # externally admitted content verbatim under a fresh queue id, so an
         # exemption would let the retry ride past a link that appeared during
         # the recovery window. Every recovery producer stamps admission context
         # at requeue (`_queue_recovery`, the manual continue), so a recovery in
         # a channel-born session still drains: its stamp records linked=True.
-        if q.get("kind") in (CRON_NOTIFICATION_KIND, SUBAGENT_COMPLETION_KIND):
+        if q.get("kind") in (
+            CRON_NOTIFICATION_KIND,
+            SUBAGENT_COMPLETION_KIND,
+            LIFECYCLE_RECOVERY_KIND,
+        ):
             continue
         changed = _sc.newly_held_constraints(
             now,

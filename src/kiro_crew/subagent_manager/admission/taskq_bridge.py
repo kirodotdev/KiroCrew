@@ -760,6 +760,7 @@ class _TaskqBridgeMixin(ManagerComponent):
     _clear_owed_report_after = _expiry._clear_owed_report_after
     taskq_clear_owed_report_if_delivered = _expiry.taskq_clear_owed_report_if_delivered
     taskq_clear_owed_reports = _expiry.taskq_clear_owed_reports
+    taskq_clear_owed_reports_async = _expiry.taskq_clear_owed_reports_async
     taskq_replay_owed_expiries_async = _expiry.taskq_replay_owed_expiries_async
     _owed_replay_wanted = _expiry._owed_replay_wanted
     taskq_schedule_owed_replay = _expiry.taskq_schedule_owed_replay
