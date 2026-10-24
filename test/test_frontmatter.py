@@ -1079,7 +1079,8 @@ class TestChompingCannotFlipAnActivationFlag:
         # The facade and every ``skills_*`` owner it binds members from, joined.
         src_dir = Path(__file__).resolve().parents[1] / "src/kiro_crew"
         src = "\n".join(
-            p.read_text() for p in [src_dir / "skills.py", *sorted(src_dir.glob("skills_*.py"))]
+            p.read_text(encoding="utf-8")
+            for p in [src_dir / "skills.py", *sorted(src_dir.glob("skills_*.py"))]
         )
         reads = re.findall(r'"repo_scope":\s*meta\.get\("repo_scope"[^\n]*', src)
         reads += re.findall(r'scope\s*=\s*meta\.get\("repo_scope"[^\n]*', src)

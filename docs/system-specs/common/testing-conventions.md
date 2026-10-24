@@ -80,7 +80,11 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   `Pacific/Kiritimati` (+14:00) and `America/St_Johns` (-03:30). Inject the zone where
   the product allows it; otherwise use the `local_tz` fixture, which sets `TZ` and calls
   `time.tzset()` under a POSIX-only skip and restores both at teardown (class 1 has the
-  shape), never a bare `monkeypatch.undo()`. [Class 1](#1-nondeterministic-input).
+  shape), never a bare `monkeypatch.undo()`. A test that reads a repository file as
+  text names the codec, `read_text(encoding="utf-8")` or `open(path, encoding="utf-8")`:
+  a bare call decodes with the host's code page, which raises at the first non-ASCII
+  character on a cp950 Windows host and silently mis-decodes it on a cp1252 one.
+  [Class 1](#1-nondeterministic-input).
 - **D6. Seed every RNG that feeds an assertion** (`random.Random(SEED)`, or the
   `seeded_rng` fixture, seeded from the node id and printing the seed when the test
   fails), and give a fake PID a number no OS can allocate (`UNALLOCATABLE_PID` /

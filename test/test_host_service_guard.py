@@ -242,9 +242,11 @@ class TestRatchet:
     def test_every_allowlisted_suite_is_opt_in(self) -> None:
         """A listed module skips itself unless its operator variable is set."""
         test_dir = pathlib.Path(__file__).resolve().parent
-        scenarios_conftest = (test_dir / "e2e" / "scenarios" / "conftest.py").read_text()
+        scenarios_conftest = (test_dir / "e2e" / "scenarios" / "conftest.py").read_text(
+            encoding="utf-8"
+        )
         assert "KIROCREW_E2E_SCENARIOS" in scenarios_conftest
-        canary = (test_dir / "test_pod_windows_boot.py").read_text()
+        canary = (test_dir / "test_pod_windows_boot.py").read_text(encoding="utf-8")
         assert 'os.environ.get("KIROCREW_E2E_POD_WINDOWS") != "1"' in canary
 
     def test_live_target_reexecs_through_the_guarded_funnel(self) -> None:

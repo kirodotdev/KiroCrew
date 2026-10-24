@@ -77,7 +77,9 @@ class TestSharedConformanceCorpus:
         from kiro_crew.constants import strip_control_comments
 
         corpus = json.loads(
-            (pathlib.Path(__file__).parent / "fixtures" / "control_tag_corpus.json").read_text()
+            (pathlib.Path(__file__).parent / "fixtures" / "control_tag_corpus.json").read_text(
+                encoding="utf-8"
+            )
         )
         for case in corpus["cases"]:
             got = strip_control_comments(case["input"])

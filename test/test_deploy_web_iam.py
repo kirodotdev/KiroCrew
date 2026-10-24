@@ -56,7 +56,7 @@ def test_policy_prefix_matches_template_bucket():
     _CfnLoader.add_multi_constructor(None, _cfn_ignore)
 
     template_path = _PKG / "skills" / "artifact-deploy" / "templates" / "base-stack.yaml"
-    with open(template_path) as f:
+    with open(template_path, encoding="utf-8") as f:
         tmpl = load_with(_CfnLoader, f)
     bucket_name = tmpl["Resources"]["OriginBucket"]["Properties"]["BucketName"]
     # Template uses !Sub 'kirocrew-deploy-${AWS::AccountId}-${AWS::Region}'
@@ -91,7 +91,7 @@ def test_audit_log_bucket_has_versioning_enabled():
     _CfnLoader.add_multi_constructor(None, _cfn_ignore)
 
     template_path = _PKG / "skills" / "artifact-deploy" / "templates" / "base-stack.yaml"
-    with open(template_path) as f:
+    with open(template_path, encoding="utf-8") as f:
         tmpl = load_with(_CfnLoader, f)
 
     resources = tmpl["Resources"]
@@ -379,7 +379,7 @@ def test_reaper_template_includes_engine_arch_permissions():
         )
 
     template_path = _PKG / "skills" / "artifact-deploy" / "templates" / "reaper.yaml"
-    with open(template_path) as f:
+    with open(template_path, encoding="utf-8") as f:
         tmpl = load_with(_CfnLoader, f)
 
     role_props = tmpl["Resources"]["ReaperRole"]["Properties"]
