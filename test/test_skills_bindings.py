@@ -135,6 +135,7 @@ _MEMBERS: dict[str, tuple[str, object, str]] = {
     "approve_pending_skill_checked": ("function", False, "skills_review"),
     "approve_pending_update_checked": ("function", False, "skills_review"),
     "archive_auto_skill": ("function", False, "skills"),
+    "audit": ("function", False, "skills"),
     "catalog_project_skills": ("function", False, "skills_review"),
     "catalog_status": ("function", False, "skills"),
     "close": ("function", False, "skills"),
