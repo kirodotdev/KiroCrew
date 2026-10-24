@@ -33,6 +33,7 @@ import {
   takeFoldedSlotProjection,
 } from './websocket/slotProjection'
 import { useSocketConnection } from './websocket/connection'
+import { noteAppSlotFrame } from '../utils/appSlotPush'
 import { decodeFrame } from './websocket/frames'
 import { useStreamBuffers } from './websocket/streamBuffers'
 import { useVoicePlayback } from './websocket/voicePlayback'
@@ -223,6 +224,8 @@ export function useWebSocket() {
       if (isLookPreviewFrame()) return
       try {
         const { type, data, msg } = decodeFrame(e.data)
+        // App embeds watching this frame's slot re-read it (utils/appSlotPush.ts).
+        noteAppSlotFrame(type, data)
         switch (type) {
           case 'dashboard':
             bundle.onDashboardStatus(data)

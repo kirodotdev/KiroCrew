@@ -264,7 +264,9 @@ fields. The no-limit route and callers requiring complete history remain on
 the sparse index nor page projection stores a redacted or alternate transcript.
 
 A poller of the newest page reads it incrementally (`dashboard/slot_detail_delta.py`;
-its one caller is the app-sdk `ChatEmbed`). A paged read passing `cursor=1` also
+its one caller is the app-sdk `ChatEmbed`, which issues the read on a poll and,
+when its host passes a push channel, on each change signal for the slot -- see
+app-kit-platform.md, *ChatEmbed live updates*; the read itself is unchanged). A paged read passing `cursor=1` also
 gets `cursor: {from, since, digest}`: the page's first and last row indices and a
 digest over the rows in `[from, since)`, so the last row (the folded streaming
 row) is never inside it. The digest is built from each row's render-memo identity

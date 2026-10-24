@@ -8,6 +8,7 @@ import reducer, { sseConnected, sseDisconnected, sseStatus } from '../../store/d
 import type { StatusData } from '../../types'
 import { __resetGatewayConnectedForTests, isGatewayConnected } from '../../utils/errorReport'
 import { markGatewayConnected, markGatewayDisconnected } from './gatewayConnectivity'
+import { createAppSlotPush, resetAppSlotPushForTests } from '../../utils/appSlotPush'
 
 beforeEach(() => { __resetGatewayConnectedForTests() })
 afterEach(() => { __resetGatewayConnectedForTests() })
@@ -42,5 +43,16 @@ describe('gatewayConnectivity helpers', () => {
     dispatch(sseStatus({ uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 } as StatusData))
     expect(state.connected).toBe(true)
     expect(isGatewayConnected()).toBe(false)
+  })
+
+  it('moves app embeds\' push channel with the same flag', () => {
+    resetAppSlotPushForTests(() => 'spec-builder')
+    const push = createAppSlotPush('spec-builder')
+    const dispatch = vi.fn()
+    markGatewayConnected(dispatch as never)
+    expect(push.connected('s1')).toBe(true)
+    markGatewayDisconnected(dispatch as never)
+    expect(push.connected('s1')).toBe(false)
+    resetAppSlotPushForTests()
   })
 })

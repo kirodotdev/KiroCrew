@@ -162,7 +162,8 @@ the app must grant `/api/chat` in its `permissions.api` (a builtin host passes i
 in `AppApiProvider`'s `allowedApiPaths`). This entry satisfies the scoped client's
 API-path check for each of these calls:
 
-- `GET /api/chat/slots/{slot}?limit=N` — the transcript poll.
+- `GET /api/chat/slots/{slot}?limit=N` — the transcript read (polled, and
+  re-issued on each push signal; see below).
 - `POST /api/chat` — sending, unless `onSend` is supplied.
 - `POST /api/chat/slots/{slot}/approve` — Approve, Reject and Trust on a tool approval.
 
@@ -184,11 +185,13 @@ callers** under [Approvals](#approvals).
 
 What the embed does not do today, one line each:
 
-- No live stream. It polls the slot every 1 s while a turn runs and every 5 s
-  when idle, reading the newest 200 rows; "load earlier" widens that by 200 rows
-  a press, up to 500. Replies are displayed from the transcript poll, not from
-  the send response. After 10 s of failed polls it backs off, up to 30 s
-  between attempts.
+- No frame stream of its own. Every row comes from the transcript read, which
+  returns the newest 200 rows; "load earlier" widens that by 200 rows a press,
+  up to 500. Replies are displayed from that read, not from the send response.
+  When the host passes `slotPush` (below), a change to the slot triggers the
+  read at once; otherwise the embed polls every 1 s while a turn runs and every
+  5 s when idle. After 10 s of failed reads it backs off, up to 30 s between
+  attempts.
 - No Stop control. A running turn cannot be cancelled from the embed.
 - No reasoning display. Model thinking is sent only as the `chat_thinking`
   WebSocket event, which the poll never sees.
@@ -263,9 +266,45 @@ scheduled job). The cards are read-only in the embed: to cancel or edit a queued
 message, open the session in the dashboard. Finished sub-agent results waiting
 for the same turn show as one progress line instead of cards.
 
-The embed polls the session about once a second while the agent works and
-every five seconds otherwise. A failed poll is retried at the same pace and
-stays silent. Once polls have kept failing for 10 seconds, counted from the
+#### Live updates (`slotPush`)
+
+A host that holds a realtime event stream passes a `SlotPush` to
+`AppScopedApiProvider` / `AppApiProvider` as `slotPush`. It tells the embed only
+two things: that its slot changed, and whether the channel is up. The embed then
+reads the session the moment it changes, so a streamed reply grows as it is
+written. Changes that arrive while a read is in flight collapse into one more
+read, at most one every 250 ms. While the channel is up and reads succeed, the
+poll is only a backstop: every 5 seconds while the agent works and every 15
+seconds otherwise. Each time the channel comes up, reconnects included, the
+embed reads once, since a change made while it was down was never signalled.
+When the channel is down, or the host passes no `slotPush`, the embed polls as
+described below.
+
+The signal carries no rows and no text, so the transcript read stays the only
+way content reaches the app and its `permissions.api` grant and the gateway's
+slot checks still apply. The dashboard's hosts (`AppHost` and the builtin
+pages) pass one that signals only for slots the app owns -- the slots an app
+token receives slot events for with no `slots:*` declaration. A slot the app
+does not own, such as one the generic `POST /api/chat` created, is not signalled
+and the embed keeps polling it at the full pace: `connected(slotKey)` is
+`false` for such a slot even while the socket is up. An app needs no new
+permission for this.
+
+```ts
+interface SlotPush {
+  connected(slotKey: string): boolean
+  watch(slotKey: string, watcher: {
+    onChange(): void
+    onConnection(connected: boolean): void
+  }): () => void
+}
+```
+
+#### Polling and outages
+
+Without a live channel the embed polls the session about once a second while
+the agent works and every five seconds otherwise. A failed read is retried at
+that pace, whether or not a channel is up, and stays silent. Once polls have kept failing for 10 seconds, counted from the
 first failure (the gateway restarted, the session was deleted, or access was
 lost), the transcript stays on its last update, the header stops showing the
 session as running and its dot turns muted, a half-written reply loses its live
