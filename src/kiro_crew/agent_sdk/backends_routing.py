@@ -41,7 +41,10 @@ from kiro_crew.agent_sdk.backends import (
 #
 # * kiro-cli: the session is bound to a derived ``<agent>--readonly`` spec
 #   (``dashboard/side_readonly_spec``) whose emptied grants make every tool call
-#   raise a permission request.
+#   kiro-cli does not run natively raise a permission request. Captured on kiro-cli 2.34.0
+#   (``test/fixtures/acp_frames/kiro/side-read-only-live.jsonl``): ``execute_bash``
+#   and ``fs_write`` each asked and a rejected write left no file; ``fs_read`` and
+#   ``grep`` inside the session cwd ran natively, as the spec module describes.
 # * claude-agent-acp: its settings cannot be emptied from outside, so the session
 #   is started with only the read built-ins, no MCP server, settings hooks
 #   disabled, an ``ask`` rule on each read built-in and ``deny`` rules on the

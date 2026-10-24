@@ -21,7 +21,7 @@ sys.modules[_spec.name] = gate
 _spec.loader.exec_module(gate)
 
 # The ceiling only moves down. Raising it is the change this test exists to stop.
-X_CAPTURE_CEILING = 7
+X_CAPTURE_CEILING = 6
 KIRO_KAS_PAIR_CEILING = 0
 
 
@@ -123,7 +123,7 @@ def test_the_self_test_passes() -> None:
 
 def test_an_added_allowlist_entry_is_refused(monkeypatch) -> None:
     entries = set(gate.X_CAPTURE_ALLOWLIST)
-    entries.discard(("ACP_BACKENDS_SIDE_READONLY", "kiro"))
+    entries.discard(("ACP_BACKENDS_SIDE_READONLY", "goose"))
     pairs, x_sets = set(gate.KIRO_KAS_PAIR_ALLOWLIST), dict(gate.X_FEATURE_SETS)
     monkeypatch.setattr(gate, "_base_allowlists", lambda base: (entries, pairs, x_sets))
     assert gate.enforce_x_captures("base") == 1

@@ -448,7 +448,6 @@ X_CAPTURE_ALLOWLIST: dict[tuple[str, str], str] = {
     ),
     ("ACP_BACKENDS_STEERING_REQUEST", "goose"): "goose _goose/unstable/session/steer turn",
     ("ACP_BACKENDS_STEER_CONCURRENT_PROMPT", "opencode"): "opencode second session/prompt",
-    ("ACP_BACKENDS_SIDE_READONLY", "kiro"): "live capture pending",
     ("ACP_BACKENDS_SIDE_READONLY", "goose"): "goose side session read-only turn",
     ("ACP_BACKENDS_MEMBER_CAPABILITIES", "codex"): "codex saved member spec session",
     ("ACP_BACKENDS_MEMBER_CAPABILITIES", "deepseek"): "deepseek saved member spec session",
