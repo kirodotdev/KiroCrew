@@ -1,5 +1,6 @@
 import { safeSetItem } from './safeStorage'
 import { mergeRecoveredDraft } from './chatDrafts'
+import { knowledgeEnvelopeEndInRow } from './knowledgeEnvelope'
 /**
  * Paste-token utilities.
  *
@@ -328,9 +329,10 @@ export function expandAll(text: string, blocks: PasteBlock[]): string {
  * Replaces the FIRST non-overlapping occurrence of each block in document
  * order, so repeated sends of the same paste each collapse to their own token.
  * A block whose content is not found verbatim is skipped (that region renders
- * as-is). Returns `content` unchanged when nothing matched.
+ * as-is). Text before `from` is kept verbatim (e.g. a recorded knowledge head).
+ * Returns `content` unchanged when nothing matched.
  */
-export function recollapsePastes(content: string, blocks: PasteBlock[]): string {
+export function recollapsePastes(content: string, blocks: PasteBlock[], from = 0): string {
   if (!content || !blocks.length) return content
   interface Hit { start: number; end: number; block: PasteBlock }
   const hits: Hit[] = []
@@ -340,12 +342,12 @@ export function recollapsePastes(content: string, blocks: PasteBlock[]): string 
   // another's). Returns -1 when every occurrence overlaps a claim or none exist.
   const firstUnclaimed = (needle: string): number => {
     if (!needle) return -1
-    let from = 0
-    while (from <= content.length) {
-      const idx = content.indexOf(needle, from)
+    let searchFrom = from
+    while (searchFrom <= content.length) {
+      const idx = content.indexOf(needle, searchFrom)
       if (idx < 0) return -1
       if (!claimed.some(([s, e]) => idx < e && idx + needle.length > s)) return idx
-      from = idx + 1
+      searchFrom = idx + 1
     }
     return -1
   }
@@ -577,7 +579,8 @@ export function mergePreservedPastes<M extends { role: string; content: string; 
         // them from the transcript permanently. Fall through to a generic
         // re-collapse that folds only the paste tokens and preserves all other
         // merged content.
-        const recollapsed = recollapsePastes(m.content, held.pastes)
+        const recollapsed = recollapsePastes(m.content, held.pastes,
+          knowledgeEnvelopeEndInRow(m.content, m.meta))
         if (recollapsed !== m.content) {
           consumeHeld()
           return { ...m, content: recollapsed, meta: newMeta }
@@ -621,7 +624,8 @@ export function mergePreservedPastes<M extends { role: string; content: string; 
     // (sendId) above.
     const ownPastes = (m.meta?.pastes as PasteBlock[] | undefined) || []
     if (ownPastes.length && !findTokenRanges(m.content, ownPastes).length) {
-      const collapsed = recollapsePastes(m.content, ownPastes)
+      const collapsed = recollapsePastes(m.content, ownPastes,
+        knowledgeEnvelopeEndInRow(m.content, m.meta))
       if (collapsed !== m.content) return { ...m, content: collapsed }
     }
     return m
