@@ -149,7 +149,11 @@ export function usePlusMenu({ pickers, value, onChange, composerControl, fileInp
   return { plusOpen, setPlusOpen, sketchOpen, setSketchOpen, plusWrapRef, plusBtnRef, plusMenuRef, plusRect, togglePlus, openTrigger }
 }
 
-export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect }: {
+export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect, optimizeRow = null }: {
+  /** "Optimize prompt" while a turn runs (#23572), a menu row because the
+   *  busy send cluster is at its button cap. Null when idle: the cluster's
+   *  own Optimize button is back then. */
+  optimizeRow?: ReactNode
   plus: ReturnType<typeof usePlusMenu>
   onUploadFiles?: (files: File[]) => void
   uploading: boolean
@@ -316,6 +320,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
                     `collapseMenuRowElement` (chat-input/collapse.tsx), which
                     also explains why touch needs a second host at all. */}
                 {collapseMenuRow}
+                {optimizeRow}
               </div>
               {/* In-input trigger shortcuts: clicking inserts the sigil
                *  and opens the matching picker (same as typing /, @, $). */}
