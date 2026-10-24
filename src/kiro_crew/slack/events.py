@@ -116,6 +116,7 @@ from kiro_crew.slack.files import (
     process_slack_files,
     voice_memo_notes,
 )
+from kiro_crew.slack.format import assemble_forward_message
 from kiro_crew.slack.handler import (
     APPROVAL_AUTO,
     APPROVAL_INTERACTIVE,
@@ -387,18 +388,51 @@ async def _route_message(
     team_id = event.get("team", "")
     files = event.get("files", [])
 
-    # Slack forwards carry content in attachments, not text — recover it so the
-    # forward isn't silently dropped by the (not text and not files) guard below.
-    # A positively admitted trusted bot may also carry card text in an ordinary
-    # attachment; keep that recovery unavailable to every other sender.
-    if not text or text in _SLACK_BLOCK_FALLBACKS:
+    # A native Slack forward carries the real body in ``attachments``
+    # (``is_share`` / ``is_msg_unfurl``), not in top-level ``text``; a note typed
+    # with the forward occupies ``text``. So detect share attachments whether or
+    # not ``text`` is set, quarantine each forwarded body (and its file metadata)
+    # in the same untrusted-content fence the message shortcut uses (XPIA
+    # guard), and keep the owner's note OUTSIDE the fence as first-party intent.
+    # The thread-follow "addressed to someone else" check reads what the
+    # message opens with: the owner's note when there is one, else the first
+    # forwarded body, never the fence framing.
+    address_text = text
+    is_forward = _has_share_attachments(event)
+    if is_forward:
+        note = "" if text in _SLACK_BLOCK_FALLBACKS else text
+        forwards = _forwarded_messages(event, has_note=bool(note))
+        # Event-level blocks are the note's own: its tables stay with it,
+        # outside the fence, as first-party text.
+        note_tables = _extract_table_text(event, include_attachments=False) if note else ""
+        if note_tables and note_tables not in note:
+            note = f"{note}\n\n{note_tables}"
+        if forwards:
+            address_text = note or forwards[0].text
+            text = "\n\n".join(
+                assemble_forward_message(fwd, note=note if index == 0 else "")
+                for index, fwd in enumerate(forwards)
+            )
+        else:
+            text = note
+            if not text and from_trusted_bot:
+                text = _extract_trusted_bot_attachment_text(event)
+            address_text = text
+    # Slack may also put a message's content only in event-level blocks, or set
+    # text to a generic Block Kit placeholder. A positively admitted trusted bot
+    # may carry card text in an ordinary attachment; keep that recovery
+    # unavailable to every other sender.
+    elif not text or text in _SLACK_BLOCK_FALLBACKS:
         fallback = "" if text in _SLACK_BLOCK_FALLBACKS else text
         text = _extract_shared_text(event)
         if not text and from_trusted_bot:
             text = _extract_trusted_bot_attachment_text(event)
         text = text or fallback
+        address_text = text
     # Pasted tables live only in blocks: append them even when text is present.
-    table_text = _extract_table_text(event)
+    # A forward's tables are already placed: the note's beside it, the
+    # forwarded ones inside their fence (_forwarded_messages).
+    table_text = "" if is_forward else _extract_table_text(event)
     if table_text and table_text not in text:
         text = f"{text}\n\n{table_text}" if text else table_text
 
@@ -693,7 +727,7 @@ async def _route_message(
             thread_follow=ch_cfg.thread_follow,
             activation=activation,
             thread_ts=thread_ts,
-            text=text,
+            text=address_text,
             sender_id=sender_id,
             channel=channel,
         ):
@@ -710,7 +744,7 @@ async def _route_message(
             thread_follow=ch_cfg.thread_follow,
             activation=activation,
             thread_ts=thread_ts,
-            text=text,
+            text=address_text,
             sender_id=sender_id,
             channel=channel,
         ):
@@ -1431,6 +1465,8 @@ from kiro_crew.slack.events_block_text import _SLACK_BLOCK_FALLBACKS  # noqa: E4
 from kiro_crew.slack.events_block_text import _extract_shared_text  # noqa: E402
 from kiro_crew.slack.events_block_text import _extract_table_text  # noqa: E402
 from kiro_crew.slack.events_block_text import _extract_trusted_bot_attachment_text  # noqa: E402
+from kiro_crew.slack.events_block_text import _forwarded_messages  # noqa: E402
+from kiro_crew.slack.events_block_text import _has_share_attachments  # noqa: E402
 from kiro_crew.slack.events_block_text import _string_field  # noqa: E402
 from kiro_crew.slack.events_home_tab import _publish_home_tab  # noqa: E402
 from kiro_crew.slack.events_inbound import SeenCache  # noqa: E402
@@ -1478,6 +1514,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.events_block_text import _BoundedBlockText  # noqa: F401
     from kiro_crew.slack.events_block_text import _MAX_RECOVERED_TEXT_CHARS  # noqa: F401
     from kiro_crew.slack.events_block_text import _extract_blocks_text  # noqa: F401
+    from kiro_crew.slack.events_block_text import _extract_share_attachment_text  # noqa: F401
+    from kiro_crew.slack.events_block_text import _is_share_attachment  # noqa: F401
     from kiro_crew.slack.events_block_text import _normalize_message_blocks  # noqa: F401
     from kiro_crew.slack.events_block_text import _render_rich_text_element  # noqa: F401
     from kiro_crew.slack.events_block_text import _table_row_fragments  # noqa: F401
@@ -1513,4 +1551,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.events_inbound import _MAX_SEEN  # noqa: F401
     from kiro_crew.slack.events_inbound import _USER_MENTION_RE  # noqa: F401
     from kiro_crew.slack.events_inbound import _addressed_to_someone_else  # noqa: F401
+    from kiro_crew.slack.format import ForwardedMessage  # noqa: F401
+    from kiro_crew.slack.format import count_forwarded_files  # noqa: F401
+    from kiro_crew.slack.format import forwarded_files_from_slack  # noqa: F401
 # isort: on
