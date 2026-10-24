@@ -3211,6 +3211,12 @@ seam. A policy pins the seam off MACHINE-WIDE with one object -- every surface, 
 {"version": 1, "capabilities": {"decisions": {"enabled": false}}}
 ```
 
+**Which models, points and endpoints — three lists.** The row carries inner `models` (`identifier`), `points` (`identifier`) and `endpoints` (`host`) rulesets (RFC [crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md), appendix rows "Decision models", "Decision kinds" and "Decision endpoints"). `decide` asks `capability.targets_denied` once the lane and model are known and before the scrub: `points:<point>` always, and for the Jev lane, the one that sends to a decision provider, `models:<model id>` and `endpoints:<host>` for every reading of the provider endpoint's host (`governance_parts.matching.url_policy_hosts`: the host as the standard library, `urllib3` and `yarl` each read it, plain and with the host part percent-decoded, lower-cased, without a root dot or an IPv6 zone; an IP literal in canonical form; a non-ASCII name only as the `xn--` form the clients send. A URL with no such reading is asked as `""`, which matches no entry: as for `network.egress`, an allow list is the hard bound, entries name ASCII hosts without a root dot and IPs in canonical form, and a deny list refuses the spellings it can name). The judge's LLM lane sends to the session's own model provider through the session runner, which picks the served model itself, so it is asked about its point only; `models` and `endpoints` do not bind it. Each item is evaluated and audited, never short-circuited; a refusal returns `None` and writes no decision row, like the capability refusal. The lists bind local presets too, as `capabilities.decisions` already does. A policy without these rulesets permits as before.
+
+```json
+{"version": 1, "capabilities": {"decisions": {"scopes": {"models": {"mode": "allow", "allow": ["jev-latest"]}, "points": {"mode": "deny", "deny": ["tool.risk"]}}}}}
+```
+
 ### "Share as image" — `capabilities.social_share`
 
 The chat's *More actions → Share as image* turns an assistant reply into a branded
