@@ -426,6 +426,97 @@ label would be confidently wrong). Both are guarded by a regression test.
 
 Tests: `test/metrics/test_resource_attrs.py`.
 
+### Per-destination narrowing: the export allowlist, point attributes, resource
+
+The table above is the resource EVERY sink gets, and the roster below is the
+instrument set every sink gets. That is the right answer for the local JSONL sink
+and for an operator's own collector: both are the operator's own machine talking
+to the operator's own backend. It is the wrong answer for a destination that may
+receive only part of it -- a product destination reporting how Kiro Crew is used,
+whose exported set is a reviewed list rather than everything the process happens
+to record.
+
+So `OtlpDestination` carries three optional NARROWING fields. Each can only
+reduce or label what THAT destination receives; none of them can widen anything,
+reach the local sink, or touch another destination. All three default to today's
+behaviour, so an existing destination's payload is byte-identical.
+
+| Field | Default | What it does |
+|-------|---------|--------------|
+| `allow: frozenset[str] \| None` | `None` | A metric whose name is not in the set is dropped before encoding. `None` sends every metric collected. Full instrument names, `kirocrew.` prefix included. |
+| `point_attributes: Mapping[str, str]` | empty | Fixed pairs added to every exported data point of this destination. |
+| `resource_allow: frozenset[str] \| None` | `None` | This destination's batches carry a `Resource` reduced to these keys. A key the shared resource does not set is simply absent. |
+
+`metrics/destination_filter.py` enforces all three as an exporter WRAPPER that
+`_build_otlp_reader` puts around that destination's own exporter. The descriptor
+declares the narrowing; the core performs it. Four properties follow from where
+the wrapper sits:
+
+- **Containment is structural.** A wrapper only ever sees batches handed to its
+  own exporter. The local sink and every other destination read their own, and a
+  destination that narrows nothing is handed the unwrapped exporter object -- there
+  is no wrapper in its path to differ by.
+- **Nothing shared is mutated.** A collected batch arrives as SDK dataclasses
+  whose nested objects a sibling exporter may also hold, so every narrowed level
+  is rebuilt with `dataclasses.replace` rather than assigned in place. That also
+  keeps it correct as the SDK adds fields (`NumberDataPoint.exemplars` arrived
+  that way).
+- **It fails closed.** If the narrowing itself raises, the batch is DROPPED and
+  the first occurrence logs one WARNING (the rest are debug, because a per-minute
+  reader would otherwise write a line per interval forever). Forwarding the
+  unnarrowed batch is the one outcome that would turn a bug here into an egress
+  of data the destination was never allowed.
+- **Temporality stays a core decision.** The wrapper mirrors the wrapped
+  exporter's `_preferred_temporality` and `_preferred_aggregation`, which
+  `PeriodicExportingMetricReader` reads at construction -- answering `None` there
+  would silently put that destination back on the SDK's CUMULATIVE default while
+  the local sink stayed on DELTA.
+
+**A point-attribute key is refused, not dropped.** Keys are checked at
+construction against `destination_filter.ALLOWED_POINT_ATTRIBUTE_KEYS`
+(`ClientType` only today), and an unreviewed key raises. `_build_otlp_reader`
+turns that into "this destination gets no reader", so the cost is one
+destination's egress and local collection continues. Dropping the label instead
+would publish a series the receiving side cannot route, with only a debug line to
+say why. Keys are a reviewed non-secret set and are named in that log; attribute
+VALUES are never logged, least of all beside an endpoint that may carry a
+credential. On a key collision the destination's fixed value WINS over one
+already on the point: the value is a constant fixed at construction and a
+receiving side routes on it, so a call site must not be able to steer it.
+
+`PRODUCT_METRICS` in `metrics/product_metrics.py` is the reviewed set a product
+destination exports under. Names are spelled as literals there because
+`metrics.turns` imports `metrics.provider` at module scope and the recorder reads
+the set, so importing the declaring modules would close a cycle;
+`test/metrics/test_product_metrics.py` resolves every name against its declaring
+constant instead, and fails on a name with no instrument or on one that is a
+histogram or an up/down counter. Counters and gauges only: a fixed-bucket
+histogram's boundaries may not survive a receiving backend, so a distribution is
+exported as a bucket-labelled counter.
+
+Being a real counter is not sufficient. Every attribute value on an exported
+series has to come from a closed enum, which the kind check cannot see, so a
+metric carrying an open value is held out by name with its reason:
+`kirocrew.turn.tokens` is wanted and its instrument exists, but its `model` value
+is the configured model id, drawn from no set this repo controls -- on a non-Kiro
+backend it can be a provider resource id, so its range is whatever that provider
+names and whatever the person pointed the backend at. `provider` is configured
+the same way. It waits for a bucketed or enumerated stand-in for those two. A negative test asserts each holdout stays
+absent and that its name resolves to a real instrument, so the guard cannot pass
+on a typo and putting a name back means deleting a line that states why it was
+out.
+
+Tests: `test/metrics/test_destination_filter.py` (one provider with the real local
+sink plus narrowed and un-narrowed destinations attached at once: the allowed
+metric only, the fixed attribute on every point, the reduced resource, both other
+sinks untouched; then the nearby inputs -- an empty allowlist, an allowlist naming
+an unknown metric, observable gauges, existing attributes preserved, a collision
+on the fixed key, two destinations with different allowlists, a resource key the
+build does not set, a refused key, and a raise inside the narrowing),
+`test/metrics/test_product_metrics.py` (allowlist membership, instrument kind, the
+open-attribute holdouts, and selftests that drive each rejection those checks rely
+on).
+
 ## Instrumented signals
 
 | Metric | Type | Attrs | Site |

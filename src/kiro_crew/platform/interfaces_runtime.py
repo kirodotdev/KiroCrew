@@ -11,6 +11,7 @@ callers use; this module never imports it. A new extension point of this kind go
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -18,6 +19,7 @@ from typing import (
     Callable,
     Dict,
     List,
+    Mapping,
     Optional,
     Protocol,
     Sequence,
@@ -289,12 +291,45 @@ class OtlpDestination:
     only injection point before this seam, cannot avoid.  Static per-destination
     headers need no field of their own: ``Session.headers`` already carries them
     per destination, where that env var is process-wide.
+
+    ``allow``, ``point_attributes`` and ``resource_allow`` are the three NARROWING
+    fields.  They keep this seam add-only in the direction that matters: each one
+    can only reduce or label what THIS destination receives, and none of them can
+    widen it, reach the local JSONL sink, or touch another destination.  All three
+    default to today's behaviour, so an existing destination is byte-identical.
+
+    - ``allow`` -- when set, a metric whose NAME is not in the set is dropped
+      before encoding for this destination.  ``None`` means send every metric the
+      core collected, which is what an operator's own collector gets.  The set
+      holds full instrument names, ``kirocrew.`` prefix included.
+    - ``point_attributes`` -- fixed key/value pairs added to every exported data
+      point of this destination.  Values are constants fixed at construction; keys
+      are checked at construction against a short reviewed allowlist
+      (``metrics.destination_filter.ALLOWED_POINT_ATTRIBUTE_KEYS``) and an
+      unreviewed key REFUSES the destination rather than silently dropping the
+      label.  A pair here wins over a same-named attribute already on the point,
+      because a receiving side that routes on the value must not be steerable from
+      a call site.
+    - ``resource_allow`` -- when set, this destination's exported batches carry a
+      Resource reduced to these keys.  The Resource is SHARED by the local sink
+      and every destination, and it carries host- and install-scoped keys; a
+      destination that may receive only a few of them says so here.  A key absent
+      from the shared Resource is simply absent -- nothing is invented.  ``None``
+      sends the Resource as built.
+
+    All three are enforced by an exporter WRAPPER the core builds
+    (``metrics/destination_filter.py``), outside this descriptor: a destination
+    declares the narrowing, the core performs it, and the wrapper rebuilds the
+    batch rather than mutating SDK objects another exporter also reads.
     """
 
     name: str
     endpoint: str
     signals: "frozenset[str]"
     session: Optional[Any] = None
+    allow: "Optional[frozenset[str]]" = None
+    point_attributes: "Mapping[str, str]" = MappingProxyType({})
+    resource_allow: "Optional[frozenset[str]]" = None
 
 
 class FeedbackTrackerProvider(Protocol):
