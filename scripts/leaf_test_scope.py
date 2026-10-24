@@ -42,6 +42,13 @@ What a modify-only leaf diff can still break, and how each is closed
   deliberately over-broad (a mention in a comment escalates too) because it is
   spelling-independent: it covers `importlib`, `__import__`,
   `pytest.importorskip`, a `sys.modules` patch, and whatever comes next.
+* Another test READS it by file name: `test_history_locking_remediation` parses
+  `"test_member_memory_runtime.py"`, and `test_windows_gap_list` parses every
+  module `windows-expected-failures.txt` lists. The quoted-word index holds
+  neither spelling. Closed by looking the changed file's name up, in the tests and
+  in the lists under `test/`, and running each reader once beside the edit. A
+  reader is added, not escalated: what it read decides its own outcome only, and
+  it runs only for a diff that touches a file it names.
 * A CORPUS GATE reads the `test/` tree as DATA and asserts on its CONTENTS, so
   editing a test file can flip a gate that names none of them
   (`test_jsondecodeerror_redundancy_ratchet` carries `test/` in `SCAN_ROOTS`).
@@ -150,6 +157,20 @@ _REACHES_TEST_TREE = re.compile(r"""/[ \t]*['"]test['"]|__file__""")
 # one alone was demonstrably incomplete.
 _JOINS_TEST_DIR = re.compile(r"""/[ \t]*['"]test['"]""")
 
+# A test can also read ONE test file by name, with no scan and no join:
+# `test_history_locking_remediation` parses
+# `Path(__file__).resolve().parent / "test_member_memory_runtime.py"`. The
+# quoted-word index misses that spelling, because `.py` sits between the stem and
+# the closing quote. This takes a quoted file name, bare or `test/`-relative, that
+# ends at the quote or at a node id's `::` (`"test/test_x.py::test_y"`).
+_NAMES_A_FILE = re.compile(r"""['"](?:test/)?([A-Za-z0-9_-]+\.[A-Za-z0-9]+)(?=['"]|::)""")
+
+# How one of the `.txt` lists under `test/` names a test module:
+# `test/test_x.py::test_y` in `windows-expected-failures.txt`, `test/test_x.py` in
+# `windows-collect-ignore.txt`. Prose is not a list: `test/README.md` names a module
+# in passing, and its bare name is quoted by every test that reads another README.
+_LISTED_MODULE = re.compile(r"(?<![A-Za-z0-9_])(test_[A-Za-z0-9_]+)\.py(?![A-Za-z0-9_])")
+
 _PY_SCAN_ROOTS = ("test", "scripts", "src")
 _PY_SCAN_EXCLUDE = ("_vendor", "build", "node_modules", "__pycache__", ".venv")
 
@@ -203,17 +224,20 @@ _WORD = re.compile(r"[A-Za-z0-9_]+\Z")
 
 
 class _TreeIndex(NamedTuple):
-    """What `importers_of` / `mentions_of` need from the tree, and nothing else.
+    """What `importers_of` / `mentions_of` / `readers_of` need from the tree, and nothing else.
 
     `importers`: top-level module name -> the first file (in scan order) that
     imports it by statement. `mentioners`: quoted word token -> the first file whose
     text holds it in quotes. "First" skips the file whose own stem IS the name --
     a module importing itself or quoting its own name is not a dependency -- so
     each entry is the answer the original per-file loop gave, and only that.
+    `readers`: quoted file name -> EVERY top-level test module that names it, since
+    each of them is a test to run rather than a reason to escalate.
     """
 
     importers: dict[str, str]
     mentioners: dict[str, str]
+    readers: dict[str, list[str]]
 
 
 def _index_tree(root: Path) -> _TreeIndex:
@@ -236,6 +260,8 @@ def _index_tree(root: Path) -> _TreeIndex:
     """
     importers: dict[str, str] = {}
     mentioners: dict[str, str] = {}
+    readers: dict[str, list[str]] = {}
+    test_dir = root / "test"
     for path in _iter_python(root):
         text = _read(path)
         rel = _rel_posix(path, root)
@@ -248,8 +274,12 @@ def _index_tree(root: Path) -> _TreeIndex:
             token = match.group(2)
             if token != own:
                 mentioners.setdefault(token, rel)
+        # Only a module a leaf run can execute is worth recording as a reader.
+        if path.parent == test_dir and _LEAF_NAME.match(path.name):
+            for file_name in set(_NAMES_A_FILE.findall(text)):
+                readers.setdefault(file_name, []).append(rel)
         del text
-    return _TreeIndex(importers, mentioners)
+    return _TreeIndex(importers, mentioners, readers)
 
 
 _index_tree_cached = functools.lru_cache(maxsize=None)(_index_tree)
@@ -350,6 +380,32 @@ def mentions_of(stems: set[str], root: Path) -> dict[str, str]:
     return found
 
 
+def readers_of(stems: set[str], root: Path) -> list[str]:
+    """Tests that read one of these test modules by its FILE name, sorted.
+
+    The name is in the test's own source (`"test_x.py"`, `"test/test_x.py"`, a node
+    id `"test/test_x.py::test_y"`), or in a `.txt` list under `test/` that the test
+    names: `test_windows_gap_list` reads `windows-expected-failures.txt` and fails
+    when a test the list names was renamed, and nothing in its source names that
+    module.
+
+    A reader is looked up per diff rather than gated on every leaf run: each one
+    depends only on the modules it names, and much of what this spelling finds is a
+    fixture string that reads nothing (a path in a routing table, a sample argv).
+    Beside an edit to the module it names, such a false reader costs one file; as a
+    gate, it would cost every leaf run.
+    """
+    if not stems:
+        return []
+    names = {f"{stem}.py" for stem in stems}
+    test_dir = root / "test"
+    for path in sorted(test_dir.glob("*.txt")):
+        if stems.intersection(_LISTED_MODULE.findall(_read(path))):
+            names.add(path.name)
+    index = _index_tree_cached(root)
+    return sorted({reader for name in names for reader in index.readers.get(name, ())})
+
+
 def corpus_gates(root: Path) -> list[str]:
     """Tests that read the `test/` tree as data, so any test edit can flip them.
 
@@ -442,6 +498,8 @@ def classify(
             "broken rather than trusting an empty result"
         )
 
+    # The tests that read a changed module by name run once beside it.
+    gates = sorted(set(gates).union(readers_of(stems, root)))
     gates = [g for g in gates if g not in set(paths)]
     return (paths, gates), (
         f"leaf tests: {len(paths)} modified leaf test file(s) repeated, plus "
