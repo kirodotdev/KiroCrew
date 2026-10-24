@@ -147,8 +147,8 @@ def _derive_step(
        only by the formal gateway restart path.
     6. ``occupied`` — serve holds this port/mount for something that is not this
        dashboard, or its state could not be determined. Publishing would REPLACE
-       it, so this refuses and the card renders the manual command
-       (``kirocrew tailnet up``) for the operator to run deliberately. Decided
+       it, so this refuses and the card renders the manual ``tailscale serve``
+       publish (``serve_command``) for the operator to run deliberately. Decided
        on ``port_free``, not on ``published`` alone: a stranger's handler at the
        mount reads ``published=False`` exactly as a free port does, and offering
        the publish button for it walked the operator into ``publish()``'s own
@@ -310,11 +310,20 @@ async def api_tailnet_mobile_status(request: web.Request) -> web.Response:
             # line; ``detail`` already says why in a sentence the card's body
             # copy repeats, so the card renders only the path.
             "refused_cli": probe.refused_cli,
-            # The publish the gateway cannot run for a refused binary, spelled
-            # for the operator to run by hand. Built here because only the
-            # server knows the port it actually listens on.
+            # The publish the gateway cannot or will not run here, spelled for
+            # the operator to run by hand. Built server-side because only this
+            # process knows the port it actually listens on. Two steps need it:
+            # ``untrusted_cli`` (the gateway refuses the planted binary) and
+            # ``occupied`` (serve already holds this mount for something else, so
+            # publishing would REPLACE it — the gateway refuses to, and the
+            # operator runs the publish deliberately if the existing mapping is
+            # safe to overwrite). ``kirocrew tailnet up`` was shown on
+            # ``occupied`` before and could not resolve it: it runs the very
+            # publish path that just refused.
             "serve_command": (
-                tailnet_serve.manual_publish_command(port) if probe.refused_cli and port else ""
+                tailnet_serve.manual_publish_command(port)
+                if port and (probe.refused_cli or live.step == "occupied")
+                else ""
             ),
             "download_url": TAILSCALE_DOWNLOAD_URL,
         }
