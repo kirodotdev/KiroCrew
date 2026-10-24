@@ -14,7 +14,7 @@ ones run on this module's own globals and import what they use inside their bodi
 
 The manager fields this module uses. Writes: none. Reads: ``_on_done``, ``_sessions``,
 ``_teardown_cancelled_ids``, ``_safe_announce``, ``_forget_pending_start``,
-``arm_report_in_flight``, ``consume_report_hold``.
+``arm_report_in_flight``, ``consume_report_hold``, ``_admission``.
 """
 
 from __future__ import annotations
@@ -260,9 +260,21 @@ def _announce_rejection_impl(self: _GateMixin, info: SubagentInfo) -> SubagentIn
     queue-drained non-batch rejections too — ``_drain_queue`` announces
     those itself off the returned info, so announcing here as well would
     inject the completion twice.
+
+    The announce of a refused row that the store holds waits for that
+    row's settle (``await_pending_defer``) before ``_on_done`` runs: the
+    wave's completion event, and the failure it counts, are the refusal
+    PUBLISHED to the parent, and a refusal published while the row's
+    ``failed`` write is still in flight is one a restart reverses. A
+    refusal with no pending write returns from that wait at once.
     """
     self._manager._forget_pending_start(info.id)
     if info.batch_id and self._manager._on_done:
+
+        async def _settled_then_announce() -> None:
+            await self._manager._admission.await_pending_defer(info.id)
+            await self._manager._safe_announce(info)
+
         try:
             # Arm synchronously BEFORE scheduling the announce. This path
             # also carries SYNTHETIC rejections created ``done=True``
@@ -276,7 +288,7 @@ def _announce_rejection_impl(self: _GateMixin, info: SubagentInfo) -> SubagentIn
             # is idempotent, so a registered rejection that already armed
             # at its flip site composes with no effect.
             self._manager.arm_report_in_flight(info)
-            _announce_task = asyncio.ensure_future(self._manager._safe_announce(info))
+            _announce_task = asyncio.ensure_future(_settled_then_announce())
             self._hold_announce_task(f"reject-{info.id}", _announce_task)
             # Strand-guard mirroring ``_spawn_terminal_report``'s: an
             # announce task cancelled before its first run never reaches

@@ -46,6 +46,7 @@ class _PumpMixin(ManagerComponent):
         def taskq_admit_wait_secs(self) -> float: ...
 
         async def taskq_child_registered_async(self, info: "SubagentInfo") -> None: ...
+        async def await_pending_defer(self, agent_id: str, *, dispatch: bool = False) -> None: ...
 
         @staticmethod
         def _release_taken_start(
@@ -496,6 +497,17 @@ class _PumpMixin(ManagerComponent):
                 # durably parked -- or refused for want of a row -- before any
                 # caller can read the answer as a queued handle.
                 first = await admission.finish_parked_defer(first)
+                # A refusal fired on this branch (the gate's commit-point
+                # re-check, an agent name that fails validation at dispatch)
+                # posted its row's FAILED write on the way out. Await it -- and
+                # verify it landed -- before the answer is returned: this
+                # branch runs under neither ``spawn_async``'s accept ``finally``
+                # nor ``claim_and_start``. The wait is the dispatcher's bounded
+                # one: this loop runs the picked rows one at a time, so a write
+                # the store refuses for this row alone must not stop the rest;
+                # past the read bound the row stays excluded and unregistered
+                # while its settle keeps retrying (``await_pending_defer``).
+                await admission.await_pending_defer(first.id, dispatch=True)
             # A re-queued (or, without a store, started) row: the W3 branch
             # runs here, awaited, instead of inline in ``spawn_impl``.
             if (
@@ -717,6 +729,18 @@ class _PumpMixin(ManagerComponent):
                 self._manager.__dict__.get("_starting_claim_parents", {}).pop(point.agent_id, None)
                 if not starting.done():
                     starting.set_result(registered)
+            if not registered and not claim_retained:
+                # A claim that was refused at the gate's commit point (the
+                # conversation-busy re-check) posted its row's FAILED write on
+                # the way out. Await it here -- and verify it landed -- before
+                # the refusal is returned: this is the one re-entry path that
+                # does not run under ``spawn_async``'s accept ``finally``, and a
+                # refusal published while its durable failure is still in
+                # flight would let a lost write leave the claimed row ADMITTED
+                # for the next incarnation's reconcile to requeue and run. The
+                # dispatcher's bounded wait, as on the drained branch above;
+                # after the start's answer above, which no await may precede.
+                await self.await_pending_defer(point.agent_id, dispatch=True)
             if registered:
                 # Every registered start re-publishes the parent's queued depth.
                 # A direct spawn owes nothing to the count, so its emit reports
@@ -1120,10 +1144,21 @@ class _PumpMixin(ManagerComponent):
             and not drained.batch_id
             and self._manager._on_done
         ):
+            # The announce is the refusal PUBLISHED to the parent, and the
+            # dispatcher's own wait on the row's settle is bounded
+            # (``await_pending_defer(dispatch=True)``), so this task waits for
+            # the write itself -- the caller-style hold, as the batch announce
+            # in ``_announce_rejection`` does -- and the dispatcher moves on.
+            refused = drained
+
+            async def _settled_then_announce() -> None:
+                await self._manager._admission.await_pending_defer(refused.id)
+                await self._manager._safe_announce(refused)
+
             try:
                 self._hold_announce_task(
                     f"reject-{drained.id}",
-                    asyncio.ensure_future(self._manager._safe_announce(drained)),
+                    asyncio.ensure_future(_settled_then_announce()),
                 )
             except RuntimeError:
                 pass  # no running loop (sync/test context)

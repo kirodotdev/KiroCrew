@@ -12,8 +12,7 @@ binds it under the same name in ``admission/taskq_bridge.py``, so it reaches the
 ``self._manager`` and its sibling members through ``self``, and a class-level patch of a member
 reaches every call made through ``self`` or the class.
 
-The manager fields this module uses. Writes: ``_parked_defers``, ``_pending_defers``. Reads:
-``_cancellation``.
+The manager fields this module uses. Writes: ``_parked_defers``. Reads: ``_cancellation``.
 """
 
 from __future__ import annotations
@@ -216,27 +215,11 @@ def taskq_defer_posted(self: _TaskqBridgeMixin, agent_id: str, *, reason: str) -
         store, f"defer {agent_id}", store.defer, agent_id, wait=wait, reason=reason
     )
     if task is not None:
-        pending = getattr(self._manager, "_pending_defers", None)
-        if pending is None:
-            pending = {}
-            setattr(self._manager, "_pending_defers", pending)
-        pending[agent_id] = task
+        self._retain_pending(agent_id, task)
     try:
         _asyncio.get_event_loop().call_later(wait, self._manager._drain_queue)
     except RuntimeError:
         pass
-
-
-async def await_pending_defer(self: _TaskqBridgeMixin, agent_id: str) -> None:
-    """Wait for the defer :meth:`taskq_defer_posted` posted for *agent_id*,
-    so ``next_run_at`` is on the row before the pump may refill it."""
-    pending = getattr(self._manager, "_pending_defers", None)
-    task = pending.pop(agent_id, None) if pending else None
-    if task is not None:
-        try:
-            await task
-        except Exception:  # noqa: BLE001 - the write logged its own failure
-            pass
 
 
 def park_defer(

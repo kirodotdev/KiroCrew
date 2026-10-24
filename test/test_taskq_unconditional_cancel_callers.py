@@ -26,7 +26,7 @@ ALLOWED: dict[tuple[str, str], str] = {
     ("taskq/waits.py", "WaitLedger.rebuild"): (
         "orphan cancel: runs inside open_store, before the store is attached for claims"
     ),
-    ("taskq/reconcile.py", "_settle_one"): (
+    ("taskq/reconcile.py", "_settle_terminal"): (
         "tombstone settle: reconcile_on_boot runs inside open_store, before the store "
         "is attached for claims"
     ),
