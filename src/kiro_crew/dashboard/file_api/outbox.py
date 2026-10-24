@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         DashboardState,
         FileTooLargeError,
         _body_err_code,
+        _parse_range_header,
         _PathProbeBusy,
         _probe_busy_response,
         _resolve_session_target,
@@ -558,14 +559,30 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
         outcome="completed",
         resources=f"filename={filename}",
     )
-    return web.Response(
-        body=raw,
-        headers={
-            "Content-Disposition": f"{disposition}; filename*=UTF-8''{safe_name}",
-            "Content-Type": content_type,
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
+    headers = {
+        "Content-Disposition": f"{disposition}; filename*=UTF-8''{safe_name}",
+        "Content-Type": content_type,
+        "X-Content-Type-Options": "nosniff",
+        # A <video>/<audio> element seeks by asking for a byte range; a server
+        # that never advertises or answers ranges leaves the progress bar inert.
+        "Accept-Ranges": "bytes",
+    }
+    # The range is cut from bytes the scans above already cleared, so a partial
+    # response never carries content the full one would refuse.
+    range_header = request.headers.get("Range")
+    if range_header:
+        size = len(raw)
+        parsed = _parse_range_header(range_header, size)
+        if parsed is None:
+            return web.json_response(
+                {"error": "range not satisfiable", "code": "bad_range"},
+                status=416,
+                headers={"Content-Range": f"bytes */{size}"},
+            )
+        start, end = parsed
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        return web.Response(status=206, body=raw[start : end + 1], headers=headers)
+    return web.Response(body=raw, headers=headers)
 
 
 async def api_outbox_list(request: web.Request) -> web.Response:

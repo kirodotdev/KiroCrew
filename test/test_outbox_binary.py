@@ -274,6 +274,63 @@ class TestOutboxDownloadBinary:
             assert "inline" in resp.headers["Content-Disposition"]
 
 
+_MP4 = b"\x00\x00\x00\x1cftyp\xff\xfe\x80\x81" + bytes(range(256)) * 4
+
+
+class TestOutboxDownloadRange:
+    """A media element seeks with a ``Range`` request; a 200 for the whole file
+    leaves the native progress bar unable to move."""
+
+    @pytest.mark.asyncio
+    async def test_full_response_advertises_byte_ranges(self, outbox, mock_sel):
+        (outbox / "clip.mp4").write_bytes(_MP4)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/outbox/clip.mp4")
+            assert resp.status == 200
+            assert resp.headers["Accept-Ranges"] == "bytes"
+            assert await resp.read() == _MP4
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("header", "start", "end"),
+        [
+            ("bytes=100-199", 100, 199),
+            ("bytes=500-", 500, len(_MP4) - 1),
+            ("bytes=-64", len(_MP4) - 64, len(_MP4) - 1),
+            ("bytes=1000-999999", 1000, len(_MP4) - 1),
+        ],
+    )
+    async def test_range_request_returns_partial_content(
+        self, outbox, mock_sel, header, start, end
+    ):
+        (outbox / "clip.mp4").write_bytes(_MP4)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/outbox/clip.mp4", headers={"Range": header})
+            assert resp.status == 206
+            assert resp.headers["Content-Range"] == f"bytes {start}-{end}/{len(_MP4)}"
+            assert resp.headers["Content-Type"] == "video/mp4"
+            assert "inline" in resp.headers["Content-Disposition"]
+            assert await resp.read() == _MP4[start : end + 1]
+
+    @pytest.mark.asyncio
+    async def test_unsatisfiable_range_is_416(self, outbox, mock_sel):
+        (outbox / "clip.mp4").write_bytes(_MP4)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(
+                "/api/outbox/clip.mp4", headers={"Range": f"bytes={len(_MP4)}-"}
+            )
+            assert resp.status == 416
+            assert resp.headers["Content-Range"] == f"bytes */{len(_MP4)}"
+
+    @pytest.mark.asyncio
+    async def test_range_does_not_bypass_the_content_scan(self, outbox, mock_sel):
+        """The scan reads the whole file even when the range names a clean slice."""
+        (outbox / "leak.png").write_bytes(_synth_flagged_png())
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/outbox/leak.png", headers={"Range": "bytes=0-7"})
+            assert resp.status == 400
+
+
 class TestGeneratedBinaryActuallyTrips:
     """A fixture the scanner ignores would make every case below vacuous."""
 

@@ -913,6 +913,8 @@ class TestOutboxDownload:
     def _request(filename: str):
         req = MagicMock()
         req.match_info = {"filename": filename}
+        # A bare MagicMock answers headers.get("Range") with a truthy mock.
+        req.headers = {}
         return req
 
     @pytest.mark.asyncio
