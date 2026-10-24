@@ -54,10 +54,10 @@ export function fileDownloadUrl(filePath: string): string {
 
 /** Fetch a file's raw bytes through /api/file-download and hand them to the
  * browser as a save-to-disk. THE ONE transport for retrieving a project file
- * onto the machine running the dashboard — the markdown panel's Download and
- * the file-tree row's Download both call it, so the credential gate the
- * endpoint applies (a positive scan aborts with 400) sits in front of both
- * callers, and the browser-download dance has one owner.
+ * onto the machine running the dashboard. The viewer, file tree, transcript
+ * diffs and file-path menus all call it, so the credential gate the endpoint
+ * applies (a positive scan aborts with 400) covers every caller, and the
+ * browser-download dance has one owner.
  *
  * The failure copy lives HERE, not in each caller: both passed the identical
  * string, so the helper owns it. A credential-scan refusal is told apart from
@@ -106,7 +106,10 @@ export async function downloadFileToDisk(
  *  the fetch above and by the side panel's last-copy download, which hands the
  *  buffer of a file no longer on disk to `downloadBlob` under the same name. */
 export function downloadFileName(filePath: string): string {
-  return filePath.split('/').pop() || 'download'
+  // Backslashes are ordinary filename characters on POSIX. Only a drive or
+  // UNC prefix establishes that this is a Windows path.
+  const windows = /^(?:[A-Za-z]:[\\/]|\\\\)/.test(filePath)
+  return filePath.split(windows ? /[\\/]/ : '/').pop() || 'download'
 }
 
 /** Build the /api/file-stream URL — Range-capable audio/video serving.

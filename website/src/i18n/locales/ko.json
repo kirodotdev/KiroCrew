@@ -6610,10 +6610,8 @@
       "open": "열기",
       "open_in_side_panel": "{{path}}을(를) 사이드 패널에서 열기",
       "plain_view": "강조 표시 없음 — 일반 보기",
-      "split_view": "분할 보기",
       "switch_to_split_view": "분할 보기로 전환",
-      "switch_to_unified_view": "통합 보기로 전환",
-      "unified_view": "통합 보기"
+      "switch_to_unified_view": "통합 보기로 전환"
     },
     "diffPanel": {
       "click_to_copy_path": "클릭하여 경로 복사",
@@ -7330,6 +7328,7 @@
       "tooltip": "이 에이전트는 여기서 시작되지 않습니다. Markdown으로 정의되어 있고 {{current}}은(는) JSON 에이전트만 실행합니다. {{backends}}을(를) 사용하거나 JSON 파일을 추가하세요."
     },
     "markdownPanel": {
+      "downloading": "다운로드 중…",
       "add_to_artifact_library": "아티팩트 라이브러리에 추가",
       "add_to_artifacts": "아티팩트에 추가",
       "add_to_knowledge": "지식에 추가",
@@ -9302,6 +9301,7 @@
       "phone_connection_is_disabled_by_policy_on_this_dep": "이 배포에서는 정책에 따라 휴대전화 연결이 비활성화되어 있습니다."
     },
     "filePathMenu": {
+      "download_current_file": "디스크의 현재 파일 다운로드: {{path}}",
       "copy_failed": "경로를 복사하지 못했습니다",
       "copy_path": "경로 복사",
       "open_in_side_panel": "사이드 패널에서 열기",

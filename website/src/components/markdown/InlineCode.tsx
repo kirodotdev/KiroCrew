@@ -655,10 +655,9 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
     activatePath(path, kind, e.shiftKey, actions, reveal.onError, targetLine, targetEndLine)
   }
   // Right-click opens the shared file-path menu (Open in default app / reveal /
-  // copy path), additive to the existing click/shift-click activation. The
-  // native items self-gate on directLocal; the in-app items ("Open in side
-  // panel", "Show folder in side panel") come from this host's own handlers,
-  // so a remote session still gets an entry that works on the viewer's screen.
+  // download / copy path), additive to the existing click/shift-click activation.
+  // Host actions self-gate on directLocal; remote sessions can download files
+  // and copy paths.
   // `kind` is threaded through so a directory chip hides "Open with default
   // app" — the reveal endpoint 400s an `open` on a directory, which would land
   // the user on an error for a click they cannot fix.
