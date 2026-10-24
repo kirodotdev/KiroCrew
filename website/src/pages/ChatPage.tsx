@@ -568,6 +568,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     sidMatches,
     setSidMatches,
     openShortNameMatch,
+    ownChatClosedElsewhere,
   } = session
 
   // Only the routed chat consumes app launch intents; see useAppLaunchIntake.
@@ -1029,6 +1030,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           <ChatEmptyState
             mode={mode} dispatch={dispatch} pendingAgent={pendingAgent} pendingAgentKindRef={pendingAgentKindRef} pendingModel={pendingModel} newSessionRef={newSessionRef}
             newSlotFailed={newSlotFailed} newSlotMutation={newSlotMutation} setNewSlotFailed={setNewSlotFailed} setSidError={setSidError}
+            closedElsewhere={!!popout && !!ownChatClosedElsewhere}
           />
         ) : (
           <SearchHighlightContext.Provider value={searchCtxValue}>
