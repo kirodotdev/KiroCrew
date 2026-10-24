@@ -8,11 +8,13 @@ import { mintSendId } from '../../../chat-core/transport/sendTurn'
 import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import { isNonInteractiveQueued, isSystemDelivery } from '../../../components/QueueStack'
 import { useQueuedMessageActions } from '../../../hooks/useQueuedMessageActions'
+import { useSteerRetract } from '../../../hooks/useSteerRetract'
 import { drainPendingChunks } from '../../../lib/pendingChunkDrain'
 import { store, type AppDispatch } from '../../../store'
 import { appendMessage, appendSlotMessage, capturePendingAskId, clearPendingPermissions, requestStop, selectComposerBusy, type pendingQuestionFor } from '../../../store/chatSlice'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { mergeIntoDraft, mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
+import { setFileDraft } from '../../../utils/chatFileDrafts'
 import { expandAll as expandPasteTokens } from '../../../utils/pasteTokens'
 import { handleStopPress, isEscalationState } from '../../../utils/stopDebounce'
 import { answerRejectedMessage } from '../../../utils/questionAnswers'
@@ -27,6 +29,7 @@ interface BusyTurnControlsOptions {
   activeSlotRef: MutableRefObject<string | null>
   slotRunning: boolean
   messages: ChatMessage[]
+  transcriptAuthoritative: boolean
   /** The page's send, for the busy-but-not-running case and nothing else. */
   send: (optionText?: string, targetSlot?: string, steerNow?: boolean, isolated?: boolean) => Promise<boolean>
   /** The receipt-aware steer POST (turnActions.ts's `applySteerReceipt` adapter). */
@@ -53,8 +56,9 @@ interface BusyTurnControlsOptions {
 /**
  * The composer's controls for a turn that is already busy: steering the text
  * into the running turn (or starting a real turn when only sub-agents are
- * running), answering a question card raised by that turn, stopping it, and the
- * queued-message cards' cancel / interrupt / edit / reorder actions.
+ * running), taking back a steer that turn has not read yet, answering a question
+ * card raised by that turn, stopping it, and the queued-message cards' cancel /
+ * interrupt / edit / reorder actions.
  */
 export function useBusyTurnControls({
   activeSlot,
@@ -63,6 +67,7 @@ export function useBusyTurnControls({
   activeSlotRef,
   slotRunning,
   messages,
+  transcriptAuthoritative,
   send,
   steerMutation,
   messageQuote,
@@ -260,25 +265,46 @@ export function useBusyTurnControls({
   // spelling and it destroyed text: cancelling two cards in a row overwrote the
   // first card's restored draft with the second's, and by then the first card had
   // already been optimistically retired, so that text existed nowhere else.
-  // Whatever lands here is persisted into this slot's draft by the draft
-  // commit (useComposerDraftLifecycle), so a recovered draft survives a slot switch.
+  // Update the refs and persisted slot stores before returning: useSteerRetract
+  // removes its recovery record after this callback, so a reload between this
+  // effect and the composer's next commit must still find the restored draft.
   const restoreQueuedDraft = useCallback(
     (text: string, files: string[], aliases?: Record<string, string[]>, quote?: MessageQuote) => {
       // The stash carries the quote the send consumed: back as a staged card
       // when the stage is free, else in the restored text.
-      setInput(prev => mergeRecoveredDraft(prev, messageQuote.recoverInto(text, quote ?? null)))
-      // Chips MERGE like the text does: paths join whatever is already staged,
-      // deduped, so a re-send serializes each attachment exactly once.
-      if (files.length) setPendingFiles(prev => [...new Set([...prev, ...files])])
+      const recoveredText = messageQuote.recoverInto(text, quote ?? null)
+      const slot = composerSlotRef.current
+      if (!slot) {
+        setInput(prev => mergeRecoveredDraft(prev, recoveredText))
+        return false
+      }
+      // During a slot-switch commit the composer store already holds the
+      // incoming draft, but its refs still hold the outgoing one. Persist from
+      // the incoming slot stores, and merge the visible value through the
+      // composer store's pure updater so neither path can copy the old chat.
+      const restoredText = mergeRecoveredDraft(drafts.current[slot], recoveredText)
+      const slotFiles = fileDrafts.current[slot] ?? []
+      const restoredFiles = files.length
+        ? [...new Set([...slotFiles, ...files])]
+        : slotFiles
+      setDraft(drafts.current, slot, restoredText)
+      if (files.length) setFileDraft(fileDrafts.current, slot, restoredFiles)
       // The stash's alias snapshot comes back with them (fork GPT review), so
       // the restored mentions are reconciled again -- without it a
       // hand-deleted mention left a stale chip the next send re-attached.
-      if (aliases) {
-        const slot = composerSlotRef.current
-        if (slot) mergeSlotTokens(slot, aliases)
+      if (aliases) mergeSlotTokens(slot, aliases)
+      const stored = saveDrafts()
+      setInput(prev => mergeRecoveredDraft(prev, recoveredText))
+      // Chips MERGE like the text does: paths join whatever is already staged,
+      // deduped, so a re-send serializes each attachment exactly once.
+      if (files.length) {
+        pendingFilesRef.current = restoredFiles
+        setPendingFiles(restoredFiles)
       }
+      return stored
     },
-    [mergeSlotTokens, setInput, setPendingFiles, composerSlotRef, messageQuote],
+    [mergeSlotTokens, setInput, setPendingFiles, composerSlotRef, messageQuote,
+      pendingFilesRef, drafts, fileDrafts, saveDrafts],
   )
   const {
     onCancel: handleCancelQueued,
@@ -296,6 +322,22 @@ export function useBusyTurnControls({
     stagedFiles: () => pendingFilesRef.current,
     // A mention written back for a project file is spelled relative to this
     // slot's project, the spelling the composer revives a chip for on undo.
+    project: () => currentSlot?.project,
+  })
+  // Unsend, Edit and Queue instead on a pending steer. An Edit's text comes back
+  // through the same merge a cancelled queue card's does.
+  const {
+    onSteerAction: handleSteerAction,
+    pending: steerActionPending,
+    refusals: steerActionRefusals,
+    requestFailures: steerActionRequestFailures,
+  } = useSteerRetract({
+    slot: activeSlot,
+    messages,
+    transcriptAuthoritative,
+    slotRunning,
+    restoreDraft: restoreQueuedDraft,
+    stagedFiles: () => pendingFilesRef.current,
     project: () => currentSlot?.project,
   })
   /** The composer's Stop press: soft stop, then an armed force stop. */
@@ -381,5 +423,6 @@ export function useBusyTurnControls({
   return {
     queuedMessages, systemDeliveryCount, steer, stopTurn, keepQuestionAnswer, answerQuestionCard,
     handleCancelQueued, handleInterruptQueued, handleEditQueued, handleReorderQueued, queuePendingIds,
+    handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
   }
 }

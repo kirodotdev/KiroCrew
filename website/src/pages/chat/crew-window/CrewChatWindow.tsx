@@ -40,7 +40,7 @@ import { useCrewWindowModelPicker, type PeerModelFields } from './crewWindowMode
 import { useCrewWindowAgentMode, type PeerAgentModeFields } from './crewWindowAgentMode'
 import { mergeRecoveredDraft } from '../../../utils/chatDrafts'
 import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
-import { isHiddenInvisibleAssistantRow } from '../../../utils/invisibleText'
+import { isHiddenInvisibleAssistantRow, isRetractedSteerRow } from '../../../utils/invisibleText'
 import { isSystemNoticeRow } from '../CompactionCard'
 import { useMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
@@ -297,7 +297,12 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   }, [nativeApproval, instanceId, slotPath, settle, name])
   // The newest turn row the transcript draws as a bubble: a system notice
   // (compaction, reload) and a say-nothing reply are not one.
-  const lastTurn = [...messages].reverse().find(m => m.role === 'user' || (m.role === 'assistant' && !isSystemNoticeRow(m) && !isHiddenInvisibleAssistantRow(m)))
+  const lastTurn = [...messages].reverse().find(m =>
+    !isRetractedSteerRow(m) && (
+      m.role === 'user' ||
+      (m.role === 'assistant' && !isSystemNoticeRow(m) && !isHiddenInvisibleAssistantRow(m))
+    ),
+  )
   // An untitled session shows the shared "Untitled session" label, never the
   // internal slot key. The key still routes every request (crewWindowSlot,
   // slotPath); only the header text changes. The label is used ONLY once a

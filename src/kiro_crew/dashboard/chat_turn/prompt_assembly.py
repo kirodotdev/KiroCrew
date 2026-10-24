@@ -633,8 +633,10 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                     build_cancelled_turn_preamble,  # circular: context -> dashboard.chat -> chat_runner (can't top-level: context imports chat at module load); circular: context -> chat -> chat_runner; circular: context -> chat
                 )
 
-                preamble = build_cancelled_turn_preamble(
-                    state.context_builder.conversation_log, session_key
+                preamble = await asyncio.to_thread(
+                    build_cancelled_turn_preamble,
+                    state.context_builder.conversation_log,
+                    session_key,
                 )
                 if preamble:
                     message = preamble + "\n\n" + message

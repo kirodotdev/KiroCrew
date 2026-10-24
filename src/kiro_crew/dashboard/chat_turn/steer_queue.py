@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         _ChatSlot,
         crew_log_emit,
         logger,
+        possibly_consumed_steers,
         settle_consumed_steers,
     )
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
@@ -126,6 +127,11 @@ def _settle_consumed_steers(
     previous = list(slot._pending_steers)
     from kiro_crew.dashboard import responsive_chat
 
+    possibly_delivered = responsive_chat.settle_steers(
+        slot, previous, snapshot, possibly_consumed_steers
+    )
+    newly_possibly_delivered = set(possibly_delivered) - slot._steer_possibly_delivered
+    slot._steer_possibly_delivered.update(possibly_delivered)
     remaining = responsive_chat.settle_steers(slot, previous, snapshot, settle_consumed_steers)
     settled_count = len(previous) - len(remaining)
     logger.debug(
@@ -214,6 +220,10 @@ def _settle_consumed_steers(
         slot._steer_automation.pop(settled_msg, None)
         slot._steer_decision_strips.pop(settled_msg, None)
         slot._steer_possibly_delivered.discard(settled_msg)
+    if settled_count or newly_possibly_delivered:
+        from kiro_crew.dashboard import steer_retract
+
+        steer_retract.on_settled(slot)
 
 
 def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> None:
@@ -231,7 +241,14 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
     "discard" dismisses it with one click; nothing is ever silently lost.
     A hard kill never reaches here with pending steers (the force-stop
     handler clears ``_pending_steers`` alongside ``_queue``).
+
+    A steer the person is taking back is settled first
+    (``steer_retract.on_turn_ending``): an Unsend or an Edit never reached the
+    turn, so it is not requeued, and a Queue instead is left to this requeue.
     """
+    from kiro_crew.dashboard import steer_retract
+
+    steer_retract.on_turn_ending(state, slot)
     if not slot._pending_steers:
         return
     from kiro_crew.dashboard import responsive_chat
@@ -651,6 +668,19 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
                 else ""
             ),
         )
+
+
+async def _on_steer_dropped(turn: _ChatTurn, event) -> None:
+    """kiro-cli dropped the steers it held, unread, on a take-back's clear.
+
+    A copy fanned out to every session on the process names no owner, so it
+    settles nothing here.
+    """
+    if getattr(event, "runtime_global", False):
+        return
+    from kiro_crew.dashboard import steer_retract
+
+    await steer_retract.on_dropped(turn.state, turn.slot)
 
 
 async def _on_steer_consumed(turn: _ChatTurn, event) -> None:

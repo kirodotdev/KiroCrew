@@ -693,6 +693,15 @@ class AcpSessionProvider(LLMProvider):
         return self._handle.supports_steer
 
     @property
+    def supports_steer_retract(self) -> bool:
+        """True when the backing handle can take back a steer its turn has not read."""
+        return self._handle.supports_steer_retract is True
+
+    async def clear_pending_steers(self) -> bool | None:
+        """Forward a steer clear to the session handle (kiro ``_session/steer/clear``)."""
+        return await self._guarded(self._handle.clear_pending_steers(), own_write_only=True)
+
+    @property
     def steer_needs_loss_recovery(self) -> bool:
         """True when a delivered steer can still be lost (see the handle)."""
         return self._handle.steer_needs_loss_recovery is True

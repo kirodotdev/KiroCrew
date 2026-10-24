@@ -2882,7 +2882,9 @@ caller re-sends it as a fresh message. The dying turn's teardown
 entry meta (set on the entry directly when the teardown requeued it before the
 RPC's own stall surfaced), and the drain runs it with
 `_run_chat(_steer_possibly_delivered=True)`, which leads only the final model
-input with `STEER_POSSIBLY_DELIVERED_NOTE`. The next turn checks before acting
+input with `STEER_POSSIBLY_DELIVERED_NOTE`. A partial echo of distinct raw steers
+sharing one escaped and redacted key marks the whole collision group possibly delivered.
+The next turn checks before acting
 on it again, while slash dispatch, the mirror legs and the user's row keep the
 text as typed. Such an entry drains
 alone (`_dequeue_next_message` never merges it), and the mark is cleared when
@@ -2913,6 +2915,57 @@ Known residual: `_drained_meta` accumulates only `steer_delivery_id` (into
 MERGES two requeued steers keeps one `sendId` and the other send keeps the
 over-keep default. Pinned by the requeue sendId tests in
 `test_steer_requeue_entry_meta.py`.
+
+**Taking back a steer the turn has not read (`dashboard/steer_retract.py`).** A
+`written` steer row carries `meta.steerRetract: true` when it can be taken back:
+the session's own human typed it into the composer (not a peer, a channel, an
+automation or a crewmate's responsive turn), and the slot's live client answers
+`supports_steer_retract` (`ACP_BACKENDS_STEER_RETRACT`, kiro-cli). The dashboard
+draws Unsend, Edit and Queue instead from that mark alone, and the
+`steer_push` frame carries it too. A hard Stop discards the pending steers
+without settling their rows, and a gateway restart mid-turn leaves them as saved,
+so a row can keep the mark after its turn is over: each top-level turn starts by
+withdrawing it (`withdraw_stale_offers`) from every `written` row that still
+carries it, unless a steer is pending or a take-back is armed.
+`POST /api/chat/slots/{slot}/steers/{mid}/retract`
+with `{action}` arms the take-back on the slot (`_steer_retract`, plus
+`_steer_clear` for the clear in flight and the steers it can drop) and writes
+kiro-cli's `_session/steer/clear`, then answers 202. It refuses (409, changing
+nothing) a row that is no longer a pending retractable steer, a second take-back
+or a steer RPC still in flight (a clear written beside a steer could land on
+either side of it), and an app. The clear's answer is `{cleared: true}` whether
+or not anything was held, so it decides nothing: an error answer only means the
+build has no such request, and the row's mark is withdrawn. What the turn reports
+next decides: `AgentExecutionUserMessageCleared` (`EVENT_STEER_DROPPED`) with the
+steer still pending means kiro-cli dropped it unread; a consumption echo settling
+it first means the turn read it (the row goes `consumed` as for any steer); the
+turn ending, including hard-stop cleanup, finding it still pending means it
+never reached the turn. `wrap_user_message` escapes tags inside each steer, so the
+echo splits one way, and a possibly-delivered steer is never taken back or sent
+again. A
+taken-back row keeps its place with `steerState: retracted` and
+`steerRetractAction`, but its content is cleared (`_mark_retracted`), so nothing
+that later reads the transcript as the conversation presents it as something the
+person said, and context replay skips it like a `requeued` one. Regenerate and
+the cancelled-turn restore step past a taken-back row to the prompt or steer
+before it. Edit
+leaves the text to the dashboard, which restores it into the composer from the
+row as it stood when the take-back was asked and moves focus there; Queue instead appends it to the slot's queue as a new
+composer admission, except when the teardown overtook it, where the ordinary
+requeue (head of the queue, row `requeued`) is that outcome. On the dashboard a
+row that settles as taken back while on screen collapses from its bubble into a
+note in place (straight to the note under reduced motion, and for a row read back
+from history); the Edit and Queue instead notes ("You moved this message back to
+your message box", "You moved this message to the queue") are buttons that move
+focus to the composer, and the Unsend note is plain text. The clear drops
+EVERY steer kiro-cli holds, so the others pending when it was written are sent
+again in their order, and a steer sent while a clear is unanswered waits for that
+answer before it is written (`wait_for_clear`), so the clear cannot drop it. The
+wait ends at the clear's answer. The steers the drop took besides the taken-back
+one are sent again only when kiro-cli reports the drop, so a steer sent between
+the two can reach the turn before them. A
+resend that fails leaves its steer pending for the teardown's requeue. Pinned by
+`test_steer_retract.py` and `test_steer_clear_handle.py`.
 
 ### Wait countdown and early end (`/api/session-keepalive` as a control channel)
 

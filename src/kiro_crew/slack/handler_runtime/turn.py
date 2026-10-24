@@ -669,7 +669,9 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             and context_builder.conversation_log
         ):
             _session.prev_turn_cancelled = False
-            _preamble = build_cancelled_turn_preamble(context_builder.conversation_log, session_key)
+            _preamble = await asyncio.to_thread(
+                build_cancelled_turn_preamble, context_builder.conversation_log, session_key
+            )
             if _preamble:
                 offset = len(_preamble) + 2
                 _user_text_range = (offset, offset + len(text))

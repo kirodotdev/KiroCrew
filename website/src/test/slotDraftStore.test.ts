@@ -62,12 +62,41 @@ describe('slotDraftStore', () => {
       expect(d['chat-1']).toEqual(['/a'])
     })
 
-    it('save swallows QuotaExceededError without throwing', () => {
+    it('save reports whether the write stuck', () => {
       const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', sanitize: isString })
+      expect(s.save({ a: 'b' })).toBe(true)
       const orig = Storage.prototype.setItem
       Storage.prototype.setItem = () => { throw new Error('QuotaExceeded') }
-      try { expect(() => s.save({ a: 'b' })).not.toThrow() }
+      try { expect(s.save({ a: 'b' })).toBe(false) }
       finally { Storage.prototype.setItem = orig }
+    })
+  })
+
+  describe('non-persisting reads', () => {
+    it.each([
+      ['fresh', { slot: 'fresh' }, { slot: Date.now() }],
+      ['expired', { slot: 'expired' }, { slot: 0 }],
+      ['unstamped', { slot: 'legacy' }, {}],
+      ['invalid', { slot: 42 }, { slot: Date.now() }],
+    ])('peek matches load for %s entries without writing', (name, drafts, timestamps) => {
+      const peekKey = `peek-${name}`
+      const loadKey = `load-${name}`
+      localStorage.setItem(peekKey, JSON.stringify(drafts))
+      localStorage.setItem(`${peekKey}-ts`, JSON.stringify(timestamps))
+      localStorage.setItem(loadKey, JSON.stringify(drafts))
+      localStorage.setItem(`${loadKey}-ts`, JSON.stringify(timestamps))
+      const peekStore = createSlotDraftStore<string>({ key: peekKey, storage: 'local', ttlMs: TTL, sanitize: isString })
+      const loadStore = createSlotDraftStore<string>({ key: loadKey, storage: 'local', ttlMs: TTL, sanitize: isString })
+      const setItem = vi.spyOn(Storage.prototype, 'setItem')
+      const removeItem = vi.spyOn(Storage.prototype, 'removeItem')
+
+      const peeked = peekStore.peek()
+
+      expect(setItem).not.toHaveBeenCalled()
+      expect(removeItem).not.toHaveBeenCalled()
+      setItem.mockRestore()
+      removeItem.mockRestore()
+      expect(peeked).toEqual(loadStore.load())
     })
   })
 

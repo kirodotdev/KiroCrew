@@ -372,6 +372,9 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
   ['steer_push', [{ type: 'chat_chunk', data: { slot: ACTIVE, seq: 1, content: 'pre' } }], [{
     type: 'steer_push', data: { slot: ACTIVE, content: 'steer', ts: TS, sendId: 's-1', steerState: 'written', mid: 'm-9', meta: { files: ['f'], dirs: ['d'] } },
   }]],
+  ['steer_push that can be taken back', [], [{
+    type: 'steer_push', data: { slot: ACTIVE, content: 'steer', ts: TS, steerState: 'written', mid: 'm-10', steerRetract: true },
+  }]],
   ['steer_push without a slot', [], [{ type: 'steer_push', data: { content: 'steer' } }]],
   ['chat_chunk', [], [
     { type: 'chat_chunk', data: { slot: ACTIVE, seq: 1, content: 'Hello', gen: 'g-1' } },
@@ -1220,6 +1223,12 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action chat/appendSlotMessage {"slot":"slot-a","message":{"role":"user","content":"steer","cls":"msg msg-u","meta":{"steer":true,"sendId":"s-1","steerState":"written","mid":"m-9","files":["f"],"dirs":["d"]},"ts":"2026-09-01T00:00:00.000Z"}}',
     'frame',
     'cancel-frame 2',
+    'action dashboard/touchSlotActivity {"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}',
+  ],
+  "steer_push that can be taken back": [
+    'action chat/appendSlotMessage {"slot":"slot-a","message":{"role":"user","content":"steer","cls":"msg msg-u","meta":{"steer":true,"steerState":"written","mid":"m-10","steerRetract":true},"ts":"2026-09-01T00:00:00.000Z"}}',
+    'frame',
+    'cancel-frame 1',
     'action dashboard/touchSlotActivity {"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}',
   ],
   "steer_push without a slot": [

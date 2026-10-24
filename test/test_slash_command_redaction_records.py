@@ -41,6 +41,11 @@ class _Slot:
     def __init__(self) -> None:
         self.rows: list[dict] = []
         self.credential_evidence = None
+        # A turn's start withdraws a take-back offer an ended turn left on a row.
+        self.messages: list[dict] = []
+        self._pending_steers: list[str] = []
+        self._steer_retract = None
+        self._steer_clear = None
 
     def append(self, role, content, cls="", ts="", *, meta=None, **_kw):
         row = {"role": role, "content": content, "cls": cls, "meta": meta}

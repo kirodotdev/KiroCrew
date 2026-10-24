@@ -9,7 +9,7 @@ import logging
 from aiohttp import web
 
 from kiro_crew.dashboard.body_numbers import body_int
-from kiro_crew.dashboard.chat_delivery import queued_text_for_display
+from kiro_crew.dashboard.chat_delivery import is_retracted_steer_row, queued_text_for_display
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
 from kiro_crew.dashboard.chat_utils import (
@@ -114,6 +114,10 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         ai_idx = -1
         for i in range(len(msgs) - 1, -1, -1):
             role = msgs[i].get("role")
+            # A taken-back steer keeps its row, text cleared, inside the turn it
+            # was sent into. The turn never read it, so it is not a user turn.
+            if is_retracted_steer_row(msgs[i]):
+                continue
             # Never cross a real user turn: the truncation below deletes
             # everything after the target reply's user row, so a reply found
             # PAST a newer user row (e.g. a /compact row awaiting only its
@@ -137,7 +141,7 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             )
         u_idx = -1
         for i in range(ai_idx - 1, -1, -1):
-            if msgs[i].get("role") == "user":
+            if msgs[i].get("role") == "user" and not is_retracted_steer_row(msgs[i]):
                 u_idx = i
                 break
         if u_idx < 0:

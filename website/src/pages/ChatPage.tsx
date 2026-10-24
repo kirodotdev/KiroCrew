@@ -835,6 +835,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const {
     queuedMessages, systemDeliveryCount, steer, stopTurn, keepQuestionAnswer, answerQuestionCard,
     handleCancelQueued, handleInterruptQueued, handleEditQueued, handleReorderQueued, queuePendingIds,
+    handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
   } = useBusyTurnControls({
     activeSlot,
     messageQuote,
@@ -843,6 +844,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     activeSlotRef,
     slotRunning,
     messages,
+    transcriptAuthoritative: !slotLoading && slotSwitchTarget !== activeSlot,
     send,
     steerMutation,
     composerRef,
@@ -902,7 +904,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     approve, dismissApproval, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, continuable, continuing, freshSession, handleContinue, handleFreshSession, interrupted,
     openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openModelPickerFromError, openTurnLimitSetting, quoteWholeMessage, handleAsk, handleQuote, handleEditResend, editLast, farmPassRef,
     handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote,
-    handleTogglePinForMessage,
+    handleTogglePinForMessage, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
   })
   const {
     mobileSessions, drawerMounted, drawerX, drawerPanelRef, drawerScrimRef, sideOverlayX, sideOverlayPanelRef, sideOverlayPhase, drawerScrim, openSidebar, closedSessionActions, sidebarFolderActions,

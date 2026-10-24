@@ -239,6 +239,11 @@ class _Slot:
         # One ``meta`` per row of ``messages``, kept apart so the row tuples the
         # prompt tests index stay three wide.
         self.metas: list[dict | None] = []
+        # Mirrors _ChatSlot's steer take-back state: a turn's start reads all three
+        # before withdrawing a take-back offer an ended turn left behind.
+        self._pending_steers: list[str] = []
+        self._steer_retract = None
+        self._steer_clear = None
 
     def append(self, role, text, cls, *, meta=None):
         self.messages.append((role, text, cls))

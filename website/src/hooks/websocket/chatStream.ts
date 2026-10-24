@@ -165,6 +165,9 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       // which is keyed on `mid`, resolves this row -- without it that patch
       // matches nothing and the state never moves until a reload.
       const steerMid = (data as { mid?: unknown }).mid
+      // Whether this steer can be taken back while it waits (the gateway stamps it
+      // only where the harness can), so another tab draws the same controls.
+      const steerRetract = (data as { steerRetract?: unknown }).steerRetract === true
       const steerMeta = (data as { meta?: unknown }).meta
       const steerFiles = steerMeta && typeof steerMeta === 'object' ? (steerMeta as { files?: unknown }).files : undefined
       const steerDirs = steerMeta && typeof steerMeta === 'object' ? (steerMeta as { dirs?: unknown }).dirs : undefined
@@ -173,7 +176,7 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       const steerQuote = queueEntryQuote(steerMeta).quote
       dispatch(appendSlotMessage({
         slot: (data as { slot?: string }).slot || store.getState().chat.activeSlot || '',
-        message: { role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true, ...(typeof steerSid === 'string' && steerSid ? { sendId: steerSid } : {}), ...(typeof steerState === 'string' && steerState ? { steerState } : {}), ...(typeof steerMid === 'string' && steerMid ? { mid: steerMid } : {}), ...(Array.isArray(steerFiles) ? { files: steerFiles } : {}), ...(Array.isArray(steerDirs) ? { dirs: steerDirs } : {}), ...(steerQuote ? { quote: steerQuote } : {}) }, ts: (data as { ts?: string }).ts },
+        message: { role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true, ...(typeof steerSid === 'string' && steerSid ? { sendId: steerSid } : {}), ...(typeof steerState === 'string' && steerState ? { steerState } : {}), ...(typeof steerMid === 'string' && steerMid ? { mid: steerMid } : {}), ...(steerRetract ? { steerRetract: true } : {}), ...(Array.isArray(steerFiles) ? { files: steerFiles } : {}), ...(Array.isArray(steerDirs) ? { dirs: steerDirs } : {}), ...(steerQuote ? { quote: steerQuote } : {}) }, ts: (data as { ts?: string }).ts },
       }))
       // Steering is the other way to type into a busy session, so it
       // settles the rank exactly like a queued send. The server appends a

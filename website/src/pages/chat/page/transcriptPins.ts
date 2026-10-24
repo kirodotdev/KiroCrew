@@ -184,6 +184,8 @@ export function useTranscriptPins({
     const msgs = messagesRef.current
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i].role !== 'user') continue
+      // A steer taken back draws no bubble, so it has nothing to edit.
+      if (msgs[i].meta?.steerState === 'retracted') continue
       const di = messageToDisplayIdxRef.current.get(i)
       if (di === undefined) return
       navToDisplayIndex(di, { behavior: 'auto', align: 'center' })

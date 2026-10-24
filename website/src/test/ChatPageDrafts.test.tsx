@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
+import type { ChatMessage } from '../types'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
@@ -21,6 +22,8 @@ import {
   __resetNavSeamForTests,
 } from '../utils/errorReport'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
+import { __resetSteerTakeBacksForTests } from '../hooks/useSteerRetract'
+import { api } from '../api/client'
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
@@ -41,6 +44,7 @@ vi.mock('../api/client', () => ({
     spawnList: vi.fn().mockResolvedValue({ agents: [] }),
     uploadFiles: vi.fn().mockResolvedValue({ paths: [] }),
     screenshot: vi.fn().mockResolvedValue({ path: null }),
+    retractSteer: vi.fn().mockResolvedValue({ ok: true, pending: true }),
     createChatSlot: vi.fn().mockResolvedValue({ key: 'new-slot', title: 'new-slot', messages: 0, running: false }),
     setSlotColor: vi.fn().mockResolvedValue({ ok: true }),
     setSlotFolder: vi.fn().mockResolvedValue({ ok: true }),
@@ -65,7 +69,12 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPage from '../pages/ChatPage'
 
-function makeStore(activeSlot: string, slots: { key: string; mode?: string }[]) {
+function makeStore(
+  activeSlot: string,
+  slots: { key: string; mode?: string }[],
+  slotMessages: Record<string, ChatMessage[]> = {},
+  slotRun: Record<string, unknown> = {},
+) {
   return configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
@@ -89,7 +98,7 @@ function makeStore(activeSlot: string, slots: { key: string; mode?: string }[]) 
         slotHasMore: false, slotOldestIndex: 0, loadingOlder: false,
         slotStatusDetail: {}, slotContextPct: {}, slotActivity: {}, slotHistory: [],
         historyOffset: 0, _wsChunkedDuringFetch: false,
-        slotMessages: {}, slotLoading: false,
+        slotMessages, slotLoading: false, slotRun,
       } as unknown as RootState['chat'],
       notifications: { items: [] } as unknown as RootState['notifications'],
     },
@@ -119,11 +128,51 @@ async function renderAndWaitForInput(store: ReturnType<typeof makeStore>, mode?:
   return result
 }
 
+const messageInput = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
+const TAKE_BACK_NOW = Date.parse('2026-10-23T14:00:00Z')
+const SLOT_A_FILE = '/tmp/a.txt'
+const SLOT_B_FILE = '/tmp/b.txt'
+const RESTORED_FILE = '/tmp/steer.txt'
+
+function primeEditedSteerTakeBack() {
+  vi.spyOn(Date, 'now').mockReturnValue(TAKE_BACK_NOW)
+  localStorage.setItem('mc-steer-take-backs', JSON.stringify({
+    'slot-b': {
+      slot: 'slot-b', mid: 'm-9', action: 'edit',
+      content: `steer text\n[attached_file 1] ${RESTORED_FILE}`,
+      meta: { files: [RESTORED_FILE] }, observedRunning: true, requestFailed: false,
+    },
+  }))
+  localStorage.setItem('mc-steer-take-backs-ts', JSON.stringify({ 'slot-b': TAKE_BACK_NOW }))
+}
+
+const steerRow = (steerState: string): ChatMessage => ({
+  role: 'user',
+  content: steerState === 'retracted' ? '' : 'steer text',
+  cls: '',
+  meta: {
+    mid: 'm-9', steer: true, steerState,
+    ...(steerState === 'retracted' ? { steerRetractAction: 'edit' } : {}),
+  },
+})
+
+const slotBMessages = (steerState: string): ChatMessage[] => [
+  { role: 'user', content: 'first', cls: '', meta: { mid: 'm-1' } },
+  { role: 'assistant', content: 'working', cls: '' },
+  steerRow(steerState),
+]
+
 beforeEach(() => {
   vi.clearAllMocks()
   sessionStorage.clear()
   localStorage.clear()
   __resetNavSeamForTests()
+  __resetSteerTakeBacksForTests()
+  vi.mocked(api.chatSlotDetail).mockReset().mockResolvedValue({
+    messages: [{ role: 'assistant', content: 'hi', cls: '' }],
+    running: false, has_more: false, total: 1,
+  })
+  vi.mocked(api.retractSteer).mockReset().mockResolvedValue({ ok: true, pending: true })
   installSoftNavigate(() => {})
 })
 
@@ -496,6 +545,120 @@ describe('ChatPage composerSlotRef effect ordering', () => {
 })
 
 describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
+  it('restores an edited steer into its cached chat draft when switching back', async () => {
+    localStorage.setItem('mc-chat-drafts', JSON.stringify({ 'slot-b': 'B draft' }))
+    sessionStorage.setItem('mc-chat-file-drafts', JSON.stringify({
+      'slot-a': [SLOT_A_FILE], 'slot-b': [SLOT_B_FILE],
+    }))
+    primeEditedSteerTakeBack()
+    vi.mocked(api.chatSlotDetail).mockImplementation((slot: string) => Promise.resolve(
+      slot === 'slot-b'
+        ? { messages: slotBMessages('retracted'), running: false, has_more: false, total: 3 }
+        : { messages: [{ role: 'assistant', content: 'hi', cls: '' }], running: false, has_more: false, total: 1 },
+    ) as never)
+    const store = makeStore(
+      'slot-a',
+      [{ key: 'slot-a' }, { key: 'slot-b' }],
+      { 'slot-b': slotBMessages('retracted') },
+    )
+    await renderAndWaitForInput(store)
+    fireEvent.change(messageInput(), { target: { value: 'A text' } })
+    await waitFor(() => expect(messageInput().value).toBe('A text'))
+
+    await act(async () => { await store.dispatch(switchSlot('slot-b')) })
+
+    await waitFor(() => expect(messageInput().value).toBe('B draft\n\nsteer text'))
+    const drafts = JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')
+    expect(drafts['slot-a']).toBe('A text')
+    expect(drafts['slot-b']).toBe('B draft\n\nsteer text')
+    const fileDrafts = JSON.parse(sessionStorage.getItem('mc-chat-file-drafts') || '{}')
+    expect(fileDrafts['slot-a']).toEqual([SLOT_A_FILE])
+    expect(fileDrafts['slot-b']).toEqual([SLOT_B_FILE, RESTORED_FILE])
+    expect(messageInput().value).not.toContain('A text')
+    expect(localStorage.getItem('mc-steer-take-backs')).toBeNull()
+  })
+
+  it('keeps the edited-steer recovery record when the real composer draft write fails', async () => {
+    localStorage.setItem('mc-chat-drafts', JSON.stringify({ 'slot-b': 'B draft' }))
+    const store = makeStore(
+      'slot-a',
+      [{ key: 'slot-a' }, { key: 'slot-b' }],
+      { 'slot-b': slotBMessages('retracted') },
+    )
+    await renderAndWaitForInput(store)
+    primeEditedSteerTakeBack()
+    vi.mocked(api.chatSlotDetail).mockImplementation((slot: string) => Promise.resolve(
+      slot === 'slot-b'
+        ? { messages: slotBMessages('retracted'), running: false, has_more: false, total: 3 }
+        : { messages: [{ role: 'assistant', content: 'hi', cls: '' }], running: false, has_more: false, total: 1 },
+    ) as never)
+    const originalSetItem = Storage.prototype.setItem
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (key, value) {
+      if (this === localStorage && key === 'mc-chat-drafts') {
+        throw new DOMException('quota exceeded', 'QuotaExceededError')
+      }
+      return originalSetItem.call(this, key, value)
+    })
+
+    await act(async () => { await store.dispatch(switchSlot('slot-b')) })
+
+    await waitFor(() => expect(messageInput().value).toBe('B draft\n\nsteer text'))
+    expect(localStorage.getItem('mc-steer-take-backs')).not.toBeNull()
+  })
+
+  it('keeps an edited steer through a live chunk before an uncached transcript loads', async () => {
+    localStorage.setItem('mc-chat-drafts', JSON.stringify({ 'slot-b': 'B draft' }))
+    sessionStorage.setItem('mc-chat-file-drafts', JSON.stringify({
+      'slot-a': [SLOT_A_FILE], 'slot-b': [SLOT_B_FILE],
+    }))
+    primeEditedSteerTakeBack()
+    let releaseSlotB!: () => void
+    const slotBGate = new Promise<void>(resolveGate => { releaseSlotB = resolveGate })
+    vi.mocked(api.chatSlotDetail).mockImplementation((slot: string) => (slot === 'slot-b'
+      ? slotBGate.then(() => ({
+          messages: slotBMessages('retracted'), running: false, has_more: false, total: 3,
+        }))
+      : Promise.resolve({
+          messages: [{ role: 'assistant', content: 'hi', cls: '' }],
+          running: false, has_more: false, total: 1,
+        })) as never)
+    const store = makeStore('slot-a', [{ key: 'slot-a' }, { key: 'slot-b' }])
+    await renderAndWaitForInput(store)
+    fireEvent.change(messageInput(), { target: { value: 'A text' } })
+    await waitFor(() => expect(messageInput().value).toBe('A text'))
+
+    let pendingSwitch!: Promise<unknown>
+    await act(async () => {
+      pendingSwitch = store.dispatch(switchSlot('slot-b')) as unknown as Promise<unknown>
+    })
+    expect(store.getState().chat.messages).toEqual([])
+    expect(localStorage.getItem('mc-steer-take-backs')).not.toBeNull()
+
+    await act(async () => {
+      store.dispatch({
+        type: 'chat/sseChatMessage',
+        payload: { slot: 'slot-b', role: 'chunk', content: 'partial reply', seq: 1 },
+      })
+      await Promise.resolve()
+    })
+    expect(store.getState().chat.messages.some(message => message.role === 'streaming')).toBe(true)
+    expect(localStorage.getItem('mc-steer-take-backs')).not.toBeNull()
+
+    await act(async () => {
+      releaseSlotB()
+      await pendingSwitch
+    })
+
+    await waitFor(() => expect(messageInput().value).toBe('B draft\n\nsteer text'))
+    const drafts = JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')
+    expect(drafts['slot-a']).toBe('A text')
+    expect(drafts['slot-b']).toBe('B draft\n\nsteer text')
+    const fileDrafts = JSON.parse(sessionStorage.getItem('mc-chat-file-drafts') || '{}')
+    expect(fileDrafts['slot-a']).toEqual([SLOT_A_FILE])
+    expect(fileDrafts['slot-b']).toEqual([SLOT_B_FILE, RESTORED_FILE])
+    expect(messageInput().value).not.toContain('A text')
+    expect(localStorage.getItem('mc-steer-take-backs')).toBeNull()
+  })
   it('leaves the draft alone when a staged prefill belongs to another slot', async () => {
     // A prefill is addressed to ONE slot. Landing on a different slot must not
     // seed the composer with it, and must not consume it either — the slot it

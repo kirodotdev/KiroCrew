@@ -102,11 +102,14 @@ export function pinHandoffY(foldY: number): number {
  * A subagent completion in OLDER scrollback was persisted under role `user`
  * (before the `subagent` role existed) and IS excluded, by SHAPE rather than by
  * role: the same completion-event parser the transcript card uses recognises it.
+ *
+ * A steer the person took back (`steerState: retracted`) is excluded too: it
+ * draws as a one-line note with no text, and it is not something they asked.
  */
 function isPrompt(item: DisplayItem | undefined): boolean {
   if (!item || item.kind !== 'single') return false
   const { msg } = item
-  return msg.role === 'user' && !isSubagentCompletionMessage(msg)
+  return msg.role === 'user' && !isSubagentCompletionMessage(msg) && msg.meta?.steerState !== 'retracted'
 }
 
 /**
