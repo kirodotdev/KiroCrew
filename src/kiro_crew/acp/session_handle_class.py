@@ -1,7 +1,7 @@
 """``class AcpSessionHandle``: the session handle's constructor, state, properties and members.
 
 The class body binds each member an owner module defines (``prompt = _sh_turn.prompt``) and
-keeps the constructor, the properties and the class default. ``_own_methods`` names each bound
+keeps the constructor, the properties and the class default. ``own_methods`` names each bound
 function after its class attribute. ``kiro_crew.acp.session_handle`` re-exports the class,
 which keeps that module as its ``__module__``: the facade is the import path callers, pickles
 and reprs name.
@@ -13,6 +13,7 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
+from kiro_crew._facade_bindings import own_methods
 from kiro_crew.acp import kas_wire
 from kiro_crew.acp import session_handle_compaction as _sh_compaction
 from kiro_crew.acp import session_handle_dispatch as _sh_dispatch
@@ -51,28 +52,27 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.recovery.ladder import InfraError
 
-_OWNER_PREFIX = "kiro_crew.acp.session_handle_"
+#: The owner modules whose functions ``AcpSessionHandle`` binds as its members, this
+#: shell included.
+_MEMBER_OWNERS = frozenset(
+    {
+        "kiro_crew.acp.session_handle_class",
+        "kiro_crew.acp.session_handle_compaction",
+        "kiro_crew.acp.session_handle_dispatch",
+        "kiro_crew.acp.session_handle_kas",
+        "kiro_crew.acp.session_handle_lifecycle",
+        "kiro_crew.acp.session_handle_mcp",
+        "kiro_crew.acp.session_handle_model_selection",
+        "kiro_crew.acp.session_handle_native_children",
+        "kiro_crew.acp.session_handle_permissions",
+        "kiro_crew.acp.session_handle_steering",
+        "kiro_crew.acp.session_handle_turn",
+        "kiro_crew.acp.session_handle_updates",
+        "kiro_crew.acp.session_handle_watchdog",
+    }
+)
 
 
-def _own_methods(cls: type) -> type:
-    """Make each member *cls* binds from an owner module read as a method of *cls*.
-
-    A bound function annotates ``self`` so mypy checks its body as a method body;
-    this drops that annotation from the runtime object and names the function after
-    the class attribute (``AcpSessionHandle._run_turn``), so its ``inspect.signature``
-    and ``__qualname__`` are what the one-module class had, and so are the reprs of
-    the coroutines and tasks it starts. Only ``__module__`` moves: it names the owner
-    module that holds the body.
-    """
-    for name, member in vars(cls).items():
-        function = getattr(member, "__func__", member)
-        if getattr(function, "__module__", "").startswith(_OWNER_PREFIX):
-            function.__annotations__.pop("self", None)
-            function.__qualname__ = f"{cls.__qualname__}.{name}"
-    return cls
-
-
-@_own_methods
 class AcpSessionHandle:
     """Handle for a single ACP session on a shared runtime.
 
@@ -951,3 +951,6 @@ class AcpSessionHandle:
         de-duplicating an id means remembering it, which is the one thing the
         cap exists to refuse."""
         return self._native_child_overflow
+
+
+own_methods(AcpSessionHandle, _MEMBER_OWNERS)

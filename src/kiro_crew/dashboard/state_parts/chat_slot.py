@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, Callable
 
+from kiro_crew._facade_bindings import own_methods
 from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
@@ -16,7 +17,6 @@ from kiro_crew.dashboard.slot_queue_repository import (
     durable_queue_view,
     queue_persist_signature,
 )
-from kiro_crew.dashboard.state_parts import own_methods
 from kiro_crew.dashboard.state_parts import slot_ladder as _slot_ladder
 from kiro_crew.dashboard.state_parts import slot_session as _slot_session
 from kiro_crew.dashboard.state_parts import slot_sidebar as _slot_sidebar
@@ -1122,4 +1122,17 @@ class _ChatSlot:
     to_dict = _slot_transcript.to_dict
 
 
-own_methods(_ChatSlot)
+#: The owners whose functions :class:`_ChatSlot` binds as its members, this shell included.
+_MEMBER_OWNERS = frozenset(
+    {
+        "kiro_crew.dashboard.state_parts.chat_slot",
+        "kiro_crew.dashboard.state_parts.slot_session",
+        "kiro_crew.dashboard.state_parts.slot_sidebar",
+        "kiro_crew.dashboard.state_parts.slot_todo",
+        "kiro_crew.dashboard.state_parts.slot_transcript",
+        "kiro_crew.dashboard.state_parts.slot_turns",
+        "kiro_crew.dashboard.state_parts.source_links",
+    }
+)
+
+own_methods(_ChatSlot, _MEMBER_OWNERS)

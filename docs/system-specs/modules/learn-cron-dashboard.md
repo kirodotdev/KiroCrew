@@ -1618,8 +1618,9 @@ owner never imports the facade. `_ChatSlot` is split by binding, not inheritance
 - Every method is a one-line class attribute bound to a function in its
   collaborator (`set_todo = _slot_todo.set_todo`). That function's first parameter
   is `self`, and its body is the method body, unchanged.
-- `own_methods` (`state_parts/__init__.py`) drops the runtime `self` annotation and
-  restores `__qualname__` (`_ChatSlot.append`). `__module__` names the collaborator.
+- `own_methods` (`kiro_crew/_facade_bindings.py`), called with the shell's
+  `_MEMBER_OWNERS` set, drops the runtime `self` annotation and restores
+  `__qualname__` (`_ChatSlot.append`). `__module__` names the collaborator.
 - Each collaborator also sets the default of every field it drives in
   `init_<x>_fields`, which `_ChatSlot.__init__` calls in the order those fields were
   first set. The slot keeps every field on itself.
@@ -1966,7 +1967,7 @@ specified compatibility change.
   `identity_component_dropped` (its name is the module function it calls); every
   other method is a function in its collaborator, bound as a class attribute
   (`_probe = _probing._probe`), so the attribute IS that function and the
-  instance keeps every field. `_own_methods`
+  instance keeps every field. `own_methods` (`_facade_bindings.py`)
   names each bound function `KiroPrerequisiteService.<name>` and drops its
   runtime `self` annotation, so `__qualname__` and `inspect.signature` read as
   before; only `__module__` names the collaborator. Every owner that logs writes to

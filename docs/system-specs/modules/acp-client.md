@@ -89,7 +89,7 @@ class, and the handle's state stays on the instance, so a patch of a method on t
 (also when spelled through `kiro_crew.acp.runtime.AcpSessionHandle`) or on an instance, an
 `AcpSessionHandle.__new__` build and an unbound `AcpSessionHandle.<member>(stub, ...)` call
 all reach the one function; each owner's docstring names the instance fields its members
-write and read. `_own_methods` names each bound function after its class attribute, so its
+write and read. `own_methods` names each bound function after its class attribute, so its
 `__qualname__` (what a coroutine's and a task's repr print) and `inspect.signature` read as
 before the move, and only its `__module__` names the owner. The runtime exception family
 keeps `kiro_crew.acp.session_handle` as its `__module__`, so error chains name the path
@@ -117,7 +117,7 @@ inventory, the binding, the reach and the import inventory.
 | `acp/session_handle_permissions.py` | permission requests and in-band refusals: the permission event, approve and reject, the spec-disabled deny and tripwire, the unidentifiable, unreadable and unretained MCP identity refusals, the reject audit (`_audit_handle_reject`) and session permission routing |
 | `acp/session_handle_updates.py` | `session/update` frames as `AcpEvent` values: tool calls and the per-tool-call caches they keep, child-tool frames and structured status frames |
 | `acp/session_handle_turn.py` | one turn end to end: `prompt`, `stream_command`, the per-turn reset and pre-turn drain in `_run_turn`, the abandoned-turn close and `wait_turn_done` |
-| `acp/session_handle_class.py` | the class statement: the constructor, the properties, the class default, the member table that binds every owner's members, and `_own_methods` |
+| `acp/session_handle_class.py` | the class statement: the constructor, the properties, the class default, the member table that binds every owner's members, and the `_MEMBER_OWNERS` set it passes to `own_methods` (`_facade_bindings.py`) |
 | `acp/session_handle_dispatch.py` | the per-turn event loop `_dispatch_events`: it reads the session queue, routes each frame and runs the in-band watchdog arm |
 
 The class statement sets `__module__ = "kiro_crew.acp.session_handle"`, so reprs, pickles
@@ -125,8 +125,8 @@ and `typing.get_type_hints` on the class name the facade, and `acp/session_handl
 re-exports it: `kiro_crew.acp.session_handle.AcpSessionHandle` and
 `kiro_crew.acp.runtime.AcpSessionHandle` are the same class object, and a patch of a member on
 it reaches every caller. `inspect.getsource(AcpSessionHandle)` does not find the class through
-that module name; read a member's source, or `acp/session_handle_class.py`. `_own_methods`
-decorates the class there. `acp/session_handle.py` keeps only the compatibility facade. New
+that module name; read a member's source, or `acp/session_handle_class.py`. `own_methods`
+renames its members there. `acp/session_handle.py` keeps only the compatibility facade. New
 `AcpSessionHandle` behaviour goes to the owner whose row names its responsibility, bound in the
 class (`acp/session_handle_class.py`) under that owner's header.
 
@@ -151,7 +151,7 @@ one block above `__init__`, one comment header per owner. The constructor, the p
 the class constants stay in the class, and the runtime's state stays on the instance, so a
 patch of a method on the class or on an instance, an `AcpRuntime.__new__` build and an unbound
 `AcpRuntime.<member>(stub, ...)` call all reach the one function; each owner's docstring names
-the instance fields its members write and read. `_own_methods` names each bound function after
+the instance fields its members write and read. `own_methods` names each bound function after
 its class attribute, so its `__qualname__` (what a coroutine's and a task's repr print) and
 `inspect.signature` read as before the move, and only its `__module__` names the owner. An
 exception class an owner defines keeps `kiro_crew.acp.runtime` as its `__module__`, so error
@@ -186,7 +186,7 @@ names its responsibility, bound in the class under that owner's header.
 | `acp/runtime_host_requests.py` | requests the agent sends this host that no session turn answers: permission requests for unregistered sessions (bounded off-loop answers and their audit), the host credential callback, MCP sign-in and re-attempt, the consent URL, the engine's MCP secret store (`_kiro/secret/*`), and ownerless requests |
 | `acp/runtime_frame_accounting.py` | what the reader drops or truncates, counted instead of logged per frame: the backend subagent roster and its overflow episodes, and the unroutable-frame drop summaries |
 | `acp/runtime_reader_loop.py` | the single stdout reader: routing every frame by id and sessionId, the host's notification aliases, oversize-frame recovery, and the error an awaited request fails with |
-| `acp/runtime_class.py` | the class statement: the constructor, the properties, the class constants, the field declarations, the binding block and `_own_methods`; `acp/runtime.py` re-exports the class, which keeps that module as its `__module__` |
+| `acp/runtime_class.py` | the class statement: the constructor, the properties, the class constants, the field declarations, the binding block and the `_MEMBER_OWNERS` set it passes to `own_methods`; `acp/runtime.py` re-exports the class, which keeps that module as its `__module__` |
 
 `acp/_dispatch.py`, the dispatch parser both transports share, is a mirror facade over
 the owners in `acp/_dispatch_parts/`. It keeps the session handshake -- the request shapes
