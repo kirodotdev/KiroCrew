@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import platform
 import sys
@@ -88,6 +89,54 @@ class TestScriptHook:
         assert hook.timeout == 10
         assert hook.enabled is False
         assert hook.matcher == "fs_*"
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            # A hand-edited "off" must turn the hook off (bool("false") is True).
+            ("false", False),
+            ("FALSE", False),
+            ("0", False),
+            ("no", False),
+            ("off", False),
+            (0, False),
+            # Recognised "on" values keep it on.
+            (True, True),
+            ("true", True),
+            ("1", True),
+            (1, True),
+            # Malformed values fail closed: a script hook runs a shell command.
+            (None, False),
+            ("", False),
+            ("junk", False),
+            ([], False),
+            (["x"], False),
+            ({}, False),
+            (False, False),
+        ],
+    )
+    def test_from_dict_coerces_enabled(self, raw, expected):
+        hook = ScriptHook.from_dict({"id": "e1", "command": "echo hi", "enabled": raw})
+        assert hook.enabled is expected
+
+    def test_from_dict_absent_enabled_defaults_on(self):
+        assert ScriptHook.from_dict({"id": "e1", "command": "echo hi"}).enabled is True
+
+    @pytest.mark.parametrize("raw", ["false", 0, None])
+    def test_store_load_keeps_hand_disabled_hook_off(self, tmp_path: Path, raw):
+        """A hooks.json entry hand-set to an "off" spelling loads disabled."""
+        hook = ScriptHookStore(tmp_path).create(
+            {"name": "hand-off", "event": HOOK_EVENT_PRE_TOOL_USE, "command": "echo hi"}
+        )
+        path = tmp_path / "hooks.json"
+        doc = json.loads(path.read_text())
+        for entry in doc["hooks"]:
+            if entry["id"] == hook.id:
+                entry["enabled"] = raw
+        path.write_text(json.dumps(doc))
+        reloaded = ScriptHookStore(tmp_path).get(hook.id)
+        assert reloaded is not None
+        assert reloaded.enabled is False
 
 
 class TestScriptHookStore:

@@ -1532,6 +1532,23 @@ class ScriptHook:
     def to_dict(self) -> dict:
         return asdict(self)
 
+    @staticmethod
+    def _enabled_from(data: dict) -> bool:
+        """Read a stored ``enabled`` without the ``bool("false")`` trap.
+
+        hooks.json is hand-editable, and a script hook runs a shell command, so
+        a malformed value fails CLOSED: only a recognised "on" value enables it.
+        An absent key keeps the long-standing default of enabled. JSON integers
+        map like their string spellings (``0`` off, any other int on), because a
+        hand edit writes ``0`` as naturally as ``false``.
+        """
+        if "enabled" not in data:
+            return True
+        raw = data["enabled"]
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            return raw != 0
+        return _coerce_bool(raw, default=False)
+
     @classmethod
     def from_dict(cls, data: dict) -> "ScriptHook":
         # Support legacy "pattern" field as fallback for "matcher"
@@ -1597,7 +1614,7 @@ class ScriptHook:
             command=data.get("command", ""),
             skills=[str(s) for s in skills if isinstance(s, str)],
             timeout=timeout,
-            enabled=data.get("enabled", True),
+            enabled=cls._enabled_from(data),
             last_run=data.get("last_run", 0.0),
             last_status=data.get("last_status", ""),
             last_error=last_error,
