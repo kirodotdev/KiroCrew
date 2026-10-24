@@ -139,9 +139,11 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _DARWIN_PBI_START_TVUSEC_OFFSET ProcessStartIdentity _DARWIN_PROC_PIDTASKINFO
         _DARWIN_PROC_TASKINFO_SIZE _DARWIN_PTI_TOTAL_USER_OFFSET _DARWIN_PTI_TOTAL_SYSTEM_OFFSET
         _DARWIN_RUSAGE_INFO_V2 _DARWIN_RUSAGE_INFO_V2_SIZE _DARWIN_RI_PHYS_FOOTPRINT_OFFSET
+        _DARWIN_RI_PAGEINS_OFFSET
         _darwin_libproc _darwin_libproc_loaded _darwin_libproc_handle _darwin_process_cwd
         _darwin_process_start_identity _darwin_process_phys_footprint_bytes
-        proc_phys_footprint_bytes_for_pid darwin_libproc_available darwin_footprint_tree_mb
+        _darwin_process_pageins
+        proc_phys_footprint_bytes_for_pid proc_pageins_for_pid darwin_libproc_available darwin_footprint_tree_mb
         _darwin_process_start_microtime _darwin_process_cpu_nanos _DARWIN_PBI_STATUS_OFFSET
         _DARWIN_SZOMB _DARWIN_PIDPATH_MAXSIZE _DARWIN_CTL_KERN _DARWIN_KERN_PROCARGS2
         _DARWIN_PROCARGS_BUFSIZE _DARWIN_PROCARGS_ENV_BUFSIZE _DARWIN_KERN_PROC
