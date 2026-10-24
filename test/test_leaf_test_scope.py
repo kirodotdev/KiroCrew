@@ -260,6 +260,45 @@ def test_the_missed_gate_needs_the_file_relative_rule(clean_leaf: str) -> None:
     assert mod._SCANS_A_DIR.search(text) and mod._REACHES_TEST_TREE.search(text)
 
 
+# The fleet-probe suite's two self-scans read every file of the suite through
+# `pipeline_conductor_fleet_probe_helpers.SUITE_FILES`, a glob in the helper.
+_HELPER_GATES = (
+    "test/test_pipeline_conductor_fleet_probe_cycle.py",
+    "test/test_pipeline_conductor_fleet_probe_host_lines.py",
+)
+
+
+@pytest.mark.parametrize("gate", _HELPER_GATES)
+def test_a_gate_that_reads_the_tree_through_a_helper_is_derived(
+    gate: str, all_corpus_gates: list[str]
+) -> None:
+    """Mutation guard: each of these is a gate ONLY through the helper rule.
+
+    Neither file enumerates a directory or joins `/ "test"`, so the per-file rule
+    alone drops them, and a diff to a third file of the suite runs neither scan.
+    """
+    text = REPO_ROOT.joinpath(gate).read_text(encoding="utf-8")
+    assert "SUITE_FILES" in text, f"{gate} no longer reads SUITE_FILES; pick another"
+    scans_itself = mod._SCANS_A_DIR.search(text) or mod._JOINS_TEST_DIR.search(text)
+    assert not scans_itself, f"{gate} now scans the tree itself; pick another helper gate"
+    assert "pipeline_conductor_fleet_probe_helpers" in mod._tree_reading_helpers(TEST_DIR)
+    assert gate in all_corpus_gates
+
+
+def test_an_edit_to_one_suite_file_runs_the_scans_over_the_suite() -> None:
+    """The case that went green: `_argv_row` is read by both self-scans as data.
+
+    A cwd `symlink_to` added there fails `_host_lines`'s scan in the full suite,
+    and before the helper rule the leaf run held neither scan.
+    """
+    part = "test/test_pipeline_conductor_fleet_probe_argv_row.py"
+    assert part not in _HELPER_GATES
+    resolved = _resolved([part])
+    assert isinstance(resolved, tuple), _reason([part])
+    _changed, gates = resolved
+    assert set(_HELPER_GATES) <= set(gates)
+
+
 def test_accepted_run_always_includes_the_corpus_gates(
     clean_leaf: str, all_corpus_gates: list[str]
 ) -> None:

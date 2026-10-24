@@ -49,6 +49,10 @@ What a modify-only leaf diff can still break, and how each is closed
   test tree in ANY form -- the `/ "test"` join or a `__file__`-relative parent.
   Derived, not hardcoded, and an empty derivation forfeits the reduction, because
   a dead scan and a working one look identical.
+* A gate can take the tree from a HELPER instead of scanning it itself
+  (`pipeline_conductor_fleet_probe_helpers.SUITE_FILES` globs its suite's files,
+  and two of them assert over every file in it). Closed by the same two regexes
+  applied to the shared modules under `test/`: a test naming such a helper is a gate.
 
 Repeats, and what they are for
 ------------------------------
@@ -363,13 +367,47 @@ def corpus_gates(root: Path) -> list[str]:
     test_dir = root / "test"
     if not test_dir.is_dir():
         return gates
+    helpers = _tree_reading_helpers(test_dir)
+    names_a_helper = (
+        re.compile(r"\b(?:%s)\b" % "|".join(sorted(map(re.escape, helpers)))) if helpers else None
+    )
     for path in sorted(test_dir.glob("test_*.py")):
-        # Read, match, drop: three regexes need the text once and nothing keeps it.
+        # Read, match, drop: the regexes need the text once and nothing keeps it.
         text = _read(path)
         scans_tree = _SCANS_A_DIR.search(text) and _REACHES_TEST_TREE.search(text)
-        if scans_tree or _JOINS_TEST_DIR.search(text):
+        via_helper = names_a_helper is not None and names_a_helper.search(text)
+        if scans_tree or via_helper or _JOINS_TEST_DIR.search(text):
             gates.append(_rel_posix(path, root))
     return gates
+
+
+def _tree_reading_helpers(test_dir: Path) -> set[str]:
+    """Stems of the shared modules directly under `test/` that can hand a test the tree.
+
+    `pipeline_conductor_fleet_probe_helpers.SUITE_FILES` globs the suite's own
+    `test_*.py` files, and `_cycle` and `_host_lines` assert a rule over every file
+    in it. Neither of them enumerates a directory, so the per-file rule above cannot
+    see them, and a leaf diff to a third file of the suite ran neither.
+
+    A helper qualifies on the same two regexes a gate does. A test then counts as a
+    gate when it names the helper: a whole-word match on the stem rather than an
+    import pattern, because `import a, b` and `importlib` spell it in ways an import
+    regex misses, and over-inclusion only adds a gate.
+
+    One level, not a closure over helpers that name helpers: nearly every helper
+    names `conftest` or `source_corpus`, and the closure made 1,493 files gates,
+    which is no reduction at all. A helper that RE-EXPORTS a tree-reading object
+    from another helper is therefore not seen. None does today: the three helpers
+    that import from one take `LOAD_NAME`, `_clear_caches` and `iter_source_texts`,
+    and none of those reads a test file.
+    """
+    return {
+        path.stem
+        for path in sorted(test_dir.glob("*.py"))
+        if not _LEAF_NAME.match(path.name)
+        and _SCANS_A_DIR.search(text := _read(path))
+        and _REACHES_TEST_TREE.search(text)
+    }
 
 
 def classify(
