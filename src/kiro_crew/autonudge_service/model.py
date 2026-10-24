@@ -39,6 +39,17 @@ MONITOR_TERMINAL_REASON = "monitor_terminal"
 #: (``subject_reads``); the reconciler rescues a held loop at the same cadence.
 SUBJECT_READ_SECS = 300.0
 
+#: The longest a declared person-wait hold lasts (``person_wait_expires_at``). A
+#: loop with a runtime budget expires sooner when less of that budget is left.
+PERSON_WAIT_MAX_SECS = 86400
+
+#: ``person_wait_release``: why the last declared person-wait hold ended -- its
+#: bound ran out, a person came back, or the agent ended it.
+PERSON_WAIT_EXPIRED = "expired"
+PERSON_WAIT_PERSON = "person"
+PERSON_WAIT_AGENT = "agent"
+PERSON_WAIT_RELEASES = frozenset({PERSON_WAIT_EXPIRED, PERSON_WAIT_PERSON, PERSON_WAIT_AGENT})
+
 #: ``stopped_reason`` for a loop whose own kill switch fired: the stop file at
 #: ``stop_sentinel_path`` existed when the timer woke. The file is how the agent
 #: declares the goal reached on a goal whose text carries ``{{STOP_FILE}}`` (the
@@ -607,6 +618,20 @@ class NudgeLoop:
     # time is added to ``created_ts``, so the hold spends neither the runtime budget
     # nor the backstop, the same credit ``approval_stalled_at`` gives.
     waiting_on_person_at: float = 0.0
+    # The loop's own agent DECLARED the person-wait hold (``monitor_update``'s
+    # ``waiting_on_person``, through ``declare_person_wait``) rather than a ledger
+    # read finding it. Set only together with ``waiting_on_person``. A declared hold
+    # fires no cycle; it reads the one pull request the loop names each held tick
+    # (``subject_reads.hold_tick``), and a loop naming none arms one tick at the
+    # hold's expiry. The ledger never releases it. A person does, on the same signs
+    # of presence that end the approval hold (``release_approval_hold``), and so does
+    # the agent passing ``false``. It also expires (``person_wait_expires_at``): a day
+    # at most, never past the runtime budget. Persisted, and cleared on every revival.
+    person_wait_declared: bool = False
+    # Why the last declared hold ended: ``PERSON_WAIT_EXPIRED``, ``PERSON_WAIT_PERSON``
+    # or ``PERSON_WAIT_AGENT``; "" when none has, or a merge or close settled it.
+    # Cleared by a new declaration and on every revival. Persisted.
+    person_wait_release: str = ""
     # How many of this loop's cycles in a row ended without ever getting a model
     # session (``session/new`` timed out or otherwise failed). Raised by
     # ``notify_cycle_start_failed`` and zeroed by ``notify_cycle_landed``, both
@@ -874,6 +899,73 @@ def hold_span(loop: "NudgeLoop", kind: str, since: float, now: float) -> tuple[f
     if isinstance(since, bool) or not isinstance(since, (int, float)) or not 0 < since <= now:
         return mono, 0.0
     return mono - (now - since), now - since
+
+
+def _person_wait_expiry(loop: "NudgeLoop") -> tuple[float | None, bool]:
+    """The declared hold's expiry and whether its runtime budget supplies that bound."""
+    if not (loop.person_wait_declared and loop.waiting_on_person):
+        return None, False
+    since = _positive_number(loop.waiting_on_person_at)
+    if not since:
+        return 0.0, False
+    cap_expires_at = since + float(PERSON_WAIT_MAX_SECS)
+    budget = _positive_number(loop.max_runtime_secs)
+    created = _positive_number(loop.created_ts)
+    if not (budget and created):
+        return cap_expires_at, False
+
+    # A hold declared in this process has both monotonic witnesses. Project the
+    # runtime remainder onto the wall clock used by asyncio deadlines and the REST
+    # reading: a host suspend advances that clock but not the runtime budget on
+    # Linux/macOS, so the projected instant advances by the same amount. A hold
+    # loaded after restart has no hold witness and falls back to the persisted wall
+    # fields, which deliberately count time while the gateway was down.
+    anchor = loop.__dict__.get(_RUNTIME_ANCHOR)
+    hold_start = loop.__dict__.get(_HOLD_STARTS, {}).get(PERSON_WAIT_HOLD)
+    if (
+        anchor is not None
+        and anchor[0] == created
+        and hold_start is not None
+        and hold_start[0] == since
+    ):
+        remaining = max(0.0, budget - runtime_elapsed(loop, created))
+        budget_expires_at = time.time() + remaining
+    else:
+        budget_expires_at = created + budget
+    if budget_expires_at <= cap_expires_at:
+        return budget_expires_at, True
+    return cap_expires_at, False
+
+
+def person_wait_expires_at(loop: "NudgeLoop") -> float | None:
+    """When *loop*'s declared person-wait hold expires (epoch seconds), or None.
+
+    None unless a declared hold is on. The hold lasts ``PERSON_WAIT_MAX_SECS`` from
+    ``waiting_on_person_at``, or for the runtime budget left when it was declared
+    when that is less. While the declaring process runs, that remainder uses the
+    same monotonic clock as :func:`runtime_elapsed`, projected onto the wall clock
+    used by timers and API readings. After a restart the monotonic hold witness is
+    gone, so persisted ``created_ts + max_runtime_secs`` is the fallback. A start
+    stamp that is not a finite positive number expires at once: a hold whose bound
+    cannot be read does not hold.
+    """
+    return _person_wait_expiry(loop)[0]
+
+
+def person_wait_has_expired(loop: "NudgeLoop") -> bool:
+    """Whether *loop*'s declared person-wait hold has reached its expiry.
+
+    The clock is read after the expiry is computed. A spent live budget projects
+    its expiry as "now plus nothing", so a reading taken before that projection
+    lands just short of it and would miss an expiry that has already happened.
+    """
+    expires_at = person_wait_expires_at(loop)
+    return expires_at is not None and time.time() >= expires_at
+
+
+def person_wait_ends_on_budget(loop: "NudgeLoop") -> bool:
+    """Whether the declared hold ends because its runtime budget is exhausted."""
+    return _person_wait_expiry(loop)[1]
 
 
 def credit_held_runtime(loop: "NudgeLoop", previous_created: float, held: float) -> None:

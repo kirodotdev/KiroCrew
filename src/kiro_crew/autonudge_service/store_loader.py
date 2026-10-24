@@ -29,6 +29,7 @@ from kiro_crew.autonudge_service.model import (
     _MAX_IDLE_SECS,
     _MIN_IDLE_SECS,
     LOOP_BOUND_FIELDS,
+    PERSON_WAIT_RELEASES,
     SENTINEL_DROPPED_REASON,
     STRUCTURAL_TERMINAL_REASON,
     NudgeLoop,
@@ -520,6 +521,13 @@ def _load(self: AutoNudgeService) -> None:
                     loop_values["gate"],
                 )
                 loop_values["gate"] = False
+            # Read by the popover and ``monitor_inspect``; anything but a release
+            # the service writes says nothing about how the last wait ended.
+            if "person_wait_release" in loop_values and (
+                not isinstance(loop_values["person_wait_release"], str)
+                or loop_values["person_wait_release"] not in PERSON_WAIT_RELEASES
+            ):
+                loop_values["person_wait_release"] = ""
             # Model-authored and agent-writable on disk: cleaned the way every
             # write cleans it (``autonudge_stop_log.clean_stop_detail``). A value
             # the clean changed is written back clean.

@@ -141,6 +141,16 @@ function legacyWire(loop: LegacyGoalLoop): AutoNudgeLoop {
     // A held loop reads and acts paused only when this rides along.
     ...(loop.approvalStalled ? { approval_stalled: true } : {}),
     ...(loop.waitingOnPerson ? { waiting_on_person: true } : {}),
+    ...(loop.personWaitDeclared ? { person_wait_declared: true } : {}),
+    ...(loop.personWaitRelease ? { person_wait_release: loop.personWaitRelease } : {}),
+    ...(loop.personWaitExpiresAt !== undefined ? { person_wait_expires_at: loop.personWaitExpiresAt } : {}),
+    ...(loop.personWaitEndsOnBudget !== undefined
+      ? { person_wait_ends_on_budget: loop.personWaitEndsOnBudget }
+      : {}),
+    // The authoritative marker tells a declared wait that ends the goal from
+    // one after which nudges resume; timestamps remain an old-backend fallback.
+    ...(loop.createdAt !== undefined ? { created_ts: loop.createdAt } : {}),
+    ...(loop.maxRuntimeSecs !== undefined ? { max_runtime_secs: loop.maxRuntimeSecs } : {}),
     ...(loop.stopSentinelPath !== undefined ? { stop_sentinel_path: loop.stopSentinelPath } : {}),
     ...(loop.judge !== undefined ? { judge: loop.judge } : {}),
     ...(loop.judge_last_verdict !== undefined

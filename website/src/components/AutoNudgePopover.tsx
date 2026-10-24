@@ -11,7 +11,7 @@ import { loadGoalDraft, saveGoalDraft, type GoalDraft } from '../utils/goalDraft
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
 import { i18nT } from '../i18n/t'
-import { fmtTimeNumeric } from '../i18n/format'
+import { fmtTime, fmtTimeNumeric, fmtRelative, toDate } from '../i18n/format'
 import { type AutoNudgeLoop, cycleText as loopCycleText, nextCycleText, judgeReading, judgeVerdictTime, loopFinished, PULL_REQUEST_WATCH_KINDS, AUTONUDGE_LOOPS_QUERY_KEY } from './autoNudgeLoop'
 export type { AutoNudgeLoop } from './autoNudgeLoop'
 
@@ -79,6 +79,21 @@ const PAUSED_STATUS_KEY: Record<string, string> = {
   approval_stalled: 'components.autoNudgePopover.paused_approval_stalled',
   structural_terminal: 'components.autoNudgePopover.paused_last_cycle_failed',
   session_start_failures: 'components.autoNudgePopover.paused_last_cycle_failed',
+}
+
+/**
+ * The relative-day word ("today" / "tomorrow" / "in N days") for a hold's end
+ * against now, compared by CALENDAR day. Both arguments are already floored to
+ * local midnight; the midnight-to-midnight span is ROUNDED to whole days before
+ * formatting. A spring-forward night spans 23 hours, and `fmtRelative`'s own
+ * truncation toward zero would read that as 0 days and say "today" for an end
+ * that is the next calendar day. Rounding the span first makes the count the
+ * calendar's, not the elapsed clock's. Exported so the test drives the DST case
+ * directly rather than depending on the host timezone.
+ */
+export function calendarDayWord(nowMidnight: Date, endMidnight: Date): string {
+  const spanDays = Math.round((endMidnight.getTime() - nowMidnight.getTime()) / 86_400_000)
+  return fmtRelative(nowMidnight.getTime() + spanDays * 86_400_000, { now: nowMidnight, unit: 'day' })
 }
 
 /** The three editable fields, as every write of the form sends them. */
@@ -601,13 +616,69 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
         : loop?.monitor_outcome === 'success'
           ? { key: 'components.autoNudgePopover.done_pr_merged', check: true }
           : { key: 'components.autoNudgePopover.done_pr_closed', check: false }
+  /** While the loop's own agent DECLARED a person-wait that is still holding, the
+   *  backend carries the instant it ends (`person_wait_expires_at`, epoch secs):
+   *  the hold lifts after the earlier of 24h and the loop's remaining runtime
+   *  budget. The declared-hold status line names that instant so the wait does
+   *  not read as open-ended, and says whether the whole goal ends there or only
+   *  the wait does. `null` when no declared hold is on or the backend carried no
+   *  expiry. The clock leads ("1:00 AM") so the reader sees WHEN first; the time
+   *  left rides in parentheses ("in 20h"). The hold never runs past 24h, so a
+   *  cross-midnight end is the next calendar day: it is tagged with the
+   *  relative-day word ("tomorrow") rather than a dated clock, never a year. */
+  const personWaitEnd = (() => {
+    if (
+      loop?.person_wait_declared !== true ||
+      loop?.waiting_on_person !== true ||
+      (loop?.person_wait_expires_at ?? 0) <= 0
+    ) return null
+    const ts = loop.person_wait_expires_at as number
+    const end = toDate(ts)
+    if (!end) return null
+    const now = new Date()
+    const sameDay =
+      end.getFullYear() === now.getFullYear() &&
+      end.getMonth() === now.getMonth() &&
+      end.getDate() === now.getDate()
+    const relative = fmtRelative(ts)
+    const clock = fmtTime(ts)
+    // Clock first, time-left in parentheses: the status sentence leads with the
+    // OUTCOME's instant ("at 1:00 AM"), and the countdown rides alongside ("in
+    // 20h"). A cross-midnight end tags the clock with its calendar day
+    // ("1:00 AM tomorrow") rather than a dated clock, and never carries a year.
+    const text = sameDay
+      ? `${clock} (${relative})`
+      : (() => {
+          // Compare calendar days (both floored to local midnight) rather than a
+          // 24h span, so an end a few hours away but past midnight reads "tomorrow".
+          const nowMidnight = new Date(now); nowMidnight.setHours(0, 0, 0, 0)
+          const endMidnight = new Date(end); endMidnight.setHours(0, 0, 0, 0)
+          return `${clock} ${calendarDayWord(nowMidnight, endMidnight)} (${relative})`
+        })()
+    // Whether the hold ends because the GOAL's runtime budget ran out, not the
+    // 24h cap. A live monotonic runtime projection can diverge from persisted
+    // `created_ts + max_runtime_secs` after host suspend, so current backends
+    // carry the authoritative answer. The arithmetic remains only as a
+    // compatibility fallback for an older backend that omitted the marker.
+    const budget = loop.max_runtime_secs ?? 0
+    const created = loop.created_ts ?? 0
+    const runtimeEnd = budget > 0 && created > 0 ? created + budget : 0
+    const endsOnBudget = typeof loop.person_wait_ends_on_budget === 'boolean'
+      ? loop.person_wait_ends_on_budget
+      : runtimeEnd > 0 && ts >= runtimeEnd - 1
+    return { text, endsOnBudget }
+  })()
   /** THE STATUS LINE under the title, independent of the controls: a running
    *  loop's countdown, why a finished one is done, or why a paused one is paused. */
   const statusText = loop
     ? heldForApproval
       ? i18nT('components.autoNudgePopover.paused_approval_hold')
       : waitingOnPerson
-        ? i18nT('components.autoNudgePopover.waiting_on_person_hold')
+        ? loop.person_wait_declared === true
+          ? personWaitEnd
+            ? `${i18nT('components.autoNudgePopover.waiting_on_person_declared_hold')} ${i18nT(personWaitEnd.endsOnBudget ? 'components.autoNudgePopover.waiting_on_person_declared_ends_budget' : 'components.autoNudgePopover.waiting_on_person_declared_ends', { time: personWaitEnd.text })}`
+            : i18nT('components.autoNudgePopover.waiting_on_person_declared_hold')
+          : i18nT('components.autoNudgePopover.waiting_on_person_hold')
         : loop.active
         ? countdownText
         : doneLine
@@ -622,21 +693,47 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   const agentStopped =
     !!loop && !loop.active && (loop.stopped_reason === 'agent_stop' || loop.stopped_reason === 'autonudge_stop')
   const agentStopDetail = agentStopped ? (loop?.stopped_detail ?? '').trim() : ''
+  /** The loop's own agent declared a wait on the person (it asked a question and
+   *  fires nothing until the person acts). Detected the same way the status line
+   *  is; defined here because the title reads from it too. Gated on `loop.active`:
+   *  a person pausing the loop leaves `person_wait_declared`/`waiting_on_person`
+   *  set, and an inactive loop must not keep titling itself "Waiting on you". */
+  const declaredPersonWait =
+    !!loop?.active && loop?.person_wait_declared === true && loop?.waiting_on_person === true
+  /** The declared hold was released by the clock, not the person: the loop
+   *  resumed (or stopped on its budget) when the wait expired with no reply and
+   *  no press. Shown as one muted line once the hold is no longer on; a `person`
+   *  or `agent` release WAS the person acting, so neither says anything here. */
+  const personWaitExpired = loop?.person_wait_release === 'expired' && loop?.waiting_on_person !== true
   /** The title names the state: the goal's cycle while running, Done once
-   *  finished, Paused otherwise, and the invitation when there is no loop. */
+   *  finished, Paused otherwise, and the invitation when there is no loop. A
+   *  declared person-wait is held, not running, so its title reads as held
+   *  rather than "Goal active" -- which otherwise sat over a "Waiting on you"
+   *  status line beside a live Pause and left the reader unsure whether the loop
+   *  was running or stopped. It gets its own "Waiting on you" title rather than
+   *  "Paused": nobody paused it, and "Paused" beside a live Pause button read as
+   *  contradictory. "Paused" stays for a loop a person paused or an approval held. */
   const titleText = !loop
     ? i18nT('components.autoNudgePopover.set_a_goal')
-    : runsNow
-      ? i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: cycleText })
-      : finished
-        ? i18nT('components.autoNudgePopover.loop_done')
-        : i18nT('components.autoNudgePopover.loop_paused')
+    : declaredPersonWait
+      ? i18nT('components.autoNudgePopover.waiting_on_you_title')
+      : runsNow
+        ? i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: cycleText })
+        : finished
+          ? i18nT('components.autoNudgePopover.loop_done')
+          : i18nT('components.autoNudgePopover.loop_paused')
+  /** The declared-wait status line tells the person to press Nudge now, so the
+   *  press is named on the button too, beside its icon; the accessible name is
+   *  `playName` either way. */
+  const showPlayLabel = runsNow && declaredPersonWait && !formDirty
   /** Whether a cycle is ALREADY armed to run. Derived from the same countdown
    *  the status line renders, so the button and the text can never disagree.
-   *  Never while held: its deadline has passed but nothing is armed, and the
-   *  press is how a person resumes it. */
+   *  Never while held for an approval or a declared person-wait: the deadline
+   *  has passed but nothing is armed, and the press is how a person releases it. */
   const cycleAlreadyDue =
-    !heldForApproval && countdownText === i18nT('components.autoNudgePopover.next_cycle_due')
+    !heldForApproval &&
+    !declaredPersonWait &&
+    countdownText === i18nT('components.autoNudgePopover.next_cycle_due')
   /** Help line under the goal textarea while it carries the raw kill-switch
    *  token; '' otherwise. See the JSX comment at the render site (#10458). */
   const stopFileHelp = message.includes(STOP_FILE_TOKEN)
@@ -736,6 +833,23 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                 {i18nT('components.autoNudgePopover.stopped_agent_reason', { reason: agentStopDetail })}
               </span>
             )}
+          </p>
+        )}
+        {personWaitExpired && (
+          /* One muted line, not boxed: the declared hold lifted on the clock
+             with no reply and no press. While the loop is still active it
+             resumed on its own, so the line says so; once the loop is inactive
+             (the wait expired at the end of the runtime budget, stopping it) the
+             "loop resumed" claim would be false, so a variant drops it.
+             Informational about the PAST wait, below whatever the status box now
+             says about the loop's current state. */
+          <p
+            data-testid="auto-nudge-person-wait-expired"
+            className="mb-2 text-[11px] leading-relaxed text-muted"
+          >
+            {i18nT(loop?.active
+              ? 'components.autoNudgePopover.person_wait_expired'
+              : 'components.autoNudgePopover.person_wait_expired_inactive')}
           </p>
         )}
         {onSetUpBoundedMonitor ? (
@@ -1013,7 +1127,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
               <Btn
                 type="button"
                 primary
-                className={ICON_BTN}
+                className={showPlayLabel ? `${ICON_BTN} pr-2` : ICON_BTN}
                 onClick={play}
                 /* Disabled once a cycle is already due and the form is pristine,
                    so a press visibly acknowledges itself: a second press could
@@ -1026,6 +1140,11 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                 title={playName}
               >
                 {runsNow ? <Zap size={14} aria-hidden /> : <Play size={14} aria-hidden />}
+                {showPlayLabel && (
+                  <span data-testid="auto-nudge-play-label" aria-hidden className="text-xs">
+                    {i18nT('components.autoNudgePopover.nudge_now')}
+                  </span>
+                )}
                 {formDirty && (
                   <span data-testid="auto-nudge-play-dirty" aria-hidden className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-warn ring-1 ring-bg" />
                 )}

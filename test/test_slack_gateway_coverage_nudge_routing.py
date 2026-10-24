@@ -216,6 +216,30 @@ class TestAutonudgeRouterAndObserver:
         assert payload["loop"]["created_ts"] == 1_800_000_000.0
 
     @pytest.mark.asyncio
+    async def test_observer_frame_carries_the_declared_wait_s_expiry_and_release(self):
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+
+        held = _loop(
+            "chat-1-1721",
+            waiting_on_person=True,
+            person_wait_declared=True,
+            waiting_on_person_at=1_800_000_000.0,
+        )
+        observer("updated", held)
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert payload["loop"]["person_wait_release"] == ""
+        assert payload["loop"]["person_wait_expires_at"] == 1_800_086_400.0
+        assert payload["loop"]["person_wait_ends_on_budget"] is False
+
+        released = _loop("chat-1-1721", person_wait_release="expired")
+        observer("updated", released)
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert payload["loop"]["person_wait_release"] == "expired"
+        assert "person_wait_expires_at" not in payload["loop"]
+
+    @pytest.mark.asyncio
     async def test_observer_frame_carries_stopped_reason_and_deadline_for_a_plain_loop(self):
         """The dashboard caches the frame over the REST read, so a frame that
         carried these two fields only for a structured monitor blanked a plain

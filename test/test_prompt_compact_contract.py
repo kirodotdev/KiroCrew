@@ -26,7 +26,10 @@ CONFIG = ROOT / "src" / "kiro_crew" / "config"
 # markers gone, as a session with browsing set up gets it. The
 # `{{MAX_SUBAGENTS}}` and `{{WIDGET_BLOCK}}` slots are still counted as their
 # raw tokens.
-PROMPT_BYTE_CEILINGS = {"prompt.md": 41_385}
+# The budget includes the `waiting_on_person` rule under `monitor_update`: a declared
+# wait holds the loop for up to a day, so the prompt states when one may be declared
+# before an agent reaches the tool's own description.
+PROMPT_BYTE_CEILINGS = {"prompt.md": 41_600}
 _COMPUTER_USE_TOKEN = "{{COMPUTER_USE_BLOCK}}"
 
 

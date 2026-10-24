@@ -19,6 +19,8 @@ from kiro_crew.autonudge import get_instance as _autonudge_get
 from kiro_crew.autonudge import (
     is_channel_key,
     is_structured_monitor_loop,
+    person_wait_ends_on_budget,
+    person_wait_expires_at,
 )
 
 # The security chokepoint lives in the transport-agnostic module (see its
@@ -144,6 +146,13 @@ def _serialize(loop: Any) -> dict[str, Any]:
     # which is the watched subject's discussion by another name. No surface renders
     # it, so no reader is worse off without it.
     payload.pop("judge_pr_seen", None)
+    # When a declared person-wait hold ends on its own, derived from the live
+    # runtime clock with persisted wall fields as the restart fallback; present
+    # only while one is on.
+    expires_at = person_wait_expires_at(loop)
+    if expires_at is not None:
+        payload["person_wait_expires_at"] = expires_at
+        payload["person_wait_ends_on_budget"] = person_wait_ends_on_budget(loop)
     if loop.monitor is None:
         # Legacy clients predate structured monitors and require their exact shape.
         payload.pop("monitor", None)
@@ -367,11 +376,32 @@ def _autonudge_loop_reading(loop: Any) -> dict[str, Any]:
         # Active but holding: a cycle's approval went unanswered and it fires
         # nothing until a person answers one, sends a message or fires it.
         "paused_for_approval": bool(loop.approval_stalled) and not is_structured_monitor_loop(loop),
-        # Active but holding: every open work-ledger item waits on a person, and it
-        # fires nothing until the ledger moves.
+        # Active but holding for a person: every open work-ledger item waits on one
+        # (the ledger moving releases it), or its agent declared the wait.
         "waiting_on_person": bool(getattr(loop, "waiting_on_person", False)),
+        # The same hold, declared by the loop's own agent (``monitor_update``): it
+        # fires nothing until a person replies, answers an approval or fires it.
+        "person_wait_declared": bool(getattr(loop, "person_wait_declared", False)),
+        # Why the last declared hold ended ("expired", "person" or "agent"), and
+        # while one is on, when it expires on its own.
+        **_person_wait_reading(loop),
         "has_banner": bool(loop.banner),
     }
+
+
+def _person_wait_reading(loop: Any) -> dict[str, Any]:
+    """The declared hold's release reason and, while it is on, its expiry instant."""
+    out: dict[str, Any] = {}
+    release = str(getattr(loop, "person_wait_release", "") or "")
+    if release:
+        out["person_wait_release"] = release
+    if not getattr(loop, "person_wait_declared", False):
+        return out
+    expires_at = person_wait_expires_at(loop)
+    if expires_at is not None:
+        out["person_wait_expires_at"] = expires_at
+        out["person_wait_ends_on_budget"] = person_wait_ends_on_budget(loop)
+    return out
 
 
 def _monitor_error(message: str, code: str, *, status: int = 400) -> web.Response:

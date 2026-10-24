@@ -116,6 +116,21 @@ export interface LegacyGoalLoop {
   /** An active work-ledger watch holding while every open item waits on a person
    *  (the REST row's and frame's `waiting_on_person`). Present only when true. */
   waitingOnPerson?: boolean
+  /** That hold declared by the loop's own agent rather than read off the ledger
+   *  (the REST row's and frame's `person_wait_declared`). Present only when true. */
+  personWaitDeclared?: boolean
+  /** How a declared person-wait was released (the REST row's and frame's
+   *  `person_wait_release`): `expired` when the clock lifted it with no reply,
+   *  `person`/`agent` when one of them acted. Present only when a non-empty string. */
+  personWaitRelease?: string
+  /** While a declared hold is on, when it expires in epoch seconds (the REST
+   *  row's and frame's `person_wait_expires_at`): the earlier of 24h and the
+   *  loop's remaining runtime budget. Present only while a hold is on (positive). */
+  personWaitExpiresAt?: number
+  /** The backend's authoritative answer for which bound supplied that expiry;
+   *  required for correctness when host suspend separates the live monotonic
+   *  runtime from persisted wall-clock timestamps. */
+  personWaitEndsOnBudget?: boolean
   /** The kill-switch file the server substitutes for `{{STOP_FILE}}` at fire
    *  time; '' when the loop was armed with none. Carried by the REST reads
    *  (`asdict(loop)`), not by the websocket frame, which withholds paths -- so
@@ -399,6 +414,18 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
       monitorKind: text(loop.monitor_kind, text(gatedRecord?.kind)),
       ...(loop.approval_stalled === true ? { approvalStalled: true } : {}),
       ...(loop.waiting_on_person === true ? { waitingOnPerson: true } : {}),
+      ...(loop.person_wait_declared === true ? { personWaitDeclared: true } : {}),
+      ...(typeof loop.person_wait_release === 'string' && loop.person_wait_release !== ''
+        ? { personWaitRelease: loop.person_wait_release }
+        : {}),
+      ...(typeof loop.person_wait_expires_at === 'number'
+        && Number.isFinite(loop.person_wait_expires_at)
+        && loop.person_wait_expires_at > 0
+        ? { personWaitExpiresAt: loop.person_wait_expires_at }
+        : {}),
+      ...(typeof loop.person_wait_ends_on_budget === 'boolean'
+        ? { personWaitEndsOnBudget: loop.person_wait_ends_on_budget }
+        : {}),
       ...(typeof loop.stop_sentinel_path === 'string'
         ? { stopSentinelPath: loop.stop_sentinel_path }
         : {}),

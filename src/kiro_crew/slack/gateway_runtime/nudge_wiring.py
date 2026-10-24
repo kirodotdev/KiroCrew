@@ -48,6 +48,8 @@ if TYPE_CHECKING:
         is_structured_monitor_loop,
         logger,
         monitor_state_public_dict,
+        person_wait_ends_on_budget,
+        person_wait_expires_at,
         reason_in,
         redact_credentials,
         redact_exfiltration_urls,
@@ -340,10 +342,22 @@ async def _init_autonudge(self: GatewayOrchestrator) -> None:
                 # An ACTIVE loop holding for an unanswered approval; the
                 # popover words it as paused.
                 "approval_stalled": bool(loop.approval_stalled),
-                # An ACTIVE work-ledger watch holding because every open item
-                # waits on a person; the popover says it is waiting on you.
+                # An ACTIVE loop holding for a person: every open work-ledger item
+                # waits on one, or its agent declared the wait; the popover says it
+                # is waiting on you.
                 "waiting_on_person": bool(loop.waiting_on_person),
+                # The same hold, declared by the loop's own agent: it waits for a
+                # reply in this chat rather than for the ledger to move.
+                "person_wait_declared": bool(loop.person_wait_declared),
+                # Why the last declared hold ended ("expired", "person", "agent";
+                # "" when none has).
+                "person_wait_release": loop.person_wait_release or "",
             }
+            # While a declared hold is on: when it expires on its own.
+            expires_at = person_wait_expires_at(loop)
+            if expires_at is not None:
+                loop_payload["person_wait_expires_at"] = expires_at
+                loop_payload["person_wait_ends_on_budget"] = person_wait_ends_on_budget(loop)
             if is_structured_monitor_loop(loop):
                 assert loop.monitor is not None
                 loop_payload["monitor"] = _redact_monitor_value(

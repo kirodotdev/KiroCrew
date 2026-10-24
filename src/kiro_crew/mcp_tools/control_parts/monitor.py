@@ -685,6 +685,8 @@ def monitor_update(name: str, args: dict[str, Any]) -> str:
     # armed, observes nothing" state the service's own fold exists to prevent.
     if str(args.get("watch") or "").strip():
         patch["watch"] = str(args["watch"]).strip()
+    if args.get("waiting_on_person") is not None:
+        patch["waiting_on_person"] = bool(args["waiting_on_person"])
     if not patch:
         mcp_core.sel().log_tool_invocation(
             session_key=sk, source="mcp", tool_name="monitor_update", outcome="noop"
@@ -693,7 +695,7 @@ def monitor_update(name: str, args: dict[str, Any]) -> str:
             "monitor_update: nothing to change — pass at least one of "
             "message, interval_secs, max_cycles, max_runtime_secs, target, "
             "objective, max_agent_turns, max_tokens, max_provider_errors, "
-            "wake_instructions, banner, judge, watch."
+            "wake_instructions, banner, judge, watch, waiting_on_person."
         )
     # AFTER the empty-patch no-op so that more specific answer still wins. A
     # retained stop cannot be updated either: ``update_monitor`` answers "not found

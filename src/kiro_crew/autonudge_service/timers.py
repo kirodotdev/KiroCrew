@@ -35,6 +35,7 @@ from kiro_crew.autonudge_service.model import (
     _START_FAILURE_STANDDOWN_AFTER,
     APPROVAL_HOLD,
     PERSON_WAIT_HOLD,
+    PERSON_WAIT_PERSON,
     SUBJECT_READ_SECS,
     NudgeAdmissionRefused,
     NudgeLoop,
@@ -44,6 +45,8 @@ from kiro_crew.autonudge_service.model import (
     hold_span,
     is_structured_monitor_loop,
     note_hold_start,
+    person_wait_expires_at,
+    person_wait_has_expired,
 )
 from kiro_crew.autonudge_service.subject import loop_subject
 from kiro_crew.monitoring.models import MONITOR_STATE_VERSION, MonitorDispatchResult
@@ -341,19 +344,54 @@ def _drained_bookkeeping(
     return wrapper
 
 
+def _valid_stamp(value: object, now: float) -> bool:
+    """Whether *value* is a usable hold stamp: a positive number at or before *now*."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= now
+
+
+def _holds_for_a_person(loop: NudgeLoop) -> bool:
+    """Whether *loop* holds until a person is back: an approval hold, or a declared wait."""
+    return bool(loop.approval_stalled or (loop.person_wait_declared and loop.waiting_on_person))
+
+
 def _held_tick_rearms(loop: NudgeLoop) -> bool:
     """Whether *loop*'s held tick re-arms one read interval out to read its subject again.
 
-    Only an approval-held GATED loop that names one pull request does, which
-    ``subject_reads.hold_tick`` reads so a merge or a close settles the loop. An
-    ungated loop never does: ``gate=False`` promises a terminal reading can never
-    end it, so held it reads nothing, exactly as a held loop naming no pull
-    request, and waits for a person.
+    Only a GATED loop held for a person (an approval hold or a declared person-wait)
+    that names one pull request does, which ``subject_reads.hold_tick`` reads so a
+    merge or a close settles the loop. An ungated loop never does: ``gate=False``
+    promises a terminal reading can never end it, so held it reads nothing, exactly
+    as a held loop naming no pull request, and waits for a person (a declared hold
+    still ticks at its expiry, ``_held_tick_delay``).
     """
-    if not loop.approval_stalled or not loop.gate or loop.monitor is None:
+    if not _holds_for_a_person(loop) or not loop.gate or loop.monitor is None:
         return False
     target = loop_subject(loop)
     return target is not None and target.kind == probes.GH_PR
+
+
+def _declared_hold_delay(loop: NudgeLoop, now: float | None = None) -> float | None:
+    """Seconds until *loop*'s declared person-wait hold expires, at least 0; None if none."""
+    expires_at = person_wait_expires_at(loop)
+    if expires_at is None:
+        return None
+    return max(0.0, expires_at - (time.time() if now is None else now))
+
+
+def _held_tick_delay(loop: NudgeLoop) -> float | None:
+    """When a loop held for a person ticks next, in seconds, or None when it arms nothing.
+
+    A loop naming one pull request reads it one read interval out; a declared hold
+    ticks no later than its expiry, so a declared hold always has a tick that
+    reaches it. An approval hold naming no pull request arms nothing until a person
+    is back.
+    """
+    if not _holds_for_a_person(loop):
+        return None
+    to_expiry = _declared_hold_delay(loop)
+    if _held_tick_rearms(loop):
+        return SUBJECT_READ_SECS if to_expiry is None else min(SUBJECT_READ_SECS, to_expiry)
+    return to_expiry
 
 
 def notify_approval_stalled(self: AutoNudgeService, slot_key: str) -> None:
@@ -395,9 +433,13 @@ def notify_approval_stalled(self: AutoNudgeService, slot_key: str) -> None:
     row. One that arrives after closure is dropped at DEBUG, because no wake is
     left for it to hold. Either way nothing raises into the approval path that
     called this.
+
+    A loop whose agent declared it waits on a person is already held for one, and
+    the person who answers this prompt releases that hold, so nothing is recorded:
+    the two holds never overlap.
     """
     loop = self._find_by_slot(slot_key)
-    if not loop or not loop.active or loop.approval_stalled:
+    if not loop or not loop.active or _holds_for_a_person(loop):
         return
     try:
         admission = self._admit_mutation()
@@ -463,7 +505,7 @@ async def _record_approval_hold(
             return
     async with svc._lock:
         loop = svc._find_by_slot(slot_key)
-        if not loop or not loop.active or loop.approval_stalled:
+        if not loop or not loop.active or _holds_for_a_person(loop):
             return
         # A structured monitor does not hold: its tick path never reads the flag
         # and the release refuses it. Its action-completion path does read it,
@@ -557,6 +599,11 @@ async def release_approval_hold(
     refuses after closure. After closure a direct caller whose loop is held gets
     ``NudgeAdmissionRefused`` (the popover's manual fire answers 503) and nothing
     is written; one with no hold to end still gets False.
+
+    A person-wait hold the agent declared (``person_wait_declared``) waits for the
+    same person, so it ends here too, crediting its own span. The two holds never
+    overlap -- ``declare_person_wait`` and ``notify_approval_stalled`` each record
+    nothing while the other is on -- so a release ends one of them.
     """
     if admission is None:
         try:
@@ -566,7 +613,7 @@ async def release_approval_hold(
             if (
                 not current
                 or not current.active
-                or not current.approval_stalled
+                or not _holds_for_a_person(current)
                 or is_structured_monitor_loop(current)
             ):
                 return False
@@ -606,12 +653,37 @@ async def _release_approval_hold_admitted(
         if (
             not loop
             or not loop.active
-            or not loop.approval_stalled
+            or not _holds_for_a_person(loop)
             or is_structured_monitor_loop(loop)
         ):
             return False
+        stalled = bool(loop.approval_stalled)
+        kind = APPROVAL_HOLD if stalled else PERSON_WAIT_HOLD
         now = time.time()
-        since = loop.approval_stalled_at
+        since = loop.approval_stalled_at if stalled else loop.waiting_on_person_at
+        if not stalled:
+            if person_wait_has_expired(loop):
+                # Imported lazily because ``firing`` imports this timer module.
+                from kiro_crew.autonudge_service.firing import (
+                    _announce_person_wait_expired,
+                    _expire_person_wait_locked,
+                )
+
+                expired = await _expire_person_wait_locked(
+                    svc,
+                    loop,
+                    admission=admission,
+                    raise_on_write_failure=True,
+                )
+                if expired is None:
+                    return False
+                _announce_person_wait_expired(svc, loop, expired)
+                if arm and loop.active and loop.id in svc._loops:
+                    if loop.id in svc._firing:
+                        svc._rearm_pending.add(loop.id)
+                    else:
+                        svc._arm_from_deadline(loop)
+                return True
         held = 0.0
         if isinstance(since, (int, float)) and not isinstance(since, bool) and 0 < since <= now:
             held = now - since
@@ -626,7 +698,7 @@ async def _release_approval_hold_admitted(
         previous = loop.created_ts
         # The budget's anchor is handed back the hold's span on the monotonic clock;
         # ``created_ts`` keeps the wall span, which is what a restart reads.
-        approval_start, span = hold_span(loop, APPROVAL_HOLD, since, now)
+        approval_start, span = hold_span(loop, kind, since, now)
         staged = deepcopy(loop)
         staged.approval_stalled = False
         staged.approval_stalled_at = 0.0
@@ -649,12 +721,20 @@ async def _release_approval_hold_admitted(
             and 0 < pw_since < now
         ):
             pw_since += now - max(pw_since, since)
+        if not stalled:
+            # The declared wait is the hold this release ends.
+            pw_since, person_start = 0.0, None
+            staged.waiting_on_person = staged.person_wait_declared = False
+            staged.person_wait_release = PERSON_WAIT_PERSON
         staged.waiting_on_person_at = pw_since
 
         def _apply(target: NudgeLoop) -> None:
             target.approval_stalled, target.approval_stalled_at = False, 0.0
             target.created_ts = created
             target.waiting_on_person_at = pw_since
+            if not stalled:
+                target.waiting_on_person = target.person_wait_declared = False
+                target.person_wait_release = PERSON_WAIT_PERSON
             credit_held_runtime(target, previous, span)
             if person_start is not None:
                 note_hold_start(target, PERSON_WAIT_HOLD, pw_since, mono=person_start)
@@ -670,9 +750,10 @@ async def _release_approval_hold_admitted(
             raise
         _apply(loop)
     logger.warning(
-        "AutoNudge: loop %s resumed after %.0fs paused for approval (%s)",
+        "AutoNudge: loop %s resumed after %.0fs %s (%s)",
         loop.id,
         held,
+        "paused for approval" if stalled else "waiting on a person",
         why,
     )
     svc._emit("updated", loop)
@@ -702,7 +783,7 @@ def _schedule_release(svc: AutoNudgeService, slot_key: str, *, why: str, arm: bo
     if not slot_key:
         return
     loop = svc._find_by_slot(slot_key)
-    if loop is None or not loop.approval_stalled:
+    if loop is None or not _holds_for_a_person(loop):
         return
     try:
         admission = svc._admit_mutation()
@@ -1053,8 +1134,8 @@ def notify_user_input(self: AutoNudgeService, slot_key: str, *, human: bool = Fa
     """Called when user sends a message — cancel the pending nudge task.
 
     *human* says a PERSON typed it (not an app token). That is proof someone is
-    back in the slot, so it also ends an approval hold (``release_approval_hold``,
-    unarmed: this turn's own completion re-arms the loop).
+    back in the slot, so it also ends an approval hold or a declared person-wait
+    (``release_approval_hold``, unarmed: this turn's own completion re-arms the loop).
 
     Cancelling the TASK defers delivery until the user's turn ends (a
     nudge must never race a human turn); the loop's ``next_due_ts`` is
@@ -1231,20 +1312,22 @@ def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
         if loop.monitor is not None:
             loop.monitor.next_probe_at = loop.next_due_ts
         self._persist_soon()
-    if _held_tick_rearms(loop) and not is_structured_monitor_loop(loop):
-        # A held gated loop naming one pull request: its timer is its subject read
-        # (``subject_reads.hold_tick``), one read interval out whatever its deadline,
-        # from every arm: a turn ending, a deferred re-arm, a reconciler rescue. Any
-        # other held loop is armed toward its deadline as any loop is, so its tick
-        # still reaches the cycle cap and the stop sentinel. The release arms toward
-        # the deadline.
-        self._arm_timer(loop, delay=SUBJECT_READ_SECS)
-        return
+    if not is_structured_monitor_loop(loop):
+        held_delay = _held_tick_delay(loop)
+        if held_delay is not None:
+            # A held gated loop naming one pull request reads it one interval out, no
+            # later than a declared hold's expiry. Any other declared hold ticks at its
+            # expiry. Any other approval hold falls through to its deadline.
+            self._arm_timer(loop, delay=held_delay)
+            return
     remaining = loop.next_due_ts - now
     if remaining <= 0:
         delay = float(seams._OVERDUE_REARM_SECS)
     else:
         delay = min(remaining, float(loop.idle_secs))
+    to_expiry = None if is_structured_monitor_loop(loop) else _declared_hold_delay(loop, now)
+    if to_expiry is not None:
+        delay = min(delay, to_expiry)
     self._arm_timer(loop, delay=delay)
 
 
@@ -1376,14 +1459,15 @@ def _reconcile_once(self: AutoNudgeService) -> None:
         if loop.id in self._firing or loop.id in self._maintenance_quiescing:
             continue
         if (
-            loop.approval_stalled
+            _holds_for_a_person(loop)
             and not is_structured_monitor_loop(loop)
-            and not _held_tick_rearms(loop)
+            and _held_tick_delay(loop) is None
         ):
-            # Paused for approval with no pull request to read (or ungated): no live
+            # Held for an approval with no pull request to read (or ungated): no live
             # timer is the intended state, and ``release_approval_hold`` re-arms it. A
             # gated one that names a pull request re-arms itself to keep reading it
-            # (``subject_reads.hold_tick``), so it is rescued like any other.
+            # (``subject_reads.hold_tick``), and a declared hold always has a tick at
+            # its expiry, so both are rescued like any other.
             continue
         monitor = loop.monitor
         if monitor is not None and monitor.version != MONITOR_STATE_VERSION:

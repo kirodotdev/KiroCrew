@@ -146,6 +146,42 @@ describe('automation transport normalizer', () => {
     expect(normalizeAutomationRecord(base)).not.toHaveProperty('stoppedDetail')
   })
 
+  it('carries a declared person-wait, and only when it is true', () => {
+    const base = {
+      id: 'legacy-1', slot_key: 'chat-1', message: 'Keep going', idle_secs: 60,
+      max_cycles: 0, cycle_count: 7, active: true, last_fire_ts: 123,
+    }
+    expect(normalizeAutomationRecord({ ...base, waiting_on_person: true, person_wait_declared: true }))
+      .toMatchObject({ kind: 'legacy_goal_loop', waitingOnPerson: true, personWaitDeclared: true })
+    expect(normalizeAutomationRecord({ ...base, person_wait_declared: false })).not.toHaveProperty('personWaitDeclared')
+    expect(normalizeAutomationRecord({ ...base, person_wait_declared: 'true' })).not.toHaveProperty('personWaitDeclared')
+  })
+
+  it('carries a person-wait release and expiry, each only when meaningful', () => {
+    const base = {
+      id: 'legacy-1', slot_key: 'chat-1', message: 'Keep going', idle_secs: 60,
+      max_cycles: 0, cycle_count: 7, active: true, last_fire_ts: 123,
+    }
+    expect(normalizeAutomationRecord({
+      ...base,
+      person_wait_release: 'expired',
+      person_wait_expires_at: 1_760_878_800,
+      person_wait_ends_on_budget: false,
+    }))
+      .toMatchObject({
+        kind: 'legacy_goal_loop',
+        personWaitRelease: 'expired',
+        personWaitExpiresAt: 1_760_878_800,
+        personWaitEndsOnBudget: false,
+      })
+    // Empty / wrong-type / absent release is dropped; it is a non-empty string or nothing.
+    expect(normalizeAutomationRecord({ ...base, person_wait_release: '' })).not.toHaveProperty('personWaitRelease')
+    expect(normalizeAutomationRecord({ ...base, person_wait_release: 5 })).not.toHaveProperty('personWaitRelease')
+    // A non-positive or non-number expiry is dropped; it is present only while a hold is on.
+    expect(normalizeAutomationRecord({ ...base, person_wait_expires_at: 0 })).not.toHaveProperty('personWaitExpiresAt')
+    expect(normalizeAutomationRecord({ ...base, person_wait_expires_at: 'soon' })).not.toHaveProperty('personWaitExpiresAt')
+  })
+
   it('folds channel session keys into dashboard slot keys', () => {
     const record = normalizeAutomationRecord({
       id: 'legacy-1', slot_key: 'slack:1785370133.085469', message: 'Keep going',

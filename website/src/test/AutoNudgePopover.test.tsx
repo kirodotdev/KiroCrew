@@ -2,8 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { useState } from 'react'
 import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import AutoNudgePopover, { STOP_FILE_TOKEN, type AutoNudgeLoop } from '../components/AutoNudgePopover'
+import AutoNudgePopover, { STOP_FILE_TOKEN, calendarDayWord, type AutoNudgeLoop } from '../components/AutoNudgePopover'
 import { AUTONUDGE_LOOPS_QUERY_KEY } from '../components/autoNudgeLoop'
+import { fmtTime, fmtRelative } from '../i18n/format'
 import { __resetForTests, loadGoalDraft, saveGoalDraft } from '../utils/goalDrafts'
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
@@ -741,6 +742,200 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     expect(clearAction()).toBeNull()
   })
 
+  it('a loop whose agent declared it waits on you reads as "Waiting on you", not "Goal active", and asks for a reply in this chat or a Nudge now press', () => {
+    renderWith(running({ waiting_on_person: true, person_wait_declared: true }))
+    expect(status()!.textContent).toBe(
+      'The agent asked you a question. Reply in this chat, or press Nudge now to continue without answering.',
+    )
+    expect(status()!.className).toMatch(/\bbg-warn-subtle\b/)
+    // The title no longer says "Goal active" over a "Waiting on you" line, and no
+    // longer says "Paused" beside a live Pause button (which read as contradictory):
+    // a declared person-wait gets its own "Waiting on you" title.
+    expect(title()).toBe('Waiting on you')
+    expect(title()).not.toMatch(/Goal active/)
+    expect(title()).not.toMatch(/Paused/)
+  })
+
+  it('Nudge now shows its name beside the icon only while the agent declared it waits on you', () => {
+    const label = () => screen.queryByTestId('auto-nudge-play-label')
+    renderWith(running({ waiting_on_person: true, person_wait_declared: true }))
+    expect(label()!.textContent).toBe(NUDGE_NOW)
+    // The accessible name is the button's own, unchanged by the visible text.
+    expect(byLabel(NUDGE_NOW)!).toContainElement(label())
+    cleanup()
+    for (const loop of [running(), running({ waiting_on_person: true }), running({ approval_stalled: true })]) {
+      renderWith(loop)
+      expect(label()).toBeNull()
+      cleanup()
+    }
+  })
+
+  it('while a declared person-wait holds, the status line leads with the clock and rides the time left in parentheses, tagging the next day and never a year', () => {
+    // A fixed clock so the branch (same day vs the next) is deterministic. The
+    // popover renders in the HOST timezone (format.ts pins none), so the end
+    // string is asserted via the same fmt* the component uses, never a hardcoded
+    // "1:00 PM".
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-19T12:00:00Z'))
+    const HOLD = 'The agent asked you a question. Reply in this chat, or press Nudge now to continue without answering.'
+    // Mirror of the component's personWaitEnd text, so the assertion tracks the
+    // real formatter rather than a clock the host timezone would shift. Clock
+    // first, time left in parentheses; the cross-midnight branch reuses the
+    // component's own calendarDayWord so the mirror cannot drift from it.
+    const endsAt = (ts: number) => {
+      const end = new Date(ts * 1000)
+      const now = new Date()
+      const sameDay = end.getFullYear() === now.getFullYear()
+        && end.getMonth() === now.getMonth() && end.getDate() === now.getDate()
+      const relative = fmtRelative(ts)
+      const clock = fmtTime(ts)
+      if (sameDay) return `${clock} (${relative})`
+      const nowMid = new Date(now); nowMid.setHours(0, 0, 0, 0)
+      const endMid = new Date(end); endMid.setHours(0, 0, 0, 0)
+      return `${clock} ${calendarDayWord(nowMid, endMid)} (${relative})`
+    }
+    // The full end sentence as the status composes it: the declared-hold line, a
+    // space, then the resume line with the time interpolated. These loops carry
+    // no runtime budget, so the hold ends on the 24h cap -- nudges resume.
+    const ends = (ts: number) => `Nudges resume at ${endsAt(ts)} if you don't reply.`
+
+    // Minutes away: the clock leads, the countdown rides in parentheses, no year.
+    const inMinutes = Math.floor(Date.now() / 1000) + 25 * 60
+    renderWith(running({ waiting_on_person: true, person_wait_declared: true, person_wait_expires_at: inMinutes }))
+    expect(status()!.textContent).toBe(`${HOLD} ${ends(inMinutes)}`)
+    expect(status()!.textContent).toContain(`resume at ${fmtTime(inMinutes)}`)
+    expect(status()!.textContent).toContain(`(${fmtRelative(inMinutes)})`)
+    expect(status()!.textContent).not.toMatch(/\b20\d{2}\b/)
+    expect(status()!.className).toMatch(/\bbg-warn-subtle\b/)
+    cleanup()
+
+    // Hours away, same day.
+    const inHours = Math.floor(Date.now() / 1000) + 6 * 3600
+    renderWith(running({ waiting_on_person: true, person_wait_declared: true, person_wait_expires_at: inHours }))
+    expect(status()!.textContent).toBe(`${HOLD} ${ends(inHours)}`)
+    expect(status()!.textContent).toContain(fmtRelative(inHours))
+    cleanup()
+
+    // Crossing midnight: built as 01:00 on the next LOCAL day so the branch fires
+    // in any timezone. The clock is tagged with the relative day, still no year.
+    const nextDay = new Date(); nextDay.setDate(nextDay.getDate() + 1); nextDay.setHours(1, 0, 0, 0)
+    const crossMidnight = Math.floor(nextDay.getTime() / 1000)
+    renderWith(running({ waiting_on_person: true, person_wait_declared: true, person_wait_expires_at: crossMidnight }))
+    expect(status()!.textContent).toBe(`${HOLD} ${ends(crossMidnight)}`)
+    const nowMid = new Date(); nowMid.setHours(0, 0, 0, 0)
+    const endMid = new Date(nextDay); endMid.setHours(0, 0, 0, 0)
+    expect(status()!.textContent).toContain(calendarDayWord(nowMid, endMid))
+    expect(status()!.textContent).not.toMatch(/\b20\d{2}\b/)
+    cleanup()
+
+    // Declared hold with NO expiry carried: only the hold line, no end sentence.
+    renderWith(running({ waiting_on_person: true, person_wait_declared: true }))
+    expect(status()!.textContent).toBe(HOLD)
+    cleanup()
+    // An expiry present on a hold that is NOT the agent's declaration (the
+    // work-ledger wait) does not take the declared-hold line or its end time.
+    renderWith(running({ waiting_on_person: true, person_wait_expires_at: inHours }))
+    expect(status()!.textContent).not.toContain('resume at ')
+    expect(status()!.textContent).not.toContain(HOLD)
+  })
+
+  it('the declared-hold line says the GOAL ends (not just nudges resume) only when the wait ends on the runtime budget', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-19T12:00:00Z'))
+    const HOLD = 'The agent asked you a question. Reply in this chat, or press Nudge now to continue without answering.'
+    // Mirror of personWaitEnd.text (clock first, time left in parentheses),
+    // robust across the host timezone's midnight.
+    const endClock = (ts: number) => {
+      const end = new Date(ts * 1000); const now = new Date()
+      const sameDay = end.getFullYear() === now.getFullYear()
+        && end.getMonth() === now.getMonth() && end.getDate() === now.getDate()
+      if (sameDay) return `${fmtTime(ts)} (${fmtRelative(ts)})`
+      const a = new Date(now); a.setHours(0, 0, 0, 0); const b = new Date(end); b.setHours(0, 0, 0, 0)
+      return `${fmtTime(ts)} ${calendarDayWord(a, b)} (${fmtRelative(ts)})`
+    }
+    const now = Math.floor(Date.now() / 1000)
+    const created = now - 3600        // the loop started an hour ago
+    const budget = 6 * 3600           // a 6h runtime budget → ends 5h from now
+    const expiry = created + budget   // under the 24h cap, so the BUDGET binds the hold
+    // The authoritative marker says the runtime budget binds the hold.
+    renderWith(running({
+      waiting_on_person: true, person_wait_declared: true,
+      person_wait_expires_at: expiry, person_wait_ends_on_budget: true,
+      created_ts: created, max_runtime_secs: budget,
+    }))
+    expect(status()!.textContent).toBe(`${HOLD} The goal ends at ${endClock(expiry)} if you don't reply.`)
+    cleanup()
+    // A suspend can move a cap-limited expiry past persisted created+budget.
+    // The marker still says only nudges resume; timestamp arithmetic must not
+    // mislabel the cap as the goal's runtime end.
+    renderWith(running({
+      waiting_on_person: true, person_wait_declared: true,
+      person_wait_expires_at: expiry, person_wait_ends_on_budget: false,
+      created_ts: created - budget, max_runtime_secs: budget,
+    }))
+    expect(status()!.textContent).toBe(`${HOLD} Nudges resume at ${endClock(expiry)} if you don't reply.`)
+    cleanup()
+    // The SAME expiry with no budget carried: only the 24h cap is provable, so
+    // the line claims only that nudges resume -- the goal does NOT end.
+    renderWith(running({ waiting_on_person: true, person_wait_declared: true, person_wait_expires_at: expiry }))
+    expect(status()!.textContent).toBe(`${HOLD} Nudges resume at ${endClock(expiry)} if you don't reply.`)
+    expect(status()!.textContent).not.toContain('The goal ends at')
+  })
+
+  it('calendarDayWord rounds a DST-shortened midnight span to a whole calendar day (spring-forward reads "tomorrow", not "today")', () => {
+    // A spring-forward night is 23h midnight-to-midnight, a fall-back night 25h.
+    // fmtRelative truncates toward zero, so a raw 23h span reads as 0 days
+    // ("today") for an end that is the next calendar day. The helper rounds the
+    // span to whole days first. Built zone-independently: both midnights are
+    // constructed here with an explicit gap, so the case does not rely on the
+    // host timezone actually observing DST on any given date.
+    const nowMidnight = new Date(2026, 2, 8, 0, 0, 0, 0)
+    const DAY = 86_400_000
+    // The canonical words, read off exact whole-day spans so the assertion needs
+    // no hardcoded "today"/"tomorrow" and holds in every locale.
+    const today = calendarDayWord(nowMidnight, nowMidnight)
+    const tomorrow = calendarDayWord(nowMidnight, new Date(nowMidnight.getTime() + DAY))
+    expect(tomorrow).not.toBe(today) // a degenerate locale would make the test vacuous
+    // 23h (spring forward) rounds UP to one day, and 25h (fall back) rounds DOWN
+    // to one day: both the next calendar day, never "today" and never "in 2 days".
+    expect(calendarDayWord(nowMidnight, new Date(nowMidnight.getTime() + 23 * 3_600_000))).toBe(tomorrow)
+    expect(calendarDayWord(nowMidnight, new Date(nowMidnight.getTime() + 25 * 3_600_000))).toBe(tomorrow)
+  })
+
+  it('a paused loop still carrying a declared person-wait does not title itself "Waiting on you"', () => {
+    // Pausing leaves person_wait_declared/waiting_on_person set on the record;
+    // the title must follow loop.active, not the stale declaration.
+    renderWith(paused({ stopped_reason: 'manual', waiting_on_person: true, person_wait_declared: true }))
+    expect(title()).toBe('Paused')
+    expect(title()).not.toMatch(/Waiting on you/)
+    // The status line reads as a plain pause, not the declared-hold invitation.
+    expect(status()!.textContent).toBe('Paused · you paused it')
+    expect(status()!.textContent).not.toMatch(/time budget runs out/)
+  })
+
+  it('once a declared person-wait expired with no answer, one muted line says so; a person/agent release says nothing', () => {
+    const expired = () => screen.queryByTestId('auto-nudge-person-wait-expired')
+    renderWith(running({ person_wait_release: 'expired' }))
+    expect(expired()!.textContent).toBe('No reply came in time, so nudges resumed.')
+    expect(expired()!.className).toMatch(/\btext-muted\b/)
+    cleanup()
+    // Inactive: the wait expired at the end of the runtime budget, which STOPPED
+    // the loop, so the line drops the now-false "nudges resumed" claim.
+    renderWith(paused({ stopped_reason: 'runtime_budget', person_wait_release: 'expired' }))
+    expect(expired()!.textContent).toBe('No reply came in time.')
+    cleanup()
+    // Still holding: the status line owns the message, the expired line stays off.
+    renderWith(running({ waiting_on_person: true, person_wait_declared: true, person_wait_release: 'expired' }))
+    expect(expired()).toBeNull()
+    cleanup()
+    // A person or agent release WAS someone acting, and no release at all: silent.
+    for (const release of ['person', 'agent', '', undefined]) {
+      renderWith(running({ person_wait_release: release as string | undefined }))
+      expect(expired()).toBeNull()
+      cleanup()
+    }
+  })
+
   it('a running loop reads its countdown in the ok box and its cycle in the title; no loop has neither', () => {
     renderWith(running({ cycle_count: 2 }))
     expect(status()!.textContent).toMatch(/^Next cycle in .+$/)
@@ -871,6 +1066,12 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     cleanup()
     renderWith(paused({ stopped_reason: 'autonudge_stop' }))
     expect(rowNames()).toEqual([PAUSE, RESUME])
+  })
+
+  it('a declared person-wait past its deadline keeps Nudge now live: the press is how a person releases it', () => {
+    renderWith(running({ waiting_on_person: true, person_wait_declared: true, next_due_ts: 1 }) /* any deadline long past */)
+    expect(byLabel(NUDGE_NOW)!).toBeEnabled()
+    expect(byLabel(PAUSE)!).toBeEnabled()
   })
 
   it('NO LOOP: Play alone, named Start loop, creates and starts the loop from the form, fires nothing, hands the created record up and stays open', async () => {

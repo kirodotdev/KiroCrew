@@ -242,6 +242,22 @@ describe('SessionAutomationPopover', () => {
     expect(screen.getByTestId('auto-nudge-status')).toHaveTextContent(/^Waiting on you · /)
   })
 
+  it('carries the runtime budget through the bridge, so a declared wait the budget ends says the goal ends', () => {
+    const now = 1_900_000_000
+    vi.spyOn(Date, 'now').mockReturnValue(now * 1000)
+    const budgetEnd = now + 3600
+    renderPopover({
+      ...activeLegacyLoop,
+      waitingOnPerson: true,
+      personWaitDeclared: true,
+      personWaitExpiresAt: budgetEnd,
+      personWaitEndsOnBudget: true,
+      createdAt: budgetEnd - 7200,
+      maxRuntimeSecs: 7200,
+    })
+    expect(screen.getByTestId('auto-nudge-status')).toHaveTextContent(/The goal ends at .* if you don't reply\./)
+  })
+
   it('clears a paused legacy loop through the bridge: the record is handed up as null and the popover closes', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
     vi.stubGlobal('fetch', fetchMock)

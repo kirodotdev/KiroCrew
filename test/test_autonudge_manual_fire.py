@@ -454,6 +454,31 @@ async def test_route_refuses_when_the_approval_hold_cannot_be_released(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_route_refuses_when_an_expired_declared_wait_cannot_be_persisted(
+    monkeypatch, svc_base_dir
+) -> None:
+    svc, loop = _svc_with_loop(svc_base_dir)
+    loop.waiting_on_person = True
+    loop.person_wait_declared = True
+    loop.waiting_on_person_at = 1.0
+
+    async def _refuse(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(svc, "_write_monitor_snapshot_locked", _refuse)
+    monkeypatch.setattr(h, "_autonudge_get", lambda: svc)
+    try:
+        resp = await h.api_autonudge_fire(_mk(loop.id, slot=_slot()))
+
+        assert resp.status == 503
+        assert _body(resp)["code"] == "approval_hold_release_failed"
+        assert loop.waiting_on_person is True and loop.person_wait_declared is True
+        assert loop.id not in svc._timers, "the refused release still armed a nudge"
+    finally:
+        svc.stop()
+
+
+@pytest.mark.asyncio
 async def test_route_maps_closed_held_loop_to_shutdown_without_warning(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,

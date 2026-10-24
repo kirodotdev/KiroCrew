@@ -1201,6 +1201,8 @@ async def _update_unserialized(
                         loop.approval_stalled = False
                         loop.waiting_on_person = False
                         loop.waiting_on_person_at = 0.0
+                        loop.person_wait_declared = False
+                        loop.person_wait_release = ""
                         loop.ledger_seen_fp = ""
                         # Same rule, same reason: the streaks are evidence
                         # about a PAST run, and a revival starts a fresh one.

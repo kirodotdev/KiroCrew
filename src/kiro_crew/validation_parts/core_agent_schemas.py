@@ -570,5 +570,7 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
         # is the only way a conductor that armed a plain timer reaches the gate without
         # tearing its loop down and losing its cycle count.
         _MONITOR_WATCH_FIELD,
+        # Legacy loops only: declare (true) or end (false) the loop's person-wait hold.
+        FieldSpec("waiting_on_person", bool),
     ],
 )

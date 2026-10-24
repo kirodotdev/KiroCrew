@@ -391,22 +391,70 @@ patrol whose people never answer stays a paused row that costs one ledger read
 per interval, never a runaway. Doubt fires: an unreadable ledger or a fresh loop
 never holds.
 
+A legacy loop's own agent can DECLARE the same hold: `monitor_update` with
+`waiting_on_person: true` (`declare_person_wait`, owner
+`autonudge_service/person_wait.py`) sets `waiting_on_person` and
+`person_wait_declared`, for a loop that has asked the user something and has
+nothing to do until they answer. Declarations and releases enter mutation
+admission before their first await, persist before publishing, and are drained
+through shutdown when admitted before closure; after closure a held loop's
+release is refused like every other public mutation. `_timer` fires no cycle at
+the person-wait hold point, so a declared hold spends neither bound; the ledger
+neither holds nor releases it. A loop that names one pull request is not blind
+while it waits: its held tick reads that pull request (`subject_reads.hold_tick`)
+and settles the loop when it merges or closes, exactly as an approval hold's does
+below, and the reconciler rescues that read at the same cadence. A loop that
+names none arms one tick at the hold's expiry and the reconciler rescues that
+timer if it is lost, so the wait performs no subject read. When the hold expires,
+its elapsed span is charged to the runtime budget: the loop fires one cycle if
+budget remains, or stops without a cycle if the budget is spent. While the
+declaring process runs, the budget-limited expiry is the remaining
+`runtime_elapsed` projected onto the wall clock used by timers, so a Linux/macOS
+host suspend does not spend the remainder or expire a newly declared wait. The
+24-hour cap remains wall-clock. A hold loaded after restart has no monotonic hold
+witness and falls back to persisted `created_ts + max_runtime_secs`, so downtime
+still counts as it does for the runtime budget itself. REST, inspect and websocket
+readings carry both the projected expiry and whether the runtime budget supplied
+it, keeping the popover's "goal ends" wording aligned with enforcement even when
+the projected instant differs from the persisted wall-clock sum. A person
+ends it on the approval hold's signs of presence below, through that release,
+and the agent ends it with
+`false`. Only a running legacy loop can declare, `true` only from a turn a
+person sent or the loop's own live wake, and only in a dashboard chat, since a
+Slack or Discord reply does not reach the release; a structured monitor is
+refused. A person who sent a message during the declaring turn, or has one
+queued, has already answered, so the applier
+(`dashboard/session_directive_person_wait.py`) does not set the hold then.
+Release credits the held span to `created_ts` like the other holds. If Nudge
+now reaches an expired declared hold and the expiry write is refused, the release
+raises into the dashboard handler, which answers `approval_hold_release_failed`
+instead of auditing a successful fire that never occurred. The ordinary timer
+expiry remains best-effort and retries the held loop. The
+declared wait and the approval hold never overlap: a declaration while an
+approval hold is on records nothing (the agent is told the loop already waits),
+and an unanswered approval during a declared wait records no approval hold, so
+each release and each settlement credits the one span that held.
+`test_autonudge_declared_person_wait.py` pins the hold, its releases and its
+refusals.
+
 An unanswered tool approval HOLDS a prompt loop rather than stopping it: it
 stays active, fires nothing and spends neither bound, and it resumes on its own
 once a person answers an approval, types into the dashboard session or presses
-fire (`release_approval_hold`); a Slack or Discord message alone does not
-release it. `monitor_inspect` reports the hold as
-`paused_for_approval` on the loop reading. A held gated loop is not blind: when
-it names one pull request, each held tick reads it (`subject_reads.hold_tick`,
-one `gh pr view`, no model turn) and re-arms one read interval out, so the
-reconciler rescues such a held loop whose timer died like any other. Any other
-held loop, ungated or naming none, reads nothing: its held tick re-arms
-nothing, a turn's end arms it toward its deadline, and the reconciler skips it.
-A pull request that merged or closed during a gated loop's hold settles the
-loop as `monitor_terminal`, records the outcome on its monitor and sends the
-expiry notice. An ungated loop is never settled by a held read, because
-`gate=False` promises a terminal reading never ends it. A channel loop settles
-there too, because a held loop delivers no turn to carry the news.
+fire (`release_approval_hold`, which also ends a declared person-wait); a Slack
+or Discord message alone does not release it. `monitor_inspect` reports the hold
+as `paused_for_approval` on the loop reading, and a declared person-wait as
+`person_wait_declared` beside `waiting_on_person`. A held gated loop is not
+blind: when it names one pull request, each held tick reads it
+(`subject_reads.hold_tick`, one `gh pr view`, no model turn) and re-arms one
+read interval out, so the reconciler rescues such a held loop whose timer died
+like any other. Any other held loop, ungated or naming none, reads nothing: an
+approval hold's held tick re-arms nothing, a turn's end arms it toward its
+deadline, and the reconciler skips it. A pull request that merged or closed
+during a gated loop's hold settles the loop as `monitor_terminal`, records the
+outcome on its monitor and sends the expiry notice. An ungated loop is never
+settled by a held read, because `gate=False` promises a terminal reading never
+ends it. A channel loop settles there too, because a held loop delivers no turn
+to carry the news.
 
 A tool's “requested” response proves receipt only. The gateway's applied notice
 and a subsequent `monitor_inspect` prove activation. Unmatched directive delivery

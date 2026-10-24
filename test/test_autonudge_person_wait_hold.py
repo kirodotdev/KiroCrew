@@ -218,9 +218,9 @@ async def test_the_live_loop_shows_the_hold_only_after_the_write(
     seen_during_write: list[bool] = []
     real = svc._write_monitor_snapshot_locked
 
-    async def _watch(*args):
+    async def _watch(*args, **kwargs):
         seen_during_write.append(svc._loops[loop.id].waiting_on_person)
-        return await real(*args)
+        return await real(*args, **kwargs)
 
     monkeypatch.setattr(svc, "_write_monitor_snapshot_locked", _watch)
     await _tick(svc, loop)

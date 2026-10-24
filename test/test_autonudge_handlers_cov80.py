@@ -1207,11 +1207,16 @@ async def test_structured_legacy_row_carries_exactly_the_entitled_keys(
         # When that hold began; same class, and 0 on a structured monitor.
         "approval_stalled_at",
         # The person-wait hold: the same class as ``approval_stalled`` (the loop's
-        # own reading of whether it can act). Only a work-ledger watch sets them, so a
-        # structured monitor carries "" and False truthfully.
+        # own reading of whether it can act). Only a work-ledger watch or a legacy
+        # loop's own agent sets them, so a structured monitor carries "" and False
+        # truthfully.
         "ledger_seen_fp",
         "waiting_on_person",
         "waiting_on_person_at",
+        "person_wait_declared",
+        # Why the last declared hold ended; a structured monitor never declares one,
+        # so it carries "" truthfully.
+        "person_wait_release",
         # Same class as ``approval_stalled``: the automation's own reading of
         # whether it can act, not a fact about what it watches. A structured
         # monitor never writes it, so the row carries 0 truthfully.
