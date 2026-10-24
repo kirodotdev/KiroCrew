@@ -3,9 +3,9 @@
 ``rebuild_agent_config`` and the outcome tracking around it; the projection memo a
 rebuild records, the hold a conductor spec can be under, the profile watch and the
 entry points that re-project the specs when the ceiling or the profile answer moves;
-the fork-governance check a session start makes; the reporting wrapper and
-``ensure_agent_materialized``; and the installs the rebuild drives itself (AIM
-capabilities and packages, the heartbeat agent). New work on the rebuild's order or on
+the fork-governance check a session start makes; the reporting wrapper,
+``ensure_agent_materialized`` and its ``managed_spec_missing`` probe; and the installs
+the rebuild drives itself (AIM capabilities and packages, the heartbeat agent). New work on the rebuild's order or on
 when the specs are re-projected goes here.
 
 Composed onto ``kiro_crew.agent``, the import path and patch target of every name
@@ -1296,6 +1296,19 @@ def rebuild_agent_config_reporting(*, _held_out: list[bool] | None = None) -> tu
 
 # Backward-compat alias — callers may still use the old name.
 install_agent = rebuild_agent_config
+
+
+def managed_spec_missing(agent: str | None) -> bool:
+    """Whether *agent* is the managed default and its spec is absent on disk.
+
+    The one case :func:`ensure_agent_materialized` regenerates. Never raises.
+    """
+    try:
+        return agent == Path(AGENT_FILENAME).stem and not (
+            (kiro_agents_dir_path() / AGENT_FILENAME).exists()
+        )
+    except Exception:  # noqa: BLE001 - a read-only probe never fails its caller
+        return False
 
 
 def ensure_agent_materialized(agent: str | None) -> bool:

@@ -29,9 +29,11 @@ if TYPE_CHECKING:
         SessionManager,
         SubagentManager,
         TaskRunner,
+        _arm_config_stale_sweep,
         _arm_listener_guard,
         _arm_prevent_sleep_poll,
         _arm_secondary_listener_guard,
+        _config_write_refresh,
         _dispatch_healthy_boot_marker,
         _export_bound_port,
         _install_api_middlewares,
@@ -47,6 +49,7 @@ if TYPE_CHECKING:
         _make_deny_audit_middleware,
         _make_host_validation_middleware,
         _note_listener_sidecar,
+        _pool_spawn_config,
         _precompute_telemetry,
         _reconcile_listener_publication,
         _register_browser_install_cleanup,
@@ -208,6 +211,12 @@ async def start_api_server(
     # retired before reuse (see flag_identity_stamp_mismatches). Unwired (the
     # CLI, tests), spawns stay unstamped and keep the pre-stamping behavior.
     state.sessions.spawn_identity_reader = app["kiro_prerequisite_service"].read_spawn_identity
+    # Fingerprint each warm-pool process's config before it starts, so a chat
+    # that claims it compares against what that process read (stale-config badge).
+    state.sessions.spawn_config_reader = _pool_spawn_config
+    # Badge idle chats too: refresh every live chat right after the gateway's
+    # own config writes, and sweep for edits made outside it.
+    _arm_config_stale_sweep(app, state)
     # Probe Kiro readiness during boot rather than on the dashboard's first
     # status request: the cold probe spawns sandboxed CLI subprocesses and can
     # take seconds, which is what made the first-run setup chrome visible to
@@ -309,6 +318,7 @@ async def start_api_server(
         port=port,
         local_only=local_only,
         tailnet_trust=_tailnet_trust,
+        config_write_refresh=_config_write_refresh(state),
     )
 
     _register_mcp_routes(app)

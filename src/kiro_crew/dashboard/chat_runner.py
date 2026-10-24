@@ -297,6 +297,14 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     open_construct_at_end,
     run_to_completion,
 )
+from kiro_crew.dashboard.config_staleness import (  # noqa: F401
+    managed_spec_missing,
+    record_spawn_config,
+    records_provider,
+    refresh_config_stale,
+    spawn_config_fingerprint,
+    turn_spawn_inputs,
+)
 from kiro_crew.dashboard.handlers import (
     MAX_PROMPT_BYTES,
     _find_prompt,
@@ -323,6 +331,7 @@ from kiro_crew.dashboard.session_directive_apply import (  # noqa: F401
     apply_session_directive,
     apply_session_directive_outcome,
 )
+from kiro_crew.dashboard.stale_config import ConfigFingerprint, SpawnInputs
 from kiro_crew.dashboard.state import (  # noqa: F401
     _MAX_SLOT_MESSAGES,
     CRON_NOTIFY_PREFIX,
@@ -585,6 +594,61 @@ def _member_capable_backend_names() -> str:
     """
     names = sorted(ACP_BACKENDS_MEMBER_CAPABILITIES - {ACP_BACKEND_KIRO})
     return ", ".join(names[:-1]) + " or " + names[-1] if len(names) > 1 else names[0]
+
+
+def _schedule_config_stale_refresh(state: DashboardState, slot: _ChatSlot) -> None:
+    """Recompute *slot*'s stale-config badge in the background, off the turn's path.
+
+    Badge bookkeeping never breaks a turn: any failure here is logged and dropped.
+    """
+    try:
+        task = asyncio.get_running_loop().create_task(
+            refresh_config_stale(state, slot, turn_ended=True)
+        )
+        state._background_tasks.add(task)
+        task.add_done_callback(state._background_tasks.discard)
+    except Exception:  # noqa: BLE001 - a change detector never fails a turn
+        logger.debug("Stale-config refresh not scheduled for slot %s", slot.key, exc_info=True)
+
+
+async def _take_spawn_fingerprint(
+    cfg: Any, slot: _ChatSlot, session_key: str, kiro_agent: str | None
+) -> tuple[SpawnInputs, ConfigFingerprint] | None:
+    """The spawn inputs and fingerprint a turn records, or ``None`` on any failure.
+
+    A missing managed spec is left for the spawn to heal (``None``):
+    regenerating it here rebuilds every managed spec and re-reads the config
+    dozens of times, ahead of the turn it would delay, and a later turn,
+    finding no record, fingerprints the healed spec. Badge bookkeeping only: it
+    must never break the turn or spawn that takes it.
+    """
+
+    def _take(inputs: SpawnInputs) -> ConfigFingerprint | None:
+        if managed_spec_missing(inputs.agent):
+            return None
+        return spawn_config_fingerprint(cfg, session_key, inputs)
+
+    try:
+        inputs = turn_spawn_inputs(slot, kiro_agent)
+        fingerprint = await asyncio.to_thread(_take, inputs)
+    except Exception:  # noqa: BLE001 - a change detector never fails a turn
+        logger.debug("Config fingerprint failed for slot %s", slot.key, exc_info=True)
+        return None
+    if fingerprint is None:
+        return None
+    return inputs, fingerprint
+
+
+def _record_spawn_config_quietly(
+    slot: _ChatSlot, provider: Any, spawn: tuple[SpawnInputs, ConfigFingerprint] | None
+) -> None:
+    """:func:`record_spawn_config`, with any failure logged and dropped."""
+    if spawn is None or provider is None:
+        return
+    try:
+        record_spawn_config(slot, provider, *spawn)
+    except Exception:  # noqa: BLE001 - a change detector never fails a turn
+        logger.debug("Spawn config not recorded for slot %s", slot.key, exc_info=True)
 
 
 async def _expand_prompt_mention_off_loop(
@@ -1711,6 +1775,8 @@ async def _run_chat(
         slot._git_repo_touch_terminal.clear()
         slot._git_repo_touch_overflow = False
         await _turn_record_outcome(turn)
+        # The turn's end: recompute the stale-config badge off this path.
+        _schedule_config_stale_refresh(state, slot)
         await _turn_close_crew_log(turn)
         await _turn_release_handles(turn)
         await _turn_settle_debts(turn)

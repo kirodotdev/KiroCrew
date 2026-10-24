@@ -16,8 +16,9 @@ const apiMock = vi.hoisted(() => ({
   forkChatSlot: vi.fn(),
   setSlotPin: vi.fn(),
   chatSlots: vi.fn(),
+  chatSlotReload: vi.fn(),
 }))
-vi.mock('../api/client', () => ({ api: apiMock }))
+vi.mock('../api/client', () => ({ api: apiMock, ApiError: class ApiError extends Error { body = '' } }))
 
 const copySessionLink = vi.hoisted(() => vi.fn())
 vi.mock('../utils/shareUrl', () => ({ copySessionLink }))
@@ -66,6 +67,7 @@ beforeEach(() => {
   apiMock.forkChatSlot.mockReset().mockResolvedValue({ ok: true, key: 'zzq-forked' })
   apiMock.setSlotPin.mockReset().mockResolvedValue({ ok: true })
   apiMock.chatSlots.mockReset().mockImplementation(async () => store.getState().dashboard.slots)
+  apiMock.chatSlotReload.mockReset().mockResolvedValue({ ok: true })
   copySessionLink.mockClear()
   moveSlotToFolder.mockClear()
   deleteSlot.mockClear()
@@ -505,5 +507,55 @@ describe('close', () => {
     const { result } = harness()
     act(() => result.current.close(KEY))
     expect(deleteSlot).not.toHaveBeenCalled()
+  })
+})
+
+describe('reload', () => {
+  // The header button owns the hook, and it unmounts mid-request when the user
+  // switches to a chat that is not stale or the title's Undo offer replaces it.
+  // TanStack skips per-``mutate`` callbacks for an unmounted observer, so the
+  // failure must be dispatched from the mutation itself or it is never shown.
+  function deferred() {
+    let reject!: (e: unknown) => void
+    let resolve!: (v: unknown) => void
+    const promise = new Promise((res, rej) => { resolve = res; reject = rej })
+    return { promise, resolve, reject }
+  }
+
+  it('reports a failure to the caller after the caller unmounted mid-request', async () => {
+    const req = deferred()
+    apiMock.chatSlotReload.mockReturnValue(req.promise)
+    const onError = vi.fn()
+    const { result, unmount } = harness()
+    act(() => result.current.reload(KEY, { onError }))
+    await waitFor(() => expect(apiMock.chatSlotReload).toHaveBeenCalledWith(KEY))
+    unmount()
+    const err = new Error('slot_subagents_running')
+    await act(async () => { req.reject(err); await req.promise.catch(() => {}) })
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(err))
+  })
+
+  it('reports success to the caller after the caller unmounted mid-request', async () => {
+    const req = deferred()
+    apiMock.chatSlotReload.mockReturnValue(req.promise)
+    const onSuccess = vi.fn()
+    const { result, unmount } = harness()
+    act(() => result.current.reload(KEY, { onSuccess }))
+    await waitFor(() => expect(apiMock.chatSlotReload).toHaveBeenCalledWith(KEY))
+    unmount()
+    await act(async () => { req.resolve({ ok: true }); await req.promise })
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled())
+  })
+
+  it('alerts for a caller without its own error surface, and not for one with it', async () => {
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
+    apiMock.chatSlotReload.mockRejectedValue(new Error('boom'))
+    const { result } = harness()
+    act(() => result.current.reload(KEY))
+    await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
+    const onError = vi.fn()
+    act(() => result.current.reload(KEY, { onError }))
+    await waitFor(() => expect(onError).toHaveBeenCalled())
+    expect(alertSpy).toHaveBeenCalledTimes(1)
   })
 })

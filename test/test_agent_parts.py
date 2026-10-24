@@ -556,7 +556,7 @@ def test_the_value_scan_can_fail() -> None:
 def test_every_module_level_value_an_owner_defines_is_the_object_the_facade_binds() -> None:
     """Checked in a fresh interpreter, before any test patch or rebuild has rebound one: the
     facade's binding is the owner's object, so a write through the facade is what every
-    composed function reads. No owner defines a class: the two exception classes stay on the
+    composed function reads. No owner defines a class: the exception classes stay on the
     facade, where their ``__module__`` is the one error text and logs render."""
     values = {
         stem: [name for name in _module_values(_tree(path)) if name not in _REWRAPPED]

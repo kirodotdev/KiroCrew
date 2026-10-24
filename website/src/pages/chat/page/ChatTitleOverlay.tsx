@@ -1,4 +1,4 @@
-import type { MutableRefObject, Dispatch, SetStateAction } from 'react'
+import { useState, type MutableRefObject, type Dispatch, type SetStateAction } from 'react'
 import { Undo2, ExternalLink, Columns2 } from 'lucide-react'
 import type { SidePanelDock } from '../../../hooks/useSidePanelDock'
 import type { AppDispatch } from '../../../store'
@@ -10,6 +10,7 @@ import { ChatHeaderMenu } from '../ChatHeaderMenu'
 import type { useSteerDelivery } from './turnActions'
 import { SELECTION_INERT_ATTR } from '../useSelectionInertOverlays'
 import ChatHeaderChips from '../../../components/ChatHeaderChips'
+import { StaleConfigReloadButton } from '../../../components/StaleConfigBadge'
 import { PinnedPrompt } from '..'
 import { pinCandidateKey } from '../usePinnedPrompt'
 import SessionTitleControl from '../SessionTitleControl'
@@ -18,6 +19,8 @@ import { SidePanelGlyph } from '../../../components/SidePanelGlyph'
 import Clickable from '../../../components/Clickable'
 import type { useLabelTip } from '../../../components/InstantTip'
 import { i18nT } from '../../../i18n/t'
+import { errMessage } from '../../../utils/thunkError'
+import { generateSlotTitle } from '../../../hooks/slotTitleGeneration'
 import { uiLocation } from '../../../uiLocations/uiLocation'
 
 interface ChatTitleOverlayProps {
@@ -76,6 +79,7 @@ export default function ChatTitleOverlay({
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarPinned, sidebarAutoHidden, sidebarPinned, sidePanelDock, splitAnchorForActive, toggleAct, openSidebar, sidebarOnScreen,
   sidebarOpen, sidePanelWantsMount, mobileNewSessionItem, mobileSessionsToggle, popOutTip, activityTip,
 }: ChatTitleOverlayProps) {
+  const [titleUndoOffered, setTitleUndoOffered] = useState(false)
   return (
     <>
       {/* Claude-style title row — absolute overlay, solid top fading to transparent.
@@ -132,6 +136,14 @@ export default function ChatTitleOverlay({
               dispatch(requestSlotReveal(activeSlot))
             } : undefined}
             onRename={activeSlot ? () => setEditingTitleSlot(activeSlot) : undefined}
+            // The title's hover Auto-title button is off while the chat is
+            // stale (hoverActions below), so the menu carries it then.
+            onAutoTitle={activeSlot && currentSlot?.config_stale ? () => {
+              const run = generateSlotTitle(activeSlot, dispatch)
+              if (!run) return
+              setActionError(null)
+              run.catch(e => showActionError(errMessage(e) || i18nT('pages.chatPage.unknown_error'), i18nT('pages.chatPage.could_not_generate_title')))
+            } : undefined}
             mode={effectiveMode}
             sidebarOnScreen={sidebarOnScreen}
             newSessionHere={embedMode !== 'chat' && isMobile ? mobileNewSessionItem : undefined}
@@ -147,9 +159,26 @@ export default function ChatTitleOverlay({
               onEditingChange={open => setEditingTitleSlot(open ? activeSlot : null)}
               onError={showActionError}
               onAttempt={() => setActionError(null)}
+              hoverActions={!currentSlot?.config_stale}
+              onUndoOfferedChange={setTitleUndoOffered}
             />
           )}
           </div>
+        {/* Right after the title, the same spot as on the phone bar. While
+            the chat is stale the row holds two controls, the session-menu
+            trigger and this button: the title's hover Rename and Auto-title
+            are off (hoverActions above) and stay in the session menu, so
+            the row never grows to four. The title's Undo (a generated
+            title just landed) cannot be hidden, so the button waits for
+            it to end; Reload stays in the session menu meanwhile. A
+            failed reload goes to the action-error region, not a notice
+            of its own, which would be a third control. The button is
+            hidden, not unmounted, while Undo is offered: a reload still in
+            flight then reports its failure to the notice when Undo ends,
+            instead of being dropped with the instance. */}
+        {currentSlot?.config_stale && (
+          <StaleConfigReloadButton key={currentSlot.key} slot={currentSlot} mode={effectiveMode} onError={showActionError} hidden={titleUndoOffered} />
+        )}
         <ChatHeaderChips slotKey={activeSlot} />
         {/* Trailing controls grouped under a single ml-auto so multiple
             right-aligned items don't each absorb free space (two ml-auto

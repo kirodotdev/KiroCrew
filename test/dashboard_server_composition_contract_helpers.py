@@ -110,7 +110,8 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
 }
 
 #: The boot phases the two entrypoints delegate to, which the one-module file kept
-#: inline in their bodies, and the owner each lives in.
+#: inline in their bodies, plus the helpers added to the boot after the split, and
+#: the owner each lives in.
 _PHASE_OWNERS: dict[str, tuple[str, ...]] = {
     "app_platform": (
         "_reconcile_app_resources",
@@ -119,6 +120,7 @@ _PHASE_OWNERS: dict[str, tuple[str, ...]] = {
         "_warm_builtin_app_names",
         "_warm_materialized_agents",
     ),
+    "config_watch": ("_arm_config_stale_sweep", "_config_write_refresh", "_pool_spawn_config"),
     "crewmate_prune": ("_converge_channel_transcripts",),
     "diagnostics": ("_register_diag_recorder_shutdown", "_start_diag_recorder"),
     "heartbeat": (

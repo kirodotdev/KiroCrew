@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import quote
 
 from kiro_crew.conductor_patrol import reply_line
+from kiro_crew.dashboard import stale_config
 from kiro_crew.mcp_dashboard_caller_scope import (
     _caller_app_scope,
     _refuse_tree_shaping_if_unverifiable,
@@ -935,3 +936,38 @@ def _run_session_summary(args: dict[str, Any], ctx: ToolContext) -> str:
     except DashboardError as refused:
         return f"Error: could not read that session's summary: {refused.error}"
     return _render_session_summary(resp)
+
+
+def _run_session_config_status(args: dict[str, Any], ctx: ToolContext) -> str:
+    try:
+        resp = ctx.client.get(
+            f"/api/session-control/config-status?target={quote(str(args['target']))}",
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        return f"Error: could not check that session's config: {refused.error}"
+    target = resp.get("target", args["target"])
+    if resp.get("stale") is None:
+        unreadable = ", ".join(resp.get("unreadable") or [])
+        if not unreadable:
+            # Read at call time: the platform flag is patched in tests.
+            if stale_config.WINDOWS_SCAN_DISABLED:
+                return redact(
+                    f"`{target}`: unknown -- the config check is not available on Windows."
+                )
+            # No file named: the check itself failed or was overtaken by a
+            # reload, so there is no file to fix.
+            return redact(
+                f"`{target}`: unknown -- the config could not be checked right now; try again."
+            )
+        return redact(
+            f"`{target}`: unknown -- {unreadable} could not be read, so whether its "
+            "config changed cannot be told."
+        )
+    if not resp.get("stale"):
+        return redact(f"`{target}` runs on its current config.")
+    changed = ", ".join(resp.get("changed") or []) or "its config"
+    return redact(
+        f"`{target}` has a stale config ({changed} changed since it started). "
+        "It needs a Reload of that session to apply."
+    )

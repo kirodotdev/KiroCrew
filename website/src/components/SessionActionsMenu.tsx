@@ -17,10 +17,10 @@ import { DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
 import { ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
 import { muteFlagErrorKey } from '../store/dashboardSlice'
 import { useAppSelector } from '../store'
-import { selectSlotSubagentsActive } from '../store/chatSlice'
 import { useTagPopover } from '../hooks/useTagPopover'
 import { api } from '../api/client'
 import { useSessionActions } from '../hooks/useSessionActions'
+import { useReloadBlocked } from '../hooks/useReloadBlocked'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 
 import { uiLocation } from '../uiLocations/uiLocation'
@@ -174,7 +174,6 @@ export default function SessionActionsMenu({
   // and this is the only place that disagreement is said.
   const mutesOpenedError = useAppSelector(s => s.dashboard.slotMuteFlagError?.[muteFlagErrorKey('mutes_opened', slotKey)])
   const mutesOpenedErrorId = React.useId()
-  const isRunning = !!slot?.running
   // The move-to submenu lists chat folders in the order the sidebar draws them.
   // A failed read (no body to draw from) is said once per screen, by the
   // sidebar's banner over the tree -- so while that banner is on screen this
@@ -184,12 +183,22 @@ export default function SessionActionsMenu({
   const { mode: folderSortMode, error: folderSortError } = useFolderSortMode()
   const folderOrderUnsaid = folderSortError !== null && !sidebarOnScreen
   const folderOrderErrorId = React.useId()
-  // Reload is also refused while sub-agent children are attached (the reset
-  // would tear down their shared runtime) — mirror that in the disable so a
-  // slot whose turn ended but whose children still run doesn't offer a click
-  // the backend will 409.
-  const hasActiveSubagents = useAppSelector(s => selectSlotSubagentsActive(s, slotKey))
-  const reloadBlocked = isRunning || hasActiveSubagents
+  // Shared with the chat header's Reload button, so both disable on the same
+  // answer the backend's 409 gives.
+  const { isRunning, reloadBlocked } = useReloadBlocked(slotKey)
+  // The live session runs on config changed since it started (the header's
+  // Reload button): the Reload row says a press applies it, beside any reason
+  // it is blocked right now.
+  const configStale = !!slot?.config_stale
+  // What changed, by display-safe label, so a touch user with no tooltip to
+  // hover still sees it on the row.
+  const staleInputs = slot?.config_stale_inputs || ''
+  // The remedy, or what the reload waits on, worded for the row's state.
+  const reloadClause = i18nT(!reloadBlocked
+    ? 'components.sessionActionsMenu.reload_clause_press_needed'
+    : isRunning
+      ? 'components.sessionActionsMenu.reload_clause_after_turn'
+      : 'components.sessionActionsMenu.reload_clause_after_subagents')
   const currentFolderId = slot?.folder_id
   const colorIndex = slot?.color_index
   const colorHex = slot?.color_hex
@@ -450,14 +459,50 @@ export default function SessionActionsMenu({
       // before it is stopped, instead of the global Settings value. Beside
       // Reload because both are about how this session's agent runs.
       <SessionTurnLimitSubmenu key="turn-limit" slotKey={slotKey} variant={variant} />,
+      // Narrow-first: on a phone the row wraps so the stale note drops onto its
+      // own line under the label instead of pushing the menu past the screen
+      // edge; `md:` puts it back beside the label on desktop.
       <Item
         key="reload"
+        className={configStale ? 'flex-wrap md:flex-nowrap' : undefined}
         disabled={reloadBlocked}
         title={i18nT('components.sessionActionsMenu.reload_session_tooltip')}
         onSelect={() => reload(slotKey)}
       >
         <RotateCw size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.reload_session')}
-        {reloadBlocked && (
+        {configStale ? (
+          // One sentence, two facts: the config is stale, and the reload waits
+          // on what blocks it -- never "stale config · sub-agents working",
+          // which reads as one causing the other.
+          // Only the changed-input list is clamped: several paths would
+          // otherwise stretch the whole dropdown. The remedy clause after it is
+          // its own span and never truncates, so what to do is always visible:
+          // it may wrap on a narrow screen, never clip. The title carries the
+          // whole sentence.
+          staleInputs ? (
+            <span
+              className="flex min-w-0 max-w-[20rem] basis-full flex-wrap items-baseline gap-x-1 pl-[21px] text-[10px] text-muted md:ml-auto md:basis-auto md:flex-nowrap md:pl-0"
+              data-testid="reload-stale-note"
+              title={`${i18nT('components.sessionActionsMenu.reload_stale_inputs', { inputs: staleInputs })} ${reloadClause}`}
+            >
+              <span className="min-w-0 max-w-full truncate" data-testid="reload-stale-inputs">
+                {i18nT('components.sessionActionsMenu.reload_stale_inputs', { inputs: staleInputs })}
+              </span>
+              {/* A real space, so the accessible text reads as one sentence; the
+               *  flex gap does the visual spacing. */}
+              {' '}
+              <span className="min-w-0 whitespace-normal break-words md:shrink-0 md:whitespace-nowrap" data-testid="reload-stale-clause">{reloadClause}</span>
+            </span>
+          ) : (
+            <span className="basis-full pl-[21px] text-[10px] text-muted md:ml-auto md:basis-auto md:pl-0" data-testid="reload-stale-note">
+              {i18nT(!reloadBlocked
+                ? 'components.sessionActionsMenu.reload_press_needed'
+                : isRunning
+                  ? 'components.sessionActionsMenu.reload_stale_after_turn'
+                  : 'components.sessionActionsMenu.reload_stale_after_subagents')}
+            </span>
+          )
+        ) : reloadBlocked && (
           <span className="ml-auto text-[10px] text-muted">
             {isRunning
               ? i18nT('components.sessionActionsMenu.reload_blocked_running')

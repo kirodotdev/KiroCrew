@@ -8557,6 +8557,13 @@
       "reload_blocked_subagents": "sous-agents au travail",
       "reload_session": "Recharger la session",
       "reload_session_tooltip": "Redémarre le processus de l'agent pour prendre en compte les changements MCP/configuration. La conversation est conservée.",
+      "reload_press_needed": "configuration modifiée · recharge pour l’appliquer",
+      "reload_stale_inputs": "configuration modifiée ({{inputs}})",
+      "reload_clause_press_needed": "· recharge pour l’appliquer",
+      "reload_clause_after_subagents": "— recharge quand les sous-agents ont terminé",
+      "reload_clause_after_turn": "— recharge à la fin du tour",
+      "reload_stale_after_subagents": "configuration modifiée — recharge quand les sous-agents ont terminé",
+      "reload_stale_after_turn": "configuration modifiée — recharge à la fin du tour",
       "rename": "Renommer",
       "reveal_in_sidebar": "Afficher dans la barre latérale",
       "tags": "Étiquettes…",
@@ -8584,6 +8591,12 @@
       "custom_color": "Couleur personnalisée",
       "hex_color_code": "Code couleur hexadécimal",
       "no_color": "Aucune couleur"
+    },
+    "staleConfigBadge": {
+      "reload_action": "Configuration modifiée · Recharger",
+      "reload_action_short": "Configuration · Recharger",
+      "tooltip": "{{inputs}} a changé depuis le début de cette session. Recharge la session pour appliquer le changement.",
+      "tooltip_generic": "La configuration de cette session a changé depuis son démarrage. Recharge la session pour appliquer le changement."
     },
     "sessionGridView": {
       "close_cell": "Fermer la cellule",
