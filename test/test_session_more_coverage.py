@@ -32,6 +32,7 @@ chokepoint the product actually calls.
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -153,21 +154,28 @@ class TestSessionMapDelegation:
         assert mgr.channel_key_for_stem("channel_slack_C1") == "channel:slack_C1"
         smap.channel_key_for_stem.assert_called_once_with("channel_slack_C1")
 
-    def test_set_mirror_link_forwards_accepts_inbound_as_a_keyword(self, mgr, smap) -> None:
+    @pytest.mark.parametrize(
+        "kwargs, accepts_inbound, reason",
+        [
+            pytest.param(
+                {"accepts_inbound": True},
+                True,
+                UNBIND_REASON_UNSPECIFIED,
+                id="forwards_accepts_inbound_as_a_keyword",
+            ),
+            pytest.param(
+                {"reason": "origin_rebind"}, False, "origin_rebind", id="forwards_a_callers_reason"
+            ),
+        ],
+    )
+    def test_set_mirror_link(self, mgr, smap, kwargs, accepts_inbound, reason) -> None:
+        """The unbind reason rides along on the same call: a rebind through this
+        wrapper can displace an inbound binding, and the map's audit is what
+        records which caller did it."""
         link = ChannelLink(channel_type="discord", channel_id="C9")
-        mgr.set_mirror_link("dashboard:a", link, accepts_inbound=True)
-        # The unbind reason rides along on the same call: a rebind through this
-        # wrapper can displace an inbound binding, and the map's audit is what
-        # records which caller did it.
+        assert mgr.set_mirror_link("dashboard:a", link, **kwargs) is None
         smap.set_mirror_link.assert_called_once_with(
-            "dashboard:a", link, accepts_inbound=True, reason=UNBIND_REASON_UNSPECIFIED
-        )
-
-    def test_set_mirror_link_forwards_a_callers_reason(self, mgr, smap) -> None:
-        link = ChannelLink(channel_type="discord", channel_id="C9")
-        mgr.set_mirror_link("dashboard:a", link, reason="origin_rebind")
-        smap.set_mirror_link.assert_called_once_with(
-            "dashboard:a", link, accepts_inbound=False, reason="origin_rebind"
+            "dashboard:a", link, accepts_inbound=accepts_inbound, reason=reason
         )
 
     def test_get_mirror_link_returns_the_stored_link(self, mgr, smap) -> None:
@@ -248,9 +256,13 @@ class TestCancelAndCallbacks:
         assert mgr._on_recycled is cb
 
     @pytest.mark.asyncio
-    async def test_a_raising_recycle_callback_never_escapes(self, mgr) -> None:
-        mgr.set_recycle_callback(AsyncMock(side_effect=RuntimeError("boom")))
-        await mgr._fire_recycle_callback("dashboard:a", reason="rss")
+    async def test_a_raising_recycle_callback_never_escapes(self, mgr, caplog) -> None:
+        cb = AsyncMock(side_effect=RuntimeError("boom"))
+        mgr.set_recycle_callback(cb)
+        with caplog.at_level(logging.ERROR, logger="kiro_crew.session"):
+            await mgr._fire_recycle_callback("dashboard:a", reason="rss")
+        cb.assert_awaited_once_with("dashboard:a", reason="rss")
+        assert "Recycle callback failed for dashboard:a" in caplog.messages
 
 
 # ── _resolve_agent_model ──────────────────────────────────────
@@ -271,23 +283,25 @@ class TestResolveAgentModel:
             assert SessionManager._resolve_agent_model("researcher") == "auto"
         assert SessionManager._agent_model_cache["researcher"][1] == 0.0
 
-    def test_an_unparsable_agent_file_is_skipped_not_fatal(self, tmp_path) -> None:
-        """A hand-edited agent JSON with a syntax error must not take the whole
-        resolver down — every other agent's model would stop resolving."""
+    @pytest.mark.parametrize(
+        "file_text, expected",
+        [
+            # A hand-edited agent JSON with a syntax error must not take the whole
+            # resolver down — every other agent's model would stop resolving.
+            pytest.param("{not json", "auto", id="an_unparsable_agent_file_is_skipped_not_fatal"),
+            pytest.param(
+                '{"name": "researcher", "model": "sonnet-9"}',
+                "sonnet-9",
+                id="a_readable_agent_file_supplies_its_pinned_model",
+            ),
+        ],
+    )
+    def test_agent_file_model_resolution(self, tmp_path, file_text, expected) -> None:
         agents = tmp_path / "agents"
         agents.mkdir()
-        (agents / "researcher.json").write_text("{not json", encoding="utf-8")
+        (agents / "researcher.json").write_text(file_text, encoding="utf-8")
         with patch("kiro_crew.session.kiro_agents_dir_path", return_value=agents):
-            assert SessionManager._resolve_agent_model("researcher") == "auto"
-
-    def test_a_readable_agent_file_supplies_its_pinned_model(self, tmp_path) -> None:
-        agents = tmp_path / "agents"
-        agents.mkdir()
-        (agents / "researcher.json").write_text(
-            '{"name": "researcher", "model": "sonnet-9"}', encoding="utf-8"
-        )
-        with patch("kiro_crew.session.kiro_agents_dir_path", return_value=agents):
-            assert SessionManager._resolve_agent_model("researcher") == "sonnet-9"
+            assert SessionManager._resolve_agent_model("researcher") == expected
 
     def test_a_raising_spec_reader_falls_back_to_auto(self, tmp_path) -> None:
         agents = tmp_path / "agents"
@@ -374,11 +388,12 @@ class TestWarmPoolQueueRaces:
         mgr._warm_pool = _RacedQueue()
         mgr._discard_pool_provider = AsyncMock()
         with (
-            patch.object(mgr, "start_pool", AsyncMock()),
+            patch.object(mgr, "start_pool", AsyncMock()) as start_pool,
             patch("kiro_crew.session.build_provider_factory", return_value=MagicMock()),
         ):
             await mgr.refresh_defaults()
         mgr._discard_pool_provider.assert_not_called()
+        start_pool.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_reload_provider_factory_survives_a_lost_entry(self, mgr) -> None:
@@ -399,8 +414,10 @@ class TestWarmPoolQueueRaces:
         mgr._warm_pool = _RacedQueue()
         mgr._fill_warm_pool = AsyncMock()
         mgr._discard_pool_provider = AsyncMock()
+        mgr._pool_sweep_pids.add(77)
         await mgr._sweep_warm_pool_once()
         mgr._discard_pool_provider.assert_not_called()
+        assert mgr._pool_sweep_pids == set(), "the sweep shield is cleared"
 
     @pytest.mark.asyncio
     async def test_health_sweep_no_ops_when_the_pool_is_disabled(self, mgr) -> None:
@@ -448,9 +465,11 @@ class TestPoolHealthLoop:
 
 
 class TestPoolDecisionMetric:
-    def test_a_failing_recorder_never_reaches_the_caller(self, mgr) -> None:
+    def test_a_failing_recorder_never_reaches_the_caller(self, mgr, caplog) -> None:
         with patch("kiro_crew.session.get_recorder", side_effect=RuntimeError("no otel")):
-            mgr._record_pool_decision("hit", "dashboard:a")
+            with caplog.at_level(logging.DEBUG, logger="kiro_crew.session"):
+                mgr._record_pool_decision("hit", "dashboard:a")
+        assert "pool decision metric emit failed" in caplog.messages
 
 
 # ── Pool provider discard ────────────────────────────────────────────────────

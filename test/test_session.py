@@ -25,7 +25,7 @@ from session_helpers import (  # noqa: F401 -- the fixture is requested by name
 
 from kiro_crew.acp.types import AcpPromptStats
 from kiro_crew.messaging.link import ChannelLink
-from kiro_crew.session import BACKGROUND_KEY, CONSOLIDATE_KEY, SessionManager
+from kiro_crew.session import BACKGROUND_KEY, CONSOLIDATE_KEY, HEARTBEAT_KEY, SessionManager
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.testing.wait import await_until
 
@@ -869,7 +869,7 @@ class TestWorkflowPoolStateless:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mgr._session_map.get = MagicMock(return_value=None)  # type: ignore[method-assign]
         await mgr.get_or_create("dashboard:chat-9")
-        mgr._session_map.get.assert_called()
+        assert "dashboard:chat-9" in [c.args[0] for c in mgr._session_map.get.call_args_list]
         await mgr.close_all()
 
 
@@ -884,22 +884,19 @@ class TestHeartbeatStateless:
     queued tasks would inherit each other's reasoning.
     """
 
+    @pytest.mark.parametrize(
+        "key",
+        [
+            pytest.param(HEARTBEAT_KEY, id="heartbeat_key_skips_resume_lookup"),
+            # Control: ``_hb`` is stateless the same way ``_bg`` is.
+            pytest.param(BACKGROUND_KEY, id="background_key_also_stateless"),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_heartbeat_key_skips_resume_lookup(self, cfg):
-        """``_hb`` must NOT consult the session_map for a resume sid."""
-        from kiro_crew.session import HEARTBEAT_KEY
-
+    async def test_persistent_key_skips_resume_lookup(self, cfg, key):
+        """Neither key may consult the session_map for a resume sid."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mgr._session_map.get = MagicMock(return_value="stale-sid")  # type: ignore[method-assign]
-        await mgr.get_or_create(HEARTBEAT_KEY)
-        mgr._session_map.get.assert_not_called()
-        await mgr.close_all()
-
-    @pytest.mark.asyncio
-    async def test_background_key_also_stateless(self, cfg):
-        """Control: ``_bg`` was already stateless — ``_hb`` now matches it."""
-        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        mgr._session_map.get = MagicMock(return_value="stale-sid")  # type: ignore[method-assign]
-        await mgr.get_or_create(BACKGROUND_KEY)
+        await mgr.get_or_create(key)
         mgr._session_map.get.assert_not_called()
         await mgr.close_all()

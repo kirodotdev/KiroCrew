@@ -322,6 +322,8 @@ async def test_remove_of_a_live_session_emits_no_close_edge(cfg: KiroCrewConfig)
         await manager.remove("key")
 
     on_closed.assert_not_called()
+    assert "key" not in manager._sessions, "the removal itself still ran"
+    provider.shutdown.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -336,3 +338,5 @@ async def test_remove_of_a_missing_key_emits_no_close_edge(cfg: KiroCrewConfig) 
         await manager.remove("missing")
 
     on_closed.assert_not_called()
+    assert manager.release_subagent_runtime.await_count == 0
+    assert not manager.has_session("missing")

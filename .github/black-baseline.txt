@@ -706,15 +706,10 @@ test/test_sel_dashboard_offload.py
 test/test_sel_prune_streaming.py
 test/test_service.py
 test/test_serving_loop_unified.py
-test/test_session_cleanup.py
-test/test_session_coverage.py
-test/test_session_end_interaction.py
 test/test_session_grid.py
 test/test_session_map_locking.py
 test/test_session_map_migration.py
 test/test_session_mtime_ordering.py
-test/test_session_pid_sig.py
-test/test_session_rss.py
 test/test_session_spend_identity.py
 test/test_session_start_timeout_diagnostics.py
 test/test_session_summary_api.py

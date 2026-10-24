@@ -356,7 +356,8 @@ class TestApprovalPolicy:
 
     def test_set_approval_policy_missing_session(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        mgr.set_approval_policy("nonexistent", "auto")  # should not raise
+        assert mgr.set_approval_policy("nonexistent", "auto") is None
+        assert not mgr.has_session("nonexistent")
 
     @pytest.mark.asyncio
     async def test_approval_policy_propagated_on_create(self, cfg):
@@ -1153,7 +1154,6 @@ class TestGetOrCreatePoolClaim:
     async def test_cold_start_with_resume_sid(self, cfg):
         """get_or_create with a stored session_map entry attempts resume."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        # Mock session_map to return a resume SID
         with (
             patch.object(mgr._session_map, "get", return_value="sid-resume-test"),
             patch.object(mgr._session_map, "get_cwd", return_value=None),

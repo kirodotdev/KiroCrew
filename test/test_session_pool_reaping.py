@@ -167,10 +167,14 @@ class TestPoolHealthLoop:
         """pool_size=0 keeps the sweep a no-op: no refill for a disabled pool."""
         mgr, _ = _make_manager(pool_size=0)
         mgr._schedule_replenish = MagicMock()
+        expired = _make_provider()
+        mgr._warm_pool.put_nowait((expired, time.monotonic() - 10_000))
 
         await mgr._sweep_warm_pool_once()
 
         mgr._schedule_replenish.assert_not_called()
+        assert mgr._warm_pool.qsize() == 1, "a disabled pool's sweep reads nothing"
+        expired.shutdown.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_mixed_healthy_and_dead(self):
@@ -312,10 +316,12 @@ class TestDiscardReaping:
         self._expired_entry(mgr, clean)
 
         with patch("kiro_crew.session._sync_kill_provider") as mock_kill:
-            await mgr._drain_and_claim("kirocrew")
+            result = await mgr._drain_and_claim("kirocrew")
 
         clean.shutdown.assert_awaited_once()
         mock_kill.assert_not_called()
+        assert result is None, "an expired provider is discarded, not claimed"
+        assert mgr._warm_pool.empty()
 
     @pytest.mark.asyncio
     async def test_shutdown_failure_falls_back_to_hard_kill(self):

@@ -1,7 +1,9 @@
 """Tests for _handle_session_end in slack/interactions_sessions.py."""
+
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,23 +22,6 @@ def _make_orch(*, find_key: str | None = None, remove_side_effect=None):
 
 @pytest.mark.asyncio
 @patch("kiro_crew.slack.interactions.is_owner", return_value=True)
-async def test_session_end_calls_remove(_mock_owner):
-    """End Session button calls remove() (soft) not destroy()."""
-    orch = _make_orch(find_key="dashboard:chat-1-100")
-    with patch("kiro_crew.slack.interactions._orch", orch):
-        await _handle_session_end(
-            payload={},
-            action={"value": "abc-123-sid"},
-            channel="C1",
-            msg_ts="1234",
-            user_id="U_OWNER",
-        )
-    orch.sessions.remove.assert_awaited_once_with("dashboard:chat-1-100")
-    orch.sessions.destroy.assert_not_called()
-
-
-@pytest.mark.asyncio
-@patch("kiro_crew.slack.interactions.is_owner", return_value=True)
 async def test_session_end_remove_exception_swallowed(_mock_owner):
     """If remove() raises, the handler doesn't propagate."""
     orch = _make_orch(find_key="dashboard:chat-1-100", remove_side_effect=RuntimeError("gone"))
@@ -49,6 +34,7 @@ async def test_session_end_remove_exception_swallowed(_mock_owner):
             user_id="U_OWNER",
         )
     orch.sessions.remove.assert_awaited_once()
+    assert _dismissed_key(orch) == "dashboard:chat-1-100", "the dismissal still lands"
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +83,7 @@ async def test_end_records_dismissal_for_an_idle_row(_mock_owner):
 @pytest.mark.asyncio
 @patch("kiro_crew.slack.interactions.is_owner", return_value=True)
 async def test_end_records_dismissal_for_a_live_row_too(_mock_owner):
+    """End calls the soft ``remove()``, never ``destroy()``, then records the dismissal."""
     orch = _make_orch(find_key="dashboard:chat-1-100")
     with patch("kiro_crew.slack.interactions._orch", orch):
         await _handle_session_end(
@@ -107,6 +94,7 @@ async def test_end_records_dismissal_for_a_live_row_too(_mock_owner):
             user_id="U_OWNER",
         )
     orch.sessions.remove.assert_awaited_once_with("dashboard:chat-1-100")
+    orch.sessions.destroy.assert_not_called()
     # The resolved session key, never the sid the button carried.
     assert _dismissed_key(orch) == "dashboard:chat-1-100"
     assert _dismissal(orch)["closed"] is True
@@ -165,10 +153,10 @@ async def test_dismissal_is_guarded_on_the_transcript_existing(_mock_owner):
 
 @pytest.mark.asyncio
 @patch("kiro_crew.slack.interactions.is_owner", return_value=True)
-async def test_end_survives_a_failed_dismissal_write(_mock_owner):
+async def test_end_survives_a_failed_dismissal_write(_mock_owner, caplog):
     orch = _make_orch(find_key="slack:C1.170000")
     orch.conv_log.update_metadata_if.side_effect = OSError("disk gone")
-    with patch("kiro_crew.slack.interactions._orch", orch):
+    with patch("kiro_crew.slack.interactions._orch", orch), caplog.at_level(logging.WARNING):
         await _handle_session_end(
             payload={},
             action={"value": "sid"},
@@ -177,14 +165,15 @@ async def test_end_survives_a_failed_dismissal_write(_mock_owner):
             user_id="U_OWNER",
         )
     orch.sessions.remove.assert_awaited_once()
+    assert "session end: dismissal not recorded for slack:C1.170000" in caplog.messages
 
 
 @pytest.mark.asyncio
 @patch("kiro_crew.slack.interactions.is_owner", return_value=True)
-async def test_end_without_a_conversation_log_is_a_no_op(_mock_owner):
+async def test_end_without_a_conversation_log_is_a_no_op(_mock_owner, caplog):
     orch = _make_orch(find_key="slack:C1.170000")
     orch.conv_log = None
-    with patch("kiro_crew.slack.interactions._orch", orch):
+    with patch("kiro_crew.slack.interactions._orch", orch), caplog.at_level(logging.WARNING):
         await _handle_session_end(
             payload={},
             action={"value": "sid"},
@@ -193,6 +182,8 @@ async def test_end_without_a_conversation_log_is_a_no_op(_mock_owner):
             user_id="U_OWNER",
         )
     orch.sessions.remove.assert_awaited_once()
+    own = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.slack.interactions"]
+    assert not any("dismiss" in m for m in own)
 
 
 @pytest.mark.asyncio

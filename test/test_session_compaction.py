@@ -90,6 +90,7 @@ class TestCompactCallback:
         await mgr._compact_session("dashboard:missing", 91.0)
 
         cb.assert_not_awaited()
+        assert not mgr.has_session("dashboard:missing"), "compaction must not create a session"
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -490,7 +491,6 @@ class TestClaudeBackendCompaction:
         mgr.release("k1")
 
         with patch("kiro_crew.session._is_claude_backend", return_value=True):
-            # Simulate compact in progress.
             mgr._compacting.add("k1")
             try:
                 provider2, is_new, _ = await mgr.get_or_create("k1")

@@ -336,10 +336,12 @@ class TestCleanupLoop:
             await mgr._cleanup_loop()
 
         mock_expire.assert_awaited_once_with(120)
+        assert mgr._idle_sweep_enabled is True
+        assert mgr._idle_timeout == 120
         await mgr.close_all()
 
     @pytest.mark.asyncio
-    async def test_cleanup_loop_disabled_idle_sweep(self, cfg):
+    async def test_cleanup_loop_disabled_idle_sweep(self, cfg, caplog):
         cfg.session.timeout_secs = 0
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
 
@@ -362,10 +364,13 @@ class TestCleanupLoop:
 
             mock_event.is_set = lambda: call_count[0] >= 1
             mock_event.wait = AsyncMock(side_effect=one_pass)
-            await mgr._cleanup_loop()
+            with caplog.at_level(logging.INFO, logger="kiro_crew.session"):
+                await mgr._cleanup_loop()
 
-        # idle sweep disabled — _expire_idle should NOT be called
+        assert call_count == [1], "the loop still ticked once"
         mock_expire.assert_not_awaited()
+        assert mgr._idle_sweep_enabled is False
+        assert any(m.startswith("Idle session sweep disabled") for m in caplog.messages)
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -389,8 +394,9 @@ class TestCleanupLoop:
             with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
                 await mgr._cleanup_loop()
 
-        # Should clamp to 60
         mock_expire.assert_awaited_once_with(60)
+        assert mgr._idle_timeout == 60
+        assert "session.timeout_secs=30 is below minimum 60; clamping to 60" in caplog.messages
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -401,8 +407,9 @@ class TestCleanupLoop:
         with patch("kiro_crew.session.shutdown_event") as mock_event:
             mock_event.is_set = lambda: True
             mock_event.wait = AsyncMock(return_value=None)
-            # Should return immediately since shutdown is set
             await mgr._cleanup_loop()
+        mock_event.wait.assert_not_awaited()
+        assert mgr._idle_timeout == 120, "the policy is still adopted before the first tick"
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -463,7 +470,6 @@ class TestCleanupLoop:
             h is not None and Path(h).resolve() == Path(os.environ["KIROCREW_HOME"]).resolve()
             for h in sweep_homes
         ), sweep_homes
-        # Verify: non-zero return produces the info log
         assert "removed 3 stale sandbox artifacts" in caplog.text
         await mgr.close_all()
 
@@ -533,7 +539,6 @@ class TestStartPoolNonBlocking:
     async def test_ensure_background_already_exists(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         await mgr.start_pool()
-        # Call again — should be no-op
         await mgr._ensure_background()
         assert mgr.count == 1  # still just the one bg session
         await mgr.close_all()
@@ -545,7 +550,6 @@ class TestStartPoolNonBlocking:
 
         mgr = SessionManager(cfg, provider_factory=failing_factory)
         await mgr._ensure_background()
-        # Should not crash, just log warning
         assert BACKGROUND_KEY not in mgr._sessions
 
 

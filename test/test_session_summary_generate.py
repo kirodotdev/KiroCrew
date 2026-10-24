@@ -759,11 +759,15 @@ class TestPromptCarriesTheTraps:
         assert "timestamp" in p
         assert "correction" in p
 
-    def test_progress_is_specified_as_a_runbook(self):
-        assert "RUNBOOK" in chat_summary._PROMPT
-
-    def test_next_steps_are_specified_as_inferences(self):
-        assert "inferences" in chat_summary._PROMPT
+    @pytest.mark.parametrize(
+        "needle",
+        [
+            pytest.param("RUNBOOK", id="progress_is_specified_as_a_runbook"),
+            pytest.param("inferences", id="next_steps_are_specified_as_inferences"),
+        ],
+    )
+    def test_the_prompt_specifies(self, needle):
+        assert needle in chat_summary._PROMPT
 
     def test_the_two_status_axes_are_explained(self):
         p = chat_summary._PROMPT

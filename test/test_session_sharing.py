@@ -385,10 +385,8 @@ class TestSessionSharingSpawn:
         ):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             assert info is not None
-            # Wait for the subagent to complete
             await _wait_until_done(info)
 
-        # Verify runtime.create_session was called (not get_or_create)
         sessions.get_subagent_runtime.assert_awaited_once()
         assert sessions.get_subagent_runtime.await_args.args == ("dashboard:slot1",)
         runtime = await sessions.get_subagent_runtime("dashboard:slot1")
@@ -605,7 +603,6 @@ class TestSessionSharingFallback:
     async def test_fallback_on_runtime_dead(self):
         """When runtime dies during create_session, falls back to legacy path."""
         sessions = _mock_sessions(sharing_eligible=True)
-        # Make get_subagent_runtime raise AcpRuntimeDead
         sessions.get_subagent_runtime = AsyncMock(side_effect=AcpRuntimeDead("process died"))
 
         manager = SubagentManager(
@@ -622,9 +619,7 @@ class TestSessionSharingFallback:
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             await _wait_until_done(info)
 
-        # Should have fallen back to get_or_create
         sessions.get_or_create.assert_awaited()
-        # Flags should be reset
         assert info._session_sharing is False
         assert info._shared_provider is None
 
@@ -690,7 +685,6 @@ class TestSessionSharingFallback:
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             await _wait_until_done(info)
 
-        # Should have fallen back to get_or_create
         sessions.get_or_create.assert_awaited()
         assert info._session_sharing is False
 
@@ -726,10 +720,11 @@ class TestSessionSharingReaper:
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             await manager._force_reap("reap1", info, 1800.0)
 
-        # shutdown called on the shared provider
         mock_provider.shutdown.assert_awaited_once()
-        # reset NOT called (no dedicated process to kill)
+        # No dedicated process to kill, so no reset.
         sessions.reset.assert_not_awaited()
+        assert info._reap_started is True
+        assert "reap1" not in manager._reaps_in_flight
 
     @pytest.mark.asyncio
     async def test_force_reap_legacy_calls_reset(self):
@@ -756,8 +751,9 @@ class TestSessionSharingReaper:
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             await manager._force_reap("reap2", info, 1800.0)
 
-        # Legacy path: reset called
         sessions.reset.assert_awaited_once()
+        assert sessions.reset.await_args.args[0] == "subagent:reap2"
+        assert info._reap_started is True
 
 
 class TestSessionSharingMultiAgent:
@@ -862,14 +858,12 @@ class TestSessionSharingParentReset:
         cfg = KiroCrewConfig.load()
         sm = SessionManager(cfg)
 
-        # Simulate a subagent runtime being registered
         mock_runtime = MagicMock()
         mock_runtime.is_alive.return_value = True
         mock_runtime.kill = AsyncMock()
         sm._subagent_runtimes["dashboard:slot1"] = mock_runtime
         sm._subagent_runtime_locks["dashboard:slot1"] = asyncio.Lock()
 
-        # Call release_subagent_runtime
         await sm.release_subagent_runtime("dashboard:slot1")
 
         # Runtime should be killed
@@ -887,8 +881,7 @@ class TestSessionSharingParentReset:
         cfg = KiroCrewConfig.load()
         sm = SessionManager(cfg)
 
-        # Should not raise
-        await sm.release_subagent_runtime("nonexistent:key")
+        assert await sm.release_subagent_runtime("nonexistent:key") is False
 
     @pytest.mark.asyncio
     async def test_release_subagent_runtime_handles_kill_failure(self):
@@ -904,9 +897,7 @@ class TestSessionSharingParentReset:
         sm._subagent_runtimes["dashboard:slot1"] = mock_runtime
         sm._subagent_runtime_locks["dashboard:slot1"] = asyncio.Lock()
 
-        # Should not raise despite kill() failing
         await sm.release_subagent_runtime("dashboard:slot1")
-        # Entry should still be cleaned up
         assert "dashboard:slot1" not in sm._subagent_runtimes
 
     @pytest.mark.asyncio
@@ -924,7 +915,6 @@ class TestSessionSharingParentReset:
         sm._subagent_runtimes["dashboard:slot1"] = mock_runtime
         sm._subagent_runtime_locks["dashboard:slot1"] = asyncio.Lock()
 
-        # Mock the _sessions dict for agent lookup
         mock_session = MagicMock()
         mock_session.agent = "kirocrew"
         sm._sessions["dashboard:slot1"] = mock_session

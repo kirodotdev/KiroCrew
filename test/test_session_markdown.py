@@ -821,27 +821,30 @@ def test_a_tilde_block_is_not_closed_by_a_backtick_fence_inside_it():
     assert out.rstrip().endswith("~~~")
 
 
-def test_a_shorter_run_does_not_close_a_longer_fence():
-    # CommonMark: the closer must be at least as long as the opener. A ``` inside
-    # a ```` block is content.
-    assert sm._unterminated_blocks("````\n```\nstill open") == "````"
-
-
-def test_a_closer_with_an_info_string_does_not_close():
-    # CommonMark forbids an info string on a closing fence, so this is a second
-    # OPENING inside the first block, not a close.
-    assert sm._unterminated_blocks("```sh\nls\n```sh") == "```"
-
-
-def test_a_fence_indented_past_three_spaces_is_not_a_fence():
-    assert sm._unterminated_blocks("    ```\nindented code, not a fence") == ""
-
-
-def test_a_tab_indented_fence_is_not_a_fence():
-    # A leading tab is four columns, so the line is indented code. Pinned because
-    # the indent test measures spaces only and would be wrong on its own; the
-    # prefix check is what rejects this, and a refactor could drop it.
-    assert sm._unterminated_blocks("\t```") == ""
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        # CommonMark: the closer must be at least as long as the opener. A ``` inside
+        # a ```` block is content.
+        pytest.param(
+            "````\n```\nstill open", "````", id="a_shorter_run_does_not_close_a_longer_fence"
+        ),
+        # CommonMark forbids an info string on a closing fence, so this is a second
+        # OPENING inside the first block, not a close.
+        pytest.param("```sh\nls\n```sh", "```", id="a_closer_with_an_info_string_does_not_close"),
+        pytest.param(
+            "    ```\nindented code, not a fence",
+            "",
+            id="a_fence_indented_past_three_spaces_is_not_a_fence",
+        ),
+        # A leading tab is four columns, so the line is indented code. Pinned because
+        # the indent test measures spaces only and would be wrong on its own; the
+        # prefix check is what rejects this, and a refactor could drop it.
+        pytest.param("\t```", "", id="a_tab_indented_fence_is_not_a_fence"),
+    ],
+)
+def test_fence_closer_and_indent_rules(content, expected):
+    assert sm._unterminated_blocks(content) == expected
 
 
 # ── the opener rules: a MIS-detected opener is what causes the loss ───────
@@ -874,16 +877,25 @@ def test_the_one_line_snippet_leaves_the_rest_of_the_transcript_readable():
     assert "that builds it" in out
 
 
-def test_a_tilde_fence_may_carry_any_info_string():
-    # The backtick restriction is specific to backtick fences; a tilde fence takes
-    # an arbitrary info string, so the same guard must not reject one.
-    assert sm._unterminated_blocks("~~~ info ~ string\nstill open") == "~~~"
-
-
-def test_a_longer_backtick_fence_with_a_clean_info_string_still_opens():
-    # A 4-backtick fence with a clean info string is a valid opener, so left
-    # unterminated it draws its matching closer (and the closer matches length).
-    assert sm._unterminated_blocks("````python\nstill open") == "````"
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        # The backtick restriction is specific to backtick fences; a tilde fence takes
+        # an arbitrary info string, so the same guard must not reject one.
+        pytest.param(
+            "~~~ info ~ string\nstill open", "~~~", id="a_tilde_fence_may_carry_any_info_string"
+        ),
+        # A 4-backtick fence with a clean info string is a valid opener, so left
+        # unterminated it draws its matching closer (and the closer matches length).
+        pytest.param(
+            "````python\nstill open",
+            "````",
+            id="a_longer_backtick_fence_with_a_clean_info_string_still_opens",
+        ),
+    ],
+)
+def test_an_info_string_opens_where_the_fence_kind_allows_it(content, expected):
+    assert sm._unterminated_blocks(content) == expected
 
 
 # ── the other construct that hides a transcript: an HTML comment ──────────
@@ -905,32 +917,40 @@ def test_an_unterminated_html_comment_is_closed_at_the_message_boundary():
     _assert_no_unclosed_comment_before_later_heading(out)
 
 
-def test_a_balanced_html_comment_gets_no_closer():
-    assert sm._unterminated_blocks("<!-- a note -->\ntext") == ""
-
-
-def test_a_mid_line_comment_opener_is_not_treated_as_a_comment():
-    # CommonMark starts a raw HTML block only when the LINE begins with <!--. One
-    # appearing mid-line is inline text, and an unterminated one there is escaped
-    # to literal characters rather than recognised — so it hides nothing, and
-    # appending a --> would put a stray delimiter in the document.
-    assert sm._unterminated_blocks("see the <!-- marker here") == ""
-
-
-def test_a_comment_opener_inside_a_code_fence_needs_only_the_fence_closed():
-    # Inside a fence the <!-- is escaped text, so the fence is the only thing
-    # open. Two independent scans would wrongly append both closers.
-    assert sm._unterminated_blocks("```html\n<!-- example") == "```"
-
-
-def test_a_fence_line_inside_a_comment_does_not_open_a_fence():
-    # The mirror case: inside a comment the ``` line is raw HTML, not a fence, so
-    # the comment is the only thing open.
-    assert sm._unterminated_blocks("<!-- note\n```") == "<!-- -->"
-
-
-def test_a_comment_closed_before_a_fence_opens_reports_only_the_fence():
-    assert sm._unterminated_blocks("<!-- a -->\n```py\nx = 1") == "```"
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        pytest.param("<!-- a note -->\ntext", "", id="a_balanced_html_comment_gets_no_closer"),
+        # CommonMark starts a raw HTML block only when the LINE begins with <!--. One
+        # appearing mid-line is inline text, and an unterminated one there is escaped
+        # to literal characters rather than recognised — so it hides nothing, and
+        # appending a --> would put a stray delimiter in the document.
+        pytest.param(
+            "see the <!-- marker here",
+            "",
+            id="a_mid_line_comment_opener_is_not_treated_as_a_comment",
+        ),
+        # Inside a fence the <!-- is escaped text, so the fence is the only thing
+        # open. Two independent scans would wrongly append both closers.
+        pytest.param(
+            "```html\n<!-- example",
+            "```",
+            id="a_comment_opener_inside_a_code_fence_needs_only_the_fence_closed",
+        ),
+        # The mirror case: inside a comment the ``` line is raw HTML, not a fence, so
+        # the comment is the only thing open.
+        pytest.param(
+            "<!-- note\n```", "<!-- -->", id="a_fence_line_inside_a_comment_does_not_open_a_fence"
+        ),
+        pytest.param(
+            "<!-- a -->\n```py\nx = 1",
+            "```",
+            id="a_comment_closed_before_a_fence_opens_reports_only_the_fence",
+        ),
+    ],
+)
+def test_html_comment_and_fence_interplay(content, expected):
+    assert sm._unterminated_blocks(content) == expected
 
 
 # ── the document's shape ─────────────────────────────────────────────────
@@ -994,15 +1014,24 @@ def test_an_empty_approval_policy_is_named_rather_than_blank():
     assert "| Approval policy | auto |" in auto
 
 
-def test_a_pipe_in_provenance_cannot_shift_the_table():
-    # The one place content is not verbatim: an unescaped pipe ends the cell.
-    out = _render(_bundle(MSGS, source={"workspace": "a|b"}))
-    assert "| Workspace | a\\|b |" in out
-
-
-def test_a_newline_in_provenance_cannot_end_the_row():
-    out = _render(_bundle(MSGS, source={"model": "a\nb"}))
-    assert "| Model | a b |" in out
+@pytest.mark.parametrize(
+    "field, value, expected",
+    [
+        # The one place content is not verbatim: an unescaped pipe ends the cell.
+        pytest.param(
+            "workspace",
+            "a|b",
+            "| Workspace | a\\|b |",
+            id="a_pipe_in_provenance_cannot_shift_the_table",
+        ),
+        pytest.param(
+            "model", "a\nb", "| Model | a b |", id="a_newline_in_provenance_cannot_end_the_row"
+        ),
+    ],
+)
+def test_provenance_cannot_break_the_table_row(field, value, expected):
+    out = _render(_bundle(MSGS, source={field: value}))
+    assert expected in out
 
 
 def test_an_empty_message_contributes_a_heading_and_no_body():
@@ -1097,40 +1126,30 @@ def test_the_document_is_text_and_not_json(tmp_path, monkeypatch):
 # ── current-head scanner-state regressions ─────────────────────────────────
 
 
-def test_nested_list_exit_restores_the_enclosing_items_fence_ownership():
-    # The inner item ends at its content column. The following two-space fence
-    # belongs to the outer item, whose separator dedent closes it without a
-    # manufactured top-level closer.
-    content = "- outer\n  - inner\n\n  ```python\n  code"
-    assert sm._unterminated_blocks(content) == ""
-    out = _render(
-        _bundle(
-            [
-                {"role": "assistant", "content": content, "ts": "t1"},
-                {"role": "user", "content": "later", "ts": "t2"},
-            ]
-        )
-    )
-    _assert_later_heading_is_structural(out)
-
-
-def test_heading_ends_a_paragraph_before_an_ordered_list_marker():
-    content = "# Examples\n2. item\n   ```python\n   code"
-    assert sm._unterminated_blocks(content) == ""
-    out = _render(
-        _bundle(
-            [
-                {"role": "assistant", "content": content, "ts": "t1"},
-                {"role": "user", "content": "later", "ts": "t2"},
-            ]
-        )
-    )
-    _assert_later_heading_is_structural(out)
-
-
-def test_only_ascii_space_or_tab_may_pad_a_fence_closer():
-    content = "```python\ncode\n```\u00a0"
-    assert sm._unterminated_blocks(content) == "```"
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        # The inner item ends at its content column. The following two-space fence
+        # belongs to the outer item, whose separator dedent closes it without a
+        # manufactured top-level closer.
+        pytest.param(
+            "- outer\n  - inner\n\n  ```python\n  code",
+            "",
+            id="nested_list_exit_restores_the_enclosing_items_fence_ownership",
+        ),
+        pytest.param(
+            "# Examples\n2. item\n   ```python\n   code",
+            "",
+            id="heading_ends_a_paragraph_before_an_ordered_list_marker",
+        ),
+        pytest.param(
+            "```python\ncode\n```\xa0", "```", id="only_ascii_space_or_tab_may_pad_a_fence_closer"
+        ),
+    ],
+)
+def test_scanner_state_keeps_a_later_heading_structural(content, expected):
+    content = content
+    assert sm._unterminated_blocks(content) == expected
     out = _render(
         _bundle(
             [

@@ -60,7 +60,6 @@ class TestRecycleBackground:
         await mgr._ensure_background()
 
         old_provider = mgr._sessions[BACKGROUND_KEY].provider
-        # Simulate high context
         old_provider.context_usage_pct = lambda: 75.0
 
         await mgr.recycle_background()
@@ -103,7 +102,6 @@ class TestRecycleBackground:
 
         await mgr.recycle_background()
 
-        # Should NOT have been shut down
         old_provider.shutdown.assert_not_awaited()
         assert mgr._sessions[BACKGROUND_KEY].provider is old_provider
         await mgr.close_all()
@@ -112,8 +110,8 @@ class TestRecycleBackground:
     async def test_recycle_no_background_session(self, cfg):
         """recycle_background() is no-op when no background session exists."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        # Don't start pool — no background session
-        await mgr.recycle_background()  # should not raise
+        await mgr.recycle_background()
+        assert not mgr.has_session(BACKGROUND_KEY), "recycling must not create one"
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -356,6 +354,7 @@ class TestReloadProviderFactory:
             await mgr.reload_provider_factory()
 
         provider.shutdown.assert_awaited_once()
+        assert not mgr.has_session("k1")
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -370,8 +369,10 @@ class TestReloadProviderFactory:
             patch.object(KiroCrewConfig, "load", return_value=cfg),
             patch.object(cfg, "create_provider_factory", return_value=_mock_provider_factory()),
         ):
-            await mgr.reload_provider_factory()  # should not raise
+            await mgr.reload_provider_factory()
 
+        provider.shutdown.assert_awaited_once()
+        assert not mgr.has_session("k1"), "the stale session is dropped despite the failure"
         await mgr.close_all()
 
 
@@ -393,7 +394,6 @@ class TestBackgroundSession:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         await mgr._ensure_background()
         await mgr._ensure_background()
-        # Should still only have one background session
         assert mgr.count == 1
         await mgr.close_all()
 
