@@ -529,13 +529,10 @@ To map an installed app's skills, use the namespaced path. `_register_skills` in
 `src/kiro_crew/apps/bridges_skills.py` links every app skill at
 `skills/<app>/<skill>/SKILL.md` under the skills directory (`~/.kiro/crew/skills`,
 or `$KIROCREW_HOME/skills` when `KIROCREW_HOME` is set). Map each skill as its own
-entry, `skill://~/.kiro/crew/skills/<app>/<skill>/SKILL.md`. A `~/` URI expands
+entry, `skill://~/.kiro/crew/skills/<app>/<skill>/SKILL.md`, or all of an app's
+skills at once, `skill://~/.kiro/crew/skills/<app>/*/SKILL.md`. A `~/` URI expands
 against your home, not `KIROCREW_HOME`, so with a relocated data home write the
-absolute path instead. Do not map an app with the wildcard
-`<app>/*/SKILL.md` yet: the catalog keeps one path per skill, and for a skill
-whose name sorts before the app's it keeps the flat link, which that wildcard
-does not match, so the skill is left out with no error (issue #22871).
-Registration also adds a flat `skills/<skill>` link, but only as a
+absolute path instead. Registration also adds a flat `skills/<skill>` link, but only as a
 convenience. It is skipped when the skill has the same name as its app (the flat
 path is then the namespaced directory itself), when the name is reserved
 (`auto`), and when a real directory of that name already exists. When two apps
