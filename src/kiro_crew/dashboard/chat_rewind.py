@@ -389,11 +389,17 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         dispatch_ready = asyncio.Event()
         dispatch_commit = False
 
+        # Decided at request time, stamped at dispatch time: see ``api_chat``.
+        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+        _owner_sent = is_owner_dashboard_request(request)
+
         async def _rewind_dispatch() -> None:
             await dispatch_ready.wait()
             if request_app and state._slots.get(name) is not slot:
                 return
             if dispatch_commit:
+                slot._turn_owner_pending = _owner_sent
                 await _run_chat(
                     state,
                     slot,

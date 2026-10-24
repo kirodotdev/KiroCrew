@@ -666,6 +666,7 @@ def queue_append(
     *,
     directive_user_origin: bool = False,
     directive_channel_origin: bool = False,
+    directive_owner_origin: bool = False,
 ) -> str:
     return self._queue_repository.queue_append(
         self,
@@ -674,6 +675,7 @@ def queue_append(
         meta,
         directive_user_origin=directive_user_origin,
         directive_channel_origin=directive_channel_origin,
+        directive_owner_origin=directive_owner_origin,
     )
 
 
@@ -692,6 +694,7 @@ def queue_insert(
     on_irreversibly_consumed: Callable[[], Awaitable[None] | None] | None = None,
     directive_user_origin: bool = False,
     directive_channel_origin: bool = False,
+    directive_owner_origin: bool = False,
 ) -> str:
     return self._queue_repository.queue_insert(
         self,
@@ -704,6 +707,7 @@ def queue_insert(
         on_irreversibly_consumed,
         directive_user_origin,
         directive_channel_origin,
+        directive_owner_origin,
     )
 
 
@@ -738,6 +742,7 @@ def queue_edit_by_id(
     *,
     directive_user_origin: bool = False,
     directive_channel_origin: bool = False,
+    directive_owner_origin: bool = False,
 ) -> bool:
     return self._queue_repository.queue_edit_by_id(
         self,
@@ -745,6 +750,7 @@ def queue_edit_by_id(
         content,
         directive_user_origin=directive_user_origin,
         directive_channel_origin=directive_channel_origin,
+        directive_owner_origin=directive_owner_origin,
     )
 
 

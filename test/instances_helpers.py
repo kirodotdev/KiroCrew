@@ -159,6 +159,11 @@ class _State:
         self.instances_registry = registry
         self.instances_manager = manager
 
+    def get_slot(self, slot_key):
+        """The live slot *slot_key* names, as the shared caller resolver reads it."""
+        slots = getattr(self, "_slots", None)
+        return slots.get(slot_key) if slots is not None and slot_key else None
+
 
 class _ConnectedMgr:
     """Manager stub where the named instances report a live tunnel.

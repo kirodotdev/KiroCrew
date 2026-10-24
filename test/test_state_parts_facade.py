@@ -270,7 +270,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, content: 'str', kind: 'str' = '', meta: 'dict | None' = None, *, "
         "directive_user_origin: 'bool' = False, directive_channel_origin: 'bool' = "
-        "False) -> 'str'",
+        "False, directive_owner_origin: 'bool' = False) -> 'str'",
     ),
     "queue_depth": ("property", False, False, "(self) -> 'int'"),
     "queue_edit_by_id": (
@@ -278,7 +278,8 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         False,
         "(self, queue_id: 'str', content: 'str', *, directive_user_origin: "
-        "'bool' = False, directive_channel_origin: 'bool' = False) -> 'bool'",
+        "'bool' = False, directive_channel_origin: 'bool' = False, "
+        "directive_owner_origin: 'bool' = False) -> 'bool'",
     ),
     "queue_insert": (
         "function",
@@ -288,7 +289,8 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "meta: 'dict | None' = None, on_consumed: 'Callable[[bool], None] | None' = "
         "None, on_irreversibly_consumed: 'Callable[[], Awaitable[None] | None] | "
         "None' = None, directive_user_origin: 'bool' = False, "
-        "directive_channel_origin: 'bool' = False) -> 'str'",
+        "directive_channel_origin: 'bool' = False, directive_owner_origin: 'bool' = "
+        "False) -> 'str'",
     ),
     "queue_persist_pending": ("property", False, False, "(self) -> 'bool'"),
     "queue_pop": ("function", False, False, "(self, index: 'int' = 0) -> 'dict[str, Any]'"),
@@ -569,6 +571,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_steer_audience_fences": ("value", "{}"),
     "_steer_automation": ("value", "{}"),
     "_steer_channel_origin": ("value", "{}"),
+    "_steer_owner_origin": ("value", "{}"),
     "_steer_confirmed": ("value", "set()"),
     "_steer_decision_strips": ("value", "{}"),
     "_steer_delivery_ids": ("value", "{}"),
@@ -621,6 +624,8 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_turn_generation": ("value", "0"),
     "_turn_in_flight_generation": ("value", "0"),
     "_turn_in_flight_prompt": ("value", "None"),
+    "_turn_owner_pending": ("value", "False"),
+    "_turn_owner_sent": ("value", "False"),
     "_turn_reply_mids": ("value", "[]"),
     "_turn_retries": ("value", "{}"),
     "_turn_timeout_hydrated": ("value", "True"),

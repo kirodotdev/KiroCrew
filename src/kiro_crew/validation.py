@@ -437,6 +437,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.validation_parts.messaging_session_schemas import (  # noqa: F401
         _CHANNEL_TARGET_INCOMPATIBLE,
+        _CREW_RE,
         _EMOJI_NAME_RE,
         _ISO_DATE_RE,
         _SEND_MESSAGE_SESSION_RE,

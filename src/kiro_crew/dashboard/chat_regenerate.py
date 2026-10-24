@@ -247,6 +247,10 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             "vary phrasing, structure, or angle. Do not say you already answered or "
             "reference the prior reply."
         )
+        # The regenerated turn's owner mark is THIS request's: see ``api_chat``.
+        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+        slot._turn_owner_pending = is_owner_dashboard_request(request)
         task = asyncio.create_task(
             _run_chat(
                 state,
@@ -647,9 +651,17 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         dispatch_ready = asyncio.Event()
         dispatch_commit = False
 
+        # Decided at request time, stamped at dispatch time: see ``api_chat``.
+        # The edited words are whoever sent THIS request's, so the turn's owner
+        # mark is this request's, not the original row's.
+        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+        _owner_sent = is_owner_dashboard_request(request)
+
         async def _edit_resend_dispatch() -> None:
             await dispatch_ready.wait()
             if dispatch_commit:
+                slot._turn_owner_pending = _owner_sent
                 await _run_chat(
                     state,
                     slot,
