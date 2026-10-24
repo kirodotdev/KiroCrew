@@ -102,6 +102,9 @@ Two independent switches:
   no clip is downloaded, and nothing streams from the CDN — clips already on disk
   still play. The settings panel reads the answer from `GET /api/feature-videos/status`
   (`download_enabled`), so the controls reflect it rather than failing when pressed.
+- The same scope can instead name the hosts the catalog and clips may come from
+  (`"scopes": {"hosts": {"mode": "allow", "allow": ["mirror.example.com"]}}`).
+  A request to any other host is not made.
 
 To fetch the catalog from somewhere else, set `KIROCREW_FEATURE_VIDEOS_MANIFEST_URL`
 in the gateway's environment to point at your own copy of the manifest. It must be
