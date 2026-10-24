@@ -61,6 +61,7 @@ class _ChatTurn:
     """One turn's inputs and the state its phases share; see the module docstring."""
 
     # The inputs of ``_run_chat`` the functions it calls with the turn read off it.
+    _preparing_task: "Task[Any] | None"
     state: "DashboardState"
     slot: "_ChatSlot"
     turn_exit: "_TurnExit"

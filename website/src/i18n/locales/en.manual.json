@@ -9727,5 +9727,9 @@
     "change_turns_on": "Turns back on",
     "tool_access_every_tool": "Can use every {{server}} tool",
     "tool_access_tool_on_server": "Can use {{tool}} on {{server}}"
+  },
+  "queueActions": {
+    "stillStopping": "Still stopping…",
+    "teardownPending": "The previous turn is still stopping. Your message is queued and will send once it stops."
   }
 }

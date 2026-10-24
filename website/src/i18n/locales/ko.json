@@ -19357,5 +19357,9 @@
     "change_turns_on": "다시 켬",
     "tool_access_every_tool": "{{server}}의 모든 도구 사용 가능",
     "tool_access_tool_on_server": "{{server}}의 {{tool}} 사용 가능"
+  },
+  "queueActions": {
+    "stillStopping": "아직 중지하는 중…",
+    "teardownPending": "이전 턴을 아직 중지하고 있습니다. 메시지는 대기열에 있으며 중지가 끝나면 전송됩니다."
   }
 }

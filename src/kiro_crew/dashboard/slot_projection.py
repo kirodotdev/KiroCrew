@@ -467,6 +467,9 @@ class SlotProjection:
                 slot.turn_running and getattr(slot, "_wake_starting_task", None) is slot.task
             ),
             **turn_identity,
+            "stop_teardown": bool(
+                slot._stop_teardown_task is not None and not slot._stop_teardown_task.done()
+            ),
             # An automatic compaction in flight on this session. Separate from
             # `running` because it is NOT a dashboard turn: the composer reads
             # idle while it holds the session, which without this field looks

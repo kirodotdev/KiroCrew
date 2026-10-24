@@ -19943,5 +19943,9 @@
     "change_turns_on": "Vuelve a activar",
     "tool_access_every_tool": "Puede usar todas las herramientas de {{server}}",
     "tool_access_tool_on_server": "Puede usar {{tool}} en {{server}}"
+  },
+  "queueActions": {
+    "stillStopping": "Aún se está deteniendo…",
+    "teardownPending": "El turno anterior aún se está deteniendo. Tu mensaje está en la cola y se enviará cuando se detenga."
   }
 }

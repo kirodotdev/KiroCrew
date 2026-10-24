@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
@@ -409,6 +410,26 @@ def subagents_hold_user_messages(state: DashboardState, session_key: str) -> boo
     return any(not (isinstance(a, dict) and a.get("stalled")) for a in agents)
 
 
+_queue_handoff_context: ContextVar[
+    tuple[asyncio.Task[Any] | None, asyncio.Task[Any] | None] | None
+] = ContextVar("queue_handoff_context", default=None)
+
+
+async def _start_next_queued_turn_for_handoff(
+    state: DashboardState,
+    slot: _ChatSlot,
+    *,
+    handoff_owner: asyncio.Task[Any] | None,
+    **options: Any,
+) -> bool:
+    """Carry the retiring owner through one drain without changing its base signature."""
+    token = _queue_handoff_context.set((asyncio.current_task(), handoff_owner))
+    try:
+        return await _start_next_queued_turn(state, slot, **options)
+    finally:
+        _queue_handoff_context.reset(token)
+
+
 async def _start_next_queued_turn(
     state: DashboardState,
     slot: _ChatSlot,
@@ -430,7 +451,8 @@ async def _start_next_queued_turn(
     (:func:`_mark_turn_end`). ``end_batch`` says the caller read the synthesis
     fire gate as ``clear`` with the floor held, so a user message drained here
     also zeroes the batch's completion-turn count; the drain itself reads no
-    store.
+    store. The task-scoped handoff context lets the retiring runner dispatch
+    its successor; external retries still wait for teardown to finish.
     """
 
     # Nothing starts while the process is going away. The successor would write
@@ -445,6 +467,19 @@ async def _start_next_queued_turn(
     # the drop notices, the held-note flush and the cancellation notices below
     # belong to what comes next, not to the turn that ended. Held back only while
     # the queue head is that turn's own recovery; the dequeue re-decides then.
+    handoff = _queue_handoff_context.get()
+    # Child tasks inherit context, but only this exact caller may use the handoff.
+    handoff_owner = (
+        handoff[1] if handoff is not None and handoff[0] is asyncio.current_task() else None
+    )
+    teardown = slot._stop_teardown_task
+    if (
+        teardown is not None
+        and not teardown.done()
+        and (handoff_owner is not teardown or slot.task is not teardown)
+    ):
+        return False
+
     turn_ended = False
     if predecessor_actor and not _is_own_recovery(
         slot._queue[:1], predecessor_actor, predecessor_turn_id

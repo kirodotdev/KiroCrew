@@ -19357,5 +19357,9 @@
     "change_turns_on": "オンに戻す",
     "tool_access_every_tool": "{{server}} のすべてのツールを使える",
     "tool_access_tool_on_server": "{{server}} の {{tool}} を使える"
+  },
+  "queueActions": {
+    "stillStopping": "停止しています…",
+    "teardownPending": "前のターンを停止しています。メッセージはキューに残っており、停止が完了すると送信されます。"
   }
 }

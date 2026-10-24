@@ -1211,7 +1211,11 @@ async def _run_chat(
     # to clear it, and a cut with no text after it leaves nothing to judge.
     _compaction_text_offset = 0
     turn._compaction_text_offset = _compaction_text_offset
+    # Bounded dispatch stores the outer task on the slot, not this inner runner.
+    _preparing_task = slot.task or asyncio.current_task()
+    turn._preparing_task = _preparing_task
     try:
+        slot._preparing_task = _preparing_task
         _flow = await _turn_admit(turn)
         if _flow is _Flow.END:
             return
@@ -1237,6 +1241,15 @@ async def _run_chat(
         full_message = turn.full_message
         event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
         async for event in event_stream:
+            # The provider's first event ends the PREPARING span. Not the dispatch
+            # gate above: the transport can still await (timeout configuration,
+            # session setup) before it registers the turn as active, and a Stop
+            # landing there finds no active turn, answers ``idle`` and would leave
+            # the prompt to dispatch after it. While the marker stands, that
+            # terminal outcome cancels this runner instead. From the first event
+            # on, the provider owns the turn and a stop goes through its machinery.
+            if slot._preparing_task is _preparing_task:
+                slot._preparing_task = None
             if (_todo_sync_rendered or _todo_recovery_carried) and (
                 event.kind in _TODO_BLOCK_READ_EVENT_KINDS
             ):

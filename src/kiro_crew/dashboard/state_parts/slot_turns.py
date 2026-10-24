@@ -21,6 +21,7 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_member_approval_seeded``, ``_on_card_event``, ``_on_message``,
 ``_on_question_retired``, ``_on_row``, ``_pending``, ``_preparing_count``, ``_pending_consumers``,
 ``_pending_context``, ``_pending_release_deferred``, ``_pending_variants``,
+``_preparing_task``, ``_stop_teardown_task``,
 ``_question_pending``, ``_queue``, ``_queue_persist_inflight``, ``_queue_persist_owed``,
 ``_queue_persisted_sig``, ``_queue_repository``, ``_responsive``, ``_side``,
 ``_stop_declined_at``, ``_stop_escalated_card_id``, ``_stop_event_id``,
@@ -456,6 +457,9 @@ def init_turns_fields(self: _ChatSlot) -> None:
     self._active_turn_session_key = ""
     # Process-local human priority; queue/history metadata cannot restore it.
     self._responsive = None
+    # Task identity keeps a terminal stop and old cleanup off a successor.
+    self._preparing_task = None
+    self._stop_teardown_task = None
     self._side = None
     # Live inner AcpClient for the in-flight turn, published by _run_chat at
     # turn start and cleared in _turn_release_handles (chat_turn/turn_entry.py).

@@ -209,8 +209,8 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     session_key = turn.session_key
     slot = turn.slot
     state = turn.state
-    # Publish the immutable identity BEFORE the first admission await, as
-    # the first statement _run_chat's finally covers. From here down the
+    # Publish the immutable identity BEFORE the first admission await,
+    # inside _run_chat's finally coverage. From here down the
     # local session_key is what the turn acquires, audits and releases
     # while slot.linked_session_key remains mutable underneath it -- and
     # the admission awaits below are exactly where a rebind can land: a

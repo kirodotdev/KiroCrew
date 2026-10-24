@@ -19943,5 +19943,9 @@
     "change_turns_on": "Reativa",
     "tool_access_every_tool": "Pode usar todas as ferramentas de {{server}}",
     "tool_access_tool_on_server": "Pode usar {{tool}} em {{server}}"
+  },
+  "queueActions": {
+    "stillStopping": "Ainda interrompendo…",
+    "teardownPending": "O turno anterior ainda está sendo interrompido. Sua mensagem está na fila e será enviada quando ele parar."
   }
 }

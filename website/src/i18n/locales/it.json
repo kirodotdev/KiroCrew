@@ -19943,5 +19943,9 @@
     "change_turns_on": "Riattiva",
     "tool_access_every_tool": "Può usare tutti gli strumenti di {{server}}",
     "tool_access_tool_on_server": "Può usare {{tool}} su {{server}}"
+  },
+  "queueActions": {
+    "stillStopping": "Interruzione in corso…",
+    "teardownPending": "Il turno precedente si sta ancora interrompendo. Il messaggio è in coda e verrà inviato quando si ferma."
   }
 }

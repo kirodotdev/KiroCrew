@@ -19650,5 +19650,9 @@
     "change_turns_on": "फिर से चालू करता है",
     "tool_access_every_tool": "{{server}} के सभी टूल इस्तेमाल कर सकता है",
     "tool_access_tool_on_server": "{{server}} पर {{tool}} इस्तेमाल कर सकता है"
+  },
+  "queueActions": {
+    "stillStopping": "अभी रुक रही है…",
+    "teardownPending": "पिछली बारी अभी रुक रही है। तुम्हारा संदेश कतार में है और रुकते ही भेज दिया जाएगा।"
   }
 }

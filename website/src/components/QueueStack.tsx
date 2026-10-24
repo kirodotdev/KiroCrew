@@ -236,7 +236,7 @@ function EditInput({ initial, onCommit, onCancel }: {
   )
 }
 
-function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, fuseBelow = true, pendingIds }: {
+function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, fuseBelow = true, pendingIds, interruptBlockedTitle }: {
   messages: ChatMessage[]
   onCancel?: (queueId: string) => void
   onInterrupt?: (queueId: string) => void
@@ -249,6 +249,9 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
    *  is only retired once the server confirms, that second request races the
    *  first and comes back 404, reporting a failure for an action that worked. */
   pendingIds?: ReadonlySet<string>
+  /** Set while the slot cannot take an interrupt yet: the lightning button is
+   *  disabled and this text is its tooltip. */
+  interruptBlockedTitle?: string | null
   /** When true (default) the front collapsed card fuses into the surface directly
    *  below it (the input box) via a negative bottom margin + a flat, borderless bottom
    *  edge. Set false when a non-fusable element sits between the queue and the input box
@@ -497,9 +500,9 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                       {onInterrupt && showActions && (
                         <button
                           className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors text-[var(--text)] disabled:opacity-40 disabled:cursor-not-allowed"
-                          title={i18nT('components.queueStack.interrupt_current_turn_and_send_this_now')}
+                          title={interruptBlockedTitle || i18nT('components.queueStack.interrupt_current_turn_and_send_this_now')}
                           aria-label={i18nT('components.queueStack.send_now')}
-                          disabled={isPending}
+                          disabled={isPending || !!interruptBlockedTitle}
                           onClick={(e) => { e.stopPropagation(); onInterrupt(queueId!) }}
                         >
                           <Zap size={13} fill="currentColor" />
@@ -542,6 +545,7 @@ export default memo(QueueStackInner, (prev, next) =>
   prev.messages.length === next.messages.length &&
   prev.fuseBelow === next.fuseBelow &&
   prev.pendingIds === next.pendingIds &&
+  prev.interruptBlockedTitle === next.interruptBlockedTitle &&
   prev.messages.every((m, i) => m === next.messages[i]) &&
   prev.onCancel === next.onCancel &&
   prev.onInterrupt === next.onInterrupt &&

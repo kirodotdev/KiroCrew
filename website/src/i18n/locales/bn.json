@@ -19650,5 +19650,9 @@
     "change_turns_on": "আবার চালু করে",
     "tool_access_every_tool": "{{server}}-এর সব টুল ব্যবহার করতে পারে",
     "tool_access_tool_on_server": "{{server}}-এ {{tool}} ব্যবহার করতে পারে"
+  },
+  "queueActions": {
+    "stillStopping": "এখনও থামছে…",
+    "teardownPending": "আগের পালাটি এখনও থামছে। তোমার বার্তাটি সারিতে আছে এবং থামা শেষ হলেই পাঠানো হবে।"
   }
 }

@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         _arm_parked_queue_drain,
         _mark_turn_end,
         _start_next_queued_turn,
+        _start_next_queued_turn_for_handoff,
     )
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
     from kiro_crew.dashboard.chat_turn.steer_queue import _requeue_unconsumed_steers
@@ -175,12 +176,19 @@ def _arm_synthesis_recheck(state: DashboardState, slot: _ChatSlot) -> None:
                 and state._slots.get(slot.key) is slot
             )
 
-        if not _still_wanted():
+        def _defer_stop_teardown() -> bool:
+            teardown = slot._stop_teardown_task
+            if teardown is None or teardown.done():
+                return False
+            _arm_synthesis_recheck(state, slot)
+            return True
+
+        if not _still_wanted() or _defer_stop_teardown():
             return
         verdict = await synthesis_fire_verdict(state, slot)
         if verdict == SYNTHESIS_UNKNOWN:
             _arm_synthesis_recheck(state, slot)
-        elif verdict == SYNTHESIS_CLEAR and _still_wanted():
+        elif verdict == SYNTHESIS_CLEAR and _still_wanted() and not _defer_stop_teardown():
             # Re-read after the store read: the tab may have started closing.
             _launch_synthesis(state, slot)
 
@@ -222,6 +230,7 @@ async def _finish_queue_cycle(
     a cycle of local commands and cancelled replays has no reply to title and
     no remote work to re-read."""
 
+    handoff_owner = slot.task
     will_synthesize = False
     verdict = SYNTHESIS_HELD
     if (
@@ -247,7 +256,7 @@ async def _finish_queue_cycle(
             # drain attempt. A held queue stays held: its arrivals are handed the
             # floor by the read loop below.
             state.push_slots_update()
-            if await _start_next_queued_turn(state, slot):
+            if await _start_next_queued_turn_for_handoff(state, slot, handoff_owner=handoff_owner):
                 return
 
     # The cycle's end is also the end of the turn that ran it, and it is marked
@@ -295,13 +304,19 @@ async def _finish_queue_cycle(
             break
         # The queue moved during the read: a send that arrived queued behind the
         # still-running turn. Hand it the floor, then read again.
-        if drain and slot._queue and await _start_next_queued_turn(state, slot):
+        if (
+            drain
+            and slot._queue
+            and await _start_next_queued_turn_for_handoff(state, slot, handoff_owner=handoff_owner)
+        ):
             return
         arrived = next((e.get("id") for e in slot._queue if e.get("id") not in held), None)
         if (
             not drain
             and arrived
-            and await _start_next_queued_turn(state, slot, required_queue_id=arrived)
+            and await _start_next_queued_turn_for_handoff(
+                state, slot, required_queue_id=arrived, handoff_owner=handoff_owner
+            )
         ):
             return
     if slot.task is not owner:
@@ -324,7 +339,7 @@ async def _finish_queue_cycle(
         if (
             responsive_chat.first_priority_id(slot)
             and not responsive_chat.pending_interaction(slot, idle=True)
-            and await _start_next_queued_turn(state, slot)
+            and await _start_next_queued_turn_for_handoff(state, slot, handoff_owner=handoff_owner)
         ):
             return
     slot.append("done", "", "done")
@@ -420,12 +435,13 @@ async def _hand_off_queue(
             and await synthesis_fire_verdict(state, slot) == SYNTHESIS_CLEAR
         )
         state.push_slots_update()
-        if await _start_next_queued_turn(
+        if await _start_next_queued_turn_for_handoff(
             state,
             slot,
             predecessor_actor=predecessor_actor,
             predecessor_turn_id=predecessor_turn_id,
             end_batch=end_batch,
+            handoff_owner=slot.task,
         ):
             return
     await _finish_queue_cycle(
@@ -726,3 +742,6 @@ async def _turn_record_outcome(turn: _ChatTurn) -> None:
             "nudge_turn": _directive_self_wake and turn._turn_landed,
         },
     )
+    # An older runner may finish after a successor starts preparing.
+    if turn.slot._preparing_task is turn._preparing_task:
+        turn.slot._preparing_task = None

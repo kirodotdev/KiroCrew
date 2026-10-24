@@ -718,6 +718,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         if _responsive_eligible and (not steer or not slot.turn_running):
             return await responsive_chat.accept(request, slot, message, user_meta)
 
+    _auto_strip: dict | None = None
+    _auto_queues = False
     if slot.turn_running or slot._turn_admission_reserved:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
         # the next turn. Gated on an explicit `steer` flag + a live, steer-capable
@@ -739,8 +741,6 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # Resolved before the steer `if` rather than inside it, so the steer block
         # below keeps its exact shape: the only thing `auto` changes about it is one
         # more conjunct on its condition and the receipt it stamps.
-        _auto_strip: dict | None = None
-        _auto_queues = False
         if steer_is_auto(steer) and not request_app and not _responsive_eligible:
             # The turn the question is ABOUT, captured before the await. The
             # decision is a provider round-trip, so the turn it describes can end
@@ -805,6 +805,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                     request, slot, message, user_meta, steer_first=False
                 )
             # steer requested but unavailable -> fall through to queue below.
+    if slot.running:
         # Queue the message - return JSON immediately (no SSE needed).
         # The existing SSE reader will pick up queued messages as _run_chat
         # processes the queue in its finally block. The message is non-empty

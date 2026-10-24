@@ -20,6 +20,7 @@ import ChatDropOverlay from './ChatDropOverlay'
 import PaneDim from './PaneDim'
 import PendingQuestionCard from './PendingQuestionCard'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
+import QueueHoldNotice from './QueueHoldNotice'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 import ChatFooter from '../pages/chat/ChatFooter'
 import PinnedPrompt from '../pages/chat/PinnedPrompt'
@@ -535,6 +536,8 @@ export default function ChatPane({
     onEdit: onEditQueued,
     onReorder: onReorderQueued,
     pendingIds: queuePendingIds,
+    interruptNotice: queueInterruptNotice,
+    interruptBlockedTitle: queueInterruptBlockedTitle,
   } = useQueuedMessageActions({
     slot: slotKey,
     allQueued: allQueuedMessages,
@@ -862,10 +865,12 @@ export default function ChatPane({
             without a steer channel, a mid-plan send) must stay visible and
             cancellable — hiding real state is worse than showing a card the
             surface did not intend. */}
+        {/* No hand-off: this pane may hold an unsaved composer draft. */}
+        {!crewmate && <QueueHoldNotice message={queueInterruptNotice} />}
         {/* A crewmate's chat draws a queued message as the person's own
             bubble in the thread instead (`withQueuedAsBubbles`). */}
         {!crewmate && queuedMessages.length > 0 && (
-          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={crewmate ? undefined : onInterruptQueued} onEdit={onEditQueued} onReorder={onReorderQueued} pendingIds={queuePendingIds} />
+          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={crewmate ? undefined : onInterruptQueued} onEdit={onEditQueued} onReorder={onReorderQueued} pendingIds={queuePendingIds} interruptBlockedTitle={queueInterruptBlockedTitle} />
         )}
 
         {/* The pending ask_question card shares the message column's gutter and

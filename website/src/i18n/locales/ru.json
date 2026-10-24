@@ -20236,5 +20236,9 @@
     "change_turns_on": "Снова включает",
     "tool_access_every_tool": "Может использовать все инструменты {{server}}",
     "tool_access_tool_on_server": "Может использовать {{tool}} на {{server}}"
+  },
+  "queueActions": {
+    "stillStopping": "Ещё останавливается…",
+    "teardownPending": "Предыдущий ход ещё останавливается. Сообщение находится в очереди и будет отправлено после остановки."
   }
 }

@@ -19943,5 +19943,9 @@
     "change_turns_on": "Réactive",
     "tool_access_every_tool": "Peut utiliser tous les outils de {{server}}",
     "tool_access_tool_on_server": "Peut utiliser {{tool}} sur {{server}}"
+  },
+  "queueActions": {
+    "stillStopping": "Arrêt en cours…",
+    "teardownPending": "Le tour précédent est encore en cours d’arrêt. Ton message est en attente et sera envoyé une fois l’arrêt terminé."
   }
 }

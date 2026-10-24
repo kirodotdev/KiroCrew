@@ -1151,11 +1151,15 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         # ``running`` true, so the collect branch below hands it to the one
         # batched wait rather than serialising a hung turn's full teardown here.
         _turn_killed = False
-        if removed.running and removed.task is not None:
-            removed.task.cancel()
+        if removed.running and removed.task is not None and not removed.task.done():
+            _removed_task = removed.task
+        else:
+            _removed_task = removed._stop_teardown_task
+        if _removed_task is not None and not _removed_task.done():
+            _removed_task.cancel()
             _turn_killed = True
             try:
-                await asyncio.wait_for(asyncio.shield(removed.task), timeout=2.0)
+                await asyncio.wait_for(asyncio.shield(_removed_task), timeout=2.0)
             except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 pass
         # Post-pop teardown race (same as the single-tab close, same gate): across
@@ -1291,9 +1295,12 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         schedule_archived((_history_key_for(name), closing_key), feed_notifier(state))
         archived.append(name)
         # Collect running tasks for concurrent cancellation after the loop
-        if removed.running and removed.task is not None:
+        if removed.running and removed.task is not None and not removed.task.done():
             removed.task.cancel()
             _tasks_to_cancel.append(removed.task)
+        elif _removed_task is not None and not _removed_task.done():
+            _removed_task.cancel()
+            _tasks_to_cancel.append(_removed_task)
     # Await all cancelled tasks concurrently with a single bounded timeout
     if _tasks_to_cancel:
         await asyncio.wait(_tasks_to_cancel, timeout=5.0)

@@ -19650,5 +19650,9 @@
     "change_turns_on": "Schaltet wieder ein",
     "tool_access_every_tool": "Kann alle Tools von {{server}} nutzen",
     "tool_access_tool_on_server": "Kann {{tool}} auf {{server}} nutzen"
+  },
+  "queueActions": {
+    "stillStopping": "Wird noch beendet…",
+    "teardownPending": "Der vorherige Durchlauf wird noch beendet. Deine Nachricht ist in der Warteschlange und wird gesendet, sobald er beendet ist."
   }
 }

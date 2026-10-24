@@ -19357,5 +19357,9 @@
     "change_turns_on": "重新开启",
     "tool_access_every_tool": "可使用 {{server}} 的所有工具",
     "tool_access_tool_on_server": "可使用 {{server}} 上的 {{tool}}"
+  },
+  "queueActions": {
+    "stillStopping": "仍在停止…",
+    "teardownPending": "上一轮仍在停止中。消息已排队，停止后将自动发送。"
   }
 }
