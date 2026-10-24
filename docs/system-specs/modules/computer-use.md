@@ -1466,10 +1466,28 @@ actually doing) appears nowhere.
 
 Two smaller findings encoded the same way: **the advertised action list lies** —
 an `AXScrollArea` advertising `AXScrollDownByPage` returned
-`-25205 (kAXErrorActionUnsupported)`, so `scroll` attempts the AX action, checks
-the error code, and falls back to `CGEventCreateScrollWheelEvent` posted with
-`CGEventPostToPid`; and **the tree walk is ITERATIVE** (an explicit stack), so a
-pathological deep tree cannot `RecursionError` inside ctypes.
+`-25205 (kAXErrorActionUnsupported)`, so `scroll` attempts the AX action and
+checks the error code; and **the tree walk is ITERATIVE** (an explicit stack), so
+a pathological deep tree cannot `RecursionError` inside ctypes.
+
+**When the AX scroll action is refused, `scroll` goes through the scroll bar.**
+The fallback chain, in order:
+
+| Step | Taken when | Result text |
+|---|---|---|
+| `AXScrollDownByPage` and siblings on the element | always first | `scrolled element N ...` |
+| Press the bar's page area (`AXButton` with subrole `AXIncrementPage` / `AXDecrementPage`) once per page | the element, or one of up to three ancestors, names an `AXVerticalScrollBar` / `AXHorizontalScrollBar` that has the page area | `scrolled element N down K of P page(s) with its scroll bar` plus the bar's `AXValue` before and after |
+| No press | the bar is disabled (`AXEnabled` false: the content fits) | refused: nothing to scroll |
+| No press | the bar's `AXValue` is already at the requested end | `already at the bottom` |
+| `CGEventCreateScrollWheelEvent` posted with `CGEventPostToPid`, located at the element's centre | no bar or page area, a press refused, or a press that moved nothing | `sent a ... wheel scroll ... not confirmed`; refused outright when the element has no frame |
+
+A page-area press animates the scroll, so the bar's `AXValue` still reads the old
+position right after the press: on TextEdit it read `1.0` at once, `0.85` after
+50 ms and `0.0` after 250 ms. Each press is therefore followed by polling until
+the position has moved and two reads agree, for at most 20 x 50 ms. The wheel
+event is last because nothing confirms it: a pid-targeted wheel event is routed
+by the app to the view under the event's location, and TextEdit dropped one aimed
+at its own scroll area while the window was not under the pointer.
 
 **Secure fields are a subrole, not a role.** A real macOS password box reports:
 
