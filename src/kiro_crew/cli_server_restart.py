@@ -106,9 +106,9 @@ def _incumbent_from_lock_holder(port: int, *, shutdown_acknowledged: bool) -> li
     ladder as the port-lookup path.
 
     *shutdown_acknowledged* says whether ``_stop`` returned, i.e. a gateway
-    accepted the authenticated shutdown. Only then is a live Kiro Crew holder
-    the exiting incumbent, and only then is it returned as ``[holder_pid]`` to
-    be waited on. Returns ``[]`` when the lock is free or its recorded holder
+    accepted the authenticated shutdown. Only then is the live holder the
+    exiting incumbent, and only then is it returned as ``[holder_pid]`` to be
+    waited on, whatever its argv reads. Returns ``[]`` when the lock is free or its recorded holder
     is dead (nothing left to outwait). Every other live holder -- a foreign
     process, or a Kiro Crew gateway that did not acknowledge the shutdown
     (``_stop`` has already refused it) -- is refused through
@@ -133,7 +133,13 @@ def _incumbent_from_lock_holder(port: int, *, shutdown_acknowledged: bool) -> li
         sys.exit(1)
     if holder.pid is None or not holder.alive:
         return []
-    if shutdown_acknowledged and _is_kirocrew_process(holder.pid):
+    # No argv check here. The holder is already named twice without it: a gateway answered the shutdown that carries this home's generation
+    # secret, and the kernel says this pid holds this home's lock. argv would
+    # only refuse a gateway whose spawn shape the patterns miss, and strand
+    # the user with no gateway. The pid is only WAITED on, never signalled,
+    # so dropping the check cannot widen what gets stopped. A holder that is
+    # not really exiting just makes the wait time out and restart refuse.
+    if shutdown_acknowledged:
         return [holder.pid]
     _refuse_lock_holder("gateway_restart", port, holder.pid)
 

@@ -548,7 +548,12 @@ class TestRestart:
 
     @contextlib.contextmanager
     def _tool_absent_acked_shutdown(
-        self, holder_pid: int, lock_probe_error=None, *, acknowledged: bool = True
+        self,
+        holder_pid: int,
+        lock_probe_error=None,
+        *,
+        acknowledged: bool = True,
+        kirocrew: bool = True,
     ):
         """Patches for the port-tool-absent path with an acknowledged shutdown.
 
@@ -559,6 +564,8 @@ class TestRestart:
         unless ``lock_probe_error`` is given, in which case the probe raises it.
         ``acknowledged=False`` drives the same entry with NO gateway answering
         the API, so ``_stop`` reaches the lock holder instead.
+        ``kirocrew=False`` makes the argv check decline every pid, as it does
+        for a gateway spawned in a shape the patterns do not know.
         """
         from kiro_crew.gateway_lock import LockHolder
 
@@ -587,9 +594,70 @@ class TestRestart:
                 return_value=acknowledged,
             ),
             patch("kiro_crew.cli_server.lock_holder", **holder_kwargs),
-            patch("kiro_crew.cli_server._is_kirocrew_process", return_value=True),
+            patch("kiro_crew.cli_server._is_kirocrew_process", return_value=kirocrew),
         ):
             yield
+
+    def test_acked_shutdown_waits_for_lock_holder_whose_argv_is_unrecognised(self):
+        """The gateway answered the secret-bearing shutdown and the
+        lock names its pid, but its argv matches no pattern (e.g. the desktop
+        app's bare interpreter). Restart must still wait on that pid and then
+        spawn, not strand the user with no gateway. The pid is only waited
+        on: nothing is signalled."""
+        from kiro_crew.cli_server import _restart
+        from kiro_crew.gateway_lock import LockHolder
+
+        order: list[str] = []
+
+        def _probe(_home):
+            order.append("probe")
+            if "wait:[4242]" in order:
+                return LockHolder(pid=None, alive=False, source="none")
+            return LockHolder(pid=4242, alive=True, source="flock_owner")
+
+        def _wait(pids, timeout):
+            order.append(f"wait:{pids}")
+            return []
+
+        with (
+            self._mock_sel(),
+            self._tool_absent_acked_shutdown(4242, kirocrew=False),
+            patch("kiro_crew.cli_server.lock_holder", side_effect=_probe),
+            patch("kiro_crew.cli_server.os.kill") as mock_kill,
+            patch("kiro_crew.cli_server.platform_compat.kill_process_tree") as mock_tree,
+            patch("kiro_crew.cli_server._wait_for_pids_exit", side_effect=_wait),
+            patch(
+                "kiro_crew.cli_server._spawn_detached_gateway",
+                side_effect=lambda port: (order.append("spawn"), self._fake_proc(4321))[1],
+            ),
+        ):
+            _restart(None)
+        assert order == ["probe", "wait:[4242]", "probe", "spawn"]
+        mock_kill.assert_not_called()
+        mock_tree.assert_not_called()
+
+    def test_unacked_shutdown_unrecognised_lock_holder_is_still_refused(self, capsys):
+        """With NO acknowledged shutdown there is no
+        second proof, so an unrecognised lock holder keeps today's refusal --
+        no signal, no wait, no spawn."""
+        from kiro_crew.cli_server import _restart
+
+        with (
+            self._mock_sel(),
+            self._tool_absent_acked_shutdown(4242, acknowledged=False, kirocrew=False),
+            patch("kiro_crew.cli_server.os.kill") as mock_kill,
+            patch("kiro_crew.cli_server.platform_compat.kill_process_tree") as mock_tree,
+            patch("kiro_crew.cli_server._wait_for_pids_exit") as mock_wait,
+            patch("kiro_crew.cli_server._spawn_detached_gateway") as mock_spawn,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _restart(None)
+        assert exc.value.code == 1
+        mock_kill.assert_not_called()
+        mock_tree.assert_not_called()
+        mock_wait.assert_not_called()
+        mock_spawn.assert_not_called()
+        assert "does not look like a Kiro Crew gateway" in capsys.readouterr().out
 
     def test_tool_absent_unacked_shutdown_live_holder_refuses_to_restart(self, capsys):
         """Port tool absent, no gateway answers the API, yet the lock is held by
