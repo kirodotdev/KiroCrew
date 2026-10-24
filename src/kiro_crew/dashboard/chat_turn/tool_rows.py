@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_utils import (
     _tool_identity_fields,
+    open_construct_at_end,
     restore_replacement_if_handover_did_not_land,
     slot_history_key,
     tighten_replacement_to_restricted_original,
@@ -27,7 +28,6 @@ if TYPE_CHECKING:
         crew_log_emit,
         fire_tool_hooks,
         logger,
-        open_construct_at_end,
         redact_credentials,
         redact_exfiltration_urls,
         save_slot_off_loop,

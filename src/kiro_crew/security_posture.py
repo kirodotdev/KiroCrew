@@ -323,7 +323,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # title ONCE, centrally, before the notice is steered back into the
         # model's own turn (not to a person). It owns no egress — the steer goes
         # to the ACP subprocess through the provider, and the display rows a
-        # human sees are appended by dashboard/chat_runner.py and the native Slack turn,
+        # human sees are appended by the dashboard chat turn and the native Slack turn,
         # the registered sinks for those surfaces (Slack's is handler_runtime/delivery.py).
         "deny_notice.py",
         # The app-facing seam: it OWNS no output. It hands the redaction pass to
@@ -620,11 +620,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/session_control_parts/target_authorization.py",
         "dashboard/session_control_parts/model_switch.py",
         "dashboard/session_control_parts/session_create.py",
+        # The runner's own stream loop scrubs a tool call's id before the id keys a row;
+        # the rows reach the browser through the dashboard's sinks.
+        "dashboard/chat_runner.py",
         # The owners composed into dashboard/chat_runner.py: the redactor calls of the runner's
         # helpers, _run_chat's closures and its phases, unchanged (deny rows, turn and spawn errors,
         # file-change snapshots, the MCP sign-in banner, fallback model ids, native cards, prompt
         # and skill mentions, the queue drain, admission and permission logs, stream redactors,
-        # cross-surface legs, the segment flush, tool rows and results, directive tool-call ids, the
+        # cross-surface legs, tool rows and results, directive tool-call ids, the
         # agent-switch name, the /compact summary and failure reason, the partial reply and stream
         # flushes, spec-hook notices, the stats footer). Their output reaches the runner's surfaces.
         "dashboard/chat_turn/acp_recovery.py",
@@ -638,7 +641,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_turn/prompt_assembly.py",
         "dashboard/chat_turn/queue_drain.py",
         "dashboard/chat_turn/recipient.py",
-        "dashboard/chat_turn/segment_flush.py",
         "dashboard/chat_turn/session_events.py",
         "dashboard/chat_turn/slash_commands.py",
         "dashboard/chat_turn/tool_approval.py",

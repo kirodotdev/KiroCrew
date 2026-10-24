@@ -63,6 +63,7 @@ _ASYNC_CHECKED_FILES = [
     "dashboard/chat_turn/slash_commands.py",
     "dashboard/chat_turn/steer_queue.py",
     "dashboard/chat_turn/stop_recovery.py",
+    "dashboard/chat_turn/stream_chunks.py",
     "dashboard/chat_turn/tool_approval.py",
     "dashboard/chat_turn/tool_results.py",
     "dashboard/chat_turn/tool_rows.py",

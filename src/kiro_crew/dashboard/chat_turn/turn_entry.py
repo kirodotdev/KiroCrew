@@ -1,8 +1,9 @@
 """A dashboard turn's opening phase and entry state: ``_turn_open`` (the turn's identity,
 provenance, consume veto, allowances and clocks), the Stop signal it reads live, the session's
-Stop count and the directive provenance a channel steer can narrow; and the hand-back of
-what the turn held on its slot when it ends (``_turn_release_handles``: the live handles,
-the batch latch and the file changes)."""
+Stop count, the directive provenance a channel steer can narrow and the start priority of its
+cold start (``_turn_start_priority``); and the hand-back of what the turn held on its slot
+when it ends (``_turn_release_handles``: the live handles, the batch latch and the file
+changes)."""
 
 from __future__ import annotations
 
@@ -12,17 +13,17 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
-from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT
+from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT, row_mid
+from kiro_crew.llm_helpers import _NO_PRIOR_STATS
 from kiro_crew.security import StreamRedactor
+from kiro_crew.start_priority import person_priority
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
-        _NO_PRIOR_STATS,
         ReplayFamily,
-        _turn_start_priority,
+        StartPriority,
         effective_session_key,
         logger,
-        row_mid,
     )
     from kiro_crew.dashboard.chat_turn.decisions_hooks import _discard_stale_decision
     from kiro_crew.dashboard.chat_turn.file_changes import _flush_file_changes
@@ -452,8 +453,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     _turn_emitted = False
     turn._turn_emitted = _turn_emitted
     # Did this turn stream text the user has ALREADY READ, which a later tool
-    # boundary then flushed out of `assistant_text`? The three tool-boundary flushes (_run_chat's
-    # post-tool-group text, _on_tool_call in tool_rows, _on_permission_request in tool_approval)
+    # boundary then flushed out of `assistant_text`? The three tool-boundary flushes
+    # (_on_text_chunk's post-tool-group text in stream_chunks, _on_tool_call in tool_rows,
+    # _on_permission_request in tool_approval)
     # persist the segment and reset the buffer, so a turn that answered and THEN
     # hit a blocked tool call reaches end-of-turn with an empty `assistant_text`
     # even though its answer is on screen. Kept separate from
@@ -675,8 +677,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # ``chat_delivery.steer_into_running_turn``, which registers it in
     # ``slot._pending_steers``). Any text after that may be the model's answer
     # to that person — including text after a quiet end the model reached once
-    # it had read the steer — so _run_chat's post-terminal text drop is off for
-    # the rest of the turn: a stray bubble is recoverable, a dropped answer is
+    # it had read the steer — so the post-terminal text drop in _on_text_chunk (stream_chunks)
+    # is off for the rest of the turn: a stray bubble is recoverable, a dropped answer is
     # not. The runner's own in-band notices never register in
     # ``_pending_steers``, so they do not lift it.
     _person_steered_turn = False
@@ -982,3 +984,18 @@ async def _turn_release_handles(turn: _ChatTurn) -> None:
         )
     except Exception:
         logger.debug("_flush_file_changes failed", exc_info=True)
+
+
+def _turn_start_priority(
+    *, user_origin: bool, crew_log_actor: str, provenance_restored: bool
+) -> StartPriority:
+    """The start priority of a turn's cold start (rule: ``kiro_crew.start_priority``).
+
+    FOREGROUND only for a turn a person sent: authenticated-human provenance this
+    process observed, owned by the user -- the same predicate the crew-log gates
+    use (``_crew_log_actor == "user" and not _turn_provenance_restored``). That
+    covers a typed turn, a person's Resume/Continue press and the runner's requeue
+    of a person's failed turn; a self-wake, a dispatch-named actor (cron, sub-agent,
+    gateway, app, crew) or a restored queue entry starts BACKGROUND.
+    """
+    return person_priority(user_origin and crew_log_actor == "user" and not provenance_restored)

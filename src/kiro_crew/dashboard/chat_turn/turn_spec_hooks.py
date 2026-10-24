@@ -46,8 +46,6 @@ if TYPE_CHECKING:
         DashboardState,
         KiroCrewConfig,
         _ChatSlot,
-        _turn_full_reply_text,
-        _turn_reply_segments,
         agent_welcome_message,
         append_and_surface,
         capabilities_of,
@@ -74,6 +72,10 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
     from kiro_crew.dashboard.chat_turn.turn_ledgers import _queue_recovery
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
+    from kiro_crew.dashboard.chat_turn.turn_reply_seams import (
+        _turn_full_reply_text,
+        _turn_reply_segments,
+    )
 
 
 async def _surface_agent_welcome(

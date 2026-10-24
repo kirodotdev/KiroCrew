@@ -1,7 +1,8 @@
-"""The per-turn stats footer, its first-token clock and the context meter payload, the
-turn outcome, the turn metric and the recovery-outcome counter, the stream's terminal
-(``_on_complete``) and the turn's context usage and landed verdict after it
-(``_turn_context_usage``)."""
+"""The per-turn stats footer, its first-token clock, the first-token latency metric
+(``_emit_ttft_metric``) and the context meter payload, the turn outcome, the turn metric and
+the recovery-outcome counter, the stream's terminal (``_on_complete``) and the turn's context
+usage and landed verdict after it (``_turn_context_usage``), and the usage row of a turn that
+ends without ``EVENT_COMPLETE`` (``_persist_abnormal_turn_usage``)."""
 
 from __future__ import annotations
 
@@ -10,7 +11,13 @@ import math
 import time
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
-from kiro_crew.llm_helpers import provider_active_model, record_interaction_event
+from kiro_crew.dashboard.state import row_mid
+from kiro_crew.llm_helpers import (
+    _NO_PRIOR_STATS,
+    provider_active_model,
+    record_interaction_event,
+    usage_has_billing,
+)
 from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
 from kiro_crew.metrics.turns import emit_turn_duration, emit_turn_usage, turn_outcome
 from kiro_crew.monitoring.completion import (
@@ -26,6 +33,7 @@ if TYPE_CHECKING:
         STOP_REASON_TOOL_STALL,
         STOP_RECOVERY_MAX_RETRIES,
         RefusalInfo,
+        TurnUsage,
         _ChatSlot,
         capabilities_of,
         classify_stop_reason,
@@ -33,12 +41,11 @@ if TYPE_CHECKING:
         logger,
         note_coding_activity,
         persist_token_record_async,
+        provider_last_turn_usage,
         read_context_tokens,
         read_effective_agent,
         read_turn_model,
-        row_mid,
         telemetry_channel_of,
-        usage_has_billing,
     )
     from kiro_crew.dashboard.chat_turn.mcp_session import _redact_acp_string
     from kiro_crew.dashboard.chat_turn.model_fallback import _backfill_canonical_model
@@ -958,3 +965,142 @@ async def _turn_context_usage(turn: _ChatTurn) -> None:
                 "text": f"Turn complete: {_prompt_stats.event_count} events, {len(_prompt_stats.tool_calls)} tool calls, context {round(pct)}%",  # type: ignore[attr-defined]
             },
         )
+
+
+def _emit_ttft_metric(t0: float, session_key: str, *, is_new: bool, resumed: bool) -> None:
+    """Emit the user-message → first-visible-token latency histogram.
+
+    Best-effort, one point per top-level user prompt. ``first_turn`` splits the
+    cold-path population eager spawn targets (the slot's first message) from
+    steady-state turns, and ``resumed`` separates ``session/load`` costs — the
+    same attribution axes as the startup metric, so the two histograms can be
+    read side by side.
+    """
+    try:
+        # Re-read at call time even though the module also imports it at the
+        # top: the rebind is what lets a test patching
+        # ``kiro_crew.metrics.provider.get_recorder`` reach this emit.
+        from kiro_crew.metrics.provider import get_recorder  # noqa: F811
+
+        get_recorder().histogram(
+            "kirocrew.chat.first_token.duration",
+            (time.monotonic() - t0) * 1000.0,
+            unit="ms",
+            attrs={
+                "channel": telemetry_channel_of(session_key),
+                "first_turn": bool(is_new),
+                "resumed": bool(resumed),
+            },
+        )
+    except Exception:
+        logger.debug("TTFT metric emission failed", exc_info=True)
+
+
+class _AbnormalTurnEvent:
+    """Minimal ``event`` carrier for the abnormal-end usage row.
+
+    ``_build_token_record`` reads a turn's billing off ``event.usage`` and its
+    terminal reason off ``event.stop_reason`` -- the same two attributes an
+    ``AcpEvent`` exposes at ``EVENT_COMPLETE``. A turn that ends through
+    ``_persist_partial_reply`` never produced that event, so this wraps the
+    recovered :class:`TurnUsage` and the turn's stop reason in the shape the
+    record builder already reads, and nothing more.
+    """
+
+    __slots__ = ("usage", "stop_reason")
+
+    def __init__(self, usage: TurnUsage, stop_reason: str) -> None:
+        self.usage = usage
+        self.stop_reason = stop_reason
+
+
+async def _persist_abnormal_turn_usage(
+    slot: "_ChatSlot",
+    client: object,
+    session_key: str,
+    *,
+    elapsed_ms: int,
+    stop_reason: str,
+    since: object = _NO_PRIOR_STATS,
+    usage: TurnUsage | None = None,
+) -> bool:
+    """Write the usage row for a turn ending without ``EVENT_COMPLETE``.
+
+    The dashboard's one ``persist_token_record_async`` call sits in the
+    ``EVENT_COMPLETE`` branch, so every turn that ends through
+    ``_persist_partial_reply`` instead -- the turn ceiling, the Stop button, a
+    signed-out CLI mid-turn, and the other recovery paths that share that seam
+    -- records no credits however much it billed. This is the accounting half of
+    that gap: it recovers the turn's billing from the still live provider
+    (``provider_last_turn_usage`` reads the credits kiro-cli accumulated on
+    ``last_prompt_stats``) and writes the same row the complete path writes,
+    keyed and attributed the same way. This seam persists the row ONLY -- it
+    emits no histogram sample. The row's persist opts out of the metric
+    (``emit_metric=False``) because the persist would key the sample on
+    ``slot.key``, filing a linked-channel abnormal turn under ``dashboard``
+    instead of its channel surface; abnormal-turn sampling is out of this
+    change's scope, so the sample is simply not emitted rather than re-keyed.
+
+    ``client`` is the OUTER provider wrapper (``providers/acp`` /
+    ``acp/session_provider``): attribution reads -- ``provider_seam``,
+    ``read_context_tokens``, the effective agent -- live there, so the inner
+    ``AcpClient`` would label every row ``provider="acp"`` with a ``(0, 0)``
+    context window. The caller passes the inner handle only to decide liveness,
+    and runs this before ``_turn_release_handles`` drops ``slot._acp_client`` -- the one
+    point the credits are still reachable.
+
+    ``since`` is the per-turn stats object snapshotted BEFORE the turn's
+    cancellable work: a dispatch that dies before the runtime installs fresh
+    stats (a busy session, a dead runtime, an expired credential) leaves the
+    PREVIOUS turn's object in place, still carrying credits already recorded, and
+    ``provider_last_turn_usage``'s identity check against ``since`` reports
+    nothing rather than billing that earlier turn a second time.
+
+    Gated by ``usage_has_billing`` for the same reason the ``EVENT_COMPLETE``
+    call is: a turn that billed nothing writes no row. Returns ``True`` once the
+    row has been written, so the caller marks the turn recorded and this stays
+    once-per-turn across the seam's callers. Never raises -- these are
+    best-effort analytics, as the complete path's own persist is.
+
+    ``usage`` is the turn's billing when the caller already read it (the Stop
+    footer shares the one read, because ``provider_last_turn_usage`` consumes
+    the accumulated total); ``None`` reads it here.
+    """
+    try:
+        if usage is None:
+            usage = provider_last_turn_usage(client, since=since)
+        if not usage_has_billing(usage):
+            return False
+        _provider_name = capabilities_of(client).provider_seam
+        _record_model = read_turn_model(client) or slot.model
+        _ctx_used, _ctx_window = read_context_tokens(client)
+        await persist_token_record_async(
+            slot.key,
+            _record_model,
+            _AbnormalTurnEvent(usage, stop_reason),
+            provider=_provider_name,
+            surface=telemetry_channel_of(session_key),
+            agent=read_effective_agent(client) or slot.agent or "",
+            context_used=_ctx_used,
+            context_window=_ctx_window,
+            app=getattr(slot, "_app", "") or "",
+            elapsed_ms=elapsed_ms,
+            model_source=client,
+            # Abnormal-turn histogram sampling is out of this change's scope
+            # (the usage ROW is the deliverable); opt the row's persist out of
+            # the metric so it does not file a sample under slot.key, which for a
+            # linked-channel turn would mis-attribute to session_source=dashboard.
+            emit_metric=False,
+        )
+        return True
+    except asyncio.CancelledError:
+        # This runs inside the turn's CancelledError teardown, so its own
+        # analytics I/O can be cancelled in turn. Swallow it: the row and sample
+        # are best-effort, and re-raising here would escape _run_chat's recovery
+        # handler and strand the durable completion the finally block still owes
+        # (test_raw_complete_survives_cancellation_during_token_persistence).
+        logger.debug("Abnormal-turn usage write cancelled for slot %s", slot.key)
+        return False
+    except Exception:
+        logger.debug("Failed to persist abnormal-turn usage for slot %s", slot.key, exc_info=True)
+        return False

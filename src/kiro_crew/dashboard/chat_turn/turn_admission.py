@@ -9,6 +9,7 @@ import functools
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config.loader import normalize_agent_model
+from kiro_crew.context import discard_memory_prefetch
 from kiro_crew.dashboard.chat_utils import (
     _KIRO_ONLY_BLOCKED_SLASH_COMMANDS,
     APP_AGENT_REFUSED_KIND,
@@ -31,12 +32,9 @@ if TYPE_CHECKING:
         Routing,
         SessionBusyError,
         _AppAgentNotLoaded,
-        _expand_prompt_mention_off_loop,
         _MemoryUnavailable,
-        _prewarm_startup_query,
         capabilities_of,
         crew_log_emit,
-        discard_memory_prefetch,
         effective_session_key,
         expire_slack_options,
         invalidate_stale_kas_session,
@@ -86,6 +84,10 @@ if TYPE_CHECKING:
         _app_allocation_kwargs,
         _inherited_default_model,
         _settle_session_model,
+    )
+    from kiro_crew.dashboard.chat_turn.prompt_assembly import (
+        _expand_prompt_mention_off_loop,
+        _prewarm_startup_query,
     )
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
     from kiro_crew.dashboard.chat_turn.slash_commands import _refuse_blocked_slash
@@ -1223,7 +1225,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     _turn_stats0 = _billing_stats(client)
     turn._turn_stats0 = _turn_stats0
     # Append-only the session's log (flag-gated, fail-soft). The id is read once here and
-    # reused at every later emit site in _turn_admit, _turn_dispatch_gates and _run_chat, so
+    # reused at every later emit site in _turn_admit, _turn_dispatch_gates and later phases, so
     # a turn that never got a session id emits nothing rather than guessing one. ``owner`` is
     # "default" because a crew-bound slot never reaches this local runner.
     _crew_log_sid = crew_log_emit.session_id_of(client)

@@ -19,6 +19,7 @@ from kiro_crew.dashboard.chat_utils import (
     slack_mirror_is_paused,
 )
 from kiro_crew.dashboard.recovery_replays import ReplayRevocation, cancel_notice, replays_of
+from kiro_crew.dashboard.state import row_mid
 from kiro_crew.hooks import HOOK_EVENT_AGENT_SPAWN, HOOK_EVENT_USER_PROMPT_SUBMIT
 
 if TYPE_CHECKING:
@@ -31,7 +32,6 @@ if TYPE_CHECKING:
         crew_log_emit,
         logger,
         read_context_tokens,
-        row_mid,
         sel,
         telemetry_channel_of,
     )
