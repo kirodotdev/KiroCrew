@@ -7899,6 +7899,7 @@
         "adding": "Adding…",
         "connect": "Connect",
         "connect_failed": "Connect to {{id}} failed: {{error}}",
+        "connect_disabled_needs_restart": "The gateway is on but not active yet — restart it to connect.",
         "connect_needs_restart": "Connect to {{id}} failed: the gateway needs a restart first. See the note below.",
         "connected_switch_from_tab_strip": "Connected “{{name}}”. Switch to it from the tab strip in the top header.",
         "connecting": "Connecting…",

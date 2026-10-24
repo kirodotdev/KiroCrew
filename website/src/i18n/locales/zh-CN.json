@@ -16563,6 +16563,7 @@
         "configured_instances": "已配置的远程 Crew",
         "connect": "连接",
         "connect_failed": "连接 {{id}} 失败：{{error}}",
+        "connect_disabled_needs_restart": "网关已开启但尚未生效 — 请重启后再连接。",
         "connect_needs_restart": "连接 {{id}} 失败：需要先重启网关。请看下方提示。",
         "connected_switch_from_tab_strip": "已连接“{{name}}”。可从顶部标题栏的标签条切换过去。",
         "connecting": "正在连接…",

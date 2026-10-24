@@ -17105,6 +17105,7 @@
         "configured_instances": "Crews distantes configurées",
         "connect": "Connecter",
         "connect_failed": "Échec de la connexion à {{id}} : {{error}}",
+        "connect_disabled_needs_restart": "La passerelle est activée mais pas encore active — redémarre-la pour te connecter.",
         "connect_needs_restart": "Échec de la connexion à {{id}}: la passerelle doit d’abord être redémarrée. Voir la note ci-dessous.",
         "connected_switch_from_tab_strip": "Connexion à « {{name}} » établie. Bascule vers cette crew depuis la barre d’onglets en haut de la page.",
         "connecting": "Connexion…",

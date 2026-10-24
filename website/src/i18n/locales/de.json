@@ -16834,6 +16834,7 @@
         "configured_instances": "Konfigurierte Remote-Crews",
         "connect": "Verbinden",
         "connect_failed": "Verbindung zu {{id}} fehlgeschlagen: {{error}}",
+        "connect_disabled_needs_restart": "Das Gateway ist an, aber noch nicht aktiv — starte es neu, um zu verbinden.",
         "connect_needs_restart": "Verbindung zu {{id}} fehlgeschlagen: Das Gateway muss zuerst neu gestartet werden. Siehe den Hinweis unten.",
         "connected_switch_from_tab_strip": "„{{name}}“ verbunden. Wechsle über die Tab-Leiste in der oberen Kopfzeile dorthin.",
         "connecting": "Verbindung wird hergestellt…",
