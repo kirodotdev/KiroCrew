@@ -1,6 +1,7 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { newerTs } from '../lib/slotReadRelay'
 import { jsonEqual } from '../utils/structuralEqual'
+import { slotSurfaceKey } from './slotIdentity'
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
@@ -981,6 +982,11 @@ const dashboardSlice = createSlice({
       if (next.yolo_until_shutdown_permitted === undefined && prev?.yolo_until_shutdown_permitted !== undefined) {
         next.yolo_until_shutdown_permitted = prev.yolo_until_shutdown_permitted
       }
+      // Every frame carries a fresh `disabled_approval_modes` array; keep the
+      // stored one when equal so its selector (one per composer) stays put.
+      if (prev?.disabled_approval_modes && jsonEqual(prev.disabled_approval_modes, next.disabled_approval_modes)) {
+        next.disabled_approval_modes = prev.disabled_approval_modes
+      }
       state.status = next
       state.connected = true
       // Sync YOLO from backend (authoritative source)
@@ -1084,7 +1090,9 @@ const dashboardSlice = createSlice({
     // reconnect snapshot can never disagree about a slot's list. A delta for an
     // unknown slot is dropped — the next sseSlots push carries it anyway.
     sseTodoUpdate(state, action: PayloadAction<{ slot: string; todo: TodoList | null }>) {
-      patchSlotRow(state, action.payload.slot, slot => { slot.todo = action.payload.todo })
+      patchSlotRow(state, action.payload.slot, slot => {
+        if (!jsonEqual(slot.todo, action.payload.todo)) slot.todo = action.payload.todo
+      })
     },
     // Live MCP session-report delta, same merge discipline as sseTodoUpdate. A
     // null payload is meaningful and must be stored: it is what the gateway
@@ -1095,7 +1103,9 @@ const dashboardSlice = createSlice({
       state,
       action: PayloadAction<{ slot: string; mcp_report: McpSessionReport | null }>,
     ) {
-      patchSlotRow(state, action.payload.slot, slot => { slot.mcp_report = action.payload.mcp_report })
+      patchSlotRow(state, action.payload.slot, slot => {
+        if (!jsonEqual(slot.mcp_report, action.payload.mcp_report)) slot.mcp_report = action.payload.mcp_report
+      })
     },
     // Bump a slot's recency timestamps on live message activity so the sidebar
     // re-ranks immediately off the finer-grained chat_message stream (vs waiting
@@ -1866,34 +1876,7 @@ const dashboardSlice = createSlice({
 export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, sseSlotsPartial, sseSlotListHolds, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
   setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink, dropSlotLinks, setPinRanks, setPendingPinOrder, setPinOrderError, setManualRanks, setPendingManualOrder, setManualOrderError } = dashboardSlice.actions
 
-/**
- * Resolve a slot's surface key. Backend emits `surface` (mirrors `mode` today
- * but lets the two diverge later); fall back to `mode` for slots delivered
- * before the backend rollout. Empty string is the canonical "main chat" key.
- */
-export function slotSurfaceKey(slot: { mode?: string; surface?: string }): string {
-  return slot.surface ?? slot.mode ?? ''
-}
-
-/**
- * True for a relay archive: a chat an older build ran on a connected crew,
- * read-only now. Two client surfaces must agree with each other and with the
- * server on it: `selectContinuable` (which must not OFFER Continue on one) and
- * ChatPage's regenerate / edit-resend gates (which must not offer those
- * either). Mirrors `relay_archive_refusal` in
- * `src/kiro_crew/dashboard/relay_archive.py`, which REFUSES the same actions
- * with 409 `relay_archive_read_only`.
- *
- * Keyed on `executor` (the binding INTENT), never `instance_id`:
- * the server refuses a half-open binding (marker set, triple incomplete) too, so
- * an unbound `executor` must read as bound here exactly as it does there. An
- * absent slot is not bound — an older gateway ships `executor` on every slot, so
- * only a genuinely missing lookup lands here, and a missing slot has no local
- * action to gate.
- */
-export function slotIsRemoteBound(slot: { executor?: string } | null | undefined): boolean {
-  return slot?.executor === 'remote'
-}
+export { slotSurfaceKey, slotIsRemoteBound } from './slotIdentity'
 
 /**
  * Count unread slots whose surface matches `mode`. Slots present in

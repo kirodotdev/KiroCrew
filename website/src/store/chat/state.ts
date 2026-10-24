@@ -183,7 +183,7 @@ export interface FollowupItem {
  *  server-supplied status carries its `label`. Purpose and label are separate
  *  fields so a reader cannot paint one for the other; `toolStatusLabel`
  *  resolves any of them into the string a row shows. */
-export type SlotStatusDetail = ((ToolPhaseDetail & { toolCallId?: string }) | PhaseDetail) & { ts: number }
+export type SlotStatusDetail = (ToolPhaseDetail & { toolCallId?: string }) | PhaseDetail
 
 export interface QuestionNotice {
   message: string

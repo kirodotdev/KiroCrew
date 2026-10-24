@@ -181,7 +181,13 @@ export const slotCacheReducers = {
     if (isUnsafeKey(slot)) return
     state.slotContextPct[safeKey(slot)] = pct
     if (window_tokens && window_tokens > 0) {
-      state.slotContextTokens[safeKey(slot)] = { used: used_tokens ?? 0, window: window_tokens }
+      // Equal counts keep the stored object: the active slot's ChatPage
+      // selects it, and a fresh one would re-render the page per frame.
+      const prev = state.slotContextTokens[safeKey(slot)]
+      const used = used_tokens ?? 0
+      if (prev?.used !== used || prev.window !== window_tokens) {
+        state.slotContextTokens[safeKey(slot)] = { used, window: window_tokens }
+      }
     } else if (reset) {
       // Model switch / compaction / session reset: the stored counts belong
       // to a window that no longer describes the session. Deleting re-enables

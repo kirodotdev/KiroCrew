@@ -375,16 +375,14 @@ export default function CommandPalette({
       activeProvider.id === 'recents'
         ? slots
             .map((s) => {
-              const detail = slotStatusDetail[s.key]
-              // The status string that can change under a stable `kind`: a tool
-              // phase's agent-written purpose, any other phase's label. Only a
-              // fingerprint input — the row itself renders via toolStatusLabel.
-              const detailText = detail?.kind === 'tool' ? detail.purpose ?? '' : detail?.label ?? ''
+              // Every status field, not just `kind`: the row renders through
+              // toolStatusLabel, which reads the purpose, the raw tool name, the
+              // derived title or action and a phase's label, and any of them
+              // can change under a stable `kind`.
+              const detail = JSON.stringify(slotStatusDetail[s.key] ?? null)
               return `${s.key}:${s.running ? 1 : 0}${s.pending_approval ? 1 : 0}${
                 s.pinned ? 1 : 0
-              }:${slotRecency(s).timestamp ?? ''}:${
-                detail?.kind ?? ''
-              }:${detailText}:${detail?.ts ?? ''}`
+              }:${slotRecency(s).timestamp ?? ''}:${detail}`
             })
             .join('|') + `#${unreadSlots.join(',')}#${simplifiedToolNames ? 1 : 0}`
         : '',

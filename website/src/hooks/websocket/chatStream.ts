@@ -133,7 +133,7 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
         voice.resetForNewTurn()
       }
       if (!isPassiveNote && data.slot && (data.role === 'user' || data.role === 'inject' || data.role === 'subagent')) {
-        dispatch(batchedUnlessOpen(data.slot, setSlotStatusDetail({ slot: data.slot, kind: 'thinking', ts: Date.now() })))
+        dispatch(batchedUnlessOpen(data.slot, setSlotStatusDetail({ slot: data.slot, kind: 'thinking' })))
         // A new turn starts clean: an error row appended outside a turn (an
         // archive that failed after cancelling the turn) has no chat_done of
         // its own to take it, and must not break the mute on this turn.
@@ -195,7 +195,7 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
         const entry = buffers.bufferChunk(cs, data.seq, data.content ?? '', data.gen)
         if (!entry) return
         if (store.getState().chat.slotStatusDetail[cs]?.kind !== 'streaming') {
-          dispatch(batchedUnlessOpen(cs, setSlotStatusDetail({ slot: cs, kind: 'streaming', ts: Date.now() })))
+          dispatch(batchedUnlessOpen(cs, setSlotStatusDetail({ slot: cs, kind: 'streaming' })))
         }
         buffers.drainOrScheduleChunks(entry)
       }
@@ -211,16 +211,13 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       // Dispatch the status detail only on a genuine kind TRANSITION into
       // 'thinking'. Guarding merely on `!== 'streaming'` would not
       // self-limit — 'thinking' is itself `!== 'streaming'`, so it would
-      // re-dispatch on EVERY thought frame with a fresh `ts`. Because
-      // setSlotStatusDetail replaces slotStatusDetail[slot] wholesale, that
-      // bumps the map identity per frame and re-renders every whole-map
-      // subscriber (ChatSidebar, CommandPalette) for the duration of the
-      // model's reasoning. The sibling chat_chunk guard writes 'streaming'
-      // and so is naturally idempotent; this is the same shape, made
-      // explicit.
+      // dispatch on EVERY thought frame, and over a server `chat_status`
+      // ('thinking' with a label) it would replace that label with the bare
+      // phase. The sibling chat_chunk guard writes 'streaming' and so is
+      // naturally idempotent; this is the same shape, made explicit.
       const detailKind = data.slot ? store.getState().chat.slotStatusDetail[data.slot]?.kind : undefined
       if (data.slot && detailKind !== 'streaming' && detailKind !== 'thinking') {
-        dispatch(batchedUnlessOpen(data.slot, setSlotStatusDetail({ slot: data.slot, kind: 'thinking', ts: Date.now() })))
+        dispatch(batchedUnlessOpen(data.slot, setSlotStatusDetail({ slot: data.slot, kind: 'thinking' })))
       }
     },
     onToolCall(data) {
@@ -286,7 +283,6 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
               ? { derivedAction: mergeInto.derivedAction, derivedMore: mergeInto.derivedMore || 0 }
               : {}),
           ...(tcid ? { toolCallId: tcid } : {}),
-          ts: Date.now(),
         })))
       }
       // Note: do NOT dispatch sseChatMessage here. The backend persists the

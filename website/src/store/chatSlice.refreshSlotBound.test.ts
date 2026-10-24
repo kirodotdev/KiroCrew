@@ -183,7 +183,7 @@ describe('refreshSlot count-matched bound', () => {
       const unrelated = () => {
         updates++
         store.dispatch(sseChatMessage({ slot: 'background', role: 'chunk', content: 'x' }))
-        store.dispatch(setSlotStatusDetail({ slot: SLOT, kind: 'thinking', label: 'Working', ts: updates }))
+        store.dispatch(setSlotStatusDetail({ slot: SLOT, kind: 'thinking', label: `Working ${updates}` }))
         store.dispatch(sseToolActivity({ slot: SLOT, tool: 'search', kind: 'tool', purpose: '', input_preview: '' }))
         store.dispatch(sseContextUsage({ slot: SLOT, pct: updates, used_tokens: 10, window_tokens: 100 }))
         DURING_FETCH = unrelated
@@ -197,7 +197,7 @@ describe('refreshSlot count-matched bound', () => {
       expect(chat.messages.at(-1)?.content).toBe(HISTORY.at(-1)?.content)
       expect(chat.slotMessages.background.at(-1)?.content).toBe('x'.repeat(updates))
       expect(chat.toolLog).toHaveLength(updates)
-      expect(chat.slotStatusDetail[SLOT]?.ts).toBe(updates)
+      expect(chat.slotStatusDetail[SLOT]).toEqual({ kind: 'thinking', label: `Working ${updates}` })
       expect(chat.slotContextPct[SLOT]).toBe(updates)
       expect(chat.slotRunning).toBe(false)
       expect(limits()).toEqual(shape === 'bounded' ? [120] : shape === 'walk' ? [120, SERVER_CLAMP, SERVER_CLAMP] : [PANE_HYDRATE_LIMIT])

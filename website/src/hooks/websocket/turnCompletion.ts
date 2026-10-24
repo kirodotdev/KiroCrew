@@ -148,7 +148,7 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
         dispatch(warmSlotCache(data.slot))
       }
       if (data.slot) {
-        dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'idle', ts: Date.now() }))
+        dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'idle' }))
       }
       // The idle `slots` row that ended this same turn already dispatched this
       // refresh (`useSlotListSync`); any other `_done` refreshes.

@@ -330,22 +330,20 @@ describe('chatSlice reducers', () => {
     })
   })
 
-  it('setSlotStatusDetail updates kind and ts, and keeps a server status label', () => {
-    const now = Date.now()
-    const state = reducer(initial, setSlotStatusDetail({ slot: 'test-slot', kind: 'thinking', ts: now }))
+  it('setSlotStatusDetail updates kind, and keeps a server status label', () => {
+    const state = reducer(initial, setSlotStatusDetail({ slot: 'test-slot', kind: 'thinking' }))
     expect(state.slotStatusDetail['test-slot'].kind).toBe('thinking')
     // A fixed phase stores no copy: the label is resolved from `kind` at render time.
-    expect(state.slotStatusDetail['test-slot']).toEqual({ kind: 'thinking', ts: now })
-    expect(state.slotStatusDetail['test-slot'].ts).toBe(now)
+    expect(state.slotStatusDetail['test-slot']).toEqual({ kind: 'thinking' })
     // Tool name optional
-    const state2 = reducer(state, setSlotStatusDetail({ slot: 'test-slot', kind: 'tool', purpose: 'Tool: read', toolName: 'read', ts: now }))
+    const state2 = reducer(state, setSlotStatusDetail({ slot: 'test-slot', kind: 'tool', purpose: 'Tool: read', toolName: 'read' }))
     expect(state2.slotStatusDetail['test-slot'].toolName).toBe('read')
     // Idle clears
-    const state3 = reducer(state2, setSlotStatusDetail({ slot: 'test-slot', kind: 'idle', ts: now }))
+    const state3 = reducer(state2, setSlotStatusDetail({ slot: 'test-slot', kind: 'idle' }))
     expect(state3.slotStatusDetail['test-slot'].kind).toBe('idle')
     // A server-supplied status is the one non-tool phase that carries a label.
-    const state4 = reducer(state3, setSlotStatusDetail({ slot: 'test-slot', kind: 'thinking', label: 'Compacting…', ts: now }))
-    expect(state4.slotStatusDetail['test-slot']).toEqual({ kind: 'thinking', label: 'Compacting…', ts: now })
+    const state4 = reducer(state3, setSlotStatusDetail({ slot: 'test-slot', kind: 'thinking', label: 'Compacting…' }))
+    expect(state4.slotStatusDetail['test-slot']).toEqual({ kind: 'thinking', label: 'Compacting…' })
   })
 
   it('clearMessages resets messages and pagination', () => {

@@ -6,6 +6,7 @@ import type { PayloadAction } from '@reduxjs/toolkit'
 import type { TurnIdentityFields } from '../../types'
 import type { ChatState, EndedTurn, SlotState, SlotStatusDetail } from './state'
 import { isUnsafeKey, safeKey } from './wire'
+import { jsonEqual } from '../../utils/structuralEqual'
 import { finalizeTrailingStreaming } from './transcript'
 import { parkActiveTranscript, setPagingCursor } from './slotCache'
 
@@ -429,10 +430,14 @@ export const runStateReducers = {
    *  `toolCallId` it describes so a later refinement of the SAME call can be
    *  merged into it (see the `tool_call` case in useWebSocket) without a
    *  refinement of one call inheriting a sibling's purpose when tools run in
-   *  parallel. */
+   *  parallel. A write equal to the stored entry is skipped, so a repeated
+   *  status or an `is_update` refinement that resolves to the same fields
+   *  keeps the map's identity and every row selecting it stays put. */
   setSlotStatusDetail(state: ChatState, action: PayloadAction<SlotStatusDetail & { slot: string }>) {
     const { slot, ...detail } = action.payload
     if (isUnsafeKey(slot)) return
-    state.slotStatusDetail[safeKey(slot)] = detail
+    const key = safeKey(slot)
+    if (jsonEqual(state.slotStatusDetail[key], detail)) return
+    state.slotStatusDetail[key] = detail
   },
 }
