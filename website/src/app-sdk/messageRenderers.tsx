@@ -207,6 +207,9 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
   // the panel exists, this toggles how tall it is. Collapsing the pill and
   // re-opening it returns to the short form, which is the cheaper default.
   const [showAll, setShowAll] = React.useState(false)
+  // Losing the toggle closes the panel for good, so a host that hides details
+  // and then shows them again gets a collapsed pill, not the panel it hid.
+  React.useEffect(() => { if (!expandable) setExpanded(false) }, [expandable])
   type CopyOutcome = 'idle' | 'copied' | 'failed'
   const [copyOutcome, setCopyOutcome] = React.useState<CopyOutcome>('idle')
   const copyResetTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)

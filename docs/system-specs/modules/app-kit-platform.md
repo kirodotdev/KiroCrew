@@ -63,9 +63,11 @@ removes:
   disabled-when-empty and queue-while-running rules.
 - `toolDetails` reaches `ChatMessageList`'s `toolDetails` prop and the render
   context, so built-in tool rows draw `ToolCallPill` with `expandable={false}`:
-  no toggle, and an open panel closes. A host `renderTool` row is its own.
+  no toggle, and an open panel closes and stays closed when the key is removed.
+  A host `renderTool` row is its own.
 - `header`, `queue` and `followUps` gate their strips; the sent message, the
-  queue and the options themselves are unchanged.
+  queue and the options themselves are unchanged. The sub-agent delivery
+  progress line renders inside the queue strip, so `queue` hides it too.
 
 No key grants a capability, and voice stays off. `ChatEmbed.hide.test.tsx`
 checks each key both ways and compiles the union against an unknown key.
