@@ -16,6 +16,7 @@ from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT
 from kiro_crew.security import StreamRedactor
 
 if TYPE_CHECKING:
+    from kiro_crew import repo_checkout_guard
     from kiro_crew.dashboard.chat_runner import (
         _NO_PRIOR_STATS,
         ReplayFamily,
@@ -254,6 +255,22 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
 
     _session_stop_gen_at_entry = _session_stop_generation(turn)
     turn._session_stop_gen_at_entry = _session_stop_gen_at_entry
+
+    # Chokepoint for the branch switch's ordering: a turn must not read project
+    # files on one branch and write them back on another. This is the first
+    # await of the body, before any prompt expansion reads a file, and the slot
+    # already publishes this turn, so a switch either refuses on seeing it or
+    # holds a reservation this waits out (see repo_checkout_guard). It sits
+    # after both Stop-generation snapshots and the replay-row freeze: a Stop
+    # pressed during the wait must still read as pressed at dispatch, and a
+    # row appended during it must not become this turn's trigger.
+    # The project is recorded first, so a switch's busy check keeps seeing this
+    # turn in it even if another project is picked while the turn runs.
+    _checkout_project = getattr(slot, "project", None)
+    turn._checkout_project = _checkout_project
+    slot._checkout_turn_projects = (str(_checkout_project or ""),)
+    slot._checkout_turn_unplaced = False
+    await repo_checkout_guard.wait_for_checkout(_checkout_project, waiter=f"session {slot.key}")
 
     # Who caused this turn, for the session ledger. Bound COMPLETELY here, before
     # anything that can fail: ``_queue_recovery`` stamps this value, and the

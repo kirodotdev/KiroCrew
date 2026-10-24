@@ -1326,6 +1326,9 @@ class TestRuntimeShieldSurvivesAFailedAppend:
             kill_process_tree_pinned=lambda pid, start, sig: (
                 (kill_tree(pid, sig) is None or True) if start == f"start-{pid}" else False
             ),
+            # This stand-in brings the whole tree down at once, so no Windows tree
+            # cleanup is ever retained for the branch-switch release to wait on.
+            windows_tree_cleanup_pending=lambda pid, start: False,
             file_lock=platform_compat.file_lock,
             open_lock_file=platform_compat.open_lock_file,
         )

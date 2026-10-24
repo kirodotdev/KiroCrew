@@ -485,7 +485,11 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
             # /prompts get <name> — invoke the prompt in this chat
             name = args[2]
             # Off the loop for the same reason as the @mention path in _turn_admit.
-            expanded, status = await _expand_prompt_mention_off_loop(f"@{name}", state, slot)
+            # Read against the project recorded at entry, which the checkout wait
+            # covered: a pick made since may name a repository mid-switch.
+            expanded, status = await _expand_prompt_mention_off_loop(
+                f"@{name}", state, slot, project=str(turn._checkout_project or "")
+            )
             if status == "ok":
                 sel().log_tool_invocation(
                     session_key="",
@@ -562,8 +566,11 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
             # prompt_source_roots() with rglob + file reads; keep it off the
             # event loop so a slow/network-backed root can't stall the gateway.
             # Pass THIS slot's project so its local prompts are listed per-slot
-            # (fail-closed to global-only when the slot has no project).
-            project_dir = Path(slot.project) if slot.project else None
+            # (fail-closed to global-only when the slot has no project). The
+            # project recorded at entry, which the checkout wait covered, not
+            # the live field a mid-turn pick may have moved.
+            _checkout_project = turn._checkout_project
+            project_dir = Path(_checkout_project) if _checkout_project else None
             prompts = await asyncio.to_thread(_list_aim_prompts, project_dir)
         except Exception:
             prompts = []

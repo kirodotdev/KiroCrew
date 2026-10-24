@@ -458,6 +458,7 @@ async def write_request_frame_bounded(
     *,
     bound_secs: float,
     before_write: Callable[[], None] | None = None,
+    on_not_written: Callable[[], None] | None = None,
 ) -> RequestWriteResult:
     """Write one REQUEST frame under the write lock and the same no-progress bound
     as :func:`write_response_frame_bounded`, but report WHICH phase stalled.
@@ -471,13 +472,31 @@ async def write_request_frame_bounded(
     phase is a RECOVERY HINT (see :class:`RequestWriteResult`): a ``DRAIN_STALL``
     flags the death ``ambiguous_delivery`` so the recovery continues from restored
     state rather than replaying a prompt the backend may already have consumed.
-    Pipe errors from ``drain()`` propagate unchanged.
+    ``on_not_written`` runs only when the call exits before ``stdin.write``:
+    cancellation or failure during the lock wait, a lock stall, or a
+    ``before_write`` refusal. It never runs after the frame was handed to the
+    transport, including cancellation during ``drain`` or a drain stall.
+    Pipe errors from ``write`` or ``drain`` propagate unchanged and are not
+    classified as confirmed non-delivery.
     """
-    if not await _acquire_lock_bounded(lock, stdin, bound_secs=bound_secs):
+    try:
+        acquired = await _acquire_lock_bounded(lock, stdin, bound_secs=bound_secs)
+    except BaseException:
+        if on_not_written is not None:
+            on_not_written()
+        raise
+    if not acquired:
+        if on_not_written is not None:
+            on_not_written()
         return RequestWriteResult.LOCK_STALL
     try:
         if before_write is not None:
-            before_write()
+            try:
+                before_write()
+            except BaseException:
+                if on_not_written is not None:
+                    on_not_written()
+                raise
         stdin.write(data)
         drained = await await_under_no_progress_bound(stdin.drain(), stdin, bound_secs=bound_secs)
         return RequestWriteResult.OK if drained else RequestWriteResult.DRAIN_STALL

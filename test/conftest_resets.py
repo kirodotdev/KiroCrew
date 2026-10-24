@@ -554,6 +554,23 @@ def _reset_session_switch_locks(_floor_monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _reset_checkout_guard_tracking(_floor_monkeypatch):
+    """Each test gets a fresh branch-switch busy registry (repo_checkout_guard),
+    so one test's tracked work or unanswered prompt never reads as running work
+    in the next."""
+    from kiro_crew import repo_checkout_guard
+
+    _floor_monkeypatch.setattr(repo_checkout_guard, "_reserved", {})
+    _floor_monkeypatch.setattr(repo_checkout_guard, "_tracked", {})
+    _floor_monkeypatch.setattr(repo_checkout_guard, "_prompts", {})
+    _floor_monkeypatch.setattr(repo_checkout_guard, "_lingering", {})
+    _floor_monkeypatch.setattr(repo_checkout_guard, "_steers", set())
+    _floor_monkeypatch.setattr(repo_checkout_guard, "_adapter_turns", set())
+    _floor_monkeypatch.setattr(repo_checkout_guard, "_turns", set())
+    _floor_monkeypatch.setattr(repo_checkout_guard, "_prompt_sessions", {})
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _shut_down_shared_pools_in_session():
     """Reap the lazily created shared executors before the session ends.

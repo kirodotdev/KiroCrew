@@ -191,6 +191,8 @@ class AcpRuntime:
     _activate_mode_bracketed = _rt_mode._activate_mode_bracketed
     # JSON-RPC over the child's stdin: ``kiro_crew.acp.runtime_wire``.
     send_request = _rt_wire.send_request
+    _admit_prompt = _rt_wire._admit_prompt
+    _record_prompt = _rt_wire._record_prompt
     send_notification = _rt_wire.send_notification
     _refuse_write_if_dead = _rt_wire._refuse_write_if_dead
     _stdin_write_lock = _rt_wire._stdin_write_lock

@@ -14,8 +14,9 @@ Instance fields written: ``_dead``, ``_death_expected``, ``_death_label``,
 ``_stall_turn_sessions``, ``_stderr_lines``,
 ``_stdin_stall_death``.
 
-Instance fields read: ``_first_session_ready``, ``_last_activity``, ``_max_age_secs``,
-``_max_rss_depth``, ``_max_rss_mb``, ``_pid``, ``_process``, ``_session_inits_in_flight``,
+Instance fields read: ``_child_pids``, ``_first_session_ready``, ``_last_activity``,
+``_max_age_secs``, ``_max_rss_depth``, ``_max_rss_mb``, ``_pid``, ``_process``,
+``_process_instance``, ``_session_inits_in_flight``,
 ``_session_queues``, ``_spawn_monotonic``, ``_spawn_start_token``, ``_stderr_task``,
 ``_turn_active_sessions``, ``recording_allowed``.
 """
@@ -825,6 +826,18 @@ async def _retire_tracking_after_exit(self: AcpRuntime) -> None:
     self._note_reaped(process.returncode, after_kill=False)
     if platform_compat.pid_exists(pid):
         return
+    # The root is confirmed gone without a kill (an OOM kill, a crash, a pkill),
+    # so no teardown will end its unanswered prompts: end them here, or keep
+    # them counted until the descendants it left are gone, exactly as a kill
+    # does. Without this a branch switch stays refused until something later
+    # kills this dead runtime, which may be never.
+    from kiro_crew.acp.runtime_tree_kill import end_prompts_after_teardown
+
+    instance = self._process_instance
+    if instance:
+        end_prompts_after_teardown(
+            instance, True, pid, self._spawn_start_token, dict(self._child_pids)
+        )
     try:
         retired = await asyncio.to_thread(_untrack_root_by_identity, pid, self._spawn_start_token)
     except Exception:

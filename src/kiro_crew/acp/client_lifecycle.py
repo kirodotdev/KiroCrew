@@ -570,6 +570,9 @@ async def _kill_process(self: AcpClient, *, force: bool = False) -> None:
 
 def _reset_state(self: AcpClient) -> None:
     """Reset all session state (call after process is dead)."""
+    # Whose prompts a confirmed death below ends (repo_checkout_guard); read
+    # before the reset clears it.
+    dying_instance = str(getattr(self, "_process_instance", "") or "")
     cleanup = getattr(self._process, "_windows_cleanup_state", None)
     if platform_compat.IS_WINDOWS and isinstance(
         cleanup, platform_compat._PendingWindowsTreeCleanup
@@ -804,6 +807,15 @@ def _reset_state(self: AcpClient) -> None:
             )
     self._child_pids = {}
     self._process_tree_confirmed_dead = root_confirmed_dead and not survivors
+    from kiro_crew.acp.runtime_tree_kill import end_prompts_after_teardown
+
+    end_prompts_after_teardown(
+        dying_instance,
+        root_confirmed_dead,
+        saved_pid,
+        saved_start_token,
+        {pid: saved_child_pids[pid] for pid in survivors},
+    )
 
 
 async def _classify_failed_start(self: AcpClient, classify: Callable[[], Awaitable[_T]]) -> _T:
