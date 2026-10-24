@@ -338,7 +338,7 @@ export const CodeBlock = memo(function CodeBlock(
           conditioning tabIndex on the tag would move keyboard behavior with content
           type, and a focusable non-scrolling region is harmless. */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
-      <div ref={contentRef} className="pierre-surface scroll-fade" tabIndex={0} role="region" aria-label={lang ? `${lang} code` : 'code'}>
+      <div ref={contentRef} className="pierre-surface" tabIndex={0} role="region" aria-label={lang ? `${lang} code` : 'code'}>
         {complete && highlighted ? (
           <PierreCode
             file={file}

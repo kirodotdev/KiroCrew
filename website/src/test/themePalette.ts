@@ -1,6 +1,6 @@
 /**
  * Shared theme-palette cascade resolver for tests that measure `index.css`
- * source text (themeFillForeground.test.ts, scrollbarThumbContrast.test.ts).
+ * source text (themeFillForeground.test.ts, focusRingContrast.test.ts).
  *
  * The CSS is parsed rather than rendered because jsdom resolves no cascade: it
  * would report every var as empty and a consumer suite would pass vacuously.
@@ -24,7 +24,7 @@
  * palette whose block follows a banner -- and left them measured against the
  * `:root` dark defaults. Blocks preceded by a blank line (kiro-dark) were
  * unaffected, which is what made it survive spot checks.
- * scrollbarThumbContrast.test.ts anchors the fix with a banner-prefixed theme,
+ * themeFillForeground.test.ts anchors the fix with a banner-prefixed theme,
  * alongside the compound-list case.
  */
 import { readIndexCss } from './indexCssSource'

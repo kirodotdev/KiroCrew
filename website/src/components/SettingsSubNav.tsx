@@ -373,7 +373,7 @@ export function SettingsSubNav<K extends string>({
     >
       <div
         ref={twoPane ? attachScroller : undefined}
-        className={twoPane && railCap != null ? 'min-h-0 overflow-y-auto scrollbar-overlay scrollbar-overlay-thin' : undefined}
+        className={twoPane && railCap != null ? 'min-h-0 overflow-y-auto' : undefined}
       >
       <div ref={twoPane ? attachListbox : undefined} className="flex flex-col gap-0.5" role={twoPane ? 'listbox' : 'list'} aria-label={listLabel}>
         {grouped.map(({ group, items: groupItems }, gi) =>

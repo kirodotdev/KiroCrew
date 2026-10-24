@@ -37,7 +37,7 @@
  *
  * Machinery is shared, not re-derived: the WCAG math comes from `lib/iconContrast`
  * and the palette cascade from `./themePalette`, the single resolver this file
- * shares with scrollbarThumbContrast.test.ts and themeFillForeground.test.ts.
+ * shares with themeFillForeground.test.ts.
  *
  * SCOPE: built-in palettes only. A theme pack installed from a folder or created
  * in the theme editor supplies its own tokens at runtime and is out of reach of a

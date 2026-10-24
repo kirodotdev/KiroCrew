@@ -35,7 +35,6 @@
   background: var(--bg);
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
-  scrollbar-width: thin;
 }
 .le-palette-group {
   flex-shrink: 0;

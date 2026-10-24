@@ -98,8 +98,7 @@ text label, keeps `HOVER_NONE_ACTION_BTN_CLS` / `HOVER_NONE_ACTIONS_ROW_CLS` and
 square, and an always-visible icon control takes `mc-touch-hit` (next entry).
 
 **An always-visible icon control gets its 44px from `mc-touch-hit`, not from padding.** The
-`mc-touch-hit` / `mc-touch-hit-y` / `mc-touch-hit-end` classes (`src/styles/scrollbars-and-touch-hit.css`, the block after
-the `.scrollbar-overlay` coarse rule) add an invisible `::after` that extends only the hit
+`mc-touch-hit` / `mc-touch-hit-y` / `mc-touch-hit-end` classes (`src/styles/scrollbars-and-touch-hit.css`) add an invisible `::after` that extends only the hit
 area to 44px on each axis where the control is smaller, so drawn size and layout do not
 change; use them on header, top-bar and row kebabs, toggles and split-button segments (`-y`
 for a segment with neighbours on both sides, `-end` for the last segment, which grows away

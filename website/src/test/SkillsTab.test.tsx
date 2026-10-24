@@ -123,16 +123,13 @@ describe('SkillsTab', () => {
     expect(otherRow.className).not.toMatch(/\bborder(-|\b)/)
   })
 
-  it('skill list uses the overlay (autohide, no-layout-shift) scrollbar', async () => {
+  it('skill list is its own scroll box', async () => {
     mockApi.skills.mockResolvedValue([
       { key: 'a', name: 'a', description: 'first', source: 'kirocrew', loaded_by_agents: [] },
     ])
     renderWithQuery()
 
     const list = await screen.findByRole('listbox', { name: 'Skills' })
-    // ``scrollbar-overlay`` keeps the scrollbar hidden until hover and
-    // overlays it so the row width never shifts.
-    expect(list.className).toContain('scrollbar-overlay')
     expect(list.className).toContain('overflow-y-auto')
   })
 

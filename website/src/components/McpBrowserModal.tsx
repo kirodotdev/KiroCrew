@@ -314,7 +314,7 @@ export default function McpBrowserModal({ open, onClose, askAgent = true }: Prop
               id="mcp-results-list"
               role="listbox"
               aria-label={i18nT('components.mcpBrowserModal.mcp_server_search_results')}
-              className={`${selectedServer && mobileDetail ? 'hidden md:block' : 'block'} w-full md:w-[40%] md:shrink-0 overflow-y-auto scrollbar-overlay space-y-1.5 pr-1`}
+              className={`${selectedServer && mobileDetail ? 'hidden md:block' : 'block'} w-full md:w-[40%] md:shrink-0 overflow-y-auto space-y-1.5 pr-1`}
             >
               {results.map(server => {
                 const key = serverKey(server)
@@ -396,7 +396,7 @@ export default function McpBrowserModal({ open, onClose, askAgent = true }: Prop
                       <ArrowLeft size={14} aria-hidden="true" /> {i18nT('components.mcpBrowserModal.back_to_results')}
                     </Btn>
                   </div>
-                  <div className="flex-1 min-h-0 overflow-y-auto scrollbar-overlay">
+                  <div className="flex-1 min-h-0 overflow-y-auto">
                     <ServerDetailPanel
                       server={selectedServer}
                       installed={isInstalled(selectedServer)}

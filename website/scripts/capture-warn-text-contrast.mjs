@@ -11,7 +11,7 @@
  * shapes the source pairs the tint with, instead of a dashboard route: the change
  * is a token swap inside stylesheet rules (`--warn-text`), no component logic
  * participates, and the thing compared is a painted colour. The same call
- * capture-scrollbar-thumb-contrast.mjs made for the same reason.
+ * capture-focus-ring.mjs made for the same reason.
  *
  * The BEFORE frame re-declares `--warn-text` as plain `--warn` under
  * `[data-mode="light"]`, appended after the stylesheet so it wins on source

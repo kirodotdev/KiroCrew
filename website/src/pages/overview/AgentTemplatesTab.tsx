@@ -837,7 +837,7 @@ export default function AgentTemplatesTab() {
       ) : rows.length > 0 && (
         <div className={PANE_SHELL_CLASS}>
           {showList && (
-            <div className={`${isMobile ? 'w-full' : 'w-[300px]'} shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md p-2`} role="listbox" aria-label={i18nT('pages.overview.agentTemplatesTab.title')}>
+            <div className={`${isMobile ? 'w-full' : 'w-[300px]'} shrink-0 overflow-y-auto border border-border rounded-md p-2`} role="listbox" aria-label={i18nT('pages.overview.agentTemplatesTab.title')}>
               {GROUP_ORDER.map(k => grouped[k].length > 0 && (
                 <div key={k} role="group" aria-label={groupLabel(k)}>
                   <PanelSectionHeader label={groupLabel(k)} count={grouped[k].length} className="px-2 pt-2 pb-1" />

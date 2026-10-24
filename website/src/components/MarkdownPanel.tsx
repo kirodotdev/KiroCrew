@@ -1332,9 +1332,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           </div>
           {lastCopy && <MissingFileBanner onDownload={downloadLastCopy} onCopy={() => { void copyLastCopy() }} copied={lastCopyCopied} partial={partialCopy} />}
           {/* In markdown preview the scroll box runs flush to the panel's right
-              border so the overlay scrollbar and outline rail share that edge;
-              pr-6 keeps the text clear of the ticks. */}
-          <div ref={sidePanelScrollRef} onScroll={scrollMemory.onScroll} className={`flex-1 min-h-0 overflow-auto ${isMarkdown && !editing ? 'scrollbar-overlay pr-6' : ''}`}>
+              border so the outline rail sits on that edge; pr-6 keeps the text
+              clear of the ticks. */}
+          <div ref={sidePanelScrollRef} onScroll={scrollMemory.onScroll} className={`flex-1 min-h-0 overflow-auto ${isMarkdown && !editing ? 'pr-6' : ''}`}>
             {showBinaryCard && <BinaryFileCard filePath={filePath} />}
             {!showBinaryCard && zeroDiff && <ZeroDiffNotice message={zeroDiffText} onExitDiff={readOnly ? undefined : toggleDiffMode} />}
             {!showBinaryCard && diffErrorText && !editing && (
