@@ -13,9 +13,8 @@ import { ExternalLink, FolderOpen, Presentation } from 'lucide-react'
 import { EmptyState } from '../../components/ui'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import SegmentedControl from '../../components/SegmentedControl'
-import { revealOrOpen, useRevealFailure } from '../../components/FilePathMenu'
+import { revealOrOpen, useCanReveal, useRevealFailure } from '../../components/FilePathMenu'
 import ErrorNotice from '../../components/ErrorNotice'
-import { useBranding } from '../../hooks/useBranding'
 import { i18nT } from '../../i18n/t'
 import {
   fetchArtifactJson,
@@ -120,10 +119,10 @@ export default function DeckViewer({ deckId }: { deckId: string }) {
   const [tab, setTab] = useState<DeckTab>('slides')
   const seenRef = useRef<Record<string, number> | null>(null)
   // Reveal shells out on the gateway host, so it is only useful when the browser
-  // is on that same machine. On a remote session the backend degrades reveal to a
-  // clipboard copy (and this button already swallowed every failure silently), so
-  // hide it there to match every other gated file-location surface.
-  const isLocal = useBranding().directLocal
+  // is on that same machine and the machine can open a file manager. Anywhere
+  // else the backend can only answer a clipboard copy, so the button is hidden by
+  // the shared gate every other file-location surface applies.
+  const canReveal = useCanReveal()
   // A failed reveal renders under the header row; askAgent on — the viewer
   // holds no draft.
   const reveal = useRevealFailure(deckId)
@@ -190,7 +189,7 @@ export default function DeckViewer({ deckId }: { deckId: string }) {
           collapse={false}
         />
         <div className="flex-1" />
-        {isLocal && detail.dirPath && (
+        {canReveal && detail.dirPath && (
           <button
             type="button"
             onClick={() => { void revealOrOpen(detail.dirPath, 'reveal', reveal) }}

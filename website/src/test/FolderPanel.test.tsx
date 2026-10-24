@@ -13,12 +13,17 @@ import FolderPanel from '../pages/chat/FolderPanel'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 
-// The header reveal button is gated on directLocal (a remote session cannot
-// drive Finder on the gateway). Most tests exercise the local case, so pin
-// directLocal true; a dedicated test covers the remote (hidden) case.
-const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
+// The header reveal button is gated on the shared reveal gate (directLocal AND a
+// launcher on the gateway host: a remote or headless session cannot drive
+// Finder there). Most tests exercise the local desktop case, so pin both true;
+// dedicated tests cover the hidden cases.
+const brandingEnv = vi.hoisted(() => ({ directLocal: true, desktopLauncher: true }))
 vi.mock('../hooks/useBranding', () => ({
-  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
+  useBranding: () => ({
+    botName: 'Test', avatar: '',
+    directLocal: brandingEnv.directLocal,
+    desktopLauncher: brandingEnv.desktopLauncher,
+  }),
 }))
 
 const LISTING = {
@@ -29,7 +34,11 @@ const LISTING = {
 }
 
 describe('FolderPanel', () => {
-  beforeEach(() => { vi.restoreAllMocks(); brandingEnv.directLocal = true })
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    brandingEnv.directLocal = true
+    brandingEnv.desktopLauncher = true
+  })
 
   it('lists the directory it was opened on', async () => {
     vi.spyOn(api, 'browseFiles').mockResolvedValue(LISTING)
@@ -106,6 +115,16 @@ describe('FolderPanel', () => {
     renderWithProviders(<FolderPanel path="/Users/me/ws" onClose={vi.fn()} />)
     // The listing still renders; only the header reveal button is gone, because
     // /api/reveal would drive Finder on a host the user is not looking at.
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+    expect(screen.queryByLabelText('Show in file manager')).not.toBeInTheDocument()
+  })
+
+  it('hides the reveal button when the gateway host has no desktop launcher', async () => {
+    // Direct-local (an `ssh -L` browser reads as one) but headless: the reveal
+    // could only be answered with a copy of the folder path.
+    brandingEnv.desktopLauncher = false
+    vi.spyOn(api, 'browseFiles').mockResolvedValue(LISTING)
+    renderWithProviders(<FolderPanel path="/Users/me/ws" onClose={vi.fn()} />)
     await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
     expect(screen.queryByLabelText('Show in file manager')).not.toBeInTheDocument()
   })

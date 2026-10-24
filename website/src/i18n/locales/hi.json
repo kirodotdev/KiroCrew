@@ -9445,6 +9445,7 @@
       "open_in_side_panel": "साइड पैनल में खोलो",
       "path_copied": "पथ कॉपी किया गया",
       "reveal_blocked": "यह पथ सुरक्षित है और इसे खोला नहीं जा सकता।",
+      "reveal_copied_instead": "{{productName}} चलाने वाली मशीन पर यह पथ नहीं खोला जा सका, इसलिए इसकी जगह इसे कॉपी कर दिया गया।",
       "reveal_failed": "{{productName}} चलाने वाली मशीन पर यह पथ नहीं खोला जा सका।",
       "show_folder_in_side_panel": "फ़ोल्डर को साइड पैनल में दिखाओ"
     },

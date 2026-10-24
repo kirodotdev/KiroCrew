@@ -302,11 +302,12 @@ function DirChip({ label, fullPath, onOpen }: { label: string; fullPath: string;
       title={fullPath}
       aria-label={i18nT('pages.chatPage.open_folder', { path: fullPath })}
       onClick={e => {
-        // Shift+click copies the path on a remote session. Route through the
-        // shared helper, not bare `api.revealPath`: the transport call is
-        // side-effect-free, so the helper is what writes the clipboard (and,
-        // locally, drives the file manager). A bare call would silently copy
-        // nothing and break the chip's hover promise.
+        // Shift+click reveals. Route through the shared helper, not bare
+        // `api.revealPath`: the transport call is side-effect-free, so the
+        // helper is what writes the clipboard when the gateway host could not
+        // open a file manager (a remote session, a headless host), and
+        // it says so in the notice beside the chip rather than copying
+        // silently.
         if (e && 'shiftKey' in e && e.shiftKey) { void revealOrOpen(fullPath, 'reveal', reveal); return }
         onOpen(fullPath)
       }}

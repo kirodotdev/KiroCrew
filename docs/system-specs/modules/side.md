@@ -915,8 +915,9 @@ passes them straight through, so a path chip or an artifact link in a side reply
 opens a tab of the panel the side chat sits in, as the same chip and link do in
 the main transcript. Capability by omission, like every other host seam here: a
 host that passes neither gets `MarkdownRenderer`'s own fallbacks (a path chip
-reveals the file in the OS file manager, or copies the path on a remote
-dashboard; a path link stays a plain link; an artifact link navigates away).
+reveals the file in the OS file manager, or, where the gateway host cannot open
+one, copies the path and says so; a path link stays a plain link; an artifact
+link navigates away).
 `website/src/test/SideChat.fileOpen.test.tsx` pins both the wired and the
 unwired behaviour.
 

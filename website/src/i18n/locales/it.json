@@ -9586,6 +9586,7 @@
       "open_in_side_panel": "Apri nel pannello laterale",
       "path_copied": "Percorso copiato",
       "reveal_blocked": "Questo percorso è protetto e non può essere aperto.",
+      "reveal_copied_instead": "Impossibile aprire questo percorso sul computer che esegue {{productName}}, quindi è stato copiato al suo posto.",
       "reveal_failed": "Impossibile aprire questo percorso sul computer che esegue {{productName}}.",
       "show_folder_in_side_panel": "Mostra la cartella nel pannello laterale"
     },

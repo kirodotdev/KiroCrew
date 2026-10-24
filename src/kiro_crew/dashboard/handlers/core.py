@@ -288,11 +288,19 @@ async def api_branding(request: web.Request) -> web.Response:
     # direct-local (loopback, no proxy) caller. The dashboard reads it to gate
     # OS-desktop file actions (open/reveal); any future consumer of origin
     # posture should reuse this flag rather than invent a second home.
+    #
+    # `desktop_launcher` is the other half of that gate: whether this host can
+    # open a file manager right now (the launcher those actions start, and on
+    # Linux a desktop session for it). Without that, `/api/reveal` can only
+    # answer a clipboard copy, so the dashboard does not offer them. It is a
+    # fact about this gateway process, read in a worker thread (a stat of a
+    # fixed system path), and no part of the request decides it.
     return web.json_response(
         {
             "bot_name": cfg.dashboard.bot_name or "Kiro Crew",
             "avatar": "/logo.png",
             "direct_local": is_direct_local_request(request),
+            "desktop_launcher": await asyncio.to_thread(platform_compat.desktop_launcher_available),
         }
     )
 

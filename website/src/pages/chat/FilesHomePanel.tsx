@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { FileText, ExternalLink, TerminalSquare, MoreHorizontal, AppWindow } from 'lucide-react'
 import { useBranding } from '../../hooks/useBranding'
-import { revealOrOpen, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
+import { revealOrOpen, useCanReveal, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn } from '../../components/ui'
 import {
@@ -62,11 +62,15 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
 }) {
   const { t } = useTranslation()
   const qc = useQueryClient()
-  // Reveal shells out on the gateway host, so it only makes sense when the
-  // browser is on that same machine. On a remote/tunneled session the backend
-  // degrades reveal to a clipboard copy, so hide the affordance to match every
-  // other gated file-location surface (FilePathMenu, ReportProblemModal, …).
+  // The browser is on the gateway host. The external-terminal row below keys
+  // on this alone; the reveal button also needs that host to open a file manager.
   const isLocal = useBranding().directLocal
+  // Reveal shells out on the gateway host, so it only makes sense when the
+  // browser is on that same machine and the machine can open a file manager.
+  // Anywhere else the backend can only answer a clipboard copy, so the
+  // affordance is hidden, matching every other gated file-location surface
+  // (FilePathMenu, …).
+  const canReveal = useCanReveal()
   // The platform-aware wording every other file-location surface uses ("Open in
   // Finder" / "Open in File Explorer" / "Show in file manager"), read from the
   // gateway host that `/api/reveal` shells out on — not a static "file manager".
@@ -176,7 +180,7 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
         <span className="flex-1" />
         {projectDir && (
           <>
-            {isLocal && (
+            {canReveal && (
               <button onClick={() => { void revealOrOpen(projectDir, 'reveal', reveal) }} className={iconBtn} title={revealLabel} aria-label={revealLabel}>
                 <ExternalLink size={14} />
               </button>

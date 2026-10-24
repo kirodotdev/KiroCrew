@@ -702,6 +702,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _trusted_bin_search,
         _windows_system_dirs,
         aws_bin_declined_on_ownership,
+        desktop_launcher_available,
         env_key_allowed,
         group_write_admits_another_account,
         open_with_default_app,
