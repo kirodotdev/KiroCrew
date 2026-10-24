@@ -601,6 +601,120 @@ class TestResolveManifest:
         assert enriched[0]["updateAvailable"] is True
 
 
+class TestManifestNegativeCache:
+    """A failed listing-time app.json fetch is remembered ~1h so repeated
+    listings stop re-cloning the same missing source (#21964)."""
+
+    _ROW = {"name": "demo", "gitUrl": "https://github.com/o/demo.git", "branch": "main"}
+
+    @pytest.mark.asyncio
+    async def test_repeated_listings_fetch_once_for_a_failing_source(self, cache_dir, monkeypatch):
+        # The repro: three listing passes over a source whose app.json cannot
+        # be fetched must hit the network ONCE, not once per pass. The first
+        # failure is negative-cached; passes 2 and 3 read the cache and skip.
+        monkeypatch.setattr(registry, "_owner_designated_repo_target", lambda entry: "")
+        calls = 0
+
+        async def _fetch(*a, **k):
+            nonlocal calls
+            calls += 1
+            return None
+
+        monkeypatch.setattr(registry, "_fetch_app_manifest", _fetch)
+        for _ in range(3):
+            got = await registry._resolve_manifest(dict(self._ROW))
+            assert got == self._ROW
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_negative_cache_lapses_and_the_next_listing_retries(self, cache_dir, monkeypatch):
+        # After the negative TTL lapses, the next listing fetches again so a
+        # since-fixed source is picked up without explicit invalidation.
+        monkeypatch.setattr(registry, "_owner_designated_repo_target", lambda entry: "")
+        calls = 0
+
+        async def _fetch(*a, **k):
+            nonlocal calls
+            calls += 1
+            return None
+
+        monkeypatch.setattr(registry, "_fetch_app_manifest", _fetch)
+        await registry._resolve_manifest(dict(self._ROW))
+        assert calls == 1
+        # Backdate the miss record past its TTL.
+        miss = registry._manifest_negative_cache_path(self._ROW)
+        past = time.time() - registry._MANIFEST_NEGATIVE_CACHE_TTL - 60
+        os.utime(miss, (past, past))
+        assert registry._read_manifest_negative_cache(self._ROW) is False
+        await registry._resolve_manifest(dict(self._ROW))
+        assert calls == 2
+
+    @pytest.mark.asyncio
+    async def test_one_sources_failure_does_not_suppress_another(self, cache_dir, monkeypatch):
+        # The miss record is keyed on full source coordinates, so a failure for
+        # branch `main` never suppresses the fetch for the same app on `dev`.
+        monkeypatch.setattr(registry, "_owner_designated_repo_target", lambda entry: "")
+        fetched: list[str] = []
+
+        async def _fetch(repo, branch, *a, **k):
+            fetched.append(branch)
+            return None
+
+        monkeypatch.setattr(registry, "_fetch_app_manifest", _fetch)
+        main_row = {"name": "demo", "gitUrl": "https://github.com/o/demo.git", "branch": "main"}
+        dev_row = {"name": "demo", "gitUrl": "https://github.com/o/demo.git", "branch": "dev"}
+        await registry._resolve_manifest(dict(main_row))
+        await registry._resolve_manifest(dict(dev_row))
+        assert fetched == ["main", "dev"]
+        # main stays suppressed, dev gets its own record.
+        assert registry._read_manifest_negative_cache(main_row) is True
+        assert registry._read_manifest_negative_cache(dev_row) is True
+
+    @pytest.mark.asyncio
+    async def test_success_after_expiry_is_cached_as_success_not_a_miss(
+        self, cache_dir, monkeypatch
+    ):
+        # Once a previously-failing source starts returning a manifest, the next
+        # resolve caches it as a SUCCESS and later listings merge it — the stale
+        # miss record no longer wins.
+        monkeypatch.setattr(registry, "_owner_designated_repo_target", lambda entry: "")
+        result: dict | None = None
+
+        async def _fetch(*a, **k):
+            return result
+
+        monkeypatch.setattr(registry, "_fetch_app_manifest", _fetch)
+        await registry._resolve_manifest(dict(self._ROW))  # fails -> miss cached
+        assert registry._read_manifest_negative_cache(self._ROW) is True
+        # Lapse the miss, then let the fetch succeed.
+        miss = registry._manifest_negative_cache_path(self._ROW)
+        past = time.time() - registry._MANIFEST_NEGATIVE_CACHE_TTL - 60
+        os.utime(miss, (past, past))
+        result = {"description": "now here", "version": "1.2.3"}
+        got = await registry._resolve_manifest(dict(self._ROW))
+        assert got["description"] == "now here"
+        assert registry._read_manifest_cache(self._ROW) == result
+
+    @pytest.mark.asyncio
+    async def test_install_path_is_not_short_circuited_by_a_listing_miss(
+        self, cache_dir, monkeypatch
+    ):
+        # The negative cache lives in _resolve_manifest only. The install path
+        # calls _fetch_app_manifest directly, so a listing-time miss must not
+        # stop an install from fetching.
+        monkeypatch.setattr(registry, "_owner_designated_repo_target", lambda entry: "")
+
+        async def _fail(*a, **k):
+            return None
+
+        monkeypatch.setattr(registry, "_fetch_app_manifest", _fail)
+        await registry._resolve_manifest(dict(self._ROW))
+        assert registry._read_manifest_negative_cache(self._ROW) is True
+        # The install path is _fetch_app_manifest itself — unchanged, it still
+        # runs regardless of the miss record.
+        assert "_read_manifest_negative_cache" not in registry._fetch_app_manifest.__code__.co_names
+
+
 class TestMergeManifest:
     def test_display_fields_come_from_the_manifest(self):
         merged = registry._merge_manifest(
