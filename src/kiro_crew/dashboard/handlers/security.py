@@ -857,6 +857,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         ScopedRuleset,
         _AndRuleset,
         _compose_controls,
+        policy_level_control,
     )
     from kiro_crew.platform.governance_profiles import (  # noqa: F401
         HOST_SESSION_KEY,

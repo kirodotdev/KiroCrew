@@ -125,6 +125,17 @@ evaluator edits.
 > mirror), **not** this re-triage. See `platform-context.md` for the design
 > record.
 
+## Enterprise built-in baseline (unnamed scopes)
+
+In an `oss` build a scope the policy does not name is ungoverned and permitted (`_PERMIT_NOT_GOVERNED`). In an enterprise build (`edition.is_enterprise()`) it is answered by the built-in baseline policy instead: each scope's minimal set, or off when it has none ([RFC D3](../../request-for-change/rfc-crew-enterprise-edition.md), appendix "Minimal set"). The table is data in `platform/governance_parts/baseline.py` (`BASELINE_CONTROLS`), parsed by the same per-control parser a remote policy uses, so it obeys the catalog's `always_permitted` floor.
+
+- **Where it applies.** `evaluator._policy_level` fills the POLICY level only, in `resolve`. `_query_level` still permits a `None` control, because it also answers the profile level: a profile that does not name a scope must not impose the baseline again beneath a remote widening. For the same reason no baseline is added when a `Profile` sits in the ceiling slot (`governance_profiles` asks `may_skip_gate` about one profile alone) or when `gate_decision`'s alias-group pass asks the profile layer alone (`resolve(..., baseline=False)`). `policy_level_control` exposes the same lookup to readers that inspect a ceiling directly: `may_skip_gate` and `_ceiling_mentions_mcp_server` use it, so an auto-approve grant cannot skip the gate for an unnamed scope, the policy viewer (`GET /api/governance/policy`) reports the baseline instead of "ungoverned", and the member-dashboard script grant (`member_dashboard._egress_decision`) reads an unnamed `network.egress` as the baseline's off. A `folders.*` query finds the policy's `filesystem.*` rule before the baseline answers, because the parser stores it under the canonical scope.
+- **Who may widen.** The remote policy, by naming the scope. A profile only narrows.
+- **Not gated.** `BASELINE_UNGATED` lists the two ordinals (`approval_mode`, `sandbox.min_level`), which keep Crew's own default. A scope in neither table (one registered at run time) is denied.
+- **Minimal sets that differ from the appendix wording.** `approval_modes` is `normal`, `trust`, `trust_reads` (the catalog floor; only `yolo` is off). `filesystem.read` is Crew's fixed default workspace root (`config.paths._default_workspace_base()` + `_WORKSPACE_DIR_NAME`), never the configured one, because the configured root is a local source. `tools` is off, not read-only tools: `classify_tool_title` also asks `commands` about every bare tool name, so a read-only set could never pass while `commands` is off. Read-only tools wait on the tools/commands classifier fix, a separate item. `updates.source` is not a catalog scope and has no baseline.
+- **Local policy tiers.** `compose_tier_ladder` first fills the authority tier's unnamed scopes from the baseline (`tiers._with_enterprise_baseline`), so the tighten-only `_intersect_ceilings` composes a local tier (`env`, `home`, `bundled`) WITH the baseline: a local tier can narrow it and never supply a scope's whole answer. With no central document the authority is itself local, so it is intersected with the baseline scope by scope rather than filled; only a central authority's named scopes replace the baseline. The installed ceiling therefore names every gated scope in an enterprise build, and `kirocrew policy show` lists the baseline rows beside the document's own.
+- **Not covered here.** The `ceiling is None and profile is None` early returns in `hook_runtime/governance_gate.py`, `mcp_gateway/app_call.py` and `governance_profiles.governance_permits` still permit before `resolve` runs; an enterprise host with no policy at all is the enterprise gate's to refuse (RFC Migration plan phase 2).
+
 ## Loading + precedence
 
 `load_security_policy()` precedence, highest first. The centrally distributed
@@ -3700,8 +3711,10 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
     `compose_tier_ladder` with its refresh entry point `compose_installed_ceiling`
     (+ `_TierProcessState`, the per-process tier state: the remembered bundled tier
     and the two once-per-process latches), and `load_security_policy`.
+  - `platform/governance_parts/baseline.py` — the enterprise built-in baseline
+    (`BASELINE_CONTROLS`, `BASELINE_UNGATED`); data only.
   - `platform/governance_parts/evaluator.py` — `resolve`, `resolve_ordinal`, `gate_decision`,
-    `resolve_pinned_commands` + `COMMANDS_SCOPE` force-pins.
+    `resolve_pinned_commands` + `COMMANDS_SCOPE` force-pins, `policy_level_control`.
 - `platform/admission.py` — `canonical_signing_bytes` / `hmac_signature` (shared
   by both trust roots), `ed25519_verify` (policy issuers only),
   `require_policy_signature` / `trust_keys` / `trust_public_keys`, and
@@ -3767,6 +3780,8 @@ extensibility), `test_governance_policy_signatures.py` (the `identity.signature`
 states, the opt-in fail-closed gate, and the `policy show` provenance reporting),
 `test_governance_policy_decisions.py` (an unnamed capability is ungoverned, `policy
 validate` names the ungoverned rows, and an alias group is one gate question),
+`test_governance_enterprise_baseline.py` (an unnamed scope answers the enterprise
+baseline, every catalog scope has a baseline row, and `oss` is unchanged),
 `test_governance_tier_ladder.py` (the tier ladder: that the central document
 outranks every local one, that a lower tier can only tighten it, that the reserved
 sandbox boot flags compose across tiers, that an env document beneath an authority

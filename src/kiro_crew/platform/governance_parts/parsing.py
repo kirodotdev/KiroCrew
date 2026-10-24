@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional
 
@@ -25,6 +26,7 @@ from kiro_crew.platform.governance_parts.archetypes import (
     ScopedRuleset,
     _compose_controls,
 )
+from kiro_crew.platform.governance_parts.baseline import BASELINE_CONTROLS
 from kiro_crew.platform.governance_parts.carriers import (
     SIGNATURE_UNCHECKED,
     Bind,
@@ -355,6 +357,19 @@ def _coerce_boot_flag(
         closed,
     )
     return closed
+
+
+@lru_cache(maxsize=1)
+def baseline_controls() -> Mapping[str, object]:
+    """The enterprise built-in baseline (``baseline.BASELINE_CONTROLS``), parsed.
+
+    Parsed by :func:`_parse_control`, the per-control parser a remote policy goes
+    through, so the baseline obeys the same catalog floors (``always_permitted``).
+    """
+    return {
+        scope: _parse_control(scope, SCOPE_CATALOG[scope], raw, is_policy=True)
+        for scope, raw in BASELINE_CONTROLS.items()
+    }
 
 
 def parse_policy(
