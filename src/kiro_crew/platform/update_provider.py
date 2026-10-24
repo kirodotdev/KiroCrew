@@ -26,7 +26,7 @@ import platform
 import sys
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Protocol, runtime_checkable
+from typing import Any, Coroutine, Protocol, runtime_checkable
 
 from kiro_crew import platform_compat, update_ownership
 from kiro_crew.gateway_shutdown_budget import (
@@ -133,6 +133,41 @@ async def _stop_installer(
     await platform_compat.terminate_and_reap(
         proc, grace=grace, reap_timeout=UPDATE_INSTALLER_KILL_REAP_SECS
     )
+
+
+async def _start_installer(
+    spawn: Coroutine[Any, Any, asyncio.subprocess.Process],
+) -> asyncio.subprocess.Process:
+    start = asyncio.ensure_future(spawn)
+    try:
+        return await asyncio.shield(start)
+    except asyncio.CancelledError:
+        if start.done() and start.cancelled():
+            raise
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + UPDATE_INSTALLER_TERM_GRACE_SECS
+    while not start.done():
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            start.cancel()
+            logger.warning(
+                "CommandProvider.apply: cancelled while the update child was still starting"
+            )
+            raise asyncio.CancelledError
+        try:
+            await asyncio.wait({start}, timeout=remaining)
+        except asyncio.CancelledError:
+            pass
+    if start.cancelled():
+        raise asyncio.CancelledError
+    error = start.exception()
+    if error is not None:
+        logger.warning(
+            "CommandProvider.apply: cancelled; the update child failed to start: %s", error
+        )
+        raise asyncio.CancelledError
+    await _stop_installer(start.result(), grace=max(0.0, deadline - loop.time()))
+    raise asyncio.CancelledError
 
 
 @dataclass(frozen=True)
@@ -471,19 +506,21 @@ class CommandProvider:
         logger.info("CommandProvider.apply: running apply command")
         proc: asyncio.subprocess.Process | None = None
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-                # Own session so the whole pipeline is one killable group and
-                # cannot signal back into the gateway's group.
-                start_new_session=IS_POSIX,
-                # Root, not the gateway's cwd: a relative command word
-                # (``./update.sh``) would otherwise resolve inside whatever
-                # directory the gateway was launched from, which can be an
-                # agent-writable checkout. Operator commands name absolute paths.
-                cwd="/",
+            proc = await _start_installer(
+                asyncio.create_subprocess_exec(
+                    *argv,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                    # Own session so the whole pipeline is one killable group and
+                    # cannot signal back into the gateway's group.
+                    start_new_session=IS_POSIX,
+                    # Root, not the gateway's cwd: a relative command word
+                    # (``./update.sh``) would otherwise resolve inside whatever
+                    # directory the gateway was launched from, which can be an
+                    # agent-writable checkout. Operator commands name absolute paths.
+                    cwd="/",
+                )
             )
             _stdout, stderr = await _read_bounded_output(
                 proc, timeout=_APPLY_TIMEOUT_SECS, want_stdout=False
