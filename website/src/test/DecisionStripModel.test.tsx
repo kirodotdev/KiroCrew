@@ -15,9 +15,11 @@
  *    an earlier release stamped, still renders as the one record it is.
  */
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import i18next from 'i18next'
 import { describe, it, expect, afterEach } from 'vitest'
 
 import { queryClient } from '../api/queryClient'
+import { CATALOGS } from '../i18n/catalogs'
 import AssistantMessage from '../pages/chat/AssistantMessage'
 import DecisionStrip from '../pages/chat/DecisionStrip'
 import {
@@ -62,7 +64,9 @@ const SKILL_WIRE = {
   error: null,
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await i18next.changeLanguage('en')
+  i18next.removeResourceBundle('de', 'translation')
   cleanup()
   queryClient.clear()
   __resetVerdicts()
@@ -94,6 +98,15 @@ describe('readModelRecord', () => {
     expect(applied).toBeUndefined()
     expect(readModelRecord(rest)!.applied).toBe(true)
     expect(readModelRecord({ ...MODEL_WIRE, applied: false })!.applied).toBe(false)
+  })
+
+  it('reads the routed effort beside the owner\'s, and neither when absent', () => {
+    const routed = readModelRecord({ ...MODEL_WIRE, effort_chosen: 'high', baseline_effort: 'medium' })!
+    expect(routed.effortChosen).toBe('high')
+    expect(routed.baselineEffort).toBe('medium')
+    const plain = readModelRecord(MODEL_WIRE)!
+    expect(plain.effortChosen).toBeUndefined()
+    expect(plain.baselineEffort).toBeUndefined()
   })
 
   it('draws nothing without a turn id or a tier', () => {
@@ -260,6 +273,29 @@ describe('the model row', () => {
     fireEvent.click(screen.getByTestId('decision-strip-model-toggle'))
     expect(screen.getByText('Model without routing').closest('div')!)
       .toHaveTextContent('Built-in default')
+  })
+
+  it("names the effort Jev chose beside the owner's through effortLabel", () => {
+    const routed = readModelRecord({ ...MODEL_WIRE, effort_chosen: 'xhigh', baseline_effort: 'medium' })!
+    render(<DecisionStrip record={routed} />)
+    expect(screen.getByTestId('decision-strip-model-effort')).toHaveTextContent('effort Extra High (yours: Medium)')
+  })
+
+  it('names the efforts from the language catalog, not from English labels', async () => {
+    // The test build registers English only; the `de` catalog is added by hand.
+    i18next.addResourceBundle('de', 'translation', CATALOGS.de.translation)
+    await i18next.changeLanguage('de')
+    const routed = readModelRecord({ ...MODEL_WIRE, effort_chosen: 'xhigh', baseline_effort: 'medium' })!
+    render(<DecisionStrip record={routed} />)
+    const line = screen.getByTestId('decision-strip-model-effort')
+    expect(line).toHaveTextContent('Sehr hoch')
+    expect(line).toHaveTextContent('Mittel')
+    expect(line).not.toHaveTextContent(/Extra High|Medium/)
+  })
+
+  it('draws no effort when the record carries none', () => {
+    render(<DecisionStrip record={record} />)
+    expect(screen.queryByTestId('decision-strip-model-effort')).toBeNull()
   })
 
   it('carries ONE thumbs pair, on the Jev side', () => {

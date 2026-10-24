@@ -15,6 +15,7 @@ import type {
   SessionEnvironmentWorkspace,
   SlotEnvironment,
 } from '../client'
+import type { JevRange } from '../../types'
 
 /** Deadline for `api.slashCommands`. Same value as the `$`-menu's
  *  `SKILLS_TIMEOUT_MS` (`./skills`), for the same reason and against the same
@@ -195,6 +196,10 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
      *  the session's next start; an idle runtime is reset so it cannot linger. */
     setChatSlotEnvironment: (slot: string, profile: string | null) =>
       put('/api/chat/slots/' + encodeURIComponent(slot) + '/environment', { profile }).then(j) as Promise<{ profile: string | null; applies: string }>,
+    /** Owner only (403 otherwise); 400 `jev_range_invalid` for an unknown level, a
+     *  min above the max, or a model the backend does not advertise. */
+    chatSlotJevRange: (slot: string, range: JevRange) =>
+      post('/api/chat/slots/' + encodeURIComponent(slot) + '/jev-range', range).then(j) as Promise<{ ok: boolean; jev_range: JevRange }>,
     chatSlotWorkspace: (slot: string, workspace: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/workspace', { workspace }).then(j),
     // Relaunch the slot's agent process in place (fresh agent spec, env, and MCP

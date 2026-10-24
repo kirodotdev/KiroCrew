@@ -13,7 +13,8 @@ import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
 import { useAvailableModelsQuery } from '../hooks/useAvailableModels'
 import { effortToCarry, filterInteractiveModels, legacyCodexEffort, modelWithoutEffort, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
 import { effortOffOnAuto, modelSupportsEffort, selectionCapabilitiesFailed } from '../lib/effort'
-import { JEV_ROUTE_MODEL, jevRouteOffered, withJevRoute } from '../lib/jevRoute'
+import { JEV_ROUTE_MODEL, jevRouteOffered, jevRouteShownModel, withJevRoute } from '../lib/jevRoute'
+import { useJevRange } from './useJevRange'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useKirocrewConfigReader } from '../hooks/useKirocrewConfigReader'
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -168,6 +169,7 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
     selectionCapabilitiesFailed(selectionCapabilitiesQ),
     shownModel,
   )
+  const jevRange = useJevRange(paneSlot ? slotKey : null, modelDD.filtered, jevRouteShownModel(shownModel, paneSlot), modelDD.filter)
   const readKirocrewConfig = useKirocrewConfigReader()
   const { data: defaultEffort = '' } = useQuery({
     queryKey: ['default-effort', provider.id],
@@ -202,7 +204,7 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
     installedAgents, displayAgents, agentChoices, defaultAgent, paneAgentName, queryClient, navigate, defaultAgentFailed, toggleDefaultAgent, agentDD,
     selectionCapabilitiesQ, ownModelsQuery, ownModelsFailed, codexPairModels, hiddenModelsQ, modelPickerConfigured, jevRouteOn, modelDD,
     attachModelList, modelListEdges, agentBtnRect, anchorAgentBtn, modelBtnRect, anchorModelBtn, shownModel,
-    effortSupported, effortLevelsOverride, effortAutoNote, defaultEffort, effectiveEffort, chipDefault, modelMarker,
+    effortSupported, effortLevelsOverride, effortAutoNote, defaultEffort, effectiveEffort, chipDefault, modelMarker, jevRange,
   }
 }
 
