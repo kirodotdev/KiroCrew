@@ -600,6 +600,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             if path_key in (
                 "session_environments.sprites_profiles",
                 "session_environments.boxd_profiles",
+                "session_environments.fargate_profiles",
             ):
                 # A list may not drop the profile the saved default names: every
                 # new chat would then run locally, and the next whole save fail.

@@ -20605,8 +20605,7 @@
     "publicIpHint": "Désactivé par défaut. Les sous-réseaux privés nécessitent une connexion sortante pour le moteur et les intégrations. Ce réglage ne crée aucune route réseau et n’ouvre aucun port entrant.",
     "profilesFargateHint": "Un profil est un environnement nommé et réutilisable pour les sessions distantes. Chaque profil Fargate enregistre le cluster, la définition de tâche, le réseau et le répertoire de travail à utiliser. Le champ de profil AWS CLI qu’il contient est le nom d’un profil d’identifiants déjà configuré sur la machine qui exécute {{productName}}. Choisis un profil dans l’éditeur du chat pour y exécuter la session.",
     "verifyHintFargate": "Vérifie que la définition de tâche de chaque profil est prête et que le plug-in AWS Session Manager est installé sur la machine qui exécute {{productName}}, et à quels hébergeurs Git {{productName}} peut se connecter. Aucune tâche n’est démarrée.",
-    "checkTaskDefinitionOk": "{{name}} : la définition de tâche {{taskDefinition}} est prête",
-    "workspaceFargateTask": "Tâche de session Fargate"
+    "checkTaskDefinitionOk": "{{name}} : la définition de tâche {{taskDefinition}} est prête"
   },
   "crewEditorNext": {
     "section_general": "Général",

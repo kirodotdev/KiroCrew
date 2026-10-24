@@ -259,7 +259,7 @@ async def test_foreign_task_is_forgotten_without_stop_and_prepare_launches_fresh
         assert envs.registry.get(row.session_key) is None
     elif operation == "prepare":
 
-        async def fresh(key, profile):
+        async def fresh(key, profile, progress_key):
             new = replace(row, arn=row.arn.replace("task123", "task456"), task_id="task456")
             return await asyncio.to_thread(envs._record_task, new, profile), SECRET
 
@@ -310,7 +310,7 @@ async def test_purged_task_is_forgotten_without_stopping_and_prepare_launches_fr
     owned_task.stop.side_effect = SessionEnvironmentUnavailable("The referenced task was not found")
     if operation == "prepare":
 
-        async def fresh(key, profile):
+        async def fresh(key, profile, progress_key):
             new = replace(row, arn=row.arn.replace("task123", "task456"), task_id="task456")
             return await asyncio.to_thread(envs._record_task, new, profile), SECRET
 

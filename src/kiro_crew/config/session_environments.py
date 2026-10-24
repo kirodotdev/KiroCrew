@@ -273,8 +273,9 @@ def validate_session_environments(value: object) -> dict[str, Any]:
     _refuse_shared_ids(result)
     if "default_profile" in value:
         # Shape only. Which profile it names is judged on the merged section at
-        # write time: a save that omits sprites_profiles or boxd_profiles keeps
-        # the saved list, so its default may name a profile only that list holds.
+        # write time: a save that omits sprites_profiles, boxd_profiles or
+        # fargate_profiles keeps the saved list, so its default may name a
+        # profile only that list holds.
         result["default_profile"] = validate_default_profile(value["default_profile"])
     if "stop_on_shutdown" in value:
         result["stop_on_shutdown"] = validate_stop_on_shutdown(value["stop_on_shutdown"])

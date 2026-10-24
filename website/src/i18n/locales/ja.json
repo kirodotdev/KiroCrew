@@ -19983,8 +19983,7 @@
     "publicIpHint": "既定ではオフです。プライベートサブネットには、ランタイムと連携機能用の外向き接続が必要です。この設定はネットワークルートを作成せず、受信ポートも開きません。",
     "profilesFargateHint": "プロファイルは、リモートセッション用の名前付きで再利用できる環境です。各 Fargate プロファイルには、使用するクラスター、タスク定義、ネットワーク、作業ディレクトリが記録されます。その中の AWS CLI プロファイル欄は、{{productName}} を実行しているマシンで設定済みの認証情報プロファイルの名前です。チャットの入力欄でプロファイルを選ぶと、そのセッションがそこで実行されます。",
     "verifyHintFargate": "各プロファイルのタスク定義が準備できているか、{{productName}} を実行しているマシンに AWS Session Manager プラグインがインストールされているか、{{productName}} がどの Git ホストにサインインできるかを確認します。タスクは起動しません。",
-    "checkTaskDefinitionOk": "{{name}}: タスク定義 {{taskDefinition}} を利用できます",
-    "workspaceFargateTask": "Fargate セッションタスク"
+    "checkTaskDefinitionOk": "{{name}}: タスク定義 {{taskDefinition}} を利用できます"
   },
   "crewEditorNext": {
     "section_general": "一般",

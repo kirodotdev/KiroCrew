@@ -20294,8 +20294,7 @@
     "publicIpHint": "Standardmäßig aus. Private Subnetze benötigen ausgehende Verbindungen für Laufzeit und Integrationen. Diese Einstellung erstellt keine Netzwerkrouten und öffnet keine eingehenden Ports.",
     "profilesFargateHint": "Ein Profil ist eine benannte, wiederverwendbare Umgebung für Remote-Sitzungen. Jedes Fargate-Profil hält Cluster, Aufgabendefinition, Netzwerk und Arbeitsverzeichnis fest. Das Feld für das AWS CLI-Profil darin ist der Name eines Anmeldeprofils, das auf dem Rechner, auf dem {{productName}} läuft, bereits eingerichtet ist. Wähle im Chat-Eingabefeld ein Profil, um die Sitzung darauf auszuführen.",
     "verifyHintFargate": "Prüft, ob die Aufgabendefinition jedes Profils bereit und das AWS Session Manager-Plugin auf dem Rechner, auf dem {{productName}} läuft, installiert ist, und bei welchen Git-Hosts sich {{productName}} anmelden kann. Es wird keine Aufgabe gestartet.",
-    "checkTaskDefinitionOk": "{{name}}: Aufgabendefinition {{taskDefinition}} ist bereit",
-    "workspaceFargateTask": "Fargate-Sitzungsaufgabe"
+    "checkTaskDefinitionOk": "{{name}}: Aufgabendefinition {{taskDefinition}} ist bereit"
   },
   "crewEditorNext": {
     "section_general": "Allgemein",

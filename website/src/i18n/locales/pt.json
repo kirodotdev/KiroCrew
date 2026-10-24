@@ -20605,8 +20605,7 @@
     "publicIpHint": "Desativado por padrão. Sub-redes privadas precisam de conectividade de saída para o runtime e as integrações. Esta opção não cria rotas de rede nem abre portas de entrada.",
     "profilesFargateHint": "Um perfil é um ambiente nomeado e reutilizável para sessões remotas. Cada perfil do Fargate registra o cluster, a definição de tarefa, a rede e o diretório de trabalho a usar. O campo de perfil da AWS CLI dentro dele é o nome de um perfil de credenciais já configurado na máquina que executa o {{productName}}. Escolha um perfil no editor do chat para executar essa sessão nele.",
     "verifyHintFargate": "Verifica se a definição de tarefa de cada perfil está pronta e se o plugin AWS Session Manager está instalado na máquina que executa o {{productName}}, e em quais hosts Git o {{productName}} consegue entrar. Nenhuma tarefa é iniciada.",
-    "checkTaskDefinitionOk": "{{name}}: a definição de tarefa {{taskDefinition}} está pronta",
-    "workspaceFargateTask": "Tarefa de sessão do Fargate"
+    "checkTaskDefinitionOk": "{{name}}: a definição de tarefa {{taskDefinition}} está pronta"
   },
   "crewEditorNext": {
     "section_general": "Geral",
