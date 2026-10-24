@@ -307,8 +307,7 @@ def test_service_ensure_append_snapshot(tmp_path, monkeypatch):
 
 
 def test_service_folds_events_a_second_process_wrote_between_our_appends(tmp_path, monkeypatch):
-    """The gateway is not this log's only writer: ``kirocrew-core`` runs as its
-    own stdio subprocess and records member activity through this same service.
+    """Another process can append to this log between our appends.
 
     ``log.append`` re-reads the file, so the seq it returns can sit above the one
     after what this process folded. Driving only that event advanced every cell's
@@ -622,7 +621,7 @@ class TestEnsureCostsAStatOnARepeat:
     def test_a_second_ensure_sees_what_another_process_appended(self, tmp_path, monkeypatch):
         """Correctness of the cheap path: it may skip work, never a commit.
 
-        The log has two ordinary writers, so the file can grow between two calls.
+        Another process can append, so the file can grow between two calls.
         Asked of the REGISTRY rather than through ``snapshot``, because a read
         refreshes too -- going through one could not say whether ``ensure`` crossed
         the gap or the read did.
@@ -1446,8 +1445,8 @@ def test_a_commit_during_the_read_is_not_hidden_by_the_stamp(tmp_path):
     records a state this instance has not read: an entry committed between the
     iterator's EOF and that sample gets its size and mtime stamped onto the events
     from before it, every later refresh finds "no change", and the entry stays
-    invisible for the life of the process. This log has two ordinary writers by
-    design, so the window is reachable rather than theoretical.
+    invisible for the life of the process. Another process can append to this
+    log, so the window is reachable rather than theoretical.
 
     Driven with a real second instance (the way the interleaved-writers test above
     models two processes) and a real append, not a faked stat, so the assertion is

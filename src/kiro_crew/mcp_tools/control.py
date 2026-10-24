@@ -293,7 +293,18 @@ def route_crew(name: str, args: dict[str, Any]) -> str:
 
 def select_crew(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SELECT_CREW_SCHEMA)
-    return mcp_core._do_select_crew(str(args.get("crew") or ""))
+    crew = str(args.get("crew") or "")
+    out = mcp_core._do_select_crew(crew)
+    if crew and "bound" in json.loads(out):
+        # The routing decision (intent, not a run) goes in the member's crew log,
+        # which this sandboxed process cannot reach: the gateway writes it.
+        result = mcp_core._post(
+            "/api/member-routing/decision", {"crew": crew}, timeout=_WAIT_PING_TIMEOUT_SECS
+        )
+        if isinstance(result, dict) and "error" in result:
+            code = result.get("code") or "unreachable"
+            logger.warning("select_crew: routing decision for %s not recorded (%s)", crew, code)
+    return out
 
 
 def register_hook(name: str, args: dict[str, Any]) -> str:

@@ -313,6 +313,12 @@ def _register_mcp_routes(app: web.Application) -> None:
         ("POST", "/api/member/self/notes", "api_member_self_notes"),
     ):
         app.router.add_route(_method, _path, _deferred("member_goals", _name))
+    # select_crew's routing decision: the tool runs in the sandbox, which cannot
+    # reach a member's crew log, so the gateway writes it (``member_routing``).
+    app.router.add_post(
+        "/api/member-routing/decision",
+        _deferred("member_routing", "api_member_routing_decision"),
+    )
     # Spelled with ``add_put``: the ``crewmate.goal``, ``crewmate.key_results``
     # and ``crewmate.check_ins`` cards apply and undo through these routes, and
     # the card hook's route list is pinned against them.
