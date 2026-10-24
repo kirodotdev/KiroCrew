@@ -51,7 +51,7 @@ from kiro_crew.acp.transport_framing import _STDOUT_BUFFER_LIMIT
 from kiro_crew.agent_sdk.backends import launch_for
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import describe_search_path, mise_data_dir
-from kiro_crew.sandbox import RLIMIT_PROFILE_SESSION_HOST
+from kiro_crew.sandbox import RLIMIT_PROFILE_SESSION_HOST, RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST
 
 # The client's logger name, because the helpers below were the client's and every
 # log line they emit has always been filed there. The launch tail itself logs under
@@ -1085,7 +1085,15 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # the first call probes /proc + /sys and the config read touches the config
     # dir. Guarded: the wrap above allocated the sandbox temp file, so a
     # cancellation here must not orphan it.
+    unscoped_argv = argv
     argv = await host._to_thread_guarding_sandbox(tools.cgroup_scope_argv, argv)
+    # No scope means no memory.max over this tree, so the host OOM killer is its
+    # only ceiling: bias the tree so that killer takes an agent, not the gateway.
+    session_host_profile = (
+        RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST
+        if argv == unscoped_argv
+        else RLIMIT_PROFILE_SESSION_HOST
+    )
     argv, scope_unit = request.scope_argv(argv)
 
     env = {**os.environ}
@@ -1191,7 +1199,7 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         # ``cwd``'s pathname, which a same-UID symlink retarget could aim elsewhere
         # in between; ``cwd`` stays the same directory by name.
         chdir_fd=process_directory(host)[1],
-        profile=RLIMIT_PROFILE_SESSION_HOST,
+        profile=session_host_profile,
     )
     if tools.retrying_spawn_factory is not None:
         factory = functools.partial(tools.retrying_spawn_factory, factory)

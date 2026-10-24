@@ -71,13 +71,14 @@ its persisted `timeout_secs` supplies a per-wake deadline.
 `sandbox.create_subprocess_limited()` is the accessor every agent-influenced ASYNC spawn
 uses: it prepends the shim via `spawn_shim_argv()` and passes `preexec_fn=None`.
 
-Five profiles:
+Six profiles:
 
 | Profile | Used by | Effect |
 |---------|---------|--------|
 | `tool` (default) | Every ordinary agent-influenced spawn | The full rlimit ceiling plus `oom_score_adj=1000` |
 | `extractor` | The PDF text-extraction child (`pdf_extract.py` -> `python -m kiro_crew.pdf_extract_child`), fed untrusted document bytes on stdin by file-grep and knowledge ingest | A FIXED ceiling independent of `resource_limits`: `RLIMIT_AS` 1 GiB, `RLIMIT_CPU` 60 s, `RLIMIT_NOFILE` 1024, plus the OOM bias. `pdfplumber` allocates a page's whole character list before any caller can measure it, so the memory bound has to be on by default and one process down; a pure-CPython child measures ~270 MB virtual on a one-page document, which is why a virtual cap is safe here where `tool` leaves it opt-in. On Windows (no rlimits) `pdf_extract.py` spawns the child `CREATE_SUSPENDED`, attaches a Job object with `JobMemoryLimit` at the same byte count and `ActiveProcessLimit` of `1 + python_launcher_hops()` (a venv's `python.exe` redirector spawns the base interpreter as its child, which a limit of exactly one would refuse) via `platform_compat.apply_job_limits`, kills by tree (`kill_process_tree`, then `proc.kill()`) so the interpreter under a redirector is not orphaned, and FAILS CLOSED -- kills the unrun child and reports `unbounded` -- when the job cannot be attached. macOS accepts `RLIMIT_AS` without enforcing it, so the child additionally polices its own peak RSS (sampled every 20 ms) against the same 1 GiB and ends itself with the `memory` report: the ceiling there, a second layer on Linux. The sample is the CHILD's own high-water mark: `getrusage` `ru_maxrss` on macOS, but `/proc/self/status` `VmHWM` on Linux, because there `execve` folds the pre-exec image's peak into `ru_maxrss` and a child of a gateway already past 1 GiB would read its parent's peak on the first tick and lose every document unparsed |
-| `session_host` | The trusted ACP session-host spawns (the launch tail `acp/launch.py`, for both `acp/client.py` and `acp/runtime.py`) | RAISES NOFILE to the inherited hard limit and does nothing else. A session host multiplexes many MCP pipe pairs, and the 1024 cap caused EMFILE crashes. No OOM bias: a trusted session host must not be the preferred kill target |
+| `session_host` | The trusted ACP session-host spawns (the launch tail `acp/launch.py`, for both `acp/client.py` and `acp/runtime.py`) | RAISES NOFILE to the inherited hard limit and does nothing else. A session host multiplexes many MCP pipe pairs, and the 1024 cap caused EMFILE crashes. No OOM bias: a trusted session host must not be the preferred kill target while its cgroup scope bounds it |
+| `unbounded_session_host` | The same launch tail, when `cgroup_scope_argv` could not wrap the spawn (no cgroup v2 delegation, or no trusted `systemd-run`) | `session_host`'s NOFILE headroom plus the OOM bias. With no `memory.max` over the tree, the host OOM killer is the only memory ceiling, and an unbiased tree ties the gateway at `oom_score_adj` 0, where the gateway's size makes it the victim and every session dies. Biased, the kernel takes the largest process in some agent tree, including commands the harness runs itself, which no `tool` spawn covers |
 | `build` | The dev-fleet build spawns (`apps/builtins/dev_fleet/runtime.py`) | Vite and npm need thousands of descriptors; keeps the OOM bias |
 | `none` | The user's own interactive terminal | No rlimits and no OOM bias, so the shim is skipped entirely unless the spawn also asks for a controlling terminal (`ctty_fd=`), which the terminal does |
 
@@ -224,8 +225,8 @@ and soft enforcement boundary. Each scope has:
 The spawn shim additionally writes `oom_score_adj=1000` on the child it execs (inherited by
 its descendants), biasing the kernel OOM killer toward tool subprocesses so a
 memory-ballooning command is killed *before* `memory.max` takes out the entire agent scope.
-It is requested explicitly (`--oom-bias`) by the `tool`, `build` and `extractor` profiles
-only (`_PROFILE_OOM_BIAS`).
+It is requested explicitly (`--oom-bias`) by the `tool`, `build`, `extractor` and
+`unbounded_session_host` profiles only (`_PROFILE_OOM_BIAS`).
 
 ### Scope unit names
 
