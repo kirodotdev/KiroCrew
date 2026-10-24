@@ -511,7 +511,11 @@ sweep retries it, writing the marker once the disk takes it. Every task is probe
 including its lifecycle-lock wait, with registry and vault reads off-loop, so
 any number of stalled tasks cannot push a reachable one past its idle exit;
 one failed probe does not stop the rest, so resetting an idle runtime does not
-destroy a reachable task's files. A tunnel reset, stall or close is reported
+destroy a reachable task's files. A failed probe asks ECS, at most once per
+five minutes per task and only for an authenticated row, whether the task is
+gone; one that stopped on its own (the gateway was down past its idle exit) or
+was purged is forgotten without a StopTask, so it is neither re-dialled every
+pass nor listed as running. A tunnel reset, stall or close is reported
 as a bootstrap error on every call, so the launch's enrolment retry and its
 lost-reply recovery always see it. After readiness the gateway checks off-loop for a persisted task
 registry and starts retention even with no provider configured, so keepalives

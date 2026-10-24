@@ -806,7 +806,7 @@ export function SessionEnvironmentsCard() {
     const target = formRef.current?.querySelector<HTMLElement>(deepLink)
     if (!target) return
     const panel = target.closest<HTMLElement>('[data-provider-panel]')?.dataset.providerPanel
-    if (panel === 'coder' || panel === 'sprites' || panel === 'boxd') setProvider(panel)
+    if (panel === 'coder' || panel === 'sprites' || panel === 'boxd' || panel === 'fargate') setProvider(panel)
     const row = target.closest<HTMLElement>('[data-profile-row]')?.dataset.profileRow
     if (row) setOpenRows(rows => ({ ...rows, [row]: true }))
     const details = target.closest('details')
@@ -1220,7 +1220,7 @@ export function SessionEnvironmentsCard() {
             </SettingsField>
           )}
         </div>
-        <div hidden={provider !== 'fargate'} className="space-y-3">
+        <div hidden={provider !== 'fargate'} data-provider-panel="fargate" className="space-y-3">
           {config.fargate_profiles === undefined ? (provider === 'fargate' && <ErrorNotice message={t('sessionEnvironments.unavailable')} askAgent />) : <>
             {/* Deploy my crew hosts a whole headless crew; a session environment
               * keeps state on this gateway. Say so where the two look alike. */}
@@ -1229,7 +1229,7 @@ export function SessionEnvironmentsCard() {
               description={t('sessionEnvironments.profilesFargateHint')}>
               <div className="min-w-0 space-y-3">
                 {fargateProfiles.map((profile, index) => (
-                  <ProfileDisclosure key={profile[PROFILE_ROW_ID]} title={profile.name || profile.id} subtitle={profile.task_definition}
+                  <ProfileDisclosure key={profile[PROFILE_ROW_ID]} rowId={profile[PROFILE_ROW_ID]} title={profile.name || profile.id} subtitle={profile.task_definition}
                     open={!!openRows[profile[PROFILE_ROW_ID]]} onToggle={() => toggleRow(profile[PROFILE_ROW_ID])}>
                     {fargateFields.map(field => (
                       <SettingsInput key={field.key} label={field.label} value={profile[field.key]}

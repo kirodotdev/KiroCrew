@@ -1788,6 +1788,19 @@ describe('Session Environments AWS Fargate profiles', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('This version of Kiro Crew does not support Session Environments settings.')
   })
 
+  it('opens the Fargate tab and row a settings deep link points into', async () => {
+    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [{ ...profile }], fargate_profiles: [{ ...fargate }] } }
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expect(screen.getByRole('radio', { name: 'Coder' })).toBeChecked()
+    const cluster = 'ECS cluster name or ARN'
+    expect(screen.getByLabelText(cluster)).not.toBeVisible()
+    act(() => setSettingsDeepLinkTarget(`[data-setting-label="${cluster}"]`))
+    await waitFor(() => expect(screen.getByLabelText(cluster)).toBeVisible())
+    expect(screen.getByRole('radio', { name: 'AWS Fargate' })).toBeChecked()
+    act(() => setSettingsDeepLinkTarget(null))
+  })
+
   it('opens on Fargate when only Fargate is saved, and checks it without a Coder URL', async () => {
     stored = { session_environments: { coder_url: '', profiles: [], fargate_profiles: [{ ...fargate }] } }
     server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
