@@ -27,8 +27,15 @@ import workersLeadPose from '../../assets/ghost-poses/pose-7.svg'
 import workerPoseA from '../../assets/ghost-poses/pose-4.svg'
 import workerPoseB from '../../assets/ghost-poses/pose-6.svg'
 import { api, type MemberRosterRow } from '../../api/client'
+import { isNotFoundError } from '../../api/apiError'
+import { CREW_BOARD_POLL_MS, crewBoardQueryKey } from '../../api/crewBoard'
+import { retryPolicy } from '../../api/queryClient'
 import { crewDisplayName } from '../../components/AgentSelector'
-import { useQuery } from '@tanstack/react-query'
+import { AUTONUDGE_LOOPS_QUERY_KEY } from '../../components/autoNudgeLoop'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { i18nT } from '../../i18n/t'
+import CrewOnItsOwn, { patrolLoopOf } from './CrewOnItsOwn'
+import ErrorNotice from '../../components/ErrorNotice'
 import { timeAgo } from '../../utils/timeAgo'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import CrewProfilePanel, { type ProfileTab } from './CrewProfilePanel'
@@ -51,7 +58,7 @@ import { memberMemoryDisplay, PROFILE_MEMORY_KEYS, type ProfileCardOpen, type TF
 import { type MembersPageCrewEditing } from './useMembersPageCrewEditor'
 import { type MembersPageLayout } from './useMembersPageLayout'
 import { type MembersPageRosterSignals } from './useMembersPageRoster'
-import { type AutomationRecord } from '../../monitoring/automation'
+import { type AutomationRecord, type LegacyGoalLoop } from '../../monitoring/automation'
 import { readSessionAutomationSnapshot } from '../../monitoring/sessionAutomationSnapshot'
 
 // Lazy for the same reason as `CrewEditorDialog` in MembersPage.tsx: its fields come from the crew manager page module.
@@ -393,14 +400,10 @@ export function useMembersPageProfileFlight({
     queryFn: () => readSessionAutomationSnapshot(profileSlot),
     staleTime: 0,
   })
-  const profileMonitorReadState = !profileSlot
-    ? 'ready' as const
-    : profileMonitorQuery.isError
-      ? 'error' as const
-      : profileMonitorQuery.isSuccess || activeAutomation
-        ? 'ready' as const
-        : 'loading' as const
-  const profileAutomation = profileMonitorReadState === 'error'
+  // Fails closed: a read that failed shows no record, so the head face carries
+  // no active mark it cannot prove and the Schedules tab shows no patrol row.
+  const profileReadFailed = !!profileSlot && profileMonitorQuery.isError
+  const profileAutomation = profileReadFailed
     ? null
     : activeAutomation ?? profileMonitorQuery.data ?? null
   // Relative times in the Profile Schedules tab move while the card is open.
@@ -457,8 +460,74 @@ export function useMembersPageProfileFlight({
   useEffect(() => { setFaceFlight(null) }, [activeName])
 
   return {
-    nowTs, reduceMotion, profileDocked, faceFlight, endFaceFlight, profileAutomation, profileMonitorReadState,
+    nowTs, reduceMotion, profileDocked, faceFlight, endFaceFlight, profileAutomation, profileReadFailed,
   }
+}
+
+/**
+ * The Schedules tab's "On its own" row: the crewmate's patrol over the tasks it
+ * handed out (`patrolLoopOf`), with its open-task count from the crew board and
+ * the one control, Pause / Resume. The board read is a masked projection and
+ * 404s for a session that never conducted anything: that is a gap (no count),
+ * not an error, so it is not retried and nothing is shown for it.
+ *
+ * A component, not a hook, and mounted `key`ed by the slot: a refused write and
+ * an in-flight one are THIS crewmate's, and the card itself is not re-keyed on a
+ * crewmate switch, so state held one level up would show crewmate A's refusal
+ * under crewmate B's row.
+ */
+function CrewPatrolRow({ loop, slotKey, nowTs, onBusyChange }: {
+  loop: LegacyGoalLoop
+  slotKey: string
+  nowTs: number
+  /** A write in flight, published to the host so the tab rail and the card's
+   *  leave guard refuse to unmount this row -- and with it the refusal the
+   *  write may come back with -- until it settles. Called false on unmount. */
+  onBusyChange?: (busy: boolean) => void
+}) {
+  const queryClient = useQueryClient()
+  const boardQuery = useQuery({
+    queryKey: crewBoardQueryKey(slotKey),
+    queryFn: () => api.crewBoard(slotKey),
+    enabled: !!slotKey,
+    // Items close while the tab is open; the count follows at the board's cadence.
+    refetchInterval: CREW_BOARD_POLL_MS,
+    retry: (failureCount, error) => !isNotFoundError(error) && retryPolicy(failureCount, error),
+  })
+  const openTasks = boardQuery.data
+    ? boardQuery.data.items.filter((item) => !item.terminal).length
+    : null
+  // No ledger (404) is a gap, not a failure; anything else is said.
+  const countFailed = boardQuery.isError && !isNotFoundError(boardQuery.error)
+  const [writeError, setWriteError] = useState('')
+  const write = useMutation({
+    mutationFn: ({ id, active }: { id: string; active: boolean; slot: string }) => api.autonudgeSetActive(id, active),
+    onMutate: () => setWriteError(''),
+    onSuccess: (_written, vars) => {
+      // The full-registry readers (the roster's patrol marks) and this card's own
+      // snapshot both hold the record the write just changed.
+      void queryClient.invalidateQueries({ queryKey: AUTONUDGE_LOOPS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: ['session-automation', vars.slot] })
+    },
+    onError: (e: unknown) => setWriteError(e instanceof Error && e.message ? e.message : i18nT('pages.membersPage.patrol_write_failed')),
+  })
+  const busy = write.isPending
+  useEffect(() => {
+    onBusyChange?.(busy)
+    return () => onBusyChange?.(false)
+  }, [busy, onBusyChange])
+  return (
+    <CrewOnItsOwn
+      loop={loop}
+      openTasks={openTasks}
+      nowTs={nowTs}
+      busy={write.isPending}
+      error={writeError}
+      countFailed={countFailed}
+      onPause={() => write.mutate({ id: loop.id, active: false, slot: slotKey })}
+      onResume={() => write.mutate({ id: loop.id, active: true, slot: slotKey })}
+    />
+  )
 }
 
 export type MembersPageProfileFlight = ReturnType<typeof useMembersPageProfileFlight>
@@ -501,7 +570,24 @@ export function MembersPageProfileCard({
     schedAgentField, profileGoalsQuery, schedulesCountQuery, schedulesForActive, setSchedDraftDirty,
     setSchedSaving, requestCancelSchedDraft,
   } = schedules
-  const { nowTs, reduceMotion, profileDocked, faceFlight, profileAutomation, profileMonitorReadState } = profileFlight
+  const { nowTs, reduceMotion, profileDocked, faceFlight, profileAutomation, profileReadFailed } = profileFlight
+  const patrolSlot = activeSlot || active?.slot_key || ''
+  const patrolLoop = patrolLoopOf(profileAutomation)
+  // A failed slot read shows no row (fail closed) but says so: silence here would
+  // read as "nothing wakes this mate". Keyed by slot so a crewmate switch never
+  // carries one crewmate's refused or in-flight write under another's row.
+  // The patrol row's in-flight write joins the Heartbeat row's in the same
+  // guards (tab rail, card leave), combined rather than overwriting each other.
+  const [patrolBusy, setPatrolBusy] = useState(false)
+  const selfBody = profileReadFailed
+    ? (
+      /* No hand-off: the Members page may hold an unsaved schedule or crew-editor
+         draft, and Ask the agent navigates away from it. */
+      <ErrorNotice message={t('pages.membersPage.patrol_read_failed')} testId="crew-patrol-read-error" />
+    )
+    : patrolLoop
+      ? <CrewPatrolRow key={patrolSlot} loop={patrolLoop} slotKey={patrolSlot} nowTs={nowTs} onBusyChange={setPatrolBusy} />
+      : null
   // Notes — the crewmate's own standing notes, read-only (no editor:
   // see CrewNotesTab). Its briefing read is gated on the tab being on
   // screen, like the work log's reads.
@@ -641,10 +727,16 @@ export function MembersPageProfileCard({
   // tab body at a time), so close and navigation refuse until it settles; the
   // tab rail reads `heartbeatBusy` for the same refusal.
   const [heartbeatBusy, setHeartbeatBusy] = useState(false)
+  const [heartbeatDirty, setHeartbeatDirty] = useState(false)
   const onHeartbeatBusyChange = useCallback((dirty: boolean, busy: boolean) => {
-    onGoalsDraftChange(dirty, busy)
+    setHeartbeatDirty(dirty)
     setHeartbeatBusy(busy)
-  }, [onGoalsDraftChange])
+  }, [])
+  // One publication into the leave guard for both Schedules-tab rows: a patrol
+  // write in flight holds the card exactly as a Heartbeat write does.
+  useEffect(() => {
+    onGoalsDraftChange(heartbeatDirty, heartbeatBusy || patrolBusy)
+  }, [heartbeatDirty, heartbeatBusy, patrolBusy, onGoalsDraftChange])
   // The profile card (crewmate-panel IA): the pill's surface. Notes,
   // Schedules and the work log are ITS tabs/pages now, so the three
   // bodies above mount here instead of on the side panel's strip.
@@ -667,7 +759,7 @@ export function MembersPageProfileCard({
       running={!!isRunning(active)}
       slotKey={activeSlot || active.slot_key}
       automation={profileAutomation ?? null}
-      monitorReadState={profileMonitorReadState}
+      selfBody={selfBody}
       description={profileRegistryQuery.data?.agents.find((a) => a.name === active.name)?.description ?? ''}
       descriptionError={profileRegistryQuery.isError}
       goal={profileGoalsQuery.data?.goals[0]?.text ?? ''}
@@ -688,7 +780,7 @@ export function MembersPageProfileCard({
       newScheduleBody={schedulesBody}
       heartbeatBody={activeSlug && activeMemberName ? <CrewHeartbeatRow slug={activeSlug} member={activeMemberName} onBusyChange={onHeartbeatBusyChange} /> : null}
       heartbeatOn={!!profileGoalsQuery.data?.schedules?.heartbeat}
-      heartbeatBusy={heartbeatBusy}
+      heartbeatBusy={heartbeatBusy || patrolBusy}
       sessionsBody={sessionsBody}
       notesBody={notesBody}
       goalsBody={activeSlug && activeMemberName ? (

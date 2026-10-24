@@ -209,6 +209,8 @@
   "pages.membersPage.hidden_more_hint",
   "pages.membersPage.hidden_named_hint",
   "pages.membersPage.member_count",
+  "pages.membersPage.patrol_tasks_open",
+  "pages.membersPage.patrol_tasks_still_open",
   "pages.membersPage.team_crewmate_count",
   "pages.membersPage.team_need_you_count",
   "pages.membersPage.team_state_waiting",

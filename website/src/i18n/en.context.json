@@ -844,6 +844,14 @@
     "components.meetYourMatesIntro.sample_show_first": "Secondary pill under the sample message, the answer that asks to see the change before merging. Imperative, short. Decorative in the dialog, not a real button.",
     "pages.membersPage.entrance_first_mate": "Speech bubble under Mate's large face the first time its chat opens, before it flies into the header and greets; said only while Mate is the only mate on the roster. Mate is the product's name for the standing teammate agent; keep the teammate word the catalog already uses for it.",
     "pages.membersPage.entrance_hello": "The same speech bubble when the roster already holds other mates; {{name}} is Mate's display name and is never translated.",
-    "pages.settings.instancesPanel.restart_to_activate": "Warning banner in Settings -> Remote Crew (and the older Instances panel) shown when remote crew management is turned on but the gateway has not been restarted yet. <restartCmd/> renders the literal CLI command as monospace code -- keep the tag and do not translate it. 'a terminal' is a command-line shell window; 'the computer this dashboard runs on' is the machine whose gateway serves this page, as opposed to the remote crews listed below it, and it may not be the device showing this page."
+    "pages.settings.instancesPanel.restart_to_activate": "Warning banner in Settings -> Remote Crew (and the older Instances panel) shown when remote crew management is turned on but the gateway has not been restarted yet. <restartCmd/> renders the literal CLI command as monospace code -- keep the tag and do not translate it. 'a terminal' is a command-line shell window; 'the computer this dashboard runs on' is the machine whose gateway serves this page, as opposed to the remote crews listed below it, and it may not be the device showing this page.",
+    "pages.membersPage.on_its_own": "Section header on a crewmate's Schedules tab, over what wakes the crewmate WITHOUT a schedule the user set (its patrol over tasks it handed out). 'Its' refers to the crewmate; keep it short, title-like.",
+    "pages.membersPage.your_schedules": "Section header over the list of schedules the user set for this crewmate, shown under the 'On its own' header. 'Your' is the user.",
+    "pages.membersPage.patrol_name": "Row title: the crewmate is keeping watch over the tasks it handed out to helpers. 'Its' refers to the crewmate.",
+    "pages.membersPage.patrol_wakes": "Second line of that row: the crewmate wakes when one of its tasks reports back, and otherwise at most every {{interval}} (a short duration like '15m').",
+    "pages.membersPage.patrol_pause": "Verb on a button: pause the crewmate's watch over its tasks. Not the noun.",
+    "pages.membersPage.patrol_resume": "Verb on a button: resume a paused watch. Not the noun.",
+    "pages.membersPage.patrol_stopped_runtime": "One-phrase reason the watch stopped: it ran up to its time budget of {{limit}} (a short duration like '7d').",
+    "pages.membersPage.patrol_stopped_cycles": "One-phrase reason the watch stopped: it did as many checks as it was allowed."
   }
 }

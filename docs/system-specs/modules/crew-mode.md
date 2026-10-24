@@ -2050,7 +2050,8 @@ exist yet.
 description (two lines with a pushed full-text page); when the registry read fails,
 the About section shows the shared actionable `ErrorNotice` above any retained
 description, and only omits the no-description claim when no cached description
-exists. The read-only Monitor section follows About. Every avatar and Profile surface shares the normalized record and strict `isAutomationActive` visual predicate through `CrewMonitoredAvatar`; that predicate extends `isAutomationRunning`, the broader lifecycle truth that keeps unsupported active records inside chat-sidebar close safety and its running filters. The Members page uses the strict predicate for its roster mark, header label, face flight, and **Patrolling** filter: a non-actionable record is lifecycle-busy but cannot truthfully make a visual on-watch claim. Live Redux frames remain the first source for roster and header visuals, while Profile's existing `session-automation` slot query supplies retained stopped state and full owner-gated details. A failed owner-gated Profile read deliberately hides its local avatar mark and detail rows even when Redux still has a reduced live record; the roster and header keep their live mark, but Profile never turns a failed authorization or refresh into a detailed claim. A failed roster refresh likewise discards its last-good legacy fallback, because stale active state cannot support a current visual claim. Missing cold reads cannot invent an active mark. It shows state, subject type, subject, cadence, current/maximum checks, runtime-clock start, next check, used/maximum runtime, and a retained stop reason; an absent check cap says **No limit**, while unavailable legacy runtime says **Unknown** rather than looking empty. A failed read shows only its State error with no recovery promise; loading says it is checking, never that it failed; a ready slot with no monitor says **Not watching anything** on one line. Structured targets and full state come only from the existing owner-gated `/api/monitors/slot/{slot_key}` read. The ungated compatibility read contributes legacy cadence and counters, but Profile never renders its prompt, banner, sentinel path, or session data. The section contains no control or action handler.
+exists. Profile carries no monitor readout: what the mate watches is the
+Schedules tab's business (below). Every avatar and Profile surface shares the normalized record and strict `isAutomationActive` visual predicate through `CrewMonitoredAvatar`; that predicate extends `isAutomationRunning`, the broader lifecycle truth that keeps unsupported active records inside chat-sidebar close safety and its running filters. The Members page uses the strict predicate for its roster mark, header label, face flight, and **Patrolling** filter: a non-actionable record is lifecycle-busy but cannot truthfully make a visual on-watch claim. Live Redux frames remain the first source for roster and header visuals, while the card's existing `session-automation` slot query supplies retained stopped state and full owner-gated details. A failed owner-gated read deliberately hides the card's local avatar mark and its Schedules patrol row even when Redux still has a reduced live record; the roster and header keep their live mark, but the card never turns a failed authorization or refresh into a claim. A failed roster refresh likewise discards its last-good legacy fallback, because stale active state cannot support a current visual claim. Missing cold reads cannot invent an active mark.
 Memory and
 Workspace sit side by side, but Memory is a flat readout — a solid `border-border`
 hairline, transparent background, no hover and no pointer; never dashed, which is
@@ -2099,8 +2100,54 @@ returns `409 briefing_slug_ambiguous`. Redaction and truncation are visible line
 not tooltips. Owner gating, app-token denial, and the `members.briefing.read` SEL
 record are unchanged.
 
-**Schedules** first shows the **Heartbeat** row (`CrewHeartbeat.tsx`,
-`CrewHeartbeatRow`, mounted through the card's `heartbeatBody`), then the next
+**Schedules** also answers what wakes the mate WITHOUT a schedule. While the
+mate's own slot holds a `work-ledger` goal loop -- the patrol the conductor
+prompt arms over the tasks it handed out, or the gateway's default patrol after
+a bind -- active, or retained after a stop that is not a finish (`patrolLoopOf`
+in `CrewOnItsOwn.tsx`: a loop that ended on `monitor_terminal` or
+`stop_sentinel` has nothing left to watch and cannot be revived, so it is no
+row), the tab's **On its own** header holds one more row after the Heartbeat row,
+**Watching its tasks** (the Heartbeat keeps the first row, decided 2026-10-22);
+with no such loop the Heartbeat row alone sits under that header. The row is in the
+schedule row's grammar: the state pill reads **Running** or **Paused**; line two
+says what wakes it ("Wakes when a task reports back, or every 15m", the
+loop's interval); line three is the facts a person acts on -- last check (or
+"Has not checked yet"), "Next in" only while the next due time is still
+ahead (a late loop promises nothing), and the open-item count from the masked
+crew-board read (`GET /api/crew-board`, omitted while unread or when the slot
+owns no ledger, a 404 that is not retried). A stopped patrol replaces last/next
+with one phrase: "You paused it" (`manual` / `user_stop`), "Hit its 7d time
+limit" (`runtime_budget`), "Hit its check limit" (`cycle_cap`), "Stopped while
+waiting for your approval" (`approval_stalled` / `approval_stall`), "Its chat
+was closed" (`session_close`), and the plain "Stopped" for every other code,
+never the raw value. A stop that is a FAILURE
+(`session_start_failures`, `session_unavailable`: "It could not start a check";
+`structural_terminal`, `model_refused`, `interrupted_cycle`,
+`consecutive_failures`: "Its last check failed"; `sentinel_dropped`,
+`verdict_stall`, `completion_evidence_unavailable`, `invalid_monitor_record`,
+`unsupported_monitor_version`: "It could not keep watching the way it was set
+up") is an error and renders through
+`ErrorNotice` under the row, each ending "Resume to try again"; line three then
+carries only the open-item count. While the row is present the list's empty line
+reads "No schedules yet." (`selfWaking`), as it does with the Heartbeat on. The budget bookkeeping
+the loop record carries (check count and cap, runtime clock and budget) is
+shown nowhere; it surfaces only as that one phrase when a budget ended the
+loop. The row's one control is **Pause** while it runs and **Resume** once it
+stopped, both the composer popover's own write (`PATCH /api/autonudge/{id}`
+with `active` alone, `api.autonudgeSetActive`); a success invalidates the
+shared loops query and the card's slot snapshot, a refusal renders through
+`ErrorNotice` under the row with no hand-off (the page may hold a schedule or
+crew-editor draft). A write in flight is published into the same guards as the
+Heartbeat row's (`heartbeatBusy` on the card, the host's leave guard), combined
+with it, so the tab rail, close and navigation refuse to unmount the row until
+the write settles. A pull-request watch or a plain timer on the slot marks the
+avatar but is no row here: that is the chat composer's popover's surface. The
+row renders no prompt, wake text, sentinel path or session key.
+
+Under the same **On its own** header, first, sits the **Heartbeat**
+row (`CrewHeartbeat.tsx`, `CrewHeartbeatRow`, mounted through the card's
+`heartbeatBody`); the header pair renders whenever either body is present, and
+the list stands alone with neither. Then, under **Your schedules**, the next
 enabled wake, then one `CrewScheduleList` row
 per schedule attributed to this mate. The Heartbeat sits here, not among the
 Goals tab's check-ins (decided 2026-10-22, docs/decisions): it is the one wake

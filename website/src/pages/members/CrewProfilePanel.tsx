@@ -8,7 +8,6 @@ import CrewMonitoredAvatar from '../../components/crew/CrewMonitoredAvatar'
 import Tablist, { type TablistTab } from '../../components/Tablist'
 import type { AutomationRecord } from '../../monitoring/automation'
 import type { CronJob } from '../../types'
-import CrewMonitorDetails, { type MonitorReadState } from './CrewMonitorDetails'
 import CrewScheduleList from './CrewScheduleList'
 import { cn } from '../../lib/utils'
 import { Btn } from '../../components/ui'
@@ -60,10 +59,10 @@ export interface CrewProfilePanelProps {
   member: MemberRosterRow
   running: boolean
   slotKey?: string | null
-  /** The one normalized monitor record for this crewmate's own slot. */
+  /** The one normalized monitor record for this crewmate's own slot: the head
+   *  face's active mark. What it watches is the Schedules tab's business
+   *  (`selfBody`), not a readout here. */
   automation: AutomationRecord | null
-  /** Whether both monitor registries were read, are pending, or failed. */
-  monitorReadState: MonitorReadState
   /** The crewmate's description from its crew config; '' while unread or unset. */
   description: string
   /** The crew registry read failed; retained cached description data may still be shown. */
@@ -87,6 +86,11 @@ export interface CrewProfilePanelProps {
   /** Hold the head face's place but paint nothing: the page's flight copy is
    *  the one face on screen until it lands here. */
   faceHidden?: boolean
+  /** What wakes this crewmate WITHOUT a schedule, on the Schedules tab above the
+   *  list under its own "On its own" header (CrewOnItsOwn: the patrol over the
+   *  tasks it handed out). Absent when nothing does, and then the list stands
+   *  alone with no headers: most crewmates. */
+  selfBody?: ReactNode
   /** The schedules that wake this crewmate, as the page already reads them. */
   schedules: CronJob[]
   schedulesLoading: boolean
@@ -104,8 +108,9 @@ export interface CrewProfilePanelProps {
    *  "No schedules yet" instead of "Nothing wakes this mate on its own yet",
    *  which the row above it would contradict. */
   heartbeatOn?: boolean
-  /** A Heartbeat write is in flight: the tab rail refuses to leave Schedules
-   *  until it settles (the host's leave guard refuses close and navigation). */
+  /** A write from one of the "On its own" rows (Heartbeat or patrol) is in
+   *  flight: the tab rail refuses to leave Schedules until it settles (the
+   *  host's leave guard refuses close and navigation the same way). */
   heartbeatBusy?: boolean
   sessionsBody: ReactNode
   notesBody: ReactNode
@@ -455,9 +460,9 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               value={tab}
               onChange={next => {
                 if (tab === 'goals' && next !== tab) p.onRequestBack(() => { popPage(); setTab(next) })
-                // A Heartbeat write still in flight would be unmounted by the
-                // switch and its failure lost: refuse the exit until it settles,
-                // as the leave guard refuses a busy Goals write.
+                // A Heartbeat or patrol write still in flight would be unmounted
+                // by the switch and its failure lost: refuse the exit until it
+                // settles, as the leave guard refuses a busy Goals write.
                 else if (tab === 'schedule' && p.heartbeatBusy) return
                 else setTab(next)
               }}
@@ -511,8 +516,6 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
                   ) : null}
                 </section>
 
-                <CrewMonitorDetails automation={p.automation} readState={p.monitorReadState} nowTs={p.nowTs} />
-
                 <div className="grid grid-cols-2 gap-2.5">
                   <Tile icon={<Brain size={18} />} tone="accent" label={t('pages.membersPage.profile_memory')} value={p.memoryLabel} onClick={p.onOpenMemory} testId="crew-profile-memory" />
                   <Tile icon={<FolderOpen size={18} />} tone="info" label={t('pages.membersPage.profile_workspace')} value={ws || t('pages.membersPage.profile_workspace_none')} title={p.member.workspace} onClick={p.onOpenFiles} testId="crew-profile-workspace" />
@@ -528,8 +531,22 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
             )}
             {tab === 'schedule' && (
               <div className="flex flex-col gap-3">
-                {p.heartbeatBody}
-                <CrewScheduleList jobs={p.schedules} loading={p.schedulesLoading} error={p.schedulesError} nowTs={p.nowTs} onOpenAll={p.onOpenSchedule} onOpenJob={p.onOpenScheduleJob} onCreate={() => push('new-schedule')} selfWaking={p.heartbeatOn} />
+                {/* "On its own" is what wakes the mate without a schedule a
+                    person wrote: its Heartbeat first (`heartbeatBody`, the
+                    first row by the 2026-10-22 decision), then its patrol over
+                    the tasks it handed out (`selfBody`, only while one runs or
+                    is retained). Two headers only when there is something
+                    under the first: a lone "Your schedules" over the list
+                    would name a split the reader cannot see. */}
+                {(p.selfBody || p.heartbeatBody) && (
+                  <>
+                    <h3 className="text-[11px] font-semibold tracking-wide uppercase text-muted px-0.5" data-testid="crew-schedule-heading-self">{t('pages.membersPage.on_its_own')}</h3>
+                    {p.heartbeatBody}
+                    {p.selfBody}
+                    <h3 className="text-[11px] font-semibold tracking-wide uppercase text-muted px-0.5 mt-1" data-testid="crew-schedule-heading-yours">{t('pages.membersPage.your_schedules')}</h3>
+                  </>
+                )}
+                <CrewScheduleList jobs={p.schedules} loading={p.schedulesLoading} error={p.schedulesError} nowTs={p.nowTs} onOpenAll={p.onOpenSchedule} onOpenJob={p.onOpenScheduleJob} onCreate={() => push('new-schedule')} selfWaking={p.heartbeatOn || !!p.selfBody} />
               </div>
             )}
             {tab === 'sessions' && p.sessionsBody}
