@@ -415,6 +415,18 @@ def _restore_model_fields(slot: Any, meta: dict, *, cfg: Any, effort_marker: boo
     return has_model
 
 
+def _restore_origin(raw: object) -> str:
+    """The slot origin a persisted line restores, or "" for none.
+
+    A JSON ``null`` origin (``meta["origin"]`` is ``None``) and an absent key both
+    read as NO origin, never the string ``"None"``. ``get_or_create_slot`` then
+    derives APP for an app token and leaves a person's conversation untagged,
+    which is what a cross-slot scope must not read as a claim. A non-string
+    origin is agent-editable noise: fail closed to empty rather than stringify it.
+    """
+    return raw if isinstance(raw, str) else ""
+
+
 # ── The table ─────────────────────────────────────────────────────────────────
 
 
@@ -910,7 +922,10 @@ def _read_queued_prompts(r: _Read) -> None:
     queue = sanitize_restored_queue(r.meta.get("queued_prompts"))
     if queue:
         slot._queue[:] = queue
-        logger.info("Restored %d queued prompt(s) for slot %s", len(queue), r.purpose.name)
+        # ``Resume`` carries no ``name`` (it publishes under the slot's own key);
+        # the startup purposes do. Use the slot key for the log either way.
+        name = slot.key if isinstance(r.purpose, Resume) else r.purpose.name
+        logger.info("Restored %d queued prompt(s) for slot %s", len(queue), name)
     # Stamped whatever was restored, so the first flush re-persists only a queue
     # that actually changed.
     slot._queue_persisted_sig = queue_persist_signature(slot.durable_queue_entries())
@@ -1093,15 +1108,12 @@ FIELDS: tuple[Field, ...] = (
     # rebound to the default store stops consolidating into the silo it left.
     Field(
         "memory_store",
-        _STARTUP,
+        _ALL,
         attr="memory_store",
         line=lambda s, f: _named_store(s, f) or OMIT,
         merge=_named_store,
         read=_read_memory_store,
-        why=(
-            "RESUME does not restore it, so the next full save after a History "
-            "resume clears it (#17025). A restricted line names no store"
-        ),
+        why="a restricted line names no store (its absence is the owner claim a restart reads)",
     ),
     Field(
         "agent_kind",
@@ -1205,8 +1217,10 @@ FIELDS: tuple[Field, ...] = (
         merge=_truthy(lambda s: getattr(s, "_created_by", "")),
         read=_read_created_by,
         why=(
-            "RESUME does not restore it (#17025); a session-control revive restores "
-            "it after the build when lineage corroborates"
+            "RESUME does not restore it from the line: it is agent-editable and the "
+            "ownership fence reads it, so a session-control revive restores it after "
+            "the build only when gateway lineage corroborates the claim; "
+            "``_created_by_sid`` is never persisted"
         ),
     ),
     Field(
@@ -1237,9 +1251,10 @@ FIELDS: tuple[Field, ...] = (
         merge=_truthy(lambda s: s._app),
         read=_read_app,
         why=(
-            "RESUME takes the app from the request, not the line, so a dashboard "
-            "user's resume of an app session clears it on the next full save "
-            "(#17025); a hooked revive restores the line's after the build"
+            "RESUME takes the app from the request, not the line: the resume core "
+            "owns that scope decision (a person's History resume of an app session "
+            "must not re-tag the tab app-owned), and a hooked revive restores the "
+            "line's after the build"
         ),
     ),
     # Round-trips with ``app``: an untagged restore falls back to the fail-closed
@@ -1252,22 +1267,23 @@ FIELDS: tuple[Field, ...] = (
         line=_truthy(lambda s: s._origin),
         merge=_truthy(lambda s: s._origin),
         why=(
-            "applied at construction (``slot_args``), as ``str(...)``: a null origin "
-            'reads as the string "None" (#17026)'
+            "applied at construction (``slot_args``) through ``_restore_origin``: a "
+            'null or non-string origin reads as no origin, never the string "None"'
         ),
     ),
     # The artifact companion binding: a bound session restored after a gateway
     # restart comes back as the artifact's active bound session.
     Field(
         "artifact",
-        _STARTUP,
+        _ALL,
         attr="_artifact",
         line=_truthy(lambda s: s._artifact),
         merge=_or_cleared(lambda s: s._artifact, ""),
         read=_read_artifact,
         why=(
-            "RESUME does not restore it, so the next full save after a History "
-            "resume clears it (#17025)"
+            "RESUME restores the artifact binding (``docs/.../artifacts.md`` says a "
+            "resume re-establishes it); a transfer import carries no artifact key "
+            "and so lands unbound"
         ),
     ),
     Field(
@@ -1320,12 +1336,12 @@ FIELDS: tuple[Field, ...] = (
     ),
     Field(
         "color_theme",
-        frozenset({RECENT, RESUME}),
+        _ALL,
         attr="color_theme",
         line=_truthy(lambda s: s.color_theme),
         merge=_or_cleared(lambda s: s.color_theme, ""),
         read=_read_color_theme,
-        why="RESTORE does not restore it, so the next full save of an open tab clears it (#17025)",
+        why="RESUME also reads the theme-consent pair beside the theme",
     ),
     Field(
         "theme_consent",
@@ -1369,7 +1385,7 @@ FIELDS: tuple[Field, ...] = (
         line=_flag(lambda s: getattr(s, "_human_seen", False)),
         merge=_flag(lambda s: getattr(s, "_human_seen", False)),
         read=_read_human_seen,
-        why="RESUME does not restore it (#17025); the key is unowned, so it survives on disk",
+        why="RESUME does not restore it; the key is unowned, so a save never clears it",
     ),
     Field(
         "last_user_at",
@@ -1379,24 +1395,24 @@ FIELDS: tuple[Field, ...] = (
     ),
     Field(
         "deferred_notes",
-        _STARTUP,
+        _ALL,
         attr="_deferred_notes",
         line=lambda s, f: f.deferred_notes or OMIT,
         merge=lambda s, f: f.deferred_notes,
         read=_read_deferred_notes,
-        why="RESUME does not replay the held notes (#17025); a later save keeps them on disk",
+        why=(
+            "RESUME replays the held notes too (``settle`` drops the ones the "
+            "window already delivered); a transfer import carries none"
+        ),
     ),
     Field(
         "queued_prompts",
-        _STARTUP,
+        _ALL,
         attr="_queue",
         line=lambda s, f: f.queued_prompts or OMIT,
         merge=lambda s, f: f.queued_prompts,
         read=_read_queued_prompts,
-        why=(
-            "RESUME does not hand them back, so the next full save after a History "
-            "resume clears them (#17025)"
-        ),
+        why="RESUME hands the queued prompts back too; a transfer import carries none",
     ),
     Field(
         "memory_mode",
@@ -1425,7 +1441,11 @@ FIELDS: tuple[Field, ...] = (
         line=_truthy(lambda s: s.linked_session_key),
         merge=_truthy(lambda s: s.linked_session_key),
         read=_read_linked_session_key,
-        why="RESUME does not restore it (a hooked revive restores it after the build)",
+        why=(
+            "RESUME restores it in the resume core from the fresher post-await "
+            "snapshot, beside the crew-log-class record a bare table read cannot "
+            "make (a hooked revive and a channel History resume both land there)"
+        ),
     ),
     # Durable provenance: a name is not evidence, so this flag is what tells a
     # later boot the tab was adopted from a channel conversation.
@@ -1448,9 +1468,14 @@ FIELDS: tuple[Field, ...] = (
         merge=_truthy(lambda s: getattr(s, "_tab_id", None)),
         read=_read_tab_id,
         why=(
-            "RESUME keeps the constructor's fresh id, which the next save writes over "
-            "the persisted one and so severs the fork chain (#17025). The full save "
-            "also carries the disk's id forward"
+            "RESUME keeps the constructor's fresh per-object id. ``tab_id`` is the "
+            "per-writer ownership mark ``_line_is_this_slots`` reads, and a resume "
+            "can run while the original slot is still live (close a running tab, "
+            "resume the same transcript): two live slots sharing one id would let "
+            "the old slot's rows-only save rebuild the resumed slot's line from "
+            "stale state. The startup reads adopt the id safely because no "
+            "concurrent same-transcript slot exists at boot. The full save carries "
+            "the disk's id forward"
         ),
     ),
     Field(
@@ -1631,7 +1656,7 @@ def slot_args(meta: dict[str, Any], purpose: Purpose) -> dict[str, Any]:
             args["channel_origin"] = bool(meta.get("channel_origin")) or bool(
                 meta.get("linked_session_key")
             )
-    args["origin"] = str(meta.get("origin", ""))
+    args["origin"] = _restore_origin(meta.get("origin"))
     return args
 
 
@@ -1664,7 +1689,11 @@ class AppliedMeta:
         in that order. Returns whether a local-turn marker was present.
         """
         slot = self.slot
-        if self.purpose.purpose in _STARTUP and self.restored_notes and persisted is not None:
+        # Every purpose that RESTORED held notes ``_read_deferred_notes`` -> drops
+        # the ones the loaded window already delivered. Gated on ``restored_notes``
+        # (populated only when the purpose read the field), so a purpose that reads
+        # no notes is a no-op here regardless.
+        if self.restored_notes and persisted is not None:
             pending = slot._deferred_notes
             slot._deferred_notes = drop_committed_restored_notes(persisted, pending)
             slot._dropped_note_ids.update(

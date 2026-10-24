@@ -1378,3 +1378,103 @@ def test_flush_failure_at_construction_does_not_leak_the_reservation(tmp_path, m
     assert "flush-leak-1" not in state._slots, "leaked a registered slot on flush failure"
     assert state.live_slot_count() == before, "leaked a construction reservation"
     assert "flush-leak-1" not in state._slots_under_construction
+
+
+@pytest.mark.asyncio
+async def test_a_raise_in_the_post_materialise_reads_releases_the_construction_mark(
+    tmp_path, monkeypatch
+):
+    """The reads AFTER ``_materialise_slot_from_history`` returns (the agent
+    restore, the model restore, the channel-link restore) run on a slot that is
+    REGISTERED and still under construction. The materialiser ends its own
+    rollback when it returns, and the reserved-path ``try``/``_discard`` only
+    starts at the containment await. A raise in any of those reads must not leak
+    the construction mark and the registered slot for the process lifetime:
+    ``live_slot_count`` counts it and every later mint on the key is refused with
+    no scavenge.
+
+    Force ``_restore_model_fields`` -- one of those post-materialise reads, on
+    the plain (non-reserved) History-resume path -- to raise, and assert the
+    mark was released, the slot dropped, and the key mintable again.
+    """
+    from kiro_crew.dashboard import chat_handlers as ch
+    from kiro_crew.dashboard.chat_api import resume as resume_mod
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    log = state.conversation_log
+    key = "dashboard:markleak1"
+    log.append(key, "user", "history-1")
+    log.append(key, "assistant", "history-2")
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("model restore blew up after materialise")
+
+    # The owner functions run on ``chat_handlers`` globals (see ``_facade_compose``),
+    # so the resume core resolves ``_restore_model_fields`` from there, not from the
+    # owner module's own namespace -- patch the facade home.
+    monkeypatch.setattr(ch, "_restore_model_fields", _boom)
+
+    before = state.live_slot_count()
+    with pytest.raises(RuntimeError, match="model restore blew up"):
+        await resume_mod.resume_slot_from_history(state, name="markleak1", history_key=key)
+
+    assert "markleak1" not in state._slots, "the half-built slot was left registered"
+    assert (
+        "markleak1" not in state._slots_under_construction
+    ), "the construction mark leaked: the key is reserved for the process lifetime"
+    assert state.live_slot_count() == before, "a construction reservation leaked into the count"
+    # The key is mintable again -- the leak would have refused this forever.
+    assert state.get_or_create_slot("markleak1") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_dashboard_resume_restores_the_channel_link_but_an_app_resume_does_not(
+    tmp_path, monkeypatch
+):
+    """A person resuming a channel conversation from the History tab keeps the
+    persisted ``linked_session_key``, so its next full save does not clear the
+    binding. An APP resume of a channel transcript it owns does NOT read the link
+    back from the line: the app token is scoped to the transcript, and binding
+    the slot to the channel session the line names would hand the app a
+    conversation whose own authorization this path never checks. Both resume the
+    same owned transcript; only the dashboard path restores the link.
+    """
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+
+    from kiro_crew.dashboard.slot_ownership import app_owns_transcript_meta
+
+    # A dashboard user (no app token) resuming a channel transcript.
+    state = _make_state(tmp_path)
+    log = state.conversation_log
+    key = "dashboard:linkrestore1"
+    log.append(key, "user", "history-1")
+    log.update_metadata(key, {"linked_session_key": "slack:C1:1.2"})
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.post("/api/chat/slots/linkrestore1/resume", json={"key": key})
+    assert resp.status == 200, f"dashboard resume did not publish (status {resp.status})"
+    slot = state._slots.get("linkrestore1")
+    assert slot is not None and slot.linked_session_key == "slack:C1:1.2", (
+        "a person's History resume of a channel conversation did not restore the link; "
+        "the next full save would clear the persisted binding"
+    )
+
+    # An app resuming a channel transcript it OWNS: the link is not read back.
+    state2 = _make_state(tmp_path / "home2")
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path / "home2")
+    log2 = state2.conversation_log
+    akey = "dashboard:applink1"
+    log2.append(akey, "user", "history-1")
+    log2.update_metadata(akey, {"app": "appA", "linked_session_key": "slack:C9:9.9"})
+    assert app_owns_transcript_meta(log2.get_metadata(akey), "appA")
+
+    async with TestClient(TestServer(_app_scoped(state2, "appA"))) as client:
+        resp = await client.post("/api/chat/slots/applink1/resume", json={"key": akey})
+    assert resp.status == 200, f"app resume did not publish (status {resp.status})"
+    aslot = state2._slots.get("applink1")
+    assert aslot is not None, "the app slot was never published"
+    assert not getattr(aslot, "linked_session_key", ""), (
+        "an app resume restored the channel link from the line; the app token must not "
+        "bind its slot to a channel session the resume path never authorized"
+    )
