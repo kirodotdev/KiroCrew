@@ -22,6 +22,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.config import live
 from kiro_crew.dashboard.chat_utils import (
     STEER_INTENT_META,
     STEER_POSSIBLY_DELIVERED_META,
@@ -433,12 +434,13 @@ async def steer_into_running_turn(
     client = getattr(slot, "_acp_client", None)
     if client is None or not getattr(client, "supports_steer", False):
         return STEER_UNAVAILABLE
-    if not user_origin and getattr(client, "steer_needs_loss_recovery", False) is True:
-        # codex can drop a steer it already took when a later approval in the turn
-        # is denied. That limit is accepted only for the composer, where the
-        # session's own human watches the turn and can resend; a peer's text
-        # takes the caller's queue path instead.
-        return STEER_UNAVAILABLE
+    peer_recovery = not user_origin and getattr(client, "steer_needs_loss_recovery", False) is True
+    if peer_recovery:
+        # The requeue keeps a steer this harness drops but may run it twice; peers opt in.
+        # A snapshot, not a load: no file read on the loop, no await before registering.
+        live_config = live.snapshot()
+        if live_config is None or not live_config.agent.peer_steer_loss_recovery:
+            return STEER_UNAVAILABLE
 
     # Register as pending BEFORE the await: ``steer()`` suspends on
     # ``stdin.drain()``, and if the turn's finally runs during that suspension
@@ -793,7 +795,10 @@ async def steer_into_running_turn(
     slot._steer_send_ids.pop(message, None)
     slot._steer_user_origin.pop(message, None)
     slot._steer_channel_origin.pop(message, None)
-    slot._steer_admissions.pop(message, None)
+    if not (still_registered and peer_recovery):
+        # A peer steer the key admitted stays pending until its turn ends; its requeue
+        # stamps this admission, the only record of the sender a drain drop must tell.
+        slot._steer_admissions.pop(message, None)
     # Same reason as `sendId` above, and why this is NOT held for the requeue the way
     # the attachments below are: the row persisted below carries the receipt, so a
     # turn-end requeue stamping it on the queue entry too would put one decision on

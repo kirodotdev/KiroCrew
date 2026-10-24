@@ -210,6 +210,7 @@ def _settle_consumed_steers(
     for settled_msg in set(previous) - set(remaining):
         responsive_chat.forget_steer(slot, settled_msg)
         slot._steer_attachment_meta.pop(settled_msg, None)
+        slot._steer_admissions.pop(settled_msg, None)
         slot._steer_act_now.discard(settled_msg)
         slot._steer_automation.pop(settled_msg, None)
         slot._steer_decision_strips.pop(settled_msg, None)

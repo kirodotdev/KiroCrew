@@ -543,6 +543,7 @@ async def stop_slot_turn(
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import (
             SEND_DISCARD_HARD_STOP,
+            SEND_DISCARD_HARD_STOP_STEER,
             notify_send_origin_discarded,
         )
 
@@ -571,6 +572,17 @@ async def stop_slot_turn(
         # discarded the text, so the caller is told it was not delivered instead
         # of having a row persisted for a message that never ran.
         for _discarded in slot._pending_steers:
+            # Still holding its admission, it answered steered (a peer steer the key admitted)
+            # or requeued; one still in its RPC will answer unavailable and be queued instead.
+            _admission = slot._steer_admissions.get(_discarded)
+            if _admission and _discarded not in slot._steer_rpc_in_flight:
+                notify_send_origin_discarded(
+                    state,
+                    entry_meta=_admission,
+                    target_slot=slot,
+                    text=_discarded,
+                    cause=SEND_DISCARD_HARD_STOP_STEER,
+                )
             slot._steer_delivery_ids.pop(_discarded, None)
             # Lockstep with the line above (see `_ChatSlot._steer_send_ids`): a hard
             # kill discards the text, so there is no requeued entry left to carry
