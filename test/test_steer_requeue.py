@@ -1319,6 +1319,35 @@ class TestSteerLifecycleState:
         assert states == ["written", "written"]
 
 
+def _keyed_peer_target(tmp_path, monkeypatch):
+    """A running slot on a loss-recovery client with the key on, plus a live sender slot and
+    the admission ``send_to_target`` hands the steer: its gate's containment and sender stamp."""
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.dashboard import session_control as sc
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    (tmp_path / "config.json").write_text(
+        json.dumps({"agent": {"peer_steer_loss_recovery": True}}), encoding="utf-8"
+    )
+    live.watch().prime(KiroCrewConfig.load())
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    # A drain drop writes a SEL row; keep it inline and off the real log.
+    monkeypatch.setattr(sc, "sel", MagicMock)
+    monkeypatch.setattr(sc, "_sel_off_loop", lambda write, what: write())
+    state = _make_state(tmp_path)
+    state.broadcast_ws = MagicMock()
+    sender = state.get_or_create_slot("chat-1")
+    slot = _running_slot(state)
+    client = MagicMock()
+    client.supports_steer = True
+    client.steer_needs_loss_recovery = True
+    client.steer = AsyncMock(return_value=True)
+    slot._acp_client = client
+    admission = {**sc.containment_meta(state, slot), **sc.send_origin_meta(state, sender.key)}
+    return state, slot, sender, admission
+
+
 class TestPeerSteerOnCodex:
     """By default codex steer is accepted only from the session's own composer.
 
@@ -1382,6 +1411,131 @@ class TestPeerSteerOnCodex:
         outcome = await steer_into_running_turn(state, slot, "from a peer", user_origin=False)
         assert outcome == STEER_STEERED
         assert slot._pending_steers == ["from a peer"]
+
+    @pytest.mark.asyncio
+    async def test_a_requeued_peer_steer_still_tells_its_sender_when_the_drain_drops_it(
+        self, tmp_path, monkeypatch, _patch_sel
+    ):
+        """These harnesses consume a steer only at the turn's clean end, so a peer's steer is
+        still pending after its RPC returns, and only its admission names the sender."""
+        from kiro_crew.dashboard import chat_runner as cr
+        from kiro_crew.dashboard import session_control as sc
+        from kiro_crew.dashboard.chat_delivery import STEER_STEERED, steer_into_running_turn
+        from kiro_crew.dashboard.chat_utils import slot_history_key
+
+        state, slot, sender, admission = _keyed_peer_target(tmp_path, monkeypatch)
+        outcome = await steer_into_running_turn(
+            state, slot, "from a peer", user_origin=False, admission=admission
+        )
+        assert outcome == STEER_STEERED
+
+        # A mirror lands while the steer waits, then a soft stop ends the turn before its clean end.
+        state.sessions.set_mirror_link(slot_history_key(slot), "C0MIRROR", "1700000000.000200")
+        cr._requeue_unconsumed_steers(state, slot)
+        assert sc.send_origin_slot(slot._queue[0].get("meta")) == sender.key
+
+        cr._drop_stale_admissions(state, slot)
+        assert slot._queue == []
+        notices = [m["content"] for m in sender.messages if m.get("role") == "notice"]
+        assert notices and "from a peer" in notices[-1]
+
+    @pytest.mark.asyncio
+    async def test_a_consumed_peer_steer_leaves_no_admission_behind(
+        self, tmp_path, monkeypatch, _patch_sel
+    ):
+        """The map is keyed by text and counts toward MAX_PENDING_STEERS, so an admission kept
+        past the clean end would hold the text for the slot's life and, in time, refuse steers."""
+        from kiro_crew.dashboard.chat_delivery import STEER_STEERED, steer_into_running_turn
+        from kiro_crew.dashboard.chat_runner import _settle_consumed_steers
+
+        state, slot, _sender, admission = _keyed_peer_target(tmp_path, monkeypatch)
+        outcome = await steer_into_running_turn(
+            state, slot, "from a peer", user_origin=False, admission=admission
+        )
+        assert outcome == STEER_STEERED
+
+        _settle_consumed_steers(slot, "<user_message>\nfrom a peer\n</user_message>", state)
+        assert slot._pending_steers == []
+        assert slot._steer_admissions == {}
+
+    @pytest.mark.asyncio
+    async def test_a_hard_stop_tells_the_sender_of_a_pending_peer_steer(
+        self, tmp_path, monkeypatch, _patch_sel
+    ):
+        """A hard stop drops the turn's pending steers. A peer's steer that already answered
+        steered is owed a notice; one still in its RPC answers unavailable and is queued."""
+        import asyncio
+
+        from kiro_crew.dashboard import chat_handlers as ch
+        from kiro_crew.dashboard.chat_delivery import (
+            STEER_STEERED,
+            STEER_UNAVAILABLE,
+            steer_into_running_turn,
+        )
+        from kiro_crew.testing.wait import async_wait_until, await_until
+
+        state, slot, sender, admission = _keyed_peer_target(tmp_path, monkeypatch)
+        release = asyncio.Event()
+
+        async def _answer(message):
+            if message == "held in its rpc":
+                await await_until(release, what="the test releasing the held steer RPC")
+            return True
+
+        slot._acp_client.steer = AsyncMock(side_effect=_answer)
+        steered = await steer_into_running_turn(
+            state, slot, "from a peer", user_origin=False, admission=admission
+        )
+        assert steered == STEER_STEERED
+        held = asyncio.ensure_future(
+            steer_into_running_turn(
+                state, slot, "held in its rpc", user_origin=False, admission=admission
+            )
+        )
+        await async_wait_until(lambda: "held in its rpc" in slot._steer_rpc_in_flight)
+
+        # Two Stop presses: the first is cooperative, the second hard-kills.
+        state.sessions.stop_turn = AsyncMock(return_value="cancelled")
+        await ch.stop_slot_turn(state, slot)
+        await ch.stop_slot_turn(state, slot)
+        assert slot._stop_state == "killing" and slot._pending_steers == []
+        release.set()
+        assert await await_until(held, what="the held steer") == STEER_UNAVAILABLE
+
+        notices = [m["content"] for m in sender.messages if m.get("role") == "notice"]
+        assert len(notices) == 1
+        assert "as a steer may not have run" in notices[0] and "from a peer" in notices[0]
+        # The turn may already have read it, so the notice must not claim it never ran.
+        assert "before it ran" not in notices[0] and "not delivered" not in notices[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key_on, notices", [(True, 1), (False, 0)])
+    async def test_a_hard_stop_tells_a_kiro_cli_peer_steer_sender_only_with_the_key_on(
+        self, tmp_path, monkeypatch, _patch_sel, key_on, notices
+    ):
+        """kiro-cli takes a peer's steer without the key and holds it until kiro-cli reads it.
+        The hard stop's notice follows the key, so with the key off a hard stop stays silent."""
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard import chat_handlers as ch
+        from kiro_crew.dashboard.chat_delivery import STEER_STEERED, steer_into_running_turn
+
+        state, slot, sender, admission = _keyed_peer_target(tmp_path, monkeypatch)
+        (tmp_path / "config.json").write_text(
+            json.dumps({"agent": {"peer_steer_loss_recovery": key_on}}), encoding="utf-8"
+        )
+        live.watch().prime(KiroCrewConfig.load())
+        slot._acp_client.steer_needs_loss_recovery = False
+        outcome = await steer_into_running_turn(
+            state, slot, "from a peer", user_origin=False, admission=admission
+        )
+        assert outcome == STEER_STEERED and "from a peer" in slot._steer_admissions
+
+        state.sessions.stop_turn = AsyncMock(return_value="cancelled")
+        await ch.stop_slot_turn(state, slot)
+        await ch.stop_slot_turn(state, slot)
+        assert slot._stop_state == "killing" and slot._pending_steers == []
+        assert len([m for m in sender.messages if m.get("role") == "notice"]) == notices
 
     @pytest.mark.asyncio
     async def test_the_composer_still_steers_codex(self, tmp_path, monkeypatch, _patch_sel):

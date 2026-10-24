@@ -1308,7 +1308,9 @@ class AgentConfig:
             "Those harnesses can drop a steer they accepted, so it counts as "
             "delivered only when the turn ends cleanly; a turn that is cancelled, "
             "fails or loses it to a denied approval puts it back as a queue card "
-            "that runs as the next turn, so it can run twice. Off by default: such "
+            "that runs as the next turn, so it can run twice. While it is on, a "
+            "hard stop that drops another session's pending steer, on any harness, "
+            "tells that session the steer may not have run. Off by default: such "
             "a steer queues for the next turn, and only the composer steers these "
             "harnesses.",
         ),

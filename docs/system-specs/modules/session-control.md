@@ -292,8 +292,16 @@ authorization. The recipient is resolved by the same check as the drop notice
 self-send, a closed sender, and a reused key held by a different tab. The hard
 stop reports exactly the entries it takes off the queue, before the settle can
 suspend; a send that lands during the settle stays queued and is not reported,
-because it will still run. Best-effort here too: the discard
-was already decided by the person or the stop.
+because it will still run. The same hard stop drops the turn's pending steers.
+While `agent.peer_steer_loss_recovery` is on, the sender of a pending peer steer
+that answered `steered` or requeued gets `SEND_DISCARD_HARD_STOP_STEER`: the
+notice says the steer may not have run, since the turn may already have read it,
+and that it will not be queued to run later. That covers a steer the key
+admitted, which waits for its turn's clean end, and a peer's kiro-cli or KAS
+steer its turn has not read yet. A steer still in its RPC is skipped, because it
+answers unavailable and its sender queues it. With the key off a hard stop drops
+every pending steer without a notice. Best-effort here too: the discard was
+already decided by the person or the stop.
 
 **The stamp names a session, not a key, and does not survive a restart.** It
 carries the sender's `_tab_id` beside its slot key and is omitted unless both are
@@ -2687,7 +2695,9 @@ reads it from the config watcher's snapshot (`config.live.snapshot()`), never fr
 disk, because the read runs on the event loop and before the steer registers. A
 change applies once the watcher has reloaded the file, without a restart; with no
 snapshot yet the steer is refused as with the key off. A composer steer, or a steer
-into kiro-cli or KAS, never reads the key.
+into kiro-cli or KAS, never reads the key at admission. The hard stop reads the same
+snapshot to decide its steer notice, so while the key is on that notice reaches a
+peer's kiro-cli or KAS steer too.
 
 ## Module layout
 
