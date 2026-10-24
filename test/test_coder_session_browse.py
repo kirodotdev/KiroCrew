@@ -379,8 +379,35 @@ async def test_nul_status_record_with_multiline_credential_is_withheld(browse_ta
     result = await session_browse.browse_session(SESSION, "git_status", ".")
 
     assert result["output"] == (
-        "## main\0[REDACTED: credential]\n[REDACTED: credential]\0?? keep.txt\0"
+        "## main\0?? [REDACTED: credential]\n[REDACTED: credential]\0?? keep.txt\0"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("output", "shown"),
+    [
+        (
+            "R  Authorization: Bearer\nopaque-example\0old.txt\0?? keep.txt\0",
+            "R  [REDACTED: credential]\n[REDACTED: credential]\0old.txt\0?? keep.txt\0",
+        ),
+        (
+            "C  new.txt\0Authorization: Bearer\nopaque-example\0?? keep.txt\0",
+            "C  new.txt\0[REDACTED: credential]\n[REDACTED: credential]\0?? keep.txt\0",
+        ),
+    ],
+)
+async def test_a_masked_status_name_keeps_its_code_and_the_rows_after_it(
+    browse_target, output, shown
+):
+    """Only the name is masked: a status code stays, so the panel does not read
+    a masked record as a move and swallow the next row as its source."""
+    _config, _record, _runner, guest = browse_target
+    guest.return_value = json.dumps({"git": True, "output": output}).encode()
+
+    result = await session_browse.browse_session(SESSION, "git_status", ".")
+
+    assert result["output"] == shown
 
 
 @pytest.mark.asyncio
@@ -515,6 +542,115 @@ def test_only_a_matching_footer_after_a_pem_begin_closes_it(footer):
     output = session_browse._git_diff_from_bodies(reply, "f")["output"]
     assert output.endswith(("+" + REDACTED_CREDENTIAL_TAG + "\n") * 3)
     assert "opaque" not in output
+
+
+@pytest.mark.parametrize(
+    "opener",
+    [
+        "key: " + _PEM_BEGIN_RSA,
+        '  "private_key": "' + _PEM_BEGIN_RSA,
+        "ssh_key=" + _PEM_BEGIN_RSA,
+    ],
+)
+def test_a_field_prefixed_unclosed_pem_is_withheld(opener):
+    """An opener after a field prefix, with no footer, is still withheld through
+    EOF: the shared redactor masks the header line but not a 32-column body."""
+    import base64
+    import secrets
+
+    from kiro_crew.security import REDACTED_CREDENTIAL_TAG
+
+    blob = base64.b64encode(secrets.token_bytes(600)).decode()
+    key_lines = ["  " + blob[i : i + 32] for i in range(0, len(blob), 32)]
+    body = "config:\n" + opener + "\n" + "\n".join(key_lines) + "\n"
+    reply = {"git": True, "old": None, "new": body}
+    output = session_browse._git_diff_from_bodies(reply, "f")["output"]
+    assert "+config:\n" in output
+    assert output.endswith(("+" + REDACTED_CREDENTIAL_TAG + "\n") * (len(key_lines) + 1))
+    assert not any(line.strip() in output for line in key_lines)
+
+
+def test_a_field_prefixed_footer_closes_its_pem():
+    """A closed block is left to the shared redactor: nothing after it is withheld."""
+    body = "a: " + _PEM_BEGIN_RSA + "\n  opaque\nb: " + _PEM_END_RSA + "\nafter\n"
+    assert session_browse._withhold_unclosed_pem(body) == body
+    reply = {"git": True, "old": None, "new": body}
+    assert "+after\n" in session_browse._git_diff_from_bodies(reply, "f")["output"]
+
+
+def test_reordered_repeated_lines_get_the_cut_off_reply_not_a_minute_long_diff():
+    """100 distinct lines x 200, reversed: each repeats under autojunk's 1% cut,
+    so difflib would compare 4M pairs per pass (measured: over a minute). The
+    gateway answers with the over-cap reply instead, and fast."""
+    import time
+
+    body = "".join(f"line-{i:03d} value\n" for i in range(100)) * 200
+    reply = {
+        "git": True,
+        "old": body,
+        "new": "".join(reversed(body.splitlines(keepends=True))),
+        "old_mode": "100644",
+        "new_mode": "100755",
+    }
+    started = time.monotonic()
+    result = session_browse._git_diff_from_bodies(reply, "big.txt")
+    elapsed = time.monotonic() - started
+    assert elapsed < 2  # flake-ok: two-second budget; the unbounded diff takes over a minute
+    assert result["truncated"] is True
+    assert result["output"] == "diff --git a/big.txt b/big.txt\nold mode 100644\nnew mode 100755\n"
+
+
+def test_unique_lines_with_swapped_neighbours_get_the_cut_off_reply_fast(monkeypatch):
+    """Every line is unique, so no pair count is large, but each match is one
+    line long and the matcher rescans a shrinking range per match: unbudgeted,
+    10,000 such lines take about ten seconds. A smaller budget keeps the test
+    quick on a slow runner; the work counted is the same."""
+    import time
+
+    monkeypatch.setattr(session_browse, "_DIFF_WORK_BUDGET", 500_000, raising=False)
+    old = [f"{i}\n" for i in range(10000)]
+    new = list(old)
+    for i in range(0, len(new) - 1, 2):
+        new[i], new[i + 1] = new[i + 1], new[i]
+    started = time.monotonic()
+    result = session_browse._git_diff_from_bodies(
+        {"git": True, "old": "".join(old), "new": "".join(new)}, "moved.txt"
+    )
+    elapsed = time.monotonic() - started
+    assert elapsed < 2  # flake-ok: two-second budget; the unbudgeted diff takes about ten
+    assert result["truncated"] is True
+    assert result["output"] == ""
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("a\nb\nc\n", "a\nB\nc\n"),
+        ("", "one\ntwo\n"),
+        ("one\ntwo\n", ""),
+        ("x\n" * 3 + "y", "x\n" * 3 + "y\n"),
+        ("".join(f"{i}\n" for i in range(40)), "".join(f"{i}\n" for i in range(40) if i % 9)),
+        ("same\n", "same\n"),
+    ],
+)
+def test_budgeted_hunks_match_difflib_unified_diff(old, new):
+    import difflib
+
+    a, b = old.splitlines(keepends=True), new.splitlines(keepends=True)
+    expected = list(difflib.unified_diff(a, b, fromfile="a/f", tofile="b/f", n=3))
+    assert session_browse._unified_hunks(a, b, "a/f", "b/f") == expected
+
+
+def test_a_large_file_with_scattered_edits_still_gets_its_hunks():
+    old = [f"row {i} some ordinary source text\n" for i in range(20000)]
+    new = list(old)
+    for i in range(0, 20000, 997):
+        new[i] = f"row {i} edited\n"
+    result = session_browse._git_diff_from_bodies(
+        {"git": True, "old": "".join(old), "new": "".join(new)}, "src.txt"
+    )
+    assert not result.get("truncated")
+    assert "+row 997 edited\n" in result["output"]
 
 
 @pytest.mark.parametrize("renamed", [False, True])

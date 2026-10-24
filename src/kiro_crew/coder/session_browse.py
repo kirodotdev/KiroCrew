@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import itertools
 import json
 import re
 import shlex
@@ -31,6 +32,11 @@ from kiro_crew.session_environment import SessionEnvironmentUnavailable
 from kiro_crew.session_environments import browse as vm_browse
 
 _GIT_OPS = frozenset(("git_status", "git_log", "git_diff"))
+#: Matcher work allowed for one diff, counted over every subrange it searches:
+#: each search costs its ``a`` lines plus the ``b`` positions it can scan for
+#: them. Moved or repeated lines make the total quadratic; measured, this
+#: budget is spent in about a second.
+_DIFF_WORK_BUDGET = 5_000_000
 
 #: The guest caps a read at 256 KB of text; JSON escaping can roughly double it.
 _BROWSE_OUTPUT_MAX = 2 * 1024 * 1024
@@ -197,6 +203,72 @@ def _check_path(path: str) -> str:
     return path or "."
 
 
+class _DiffBudgetSpent(Exception):
+    pass
+
+
+class _BudgetedMatcher(difflib.SequenceMatcher):
+    """``SequenceMatcher`` that stops once its searches pass ``budget``.
+
+    One ``find_longest_match`` scans, for each ``a`` line in its range, that
+    line's positions in ``b``. Charging the range length plus those position
+    counts before each search bounds the total, however often the matcher
+    recurses into smaller ranges.
+    """
+
+    # Set by ``SequenceMatcher`` itself; typeshed leaves them undeclared.
+    a: list[str]
+    b2j: dict[str, list[int]]
+
+    def __init__(self, a: list[str], b: list[str], budget: int) -> None:
+        super().__init__(None, a, b)
+        self._left = budget
+        counts = (len(self.b2j.get(line, ())) for line in a)
+        self._scan = list(itertools.accumulate(counts, initial=0))
+
+    def find_longest_match(
+        self, alo: int = 0, ahi: int | None = None, blo: int = 0, bhi: int | None = None
+    ) -> difflib.Match:
+        ahi = len(self.a) if ahi is None else ahi
+        self._left -= ahi - alo + self._scan[ahi] - self._scan[alo]
+        if self._left < 0:
+            raise _DiffBudgetSpent
+        return super().find_longest_match(alo, ahi, blo, bhi)
+
+
+def _unified_range(start: int, stop: int) -> str:
+    """A hunk side in ``unified_diff``'s ``start,length`` form."""
+    length = stop - start
+    if length == 1:
+        return str(start + 1)
+    return f"{start + 1 if length else start},{length}"
+
+
+def _unified_hunks(old: list[str], new: list[str], fromfile: str, tofile: str) -> list[str]:
+    """``difflib.unified_diff`` lines with three context lines, budgeted.
+
+    Raises ``_DiffBudgetSpent`` when the matcher's work passes the budget.
+    """
+    groups = list(_BudgetedMatcher(old, new, _DIFF_WORK_BUDGET).get_grouped_opcodes(3))
+    if not groups:
+        return []
+    out = [f"--- {fromfile}\n", f"+++ {tofile}\n"]
+    for group in groups:
+        first, last = group[0], group[-1]
+        out.append(
+            f"@@ -{_unified_range(first[1], last[2])} +{_unified_range(first[3], last[4])} @@\n"
+        )
+        for tag, i1, i2, j1, j2 in group:
+            if tag == "equal":
+                out += [" " + line for line in old[i1:i2]]
+                continue
+            if tag in ("replace", "delete"):
+                out += ["-" + line for line in old[i1:i2]]
+            if tag in ("replace", "insert"):
+                out += ["+" + line for line in new[j1:j2]]
+    return out
+
+
 def _redact_git_line(line: str) -> str:
     clean = redact_via_context(line)
     if "\n" in clean or "\0" in clean:
@@ -208,25 +280,39 @@ def _redact_git_text(text: str, *, nul_framed: bool) -> str:
     """Run the shared redactor without consuming Git's record framing.
 
     ``nul_framed`` text (``git status -z``) is redacted one NUL record at a
-    time, so a record whose name holds a newline is judged whole. Anything
+    time, after its status code, so a name holding a newline is judged whole. Anything
     else is newline-framed and redacted one line at a time: a credential
     prefix at the end of one line must not swallow the line after it. That
     cannot split a credential, because each ``git_log`` line is one whole
     commit (``%h\\t%an\\t%at\\t%s`` with a one-line subject).
     """
     records = []
+    source_next = False
     for record in text.split("\0"):
-        lines = record.split("\n")
         if not nul_framed:
-            records.append("\n".join(_redact_git_line(line) for line in lines))
+            records.append("\n".join(_redact_git_line(line) for line in record.split("\n")))
             continue
-        clean = redact_via_context(record).split("\n")
-        if len(clean) != len(lines):
-            # A multiline credential can consume line breaks. Withhold the
-            # record's bodies rather than expose fragments or move records.
-            clean = [REDACTED_CREDENTIAL_TAG if body else "" for body in lines]
-        records.append("\n".join(clean))
+        # A status record starts with its ``XY `` code, which is kept so the
+        # panel still reads the row; the record after a rename or copy is its
+        # source path and has no code.
+        keep = 0 if source_next or not _STATUS_PREFIX_RE.match(record) else 3
+        source_next = keep > 0 and any(c in "RC" for c in record[:2])
+        records.append(record[:keep] + _redact_status_name(record[keep:]))
     return "\0".join(records)
+
+
+#: ``git status --porcelain=v1`` record code (or the ``## `` branch line).
+_STATUS_PREFIX_RE = re.compile(r"[ MTADRCU?!#]{2} ")
+
+
+def _redact_status_name(name: str) -> str:
+    lines = name.split("\n")
+    clean = redact_via_context(name).split("\n")
+    if len(clean) != len(lines):
+        # A multiline credential can consume line breaks. Withhold the
+        # name's lines rather than expose fragments or move records.
+        clean = [REDACTED_CREDENTIAL_TAG if part else "" for part in lines]
+    return "\n".join(clean)
 
 
 _GIT_MODES = frozenset(("100644", "100755", "120000", "160000"))
@@ -261,20 +347,27 @@ def _git_extended_header(result: dict[str, Any], old_name: str, new_name: str) -
     return "".join(line + "\n" for line in lines)
 
 
+#: A PEM opener or footer anywhere in a line, so a field-prefixed one
+#: (``key: -----BEGIN ...-----``, ``"pem": "-----BEGIN ...``) counts too.
+_PEM_MARKER_RE = re.compile(r"-----(BEGIN|END) (.+?)-----")
+
+
 def _withhold_unclosed_pem(body: str) -> str:
     """Mask an unmatched PEM opener through EOF, preserving LF counts and final LF."""
     parts = body.split("\n")
     closed: set[str] = set()
     cut = len(parts)
-    # A backwards pass finds matching footers without rescanning each suffix.
+    # A backwards pass finds matching footers without rescanning each suffix;
+    # markers within a line are read right to left for the same reason.
     for i in range(len(parts) - 1, -1, -1):
-        marker = parts[i].strip()
-        if not marker.endswith("-----"):
+        if "-----" not in parts[i]:
             continue
-        if marker.startswith("-----END "):
-            closed.add(marker[9:-5])
-        elif marker.startswith("-----BEGIN ") and marker[11:-5] not in closed:
-            cut = i
+        for marker in reversed(list(_PEM_MARKER_RE.finditer(parts[i]))):
+            kind, label = marker.group(1), marker.group(2).strip()
+            if kind == "END":
+                closed.add(label)
+            elif label not in closed:
+                cut = i
     if cut == len(parts):
         return body
     # The empty split field after a final LF is not an extra source line.
@@ -326,13 +419,17 @@ def _git_diff_from_bodies(result: dict[str, Any], path: str) -> dict[str, Any]:
     old_lines, new_lines = lines(old), lines(new)
     extended = _git_extended_header(result, old_name, name)
     header = f"diff --git {a} {b}\n" + extended
-    patch = difflib.unified_diff(
-        old_lines,
-        new_lines,
-        fromfile=a if result["old"] is not None else "/dev/null",
-        tofile=b if result["new"] is not None else "/dev/null",
-        n=3,
-    )
+    try:
+        patch = _unified_hunks(
+            old_lines,
+            new_lines,
+            a if result["old"] is not None else "/dev/null",
+            b if result["new"] is not None else "/dev/null",
+        )
+    except _DiffBudgetSpent:
+        # Many moved or repeated lines make the matcher quadratic; show the
+        # cut-off notice instead of the hunks.
+        return {**view, "truncated": True, "output": header if extended else ""}
     output = "".join(
         line if line.endswith("\n") else line + "\n\\ No newline at end of file\n" for line in patch
     )
