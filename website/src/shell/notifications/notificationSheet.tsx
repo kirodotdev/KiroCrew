@@ -8,6 +8,7 @@ import { useAppSelector, useAppDispatch } from '../../store'
 import { ackNotification } from '../../store/notificationsSlice'
 import { setActiveId } from '../../store/instancesSlice'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import { useAckCronNotesInView } from '../../hooks/useAckCronNotesInView'
 import { animateDrawer, registerDrawerTargets, takeOverDrawer } from '../../hooks/useDrawerSwipe'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import ErrorBoundary from '../../components/ErrorBoundary'
@@ -222,6 +223,9 @@ export function useNotificationSheet() {
     openPanel()
     setSelectedTs(ts)
   }, [openPanel, crewHidden, dispatch])
+  // Lives with the bell because it reads the bell's notes: a cron run's note is
+  // marked read once its chat is on screen (#23564), never behind a remote Crew.
+  useAckCronNotesInView({ hidden: crewHidden })
 
   // See NC_CLOSE_BACKSTOP_MS: `animateDrawer`'s arrival callback owns the
   // unmount, and this only rescues a phase that never heard back at all.

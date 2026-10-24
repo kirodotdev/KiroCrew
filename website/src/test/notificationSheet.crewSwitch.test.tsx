@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'vitest'
-import { act, renderHook } from '@testing-library/react'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { act, renderHook, waitFor } from '@testing-library/react'
+import { api } from '../api/client'
+import { setActiveSlot } from '../store/chatSlice'
+import { addNotification } from '../store/notificationsSlice'
 import { Provider, useSelector } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import type { ReactNode } from 'react'
@@ -35,6 +38,44 @@ describe('notification sheet across Crew switches', () => {
     act(() => { result.current.openPanelOn('1700000000.000001') })
     expect(store.getState().instances.activeId).toBeNull()
     expect(result.current.selectedTs).toBe('1700000000.000001')
+  })
+
+  // #23564: the sheet's hook marks an open cron chat's note read, but not while
+  // a remote Crew covers the local one.
+  describe('cron note read on view', () => {
+    function setupCron(hidden: boolean) {
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+      const ack = vi.spyOn(api, 'ackNotification').mockResolvedValue(new Response('{}'))
+      const store = createTestStore()
+      store.dispatch(setActiveId(hidden ? 'remote-crew' : null))
+      store.dispatch(setActiveSlot('cron-a'))
+      store.dispatch(addNotification({ kind: 'cron', title: 'Digest', body: 'done', ts: 'run-1', slot: 'cron-a', job_id: 'job-a' }))
+      function Root({ children }: { children: ReactNode }) {
+        const remoteActive = useSelector((s: RootState) => s.instances.activeId !== null)
+        return <LocalOverlayRoot hidden={remoteActive}>{children}</LocalOverlayRoot>
+      }
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <Provider store={store}>
+          <MemoryRouter initialEntries={['/chat']}><Root>{children}</Root></MemoryRouter>
+        </Provider>
+      )
+      renderHook(() => useNotificationSheet(), { wrapper })
+      return { store, ack }
+    }
+    afterEach(() => vi.restoreAllMocks())
+
+    it('marks it read with the local Crew in front', async () => {
+      const { store, ack } = setupCron(false)
+      await waitFor(() => expect(store.getState().notifications.items[0].acked).toBe(true))
+      expect(ack).toHaveBeenCalledWith('run-1')
+    })
+
+    it('leaves it unread behind a remote Crew', async () => {
+      const { store, ack } = setupCron(true)
+      await act(async () => { await Promise.resolve() })
+      expect(ack).not.toHaveBeenCalled()
+      expect(store.getState().notifications.items[0].acked).toBeFalsy()
+    })
   })
 
   it('opens the sheet in place when the local Crew is already showing', () => {
