@@ -122,6 +122,14 @@ class _TerminalSession:
     # forwarded byte-for-byte.
     ready_marker: bytes | None = None
     ready_probe: bytearray = field(default_factory=bytearray)
+    # True for a shell in a remote Session Environment workspace (the provider
+    # CLI's login shell). This gateway cannot see that shell's directory or
+    # files, so path and command completion answer nothing for it.
+    remote: bool = False
+    # The chat a LOCAL shell was opened for (its ``slot`` query), else "". Binding
+    # that chat to a session environment retires the shell, so input typed into
+    # it cannot keep reaching the gateway after the chat moved.
+    chat_slot: str = ""
     # Serializes concurrent WS writes (reader loop + title poller + pong);
     # aiohttp's WebSocket writer is not safe for concurrent sends.
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)

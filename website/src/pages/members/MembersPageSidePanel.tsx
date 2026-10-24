@@ -45,6 +45,7 @@ import { usePanelTabDescriptors } from '../../hooks/panelTabRegistry'
 import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
 import { useMemberDocumentComments } from '../../hooks/useMemberDocumentComments'
 import { useRunInTerminalBridge, useRunInTerminalRefs } from '../../hooks/useRunInTerminalBridge'
+import { useSlotRunsHere } from '../../components/sessionEnvironmentHooks'
 import { lastActivityEpoch } from '../chat/sessionOrder'
 import { type ChatSlot } from '../../types'
 import { type MembersPageProfileFlight, type MembersPageProfileState } from './MembersPageProfile'
@@ -388,11 +389,20 @@ export function useMembersPageSidePanel({
   const runInTerminalReadyRef = useRef(slotRecordPresent)
   runInTerminalReadyRef.current = slotRecordPresent
   const runInTerminalRefs = useRunInTerminalRefs()
+  // The member chat's placement, as on the chat page: no dock shell here for a
+  // chat that runs in a Session Environment workspace.
+  const runsHere = useSlotRunsHere(confirmedSlot)
+  const runsHereRef = useRef(runsHere)
+  runsHereRef.current = runsHere
+  const runInTerminalSlotRef = useRef(confirmedSlot)
+  runInTerminalSlotRef.current = confirmedSlot
   const runInTerminalScope = useRunInTerminalBridge({
     queryClient,
     showActionError,
     cwdRef: runInTerminalCwdRef,
     readyRef: runInTerminalReadyRef,
+    runsHereRef,
+    slotRef: runInTerminalSlotRef,
     ...runInTerminalRefs,
   })
   // Transcript file links focus a side-panel tab, but the schedule draft now

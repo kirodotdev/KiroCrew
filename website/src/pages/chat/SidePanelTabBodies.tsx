@@ -329,7 +329,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
   // switch cannot remount its `AppHost`. The tab loop in `SidePanel.tsx` returns null for both.
   const terminalsPending = usePanelTerminalsPending()
   // A restored shell may be gone: connecting before the ruling would spawn a new one.
-  if (tab.kind === 'terminal') return terminalsPending ? null : <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} visible={active} onSendToChat={onTerminalSendToChat} />
+  if (tab.kind === 'terminal') return terminalsPending ? null : <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} remoteSlot={tab.remoteSlot} chatSlot={slot || undefined} visible={active} onSendToChat={onTerminalSendToChat} />
   if (tab.kind === 'browser') return <WebPreviewPanel sessionKey={slot} active={active} />
   if (tab.kind === 'app') return <McpAppTabBody tab={tab} slot={slot} />
   // Cross-remount scroll identity for document bodies. Same slot+id key shape

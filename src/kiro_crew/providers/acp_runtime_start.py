@@ -253,6 +253,11 @@ async def _start_kiro_runtime(self: AcpProvider) -> None:
         outcome = "auth_required"
         raise
     finally:
+        # A remote start's stage ends with the start, so a Stop never leaves one stale.
+        from kiro_crew.session_environment import clear_start_stage
+
+        key = meta.get("session_key")
+        clear_start_stage(key if isinstance(key, str) else None)
         self._emit_kiro_startup_metric(t0, phases, outcome, meta)
 
 
@@ -592,7 +597,7 @@ async def _start_kiro_runtime_impl(
     from kiro_crew.coder.session_launch import prepare_for_session
     from kiro_crew.config import live
     from kiro_crew.config.loader import KiroCrewConfig
-    from kiro_crew.session_environment import session_environments_enabled
+    from kiro_crew.session_environment import report_start_stage, session_environments_enabled
 
     config = live.snapshot()
     if config is None:
@@ -614,6 +619,7 @@ async def _start_kiro_runtime_impl(
         # A fresh guest worker per runtime: the bridge spends its one-use secret.
         assert remote is not None
         target.check_remote_workspace_supported()
+        report_start_stage(session_key, "connecting")
         server = await remote.launch.workspace_server(remote.workdir)
         relay = remote.launch.relay
         target.set_remote_workspace(
@@ -627,6 +633,7 @@ async def _start_kiro_runtime_impl(
                 "close": functools.partial(remote.launch.close_relay, relay),
             }
         )
+        report_start_stage(session_key, "starting_agent")
 
     from kiro_crew.session_environment import (
         forget_remote_workspace,

@@ -1,15 +1,18 @@
-"""Guest writes keep bytes and locks where they belong, and status runs nothing."""
+"""Guest saves preserve bytes and serialize with every participating writer."""
 
 from __future__ import annotations
 
 import errno
 import io
 import json
+import multiprocessing
 import os
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -44,6 +47,20 @@ def _windows_guest(monkeypatch, release_at):
     return clock, crt
 
 
+def test_non_utf8_is_read_only_and_cannot_be_saved(tmp_path):
+    original = b"caf\xe9\n"
+    path = tmp_path / "latin.txt"
+    path.write_bytes(original)
+    ws = wt.Workspace(str(tmp_path))
+    result = wt.browse(ws, {"op": "read", "path": path.name})
+    assert result["binary"] is True
+    assert result["content"] == ""
+    for expected in (original.decode("utf-8", "replace"), None):
+        saved = wt.write_request(ws, {"path": path.name, "content": "edit", "expected": expected})
+        assert "error" in saved and "ok" not in saved
+        assert path.read_bytes() == original
+
+
 def test_tool_value_errors_do_not_end_the_stdio_server(tmp_path):
     (tmp_path / "latin.txt").write_bytes(b"caf\xe9")
     replies = _serve(
@@ -58,10 +75,94 @@ def test_tool_value_errors_do_not_end_the_stdio_server(tmp_path):
     assert (tmp_path / "latin.txt").read_bytes() == b"caf\xe9"
 
 
+def _agent_writer(root, operation, observed):
+    import fcntl
+
+    real_flock = fcntl.flock
+
+    def flock(fd, flags):
+        if flags == fcntl.LOCK_EX:
+            try:
+                real_flock(fd, flags | fcntl.LOCK_NB)
+            except BlockingIOError:
+                observed.send("blocked")
+            else:
+                observed.send("free")
+        return real_flock(fd, flags)
+
+    fcntl.flock = flock
+    try:
+        ws = wt.Workspace(root)
+        if operation == "write":
+            ws.write_file("file.txt", "agent")
+        else:
+            ws.edit_file("file.txt", "dashboard", "agent")
+        observed.send("done")
+    except Exception as exc:
+        observed.send(type(exc).__name__)
+    finally:
+        observed.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX guest cross-process flock")
+@pytest.mark.parametrize("operation", ["write", "edit"])
+def test_dashboard_compare_and_replace_hold_the_agent_writer_lock(tmp_path, monkeypatch, operation):
+    path = tmp_path / "file.txt"
+    path.write_text("base")
+    ws = wt.Workspace(str(tmp_path))
+    compared, release = Event(), Event()
+    real_write = ws._write_file_locked
+
+    def paused_write(real, text):
+        compared.set()
+        assert release.wait(30), "dashboard write was not released"
+        return real_write(real, text)
+
+    monkeypatch.setattr(ws, "_write_file_locked", paused_write)
+    ctx = multiprocessing.get_context("spawn")
+    receiver, sender = ctx.Pipe(duplex=False)
+    child = ctx.Process(target=_agent_writer, args=(str(tmp_path), operation, sender))
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        request = {"path": path.name, "content": "dashboard", "expected": "base"}
+        dashboard = pool.submit(wt.write_request, ws, request)
+        try:
+            assert compared.wait(30), "dashboard did not compare the original file"
+            child.start()
+            sender.close()
+            assert receiver.poll(30), "agent did not attempt its lock"
+            assert receiver.recv() == "blocked"
+        finally:
+            release.set()
+            dashboard_result = dashboard.result(timeout=30)
+            if child.pid is not None:
+                child.join(30)
+                if child.is_alive():
+                    child.terminate()
+                    child.join(30)
+        assert dashboard_result["ok"] is True
+        assert receiver.poll(30) and receiver.recv() == "done"
+        assert child.exitcode == 0
+        receiver.close()
+    assert path.read_text() == "agent"
+
+
+def test_stale_and_deleted_files_are_not_replaced(tmp_path):
+    ws = wt.Workspace(str(tmp_path))
+    path = tmp_path / "file.txt"
+    path.write_text("agent")
+    request = {"path": path.name, "content": "dashboard", "expected": "base"}
+    assert wt.write_request(ws, request)["conflict"] is True
+    assert path.read_text() == "agent"
+    path.unlink()
+    assert wt.write_request(ws, request)["conflict"] is True
+    assert not path.exists()
+
+
 def test_lock_files_are_not_workspace_browser_entries(tmp_path):
     ws = wt.Workspace(str(tmp_path))
     ws.write_file("file.txt", "ok")
     assert ws.list_directory(".") == "file.txt"
+    assert wt.browse(ws, {"op": "list"})["entries"] == [{"name": "file.txt", "dir": False}]
     assert [Path(p).name for p in ws._walk(str(tmp_path))] == ["file.txt"]
 
 
@@ -70,23 +171,24 @@ def test_guest_entry_points_share_locks_outside_the_project(tmp_path, monkeypatc
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+    request = {"path": "file.txt", "content": "base"}
+    monkeypatch.setattr(
+        wt.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(json.dumps(request).encode()))
+    )
+    assert wt.main(["--root", str(project), "--write"]) == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert set(project.iterdir()) == {project / "file.txt"}
     locks = home / ".kirocrew-worker" / "file-locks"
-    for n, message in enumerate(
-        [
-            _call(1, "write_file", path="file.txt", content="base"),
-            _call(2, "edit_file", path="file.txt", old_str="base", new_str="agent"),
-        ]
-    ):
-        monkeypatch.setattr(
-            wt.sys,
-            "stdin",
-            SimpleNamespace(buffer=io.BytesIO(json.dumps(message).encode() + b"\n")),
-        )
-        assert wt.main(["--root", str(project)]) == 0
-        assert json.loads(capsys.readouterr().out)["result"]["isError"] is False
-        assert len(list(locks.iterdir())) == 1, f"call {n} left its lock elsewhere"
-        assert set(project.iterdir()) == {project / "file.txt"}
+    assert len(list(locks.iterdir())) == 1
+    message = _call(1, "edit_file", path="file.txt", old_str="base", new_str="agent")
+    monkeypatch.setattr(
+        wt.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(json.dumps(message).encode() + b"\n"))
+    )
+    assert wt.main(["--root", str(project)]) == 0
+    assert json.loads(capsys.readouterr().out)["result"]["isError"] is False
+    assert len(list(locks.iterdir())) == 1
     assert (project / "file.txt").read_text() == "agent"
+    assert set(project.iterdir()) == {project / "file.txt"}
 
 
 @pytest.mark.parametrize("replace_all", [None, 0, 1, 0.0, 1.0, "", "false", "true", [], {}, [1]])
@@ -233,6 +335,18 @@ def test_every_workspace_read_tool_hands_governance_a_path(tmp_path):
     assert result["isError"] is True and "token" not in result["content"][0]["text"]
 
 
+def test_browse_read_keeps_text_whose_last_character_the_cap_splits(tmp_path):
+    head = b"a" * (wt.MAX_READ_BYTES - 1)
+    (tmp_path / "cjk.txt").write_bytes(head + "\u6f22\u5b57\n".encode())  # cap lands mid-character
+    out = wt.browse(wt.Workspace(str(tmp_path)), {"op": "read", "path": "cjk.txt"})
+    assert out["binary"] is False and out["truncated"] is True
+    assert out["content"] == head.decode()
+    (tmp_path / "bad.txt").write_bytes(b"ok\xff\n")  # a real invalid byte is still caught
+    assert (
+        wt.browse(wt.Workspace(str(tmp_path)), {"op": "read", "path": "bad.txt"})["binary"] is True
+    )
+
+
 @needs_git
 @pytest.mark.skipif(os.name == "nt", reason="POSIX hook script")
 @pytest.mark.parametrize("where", ["hooks_dir", "hooks_path"])
@@ -258,7 +372,7 @@ def test_git_status_runs_no_repository_hook(tmp_path, where):
 
 
 def test_no_write_reaches_the_worker_directory(tmp_path, monkeypatch):
-    """The guest script runs from there, so a workspace write must never replace it."""
+    """Browsing runs the guest script, so a workspace write must never replace it."""
     worker = tmp_path / ".kirocrew-worker"
     worker.mkdir()
     monkeypatch.setattr(wt, "_SELF_DIR", str(worker))
@@ -267,6 +381,7 @@ def test_no_write_reaches_the_worker_directory(tmp_path, monkeypatch):
     for path in (".kirocrew-worker/workspace_tools.py", "link/workspace_tools.py"):
         with pytest.raises(wt.ToolError, match="worker directory"):
             ws.write_file(path, "print('pwned')\n")
+        assert "worker directory" in wt.write_request(ws, {"path": path, "content": "x"})["error"]
     assert not list(worker.iterdir())
     assert ws.write_file("ok.txt", "fine\n").startswith("wrote")
 

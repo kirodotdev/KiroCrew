@@ -22,6 +22,8 @@ registerCatalogs({ ru: { translation: ru }, bn: { translation: bn } })
 const terminal = vi.hoisted(() => ({
   enabled: true,
   addTab: vi.fn<(cwd?: string) => string | null>(),
+  /** The chat the last minted dock tab names, for the gateway's placement check. */
+  chatSlot: undefined as string | undefined,
   send: vi.fn(),
   bringBack: vi.fn(),
   unsubscribe: vi.fn(),
@@ -30,7 +32,7 @@ const terminal = vi.hoisted(() => ({
   callbacks: new Map<string, () => void>(),
 }))
 vi.mock('../hooks/useBottomTerminal', () => ({
-  addTab: (cwd?: string) => terminal.addTab(cwd),
+  addTab: (cwd?: string, chatSlot?: string) => { terminal.chatSlot = chatSlot; return terminal.addTab(cwd) },
 }))
 vi.mock('../utils/terminalPopout', () => ({
   bringBack: () => terminal.bringBack(),
@@ -91,6 +93,19 @@ function confirmRun() {
 }
 
 describe('direct terminal commands', () => {
+  it("names the chat on the dock shell it opens, so the gateway checks that chat's placement", () => {
+    terminal.chatSlot = undefined
+    renderWithProviders(
+      <SlotProvider slotId="chat-7">
+        <ChatInput value="! pwd" onChange={vi.fn()} onSend={vi.fn()} terminalCommands="local" project="/work/p" />
+      </SlotProvider>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Review terminal command' }))
+    confirmRun()
+    expect(terminal.addTab).toHaveBeenCalledExactlyOnceWith('/work/p')
+    expect(terminal.chatSlot).toBe('chat-7')
+  })
+
   it('names the workspace folder in the hint when the project chip is absent or compact', () => {
     const observers = new Map<Element, ResizeObserverCallback>()
     vi.stubGlobal('ResizeObserver', class {

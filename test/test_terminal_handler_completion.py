@@ -1162,6 +1162,29 @@ class TestApiTerminalCompletionEnabledFlag:
         probe.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_workspace_shell_gets_no_gateway_completions(self, sel_log, tmp_path):
+        # A remote Session Environment shell runs on another machine: listing this
+        # gateway's directory would insert its paths into the remote command line.
+        (tmp_path / "docs").mkdir()
+        sess = _make_session(session_id="s1")
+        sess.remote = True
+        probe = AsyncMock(return_value=str(tmp_path))
+        for body in (
+            {"session_id": "s1", "token": "do"},
+            {"session_id": "s1", "token": "cre", "argv": ["gh", "pr"]},
+        ):
+            req = self._req(body, registry={"s1": sess})
+            with (
+                patch.object(terminal, "_session_cwd_cached", probe),
+                patch.object(terminal, "_get_config", return_value={"completion": {}}),
+            ):
+                resp = await terminal.api_terminal_complete(req)
+            assert resp.status == 200
+            assert json.loads(resp.text)["entries"] == []
+            assert sel_log.call_args.kwargs["resources"] == "remote_session"
+        probe.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_disabled_completion_audits_as_ok_not_denied(self, sel_log):
         # Nothing was refused, and naming the state lets an operator tell a
         # configured silence from a broken route.

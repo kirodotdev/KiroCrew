@@ -13,6 +13,7 @@ import { useTipTrigger } from '../../../components/TipCard'
 import { useKnowledgeFetch } from '../useKnowledgeFetch'
 import { closeCrewWindow, useCrewWindow } from '../crew-window/crewWindowStore'
 import { useGuideRevealScope } from '../../../guide/GuideRevealScope'
+import { useEnvironmentStartLabel } from '../../../components/sessionEnvironmentHooks'
 
 // Stable identity for the "no follow-up cards" case: returning a fresh {} from
 // the selector would make it a new reference on every store update.
@@ -99,6 +100,12 @@ export function useActiveSlotState({
   // observers on every turn boundary.
   const slotRunningRef = useRef(!!slotRunning)
   slotRunningRef.current = !!slotRunning
+  // A first remote turn spends its opening minute(s) creating compute; the
+  // turn indicator names that stage instead of "Thinking…".
+  // A reply on record means this session's environment connected before, so a
+  // later engine restart is a reconnect, not setup.
+  const sessionHasReplied = useMemo(() => messages.some(m => m.role === 'assistant'), [messages])
+  const environmentStart = useEnvironmentStartLabel(activeSlot, slotRunning, sessionHasReplied)
   // Turn disclosure ("N tool calls" / "Worked through N steps"), keyed by the
   // virtualizer's stable row key. This lives HERE rather than in TurnBlock
   // because the transcript is virtualised: a row is unmounted once it leaves
@@ -244,6 +251,6 @@ export function useActiveSlotState({
     messages, messagesRef, kiroCrewVersion, completedTurnCount, knowledgeFetch, knowledgeFetchRef, softStopAtMapRef, sentMessages, slotRunning, slotRunningRef, turnDisclosure, setTurnDisclosureFor,
     toolDisclosure, setToolDisclosureFor, turnRowMayBeLive, composerBusy, projectLocked, slotStopping, slotLoading, slotSwitchTarget, pendingQuestion, restoredQuestionNotice, pendingFollowup,
     folderSuggestion, followupTsBySlot, splitMode, setSplitMode, clearSplitOnSelect, crewWindow, openEmbeddedCrewWindow, navigateToEmbeddedSlot, splitAnchor, setSplitAnchor, activeTip, dismissTip,
-    slotState, contextPct, contextTokens, activityOpen, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, olderFailed, activeViewIsBoundedPage, history, historyHasMore,
+    slotState, contextPct, contextTokens, activityOpen, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, olderFailed, activeViewIsBoundedPage, history, historyHasMore, environmentStart,
   }
 }

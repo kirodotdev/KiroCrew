@@ -95,6 +95,7 @@ describe('side panel: the external terminal fallback note', () => {
     __resetPanelTabs()
     vi.spyOn(api, 'projectTree').mockResolvedValue({ root: '/repo', paths: [], repo: true })
     vi.spyOn(api, 'projectGitStatus').mockResolvedValue({ repo: true, files: [] })
+    vi.spyOn(api, 'chatSlotEnvironment').mockResolvedValue({ profile: null, profiles: [] } as never)
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ dashboard: { terminal: { external_app: 'kitty' } } } as never)
     ;(window as { externalTerminalAPI?: unknown }).externalTerminalAPI = {
       detect: vi.fn().mockResolvedValue({ apps: [{ id: 'kitty', label: 'kitty' }], capable: true }),

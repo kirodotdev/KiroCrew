@@ -459,6 +459,131 @@ def _bash_ready_env(token: str) -> dict[str, str]:
     return env
 
 
+# The chat's placement is known and this shell would run on the wrong machine:
+# the client parks the tab. A placement that could not be READ (a Coder call or
+# the choices store failed) gets the other code, which the client redials like a
+# dropped socket, so a brief outage never strands a live terminal tab.
+_WRONG_MACHINE = "terminal_wrong_machine"
+_PLACEMENT_UNAVAILABLE = "terminal_placement_unavailable"
+
+
+async def _remote_terminal_argv(
+    request: web.Request, slot_name: str
+) -> tuple[list[str] | None, str, str]:
+    """``(argv, "", "")`` for a shell in ``slot_name``'s remote workspace, else
+    ``(None, why, error_code)``."""
+    from kiro_crew.coder.session_browse import NotRemote, remote_terminal_argv
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.session_environment import SessionEnvironmentUnavailable
+
+    state = request.app.get("state")
+    slots = getattr(state, "_slots", None) or {}
+    slot = slots.get(slot_name) if isinstance(slots, dict) else None
+    if slot is None:
+        # Not loaded yet (a restart restores chats after the server is up) or
+        # gone: either way no shell, and a tab that redials finds out which.
+        return None, "Unknown chat for this terminal", _PLACEMENT_UNAVAILABLE
+    try:
+        return await remote_terminal_argv(effective_session_key(slot)), "", ""
+    except NotRemote:
+        return None, "This chat runs on this machine, not a remote environment", _WRONG_MACHINE
+    except SessionEnvironmentUnavailable as exc:
+        return None, f"The remote workspace is not available: {exc}", _PLACEMENT_UNAVAILABLE
+
+
+def _remote_pty_env(extra: dict[str, str]) -> dict[str, str]:
+    """The environment of a workspace shell's local ``coder ssh``: the same one every
+    other ``coder ssh`` uses (no gateway secret, no inherited ``CODER_*`` override),
+    so the shell signs in with the stored login that verified the workspace, plus
+    the terminal's own *extra*."""
+    from kiro_crew.coder.remote_worker import _scrubbed_env
+
+    env = _scrubbed_env()
+    env.update(extra)
+    return env
+
+
+async def _local_terminal_refusal(request: web.Request, slot_name: str) -> tuple[str, str]:
+    """``(why, error_code)`` when a LOCAL shell opened for chat ``slot_name`` is
+    refused, else ``("", "")``.
+
+    The gateway decides the chat's placement itself rather than trusting the
+    client to ask for a remote shell: a tab opened before the chat was bound,
+    or after a missed placement read, must not run on the gateway. A slot the
+    gateway does not hold yet (a tab redialing while a restart restores its
+    chats) opens no local shell either: its placement is unknown, so the tab is
+    told to redial, as ``_remote_terminal_argv`` does for the same case.
+    """
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.session_environment import (
+        SessionEnvironmentUnavailable,
+        _choices,
+        session_environments_enabled,
+    )
+
+    # Flag off: every session runs here, and the choices are never read.
+    if not session_environments_enabled():
+        return "", ""
+    state = request.app.get("state")
+    slots = getattr(state, "_slots", None) or {}
+    slot = slots.get(slot_name) if isinstance(slots, dict) else None
+    if slot is None:
+        return "This chat is not loaded yet, so no local shell was opened", _PLACEMENT_UNAVAILABLE
+    try:
+        profile = await asyncio.to_thread(_choices().get, effective_session_key(slot))
+    except SessionEnvironmentUnavailable:
+        # Still no local shell (fail closed), but the tab may redial.
+        return "Could not read where this chat runs, so no local shell was opened", _PLACEMENT_UNAVAILABLE
+    if profile is not None:
+        return (
+            "This chat runs on a remote environment, so this shell would open on the"
+            " wrong machine. Close this tab and open a new terminal",
+            _WRONG_MACHINE,
+        )
+    return "", ""
+
+
+async def retire_local_shells_of_chat(
+    registry: dict,
+    slot_name: str,
+    *,
+    error_message: str = (
+        "This chat now runs on a remote environment, so this shell on this"
+        " machine was closed. Open a new terminal"
+    ),
+    error_code: str = _WRONG_MACHINE,
+) -> int:
+    """Close every LOCAL shell opened for chat ``slot_name``; return how many.
+
+    Called once the chat is bound to a session environment: its commands now
+    belong on that machine, and a connected socket is never re-checked, so a tab
+    whose placement read is still cached could keep typing into the gateway.
+    Each socket gets the wrong-machine code, which parks the tab, and a redial
+    meets ``_local_terminal_refusal``. A shell still opening when the chat is
+    bound is caught by the opener's own re-check once it publishes.
+    """
+    retired = 0
+    for sid, sess in list(registry.items()):
+        if sess is None or sess.remote or sess.chat_slot != slot_name:
+            continue
+        if registry.get(sid) is not sess:
+            continue
+        del registry[sid]
+        ws = sess.ws
+        if ws is not None and not ws.closed:
+            await _close_terminal_ws_bounded(ws, error_message=error_message, error_code=error_code)
+        await _kill_session(sess)
+        _sel().log_api_access(
+            caller="gateway",
+            operation="terminal.session.retire",
+            outcome="ok",
+            source="dashboard",
+            resources=f"session={sid},chat_bound=1",
+        )
+        retired += 1
+    return retired
+
+
 async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.Response:
     """WebSocket PTY for the built-in CLI panel.
 
@@ -534,6 +659,40 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
     shell, rejected_shell, fence_shells = await asyncio.get_running_loop().run_in_executor(
         discovery_executor(), _resolve_shell_with_fence_shells, cfg,
     )
+
+    # A terminal for a chat on a REMOTE session environment is a shell in that
+    # workspace, resolved before the reservation below (it awaits). Never a local
+    # fallback: it would send the user's commands to the wrong machine.
+    remote_argv: list[str] | None = None
+    remote_slot = request.query.get("remote_slot")
+    chat_slot = request.query.get("slot")
+    remote_error = ""
+    error_code = ""
+    refused = "remote_unavailable=1"
+    if isinstance(remote_slot, str) and remote_slot:
+        remote_argv, remote_error, error_code = await _remote_terminal_argv(request, remote_slot)
+    elif isinstance(chat_slot, str) and chat_slot:
+        remote_error, error_code = await _local_terminal_refusal(request, chat_slot)
+        refused = "local_refused=1"
+    # A local shell remembers its chat, so binding that chat retires it.
+    local_chat_slot = chat_slot if remote_argv is None and isinstance(chat_slot, str) else ""
+    if remote_error:
+        _sel().log_api_access(
+            caller=caller,
+            operation="terminal.ws.open",
+            outcome="denied",
+            source="dashboard",
+            resources=f"session={session_id},{refused},code={error_code}",
+        )
+        # A browser cannot read a refused handshake's body, so accept it and
+        # send a coded error: wrong-machine parks the tab, placement-unavailable
+        # lets it redial. No PTY and no reservation exist yet.
+        refusal_ws = web.WebSocketResponse(heartbeat=30, timeout=300)
+        await refusal_ws.prepare(request)
+        await _close_terminal_ws_bounded(
+            refusal_ws, error_message=remote_error, error_code=error_code
+        )
+        return refusal_ws
 
     # A None entry reserves this session id and capacity throughout opening,
     # including asynchronous setup and any refusal response. Reject duplicate
@@ -683,6 +842,9 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 cwd = os.path.expanduser("~")
             env = _pty_child_env({"KIROCREW_TERMINAL": "1"})
             argv = [shell, "-NoLogo"] if "powershell" in shell.lower() else [shell]
+            if remote_argv is not None:
+                argv, cwd = remote_argv, os.path.expanduser("~")
+                env = _remote_pty_env({"KIROCREW_TERMINAL": "1"})
             try:
                 wp = WindowsPty(argv, cwd=cwd, env=env, cols=80, rows=24)
             except Exception as exc:
@@ -701,7 +863,8 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 return ws
             sess = _TerminalSession(
                 session_id=session_id, master_fd=-1, proc=None, winpty=wp, ws=ws, shell=shell,  # wokeignore:rule=master
-                fence_shells=fence_shells,
+                fence_shells=fence_shells, remote=remote_argv is not None,
+                chat_slot=local_chat_slot,
             )
             registry[session_id] = sess
             placeholder = False
@@ -730,6 +893,8 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 ws=ws,
                 shell=shell,
                 fence_shells=fence_shells,
+                remote=remote_argv is not None,
+                chat_slot=local_chat_slot,
             )
             ready_marker: bytes | None = None
             close_cancelled: asyncio.CancelledError | None = None
@@ -773,7 +938,12 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                     # the same ioctl single-threaded in the exec'd child, where none of
                     # that applies -- see the module docstring of _spawn_exec_shim.py.
                     argv = [shell, "-l"]
-                    if _is_bash_shell(shell):
+                    if remote_argv is not None:
+                        # The provider CLI opens the remote login shell; the local cwd
+                        # and the local bash ready-marker do not apply to it.
+                        argv, cwd = remote_argv, os.path.expanduser("~")
+                        env = _remote_pty_env({"TERM": "xterm-256color", "KIROCREW_TERMINAL": "1"})
+                    elif _is_bash_shell(shell):
                         token = uuid.uuid4().hex
                         ready_marker = (
                             f"\x1b]697;KiroCrewReady;{token}\x07".encode("ascii")
@@ -891,6 +1061,17 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         # release retires that ownership before another handler can reserve it.
         if placeholder:
             registry.pop(session_id, None)
+
+    # The placement check above ran before this shell was published, and a bind
+    # in between skipped the then-unpublished reservation: read it again now
+    # that the shell is visible, so either this read or the bind's retire sees it.
+    if sess.chat_slot and registry.get(session_id) is sess:
+        why, code = await _local_terminal_refusal(request, sess.chat_slot)
+        if code:
+            await retire_local_shells_of_chat(
+                registry, sess.chat_slot, error_message=why, error_code=code
+            )
+            return ws
 
     # --- Read loop: PTY → WebSocket ---
     notification_bus: NotificationBus | None = getattr(
@@ -1346,6 +1527,15 @@ async def api_terminal_complete(request: web.Request) -> web.Response:
             {"dir": None, "prefix": prefix, "entries": [], "truncated": False}
         )
 
+    if sess.remote:
+        # A workspace shell: its directory and files are on the remote machine, so
+        # a listing here would offer this gateway's paths for the remote command
+        # line. The same empty shape as a configured silence.
+        _log_complete(caller, "ok", "remote_session")
+        return web.json_response(
+            {"dir": None, "prefix": prefix, "entries": [], "truncated": False}
+        )
+
     cwd = await _session_cwd_cached(sess)
 
     # ── Command tier ──
@@ -1453,6 +1643,12 @@ async def poll_terminal_titles(app: web.Application) -> None:
                 # probe is in flight must re-dirty the session so the next tick
                 # picks up the change instead of the flag swallowing it.
                 sess.frames_dirty = False
+                if sess.remote:
+                    # A workspace shell runs on the remote machine: the probes
+                    # below would read the local provider CLI's process, whose
+                    # cwd and title are this gateway's, not the workspace's. The
+                    # tab keeps the title the client gave it.
+                    continue
                 # _session_title / _session_cwd do blocking syscalls (tcgetpgrp
                 # ioctl, /proc reads, lsof where nothing cheaper answers) that
                 # can wedge on a D-state process or a stuck fs; run them off the

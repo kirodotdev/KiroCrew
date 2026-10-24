@@ -637,6 +637,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MOVED_CONFIG_FIELDS,
         _beacon_governance_pinned_off,
         _ConfigKeyAlreadySet,
+        _keep_omitted_session_environment_keys,
         _tailnet_governance_pinned_off,
         api_kirocrew_config_patch,
     )

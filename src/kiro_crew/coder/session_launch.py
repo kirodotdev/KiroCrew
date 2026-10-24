@@ -29,6 +29,7 @@ from kiro_crew.coder.remote_worker import (
 from kiro_crew.platform_compat import file_lock
 from kiro_crew.session_environment import (
     SessionEnvironmentUnavailable,
+    report_start_stage,
     session_environments_enabled,
 )
 
@@ -337,17 +338,24 @@ class CoderSessionEnvironments:
             return self._client_factory(self._bin(), self.url)
         return CoderClient(self._bin(), self.url, "", self.data_home, runner=_login_runner)
 
-    async def prepare(self, session_key: str, profile_id: str) -> PreparedRemoteSession:
-        """Reserve, find-or-create, start and verify this session's workspace."""
+    async def prepare(
+        self, session_key: str, profile_id: str, *, progress_key: Optional[str] = None
+    ) -> PreparedRemoteSession:
+        """Reserve, find-or-create, start and verify this session's workspace.
+
+        ``progress_key`` is the session whose start is reported: a subagent
+        prepares its root's workspace, but the start, and its cleanup, are its own."""
         from kiro_crew.coder.retention import session_lifecycle
 
         lifecycle = session_lifecycle(session_key)
         # Invalidate queued closes, then wait out an archive's stop/stamp.
         lifecycle.generation += 1
         async with lifecycle.lock:
-            return await self._prepare(session_key, profile_id)
+            return await self._prepare(session_key, profile_id, progress_key or session_key)
 
-    async def _prepare(self, session_key: str, profile_id: str) -> PreparedRemoteSession:
+    async def _prepare(
+        self, session_key: str, profile_id: str, progress_key: str
+    ) -> PreparedRemoteSession:
         profile = self.profile(profile_id)
         # Clear a pending deletion (or refuse mid-delete). Registry calls run
         # off-loop: its lock is single-shot on the loop.
@@ -391,6 +399,8 @@ class CoderSessionEnvironments:
             if workspace is not None:
                 # Names are reusable: verify before start, and again after.
                 verify_workspace(workspace)
+            if workspace is None or workspace.status != _RUNNING:
+                report_start_stage(progress_key, "provisioning")
             if workspace is None:
                 if binding.workspace_uuid:
                     # Had a workspace and it is gone: never recreate silently.
@@ -468,6 +478,8 @@ async def prepare_for_session(
     if resolved is None:
         return None
     profile_id, owner_key = resolved
+    # Cleared by the caller when the start ends (providers/acp.py).
+    report_start_stage(session_key, "checking")
     if before_compute is not None:
         # Refuse an unsupported runtime before any workspace starts.
         before_compute()
@@ -476,8 +488,9 @@ async def prepare_for_session(
         config = await asyncio.to_thread(KiroCrewConfig.load)
     section = config.session_environments
     environments = CoderSessionEnvironments(section, home)
-    # Keyed by the owner, so a subagent reuses its root's workspace.
-    return await environments.prepare(owner_key, profile_id)
+    # Keyed by the owner, so a subagent reuses its root's workspace; the start
+    # stage stays on the starting session, which clears it when the start ends.
+    return await environments.prepare(owner_key, profile_id, progress_key=session_key)
 
 
 async def forget_subagent_environment(child_key: str) -> None:

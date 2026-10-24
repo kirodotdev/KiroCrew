@@ -22,6 +22,41 @@ describe('ChatFooter', () => {
     expect(container.querySelector('.csb4')).toBeInTheDocument()
   })
 
+  it('names a starting remote environment instead of "Thinking…"', () => {
+    render(
+      <ChatFooter
+        {...base}
+        running={true}
+        lastRole="user"
+        statusLabel={{
+          label: 'Setting up Coder MicroVM',
+          stage: 'Starting workspace',
+          elapsed: '22s',
+          steps: [
+            { key: 'checking', label: 'Checking environment', state: 'done' },
+            { key: 'provisioning', label: 'Starting workspace', state: 'current' },
+            { key: 'connecting', label: 'Connecting', state: 'pending' },
+            { key: 'starting_agent', label: 'Starting agent', state: 'pending' },
+          ],
+        }}
+      />,
+    )
+    expect(screen.getByText('Setting up Coder MicroVM')).toBeInTheDocument()
+    // One timer, on the running step; the heading carries none.
+    expect(screen.getAllByText('22s')).toHaveLength(1)
+    expect(screen.queryByText('Thinking…')).toBeNull()
+    // The live region carries the stage only, not the ticking timer.
+    expect(screen.getByRole('status', { name: 'Starting workspace' })).toBeInTheDocument()
+    // Every stage is listed, with the running one marked current.
+    const steps = screen.getByTestId('environment-start-steps').querySelectorAll('li')
+    expect(steps).toHaveLength(4)
+    expect(steps[0]).toHaveTextContent('Checking environment')
+    expect(steps[0]).toHaveTextContent('done')
+    expect(steps[1]).toHaveAttribute('aria-current', 'step')
+    expect(steps[1]).toHaveTextContent('22s')
+    expect(steps[3]).toHaveTextContent('not started yet')
+  })
+
   it('stays visible in the post-tool gap (lastRole is tool)', () => {
     const { container } = render(<ChatFooter {...base} running={true} lastRole="tool" />)
     expect(container.querySelector('.csb4')).toBeInTheDocument()

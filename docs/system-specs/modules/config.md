@@ -3468,8 +3468,8 @@ screenshot.
 
 `session_environments` (`SessionEnvironmentsConfig` in `config/sections.py`)
 persists what the Settings UI needs to offer remote session environments, and
-nothing else: `coder_url`, `profiles`, and the optional `stop_on_shutdown`.
-`config/session_environments.py` owns
+nothing else: `coder_url`, `profiles`, and the optional `default_profile` and
+`stop_on_shutdown`. `config/session_environments.py` owns
 every rule: its strict `validate_*` functions back the dashboard write gate (a
 400, nothing written) and its lenient `load_session_environments` backs
 `SessionEnvironmentsConfig.from_raw`, which keeps every valid part of a
@@ -3485,6 +3485,8 @@ duplicate or over-cap profile is dropped with a warning).
   digit then letters, digits, `_` or `-` (64 max, unique); `name` is 1-128
   characters, `template` 1-255, `workdir` an absolute POSIX path of at most
   1024. Text is whitespace-stripped and may not hold control characters.
+- `default_profile`: a saved profile id or `""` (this machine); a whole-section
+  save refuses a default the same save drops.
 - `stop_on_shutdown`: a boolean, default `true`.
 
 There is no `enabled` field (the opt-in is the per-device preview flag) and no

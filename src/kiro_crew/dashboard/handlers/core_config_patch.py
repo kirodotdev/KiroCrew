@@ -100,6 +100,42 @@ class _ConfigKeyAlreadySet(Exception):
     """A conditional config write found an existing leaf under the write lock."""
 
 
+def _keep_omitted_session_environment_keys(saved: object, value: dict) -> dict:
+    """A whole ``session_environments`` save with an optional key left out keeps
+    that key's saved value, as the section's contract says (an agent's change card
+    may carry only the required keys). Only ``SECTION_OPTIONAL_KEYS``: any other
+    stored key is replaced with the section. A saved default profile missing
+    from the new profile list is dropped rather than kept dangling, and a saved
+    value the loader would not accept (a hand edit) is not carried over."""
+    from kiro_crew.config.session_environments import (
+        SECTION_OPTIONAL_KEYS,
+        SessionEnvironmentsError,
+        validate_default_profile,
+        validate_stop_on_shutdown,
+    )
+
+    validators = {
+        "default_profile": validate_default_profile,
+        "stop_on_shutdown": validate_stop_on_shutdown,
+    }
+    if not isinstance(saved, dict):
+        return value
+    merged = dict(value)
+    profile_ids = {p.get("id") for p in value.get("profiles", []) if isinstance(p, dict)}
+    for key in SECTION_OPTIONAL_KEYS:
+        if key in merged or key not in saved:
+            continue
+        validate = validators.get(key)
+        try:
+            kept = validate(saved[key]) if validate is not None else saved[key]
+        except SessionEnvironmentsError:
+            continue
+        if key == "default_profile" and kept and kept not in profile_ids:
+            continue
+        merged[key] = kept
+    return merged
+
+
 async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     """PATCH /api/config/kirocrew — update a single config field."""
     from kiro_crew.config.loader import (
@@ -305,6 +341,13 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 return _deny("unsupported config type", f"{path_key}={value}", 500)
             validated[sub_key] = sub_val
         value = validated
+    elif spec["type"] == "normalized":
+        # A structured value: the shared normalizer raises ``ValueError`` naming
+        # the field, or returns the value to store.
+        try:
+            value = spec["normalize"](value)
+        except ValueError as exc:
+            return _deny(str(exc), path_key)
     else:
         return _deny("unsupported config type", f"{path_key}={value}", 500)
 
@@ -455,7 +498,11 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 if not isinstance(nxt, dict):
                     raise ValueError(f"config section '{part}' is not an object")
                 section = nxt
-            section[parts[-1]] = value
+            stored = value
+            if path_key == "session_environments" and isinstance(value, dict):
+                # Under the lock, so it merges with what is saved at this write.
+                stored = _keep_omitted_session_environment_keys(section.get(parts[-1]), value)
+            section[parts[-1]] = stored
             # Saving the old default of an auto-adopting superseded-default row
             # (a 7200 turn limit) is an explicit choice. Ack it here, under the
             # config lock and before the write, so the reload this write triggers
@@ -490,7 +537,8 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             _log_sel("error", f"{path_key}=write_failed")
             return web.json_response({"error": "failed to write config file"}, status=500)
 
-    _log_sel("success", f"{path_key}={value}")
+    # A structured value is audited by path only; a whole record would bloat each line.
+    _log_sel("success", path_key if spec["type"] == "normalized" else f"{path_key}={value}")
 
     # Everything a running gateway does in response to this write lives behind
     # ``config.live.subscribe`` (the provider switch and role-model rebuild are

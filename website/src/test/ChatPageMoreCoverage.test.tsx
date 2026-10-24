@@ -265,7 +265,9 @@ vi.mock('../api/client', () => ({
       if (!(prop in apiMocks)) {
         apiMocks[prop] = vi.fn().mockResolvedValue(
           prop === 'chatSlotDetail' ? { messages: [], has_more: false, total: 0 }
-            : prop === 'pendingQuestions' || prop === 'approvals' ? [] : {},
+            : prop === 'pendingQuestions' || prop === 'approvals' ? []
+              // Every chat here runs on this machine: Run in terminal waits for that.
+              : prop === 'chatSlotEnvironment' ? { profile: null, profiles: [] } : {},
         )
       }
       return apiMocks[prop]

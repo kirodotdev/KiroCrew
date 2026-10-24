@@ -176,6 +176,8 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // search cannot find is the coverage gap settingsCoverage.test.ts exists to
   // close — and the hit reaches the labelled opt-in switch, not the page.
   'FeaturePreviewsSection.tsx': 'developer',
+  // The URL is offered only while its preview is enabled (settingsSearchCore).
+  'SessionEnvironmentsCard.tsx': 'session-environments',
   // The Crewmates section DeveloperPanel mounts under Feature Previews: the
   // server-side crewmate switches (reply threads today). Same tab, so a
   // SettingRef to `dashboard.crewmate_threads` deep-links to the row.

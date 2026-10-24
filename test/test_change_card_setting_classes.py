@@ -83,6 +83,29 @@ def test_newly_classified_paths_read_their_class_on_the_card(path, before, after
 
 
 @pytest.mark.parametrize(
+    "path,cls,before,after,risk",
+    [
+        (
+            "session_environments",
+            "_CODE_EXEC_SETTINGS",
+            {},
+            {"coder_url": "https://c"},
+            "code_exec",
+        ),
+        ("session_environments.coder_url", "_CODE_EXEC_SETTINGS", "", "https://c", "code_exec"),
+        ("session_environments.default_profile", "_CANNOT_WIDEN_SETTINGS", "", "dev", "normal"),
+        ("session_environments.stop_on_shutdown", "_CANNOT_WIDEN_SETTINGS", True, False, "normal"),
+    ],
+)
+def test_session_environment_paths_keep_their_class(path, cls, before, after, risk):
+    # The deployment and template pick the machine a session runs on; the default
+    # profile and the shutdown switch choose only among the operator's own setups.
+    assert [name for name, members in _CLASSES.items() if path in members] == [cls]
+    p = {"path": path, "value": after}
+    assert catalog.build_preview("setting.change", p, {"value": before}, {})["risk"] == risk
+
+
+@pytest.mark.parametrize(
     "before,after,risk",
     [
         ("node", "LOGIN", "widen"),
