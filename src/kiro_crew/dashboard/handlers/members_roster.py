@@ -169,6 +169,86 @@ def _member_is_created(member_id: object) -> bool:
     return isinstance(member_id, str) and bool(member_id.strip())
 
 
+def _transcript_holds_message(conversation_log: Any, log_key: str) -> bool:
+    """Whether the DM transcript under ``log_key`` holds a message, read off disk.
+
+    ``has_messages`` stops at the first non-metadata row, so this is one short
+    read: a metadata-only transcript (a thread opened, nothing sent) is not a
+    message. A file that cannot be read counts as holding one, so an unreadable
+    thread never hides its row. Shared by both rosters' listing rule.
+    """
+    try:
+        return bool(conversation_log.has_messages(log_key))
+    except OSError:
+        return True
+
+
+def _live_slot_has_rows(state: DashboardState | None, slot_key: str) -> bool:
+    """Whether the live slot behind ``slot_key`` holds any rows in memory.
+
+    A greeting just appended is a message whether or not it has reached disk.
+    Reads in-memory slot state, so it runs on the event loop.
+    """
+    live = state._slots.get(slot_key) if (state and slot_key) else None
+    rows = getattr(live, "messages", None) if live is not None else None
+    return isinstance(rows, (list, tuple)) and len(rows) > 0
+
+
+def read_dm_thread_message_state(name: str, cfg: Any, conversation_log: Any) -> tuple[str, bool]:
+    """``(slot_key, holds_message_on_disk)`` for crewmate ``name``'s DM thread.
+
+    File IO (the binding and one short transcript read), so callers run it off
+    the event loop. The same evidence ``GET /api/members`` folds into
+    ``has_dm_message``: only a binding whose ``member`` is exactly ``name``
+    counts, and the transcript is the thread alias that binding names. An
+    unbound thread, an unaddressable name, or no conversation log reads as
+    ``("", False)``.
+    """
+    try:
+        slug = members_mod.member_slug(name, cfg)
+    except MemberSlugError:
+        return "", False
+    binding = members_mod.read_dm_binding(slug)
+    if binding is None or binding.get("member") != name:
+        return "", False
+    slot_key = binding.get("slot_key", "") or ""
+    if not slot_key or conversation_log is None:
+        return slot_key, False
+    log_key = members_mod.member_thread_session_alias(slug, binding.get("memory_store", ""))
+    return slot_key, _transcript_holds_message(conversation_log, log_key)
+
+
+async def unchatted_legacy_bindings(cfg: Any, state: DashboardState | None) -> set[str]:
+    """Names of the legacy built-in bindings whose DM thread holds no message.
+
+    ``GET /api/agents`` leaves these out, the pickers' form of the listing rule
+    this roster ships as ``has_dm_message``. ``mate_worker.is_legacy_binding``
+    names the candidates; their binding and transcript reads run in one thread
+    hop, and the live-slot check runs on the loop.
+    """
+    from kiro_crew.mate_worker import is_legacy_binding
+
+    candidates = [name for name, a in cfg.agents.items() if is_legacy_binding(name, a)]
+    if not candidates:
+        return set()
+    log = state.conversation_log if state else None
+
+    def _read() -> dict[str, tuple[str, bool]]:
+        return {name: read_dm_thread_message_state(name, cfg, log) for name in candidates}
+
+    try:
+        threads = await asyncio.to_thread(_read)
+    except Exception:
+        # An unreadable thread state lists the rows rather than hiding a chat.
+        logger.warning("could not read the legacy bindings' DM threads", exc_info=True)
+        return set()
+    return {
+        name
+        for name, (slot_key, on_disk) in threads.items()
+        if not on_disk and not _live_slot_has_rows(state, slot_key)
+    }
+
+
 def _slot_flush_generation(slot: object) -> tuple[int, int, int] | None:
     """The three counters a live slot's persistence state is made of.
 
@@ -269,11 +349,12 @@ async def api_members(request: web.Request) -> web.Response:
     # ``agent_panel`` is below: ``handlers.agents`` reaches back into this
     # package at import time, so a module-level import would close the cycle.
     from kiro_crew.dashboard.handlers.agents import _roster_avatar, _roster_mask
-    from kiro_crew.mate_worker import is_legacy_binding
 
     rows: list[dict] = []
     for name, agent_cfg in cfg.agents.items():
-        if not _member_name_is_addressable(name) or is_legacy_binding(name, agent_cfg):
+        # A legacy built-in binding (no member id) flows through like any other
+        # non-dashboard-created row: `has_dm_message` decides whether it is listed.
+        if not _member_name_is_addressable(name):
             continue
         try:
             slug = members_mod.member_slug(name, cfg)
@@ -413,18 +494,11 @@ async def api_members(request: web.Request) -> web.Response:
             generation = binding.get("memory_store", "") if binding is not None else ""
             log_key = members_mod.member_thread_session_alias(row["slug"], generation)
             # Whether the thread holds a message at all, for the roster's
-            # listing rule. `has_messages` stops at the first non-metadata row
-            # (two lines in practice), so this stays one short read per bound
-            # row -- the same evidence the crewmate prune uses: a metadata-only
-            # transcript (a thread opened, nothing sent) is not a message. A
-            # file that cannot be read counts as holding one, so an unreadable
-            # thread never hides the row. It runs BEFORE the mtime gate below:
-            # a transcript that cannot be stat'd is unreadable, not absent
+            # listing rule (`_transcript_holds_message`, the same evidence the
+            # crewmate prune uses). It runs BEFORE the mtime gate below: a
+            # transcript that cannot be stat'd is unreadable, not absent
             # (`has_messages` answers an absent file as empty).
-            try:
-                if state.conversation_log.has_messages(log_key):
-                    has_message.add(row["slot_key"])
-            except OSError:
+            if _transcript_holds_message(state.conversation_log, log_key):
                 has_message.add(row["slot_key"])
             mt = state.conversation_log.session_mtime(log_key)
             if not mt:
@@ -510,12 +584,9 @@ async def api_members(request: web.Request) -> web.Response:
         # crew log is the recency authority, and this value is its floor.
         row["last_active_ts"] = mt
         row["last_message"] = preview
-        # A live slot's rows count before they reach the disk: a greeting that
-        # has just been appended is a message whether or not it has flushed.
-        live = state._slots.get(row["slot_key"]) if (state and row["slot_key"]) else None
-        live_rows = getattr(live, "messages", None) if live is not None else None
-        row["has_dm_message"] = row["slot_key"] in has_message or (
-            isinstance(live_rows, (list, tuple)) and len(live_rows) > 0
+        # A live slot's rows count before they reach the disk.
+        row["has_dm_message"] = row["slot_key"] in has_message or _live_slot_has_rows(
+            state, row["slot_key"]
         )
         if not (preview or exhaustive) or row["slot_key"] in unflushed_slot_keys:
             continue

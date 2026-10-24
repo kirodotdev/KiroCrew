@@ -1270,8 +1270,8 @@ that offers crew records leaves it out (`hideMateWithoutPreview` in
 `lib/assistantMember.ts`: the agent pickers fed by `useAgents`, Customize and a
 template's crew list), so nothing names it until the preview is on. With the
 preview on, Customize > Crewmates lists it as a card like any other crewmate:
-its row carries `member_id: "mate"`, so the legacy-binding rule
-(`mate_worker.is_legacy_binding`) never drops it.
+its row carries `member_id: "mate"`, so it is not a legacy binding
+(`mate_worker.is_legacy_binding`) and the pickers list it unchatted.
 
 Mate's chat has no static welcome card. Mate speaks first instead: once the thread
 endpoint has confirmed Mate's pinned thread, with the Mates preview on, the page
@@ -1528,7 +1528,8 @@ open. An empty thread is not listed,
 as a messages app lists no empty conversation; the search still reaches it, the
 mate open in the thread stays listed while open, and a remembered mate
 is restored even when the rule hides it. The built-in `default` mate, a
-dashboard-created mate and an app's mate follow the same rule. Recent
+dashboard-created mate, an app's mate and a legacy built-in binding with no
+member id follow the same rule. Recent
 order is by `last_active_ts`, the crew log's fold of the thread's last
 `member/message` (see `_recency_for_row`), so the list reads newest conversation
 first like a messages app. The client stamps a send on the row bound to the
@@ -3801,8 +3802,13 @@ check".
 **Existing crewmates move at startup** (`kiro_crew.mate_config_migration`, off
 the loop before the slot restores, never gating readiness). Every crewmate whose
 `kiro_agent` does not name its own file is a candidate. A binding with an empty
-`member_id` is not a crewmate (an old `assistant`): skipped silently, and left
-out of `GET /api/agents` and `GET /api/members` (`mate_worker.is_legacy_binding`).
+`member_id` is not a crewmate (an old `assistant`, the built-in
+`kirocrew-conductor`): skipped silently. Its roster rows follow the rule for
+any row the dashboard did not create: `GET /api/members` ships it with
+`dashboard_created` false and the page lists it once `has_dm_message` holds,
+and `GET /api/agents` (the pickers) lists it only when its DM thread holds a
+message (`mate_worker.is_legacy_binding` names the candidates; no name is
+special-cased). Otherwise the search still reaches it.
 A crewmate already on the conductor (the first crewmate) owes no notice and has
 no kit; its file is the default template's additions (`_default_template_file`).
 Otherwise its source is the agent `kiro_agent` names (a shared template or its

@@ -78,6 +78,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SOURCE_PACKAGE,
         _absence_is_confirmed,
         _as_epoch,
+        _live_slot_has_rows,
         _logged_slugs,
         _member_is_created,
         _recency_for_row,
@@ -85,8 +86,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _slot_flush_generation,
         _slot_has_unflushed_rows,
         _stamp_welcome_claimed,
+        _transcript_holds_message,
         api_members,
         normalize_member_source,
+        read_dm_thread_message_state,
+        unchatted_legacy_bindings,
     )
     from kiro_crew.dashboard.handlers.members_rules import (  # noqa: F401
         api_member_rules_get,

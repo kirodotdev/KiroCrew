@@ -1643,16 +1643,21 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 
     redact = request.app.get("state") is None or not is_owner_dashboard_request(request)
-    # A legacy binding with no member id is not a crewmate, so no roster lists it.
-    from kiro_crew.mate_worker import is_legacy_binding
+    state: DashboardState | None = request.app.get("state")
 
+    # A legacy built-in binding (``builtin``, no member id) is listed once its DM
+    # thread holds a message, the rule ``GET /api/members`` applies to every
+    # non-dashboard-created row. The binding and transcript reads are file IO:
+    # one thread hop for the candidates, then the live-slot check on the loop.
+    # Through the members facade, so a patch on it reaches this read too.
+    from kiro_crew.dashboard.handlers.members import unchatted_legacy_bindings
+
+    hidden = await unchatted_legacy_bindings(cfg, state)
     agents = [
         _agent_roster_row(name, "global", agent_cfg, redact=redact)
         for name, agent_cfg in cfg.agents.items()
-        if not is_legacy_binding(name, agent_cfg)
+        if name not in hidden
     ]
-
-    state: DashboardState | None = request.app.get("state")
 
     # Project rows come from a directory scan, so it runs on the discovery
     # pool — same rule as every other agent listing: no filesystem I/O on the

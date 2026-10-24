@@ -101,24 +101,17 @@ def member_chat_template(template_id: str) -> str:
     return MATE_CONDUCTOR_AGENT if is_mate_owned_agent(template_id) else template_id
 
 
-#: Built-in bindings a user chats with directly, so the roster keeps listing them
-#: even without a member id. ``kirocrew-conductor`` has been a pickable top-level
-#: agent since before crewmates had ids; hiding it hid every existing user's
-#: conductor thread from the Mate list and the crewmate pickers.
-USER_FACING_BUILTIN_BINDINGS = frozenset({"kirocrew-conductor"})
-
-
 def is_legacy_binding(name: str, binding: Any) -> bool:
     """Whether ``config.agents[name]`` is a legacy built-in binding, not a crewmate.
 
     Positive signature: a ``builtin`` binding that never got a member identity
-    (an older install's ``assistant``). The roster surfaces do not list it as a
-    crewmate. The reserved ``default`` member and the user-facing built-ins
-    (:data:`USER_FACING_BUILTIN_BINDINGS`) are excluded by name, and a
-    user-created crewmate on shared memory (``source`` ``kirocrew``, no id yet)
-    stays listed.
+    (an older install's ``assistant``, the built-in ``kirocrew-conductor``).
+    ``GET /api/agents`` lists one only once its DM thread holds a message, the
+    rule ``GET /api/members`` applies to every non-dashboard-created row. The
+    reserved ``default`` member is excluded by name, and a user-created crewmate
+    on shared memory (``source`` ``kirocrew``, no id yet) is not legacy.
     """
-    if name == "default" or name in USER_FACING_BUILTIN_BINDINGS:
+    if name == "default":
         return False
     if getattr(binding, "source", "") != "builtin":
         return False
