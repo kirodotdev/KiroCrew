@@ -279,3 +279,34 @@ async def steer_notice_into_refused_turn(
     # A provider that answers False did not write the notice; report that
     # honestly rather than claim a message the model never received.
     return sent is not False
+
+
+#: How many times one sub-agent run resumes a turn its backend ended because the
+#: host refused a call. Each resume is a fresh model turn that may hit the gate
+#: again, so the count is bounded; past it the cancelled ending stands.
+REFUSED_TURN_RESUME_MAX = 3
+
+
+def build_refused_turn_resume_prompt(title: str, reason: str, *, cause: str) -> str:
+    """The prompt that resumes a turn the backend ended on a host refusal.
+
+    Codex answers its only reject option for a shell command (``cancel``,
+    ``ReviewDecision::Abort``) by aborting the WHOLE turn, so the steered notice
+    never reaches a model inference and the model is left with ``aborted by
+    user``. The sub-agent run sends this as the next prompt on the same session
+    instead: the same notice, plus the fact that the turn was stopped. *title*
+    and *reason* are redacted here, as :func:`steer_refusal_notice` does.
+    Returns ``""`` when there is nothing to say.
+    """
+    title_safe, _ = redact_exfiltration_urls(title or "")
+    title_safe, _ = redact_credentials(title_safe)
+    reason_safe, _ = redact_exfiltration_urls(reason or "")
+    reason_safe, _ = redact_credentials(reason_safe)
+    notice = build_refusal_steer_notice(title_safe, reason_safe, cause=cause)
+    if not notice:
+        return ""
+    return (
+        f"{notice}\n\nThe backend ended your previous turn when this call was "
+        "refused, so the refused call did not run. Continue the task from where "
+        "you stopped, in a way the host allows."
+    )

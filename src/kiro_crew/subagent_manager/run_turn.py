@@ -892,6 +892,14 @@ async def _run_inner_impl(
 
     _wire = tool_permission.AcpWire(client)
     _policy = _policy_for(_spec)
+    from kiro_crew.deny_notice import REFUSED_TURN_RESUME_MAX, build_refused_turn_resume_prompt
+
+    # The host's refusal in the current prompt attempt, as (title, reason,
+    # cause), set by the permission branch below and read by the stream when
+    # the turn then ends cancelled; and how many such turns this run resumed.
+    _refused_call: list[tuple[str, str, str]] = []
+    _person_rejected = [False]
+    _refusal_resumes = [0]
     # Set when the stream ends on a generate failure after real output.
     _kept_after_generate_failure = False
     # One run owns one immutable manager deadline. Capture a transport
@@ -942,6 +950,8 @@ async def _run_inner_impl(
             # attempt or turn never closed would otherwise wait in the
             # in-flight set and be handed the slot when a later call returns.
             self._manager._clear_tool_dispatch(info)
+            _refused_call.clear()
+            _person_rejected[0] = False
             try:
                 if not use_session_sharing:
                     # Publish the live dedicated PID before every prompt,
@@ -969,6 +979,11 @@ async def _run_inner_impl(
                 # by a continuation on the same session.
                 _withheld: LLMEvent | None = None
                 _infra: Any = None
+                # A completion CANCELLED right after the host refused a call:
+                # codex's only reject option for a shell command aborts the
+                # whole turn. It is withheld, and the turn resumes on the same
+                # session with the refusal as the next prompt.
+                _refused_turn: LLMEvent | None = None
                 stream = (
                     client.stream(msg)
                     if prompt_timeout is None
@@ -1005,6 +1020,19 @@ async def _run_inner_impl(
                         if self._manager._stop_recovery_wanted(info, _stop_c):
                             _withheld = _ev
                             continue
+                        if (
+                            _stop_c.name == STOP_CLASS_CANCELLED
+                            and _refused_call
+                            and not _person_rejected[0]
+                            and _refusal_resumes[0] < REFUSED_TURN_RESUME_MAX
+                            and not info.user_stopped
+                            and not self._stop_in_progress(info)
+                            and not info._reap_started
+                            and not info.reaped
+                            and not self._manager._shutting_down
+                        ):
+                            _refused_turn = _ev
+                            continue
                         _last_infra = getattr(client, "last_infra_error", None)
                         if (
                             _stop_c.is_success
@@ -1017,6 +1045,22 @@ async def _run_inner_impl(
                             _infra = _last_infra
                             continue
                     yield _ev
+                if _refused_turn is not None:
+                    _title, _reason, _cause = _refused_call[-1]
+                    _resume = build_refused_turn_resume_prompt(_title, _reason, cause=_cause)
+                    if not _resume:
+                        yield _refused_turn
+                        return
+                    usage.settle(_refused_turn)
+                    _refusal_resumes[0] += 1
+                    logger.info(
+                        "Subagent %s: turn cancelled after a host refusal; resuming (%d/%d)",
+                        info.id,
+                        _refusal_resumes[0],
+                        REFUSED_TURN_RESUME_MAX,
+                    )
+                    msg = _resume
+                    continue
                 if _withheld is None:
                     return
                 # Preserve this turn's billing before recovery can cancel
@@ -1389,6 +1433,12 @@ async def _run_inner_impl(
                 self._manager._write_tombstone(info, "turn_limit")
                 return
             settled = await tool_permission.settle(_ask, _policy)
+            if settled.outcome == "rejected":
+                # A person said no in this attempt: their answer stands, so a
+                # cancelled ending is never resumed as a host refusal.
+                _person_rejected[0] = True
+            elif settled.outcome == "refused" and settled.cause is not None:
+                _refused_call.append((event.title or "", settled.reason, settled.cause))
             if settled.rung == "stopped":
                 # The ladder bailed this request for a stop that landed
                 # while it was being settled: the run ends here, as at the
