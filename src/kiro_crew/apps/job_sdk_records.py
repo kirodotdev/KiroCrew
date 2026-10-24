@@ -274,6 +274,19 @@ class JobRun:
     #: without checkpointing, so a False here with ``done`` means "not observed",
     #: which is why the classifier stays a backstop rather than being deleted.
     work_observed: bool = False
+    #: A per-process monotonic COMPLETION order, minted at the terminal write
+    #: from a counter that only advances. It exists because retention orders runs
+    #: newest-first and the wall-clock stamps (``created_at`` / ``updated_at``)
+    #: are SECOND-resolution, so a burst of fast runs shares one stamp and a
+    #: timestamp sort cannot say which finished later -- it would evict an
+    #: arbitrary member of the tie. It is minted at COMPLETION, not at start,
+    #: because retention means newest-FINISHED: a long run that started first but
+    #: finished last must sort newest, or its own terminal-write sweep would evict
+    #: the result it just produced. SDK-minted (never runner-supplied), so it
+    #: stays off the sanitize rule like the other minted fields. 0 is the default
+    #: a non-terminal record and an older build's record carry; such records sort
+    #: oldest, which is correct -- they predate every run this process completed.
+    seq: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
