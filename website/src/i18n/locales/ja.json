@@ -12076,6 +12076,27 @@
         "outcome_discarded": "破棄しました。ライブページは変わっていません。",
         "outcome_closed": "プレビューは終わりました。これが今のライブページです。",
         "outcome_undo": "元に戻すには、{{name}} に前のダッシュボードに戻すよう頼んでね。"
+      },
+      "elicitationCard": {
+        "answer_failed": "回答を送信できませんでした。もう一度お試しください。",
+        "choose": "選択…",
+        "date_time_format": "形式: 2026-01-31T09:30:00Z",
+        "decline": "拒否",
+        "done": "完了しました",
+        "integer_not_whole": "{{field}} は整数にしてください。",
+        "integer_too_large": "{{field}} は大きすぎて正確に送信できません。15 桁以内にしてください。",
+        "no_longer_pending": "この質問はもう回答を待っていません。",
+        "required_missing": "{{field}} は必須です。",
+        "resolved_accept": "回答済み",
+        "resolved_cancel": "未回答",
+        "resolved_decline": "拒否済み",
+        "sending": "送信中…",
+        "submit": "送信",
+        "title": "ツールからの質問です",
+        "title_named": "{{who}} からの質問です",
+        "title_named_resolved": "{{who}} からの質問でした",
+        "title_resolved": "ツールからの質問でした",
+        "url_hint": "リンクを開いてそこで完了し、戻ってきて「完了しました」を押してください。"
       }
     },
     "chatPage": {

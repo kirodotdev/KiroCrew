@@ -12442,6 +12442,27 @@
         "outcome_discarded": "Scartata. La pagina live non è cambiata.",
         "outcome_closed": "Anteprima finita. Ora questa è la pagina live.",
         "outcome_undo": "Per annullare, chiedi a {{name}} di ripristinare la dashboard precedente."
+      },
+      "elicitationCard": {
+        "answer_failed": "Impossibile inviare la risposta. Riprova.",
+        "choose": "Scegli…",
+        "date_time_format": "Formato: 2026-01-31T09:30:00Z",
+        "decline": "Rifiuta",
+        "done": "Ho finito",
+        "integer_not_whole": "{{field}} deve essere un numero intero.",
+        "integer_too_large": "{{field}} è troppo grande per essere inviato con esattezza; usa al massimo 15 cifre.",
+        "no_longer_pending": "Questa domanda non attende più una risposta.",
+        "required_missing": "{{field}} è obbligatorio.",
+        "resolved_accept": "Risposto",
+        "resolved_cancel": "Senza risposta",
+        "resolved_decline": "Rifiutato",
+        "sending": "Invio…",
+        "submit": "Invia",
+        "title": "Uno strumento ti sta chiedendo",
+        "title_named": "{{who}} ti sta chiedendo",
+        "title_named_resolved": "{{who}} ti ha chiesto",
+        "title_resolved": "Uno strumento ti ha chiesto",
+        "url_hint": "Apri il link, completa lì e torna a premere “Ho finito”."
       }
     },
     "chatPage": {

@@ -12259,6 +12259,27 @@
         "outcome_discarded": "Verworfen. Die Live-Seite hat sich nicht geändert.",
         "outcome_closed": "Vorschau beendet. Das ist jetzt die Live-Seite.",
         "outcome_undo": "Zum Rückgängigmachen bitte {{name}}, das vorherige Dashboard wiederherzustellen."
+      },
+      "elicitationCard": {
+        "answer_failed": "Deine Antwort konnte nicht gesendet werden. Versuche es erneut.",
+        "choose": "Auswählen…",
+        "date_time_format": "Zeitformat: 2026-01-31T09:30:00Z",
+        "decline": "Ablehnen",
+        "done": "Ich bin fertig",
+        "integer_not_whole": "{{field}} muss eine ganze Zahl sein.",
+        "integer_too_large": "{{field}} ist zu groß, um exakt gesendet zu werden; höchstens 15 Ziffern.",
+        "no_longer_pending": "Diese Frage wartet nicht mehr auf eine Antwort.",
+        "required_missing": "{{field}} ist erforderlich.",
+        "resolved_accept": "Beantwortet",
+        "resolved_cancel": "Nicht beantwortet",
+        "resolved_decline": "Abgelehnt",
+        "sending": "Wird gesendet…",
+        "submit": "Absenden",
+        "title": "Ein Tool fragt dich",
+        "title_named": "{{who}} fragt dich",
+        "title_named_resolved": "{{who}} hat dich gefragt",
+        "title_resolved": "Ein Tool hat dich gefragt",
+        "url_hint": "Öffne den Link, erledige es dort und drücke dann hier „Ich bin fertig“."
       }
     },
     "chatPage": {

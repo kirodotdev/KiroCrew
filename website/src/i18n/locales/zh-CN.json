@@ -12076,6 +12076,27 @@
         "outcome_discarded": "已丢弃。正式页面没有变化。",
         "outcome_closed": "预览已结束。现在这就是正式页面。",
         "outcome_undo": "想撤销，就让 {{name}} 恢复之前的仪表板。"
+      },
+      "elicitationCard": {
+        "answer_failed": "回答没有发送成功，请重试。",
+        "choose": "请选择…",
+        "date_time_format": "格式：2026-01-31T09:30:00Z",
+        "decline": "拒绝",
+        "done": "我已完成",
+        "integer_not_whole": "{{field}} 必须是整数。",
+        "integer_too_large": "{{field}} 太大，无法精确发送；最多 15 位数字。",
+        "no_longer_pending": "这个问题已不再等待回答。",
+        "required_missing": "{{field}} 为必填项。",
+        "resolved_accept": "已回答",
+        "resolved_cancel": "未回答",
+        "resolved_decline": "已拒绝",
+        "sending": "发送中…",
+        "submit": "提交",
+        "title": "工具在向你提问",
+        "title_named": "{{who}} 在向你提问",
+        "title_named_resolved": "{{who}} 问过你",
+        "title_resolved": "工具问过你",
+        "url_hint": "打开链接，在那边完成后回来点“我已完成”。"
       }
     },
     "chatPage": {

@@ -12442,6 +12442,27 @@
         "outcome_discarded": "Descartada. A página no ar não mudou.",
         "outcome_closed": "Prévia encerrada. Esta é a página no ar agora.",
         "outcome_undo": "Para desfazer, peça para {{name}} restaurar o painel anterior."
+      },
+      "elicitationCard": {
+        "answer_failed": "Não foi possível enviar sua resposta. Tente novamente.",
+        "choose": "Escolher…",
+        "date_time_format": "Formato: 2026-01-31T09:30:00Z",
+        "decline": "Recusar",
+        "done": "Terminei",
+        "integer_not_whole": "{{field}} precisa ser um número inteiro.",
+        "integer_too_large": "{{field}} é grande demais para ser enviado com exatidão; use no máximo 15 dígitos.",
+        "no_longer_pending": "Esta pergunta não aguarda mais resposta.",
+        "required_missing": "{{field}} é obrigatório.",
+        "resolved_accept": "Respondido",
+        "resolved_cancel": "Sem resposta",
+        "resolved_decline": "Recusado",
+        "sending": "Enviando…",
+        "submit": "Enviar",
+        "title": "Uma ferramenta está perguntando a você",
+        "title_named": "{{who}} está perguntando a você",
+        "title_named_resolved": "{{who}} perguntou a você",
+        "title_resolved": "Uma ferramenta perguntou a você",
+        "url_hint": "Abra o link, conclua lá e volte para clicar em “Terminei”."
       }
     },
     "chatPage": {

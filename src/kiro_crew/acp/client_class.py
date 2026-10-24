@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import pinned_fs
 from kiro_crew.acp import client_claude_seed as _client_claude_seed
 from kiro_crew.acp import client_claude_session as _client_claude_session
+from kiro_crew.acp import client_elicitation as _client_elicitation
 from kiro_crew.acp import client_lifecycle as _client_lifecycle
 from kiro_crew.acp import client_mcp_array as _client_mcp_array
 from kiro_crew.acp import client_model_selection as _client_model_selection
@@ -44,6 +45,7 @@ from kiro_crew.acp.client_permissions import _scrub_observed
 from kiro_crew.acp.client_start import CLIENT_NAME
 from kiro_crew.acp.client_timeouts import _CANCEL_GRACE_SECS
 from kiro_crew.acp.client_turn_control import _CLIENT_STEERING_REQUEST_METHODS, _ConcurrentSteerTurn
+from kiro_crew.acp.elicitation import ElicitationRequest
 from kiro_crew.acp.liveness import LivenessOracle
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.mcp_startable import PrunedServer
@@ -548,6 +550,12 @@ class AcpClient:
         # put the request through the security floor (``permission_floor``)
         # whichever consumer answers it.
         self._permission_gate_events: dict[str | int, AcpEvent] = {}
+        # Consumers that can put an MCP elicitation to a person opt IN; for
+        # everyone else the client declines the request itself before it
+        # would be yielded (see client_elicitation). Request id -> the parsed
+        # ask, for every elicitation yielded and not yet answered.
+        self.accepts_elicitation: bool = False
+        self._pending_elicitations: dict[str | int, ElicitationRequest] = {}
         self._stderr_lines: deque[str] = deque(maxlen=20)
         # Latched on this process's FIRST non-thinking text chunk, tool call or
         # tool result, cleared with the rest of the process state on respawn:
@@ -1241,6 +1249,12 @@ class AcpClient:
     _note_goose_version = _client_permissions._note_goose_version
     _tripwire_goose_mode = _client_permissions._tripwire_goose_mode
     _tripwire_pi_gate = _client_permissions._tripwire_pi_gate
+    # Answer an MCP server's elicitation on this client: ``kiro_crew.acp.client_elicitation``.
+    _handle_elicitation_request = _client_elicitation._handle_elicitation_request
+    _audit_elicitation_decision = _client_elicitation._audit_elicitation_decision
+    _decline_elicitation = _client_elicitation._decline_elicitation
+    answer_elicitation = _client_elicitation.answer_elicitation
+    cancel_pending_elicitations = _client_elicitation.cancel_pending_elicitations
     _audit_spec_restriction = _client_permissions._audit_spec_restriction
     _deny_zero_tools = _client_permissions._deny_zero_tools
     _deny_spec_disabled_tool = _client_permissions._deny_spec_disabled_tool

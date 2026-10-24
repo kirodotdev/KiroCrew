@@ -236,8 +236,8 @@ _SLOT_SCOPED_EVENTS = frozenset({
     "activity_event", "session_summary",
     # Voice
     "voice_chunk", "voice_complete", "voice_error",
-    # Approvals and question cards (carry a slot field)
-    "approval", "approval_resolved", "question_card",
+    # Approvals, question cards and an MCP elicitation answer (carry a slot field)
+    "approval", "approval_resolved", "question_card", "elicitation_resolved",
     # Subagent lifecycle. Every one of these is fired through
     # ``SubagentManager._fire_event`` and reaches the wire via
     # ``broadcast_ws(etype, ...)`` with a VARIABLE etype (the ``_subagent_event``

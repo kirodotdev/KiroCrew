@@ -272,16 +272,25 @@ export const messageReducers = {
     if (!resolve(state.messages)) resolve(state.slotMessages[safeKey(slot)])
   },
   removeByApprovalId(state: ChatState, action: PayloadAction<string>) { state.messages = state.messages.filter(m => m.meta?.approval_id !== action.payload) },
-  resolveByApprovalId(state: ChatState, action: PayloadAction<{ id: string; slot?: string; decision?: string; registry?: string; allPending?: boolean }>) {
-    const { id, slot, registry, allPending } = action.payload
+  resolveByApprovalId(state: ChatState, action: PayloadAction<{ id: string; slot?: string; decision?: string; registry?: string; allPending?: boolean; mid?: string; answer?: Record<string, unknown> }>) {
+    const { id, slot, registry, allPending, mid, answer } = action.payload
     if (!slot || isUnsafeKey(slot)) return
     const messages = slot === state.activeSlot
       ? state.messages
       : state.slotMessages[safeKey(slot)]
     const matches = messages?.filter(message => message.meta?.approval_id === id)
-    const m = (registry
-      ? matches?.find(message => message.meta?.registry === registry)
-      : undefined) ?? matches?.[0]
+    // `mid` names the exact row the server stamped. An ACP request id is
+    // connection-scoped and a backend may reuse it, so by id alone the OLDEST
+    // row would win and a later card with the same id would stay pending. A
+    // frame that NAMES a mid therefore never falls back to another row: a
+    // miss means the row is not in this store (not loaded yet), and stamping
+    // a sibling would resolve the wrong card.
+    const m = mid
+      ? matches?.find(message => message.meta?.mid === mid)
+      : (registry
+        ? matches?.find(message => message.meta?.registry === registry)
+        : undefined)
+        ?? matches?.[0]
     const decision = action.payload.decision || 'approved'
     // A 'stale' retirement carries no outcome (an expired wait, a 404, or a
     // reconcile snapshot that no longer lists the id), so it may only settle
@@ -293,6 +302,10 @@ export const messageReducers = {
     // write downgraded the decision. The reverse direction stays open: a
     // real decision landing after 'stale' is new information and overwrites.
     if (m?.meta && !(decision === 'stale' && m.meta.resolved)) m.meta.resolved = decision
+    // An elicitation's accepted answer rides the same frame; the card reads
+    // `meta.answer` for its summary, which a transcript reload would otherwise
+    // be the first to supply.
+    if (m?.meta && answer && decision !== 'stale') m.meta.answer = answer
     // `allPending`: a bare-id 404 proves NO request is pending under this id
     // (`resolve_approval` checks the state and slot registries), yet a
     // chat-runner row and a coordinator row can carry it. Settling only

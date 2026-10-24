@@ -437,6 +437,22 @@ class AcpSessionProvider(LLMProvider):
         if hasattr(self._handle, "child_fidelity_aware"):
             self._handle.child_fidelity_aware = value
 
+    @property
+    def accepts_elicitation(self) -> bool:
+        """See AcpSessionHandle.accepts_elicitation."""
+        return getattr(self._handle, "accepts_elicitation", False)
+
+    @accepts_elicitation.setter
+    def accepts_elicitation(self, value: bool) -> None:
+        if hasattr(self._handle, "accepts_elicitation"):
+            self._handle.accepts_elicitation = bool(value)
+
+    async def answer_elicitation(
+        self, request_id: str | int, action: str, content: dict[str, Any] | None = None
+    ) -> bool:
+        """Answer a pending MCP elicitation (see AcpSessionHandle.answer_elicitation)."""
+        return await self._guarded(self._handle.answer_elicitation(request_id, action, content))
+
     async def release_runtime_lease(self) -> None:
         """Give up this provider's lease on the runtime, if it holds one.
 

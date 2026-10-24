@@ -233,6 +233,8 @@ class AcpProvider(LLMProvider):
         # consumers (dashboard chat) BEFORE startup; re-applied when
         # _start_kiro_runtime_impl swaps in the real AcpSessionProvider.
         self._child_fidelity_aware: bool = False
+        # Same shape for the MCP elicitation opt-in (see accepts_elicitation).
+        self._accepts_elicitation: bool = False
         # Canonical Kiro Crew identity (a cfg.agents key), resolved by the
         # factory at provider-creation time — ``agent`` above is the bound kiro
         # template, a different namespace. Threaded into the kiro-shared
@@ -340,6 +342,32 @@ class AcpProvider(LLMProvider):
                 inner.child_fidelity_aware = bool(value)
             except Exception:  # pragma: no cover - read-only shapes
                 pass
+
+    @property
+    def accepts_elicitation(self) -> bool:
+        """See AcpSessionHandle.accepts_elicitation.
+
+        Stored here and forwarded to the live inner client for the same reason
+        ``child_fidelity_aware`` is: the kiro backend's placeholder client is
+        replaced at runtime startup, and the stored value is re-applied then.
+        """
+        return self._accepts_elicitation
+
+    @accepts_elicitation.setter
+    def accepts_elicitation(self, value: bool) -> None:
+        self._accepts_elicitation = bool(value)
+        inner = getattr(self, "_client", None)
+        if inner is not None and hasattr(inner, "accepts_elicitation"):
+            try:
+                inner.accepts_elicitation = bool(value)
+            except Exception:  # pragma: no cover - read-only shapes
+                pass
+
+    async def answer_elicitation(
+        self, request_id: str | int, action: str, content: dict[str, Any] | None = None
+    ) -> bool:
+        """Answer a pending MCP elicitation on the inner client."""
+        return await self._client.answer_elicitation(request_id, action, content)
 
     @property
     def model_pin_refused(self) -> str:

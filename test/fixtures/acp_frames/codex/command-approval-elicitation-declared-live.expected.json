@@ -1,0 +1,176 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "authStatus": {}
+      },
+      "auth": {
+        "logout": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "acp": false,
+        "http": true,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "providers": {},
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "list": {},
+        "resume": {},
+        "subagents": {}
+      }
+    },
+    "agent_version": "2.2.2",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "echo PROBE-RAN > probe-ran.txt",
+          "cwd": "~/probe"
+        },
+        "title": "echo PROBE-RAN > probe-ran.txt",
+        "tool_call_id": "call_0",
+        "tool_input": "{\n  \"command\": \"echo PROBE-RAN > probe-ran.txt\",\n  \"cwd\": \"~/probe\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "echo PROBE-RAN > probe-ran.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Yes, proceed"
+          },
+          {
+            "id": "accept_execpolicy_amendment",
+            "label": "Yes, and don't ask again for commands that start with `echo PROBE-RAN > probe-ran.txt`"
+          },
+          {
+            "id": "cancel",
+            "label": "No, and tell Codex what to do differently"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "echo PROBE-RAN > probe-ran.txt",
+          "cwd": "~/probe"
+        },
+        "shell_classified": true,
+        "title": "Run command",
+        "tool_call_id": "call_0",
+        "tool_input": "{\n  \"command\": \"echo PROBE-RAN > probe-ran.txt\",\n  \"cwd\": \"~/probe\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "accept_execpolicy_amendment",
+      "once": "allow_once",
+      "reject": "cancel"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_0",
+        "tool_final": true,
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      105,
+      258400
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      105,
+      258400
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "prompt_tokens": [
+      200,
+      10,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

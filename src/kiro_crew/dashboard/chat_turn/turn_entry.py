@@ -970,6 +970,13 @@ async def _turn_release_handles(turn: _ChatTurn) -> None:
         setattr(turn.client, "child_fidelity_aware", False)
     except Exception:
         pass
+    # The elicitation opt-in is the same promise (to render the card) and
+    # ends with the turn for the same reason -- on the client the turn
+    # ENDS with, which a recovery phase may have replaced.
+    try:
+        setattr(turn.client, "accepts_elicitation", False)
+    except Exception:
+        pass
     # Ensure file changes always surface, even on cancel/error. Wrapped so
     # a raise here cannot skip the re-arm in _turn_settle_debts
     # (chat_turn/prompt_assembly.py) and re-introduce the orphan bug this fix prevents.

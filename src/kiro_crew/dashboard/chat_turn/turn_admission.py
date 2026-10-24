@@ -1237,6 +1237,13 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         setattr(client, "child_fidelity_aware", True)
     except Exception:  # pragma: no cover - providers without the attr
         pass
+    # This consumer can put an MCP server's elicitation to the person (the
+    # elicitation card) -- opt in so the driver yields those events here
+    # instead of declining them itself. Same attribute shape as above.
+    try:
+        setattr(client, "accepts_elicitation", True)
+    except Exception:  # pragma: no cover - providers without the attr
+        pass
     # Companion steer handle: lets the steer handler cut the current text
     # segment at the steer boundary (see _steer_segment_cut). Same
     # lifecycle as _acp_client.

@@ -12442,6 +12442,27 @@
         "outcome_discarded": "Descartada. La página activa no cambió.",
         "outcome_closed": "Vista previa terminada. Esta es la página activa ahora.",
         "outcome_undo": "Para deshacerlo, pídele a {{name}} que restaure el panel anterior."
+      },
+      "elicitationCard": {
+        "answer_failed": "No se pudo enviar tu respuesta. Inténtalo de nuevo.",
+        "choose": "Elegir…",
+        "date_time_format": "Formato: 2026-01-31T09:30:00Z",
+        "decline": "Rechazar",
+        "done": "He terminado",
+        "integer_not_whole": "{{field}} debe ser un número entero.",
+        "integer_too_large": "{{field}} es demasiado grande para enviarse con exactitud; usa como máximo 15 dígitos.",
+        "no_longer_pending": "Esta pregunta ya no espera respuesta.",
+        "required_missing": "{{field}} es obligatorio.",
+        "resolved_accept": "Respondido",
+        "resolved_cancel": "Sin responder",
+        "resolved_decline": "Rechazado",
+        "sending": "Enviando…",
+        "submit": "Enviar",
+        "title": "Una herramienta te pregunta",
+        "title_named": "{{who}} te pregunta",
+        "title_named_resolved": "{{who}} te preguntó",
+        "title_resolved": "Una herramienta te preguntó",
+        "url_hint": "Abre el enlace, termina allí y vuelve para pulsar “He terminado”."
       }
     },
     "chatPage": {

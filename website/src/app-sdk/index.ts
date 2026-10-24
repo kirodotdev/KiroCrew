@@ -92,7 +92,7 @@ const WS_SLOT_SCOPED_EVENTS = new Set([
   // Voice
   'voice_chunk', 'voice_complete', 'voice_error',
   // Approvals and question cards
-  'approval', 'approval_resolved', 'question_card',
+  'approval', 'approval_resolved', 'question_card', 'elicitation_resolved',
   // Subagent lifecycle
   'subagent_spawn', 'subagent_done', 'subagent_tool', 'subagent_chunk',
   'subagent_snapshot', 'subagent_status', 'subagent_queued',

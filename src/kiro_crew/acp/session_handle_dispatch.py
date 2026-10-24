@@ -851,6 +851,18 @@ async def _dispatch_events(
                 # "waiting for a human" from "the consumer stopped pulling".
                 self._awaiting_permission = True
                 yield _perm_event
+            elif action == "elicitation":
+                # An MCP server's human-in-the-loop ask. The handle answers it
+                # itself (decline) unless this consumer can put it to a person;
+                # the returned event is the ask that consumer must answer. No
+                # trust tier applies: it is the server's requirement, not ours.
+                _elicit_event = await self._handle_elicitation_request(msg)
+                if _elicit_event is None:
+                    continue
+                # Same park marking as a permission: the consumer waits on a
+                # human here too, and an observer must not read that as a stall.
+                self._awaiting_permission = True
+                yield _elicit_event
             elif action == "server_request_unknown":
                 await self._runtime.send_error(msg.id, JSONRPC_METHOD_NOT_FOUND, "Method not found")
             elif action == "update":

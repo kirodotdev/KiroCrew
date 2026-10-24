@@ -369,6 +369,9 @@ async def cancel_session(self: AcpClient, grace_secs: float = 0.0) -> None:
     # their entry, and a new turn clears the map. An ``approve_tool`` call with
     # an explicit ``option_id`` leaves its entry behind; no caller passes one to
     # this client.
+    # The same holds for an MCP elicitation still waiting on a person: the
+    # engine keeps its tool call open until the ask is answered.
+    await self.cancel_pending_elicitations()
     open_requests = list(self._permission_options)
     self._permission_options.clear()
     if not open_requests:

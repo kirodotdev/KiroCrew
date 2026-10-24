@@ -158,6 +158,31 @@ def bare_approval_decide_allowed(request: web.Request) -> bool:
     return request.get("app", None) == ""
 
 
+def _pending_elicitation_ids(slot: Any) -> set[str]:
+    """Request ids of this slot's elicitation rows that a person has not answered.
+
+    An MCP server's elicitation shares the slot's approval registry with tool
+    permissions so a Stop, Continue and the Board see one open question, but it
+    is not a tool approval: only the dashboard owner answers it, through the
+    elicitation route. The approve route and the trust/yolo sweep read this set to
+    leave those futures alone -- an ``approved`` written into one would otherwise
+    be read as a person's answer to a question nobody saw.
+    """
+    ids: set[str] = set()
+    for message in slot.messages:
+        if message.get("role") != "elicitation":
+            continue
+        try:
+            meta = json.loads(message.get("cls") or "")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(meta, dict) and not meta.get("resolved"):
+            rid = meta.get("request_id")
+            if isinstance(rid, str) and rid:
+                ids.add(rid)
+    return ids
+
+
 def _approval_target_required() -> web.Response:
     return web.json_response(
         {
@@ -601,7 +626,12 @@ async def apply_approval_mode(
         for _slot in state._slots.values():
             if scoped and effective_session_key(_slot) != _target_key:
                 continue
+            _elicitations = _pending_elicitation_ids(_slot)
             for aid, fut in list(_slot._approval_futures.items()):
+                if aid in _elicitations:
+                    # A server's own question to the person: a trust tier is
+                    # not an answer to it, and the card stays open.
+                    continue
                 if not fut.done():
                     fut.set_result("approved")
                     # Persist resolved state into the permission message. The
@@ -766,6 +796,19 @@ def _deny_trust_pattern(name: str, request_id: str, action: str, code: str) -> w
     return web.json_response({"error": errors[code], "code": code}, status=400)
 
 
+def _elicitation_not_an_approval() -> web.Response:
+    """Not a tool approval: the question is the MCP server's and only the
+    dashboard owner answers it, through the elicitation route."""
+    return web.json_response(
+        {
+            "error": "this request is an MCP elicitation; answer it through "
+            "/api/chat/slots/{slot}/elicitation",
+            "code": "elicitation_not_an_approval",
+        },
+        status=409,
+    )
+
+
 async def api_chat_slot_approve(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/approve — resolve a pending tool approval."""
     state: DashboardState = request.app["state"]
@@ -797,6 +840,8 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     )
     if denied is not None:
         return denied
+    if isinstance(request_id, str) and request_id in _pending_elicitation_ids(slot):
+        return _elicitation_not_an_approval()
     strict_native = "origin" in body
     if not strict_native and not request_app and not bare_approval_decide_allowed(request):
         # A decide by request id alone, from a caller that is not the dashboard
@@ -868,11 +913,24 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 owner, fut = s, cand
                 break
     else:
-        pending = [(k, f) for k, f in slot._approval_futures.items() if not f.done()]
+        # The implicit pick never lands on an elicitation: a bare approve with
+        # no id is a decision about the agent's tool, and the only open
+        # question being the MCP server's does not make it that.
+        elicitations = _pending_elicitation_ids(slot)
+        pending = [
+            (k, f)
+            for k, f in slot._approval_futures.items()
+            if not f.done() and k not in elicitations
+        ]
         if len(pending) == 1:
             request_id, fut = pending[0]
         else:
             fut = None
+    if fut is not None and not fut.done() and request_id in _pending_elicitation_ids(owner):
+        # Checked on the RESOLVED (owner, request_id), not only the addressed
+        # slot: under session-sharing the future the scan found lives on
+        # another slot, and the early guard above never read that slot's rows.
+        return _elicitation_not_an_approval()
     if request_app and owner is not slot:
         denied = await deny_app_session_control(
             request, request_app, owner, owner.key, "chat_slot_approve"

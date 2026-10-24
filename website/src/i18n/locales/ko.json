@@ -12076,6 +12076,27 @@
         "outcome_discarded": "버렸어요. 라이브 페이지는 바뀌지 않았어요.",
         "outcome_closed": "미리보기가 끝났어요. 이제 이게 라이브 페이지예요.",
         "outcome_undo": "되돌리려면 {{name}}에게 이전 대시보드로 되돌려 달라고 해요."
+      },
+      "elicitationCard": {
+        "answer_failed": "답변을 보낼 수 없었습니다. 다시 시도하세요.",
+        "choose": "선택…",
+        "date_time_format": "형식: 2026-01-31T09:30:00Z",
+        "decline": "거절",
+        "done": "끝냈어요",
+        "integer_not_whole": "{{field}}은(는) 정수여야 해요.",
+        "integer_too_large": "{{field}}이(가) 너무 커서 정확히 보낼 수 없어요. 15자리 이하로 입력해 주세요.",
+        "no_longer_pending": "이 질문은 더 이상 답변을 기다리지 않습니다.",
+        "required_missing": "{{field}}은(는) 필수입니다.",
+        "resolved_accept": "답변함",
+        "resolved_cancel": "답변 안 함",
+        "resolved_decline": "거절함",
+        "sending": "보내는 중…",
+        "submit": "제출",
+        "title": "도구가 질문하고 있어요",
+        "title_named": "{{who}}이(가) 질문하고 있어요",
+        "title_named_resolved": "{{who}}이(가) 질문했어요",
+        "title_resolved": "도구가 질문했어요",
+        "url_hint": "링크를 열어 거기서 마친 뒤 돌아와 “끝냈어요”를 누르세요."
       }
     },
     "chatPage": {
