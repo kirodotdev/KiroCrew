@@ -86,13 +86,13 @@ def test_a_huge_history_or_status_read_is_streamed_to_the_cap(tmp_path, monkeypa
 
     root, git = _plain_git_repo(tmp_path)
     huge = "s" * (2 * wt.MAX_READ_BYTES)
-    (root / "a.txt").write_text("a\n", encoding="utf-8")
+    (root / "a.txt").write_text("a\n", encoding="utf-8", newline="\n")
     git(root, "add", ".")
     # One commit subject, or one untracked file list, larger than the read cap.
-    (tmp_path / "message").write_text(huge, encoding="utf-8")
+    (tmp_path / "message").write_text(huge, encoding="utf-8", newline="\n")
     git(root, "commit", "-q", "-F", str(tmp_path / "message"))
     for i in range(2 * wt.MAX_READ_BYTES // 200):
-        (root / f"untracked-{i:05d}-{'n' * 180}").write_text("", encoding="utf-8")
+        (root / f"untracked-{i:05d}-{'n' * 180}").write_text("", encoding="utf-8", newline="\n")
     real_popen = subprocess.Popen
     buffered = []
 
@@ -128,7 +128,9 @@ def test_a_guest_with_timeout_but_no_git_reports_git_missing(tmp_path, monkeypat
         assert result["error_text"] == "git is not installed", result
 
 
-def test_git_blob_stream_timeout_stops_before_reaping(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_git_blob_stream_timeout_stops_before_reaping(tmp_path, monkeypatch, platform):
+    # Both branches run on every runner: POSIX stops the leader, Windows the tree.
     import io
     import subprocess
     import threading
@@ -170,7 +172,8 @@ def test_git_blob_stream_timeout_stops_before_reaping(tmp_path, monkeypatch):
     # Without coreutils timeout the read's own deadline is the only one.
     monkeypatch.setattr(wt.shutil, "which", lambda name: None)
     monkeypatch.setattr(wt.subprocess, "Popen", spawn)
-    monkeypatch.setattr(wt, "_stop_read", kill)
+    monkeypatch.setattr(wt, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(wt, "_stop_read" if platform != "win32" else "_stop_tree", kill)
     with pytest.raises(subprocess.TimeoutExpired):
         wt._run_grouped(
             ["git", "cat-file", "blob", "a" * 40],
@@ -253,7 +256,7 @@ def test_a_truncated_reply_carrying_bodies_builds_no_hunks():
 
 def _committed_file(tmp_path, name="tracked.sh", body="echo hi\n"):
     root, git = _plain_git_repo(tmp_path)
-    (root / name).write_text(body, encoding="utf-8")
+    (root / name).write_text(body, encoding="utf-8", newline="\n")
     git(root, "add", ".")
     git(root, "commit", "-q", "-m", "seed")
     return root, git
@@ -300,6 +303,25 @@ def test_a_mode_change_git_ignores_is_not_shown(tmp_path):
     assert _gateway_diff(root, "tracked.sh") == ""
 
 
+def test_a_staged_chmod_shows_where_git_does_not_trust_the_mode_bit(tmp_path):
+    """With core.fileMode=false git takes the worktree mode from the index, so a
+    staged chmod with unchanged bytes and permissions is a real HEAD diff."""
+    import subprocess
+
+    root, git = _committed_file(tmp_path)
+    git(root, "config", "core.fileMode", "false")
+    git(root, "update-index", "--chmod=+x", "tracked.sh")
+    real = subprocess.run(
+        ["git", "-C", str(root), "diff", "--no-color", "HEAD", "--", "tracked.sh"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout
+    assert "old mode 100644\nnew mode 100755\n" in real
+    assert "old mode 100644\nnew mode 100755\n" in _gateway_diff(root, "tracked.sh")
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits")
 def test_new_and_deleted_files_name_their_mode(tmp_path):
     root, git = _committed_file(tmp_path)
@@ -318,7 +340,9 @@ def test_a_renamed_file_diffs_against_its_source(tmp_path):
     body = "".join(f"line {i}\n" for i in range(20))
     root, git = _committed_file(tmp_path, "a.txt", body)
     git(root, "mv", "a.txt", "b.txt")
-    (root / "b.txt").write_text(body.replace("line 7\n", "line seven\n"), encoding="utf-8")
+    (root / "b.txt").write_text(
+        body.replace("line 7\n", "line seven\n"), encoding="utf-8", newline="\n"
+    )
     # Without the source the HEAD side is absent: a whole-file addition.
     assert "--- /dev/null" in _gateway_diff(root, "b.txt")
     patch = _gateway_diff(root, "b.txt", "a.txt")
@@ -329,7 +353,7 @@ def test_a_renamed_file_diffs_against_its_source(tmp_path):
     changed = [line for line in patch.splitlines()[5:] if line[:1] in "+-"]
     assert changed == ["-line 7", "+line seven"]
     # A pure rename is still a difference.
-    (root / "b.txt").write_text(body, encoding="utf-8")
+    (root / "b.txt").write_text(body, encoding="utf-8", newline="\n")
     assert _gateway_diff(root, "b.txt", "a.txt") == (
         "diff --git a/a.txt b/b.txt\nrename from a.txt\nrename to b.txt\n"
     )
@@ -524,7 +548,7 @@ def test_an_over_cap_file_holding_a_pem_sends_no_key_line(tmp_path, side):
     pem = "\n".join("    " + line for line in [PEM_BEGIN_RSA, *key_lines, PEM_END_RSA])
     content = prefix + "  key: |\n" + pem + "\n" + ordinary * (wt.MAX_READ_BYTES // len(ordinary))
     path = root / "config.yaml"
-    path.write_text(content, encoding="utf-8")
+    path.write_text(content, encoding="utf-8", newline="\n")
     if side == "old":
         git(root, "add", "config.yaml")
         git(root, "commit", "-q", "-m", "seed")
@@ -556,7 +580,7 @@ def test_an_indented_pem_with_no_footer_in_a_complete_file_shows_no_key_line(
         "    " + line + "\n" for line in [PEM_BEGIN_RSA, *key_lines]
     )
     path = root / "config.yaml"
-    path.write_text(content, encoding="utf-8")
+    path.write_text(content, encoding="utf-8", newline="\n")
     if side == "old":
         git(root, "add", "config.yaml")
         git(root, "commit", "-q", "-m", "seed")
@@ -586,7 +610,7 @@ def test_a_complete_pem_uses_whole_body_redaction(tmp_path):
     key_lines = [blob[i : i + 32] for i in range(0, len(blob), 32)]
     pem = "\n".join([PEM_BEGIN_RSA, *key_lines, PEM_END_RSA])
     ordinary = "ordinary-" + "x" * 110 + "\n"
-    (root / "f").write_text(pem + "\n" + ordinary * 20, encoding="utf-8")
+    (root / "f").write_text(pem + "\n" + ordinary * 20, encoding="utf-8", newline="\n")
     bodies = wt.browse(wt.Workspace(str(root)), {"op": "git_bodies", "path": "f"})
     assert bodies["truncated"] is False and PEM_END_RSA in bodies["new"]
     clean = redact_via_context(bodies["new"])
@@ -597,3 +621,129 @@ def test_a_complete_pem_uses_whole_body_redaction(tmp_path):
     assert [line[1:] for line in output.splitlines() if line.startswith("+")][
         1:
     ] == clean.splitlines()
+
+
+@pytest.mark.parametrize("op", ["git_log", "git_status"])
+def test_a_windows_capped_read_ends_the_writer_by_closing_its_pipe(tmp_path, monkeypatch, op):
+    """Windows runs the read unwrapped, and stopping its leader need not stop the
+    process writing (git.exe is a launcher). Closing our end of the pipe at the cap
+    is what ends the writer, so a capped read still answers instead of waiting out
+    its 30-second deadline. Simulated here by a stop that stops nothing."""
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    root, git = _plain_git_repo(tmp_path)
+    (root / "a.txt").write_text("a\n", encoding="utf-8", newline="\n")
+    git(root, "add", ".")
+    (tmp_path / "message").write_text("s" * (2 * wt.MAX_READ_BYTES), encoding="utf-8")
+    git(root, "commit", "-q", "-F", str(tmp_path / "message"))
+    for i in range(2 * wt.MAX_READ_BYTES // 200):
+        (root / f"untracked-{i:05d}-{'n' * 180}").write_text("", encoding="utf-8")
+    wrapped = []
+    real_under_timeout = wt._under_timeout
+    monkeypatch.setattr(wt, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(wt, "_stop_read", lambda proc: None)
+    monkeypatch.setattr(
+        wt, "_under_timeout", lambda *a: wrapped.append(a) or real_under_timeout(*a)
+    )
+    result = wt.browse(wt.Workspace(str(root)), {"op": op})
+    assert result["git"] is True and result["truncated"] is True, result
+    assert 0 < len(result["output"].encode()) <= wt.MAX_READ_BYTES
+    # No coreutils wrapper on Windows: a `timeout` there may be System32's.
+    assert not wrapped
+
+
+def test_a_read_past_its_deadline_leaves_no_process_behind(tmp_path, monkeypatch):
+    """A capped read that outlives its deadline is stopped with everything it
+    started. Windows has no group signal and git.exe is a launcher, so the
+    whole tree is ended there (`taskkill /T`). The leader here starts a child
+    that holds the read's pipe, as that launcher does. Off Windows the Windows
+    path runs with a group stop standing in for taskkill, so the test fails
+    wherever the unwind stops only the leader."""
+    import os
+    import signal
+    import subprocess
+
+    from kiro_crew.platform_compat_liveness import pid_exists
+    from kiro_crew.remote_session import workspace_tools as wt
+    from kiro_crew.testing.wait import wait_until
+
+    if sys.platform != "win32":
+        monkeypatch.setattr(wt, "sys", SimpleNamespace(platform="win32"))
+        monkeypatch.setattr(wt, "_stop_tree", lambda proc: os.killpg(proc.pid, signal.SIGKILL))
+    marker = tmp_path / "child.pid"
+    script = (
+        "import pathlib, subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        f"pathlib.Path({str(marker)!r}).write_text(str(child.pid))\n"
+        "time.sleep(120)\n"
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        wt._run_grouped(
+            [sys.executable, "-c", script],
+            cwd=str(tmp_path),
+            env=dict(os.environ),
+            timeout=3,
+            stderr=subprocess.PIPE,
+            stdout_limit=wt.MAX_READ_BYTES,
+        )
+    child = int(marker.read_text())
+    wait_until(lambda: not pid_exists(child), describe=lambda: f"child {child} still running")
+
+
+def test_the_tree_stop_runs_taskkill_from_the_system_directory_not_the_environment(
+    tmp_path, monkeypatch
+):
+    """``%SystemRoot%`` is the caller's to set, so a ``taskkill.exe`` planted
+    under it must not run in place of the system's own."""
+    from kiro_crew.remote_session import workspace_tools as wt
+    from kiro_crew.testing.ids import UNALLOCATABLE_PID
+
+    ran = []
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
+    monkeypatch.setattr(wt.subprocess, "run", lambda argv, **kw: ran.append(argv))
+    wt._stop_tree(SimpleNamespace(pid=UNALLOCATABLE_PID))
+    assert len(ran) == 1 and ran[0][1:] == ["/T", "/F", "/PID", str(UNALLOCATABLE_PID)]
+    assert str(tmp_path) not in ran[0][0]
+    assert ran[0][0].lower().endswith("system32\\taskkill.exe") or ran[0][0].lower().endswith(
+        "system32/taskkill.exe"
+    )
+
+
+@pytest.mark.parametrize(
+    "body, text",
+    [
+        (b"same\r\nlast\r\n", True),
+        (b"same\r\nlast\r", False),  # lone CR
+        (b"same\r\nlast\r\x00", False),  # NUL
+        (b"a\r\n" + b"x" * 126 + b"\x01", False),  # a control byte per <128 printable
+        (b"a\r\n" + b"x" * 127 + b"\x01", True),
+        (b"a\r\nb\x1a", True),  # a DOS end-of-file byte is not counted
+        (b"a\r\n\t\x1b\x0c\x08", True),  # TAB, ESC, FF and BS are printable to git
+    ],
+)
+def test_auto_text_follows_gits_binary_predicate(body, text):
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    assert wt._git_auto_text(body) is text
+
+
+@pytest.mark.parametrize("config", [("core.autocrlf", "true"), None])
+def test_a_lone_cr_keeps_crlf_bodies_git_did_not_convert(tmp_path, config):
+    """Git leaves a file with a lone CR as it is under automatic conversion
+    (``core.autocrlf`` or ``text=auto``), so its CRLFs are a real change and the
+    bodies must keep them: folding them would hide the diff git reports."""
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    root, git = _plain_git_repo(tmp_path)
+    if config:
+        git(root, "config", *config)
+    else:
+        (root / ".gitattributes").write_bytes(b"* text=auto\n")
+    (root / "f").write_bytes(b"same\nlast\r")
+    git(root, "add", ".")
+    git(root, "commit", "-q", "-m", "base")
+    (root / "f").write_bytes(b"same\r\nlast\r")
+    assert git(root, "status", "--porcelain").strip(), "git itself reports the change"
+    bodies = wt.browse(wt.Workspace(str(root)), {"op": "git_bodies", "path": "f"})
+    assert bodies["old"] == "same\nlast\r"
+    assert bodies["new"] == "same\r\nlast\r"
