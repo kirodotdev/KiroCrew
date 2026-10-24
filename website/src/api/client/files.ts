@@ -130,7 +130,7 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     /** `dir` lists one project-relative folder (one the whole listing named in
      *  `truncatedDirectories`) instead of the whole tree; its paths stay project-relative. */
     projectTree: (path: string, dir?: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/tree', s =>
-      fetch('/api/project/tree?path=' + encodeURIComponent(path) + (dir ? '&dir=' + encodeURIComponent(dir) : ''), { signal: s }).then(j)) as Promise<{ root: string; dir?: string; paths: string[]; directories?: string[]; repo: boolean; truncated?: boolean; truncatedDirectories?: string[]; hiddenOnlyDirectories?: string[]; unreadableDirectories?: string[]; linkedDirectories?: string[] }>,
+      fetch('/api/project/tree?path=' + encodeURIComponent(path) + (dir ? '&dir=' + encodeURIComponent(dir) : ''), { signal: s }).then(j)) as Promise<{ root: string; dir?: string; paths: string[]; directories?: string[]; repo: boolean; truncated?: boolean; truncatedDirectories?: string[]; hiddenOnlyDirectories?: string[]; unreadableDirectories?: string[]; linkedDirectories?: string[]; nestedRepoDirectories?: string[] }>,
     workspaces: () => fetch('/api/workspaces').then(j),
     createWorkspace: (body: object) => post('/api/workspaces', body).then(j),
     updateWorkspace: (name: string, body: object) =>

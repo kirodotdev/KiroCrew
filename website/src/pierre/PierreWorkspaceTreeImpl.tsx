@@ -589,12 +589,13 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
       return next
     })
   }, [evict])
-  // Child folder rows of each CUT folder, for the lazy load below: a chain row
-  // reports the expansion of its last folder only. Built for the cut folders
-  // alone, so it stays small however large the listing is.
+  // Child folder rows of each folder listed on request (cut by the cap, or a
+  // nested repository), for the lazy load below: a chain row reports the
+  // expansion of its last folder only. Built for those folders alone, so it
+  // stays small however large the listing is.
   const childDirectoriesRef = useRef<Map<string, string[]>>(new Map())
   childDirectoriesRef.current = useMemo(() => {
-    const cut = new Set((tree?.truncatedDirectories ?? []).filter(Boolean))
+    const cut = new Set([...(tree?.truncatedDirectories ?? []), ...(tree?.nestedRepoDirectories ?? [])].filter(Boolean))
     const map = new Map<string, string[]>()
     if (cut.size === 0) return map
     for (const raw of tree?.directories ?? []) {
@@ -607,6 +608,20 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   const truncatedDirectoriesRef = useRef<Set<string>>(new Set())
   truncatedDirectoriesRef.current = new Set(tree?.truncatedDirectories ?? [])
   const truncatedDirectoriesKey = (tree?.truncatedDirectories ?? []).join('\n')
+  // The folders whose own listing is fetched when they are opened: the ones
+  // the cap cut, and the nested repositories the project's listing cannot see
+  // inside. Only the first kind is a cut (badge, state row, folder tab).
+  const lazyFoldersRef = useRef<Set<string>>(new Set())
+  lazyFoldersRef.current = new Set([...(tree?.truncatedDirectories ?? []), ...(tree?.nestedRepoDirectories ?? [])])
+  const lazyFoldersKey = [...lazyFoldersRef.current].join('\n')
+  // The subset of those that are nested repositories. A cut folder keeps a
+  // state row beneath it, so the tree holds it open across the listing that
+  // lands; a nested repository has no row, so the folder is open over nothing
+  // and the reset that folds its listing in would close it (the expansion is
+  // only remembered once the visible row count changes). It is re-opened once
+  // its own listing has landed, as a chain row's folder is below.
+  const nestedRepoFoldersRef = useRef<Set<string>>(new Set())
+  nestedRepoFoldersRef.current = new Set(tree?.nestedRepoDirectories ?? [])
   // The folders the server could not read, for the notice above the tree and
   // the marker on each such folder's row. The root's own marker (`.`) is not a
   // folder of the listing and has its whole-panel state; every other entry is a
@@ -1183,13 +1198,14 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   }, [model, root])
 
   // Lazy per-folder loading. The whole listing stops at its row cap
-  // and names the folders the cut reached; expanding one of those asks for its
-  // own listing, which the merge above folds into the rendered tree. The root
+  // and names the folders the cut reached, and names the nested repositories it
+  // cannot see inside; expanding one of those asks for its own listing, which
+  // the merge above folds into the rendered tree. The root
   // (`""`) is never a row to expand -- the host's search reaches past it.
   useEffect(() => {
     if (mode !== 'all') return
     // Nothing to watch on a whole listing: no subscription at all.
-    if (![...truncatedDirectoriesRef.current].some(Boolean)) return
+    if (![...lazyFoldersRef.current].some(Boolean)) return
     const isOpen = (path: string) => {
       const item = model.getItem(path) as { isExpanded?: () => boolean } | null
       return !!item && typeof item.isExpanded === 'function' && item.isExpanded()
@@ -1200,7 +1216,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
       // so a cut folder also counts as open when a folder beneath it is.
       const children = childDirectoriesRef.current
       const evicted = evictedRef.current
-      for (const folder of truncatedDirectoriesRef.current) {
+      for (const folder of lazyFoldersRef.current) {
         if (!folder) continue
         const open = isOpen(folder)
         const chainOpen = !open && (children.get(folder) ?? []).some(isOpen)
@@ -1209,19 +1225,28 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
           if (!open && !chainOpen) evicted.delete(folder)
           continue
         }
-        if (open) loadFolder(folder)
-        else if (chainOpen) {
+        if (open) {
+          loadFolder(folder)
+          // No state row holds a nested repository open (see above): ask for
+          // it to be re-opened once its listing has landed.
+          if (nestedRepoFoldersRef.current.has(folder)) {
+            setPendingExpand(prev => (prev.includes(folder) ? prev : [...prev, folder]))
+          }
+        } else if (chainOpen) {
           // Opened through its chain row: once its own listing splits the
           // chain, the folder itself must stay open, or the rows it brought
           // land under a collapsed folder.
           loadFolder(folder)
           setPendingExpand(prev => (prev.includes(folder) ? prev : [...prev, folder]))
+        } else if (nestedRepoFoldersRef.current.has(folder)) {
+          // Closed again before its listing landed: it must not open itself.
+          setPendingExpand(prev => (prev.includes(folder) ? prev.filter(f => f !== folder) : prev))
         }
       }
     }
     check()
     return model.subscribe(check)
-  }, [model, mode, loadFolder, truncatedDirectoriesKey])
+  }, [model, mode, loadFolder, lazyFoldersKey])
 
   // Each whole-tree poll that lands also re-reads the loaded folders that are
   // OPEN: inside a folder past the cap the whole listing cannot see a file the
