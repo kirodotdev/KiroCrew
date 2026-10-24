@@ -282,7 +282,8 @@
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "चैट",
     "tab_title_session": "{{session}} — {{panel}}",
-    "release_notes_not_published_yet": "{{release}} के रिलीज़ नोट्स अभी प्रकाशित नहीं हुए हैं। इसके बजाय {{shown}} के नोट्स दिखाए जा रहे हैं।"
+    "release_notes_not_published_yet": "{{release}} के रिलीज़ नोट्स अभी प्रकाशित नहीं हुए हैं। इसके बजाय {{shown}} के नोट्स दिखाए जा रहे हैं।",
+    "titlebar_menu_disabled_footer": "कुछ आइटम यहाँ उपलब्ध नहीं हैं। दिखाए गए शॉर्टकट अब भी काम करते हैं।"
   },
   "appSdk": {
     "chatEmbed": {

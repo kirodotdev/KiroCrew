@@ -296,7 +296,8 @@
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "Chat",
     "tab_title_session": "{{session}} — {{panel}}",
-    "release_notes_not_published_yet": "Les notes de version de {{release}} ne sont pas encore publiées. Affichage des notes de {{shown}} à la place."
+    "release_notes_not_published_yet": "Les notes de version de {{release}} ne sont pas encore publiées. Affichage des notes de {{shown}} à la place.",
+    "titlebar_menu_disabled_footer": "Certains éléments ne sont pas disponibles ici. Les raccourcis affichés fonctionnent toujours."
   },
   "appSdk": {
     "chatEmbed": {

@@ -32,6 +32,17 @@ declare global {
     label: string
     accelerator: string
     enabled: boolean
+    /**
+     * True when THIS ROW was disabled by the app-menu:* per-action gate
+     * (LOCAL_ONLY_* set membership and a remote sender). False when a row is
+     * disabled for any other reason — Electron's own dispatch marks role
+     * items disabled based on runtime state (an `undo` role with no history,
+     * a `paste` role for a WebContents that lost text-selection focus,
+     * etc.). The renderer scopes its "unavailable from this window —
+     * shortcut still works here" affordance to `gated: true` rows only,
+     * because that message is only accurate for gate-caused disables.
+     */
+    gated: boolean
     checked: boolean
   }
 
