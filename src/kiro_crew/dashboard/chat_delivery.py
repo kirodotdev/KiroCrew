@@ -22,6 +22,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.config import live
 from kiro_crew.dashboard.chat_utils import (
     STEER_INTENT_META,
     STEER_POSSIBLY_DELIVERED_META,
@@ -434,11 +435,11 @@ async def steer_into_running_turn(
     if client is None or not getattr(client, "supports_steer", False):
         return STEER_UNAVAILABLE
     if not user_origin and getattr(client, "steer_needs_loss_recovery", False) is True:
-        # codex can drop a steer it already took when a later approval in the turn
-        # is denied. That limit is accepted only for the composer, where the
-        # session's own human watches the turn and can resend; a peer's text
-        # takes the caller's queue path instead.
-        return STEER_UNAVAILABLE
+        # The requeue keeps a steer this harness drops but may run it twice; peers opt in.
+        # A snapshot, not a load: no file read on the loop, no await before registering.
+        live_config = live.snapshot()
+        if live_config is None or not live_config.agent.peer_steer_loss_recovery:
+            return STEER_UNAVAILABLE
 
     # Register as pending BEFORE the await: ``steer()`` suspends on
     # ``stdin.drain()``, and if the turn's finally runs during that suspension

@@ -1088,6 +1088,21 @@ class AgentConfig:
             "sessions it created itself.",
         ),
     )
+    peer_steer_loss_recovery: bool = field(
+        default=False,
+        metadata=_meta(
+            "Peer Steer Loss Recovery",
+            "Let a steer that is not typed into the session's own composer (another "
+            "session's session_send or session_broadcast steer, or an automation's) "
+            "cut into a running Claude Code, Codex, Goose, Pi or OpenCode turn. "
+            "Those harnesses can drop a steer they accepted, so it counts as "
+            "delivered only when the turn ends cleanly; a turn that is cancelled, "
+            "fails or loses it to a denied approval puts it back as a queue card "
+            "that runs as the next turn, so it can run twice. Off by default: such "
+            "a steer queues for the next turn, and only the composer steers these "
+            "harnesses.",
+        ),
+    )
     member_dispatch: bool = field(
         default=True,
         metadata=_meta(

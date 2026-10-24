@@ -24,6 +24,7 @@ modules use are in ``steer_requeue_helpers.py``.
 
 from __future__ import annotations
 
+import json
 import re
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1317,12 +1318,12 @@ class TestSteerLifecycleState:
 
 
 class TestPeerSteerOnCodex:
-    """codex steer is accepted only from the session's own composer.
+    """By default codex steer is accepted only from the session's own composer.
 
-    A codex steer can be lost to a later denied approval, and only the human
-    watching the composer can notice and resend, so a peer's steer
-    (``session_send``, ``user_origin=False``) is refused before any RPC and the
-    caller falls back to its queue path.
+    A codex steer dropped by its turn is requeued by the teardown, which can run it
+    twice, so a peer's steer (``session_send``, ``user_origin=False``) is refused
+    before any RPC and the caller falls back to its queue path, unless
+    ``agent.peer_steer_loss_recovery`` opts peers into that requeue.
     """
 
     @pytest.mark.asyncio
@@ -1345,6 +1346,40 @@ class TestPeerSteerOnCodex:
         assert outcome == STEER_UNAVAILABLE
         client.steer.assert_not_awaited()
         assert slot._pending_steers == []
+
+    @pytest.mark.asyncio
+    async def test_the_key_lets_a_peer_steer_codex_once_the_config_watcher_holds_it(
+        self, tmp_path, monkeypatch, _patch_sel
+    ):
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.chat_delivery import (
+            STEER_STEERED,
+            STEER_UNAVAILABLE,
+            steer_into_running_turn,
+        )
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        (tmp_path / "config.json").write_text(
+            json.dumps({"agent": {"peer_steer_loss_recovery": True}}), encoding="utf-8"
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _running_slot(state)
+        client = MagicMock()
+        client.supports_steer = True
+        client.steer_needs_loss_recovery = True
+        client.steer = AsyncMock(return_value=True)
+        slot._acp_client = client
+
+        # The steer reads the watcher's snapshot, never the file, so an unprimed one refuses.
+        unprimed = await steer_into_running_turn(state, slot, "from a peer", user_origin=False)
+        assert unprimed == STEER_UNAVAILABLE
+        live.watch().prime(KiroCrewConfig.load())
+        outcome = await steer_into_running_turn(state, slot, "from a peer", user_origin=False)
+        assert outcome == STEER_STEERED
+        assert slot._pending_steers == ["from a peer"]
 
     @pytest.mark.asyncio
     async def test_the_composer_still_steers_codex(self, tmp_path, monkeypatch, _patch_sel):
