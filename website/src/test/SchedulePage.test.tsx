@@ -745,4 +745,96 @@ describe('SchedulePage failed-job error surface', () => {
 
     expect(await screen.findByText('12 files copied')).toBeInTheDocument()
   })
+
+  it('the failed-run traceback surface is not clipped to the 200px sliver', async () => {
+    // #21061: the detail dialog is `max-h-[86vh]` with its own scrolling body,
+    // and the Last Error notice sat under a fixed `max-h-[200px]`, so a
+    // multi-line traceback rendered as a ~200px window that collapsed to a
+    // one- or two-line sliver when the dialog scrolled -- exactly the line
+    // naming the failure fell off. Both run surfaces carry the taller
+    // viewport-relative cap instead.
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [mkJob({
+        command: 'backup.sh',
+        last_status: 'error',
+        last_error: 'Traceback (most recent call last):\n  File "daily_report.py", line 42, in run\nConnectionError: Max retries exceeded',
+      })],
+    })
+
+    renderWithProviders(<SchedulePage />)
+    fireEvent.click(await screen.findByText('Nightly report'))
+
+    const notice = await screen.findByTestId('schedule-job-last-error')
+    expect(notice.className).toContain('max-h-[min(45vh,420px)]')
+    expect(notice.className).not.toContain('max-h-[200px]')
+  })
+
+  it('the Last Error notice is structurally kept out of the flex shrink flow', async () => {
+    // jsdom has no layout engine, so the collapse itself cannot be reproduced
+    // here (scripts/verify-schedule-error-surface-layout.mjs measures it in a
+    // real browser). What jsdom CAN pin is the DOM shape the guarantee is made
+    // of: the notice sits in a plain block wrapper with visible overflow. Such
+    // a block has an automatic `min-height` of its content, so as a flex child
+    // of the DialogBody column it cannot be shrunk below the notice's capped
+    // height -- even if the notice's own `shrink-0` class were dropped. A
+    // wrapper that were itself a flex container or a scroll container
+    // (`overflow-y-auto`) would zero that automatic minimum and reopen the
+    // 16px collapse, so both are asserted absent.
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [mkJob({
+        command: 'backup.sh',
+        last_status: 'error',
+        last_error: 'Traceback (most recent call last):\n  File "daily_report.py", line 42, in run\nConnectionError: Max retries exceeded',
+      })],
+    })
+
+    renderWithProviders(<SchedulePage />)
+    fireEvent.click(await screen.findByText('Nightly report'))
+
+    const notice = await screen.findByTestId('schedule-job-last-error')
+    // Guard one, on the notice itself: the shrink floor and the scroll+cap it
+    // needs to keep a long traceback readable inside the floored box.
+    expect(notice.className).toContain('shrink-0')
+    expect(notice.className).toContain('max-h-[min(45vh,420px)]')
+    expect(notice.className).toContain('overflow-y-auto')
+    // Guard two, structural: the wrapper between notice and scroll container
+    // is a plain visible-overflow block, so its automatic min-height reserves
+    // the notice's space in the flex column.
+    const wrapper = notice.parentElement as HTMLElement
+    expect(wrapper).not.toBeNull()
+    expect(wrapper.className).not.toContain('flex')
+    expect(wrapper.className).not.toContain('overflow-y-auto')
+    // And the wrapper's parent IS the DialogBody scroll container -- there is
+    // no other intermediate shrinkable layer between the two.
+    expect(wrapper.parentElement!.className).toContain('overflow-y-auto')
+    expect(wrapper.parentElement!.className).toContain('min-h-0')
+  })
+
+  it('the successful-run output surface is not clipped to the 200px sliver', async () => {
+    // Same cap as the Last Error notice (#21061): a long `last_result` on a
+    // succeeded job lost all but ~200px to the inner scrollbar too.
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [mkJob({ command: 'backup.sh', last_status: 'ok', last_result: '12 files copied' })],
+    })
+
+    renderWithProviders(<SchedulePage />)
+    fireEvent.click(await screen.findByText('Nightly report'))
+
+    const pre = (await screen.findByText('12 files copied')).closest('pre')
+    expect(pre).not.toBeNull()
+    expect(pre!.className).toContain('max-h-[min(45vh,420px)]')
+    expect(pre!.className).toContain('shrink-0')
+    expect(pre!.className).not.toContain('max-h-[200px]')
+    // The pre's wrapper floors it the same way the notice's block wrapper
+    // floors the notice: a visible-overflow block keeps an automatic
+    // content-height minimum in the flex column. Assert it is not a scroll
+    // container, which would zero that minimum.
+    const wrapper = pre!.parentElement as HTMLElement
+    expect(wrapper.className).not.toContain('overflow-y-auto')
+    expect(wrapper.className).toContain('flex')
+  })
+
 })
