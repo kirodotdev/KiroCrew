@@ -3803,7 +3803,9 @@ The migration writes `members/<slug>/worker_notice_owed.json` after a repoint.
 The gateway offers it to each open crewmate thread after the slots restore
 (`offer_upgrade_notices`), or at a thread's first turn end, and claims it with
 `O_EXCL` on `worker_notice_claimed.json`, so it is posted at most once, as one
-hidden turn (`NOTICE_PROMPT`, `[Worker upgrade]`) ahead of any report.
+hidden turn (`NOTICE_PROMPT`, `[Worker upgrade]`) ahead of any report. It names
+where the user sees the worker's kit (Edit mate, Built From, read only) and
+where they change it (the same editor's Advanced, Worker's extra kit).
 
 **What the worker lacks, the conductor asks for.** A worker that lacks a tool or
 a skill says so in its report; it has no request tool (its spec lists

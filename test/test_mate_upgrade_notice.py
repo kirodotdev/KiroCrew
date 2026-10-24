@@ -156,7 +156,25 @@ def test_the_migration_owes_the_notice_only_for_crewmates_it_moved(monkeypatch, 
 
 
 def test_the_notice_names_the_path_to_the_worker_tabs_as_the_dashboard_shows_it():
-    """The tabs live in the crewmate editor's Built From section, opened by the pencil."""
+    """The tabs live in the crewmate editor's Built From section, opened by the pencil.
+
+    Built From only shows the kit, so the notice also names where it is changed:
+    the same editor's Advanced section, Worker's extra kit."""
     for words in ("pencil button (Edit mate)", "Built From", "Tools, MCP Servers and Skills"):
         assert words in notice.NOTICE_PROMPT
     assert "crewmate page" not in notice.NOTICE_PROMPT
+    assert "under Advanced, Worker's extra kit" in notice.NOTICE_PROMPT
+
+
+def test_the_notice_names_the_editor_labels_the_dashboard_shows():
+    """The words the notice quotes are the English labels the editor renders."""
+    import json
+    from pathlib import Path
+
+    labels = json.loads(
+        (Path(__file__).resolve().parents[1] / "website/src/i18n/locales/en.manual.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    kit = labels["crewWorkerKit"]
+    assert (kit["section_advanced"], kit["title"]) == ("Advanced", "Worker's extra kit")
