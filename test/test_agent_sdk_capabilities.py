@@ -327,6 +327,10 @@ MAIN_ROUTING = {
     "codex": ("session_config", ("mode", "read-only"), True),
     "nope": ("unverified", ("", ""), False),
     "kiro": ("unverified", ("", ""), False),
+    # New in this change: vibe lands KNOWN but dormant, so its routing is the
+    # fail-closed member and its config row is empty -- the same answers an
+    # unknown id reads, by design.
+    "vibe": ("unverified", ("", ""), False),
 }
 
 
@@ -353,10 +357,13 @@ def test_codex_still_needs_its_read_only_mode() -> None:
 
 
 def test_known_membership_is_unchanged_by_the_move() -> None:
-    """``ACP_BACKENDS_KNOWN`` gained and lost nothing.
+    """``ACP_BACKENDS_KNOWN`` is exactly the ids this build spells.
 
     Membership is the gate on the ``acp_backend`` kwarg, so a widened set means
-    provider construction accepts a value it must reject.
+    provider construction accepts a value it must reject. ``vibe`` joined the
+    set as a DORMANT harness: known, launchable once selected by an edition,
+    and refused by ``register_selectable_backend`` until its routing leaves
+    ``Routing.UNVERIFIED``.
     """
     assert sorted(sdk_backends.ACP_BACKENDS_KNOWN) == [
         "",
@@ -369,6 +376,7 @@ def test_known_membership_is_unchanged_by_the_move() -> None:
         "opencode",
         "pi",
         "strands",
+        "vibe",
     ]
 
 

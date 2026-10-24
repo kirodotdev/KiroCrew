@@ -1022,3 +1022,36 @@ call, the tool never runs), at most three passes, then the state is cleared
 `--mcp-config` file (Copilot's staging directory and lifetime), and the CLI's own
 discovery of other tools' MCP and skill files is switched off in the child's
 environment (`STRANDS_CLI_MCP_DISCOVERY=off`, `STRANDS_CLI_SKILL_DISCOVERY=off`).
+## Worked example: the vibe harness (dormant)
+
+The run to read for what DORMANCY looks like when it is the destination rather than
+the interim state: a harness whose launch, auth and vocabulary all exist, held out
+of the switch by one unmeasured fact that the harness itself names. Mistral's Vibe
+coding agent serves ACP from its own binary (`vibe-acp`, shipped by the
+`mistral-vibe` package; `initialize` follows ACP protocol version 1). It is in
+`ACP_BACKENDS_KNOWN` and it is NOT selectable.
+
+| Stage | State |
+|---|---|
+| 1 vocabulary | Done — `ACP_BACKEND_VIBE`, in `ACP_BACKENDS_KNOWN`, `PROVIDER_LABEL_VIBE`, policy name mapped. Not in `BASELINE_SELECTABLE_BACKENDS`, which is the narrowing Stage 7 requires an exception for: named in `NOT_SHIPPED_SELECTABLE` with the routing reason. |
+| 2 capability sets | Decided for every set, and the decision is the same word for all of them: out, because a source read is not a wire fact. In the two DERIVED memberships only — `SELF_SERVED_ACP` (from the launch table) and `ACP_CLIENT_SPAWNABLE` — which ask nothing the row does not already answer. Out of the session MCP array (the mount is unmeasured), out of every model and effort channel, out of every member set (dormant harnesses serve no members), out of `INDEPENDENT_SETUP` until the sandbox path is verified, out of internal sandbox and pod-home remap. |
+| 3 spawn path | Done — the thinnest adapter in `acp/harness/`: resolve the binary, return the row's own four answers. No MCP-array warm (the projection is `no-channel`), no credential mask (routing is `UNVERIFIED`, so `adapter_hidden_credential_dirs` resolves nothing), no seed (the candidate mode pin is source-read, so seeding a value would be the routing claim dormancy exists to avoid). |
+| 4 handshake | Declared, not captured — integer `1`, source-read off the ACP bridge it ships (agent-client-protocol 0.11.0). The row feeds the version table, so the handshake is spelled the day a capture confirms it. |
+| 5 auth declaration | Done — `own_credential_file`. One leaf (`~/.vibe/.env`, the 0600 plaintext fallback; the OS keyring is the preferred store and the residual named in the comment), `VIBE_HOME` re-anchored, `adapter_own_leaves` empty for the same reason claude's is (no mask is applied, so there is nothing to carve back out), no signed-out signature because a phrase must be copied from a live capture and none exists. |
+| 6 install probe | Done — no probe of its own; `_probe_self_served` reads this harness's record, which names `vibe-acp` and its installer (`uv tool install mistral-vibe`). The dashboard status row and the doctor answer for it the same way they answer for the selectable harnesses. |
+| 7 selectability | **Dormant, named.** The exception is `register_selectable_backend`'s own second refusal: `Routing.UNVERIFIED` cannot be selectable, with no opt-out. The projection is declared too — `no-channel`, with the candidate channel (the `session/new` `mcpServers` array, once a live capture shows a server mounted, asked, listed and called) and this section's anchor as its tracking pointer. |
+| routing | `UNVERIFIED`, and the CANDIDATE mechanism is named in the table's comment: the `mode` config option the harness advertises (the vibe agent modes) plus `session/set_mode`, read as a session-config style pin to `ask`. Source-read off mistral-vibe v3.0.2; no live `vibe-acp` capture exists, so the entry stays the fail-closed member. |
+| 8 live spill | Not reached, and that is the point of the state: a dormant harness touches no file Stages 1–7 do not name. The goldens row for the launch capture was hand-written to the shape the capture machinery produces, and flagged in the PR for exactly that reason. |
+| verified range | None. Nothing is pinned to a release because nothing has been driven; the source read was taken against mistral-vibe v3.0.2 and says so where it is relied on. |
+
+The lesson this run adds to the sequence is what dormancy buys when it is chosen
+deliberately: every landing state below selectability is already inherited rather
+than deferred. The selectability PR is not "onboarding minus what shipped here" —
+it is a routing entry moved by a measurement (`SESSION_CONFIG` or a verified
+member, with the `ACP_BACKEND_PERMISSION_CONFIG` row naming the option the capture
+actually pins), the `no-channel` projection revisited against the same capture,
+and `NOT_SHIPPED_SELECTABLE` losing its name. Nothing else in the tree moves:
+the spawn arm, the launch row, the auth declaration, the model namespace and the
+install probe answer for the harness the day it becomes choosable, because they
+were written to the same standard as a selectable harness's and only the routing
+waits on evidence.
