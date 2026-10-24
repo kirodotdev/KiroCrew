@@ -58,6 +58,60 @@ def _literal_ancestor_guards(paths: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(guards)
 
 
+def _caller_can_rename(path: str) -> bool:
+    """Whether a process running as this uid could rename the directory *path*.
+
+    ``rename(2)`` needs write permission on the PARENT directory, and the owner of a
+    directory can grant itself that permission with ``chmod`` at any time, so a parent
+    this uid owns counts even while its mode withholds the write bit. A sticky parent
+    (``/tmp``, ``/private/tmp``) that this uid writes but does not own additionally
+    requires owning the entry itself, so its ``lstat`` owner decides: another user's
+    link or directory in ``/tmp`` cannot be renamed by this uid. A parent or entry that
+    cannot be inspected is reported renameable: guarding a directory that turns out to
+    be fixed costs one rule, while leaving out one that can move leaves every seal
+    beneath it unpinned.
+    """
+    normalized = os.path.normpath(path)
+    parent = os.path.dirname(normalized)
+    try:
+        info = os.stat(parent)
+    except OSError:
+        return True
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is not None and info.st_uid == geteuid():
+        return True
+    if not os.access(parent, os.W_OK):
+        return False
+    if geteuid is None or not info.st_mode & stat.S_ISVTX:
+        return True
+    try:
+        return os.lstat(normalized).st_uid == geteuid()
+    except OSError:
+        return True
+
+
+def _renameable_ancestor_guards(paths: tuple[str, ...]) -> tuple[str, ...]:
+    """Every ancestor of *paths*, down from *paths* themselves, that this uid can rename.
+
+    A read-only seal holds only while every directory on its path stays where it is: a
+    renamed ancestor carries the seal away, and the sealed name can then refer to a
+    different object, which the unsandboxed gateway reads next. This is
+    :func:`_literal_ancestor_guards` -- each path walked to the filesystem root on its
+    own, with no common ceiling, because seals under different roots have different
+    chains and a renameable directory may sit ABOVE one that is fixed -- filtered by
+    :func:`_caller_can_rename`. Directories this uid cannot rename (``/home``, ``/``,
+    ``/private/tmp`` itself) are left out, so the namespace launcher never re-binds a
+    system tree and the Seatbelt profile carries no rule that could never matter. A
+    symlink entry is left out too: the directories it leads to are guarded through the
+    canonical spelling of the same seal, and the link itself gets no rule of its own.
+    """
+    return tuple(
+        p
+        for p in _literal_ancestor_guards(paths)
+        if not os.path.islink(p) and _caller_can_rename(p)
+    )
+
+
 def prime_voice_runtime_sandbox_paths() -> str:
     """Cache and create the canonical agent-denied decoder runtime off-loop.
 

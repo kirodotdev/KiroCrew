@@ -385,6 +385,28 @@ def enter_exec_cwd(launch):
         sys.exit("sandbox: FATAL — the launch directory is not empty")
 
 
+def reenter_launch_cwd(launch, cwd):
+    """Re-enter the directory this launcher started in, by name, now the mounts are placed.
+
+    A process's working directory is a reference to one (mount, directory) pair, taken
+    before any of the launcher's mounts existed. :func:`pin_seal_parents` binds parents
+    of the seals over themselves, and every later seal and mask attaches to the TOP of
+    those pins, so a lookup that starts from the inherited directory -- a relative open,
+    ``..``, or ``/proc/<pid>/cwd`` -- walks the original mount underneath and meets none
+    of them. Entering *cwd* by name resolves through the pins, so the agent stands on
+    the same mounts every absolute lookup reaches. A launch directory that can no
+    longer be entered refuses the spawn rather than starting the agent beneath the seals.
+    """
+    try:
+        os.chdir(cwd)
+    except OSError as exc:
+        sys.exit(
+            "sandbox: BLOCKED -- cannot re-enter the launch directory %s after placing "
+            "the seals (%s), so the agent would start on a mount beneath them. Lower "
+            "agent.sandbox to run without this control deliberately." % (cwd, exc.strerror or exc)
+        )
+
+
 def exec_agent(launch, argv):
     """Replace this process with the agent command, in the scrubbed environment.
 

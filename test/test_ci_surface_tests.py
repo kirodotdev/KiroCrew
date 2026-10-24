@@ -415,6 +415,7 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_sandbox_hardlink_scan.py",
         "test_sandbox_md_notebook_carveout.py",
         "test_sandbox_nested_tier.py",
+        "test_sandbox_readonly_parent_pin.py",
         "test_pid_lifecycle.py",
         "test_pid_lifecycle_browser_daemon.py",
         "test_pid_lifecycle_orphan_cleanup.py",

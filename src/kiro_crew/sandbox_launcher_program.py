@@ -11,9 +11,10 @@ and every import sits at module level, ahead of the isolation it builds.
 :func:`main` forks. The parent writes the child's identity uid/gid maps and waits; the
 child enters the user and mount namespaces (:func:`enter_namespaces`), then
 :func:`run_child` builds the sandbox through its stages -- among them
-:func:`stage_private_windows`, :func:`seal_readonly`, :func:`mask_sensitive`,
-:func:`apply_carveouts`, :func:`mask_sensitive_files`, :func:`mask_ssh_keys`,
-:func:`scrub_env`, :func:`drop_privileges`, :func:`install_seccomp` and
+:func:`stage_private_windows`, :func:`pin_seal_parents`, :func:`seal_readonly`,
+:func:`mask_sensitive`, :func:`apply_carveouts`, :func:`mask_sensitive_files`,
+:func:`mask_ssh_keys`, :func:`scrub_env`, :func:`drop_privileges`,
+:func:`install_seccomp` and
 :func:`refuse_hardlinked_credentials` -- and ends in :func:`exec_agent`.
 :func:`run_child` and :func:`place_masks` fix the order. The child keeps the real uid
 and gid: no uid 0, no uid 65534.
@@ -142,6 +143,9 @@ class Launch:
         self.private_dirs = plan["private_dirs"]
         self.private_dir_ids = plan["private_dir_ids"]
         self.readonly_dirs = plan["readonly_dirs"]
+        #: The renameable ancestors of every read-only seal, bound over themselves by
+        #: :func:`pin_seal_parents` so each of them stays in place.
+        self.parent_pins = plan["parent_pins"]
         self.writable_dirs = plan["writable_dirs"]
         self.sensitive_files = plan["sensitive_files"]
         self.fail_closed_file_masks = plan["fail_closed_file_masks"]
@@ -366,12 +370,14 @@ def _stand_in_mkstemp(launch):
 def place_masks(launch):
     """Place every mount, in the order the kernel's mount semantics require.
 
-    Windows are staged before anything is masked, read-only seals land before the hides
+    Windows are staged before anything is masked, the seal parents are pinned before the
+    seals beneath them, read-only seals land before the hides
     placed on top of them, carve-outs after the seals they punch through, the exposed
     files are restored into their empty masks, and the single files and ``~/.ssh`` are
     masked last.
     """
     stage_private_windows(launch)
+    pin_seal_parents(launch)
     seal_readonly(launch)
     mask_sensitive(launch)
     apply_carveouts(launch)
@@ -390,7 +396,18 @@ def run_child(launch, argv):
     pick_stand_in_root(launch)
     check_crew_home_aliases(launch)
     preread_exposed_files(launch)
+    try:
+        launch_cwd = os.getcwd()
+    except OSError as exc:
+        # Without a name to re-enter, the agent would start on the inherited reference
+        # to the mount beneath every pin, seal and mask placed below. Refuse instead.
+        sys.exit(
+            "sandbox: BLOCKED -- cannot resolve the launch directory before placing the "
+            "seals (%s), so the agent could not be moved onto them. Lower agent.sandbox "
+            "to run without this control deliberately." % (exc.strerror or exc)
+        )
     place_masks(launch)
+    reenter_launch_cwd(launch, launch_cwd)
     confirm_crew_home_aliases(launch)
     scrub_env(launch)
     drop_privileges(launch)
@@ -463,6 +480,7 @@ from kiro_crew.sandbox_launcher_parts.exec_lockdown import (  # noqa: E402
     enter_exec_cwd,
     exec_agent,
     install_seccomp,
+    reenter_launch_cwd,
     refuse_hardlinked_credentials,
     scrub_env,
     seccomp_deny_table,
@@ -481,6 +499,7 @@ from kiro_crew.sandbox_launcher_parts.mask_stages import (  # noqa: E402
     mask_sensitive,
     mask_sensitive_files,
     mask_ssh_keys,
+    pin_seal_parents,
     preread_exposed_files,
     restore_exposed_files,
     seal_readonly,

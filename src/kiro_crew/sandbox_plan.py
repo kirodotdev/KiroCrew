@@ -188,9 +188,13 @@ class PlanHost:
     #: The running gateway's packaged install tree (both spellings), sealed read-only.
     #: Empty for an editable or from-source checkout.
     install_root_targets: tuple[str, ...] = ()
-    #: Every rename-sensitive ancestor of those targets (Seatbelt only): a path-based
-    #: deny on the package directory does not hold if a parent can be renamed away.
-    install_root_ancestor_guards: tuple[str, ...] = ()
+    #: Every ancestor of a read-only seal target -- the packaged install tree, the kiro
+    #: agents tree, a crew-home ceiling -- that the agent's uid could rename. A renamed
+    #: parent defeats the seal: Seatbelt's path rule stops naming the object, and the namespace launcher's self-bind moves with the renamed parent.
+    #: Seatbelt write-denies each one literally (plus the install tree's full chain); the
+    #: namespace launcher binds each one over itself (:attr:`ConfinementPlan.parent_pins`)
+    #: so the rename fails with EBUSY.
+    readonly_ancestor_guards: tuple[str, ...] = ()
     #: The probes for each absolute ``extra_writable_dirs`` candidate.
     carveout_probes: tuple[CarveoutProbe, ...] = ()
     #: The real uid and gid the namespace launcher maps.
@@ -336,6 +340,11 @@ class ConfinementPlan:
     refusals: tuple[Refusal, ...]
     #: :attr:`SandboxRequest.exec_cwd`, carried to the namespace launcher.
     exec_cwd: str = ""
+    #: The directories the namespace launcher binds over themselves BEFORE the read-only
+    #: seals, so each becomes a mountpoint and a rename of it fails with EBUSY: the
+    #: renameable ancestors of every seal (:attr:`PlanHost.readonly_ancestor_guards`).
+    #: Empty on Seatbelt, which write-denies them through ``runtime_ancestor_guards``.
+    parent_pins: tuple[str, ...] = ()
 
     @property
     def sensitive_dirs(self) -> tuple[str, ...]:
@@ -934,6 +943,7 @@ def _namespace_plan(
         cancellations=cancellations,
         refusals=tuple(window_refusals + carveout_refusals),
         exec_cwd=request.exec_cwd,
+        parent_pins=tuple(dict.fromkeys(host.readonly_ancestor_guards)),
     )
 
 
@@ -1051,7 +1061,7 @@ def _seatbelt_plan(
     ssh_dir = os.path.join(home, ".ssh")
     runtime_parents = list(host.voice_runtime_parents)
     ancestor_guards = list(
-        dict.fromkeys((*host.voice_runtime_ancestor_guards, *host.install_root_ancestor_guards))
+        dict.fromkeys((*host.voice_runtime_ancestor_guards, *host.readonly_ancestor_guards))
     )
     home_files = [os.path.join(home, f) for f in files]
     # Validated against every seal the profile emits, and emitted last: Seatbelt is
@@ -1116,6 +1126,7 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
         "private_dirs": list(plan.windows),
         "private_dir_ids": {path: list(pair) for path, pair in ids.private_dir_ids.items()},
         "readonly_dirs": list(plan.readonly),
+        "parent_pins": list(plan.parent_pins),
         "writable_dirs": list(plan.writable),
         "sensitive_files": list(plan.sensitive_files),
         "fail_closed_file_masks": [list(entry) for entry in ids.fail_closed_file_masks],
