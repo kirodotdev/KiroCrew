@@ -46,7 +46,7 @@ def _reason(paths: list[str], code: str = "M") -> str:
 
 @pytest.fixture(scope="module")
 def clean_leaf(all_corpus_gates: list[str]) -> str:
-    """A leaf nothing imports, nothing mentions, and that is not itself a gate.
+    """A leaf nothing imports, mentions or reads by name, and that is not itself a gate.
 
     Discovered rather than hardcoded: naming one in a string literal would make
     `mentions_of` find it (that scan covers `scripts/` and `test/`), so the
@@ -60,6 +60,8 @@ def clean_leaf(all_corpus_gates: list[str]) -> str:
         if mod.importers_of({candidate.stem}, REPO_ROOT):
             continue
         if mod.mentions_of({candidate.stem}, REPO_ROOT):
+            continue
+        if mod.readers_of({candidate.stem}, REPO_ROOT):
             continue
         return rel
     pytest.fail("no clean leaf test file found in this repo")
@@ -314,6 +316,95 @@ def test_a_broken_corpus_scan_forfeits_the_reduction(
     """Mutation guard: if the derivation returns nothing, escalate, never reduce."""
     monkeypatch.setattr(mod, "corpus_gates", lambda root: [])
     assert _resolved([clean_leaf]) is None
+
+
+def test_an_edit_to_a_file_another_test_reads_by_name_runs_that_test(
+    all_corpus_gates: list[str],
+) -> None:
+    """The case that went green: the reader neither scans, joins, nor is a mention.
+
+    `test_history_locking_remediation` parses `test_member_memory_runtime.py` and
+    fails when a named test function leaves it. Before the reader lookup, a diff
+    renaming that function ran the edited file alone and merged green.
+    """
+    reader = "test/test_history_locking_remediation.py"
+    text = REPO_ROOT.joinpath(reader).read_text(encoding="utf-8")
+    assert '"test_member_memory_runtime.py"' in text, f"{reader} stopped reading it; pick another"
+    scans_itself = (
+        mod._SCANS_A_DIR.search(text) and mod._REACHES_TEST_TREE.search(text)
+    ) or mod._JOINS_TEST_DIR.search(text)
+    assert not scans_itself, f"{reader} now scans the tree itself; pick another reader"
+    assert reader not in all_corpus_gates, "a reader runs for the file it reads, not as a gate"
+
+    resolved = _resolved(["test/test_member_memory_runtime.py"])
+    assert isinstance(resolved, tuple), _reason(["test/test_member_memory_runtime.py"])
+    _changed, gates = resolved
+    assert reader in gates
+
+
+def test_an_edit_to_a_listed_test_runs_the_audit_of_that_list(
+    all_corpus_gates: list[str],
+) -> None:
+    """`test_windows_gap_list` reads every module its list names, through the list.
+
+    Renaming a listed test leaves an entry that names nothing, which the audit
+    fails on. The module picked here is one the audit's own source never names,
+    so only the list connects the two.
+    """
+    audit = "test/test_windows_gap_list.py"
+    text = REPO_ROOT.joinpath(audit).read_text(encoding="utf-8")
+    assert '"windows-expected-failures.txt"' in text, f"{audit} stopped reading the list"
+    assert audit not in all_corpus_gates, f"{audit} became a gate; this no longer tests the list"
+    listing = TEST_DIR.joinpath("windows-expected-failures.txt").read_text(encoding="utf-8")
+    for line in listing.splitlines():
+        module = line.partition("::")[0].strip()
+        stem = Path(module).stem
+        if not (module.startswith("test/") and mod._LEAF_NAME.match(module[len("test/") :])):
+            continue
+        if f"{stem}.py" in text:
+            continue
+        if mod.importers_of({stem}, REPO_ROOT) or mod.mentions_of({stem}, REPO_ROOT):
+            continue
+        break
+    else:
+        pytest.fail("no listed leaf left that only the list names; update this test")
+
+    resolved = _resolved([module])
+    assert isinstance(resolved, tuple), _reason([module])
+    _changed, gates = resolved
+    assert audit in gates
+
+
+def test_a_reader_runs_only_for_a_diff_that_touches_a_file_it_names(tmp_path: Path) -> None:
+    """Every spelling of a read finds its reader, and none runs for another file."""
+    test_dir = tmp_path / "test"
+    test_dir.mkdir()
+    files = {
+        "test_gate.py": "FILES = sorted(Path(__file__).parent.glob('test_*.py'))\n",
+        "test_target.py": "def test_kept():\n    pass\n",
+        "test_other.py": "def test_unrelated():\n    pass\n",
+        "test_bare.py": 'SOURCE = Path(__file__).parent / "test_target.py"\n',
+        "test_rooted.py": 'SOURCE = ROOT / "test/test_target.py"\n',
+        "test_node_id.py": 'NODE = "test/test_target.py::test_kept"\n',
+        "test_list_audit.py": 'LISTING = Path(__file__).with_name("audit-list.txt")\n',
+        "audit-list.txt": "test/test_target.py::test_kept\n",
+    }
+    for name, body in files.items():
+        test_dir.joinpath(name).write_text(body, encoding="utf-8")
+
+    def gates_for(path: str) -> list[str]:
+        resolved, reason = mod.classify({path: "M"}, tmp_path)
+        assert isinstance(resolved, tuple), reason
+        return resolved[1]
+
+    assert gates_for("test/test_target.py") == [
+        "test/test_bare.py",
+        "test/test_gate.py",
+        "test/test_list_audit.py",
+        "test/test_node_id.py",
+        "test/test_rooted.py",
+    ]
+    assert gates_for("test/test_other.py") == ["test/test_gate.py"]
 
 
 # ── the accepted case ─────────────────────────────────────────────────────────
