@@ -11,10 +11,12 @@ from kiro_crew import cli_doctor, cli_server, platform_compat
 from kiro_crew.service.common import Platform
 
 
-@pytest.fixture
-def windows_log(monkeypatch, tmp_path):
+# SCHTASKS is what current_platform() answers on a Windows host with a trusted
+# schtasks.exe, UNSUPPORTED on one without: neither may reach `tail`.
+@pytest.fixture(params=[Platform.UNSUPPORTED, Platform.SCHTASKS], ids=lambda p: p.value)
+def windows_log(request, monkeypatch, tmp_path):
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
-    monkeypatch.setattr(cli_server, "current_platform", lambda: Platform.UNSUPPORTED)
+    monkeypatch.setattr(cli_server, "current_platform", lambda: request.param)
     monkeypatch.setattr(cli_server, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(
         cli_server, "sel", lambda: SimpleNamespace(log_api_access=lambda **kw: None)

@@ -729,7 +729,9 @@ def _restart(cli_port: int | None = None) -> None:
             print("✅ Restarted kirocrew service.")
             _print_token_url(port)
             return
-        if report.attempted or service_controller.is_service_active():
+        if report.attempted or (
+            not report.unmanaged_gateway and service_controller.is_service_active()
+        ):
             # A managed unit was there and the restart did not take. An ATTEMPTED
             # restart never falls through, whatever the unit reads now: a unit
             # that landed `failed` (start limit hit) or `inactive` is still an

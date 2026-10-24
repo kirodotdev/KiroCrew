@@ -446,6 +446,35 @@ class TestRestart:
             cli_server._restart(None)
         mock_spawn.assert_called_once()
 
+    def test_a_gateway_the_task_does_not_own_takes_the_foreground_path(self):
+        # A registered Windows task beside a foreground gateway reads as an
+        # active service, but the manager has said the gateway is not its own:
+        # the active-service veto must not stop the foreground restart.
+        from kiro_crew import cli_server
+
+        with (
+            self._mock_sel(),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=RestartReport(unmanaged_gateway=True),
+            ),
+            patch(
+                "kiro_crew.cli_server.service_controller.is_service_active",
+                return_value=True,
+            ) as mock_active,
+            patch(
+                "kiro_crew.cli_server.platform_compat.find_listening_pids",
+                return_value=[],
+            ),
+            patch(
+                "kiro_crew.cli_server._spawn_detached_gateway",
+                return_value=self._fake_proc(4321),
+            ) as mock_spawn,
+        ):
+            cli_server._restart(None)
+        mock_active.assert_not_called()
+        mock_spawn.assert_called_once()
+
     @contextlib.contextmanager
     def _probe_missed_gateway(self, holder_pid: int, *, kirocrew: bool):
         """Patches for the tool-present path where the port probe finds nothing
