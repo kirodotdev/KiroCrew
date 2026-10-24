@@ -61,21 +61,32 @@ function htmlValues(tree: MdastNodes, out: string[]): string[] {
 }
 
 /**
+ * The raw-HTML node values of one assistant reply that mention `needle`, as
+ * the transcript prepares and parses it (see the module comment). Shared by
+ * every hidden `kirocrew:` marker that renders a control under the reply, so a
+ * marker the reader can see as code never counts for any of them.
+ */
+export function hiddenHtmlValues(content: string, needle: string): string[] {
+  if (!content || !content.includes(needle)) return []
+  const html: string[] = []
+  for (const block of parseBlocks(content, false)) {
+    // Code, diff, diagram and widget blocks render as code or a frame: a
+    // marker inside one is never hidden HTML.
+    if (block.type !== 'markdown' || !block.content.includes(needle)) continue
+    const source = fixCodeFences(capWhitespaceRuns(block.content))
+    htmlValues(PARSER.runSync(PARSER.parse(source)) as MdastRoot, html)
+  }
+  return html.filter(value => value.includes(needle))
+}
+
+/**
  * The paths one assistant reply's open-file markers name, in the order they
  * appear, each once. A marker shown as code, or naming a path
  * `isOpenableMarkerPath` refuses, contributes nothing; the others still count.
  * At most `OPEN_FILE_MARKER_MAX_CHIPS` paths are returned.
  */
 export function openFileMarkerPaths(content: string): string[] {
-  if (!content || !content.includes('kirocrew:open-file')) return []
-  const html: string[] = []
-  for (const block of parseBlocks(content, false)) {
-    // Code, diff, diagram and widget blocks render as code or a frame: a
-    // marker inside one is never hidden HTML.
-    if (block.type !== 'markdown' || !block.content.includes('kirocrew:open-file')) continue
-    const source = fixCodeFences(capWhitespaceRuns(block.content))
-    htmlValues(PARSER.runSync(PARSER.parse(source)) as MdastRoot, html)
-  }
+  const html = hiddenHtmlValues(content, 'kirocrew:open-file')
   const paths: string[] = []
   for (const value of html) {
     MARKER_RE.lastIndex = 0
