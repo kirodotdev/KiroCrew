@@ -2188,6 +2188,7 @@
         "episodic_max_count": 10000,
         "decay_rates": {},
         "semantic_keys": [],
+        "recency_boost": 0.0,
         "history_idle_hours": 3.0,
         "history_max_days": 365,
         "backup_enabled": true,
@@ -2515,6 +2516,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "memory.recency_boost",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "V2 Recency Boost",
+      "help": "V2 only. Maximum multiplicative boost for recent memories in recall ranking, halving every 7 days (0 = disabled, preserving the default age-neutral ranking; 0.15 = a 15% boost for today's entries). An old entry with a decisively better semantic match still wins. Session affinity (a small additive boost for memories from the current conversation) is always on and independent of this knob. Clamped to 0..1.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0.0
     },
     {
       "path": "memory.history_idle_hours",

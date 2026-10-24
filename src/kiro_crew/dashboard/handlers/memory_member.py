@@ -238,6 +238,7 @@ async def api_memory_recall(request: web.Request) -> web.Response:
                 cap=3000,
                 project_dir=str(project) if project else None,
                 keep=_memory_recall_keep(session, query, decision_pending, name),
+                conversation_id=session,
             )
             if tier is not None
             else {}
