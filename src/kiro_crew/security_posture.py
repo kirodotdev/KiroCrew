@@ -1100,6 +1100,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/code_review_sage/sage_lib/pipeline.py",
         "apps/builtins/code_review_sage/sage_lib/report.py",
         "apps/builtins/code_review_sage/sage_lib/review_driver.py",
+        # Recovery errors feed Sage's existing app surface; no core egress is added.
+        "apps/builtins/code_review_sage/sage_lib/posting_recovery.py",
         # Split out of `review_driver` unchanged: it scrubs the worker-written
         # record's validation and persist errors before the driver surfaces them.
         # Same classification as `review_driver`.

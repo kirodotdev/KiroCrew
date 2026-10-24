@@ -3518,6 +3518,8 @@ one place a count is computed. Controls split into two classes:
     package — each module must be a registered sink or an explicitly-reasoned
     entry in `NON_EGRESS_REDACTION_MODULES` (with a companion test rejecting stale
     allowlist entries), so a new output path cannot be added without classifying it.
+    Sage's `posting_recovery.py` scrubs errors for the app's existing surface and
+    shares `review_driver.py`'s non-core-egress classification.
     The detector regex must stay broad enough to see **every wrapper**
     (`redact_and_truncate`, `redact_via_context`, qualified `security.redact(...)`,
     `StreamRedactor`), because a form missing from it is the same omission hole one

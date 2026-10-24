@@ -359,7 +359,7 @@ class TestReviewDriver(unittest.TestCase):
         # the author sees design + code issues in one pass. BLOCK only informs the
         # ship decision.
         out = D.run_review(["CR-1", "CR-2"], dispatch=self._fake_dispatch(verdict="BLOCK"),
-                           archiver=self._archiver, root=self.root, post=True)
+                           archiver=self._archiver, root=self.root, post=True, confirm=lambda *_: "1")
         self.assertEqual(out["gate_spawns"], 2)
         self.assertEqual(out["deep_spawns"], 2)            # BLOCK proceeds to Phase 2
         self.assertEqual(out["phase2_skipped_on_block"], 0)
@@ -631,7 +631,7 @@ class TestReviewDriver(unittest.TestCase):
             if phase == "done":
                 seen[cid] = extra or {}
         out = D.run_review(["CR-1"], dispatch=self._fake_dispatch(verdict="PASS"),
-                           generate_report=False, root=self.root, progress=prog, post=True)
+                           generate_report=False, root=self.root, progress=prog, post=True, confirm=lambda *_: "1")
         self.assertEqual(seen["CR-1"]["posted"], 2)       # 1 finding + always-on ship comment
         self.assertEqual(seen["CR-1"]["expected"], 2)     # red0 + yellow1 + 1 ship comment
         self.assertEqual(out["per_change"][0]["posted_comments"], 2)
@@ -718,14 +718,14 @@ class TestReviewDriver(unittest.TestCase):
         # First pass reports incomplete coverage -> the driver runs EXACTLY ONE
         # targeted follow-up (not a blanket loop), then posts. deep_rounds == 2.
         disp = self._fake_dispatch(verdict="PASS", coverage_complete=False)
-        out = D.run_review(["CR-1"], dispatch=disp, generate_report=False, root=self.root, post=True)
+        out = D.run_review(["CR-1"], dispatch=disp, generate_report=False, root=self.root, post=True, confirm=lambda *_: "1")
         self.assertEqual(out["per_change"][0]["deep_rounds"], 2)
         self.assertEqual(len(self.calls), 3)   # review + one follow-up + poster
         self.assertTrue(any("INCOMPLETE file coverage" in c for c in self.calls))
 
     def test_coverage_complete_skips_followup(self):
         disp = self._fake_dispatch(verdict="PASS", coverage_complete=True)
-        out = D.run_review(["CR-1"], dispatch=disp, generate_report=False, root=self.root, post=True)
+        out = D.run_review(["CR-1"], dispatch=disp, generate_report=False, root=self.root, post=True, confirm=lambda *_: "1")
         self.assertEqual(out["per_change"][0]["deep_rounds"], 1)
         self.assertEqual(len(self.calls), 2)   # review + poster only
         self.assertFalse(any("INCOMPLETE file coverage" in c for c in self.calls))
@@ -1321,7 +1321,7 @@ class TestDeterministicPosting(unittest.TestCase):
         self.assertIn("VERBATIM", p)                     # posts exactly, no compose
         self.assertIn("already redacted in Python", p)   # redaction is deterministic
         self.assertIn("posted_comments", p)              # records count
-        self.assertIn("design_comment_posted", p)
+        self.assertIn("Do NOT modify any other field", p)
 
 
 class TestChangeIdAndFetch(unittest.TestCase):
@@ -1427,7 +1427,7 @@ class TestGithubPosting(unittest.TestCase):
                 results.write_result(rec, self.root)
             return {"ok": True, "output": "", "error": ""}
 
-        out = D.run_review([link], dispatch=dispatch, generate_report=False, root=self.root, post=True)
+        out = D.run_review([link], dispatch=dispatch, generate_report=False, root=self.root, post=True, confirm=lambda *_: "1")
         rec = results.read_result(cid, self.root)
         pay = rec["github_review_payload"]
         self.assertNotIn("event", pay)                 # PENDING (unsubmitted)

@@ -56,6 +56,16 @@ posting path restores the accepted findings to the durable record before checkin
 delivery, so a failed confirmation cannot leave substituted findings for a manual
 retry.
 
+Posting saves an operation identity and the redacted selection before dispatch.
+Retrying an interrupted post checks GitHub for that operation first, including a
+review already submitted by its author. A matching delivery is recorded without
+another post even when the dispatch response was lost. Uncertain read-back keeps
+the findings and intent for retry. Recovery never deletes an unrelated pending
+draft; a blocking draft or unresolvable predecessor needs operator resolution.
+Reviewer response envelopes cannot set delivery intent or posting metadata.
+The delivery contract is specified in
+[error-handling](../../../../../docs/system-specs/common/error-handling.md#sage-automatic-posting-confirmation).
+
 Responses may include Markdown fences and narration. The decoder scans backward
 from the end of the response using nesting and string-aware object boundaries,
 then examines at most 64 complete objects. Braces inside quoted snippets do not

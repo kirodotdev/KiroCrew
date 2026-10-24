@@ -146,7 +146,7 @@ class TestNoAutoPost(_Base):
     def test_opt_in_restores_posting(self):
         tasks: list[str] = []
         D.run_review(["CR-1"], dispatch=self._dispatch(tasks),
-                     generate_report=False, root=self.root, post=True)
+                     generate_report=False, root=self.root, post=True, confirm=lambda *_: "1")
         self.assertTrue(self._posters(tasks), "posting was enabled but no poster ran")
 
     def test_config_flag_enables_posting(self):
@@ -156,7 +156,7 @@ class TestNoAutoPost(_Base):
         cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
         tasks: list[str] = []
         D.run_review(["CR-1"], dispatch=self._dispatch(tasks),
-                     generate_report=False, root=self.root)
+                     generate_report=False, root=self.root, confirm=lambda *_: "1")
         self.assertTrue(self._posters(tasks))
 
     def test_non_boolean_config_does_not_enable_posting(self):
@@ -240,7 +240,7 @@ class TestRecordsKeptWhenPostingFails(_Base):
         tasks: list[str] = []
         out = D.run_review(["CR-1"], dispatch=self._dispatch_failing_poster(tasks),
                            generate_report=True, archiver=lambda html, root: "slug-1",
-                           root=self.root, post=True)
+                           root=self.root, post=True, confirm=lambda *_: "")
         # A poster WAS dispatched (posting was intended) and it failed.
         self.assertTrue(self._posters(tasks), "no poster was dispatched")
         self.assertFalse(out["per_change"][0]["post_ok"])

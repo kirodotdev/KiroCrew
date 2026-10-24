@@ -114,6 +114,27 @@ from sage_lib import (  # noqa: E402
 )
 
 # Re-exported: tests and callers keep using `review_driver.<name>` for these.
+from sage_lib.delivery_intent import (  # noqa: E402,F401
+    _INTENT_ERROR_MAX_CHARS,
+    _OPERATION_ID_RE,
+    DeliveryProbe,
+    _canonical_payload,
+    _canonical_target,
+    _confirm_text,
+    _intent_payload,
+    _marker_free_body,
+    _operation_marker,
+    _outbound_payload,
+    _payload_digest,
+    _predecessor_instruction,
+    _write_intent,
+)
+from sage_lib.posting_recovery import (  # noqa: E402,F401
+    _authenticated_login,
+    _probe_delivery,
+    _remote_payload,
+    post_recorded,
+)
 from sage_lib.worker_response import (  # noqa: E402,F401
     _MAX_ENVELOPE_CANDIDATES,
     _MAX_RESPONSE_BYTES,
@@ -584,7 +605,13 @@ def build_review_followup_task(
     )
 
 
-def build_post_task(change_link: str) -> str:
+def build_post_task(
+    change_link: str,
+    operation_id: str = "",
+    predecessor: dict | None = None,
+    *,
+    recovering: bool = False,
+) -> str:
     """Poster prompt: publish the driver-built, Python-REDACTED DRAFT comments for
     one change. The bodies are authoritative and already scrubbed in Python — the
     poster posts them VERBATIM and only resolves the (non-sensitive) anchor. This
@@ -599,8 +626,8 @@ def build_post_task(change_link: str) -> str:
     )
     # FAIL CLOSED on host resolution — the host decides which GitHub instance
     # every `gh api` call in this prompt targets. `_confirmed_host` raises when
-    # the link names a host that does not revalidate (a GHE host removed from
-    # `github_hosts` mid-run, an unreadable config); producing a prompt then
+    # the link names a host that fails revalidation (a GHE host absent from
+    # `github_hosts`, an unreadable config); producing a prompt then
     # would let every call default to PUBLIC github.com and post an internal
     # enterprise draft onto a public same-slug PR. The raise is converted to a
     # per-change post failure by `post_recorded`. An empty host means the token
@@ -621,16 +648,10 @@ def build_post_task(change_link: str) -> str:
         _preamble + "  1. Read data/results/<id>.json and take its `github_review_payload` "
         "object (fields: body, comments[], optional commit_id). It was assembled "
         "AND redacted in Python — use it EXACTLY as given; do NOT rebuild it. Parse "
-        "<owner>/<repo>/<number> from the PR URL.\n"
-        "  2. FIRST clear any stale sage draft: GitHub allows only ONE pending "
-        "review per PR per user, so a leftover one would make step 3 fail with 422. "
-        "GET repos/<owner>/<repo>/pulls/<number>/reviews and, if a review with "
-        'state=="PENDING" exists WHOSE BODY CONTAINS the exact marker '
-        "`[code-review-sage]`, DELETE just that one (DELETE "
-        "repos/<owner>/<repo>/pulls/<number>/reviews/<review_id>) — it is a stale "
-        "sage draft. NEVER delete a non-PENDING review or a PENDING review lacking "
-        "that marker (it may be a human's in-progress draft).\n"
-        "  3. THEN write `github_review_payload` to a temp JSON file and create ONE "
+        "<owner>/<repo>/<number> from the PR URL. The hidden operation marker is "
+        "already in the staged body; preserve it and all other payload content.\n"
+        + _predecessor_instruction(predecessor, recovering=recovering)
+        + "  3. THEN write that outbound payload to a temp JSON file and create ONE "
         "PENDING (unsubmitted) review:\n"
         "     gh api --method POST repos/<owner>/<repo>/pulls/<number>/reviews "
         "--input <tmpfile>\n"
@@ -640,10 +661,12 @@ def build_post_task(change_link: str) -> str:
         "call any submit/approve/dismiss endpoint, and MUST NOT run `gh pr review` "
         "(that would submit immediately). `gh` uses its own stored auth — never "
         "read, print, or pass any token.\n"
-        "  4. Update data/results/<id>.json: set posted_comments = len(comments) "
-        "plus 1 when `body` is non-empty; set design_comment_posted = true when "
-        "`body` is non-empty (else false). Do NOT modify findings, phase1, "
-        "pending_comments, or github_review_payload.\n"
+        "  4. Report the number of payload units actually posted by updating ONLY "
+        "`posted_comments` in data/results/<id>.json: len(comments) plus 1 when "
+        "the original payload body is non-empty. Do NOT modify any other field, "
+        "including delivery_intent, findings, phase1, pending_comments, or "
+        "github_review_payload. This count is advisory; the caller records "
+        "delivery evidence only after its own GitHub read-back.\n"
         "Do NOT spawn further subagents. Execute; do not ask questions."
     )
 
@@ -815,339 +838,6 @@ def _record_post_refusal(cur: dict, root: Path | None, run_id: str | None) -> No
             cur.get("change_id", "?"),
             store.redact_text(str(exc)),
         )
-
-
-def post_recorded(
-    change_id: str,
-    link: str,
-    *,
-    dispatch,
-    root: Path | None = None,
-    run_id: str | None = None,
-    timeout: float = DEFAULT_TASK_TIMEOUT,
-    keys: list[str] | None = None,
-    confirm=None,
-    accepted_record: dict | None = None,
-) -> dict:
-    """Publish an ALREADY-RECORDED review to its pull request.
-
-    Builds the draft comment bodies from the recorded findings plus the always-on
-    ship-readiness comment, REDACTS each in Python (``pipeline.build_pending_comments``
-    -> ``_redact``), persists them into the record, then dispatches the verbatim
-    poster. Redaction is deterministic HERE — no LLM free-text reaches the pull
-    request, which is the security property the split between reviewer and poster
-    exists to guarantee.
-
-    Used by two callers: the opt-in ``review.auto_post`` path inside a run, and
-    the explicit "post comments" action, which is the same operation deferred
-    until the user asks for it. Returns posting stats; no poster is spawned when
-    there is nothing to post.
-
-    ``keys`` selects individual comments (see ``build_pending_comments``) so the
-    author can send the findings they agree with and leave the rest. Already-posted
-    keys are dropped from the selection: each call creates its own pending review
-    on GitHub, so re-sending one would duplicate it on the pull request. Omitting
-    ``keys`` posts everything not yet posted.
-    """
-    cur = (
-        json.loads(json.dumps(accepted_record))
-        if accepted_record is not None
-        else results.read_result(change_id, root, run_id)
-    )
-    if not cur:
-        # No record means no review to publish. Without this the always-on
-        # ship-readiness comment would be built from an empty record and posted as
-        # a review of nothing (and the write-back would fail validation).
-        return {
-            "post_ok": True,
-            "posted_comments": 0,
-            "design_comment_posted": False,
-            "pending": 0,
-            "post_error": "no recorded review for this change",
-        }
-    all_entries = pipeline.build_pending_comments(cur)
-    already = set(cur.get("posted_keys") or [])
-    wanted = set(keys) if keys is not None else {str(e.get("key")) for e in all_entries}
-    new = [
-        e for e in all_entries if str(e.get("key")) in wanted and str(e.get("key")) not in already
-    ]
-    if not new:
-        return {
-            "post_ok": True,
-            "posted_comments": 0,
-            "design_comment_posted": False,
-            "pending": 0,
-            "posted_keys": sorted(already),
-            "post_error": "nothing left to post" if all_entries else "",
-        }
-    # The draft is the UNION of what is already drafted and what was just
-    # selected — not the selection alone.
-    #
-    # GitHub allows one pending review per author, so the poster DELETES the
-    # existing sage draft and creates a replacement. A payload holding only the
-    # new selection therefore does not add to the draft, it REPLACES it: post
-    # finding A, then finding B, and A is deleted with the old draft and never
-    # reappears — while `posted_keys` still claims A landed, so nothing would
-    # ever re-send it. Rebuilding the full draft each time keeps every comment
-    # the author chose.
-    #
-    # If the author submitted the previous draft on GitHub in between, there is no
-    # pending review to replace and the re-included comments post a second time.
-    # That is the deliberate trade this module already takes elsewhere: a visible
-    # duplicate can be removed, a silently dropped finding cannot be recovered.
-    pending = [e for e in all_entries if str(e.get("key")) in (wanted | already)]
-    cur["pending_comments"] = pending
-    # GitHub posts a single PENDING review, so assemble the deterministic,
-    # already-redacted envelope in Python here — the poster posts it verbatim via
-    # one `gh api` call and never composes bodies.
-    try:
-        _platform = pipeline.adapters.detect_platform(link)
-    except Exception:  # pragma: no cover - defensive
-        _platform = "github"
-    if _platform == "github":
-        # A record with no `revision` cannot be anchored, and the builder refuses
-        # rather than let GitHub bind the draft to the current head. Surface that as
-        # a post failure on the record: the run reports it, the findings stay on disk
-        # for a retry once the record is repaired, and nothing reaches the pull
-        # request. Letting it raise would abort the whole batch for one bad record.
-        try:
-            cur["github_review_payload"] = pipeline.build_github_review_payload(cur)
-        except ValueError as e:
-            cur["post_ok"] = False
-            cur["post_error"] = str(e)
-            cur["posted_comments"] = 0
-            cur["design_comment_posted"] = False
-            _record_post_refusal(cur, root, run_id)
-            return {
-                "post_ok": False,
-                "post_error": str(e),
-                "posted_comments": 0,
-                "design_comment_posted": False,
-                "pending": len(pending),
-                "expected_units": 0,
-                "posted_keys": list(already),
-            }
-    # Clear the delivery fields before the record goes to the poster. They are
-    # what the poster writes back as its ONLY evidence of delivery, so a value
-    # left over from an earlier attempt is indistinguishable from one it just
-    # wrote: a first post that partially failed leaves `posted_comments` at 3,
-    # the one-comment retry publishes that record, a poster that delivers
-    # nothing writes nothing, and `3 >= 1` then marks the comment delivered and
-    # adds it to `posted_keys` — permanently skipping a finding that was never
-    # posted. Zeroing them means the check can only ever pass on a count written
-    # by THIS attempt. `posted_keys` is deliberately not cleared: it is the
-    # durable ledger of what really landed, and forgetting it would duplicate.
-    # The posting-skipped path below already resets these two for the same
-    # reason; this is the sibling that did not.
-    cur["posted_comments"] = 0
-    cur["design_comment_posted"] = False
-    try:
-        results.write_result(cur, root, run_id)
-    except (OSError, ValueError, RecursionError) as exc:
-        return {
-            "post_ok": False,
-            "post_error": store.redact_text(f"could not persist poster record: {exc}"),
-            "posted_comments": 0,
-            "design_comment_posted": False,
-            "pending": len(pending),
-            "expected_units": 0,
-            "posted_keys": list(already),
-        }
-    # The poster reads github_review_payload from the shared path named in its
-    # prompt, and writes posted_comments back there.
-    #
-    # A False return on a RUN-SCOPED record means the trusted record is NOT what
-    # sits at that path -- `publish_to_shared` refuses when its own no-follow read
-    # is blocked, which is exactly the case where a sibling worker replaced the
-    # record with a link. Dispatching anyway would point the poster at whatever IS
-    # there and publish it to the pull request, so the failure has to abort.
-    #
-    # Without a run_id the record already IS the shared one: publishing is a no-op
-    # that also reports False, and treating that as refusal would abort every
-    # unscoped post. The guard therefore applies only where a copy was required.
-    staged_ok = True
-    if accepted_record is not None:
-        # The shared path is worker-writable: anything can sit there (a
-        # directory, a link), and a failed staging write is this change's post
-        # failure, never an exception that aborts the rest of the batch.
-        try:
-            results.write_result(cur, root, None)
-        except (OSError, ValueError, RecursionError):
-            staged_ok = False
-    elif run_id and not results.publish_to_shared(change_id, root, run_id):
-        staged_ok = False
-    if not staged_ok:
-        staged = "could not stage the review record for the poster"
-        cur["post_ok"] = False
-        cur["post_error"] = staged
-        _record_post_refusal(cur, root, run_id)
-        return {
-            "post_ok": False,
-            "post_error": staged,
-            "posted_comments": 0,
-            "design_comment_posted": False,
-            "pending": len(pending),
-            "expected_units": 0,
-            "posted_keys": list(already),
-        }
-    # The prompt builder FAILS CLOSED when the link's host does not revalidate
-    # (see build_post_task): a prompt built with an unconfirmed host would let
-    # its `gh api` calls default to public github.com and land this draft on a
-    # public same-slug PR. Surface that as a per-change post failure — the
-    # record stays on disk for a retry once the host is configured again.
-    try:
-        post_prompt = build_post_task(link)
-    except pipeline.adapters.AdapterError as exc:
-        refused = f"refusing to post: {exc}"
-        cur["post_ok"] = False
-        cur["post_error"] = refused
-        _record_post_refusal(cur, root, run_id)
-        return {
-            "post_ok": False,
-            "post_error": refused,
-            "posted_comments": 0,
-            "design_comment_posted": False,
-            "pending": len(pending),
-            "expected_units": 0,
-            "posted_keys": list(already),
-        }
-    spawn = dispatch(post_prompt, timeout)
-    results.adopt_from_shared(change_id, root, run_id)
-    after = results.read_result(change_id, root, run_id) or {}
-    if accepted_record is not None:
-        delivery = {
-            key: after[key] for key in ("posted_comments", "design_comment_posted") if key in after
-        }
-        after = json.loads(json.dumps(cur))
-        after.update(delivery)
-        try:
-            results.write_result(after, root, run_id)
-        except (OSError, ValueError, RecursionError) as exc:
-            return {
-                "post_ok": False,
-                "post_error": store.redact_text(f"could not restore accepted review record: {exc}"),
-                "posted_comments": 0,
-                "design_comment_posted": False,
-                "pending": len(pending),
-                "expected_units": 0,
-                "posted_keys": list(already),
-            }
-    ok = bool(spawn.get("ok", False))
-    # The poster writes the count it actually delivered. That write is the ONLY
-    # evidence of delivery — a spawn that merely returned cleanly proves nothing,
-    # and treating it as proof would break the guard that catches a poster which
-    # posted nothing (_record_reviewed refuses to mark a PR reviewed unless
-    # posted >= expected). ``posted_comments`` is therefore never overwritten.
-    delivered = int(after.get("posted_comments", 0) or 0)
-    # Compare against PAYLOAD UNITS, not the finding count. The poster reports
-    # `len(comments) + 1 if body`, and a finding without a usable anchor folds into
-    # the body instead of becoming its own inline comment — so `len(pending)`
-    # over-counts and a complete delivery read as short. `posted_keys` then went
-    # unwritten and the next post duplicated comments already on the pull request.
-    # Non-GitHub platforms have no payload; there the finding count is the unit count.
-    expected_units = (
-        pipeline.review_payload_units(cur["github_review_payload"])
-        if _platform == "github"
-        else len(pending)
-    )
-    # `confirm` is a seam, not a bypass: it defaults to the real read-back and
-    # exists so tests about WHICH comments a rebuilt draft carries do not each
-    # need a live pull request.
-    _confirm = confirm or _draft_confirmed
-    # One confirmation, two consumers. `posted_keys` is the durable per-finding
-    # ledger; `post_ok` is what `_record_reviewed` reads to index the pull request as
-    # reviewed and what `_all_delivered` reads before CLEARING the result records.
-    # Gating only the ledger left the other two riding on the poster's own report, so
-    # a fabricated count still marked the PR reviewed and deleted the records the
-    # retry would have needed -- the more damaging half of the same hole.
-    #
-    # The PAYLOAD is what gets confirmed, not its size: a count is satisfied by any
-    # draft of the right shape, including a previous run's draft the poster never
-    # replaced.
-    confirmed_id = str(_confirm(link, cur.get("github_review_payload") or {}) or "")
-    confirmed = bool(ok) and bool(confirmed_id)
-    if confirmed:
-        # Record WHICH comments landed, not just how many: the count cannot tell a
-        # later call what is already on the pull request, and that is what stops a
-        # second post from duplicating it.
-        #
-        # The gate is a read-back from GitHub, NOT the poster's own report. The
-        # poster is an LLM session and `posted_comments` is a number it writes about
-        # itself (see `build_post_task` step 4), so a prompt-injected reviewer could
-        # claim a delivery that never happened. Fail-closed: an unverifiable delivery
-        # leaves the ledger untouched and reports failure, so the records survive and
-        # the next post re-sends. A visible duplicate can be removed; a silently
-        # dropped finding cannot be recovered.
-        after["posted_keys"] = sorted(already | {str(e.get("key")) for e in pending})
-        # A confirmed delivery makes the poster's self-reported count redundant, so
-        # the read-back's own accounting replaces it. Leaving the poster's number in
-        # place let a correct delivery be under-reported: the draft is proven on the
-        # pull request, but `_record_reviewed` compares posted against expected and
-        # refuses to index the head, so the next run posts the same review again.
-        after["posted_comments"] = expected_units
-        # WHICH draft was delivered, so a view can tell "this run posted at some
-        # point" from "the draft pending right now is this run's". A later run
-        # replaces the draft by deleting and re-creating it, so a changed id is the
-        # signal that the pending draft belongs to someone else.
-        after["posted_review_id"] = confirmed_id
-        try:
-            results.write_result(after, root, run_id)
-        except (OSError, ValueError, RecursionError) as exc:
-            # Same guard as the two earlier writes of this record: a record the
-            # confirmation fields push past the size cap (or a path a sibling
-            # worker replaced) fails THIS change, never the batch through
-            # `pool.map`. The ledger is unwritten, so the records survive and
-            # the next post re-sends: a visible duplicate, not a lost finding.
-            return {
-                "post_ok": False,
-                "post_error": store.redact_text(f"could not record confirmed delivery: {exc}"),
-                "posted_comments": 0,
-                "design_comment_posted": False,
-                "pending": len(pending),
-                "expected_units": expected_units,
-                "posted_keys": list(already),
-            }
-    elif ok and delivered:
-        # A partial post cannot be attributed to specific comments, so nothing is
-        # marked delivered. Re-posting the selection is the safe direction: a
-        # duplicate is visible and removable, a silently-dropped finding is not.
-        after["post_partial"] = True
-    return {
-        # `post_ok` means DELIVERED, not "the spawn exited cleanly". Two readers
-        # depend on that meaning: `_record_reviewed` indexes the pull request as
-        # reviewed, and `_all_delivered` clears the result records afterwards. A
-        # spawn that returned cleanly having posted nothing must not satisfy either.
-        "post_ok": confirmed,
-        "post_error": (
-            spawn.get("error", "")
-            or ("" if confirmed else "the posted draft could not be confirmed on the pull request")
-        ),
-        # Authoritative once confirmed: `after["posted_comments"]` holds the payload's
-        # own unit count from above, so this does not echo the poster.
-        "posted_comments": int(after.get("posted_comments", 0) or 0),
-        "design_comment_posted": bool(after.get("design_comment_posted")),
-        "pending": len(pending),
-        # The number of deliverable units actually sent, so the caller can set
-        # `posting_expected` from what was sent rather than recomputing it from
-        # finding counts (which miscounts folded-in unanchored findings).
-        "expected_units": expected_units,
-        "posted_keys": list(after.get("posted_keys") or []),
-        # Empty unless this attempt confirmed a draft, so a caller can never mistake
-        # an earlier run's id for the one pending now.
-        "posted_review_id": str(after.get("posted_review_id") or ""),
-    }
-
-
-def _confirm_text(value: object) -> str:
-    """Normalize a body for comparison: newline form, and trailing space per line.
-
-    GitHub echoes a review body back verbatim except for line-ending form, so this
-    is the smallest normalization that keeps the comparison an IDENTITY check rather
-    than a fuzzy match. Anything beyond CRLF and trailing blanks is a real
-    difference and must fail the comparison.
-    """
-    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
-    return "\n".join(line.rstrip() for line in text.split("\n")).strip()
 
 
 def _draft_confirmed(link: str, payload: dict) -> str:

@@ -88,6 +88,7 @@ async def _post_comments_bg(
                     dispatch=dispatch,
                     run_id=run_id,
                     keys=sel,
+                    dismissed_keys=_dismissed_keys(run, cid),
                 )
                 out["change_id"] = cid
                 results_out.append(out)

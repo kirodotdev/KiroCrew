@@ -19,6 +19,46 @@ restoration write returns a per-item posting failure with a redacted error; the
 batch continues and generates its report from accepted snapshots. It does not
 claim that the durable record is safe for retry.
 
+GitHub posting persists a driver-owned delivery intent before dispatch: operation
+ID, target, revision, payload digest, selected keys and payload units. An interrupted
+post reconciles that same operation before retry. Matching read-back requires the
+operation marker, posting account, revision and complete payload, including inline
+coordinates; a matching submitted review also proves delivery. A lost dispatch
+response does not negate that proof. Unknown or conflicting evidence retains the
+intent and findings without advancing posted keys or permitting cleanup.
+The driver inserts the operation marker into the staged wire payload; the poster
+copies it verbatim. Unresolvable predecessor coordinates report the draft ID and
+instruct the operator to submit or delete that draft before retrying.
+Stored-record recovery rebuilds the payload through Python redaction and refuses
+redispatch unless its digest still matches the saved operation. It stages the
+rebuilt payload, never the record's unchecked copy. Design-comment accounting
+ignores operation-marker-only bodies, including after an unscoped retry.
+Before redispatching an absent operation, recovery checks the run's dismissed
+keys. An overlap retains the intent and refuses to resend; the operator must
+undo that dismissal and reconcile the earlier post first.
+
+Reviewer response capabilities authorize review content only. Initial and coverage
+responses cannot supply delivery intents, posting payloads or delivery metadata;
+those fields are stripped before persistence and before returning the accepted
+snapshot. Coverage responses retain the first pass's identity and metadata under
+the existing append-only findings contract. Rejected responses never supply the
+automatic poster's input. Standalone runs keep shared storage without allocating
+a run ID. Manual retries consume stored records; this protocol does not authenticate
+durable files against arbitrary later writes by a worker with filesystem access.
+
+The poster's nonnegative integer count is advisory and remains visible when delivery
+is unconfirmed. Its staged record cannot replace the accepted findings or intent:
+the driver restores them before read-back, including after a failed dispatch.
+Persistence refusals fail one change with a redacted error and retain prior durable
+state where the atomic write has not succeeded. Confirmed intent advances the
+posted-key ledger; failed confirmation preserves the saved selection for retry.
+
+A fresh post retains watermark-gated replacement of Sage's pending draft. Recovery
+can replace only its recorded predecessor after content verification; it never
+deletes an unrelated pending draft. Submitted predecessors are preserved. An
+unresolvable predecessor, or a blocked pending review, requires operator resolution;
+absence of this operation's marker is not permission to delete another operation.
+
 ## Exception Hierarchy
 
 Two independent families. `AcpError` covers protocol and prompt-level failures;

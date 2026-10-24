@@ -191,7 +191,7 @@ def run_gh_json(path: str, jq: str | None = None, *,
     return out
 
 
-def current_login(*, timeout: float = GH_TIMEOUT_SEC) -> str | None:
+def current_login(*, timeout: float = GH_TIMEOUT_SEC, host: str | None = None) -> str | None:
     """The authenticated ``gh`` login, or None when it can't be determined.
 
     Runs ``gh api user --jq .login`` directly rather than through
@@ -199,6 +199,8 @@ def current_login(*, timeout: float = GH_TIMEOUT_SEC) -> str | None:
     parser cannot represent. Raises :class:`GhSetupError` when ``gh`` itself is
     unusable, because "no login" and "no gh" need different UI treatment."""
     argv = [gh_bin(), "api", "user", "--jq", ".login"]
+    if host:
+        argv += ["--hostname", host]
     try:
         proc = _run_gh(argv, timeout=timeout)
     except FileNotFoundError as exc:

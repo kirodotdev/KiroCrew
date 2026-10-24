@@ -131,9 +131,11 @@ class TestPostRecorded(_Base):
             retried.append(results.read_result("CR-1", self.root, None))
             return {"ok": True, "error": ""}
 
-        await_sync(
-            D.post_recorded, "CR-1", "https://github.com/o/r/pull/1",
-            dispatch=retry, confirm=_unconfirmed, root=self.root, run_id="run-a")
+        with unittest.mock.patch.object(
+                D, "_probe_delivery", return_value=(D.DeliveryProbe.ABSENT, "", "")):
+            await_sync(
+                D.post_recorded, "CR-1", "https://github.com/o/r/pull/1",
+                dispatch=retry, confirm=_unconfirmed, root=self.root, run_id="run-a")
         self.assertEqual(retried[0]["findings"], accepted["findings"])
 
     async def test_publishes_the_redacted_envelope_not_model_text(self):
