@@ -16,6 +16,7 @@ per-test to a deterministic answer.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import pytest
@@ -23,6 +24,7 @@ import pytest
 import kiro_crew.apps.hook_reconcile as hr
 import kiro_crew.apps.hooks_integration as hi
 import kiro_crew.apps.teardown as teardown
+from kiro_crew.cron import CronStoreBusy
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -34,11 +36,13 @@ def _isolate_home(tmp_path, monkeypatch):
     hi._loaded_hook_signatures.clear()
     hi._loaded_hook_manifests.clear()
     hr._inflight_app_tasks.clear()
+    hr._pending_cron_rollback.clear()
     hr._stopping = False
     yield
     hi._loaded_hook_signatures.clear()
     hi._loaded_hook_manifests.clear()
     hr._inflight_app_tasks.clear()
+    hr._pending_cron_rollback.clear()
     hr._stopping = False
 
 
@@ -795,6 +799,250 @@ async def test_changed_signature_reimport_deferred_if_teardown_unsettled(_harnes
     await hi.record_loaded_hook_signature("watchtower", _app_info("watchtower", version="1.0.0"))
     await hr.reconcile_once([v2])
     assert calls == [("disable", "watchtower")]  # no half-swap
+
+
+async def _capture_disable_kwargs(monkeypatch) -> list[dict[str, Any]]:
+    seen: list[dict[str, Any]] = []
+
+    async def capture(name, app_info, **kwargs):
+        seen.append(kwargs)
+        hi.clear_loaded_hook_signature(name)
+        return {}
+
+    monkeypatch.setattr(hr, "on_app_disable", capture)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_a_reload_keeps_the_apps_manifest_crons(_harness, monkeypatch):
+    """A code change under a still-enabled app (a Sync) is torn down and enabled
+    again at once, so its manifest crons must survive the teardown: removing them
+    hands the app fresh jobs with no run history and the manifest's enabled state."""
+    _, (set_current, _, _) = _harness
+    seen = await _capture_disable_kwargs(monkeypatch)
+    v2 = _app_info("watchtower", version="2.0.0")
+    set_current(v2)
+    await hi.record_loaded_hook_signature("watchtower", _app_info("watchtower", version="1.0.0"))
+    await hr.reconcile_once([v2])
+    assert [k.get("keep_manifest_crons") for k in seen] == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_disable_or_a_denied_reload_still_removes_every_cron(_harness, monkeypatch):
+    """Only the admitted reload keeps crons: a disabled app and an app whose new
+    code lost its execution grant are torn down as before."""
+    _, (set_current, _, set_denied) = _harness
+    seen = await _capture_disable_kwargs(monkeypatch)
+    app_off = _app_info("watchtower", enabled=False)
+    set_current(app_off)
+    await hi.record_loaded_hook_signature("watchtower", _app_info("watchtower"))
+    await hr.reconcile_once([app_off])
+
+    v2 = _app_info("watchtower", version="2.0.0")
+    set_current(v2)
+    set_denied("third-party execution not granted")
+    await hi.record_loaded_hook_signature("watchtower", _app_info("watchtower", version="1.0.0"))
+    await hr.reconcile_once([v2])
+
+    assert [k.get("keep_manifest_crons") for k in seen] == [False, False]
+
+
+def _spy_cron_rollback(monkeypatch, *, fail: bool = False) -> list[str]:
+    """Record the reconciler's after-failure cron removals instead of running them."""
+    rolled_back: list[str] = []
+
+    async def remove_all(name, cron_service):
+        rolled_back.append(name)
+        if fail:
+            raise CronStoreBusy("store held by another process")
+        return 2
+
+    monkeypatch.setattr(hr, "_cron_service", object())
+    monkeypatch.setattr(hr, "deregister_app_crons_reporting_failures", remove_all)
+    return rolled_back
+
+
+@pytest.mark.asyncio
+async def test_a_reload_whose_enable_raises_removes_the_kept_crons_and_retries(
+    _harness, monkeypatch
+):
+    """The reload teardown keeps the manifest crons. When the enable after it
+    raises, those crons must not keep running for an app with no healthy hook
+    wiring: the reconciler removes them and leaves the record unset. The next
+    tick retries the load, and an enable that succeeds then keeps its crons."""
+    calls, (set_current, _, _) = _harness
+    seen = await _capture_disable_kwargs(monkeypatch)
+    rolled_back = _spy_cron_rollback(monkeypatch)
+    attempts = {"n": 0}
+
+    async def flaky_enable(name, app_info, **kwargs):
+        attempts["n"] += 1
+        calls.append(("enable", name))
+        if attempts["n"] == 1:
+            raise RuntimeError("route import failed")
+        await hi.record_loaded_hook_signature(name, app_info)
+
+    monkeypatch.setattr(hr, "on_app_enable", flaky_enable)
+    v2 = _app_info("watchtower", version="2.0.0")
+    set_current(v2)
+    await hi.record_loaded_hook_signature("watchtower", _app_info("watchtower", version="1.0.0"))
+
+    await hr.reconcile_once([v2])
+    assert [k.get("keep_manifest_crons") for k in seen] == [True]
+    assert rolled_back == ["watchtower"], "the kept crons are removed after the failed enable"
+    assert hi.loaded_hook_signature("watchtower") is None, "a retry stays armed"
+
+    await hr.reconcile_once([v2])
+    assert calls == [("enable", "watchtower"), ("enable", "watchtower")]
+    assert rolled_back == ["watchtower"], "the healthy retry keeps the crons it registered"
+    assert hi.loaded_hook_signature("watchtower") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_reload_whose_wiring_comes_up_degraded_removes_the_kept_crons(
+    _harness, monkeypatch
+):
+    """A degraded enable does not raise; it leaves the record unset so the next
+    tick retries. That is the same unhealthy state, so the kept crons go too.
+    The retry is a first load, not a reload, so a retry that fails again leaves
+    the jobs its enable registered alone instead of deleting them every tick."""
+    calls, (set_current, _, _) = _harness
+    rolled_back = _spy_cron_rollback(monkeypatch)
+
+    async def degraded_enable(name, app_info, **kwargs):
+        calls.append(("enable", name))
+
+    monkeypatch.setattr(hr, "on_app_enable", degraded_enable)
+    v2 = _app_info("watchtower", version="2.0.0")
+    set_current(v2)
+    await hi.record_loaded_hook_signature("watchtower", _app_info("watchtower", version="1.0.0"))
+
+    await hr.reconcile_once([v2])
+    await hr.reconcile_once([v2])
+    assert calls == [("disable", "watchtower"), ("enable", "watchtower"), ("enable", "watchtower")]
+    assert rolled_back == ["watchtower"], "only the reload's failure removes jobs"
+
+
+@pytest.mark.asyncio
+async def test_a_first_load_that_comes_up_degraded_removes_no_crons(_harness, monkeypatch):
+    """The rollback belongs to the reload alone. An app
+    whose FIRST hook load keeps degrading (a slow or failing on_startup) is
+    retried every tick; deleting and recreating its jobs on each tick would wipe
+    their run history and pause state, the harm this change exists to remove."""
+    calls, (set_current, _, _) = _harness
+    rolled_back = _spy_cron_rollback(monkeypatch)
+
+    async def degraded_enable(name, app_info, **kwargs):
+        calls.append(("enable", name))
+
+    monkeypatch.setattr(hr, "on_app_enable", degraded_enable)
+    v1 = _app_info("watchtower")
+    set_current(v1)
+    await hr.reconcile_once([v1])
+    await hr.reconcile_once([v1])
+    assert calls == [("enable", "watchtower"), ("enable", "watchtower")]
+    assert rolled_back == []
+
+
+@pytest.mark.asyncio
+async def test_a_healthy_reload_does_not_remove_the_kept_crons(_harness, monkeypatch):
+    _, (set_current, _, _) = _harness
+    rolled_back = _spy_cron_rollback(monkeypatch)
+    v2 = _app_info("watchtower", version="2.0.0")
+    set_current(v2)
+    await hi.record_loaded_hook_signature("watchtower", _app_info("watchtower", version="1.0.0"))
+    await hr.reconcile_once([v2])
+    assert rolled_back == []
+
+
+@pytest.mark.asyncio
+async def test_a_busy_store_during_the_rollback_is_logged_and_retried(
+    _harness, monkeypatch, caplog
+):
+    """A store fault must not wedge the loop: it is logged, the record stays
+    unset, and the next tick retries the load."""
+    _, (set_current, _, _) = _harness
+    rolled_back = _spy_cron_rollback(monkeypatch, fail=True)
+
+    async def failing_enable(name, app_info, **kwargs):
+        raise RuntimeError("route import failed")
+
+    monkeypatch.setattr(hr, "on_app_enable", failing_enable)
+    v2 = _app_info("watchtower", version="2.0.0")
+    set_current(v2)
+    await hi.record_loaded_hook_signature("watchtower", _app_info("watchtower", version="1.0.0"))
+    with caplog.at_level(logging.ERROR, logger=hr.__name__):
+        await hr.reconcile_once([v2])
+    assert rolled_back == ["watchtower"]
+    assert hi.loaded_hook_signature("watchtower") is None
+    assert "cron jobs could not be removed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_rollback_that_hit_a_busy_store_is_finished_before_the_retry(_harness, monkeypatch):
+    """A busy store at the rollback leaves the kept jobs live. The next tick has
+    no loaded record, so it is not a reload any more; the rollback must still be
+    owed and must finish BEFORE the enable retries, or the kept jobs (with their
+    pause state) keep firing beside unloaded hooks. A tick whose removal is
+    still busy does not enable at all."""
+    calls, (set_current, _, _) = _harness
+    busy = {"on": True}
+    rolled_back: list[str] = []
+
+    async def remove_all(name, cron_service):
+        rolled_back.append(name)
+        calls.append(("rollback", name))
+        if busy["on"]:
+            raise CronStoreBusy("store held by another process")
+        return 2
+
+    monkeypatch.setattr(hr, "_cron_service", object())
+    monkeypatch.setattr(hr, "deregister_app_crons_reporting_failures", remove_all)
+
+    async def failing_enable(name, app_info, **kwargs):
+        calls.append(("enable", name))
+        raise RuntimeError("route import failed")
+
+    monkeypatch.setattr(hr, "on_app_enable", failing_enable)
+    v2 = _app_info("watchtower", version="2.0.0")
+    set_current(v2)
+    await hi.record_loaded_hook_signature("watchtower", _app_info("watchtower", version="1.0.0"))
+
+    await hr.reconcile_once([v2])
+    assert calls == [
+        ("disable", "watchtower"),
+        ("enable", "watchtower"),
+        ("rollback", "watchtower"),
+    ]
+
+    calls.clear()
+    await hr.reconcile_once([v2])
+    assert calls == [("rollback", "watchtower")], "still busy: no enable beside the kept jobs"
+
+    calls.clear()
+    busy["on"] = False
+    await hr.reconcile_once([v2])
+    assert calls == [("rollback", "watchtower"), ("enable", "watchtower")]
+    assert "watchtower" not in hr._pending_cron_rollback
+
+    calls.clear()
+    await hr.reconcile_once([v2])
+    assert calls == [("enable", "watchtower")], "done once, so a later retry removes nothing"
+
+
+@pytest.mark.asyncio
+async def test_an_owed_rollback_still_runs_after_the_app_is_disabled(_harness, monkeypatch):
+    """A disabled app with no loaded record is not otherwise examined, so the
+    owed removal must keep it a candidate until its kept jobs are gone."""
+    calls, (set_current, _, _) = _harness
+    rolled_back = _spy_cron_rollback(monkeypatch)
+    hr._pending_cron_rollback.add("watchtower")
+    app_off = _app_info("watchtower", enabled=False)
+    set_current(app_off)
+    await hr.reconcile_once([app_off])
+    assert rolled_back == ["watchtower"]
+    assert "watchtower" not in hr._pending_cron_rollback
+    assert calls == []
 
 
 @pytest.mark.asyncio

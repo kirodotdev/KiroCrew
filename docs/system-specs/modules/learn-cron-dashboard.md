@@ -733,7 +733,23 @@ configuration before it is useful). The contract, end to end:
 - **Lifecycle caveat**: `on_app_disable` removes the app's jobs; re-enabling
   the app re-registers from the manifest, so a cron the user had resumed
   returns to **paused** (manifest is the sole source of truth on
-  re-register). Documented in `docs/app-kit/manifest-reference.md`.
+  re-register). Documented in `docs/app-kit/manifest-reference.md`. The hook
+  reconciler's code reload of a still-enabled app (a Sync) is the exception:
+  it passes `keep_manifest_crons=True`, so `retire_app_crons_for_reload` keeps
+  each declared job registration can update in place (id, run history and pause
+  state survive) and removes only undeclared, runtime-created and
+  create-only-changed jobs, which registration then recreates. If the enable
+  after that reload teardown leaves no loaded hook record (it raised, or the
+  wiring came up degraded and a retry is armed), the reconciler removes every
+  job the app owns, as a disable does, so the kept jobs do not keep their run
+  history for an app whose new code did not load. If that removal fails (a
+  busy cron store), the app is marked in `_pending_cron_rollback`: every later
+  tick examines it, finishes the removal before any enable runs (enabling
+  nothing while the store is still busy), and clears the mark only once the
+  removal succeeds, so the kept jobs never keep firing beside unloaded hooks.
+  Only that reload does this:
+  the retry tick, and any first load, take the newly-enabled branch, whose
+  enable registers the manifest crons fresh as before and removes nothing.
 
 ### App-manifest cron re-sync (`app_manifest_digest`)
 

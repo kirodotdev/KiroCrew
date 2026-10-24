@@ -23,6 +23,7 @@ from kiro_crew.apps.bridges import (
     deregister_app_crons_reporting_failures,
     disarm_app_crons_for_execution,
     register_app_crons_with_service,
+    retire_app_crons_for_reload,
 )
 from kiro_crew.apps.context import AppContext, build_app_context, http_app_for_manifest
 from kiro_crew.apps.execution import (
@@ -584,12 +585,18 @@ async def stop_app_startup_hooks(app_name: str, *, bounded: bool = False) -> boo
     return await _lifecycle_dispatcher.stop_detached_startup_hooks(app_name, bounded=bounded)
 
 
-async def _cleanup_app_crons(app_name: str, result: dict[str, Any]) -> None:
+async def _cleanup_app_crons(
+    app_name: str, result: dict[str, Any], *, keep_manifest_crons: bool = False
+) -> None:
     """Remove the cron jobs this app owns, keyed off the running cron SERVICE
     rather than the manifest's ``cron`` grant -- a revoked grant must not make
     the jobs it authorized unreachable. Owner-scoped. A STORE failure is
     REPORTED rather than crashing the disable; an unexpected one propagates,
     exactly as an error outside ``OSError`` does on the jobs path.
+
+    ``keep_manifest_crons`` is for a code reload of a still-enabled app: the
+    jobs its current manifest declares stay (see
+    :func:`~kiro_crew.apps.bridges_crons.retire_app_crons_for_reload`).
     """
     # The cron service is the lifecycle dispatcher's; no service, no jobs.
     if not _lifecycle_dispatcher or not _lifecycle_dispatcher._cron_service:
@@ -597,9 +604,14 @@ async def _cleanup_app_crons(app_name: str, result: dict[str, Any]) -> None:
     # The bridges helper owns the removal, its logging and its SEL audit, and
     # raises both store classes so the note below can name which one happened.
     try:
-        removed = await deregister_app_crons_reporting_failures(
-            app_name, _lifecycle_dispatcher._cron_service
-        )
+        if keep_manifest_crons:
+            removed = await retire_app_crons_for_reload(
+                app_name, _lifecycle_dispatcher._cron_service
+            )
+        else:
+            removed = await deregister_app_crons_reporting_failures(
+                app_name, _lifecycle_dispatcher._cron_service
+            )
     except CronStoreUnreadable:
         # Reported rather than retried: an unreadable store does not heal on
         # its own, and crashing the disable is the one outcome forbidden here.
@@ -677,8 +689,14 @@ async def on_app_disable(
     run_app_hooks: bool = True,
     bounded_startup_cleanup: bool = False,
     startup_stopped: bool | None = None,
+    keep_manifest_crons: bool = False,
 ) -> dict[str, Any]:
     """Called before an app is disabled — deregister routes and invoke shutdown hook.
+
+    ``keep_manifest_crons=True`` is for a teardown that an enable of the same
+    app follows at once (a code reload): the cron jobs its current manifest
+    declares keep their id, run history and enabled state instead of being
+    removed and recreated. Every other teardown removes all of the app's jobs.
 
     ``run_app_hooks=False`` skips the app's OWN ``on_shutdown`` hook while still
     doing everything the GATEWAY owns (route deregistration, cron cleanup). The
@@ -750,7 +768,7 @@ async def on_app_disable(
 
     # Clean up cron jobs owned by this app. Keyed off the running cron
     # service, not the manifest grant -- see _cleanup_app_crons.
-    await _cleanup_app_crons(app_name, result)
+    await _cleanup_app_crons(app_name, result, keep_manifest_crons=keep_manifest_crons)
 
     # Stop and drop this app's durable job runs. Keyed off the registry, not
     # the manifest grant -- see _cleanup_app_jobs for why that distinction is

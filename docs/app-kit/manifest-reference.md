@@ -178,8 +178,9 @@ manifest** always: a paused job gets the new values and stays paused. Settings t
 visibility, a secret grant -- are never touched. A change to `command`, `script`,
 `agent_sequence` or `env` is the exception: the scheduler accepts those fields at
 creation only, so the change is logged (and audited as
-`app_cron_resync_pending_reenable`) on every registration until the app is
-disabled and enabled again, which is when it reaches the job; the entry's other
+`app_cron_resync_pending_reenable`) on every registration until the job is
+recreated, which is when it reaches the job: the app is disabled and enabled
+again, or a Sync of an app with backend hooks reloads its code; the entry's other
 changed fields still land at once. A `message` cleared to empty is reported the
 same way, because the scheduler keeps the stored prompt on an empty value. A job registered
 by a build that did not yet record its entry is brought up to the manifest once,

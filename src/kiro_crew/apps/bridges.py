@@ -89,6 +89,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _UPDATE_KWARGS_FOR_KEY,
         _admitted_app_cron_defs,
         _app_crons_path,
+        _changed_manifest_keys,
         _clip,
         _cron_defs_from_manifest,
         _deregister_crons,
@@ -103,6 +104,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _stamp_digests,
         _stamp_fields,
         _stored_digest,
+        _unapplicable_in_place,
         app_cron_manifest_digest,
         deregister_app_crons_from_service,
         deregister_app_crons_reporting_failures,
@@ -110,6 +112,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         load_app_cron_defs,
         reconcile_app_crons_for_execution,
         register_app_crons_with_service,
+        retire_app_crons_for_reload,
     )
     from kiro_crew.apps.bridges_mcp import (  # noqa: F401
         _BARE_PYTHON,
