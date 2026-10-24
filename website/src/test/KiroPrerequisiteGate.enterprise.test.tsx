@@ -3,7 +3,8 @@
  * (`enterprise_login_required`): no bypass hands over the dashboard, and the
  * first-run screens still run in order, so each prerequisite keeps its remedy.
  */
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import KiroPrerequisiteGate, {
   kiroPrerequisiteIsBlocking,
@@ -121,6 +122,30 @@ describe('KiroPrerequisiteGate enterprise login gate', () => {
     expect(api.acpBackends).not.toHaveBeenCalled()
     // Choosing another agent writes config, which the closed gate refuses.
     expect(screen.queryByRole('button', { name: 'Use other coding agents' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the app mounted and on screen when an established session relocks', async () => {
+    // The relock screen is a follow-up; until then a relock leaves the app as
+    // it is, and the gateway refuses its requests while the gate is closed.
+    function Draft() {
+      const [text, setText] = useState('')
+      return <input aria-label="draft" value={text} onChange={e => setText(e.target.value)} />
+    }
+    const open = status({ ready: true, authenticated: true, installed: true, initial_setup_complete: true })
+    vi.mocked(api.kiroPrerequisite)
+      .mockResolvedValueOnce(open)
+      .mockResolvedValue(status({ ...locked, initial_setup_complete: true }))
+    const { queryClient } = renderWithProviders(<KiroPrerequisiteGate><Draft /></KiroPrerequisiteGate>)
+    fireEvent.change(await screen.findByLabelText('draft'), { target: { value: 'unsaved json' } })
+    await waitFor(() => expect(queryClient.getQueryData(['kiro-prerequisite'])).toBeTruthy())
+
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['kiro-prerequisite'] }) })
+    await waitFor(() => expect(
+      (queryClient.getQueryData(['kiro-prerequisite']) as { enterprise_login_required?: boolean })
+        .enterprise_login_required,
+    ).toBe(true))
+    expect(screen.getByLabelText('draft')).toHaveValue('unsaved json')
+    expect(screen.queryByRole('button', { name: 'Check sign-in again' })).not.toBeInTheDocument()
   })
 
   it('opens the dashboard once the gate reports open', async () => {

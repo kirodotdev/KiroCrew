@@ -1468,6 +1468,10 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // background poll below reads latched state for free. A user-driven Refresh
   // must still hit the host, so it arms this flag for exactly one fetch.
   const forceProbe = useRef(false)
+  // Set once the app has rendered from a resolved status. An enterprise relock
+  // then keeps the app on screen: the gateway refuses its requests while the
+  // gate is closed, and the relock screen itself is a follow-up.
+  const appShown = useRef(false)
   const statusQuery = useQuery({
     queryKey: QUERY_KEY,
     queryFn: () => {
@@ -1608,8 +1612,17 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // This also removes the first-run flash at its root: rendering the
   // setup-branded shell here would show first-run setup on every launch for as
   // long as the gateway's two kiro-cli subprocesses take to answer.
+  // Only an admission from a resolved status counts: the app also renders while
+  // the status is still unknown, and a lock found then must not leave it mounted.
+  const app = (extra?: ReactNode) => {
+    if (statusQuery.data) appShown.current = true
+    return <>{children}{extra}</>
+  }
+  // A relock of an app already in use keeps that app mounted and visible.
+  const relocked = enterpriseLocked && appShown.current
+  const unlessRelocked = (screen: ReactNode) => (relocked ? <>{children}</> : <>{screen}</>)
   if (statusQuery.isPending) {
-    return <>{children}</>
+    return app()
   }
   const retrying = statusQuery.isFetching
   const retryStatus = () => {
@@ -1626,7 +1639,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     && statusQuery.error instanceof ApiError
     && statusQuery.error.status === 404
   ) {
-    return <>{children}</>
+    return app()
   }
   // No usable status: either a live gateway error or an unusable body. Both are
   // "we cannot tell". A RETURNING user keeps their dashboard, fully usable —
@@ -1635,7 +1648,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // setup gets the retry screen, since they may genuinely have no CLI yet.
   if (!prerequisite) {
     if (rememberedSetupComplete()) {
-      return <>{children}</>
+      return app()
     }
     const message = statusQuery.isError
       ? (statusQuery.error?.message || i18nT('components.kiroPrerequisiteGate.the_gateway_returned_an_unexpected_error'))
@@ -1650,28 +1663,25 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // in order, so a missing CLI or a sandbox refusal shows its own remedy before
   // the sign-in step.
   if (prerequisite.ready && !enterpriseLocked) {
-    return <>{children}</>
+    return app()
   }
   // Which agent will run is still unknown: same rule as the pending status
   // above — an unresolved check never paints setup chrome.
   if (!enterpriseLocked && (configQuery.isPending || (otherBackendConfigured && backendsQuery.isPending))) {
-    return <>{children}</>
+    return app()
   }
   if (otherBackendReady) {
     // Admitted to the dashboard. If the automatic marker write failed, this is
     // the only surface that can tell the operator, so it rides ALONGSIDE the
     // app (children) instead of replacing it, and its Retry re-fires the same
     // recheck for the configured backend.
-    return (
-      <>
-        {children}
-        <SetupMarkerWriteNotice
-          failed={persistMarkerMut.isError}
-          retrying={persistMarkerMut.isPending}
-          message={setupMarkerErrorMessage(persistMarkerMut.error)}
-          onRetry={() => { if (configuredBackend) persistMarker(configuredBackend) }}
-        />
-      </>
+    return app(
+      <SetupMarkerWriteNotice
+        failed={persistMarkerMut.isError}
+        retrying={persistMarkerMut.isPending}
+        message={setupMarkerErrorMessage(persistMarkerMut.error)}
+        onRetry={() => { if (configuredBackend) persistMarker(configuredBackend) }}
+      />,
     )
   }
   const status = prerequisite
@@ -1700,7 +1710,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // intermittent. It is also the only affordance in the product for repairing
   // this state, so an install without it has no route back.
   if (missingSpecs.length > 0 && status.initial_setup_complete) {
-    return (
+    return unlessRelocked(
       <AgentSpecsMissing
         specs={missingSpecs}
         repairError={repairError}
@@ -1717,7 +1727,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // a spec that is absent is not also rejected.
   const rejectedSpecs = status.rejected_agent_specs ?? []
   if (rejectedSpecs.length > 0 && status.initial_setup_complete) {
-    return (
+    return unlessRelocked(
       <AgentSpecsRejected
         specs={rejectedSpecs}
         reason={status.agent_spec_rejection_detail ?? ''}
@@ -1743,7 +1753,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     || (updateCliMutation.error ? asSentence(updateCliMutation.error.message) : '')
     || (status.cli_update_error ?? '')
   if (status.acp_supported === false) {
-    return (
+    return unlessRelocked(
       <CliOutdated
         updateCommand={status.update_command || 'kiro-cli update'}
         bundledCli={status.bundled_cli === true}
@@ -1761,10 +1771,10 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // every surface (including ones that never start a session) for a state the
   // dashboard cannot even keep current.
   if (status.initial_setup_complete && !enterpriseLocked) {
-    return <>{children}</>
+    return app()
   }
   if (prerequisite.setup_allowed === false) {
-    return <OwnerSetupRequired retrying={retrying} onRetry={retryStatus} />
+    return unlessRelocked(<OwnerSetupRequired retrying={retrying} onRetry={retryStatus} />)
   }
   // A first-run install whose probe genuinely could not verify the CLI (not the
   // sandbox/timeout/acp branches above, which have their own screens): the
@@ -1777,7 +1787,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     const withStatus = typeof status.probe_status === 'number'
       ? `${status.probe_error} (exit ${status.probe_status})`
       : status.probe_error
-    return (
+    return unlessRelocked(
       <SetupStatusError message={withStatus} retrying={retrying} onRetry={retryStatus} />
     )
   }
@@ -1790,7 +1800,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // and since the probe names the failing step that message is specific) —
   // this branch only replaces the first-run screen that would otherwise lie.
   if (status.sandbox_unavailable) {
-    return (
+    return unlessRelocked(
       <SandboxUnavailable
         failureKind={status.sandbox_failure_kind}
         detail={status.sandbox_detail}
@@ -1801,7 +1811,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     )
   }
 
-  return (
+  return unlessRelocked(
     <SetupShell>
         <>
           <div className="mb-7">
