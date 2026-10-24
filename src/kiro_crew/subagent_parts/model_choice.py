@@ -99,7 +99,12 @@ async def _route_unpinned_start(info: "SubagentInfo", kind: str, sessions: Any) 
     routed keeps that routing, because a dead process or an orphaned session says
     nothing about whether the tier was right. Sets ``info.routed_model`` /
     ``info.routed_tier``; ``routed_model`` stays ``""`` when the tier keeps the
-    inherited model.
+    inherited model. ``info.routed_effort`` is the tier's effort inside the
+    range (:func:`~kiro_crew.decisions.points.model_route.tier_effort`), and stays
+    ``""`` for a start with an effort of its own or a role effort pin. The range is
+    the one on the dashboard slot whose session is the parent, read only while that
+    slot is on ``Auto (Jev)``; its models bound the tier's model as they bound the
+    parent's turns.
     """
     if (
         info.routed_tier
@@ -113,8 +118,11 @@ async def _route_unpinned_start(info: "SubagentInfo", kind: str, sessions: Any) 
     ):
         return
     try:
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.slot_registry import SlotRegistry
         from kiro_crew.decisions.points import model_route
         from kiro_crew.llm_helpers import provider_advertised_ids
+        from kiro_crew.slack.handler import get_dashboard_state
 
         if not model_route.derive_enabled():
             return
@@ -127,6 +135,11 @@ async def _route_unpinned_start(info: "SubagentInfo", kind: str, sessions: Any) 
         if baseline is None:
             return
         advertised = provider_advertised_ids(provider)
+        state = get_dashboard_state()
+        parent = state and SlotRegistry.find_slot_by_session(
+            state, info.parent_session_key, effective_session_key
+        )
+        jev_range = parent.jev_range if parent and parent.jev_route else None
         chosen, tier = await model_route.routed_spawn_model(
             info.task,
             session_key=info.parent_session_key,
@@ -134,7 +147,11 @@ async def _route_unpinned_start(info: "SubagentInfo", kind: str, sessions: Any) 
             advertised=advertised,
             run_id=info.id,
             rate_of=model_route.rate_lookup(provider),
+            allowed=(jev_range or {}).get("models") or (),
         )
+        effort = model_route.tier_effort(tier, jev_range)
+        if effort and (info.reasoning_effort or await asyncio.to_thread(_subagent_default_effort)):
+            effort = ""
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -145,6 +162,7 @@ async def _route_unpinned_start(info: "SubagentInfo", kind: str, sessions: Any) 
     if tier:
         info.routed_tier = tier
         info.routed_model = chosen
+        info.routed_effort = effort
 
 
 def _spawn_effective_model(

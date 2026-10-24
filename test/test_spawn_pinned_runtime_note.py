@@ -42,6 +42,7 @@ def _api_spawn(
         error="",
         model="sonnet-test-model",
         routed_model="r",
+        routed_effort="max",
         keep=keep,
         agent="",
         execution_context=SimpleNamespace(selection_kind=selection_kind),
@@ -148,6 +149,33 @@ class TestApiSpawnRuntimeNote:
     def test_note_names_the_cost(self):
         assert "own runtime" in PINNED_RUNTIME_NOTE
         assert "0.55 GB" in PINNED_RUNTIME_NOTE
+
+
+class TestSharingPlanRoutedEffort:
+    @staticmethod
+    def _plan(**fields):
+        from kiro_crew.execution_context import execution_for_store
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+        mgr = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+        mgr._should_use_session_sharing = lambda info: True
+        cfg = SimpleNamespace(agent=SimpleNamespace(role_models={}, role_efforts={}))
+        info = SubagentInfo(
+            execution_context=execution_for_store(""),
+            id="r1",
+            task="t",
+            parent_session_key="chat-parent",
+            **fields,
+        )
+        return mgr._sharing_plan(info, cfg=cfg)
+
+    def test_a_routed_effort_starts_the_run_in_its_own_runtime(self):
+        assert self._plan() == _SharingPlan("", "", True)
+        assert self._plan(routed_effort="max") == _SharingPlan("", "max", False)
+
+    def test_an_own_effort_wins_over_a_routed_one(self):
+        plan = self._plan(reasoning_effort="low", routed_effort="max")
+        assert plan.eff_effort == "low"
 
 
 def _receipt(responses: list[dict[str, Any]], tasks: list[str]) -> str:
