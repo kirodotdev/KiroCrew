@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, memo } from 'react'
 import { AnimatePresence, motion, useMotionValue, useSpring } from 'framer-motion'
-import { Hourglass, ChevronUp, X, Zap, Pencil, Check, Bot, Loader2, ArrowUp, ArrowDown, AppWindow } from 'lucide-react'
+import { Hourglass, ChevronUp, X, Zap, Pencil, Check, Bot, Loader2, ArrowUp, ArrowDown, AppWindow, BookOpen } from 'lucide-react'
 import type { ChatMessage } from '../types'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { Glass } from './Glass'
@@ -11,6 +11,7 @@ import { stripAppEnvelope } from '../pages/chat/groupDisplayItems'
 import { hasSubagentCompletionPrefix } from '../pages/chat/subagentCompletion'
 import { prependQuote, quoteBlock, quoteExcerpt, readMessageQuote, stripQuoteBlock } from '../chat-core/composer/messageQuote'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { splitKnowledgeEnvelope } from '../pages/chat/useKnowledgeFetch'
 /** System-injected sub-agent completion deliveries waiting for the busy slot.
  *  These are NOT user messages: they must not be editable/cancellable (either
  *  would silently lose a finished agent's result) and rendering each as a
@@ -48,13 +49,42 @@ export function isAppMessageQueued(m: ChatMessage): boolean {
 /** Display text for a queued entry: an app-message entry drops its machine
  *  envelope so the queue card wears the same skin the transcript row will —
  *  two skins for one message read as two different messages. */
-/** The entry's own words: the content with a carried quote's block taken off
- *  the head, exactly as the sent bubble strips it (`UserMessage`). This is
- *  what the editor opens on; `reglueQuote` puts the block back on commit. */
+/** A queued entry's text split into the parts the sender did not type and the
+ *  part they did. A send is queued with its WIRE text, which opens with the
+ *  quote block (when quoting) and then the `[KNOWLEDGE CONTEXT ...]` envelope
+ *  (when a knowledge block was picked) -- model-facing material the user never
+ *  typed, so neither belongs on the card or in the editor. `quote` is set only
+ *  when the content really starts with that quote's block, and `envelope` is
+ *  the knowledge envelope as sent (empty when there is none), kept verbatim so
+ *  an edit can put it back and the agent still receives the knowledge. */
+function splitQueuedContent(m: ChatMessage): {
+  quote: ReturnType<typeof readMessageQuote>
+  envelope: string
+  own: string
+} {
+  if (isAppMessageQueued(m)) return { quote: null, envelope: '', own: stripAppEnvelope(m.content) }
+  const carried = readMessageQuote(m.meta as Record<string, unknown> | undefined)
+  const quote = carried && m.content.startsWith(quoteBlock(carried)) ? carried : null
+  const afterQuote = quote ? stripQuoteBlock(m.content, quote) : m.content
+  const split = splitKnowledgeEnvelope(afterQuote)
+  return { quote, envelope: split?.head ?? '', own: split ? split.rest : afterQuote }
+}
+
+/** The entry's own words: the content with a carried quote's block and a
+ *  knowledge envelope taken off the head, exactly as the sent bubble shows it
+ *  (`UserMessage` strips the quote; the envelope is never in the bubble). This
+ *  is what the editor opens on; `reglueQuote` puts both back on commit. */
 function queuedOwnText(m: ChatMessage): string {
-  if (isAppMessageQueued(m)) return stripAppEnvelope(m.content)
-  const quote = readMessageQuote(m.meta as Record<string, unknown> | undefined)
-  return quote ? stripQuoteBlock(m.content, quote) : m.content
+  return splitQueuedContent(m).own
+}
+
+/** True when the card hides a knowledge envelope it will still send. The card
+ *  then shows only the typed words, so it needs its own mark that knowledge
+ *  is attached; without one, the card reads as a plain message. False when the
+ *  split refused (two close-marker lines), because then the card shows the
+ *  whole text, envelope included. */
+function queuedHasKnowledge(m: ChatMessage): boolean {
+  return splitQueuedContent(m).envelope !== ''
 }
 
 /** The card's one visible line. A quoting entry shows the user's own words,
@@ -68,13 +98,20 @@ export function queuedDisplayText(m: ChatMessage): string {
   return quote ? quoteExcerpt(quote.text) : own
 }
 
-/** The text an edit of a quoting entry commits: the editor shows and edits
- *  the user's own words (`queuedDisplayText`), and the quote block the entry
- *  carries goes back on the head unchanged, so the card survives the edit. */
+/** The text an edit of an entry commits: the editor shows and edits the
+ *  user's own words (`queuedDisplayText`), and what the entry carries ahead of
+ *  them goes back on the head unchanged -- the quote block, so the card
+ *  survives the edit, and the knowledge envelope, so the edited send still
+ *  carries the knowledge the agent was meant to get. An entry sent with no
+ *  typed words (a quote plus knowledge) has its wire trimmed right after the
+ *  close marker, so the blank line a fresh send puts between the envelope and
+ *  the words is put back here; without it the edit would glue the words onto
+ *  the marker line and the envelope would no longer be found. */
 function reglueQuote(m: ChatMessage, edited: string): string {
-  const quote = readMessageQuote(m.meta as Record<string, unknown> | undefined)
-  if (!quote || !m.content.startsWith(quoteBlock(quote))) return edited
-  return prependQuote(edited, quote)
+  const { quote, envelope } = splitQueuedContent(m)
+  const sep = envelope && edited && !envelope.endsWith('\n') ? '\n\n' : ''
+  const body = envelope + sep + edited
+  return quote ? prependQuote(body, quote) : body
 }
 
 /** Split a slot's message list into the three things a pane surface needs:
@@ -390,6 +427,29 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
             // WHEN or WHETHER the entry runs, never who authored its text.
             const isAppEntry = isAppMessageQueued(m)
             const displayText = queuedDisplayText(m)
+            // The card hides the knowledge envelope, so this chip is what says
+            // the send still carries it. Same icon as the sent bubble's
+            // knowledge chip, so the two read as one thing.
+            const knowledgeChip = queuedHasKnowledge(m) ? (
+              <span
+                data-testid="queue-card-knowledge"
+                // A pill, not a bare glyph: beside the pencil / zap / X buttons a
+                // bare icon reads as a fourth button. `min-w-0` + the truncating
+                // label let the chip give way before the preview does.
+                className="min-w-0 inline-flex items-center gap-1 rounded-full border border-current px-1.5 text-[11px] leading-4 opacity-80"
+                title={i18nT('components.queueStack.knowledge_attached_title')}
+              >
+                <BookOpen size={11} className="shrink-0" aria-hidden="true" />
+                {/* The label shows at the usual pane width. Only on a really
+                    narrow card (a phone, a three-way split) does the chip drop
+                    to the icon, so it cannot squeeze the preview beside up to
+                    five action buttons. The label stays in the accessibility
+                    tree there, and the title keeps the meaning. */}
+                <span data-testid="queue-card-knowledge-label" className="truncate @max-[360px]/queuecard:sr-only">
+                  {i18nT('components.queueStack.knowledge_attached_label')}
+                </span>
+              </span>
+            ) : null
 
             return (
               // The motion box only places the card (peek offset, scale, layer);
@@ -426,7 +486,10 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                 // `glass-warn-fg` (index.css): `--warn` in dark palettes, a
                 // darker mix of it in light ones, where plain `--warn` on this
                 // tint fails the 4.5:1 text floor (#19920).
-                className="h-full glass-warn px-3 py-2 text-[13px] glass-warn-fg"
+                // `@container/queuecard`: the knowledge chip reads THIS card's
+                // width, never the viewport, since a split pane is narrow on
+                // a wide screen.
+                className="@container/queuecard h-full glass-warn px-3 py-2 text-[13px] glass-warn-fg"
                 title={readOnlyHint}
               >
                 <span className="flex items-center gap-1.5 h-full">
@@ -437,7 +500,13 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                     </span>
                   )}
                   {isEditing && onEdit ? (
-                    <EditInput initial={queuedOwnText(m)} onCommit={v => commitEdit(queueId!, reglueQuote(m, v))} onCancel={cancelEdit} />
+                    <>
+                      <EditInput initial={queuedOwnText(m)} onCommit={v => commitEdit(queueId!, reglueQuote(m, v))} onCancel={cancelEdit} />
+                      {/* Kept beside the edit box: the editor holds only the
+                          typed words, and the chip says the knowledge stays
+                          with the send after the save. */}
+                      {knowledgeChip}
+                    </>
                   ) : (
                     <>
                       {/* Same attribution the transcript row wears: a queued
@@ -454,7 +523,10 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                           <span className="truncate">{i18nT('components.mcpApp.from_app', { app: String((m.meta?.appLabel as string) || 'app').split('/')[0] })}</span>
                         </span>
                       )}
-                      <span className="truncate flex-1">{displayText}</span>
+                      {/* `min-w-16` only when a chip shares the row: the chip
+                          gives way (truncates) before the typed words do. */}
+                      <span className={`truncate flex-1${knowledgeChip ? ' min-w-16' : ''}`}>{displayText}</span>
+                      {knowledgeChip}
 
                       {/* Reorder arrows only make sense with 2+ cards, and only
                           in the expanded stack where the run order is visible.

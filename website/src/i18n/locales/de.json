@@ -8173,6 +8173,8 @@
       "hidden_lines_one": "+{{count}} Zeile",
       "hidden_lines_other": "+{{count}} Zeilen",
       "interrupt_current_turn_and_send_this_now": "Aktuellen Zug unterbrechen und dies jetzt senden",
+      "knowledge_attached_label": "Wissen angehängt",
+      "knowledge_attached_title": "Wissen aus der Bibliothek ist angehängt und wird mit dieser Nachricht an den Agenten gesendet",
       "queued": "in Warteschlange",
       "read_only_waiting_to_send": "Nur ansehen: in der Warteschlange. Zum Bearbeiten oder Abbrechen öffne diese Sitzung auf der Seite „Chat“.",
       "run_later": "Später ausführen",

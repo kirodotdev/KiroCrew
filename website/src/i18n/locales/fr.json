@@ -8307,6 +8307,8 @@
       "hidden_lines_one": "+{{count}} ligne",
       "hidden_lines_other": "+{{count}} lignes",
       "interrupt_current_turn_and_send_this_now": "Interrompre le tour en cours et envoyer maintenant",
+      "knowledge_attached_label": "connaissances jointes",
+      "knowledge_attached_title": "Des connaissances de la bibliothèque sont jointes et seront envoyées à l’agent avec ce message",
       "queued": "en file d'attente",
       "read_only_waiting_to_send": "Lecture seule : en attente d'envoi. Pour le modifier ou l'annuler, ouvre cette session sur la page Chat.",
       "run_later": "Exécuter plus tard",

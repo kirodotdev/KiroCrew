@@ -8173,6 +8173,8 @@
       "hidden_lines_one": "+{{count}}টি লাইন",
       "hidden_lines_other": "+{{count}}টি লাইন",
       "interrupt_current_turn_and_send_this_now": "বর্তমান টার্ন থামিয়ে এটি এখনই পাঠান",
+      "knowledge_attached_label": "নলেজ সংযুক্ত",
+      "knowledge_attached_title": "লাইব্রেরির নলেজ সংযুক্ত আছে এবং এই বার্তার সাথে এজেন্টের কাছে পাঠানো হবে",
       "queued": "সারিতে",
       "read_only_waiting_to_send": "শুধু দেখার জন্য: পাঠানোর অপেক্ষায়। এটি সম্পাদনা বা বাতিল করতে এই সেশনটি চ্যাট পেজে খোলো।",
       "run_later": "পরে চালান",

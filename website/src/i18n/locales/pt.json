@@ -8307,6 +8307,8 @@
       "hidden_lines_one": "+{{count}} linha",
       "hidden_lines_other": "+{{count}} linhas",
       "interrupt_current_turn_and_send_this_now": "Interromper o turno atual e enviar agora",
+      "knowledge_attached_label": "conhecimento anexado",
+      "knowledge_attached_title": "Há conhecimento da biblioteca anexado, que será enviado ao agente com esta mensagem",
       "queued": "na fila",
       "read_only_waiting_to_send": "Somente leitura: aguardando envio. Para editar ou cancelar, abra esta sessão na página Chat.",
       "run_later": "Executar depois",

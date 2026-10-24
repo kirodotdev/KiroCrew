@@ -5194,6 +5194,8 @@
       "cancel_queued_message": "Cancel queued message",
       "edit_queued_message": "Edit queued message",
       "interrupt_current_turn_and_send_this_now": "Interrupt current turn and send this now",
+      "knowledge_attached_label": "knowledge attached",
+      "knowledge_attached_title": "Knowledge from the library is attached and goes to the agent with this message",
       "queued": "queued",
       "read_only_waiting_to_send": "View only: waiting to send. To edit or cancel it, open this session on the Chat page.",
       "run_later": "Run later",

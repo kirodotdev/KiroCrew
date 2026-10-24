@@ -849,6 +849,14 @@ export default [
               // above. Matched with `startsWith` and sliced off before render;
               // byte-identical to HOOK_HALTED_RECOVERY_PREFIX in state.py.
               '^\\[Stop-hook nudge cap reached\\]$',
+              // The knowledge envelope's close marker, enumerated for the same
+              // closed-set reason. `expandKnowledgeBlock` writes it into the
+              // model-facing wire text and `splitKnowledgeEnvelope` finds it there
+              // to take the envelope off the queue card, so it is never shown and
+              // a translated marker would stop the split from finding it
+              // (`pages/chat/useKnowledgeFetch.ts`). Its open marker already
+              // matches the em-dash shape above.
+              '^\\[END KNOWLEDGE CONTEXT\\]$',
               // NOTE ON SHAPE: the plugin wraps every pattern as `^<pattern>$`
               // (`generateFullMatchRegExp`), so a pattern must describe the WHOLE
               // string. A prefix-only pattern like `^data:` becomes `^^data:$` and can

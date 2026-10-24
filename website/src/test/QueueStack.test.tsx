@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiveQueued } from '../components/QueueStack'
 import type { ChatMessage } from '../types'
+import { buildOutgoingTurn } from '../chat-core/composer/outgoingTurn'
+import { quoteBlock } from '../chat-core/composer/messageQuote'
+import type { KnowledgeBlock } from '../pages/chat/useKnowledgeFetch'
 
 // QueueStack renders framer-motion cards; we only exercise the inline
 // EditInput, which is plain DOM and needs no special test polyfill.
@@ -45,6 +48,117 @@ describe('QueueStack quote-only entry', () => {
     fireEvent.change(input, { target: { value: 'now with words' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onEdit).toHaveBeenCalledWith('q1', `${block}\n\nnow with words`)
+  })
+})
+
+describe('QueueStack knowledge-context entry', () => {
+  // The queued row carries the WIRE text a real send produced, so these tests
+  // build it with the composer's own turn builder instead of hand-writing it.
+  const KB = { totalTokens: 7, items: [{ id: 'k1', title: 'Doc', content: 'kb line one\n\nkb line two', tokens: 7 }] } as unknown as KnowledgeBlock
+
+  it('shows only what the user typed on the card, never the envelope', () => {
+    const wire = buildOutgoingTurn({ text: 'summarize the doc', knowledge: KB }, 'send').wire
+    expect(wire).toContain('[KNOWLEDGE CONTEXT')
+    const { container } = render(<QueueStack messages={[queued(wire, 'q1')]} onCancel={() => {}} onEdit={() => {}} />)
+    expect(screen.getByText('summarize the doc')).toBeInTheDocument()
+    expect(container.textContent).not.toMatch(/KNOWLEDGE CONTEXT|kb line one/)
+  })
+
+  it('opens the editor on the typed words and sends the envelope back with the edit', () => {
+    const wire = buildOutgoingTurn({ text: 'summarize the doc', knowledge: KB }, 'send').wire
+    const onEdit = vi.fn()
+    render(<QueueStack messages={[queued(wire, 'q1')]} onCancel={() => {}} onEdit={onEdit} />)
+    const input = openEditor()
+    expect(input.value).toBe('summarize the doc')
+    fireEvent.change(input, { target: { value: 'summarize it briefly' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    const expected = buildOutgoingTurn({ text: 'summarize it briefly', knowledge: KB }, 'send').wire
+    expect(onEdit).toHaveBeenCalledWith('q1', expected)
+  })
+
+  it('handles a quote plus knowledge: card shows the typed words, edit restores quote then envelope', () => {
+    const quote = { role: 'assistant' as const, text: 'the quoted reply', ts: 't0' }
+    const wire = buildOutgoingTurn({ text: 'why though?', knowledge: KB, quote }, 'send').wire
+    expect(wire.startsWith(quoteBlock(quote))).toBe(true)
+    const onEdit = vi.fn()
+    const { container } = render(<QueueStack messages={[{ role: 'queued', content: wire, cls: '', ts: 't', meta: { queueId: 'q1', quote } }]} onCancel={() => {}} onEdit={onEdit} />)
+    expect(screen.getByText('why though?')).toBeInTheDocument()
+    expect(container.textContent).not.toMatch(/KNOWLEDGE CONTEXT|kb line one|quoting an earlier message/)
+    const input = openEditor()
+    expect(input.value).toBe('why though?')
+    fireEvent.change(input, { target: { value: 'why not?' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEdit).toHaveBeenCalledWith('q1', buildOutgoingTurn({ text: 'why not?', knowledge: KB, quote }, 'send').wire)
+  })
+
+  it('an entry sent with a quote, knowledge and no typed words edits into a well-formed send', () => {
+    const quote = { role: 'assistant' as const, text: 'the quoted reply', ts: 't0' }
+    const wire = buildOutgoingTurn({ text: '', knowledge: KB, quote }, 'send').wire
+    const onEdit = vi.fn()
+    render(<QueueStack messages={[{ role: 'queued', content: wire, cls: '', ts: 't', meta: { queueId: 'q1', quote } }]} onCancel={() => {}} onEdit={onEdit} />)
+    const input = openEditor()
+    expect(input.value).toBe('')
+    fireEvent.change(input, { target: { value: 'why?' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEdit).toHaveBeenCalledWith('q1', buildOutgoingTurn({ text: 'why?', knowledge: KB, quote }, 'send').wire)
+  })
+
+  it('keeps the whole text when a knowledge item holds the close marker on its own line', () => {
+    // Two close-marker lines: which one ends the envelope cannot be told, so
+    // the card and editor keep the text whole rather than show document text
+    // as the user's words and let an edit overwrite it.
+    const kb = { totalTokens: 7, items: [{ id: 'k1', title: 'Doc', content: 'Example:\n[END KNOWLEDGE CONTEXT]\nKeep this paragraph.', tokens: 7 }] } as unknown as KnowledgeBlock
+    const wire = buildOutgoingTurn({ text: 'Summarize the reference.', knowledge: kb }, 'send').wire
+    const onEdit = vi.fn()
+    render(<QueueStack messages={[queued(wire, 'q1')]} onCancel={() => {}} onEdit={onEdit} />)
+    const input = openEditor()
+    expect(input.value).toBe(wire)
+    expect(input.value).not.toMatch(/^Keep this paragraph/)
+  })
+
+  it('marks the card when it hides a knowledge envelope, and only then', () => {
+    const withKb = buildOutgoingTurn({ text: 'summarize the doc', knowledge: KB }, 'send').wire
+    const { unmount } = render(<QueueStack messages={[queued(withKb, 'q1')]} onCancel={() => {}} onEdit={() => {}} />)
+    const chip = screen.getByTestId('queue-card-knowledge')
+    expect(chip).toHaveTextContent('knowledge attached')
+    expect(chip).toHaveAttribute('title', expect.stringMatching(/attached/))
+    unmount()
+    render(<QueueStack messages={[queued('summarize the doc', 'q2')]} onCancel={() => {}} onEdit={() => {}} />)
+    expect(screen.queryByTestId('queue-card-knowledge')).toBeNull()
+  })
+
+  it('drops the chip label to screen-reader-only on a narrow card, never removing it', () => {
+    // jsdom evaluates no container query; this pins the rule that does it
+    // (the capture script asserts the real narrow layout).
+    const wire = buildOutgoingTurn({ text: 'summarize the doc', knowledge: KB }, 'send').wire
+    render(<QueueStack messages={[queued(wire, 'q1')]} onCancel={() => {}} onEdit={() => {}} />)
+    const label = screen.getByTestId('queue-card-knowledge-label')
+    expect(label).toHaveTextContent('knowledge attached')
+    expect(label.className).toContain('/queuecard:sr-only')
+    expect(label.className).toContain('truncate')
+    expect(screen.getAllByTestId('queue-card')[0].className).toContain('@container/queuecard')
+    // The preview keeps a floor beside the chip, so the chip gives way first.
+    expect(screen.getByText('summarize the doc').className).toContain('min-w-16')
+  })
+
+  it('keeps the knowledge mark beside the edit box while editing', () => {
+    const wire = buildOutgoingTurn({ text: 'summarize the doc', knowledge: KB }, 'send').wire
+    render(<QueueStack messages={[queued(wire, 'q1')]} onCancel={() => {}} onEdit={() => {}} />)
+    openEditor()
+    expect(screen.getByTestId('queue-card-knowledge')).toBeInTheDocument()
+  })
+
+  it('shows no knowledge mark when the split refuses and the card already shows the envelope', () => {
+    const kb = { totalTokens: 7, items: [{ id: 'k1', title: 'Doc', content: 'Example:\n[END KNOWLEDGE CONTEXT]\nKeep this paragraph.', tokens: 7 }] } as unknown as KnowledgeBlock
+    const wire = buildOutgoingTurn({ text: 'Summarize the reference.', knowledge: kb }, 'send').wire
+    render(<QueueStack messages={[queued(wire, 'q1')]} onCancel={() => {}} onEdit={() => {}} />)
+    expect(screen.queryByTestId('queue-card-knowledge')).toBeNull()
+  })
+
+  it('leaves a message that merely mentions the marker mid-text untouched', () => {
+    const text = 'what does [KNOWLEDGE CONTEXT — injected by user from knowledge library] mean?'
+    render(<QueueStack messages={[queued(text, 'q1')]} onCancel={() => {}} onEdit={() => {}} />)
+    expect(screen.getByText(text)).toBeInTheDocument()
   })
 })
 

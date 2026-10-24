@@ -8039,6 +8039,8 @@
       "hidden_attachments_other": "+{{count}} 件の添付ファイル",
       "hidden_lines_other": "+{{count}} 行",
       "interrupt_current_turn_and_send_this_now": "現在のターンを中断して今すぐ送信",
+      "knowledge_attached_label": "ナレッジ添付済み",
+      "knowledge_attached_title": "ライブラリのナレッジが添付されており、このメッセージと一緒にエージェントに送信されます",
       "queued": "キューに入っています",
       "read_only_waiting_to_send": "表示のみ：送信待ちです。編集やキャンセルは、このセッションをチャットページで開いて行ってください。",
       "run_later": "後で実行",

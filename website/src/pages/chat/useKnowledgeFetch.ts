@@ -35,15 +35,47 @@ export function extractKnowledgeQuery(text: string): string | null {
   return null
 }
 
+const KNOWLEDGE_OPEN = '[KNOWLEDGE CONTEXT — injected by user from knowledge library]'
+const KNOWLEDGE_CLOSE = '[END KNOWLEDGE CONTEXT]'
+
 /** Format knowledge block for LLM context (expanded at send time). */
 export function expandKnowledgeBlock(block: KnowledgeBlock): string {
   return [
-    '[KNOWLEDGE CONTEXT — injected by user from knowledge library]\n',
+    KNOWLEDGE_OPEN + '\n',
     ...block.items.map(item =>
       `## ${item.title}${item.source ? ` (${item.source})` : ''}\n${item.content}\n`
     ),
-    '[END KNOWLEDGE CONTEXT]\n',
+    KNOWLEDGE_CLOSE + '\n',
   ].join('\n')
+}
+
+/** Split a wire text that OPENS with the knowledge envelope into the envelope
+ *  (`head`, including the blank lines after its close marker) and what follows
+ *  it (`rest`, the sender's own words). `null` when the text does not open with
+ *  one. A close marker counts only when it sits on its own line, so a
+ *  knowledge item that mentions the marker mid-line does not end the envelope.
+ *
+ *  The wire text records no boundary, and a knowledge item (or the typed text)
+ *  can hold the close marker on a line of its own. With two such lines there
+ *  is no way to tell which one ends the envelope, and picking the wrong one
+ *  would show document text as the user's words and let an edit overwrite it.
+ *  So the split happens only when there is exactly ONE close-marker line;
+ *  otherwise this returns `null` and the caller keeps the text whole.
+ *  `head + rest` is always the original text. */
+export function splitKnowledgeEnvelope(text: string): { head: string; rest: string } | null {
+  if (!text.startsWith(KNOWLEDGE_OPEN + '\n')) return null
+  const needle = '\n' + KNOWLEDGE_CLOSE
+  let close = -1
+  for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + 1)) {
+    const afterClose = at + needle.length
+    if (afterClose < text.length && text[afterClose] !== '\n') continue
+    if (close >= 0) return null
+    close = afterClose
+  }
+  if (close < 0) return null
+  let end = close
+  while (text[end] === '\n') end++
+  return { head: text.slice(0, end), rest: text.slice(end) }
 }
 
 /**

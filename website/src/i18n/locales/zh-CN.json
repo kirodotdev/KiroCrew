@@ -8039,6 +8039,8 @@
       "hidden_attachments_other": "+{{count}} 个附件",
       "hidden_lines_other": "+{{count}} 行",
       "interrupt_current_turn_and_send_this_now": "中断当前轮次并立即发送",
+      "knowledge_attached_label": "已附加知识",
+      "knowledge_attached_title": "已附加知识库中的内容，将随此消息一起发送给智能体",
       "queued": "已排队",
       "read_only_waiting_to_send": "仅供查看：等待发送。如需编辑或取消，请在“聊天”页面中打开此会话。",
       "run_later": "推后运行",

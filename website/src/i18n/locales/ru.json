@@ -8441,6 +8441,8 @@
       "hidden_lines_one": "+{{count}} строка",
       "hidden_lines_other": "+{{count}} строк",
       "interrupt_current_turn_and_send_this_now": "Прервать текущий ход и отправить сейчас",
+      "knowledge_attached_label": "знания прикреплены",
+      "knowledge_attached_title": "Прикреплены знания из библиотеки: они будут отправлены агенту вместе с этим сообщением",
       "queued": "в очереди",
       "read_only_waiting_to_send": "Только просмотр: ожидает отправки. Чтобы изменить или отменить, открой эту сессию на странице «Чат».",
       "run_later": "Выполнить позже",
