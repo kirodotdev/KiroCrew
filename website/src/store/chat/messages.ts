@@ -6,13 +6,14 @@
 import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import { isRejectedDecision } from '../../utils/approvalDecision'
-import type { ChatState } from './state'
+import { SEND_ATTEMPTS_PER_SLOT_MAX, type ChatState } from './state'
 import { isUnsafeKey, normalizeQueueEntries, safeKey } from './wire'
 import { hydrateQueuedBubbles } from './queue'
 import { RECONCILE_WINDOW, ensureMsgId, finalizeTrailingStreaming, mintMsgId, tailNotInPage } from './transcript'
 import { isOutOfBandRow, isTurnBoundaryUser, mergePreservedThinking } from './thinking'
 import { retainServerTotal, setPagingCursor, writeSlotPage } from './slotCache'
 import { evictMcpApps } from './mcpApps'
+import { persistedSendIds, pruneDeliveredAttempts } from './sendAttempts'
 
 export const messageReducers = {
   appendMessage(state: ChatState, action: PayloadAction<ChatMessage>) {
@@ -191,6 +192,9 @@ export const messageReducers = {
       return false
     }
     if (!confirm(state.messages)) confirm(state.slotMessages[safeKey(slot)])
+    // The receipt proves delivery, so this send (and every older one) is no
+    // longer a lost prompt even if another tab later rewinds its row away.
+    pruneDeliveredAttempts(state, slot, [sendId])
   },
   /** Record that a send's own receipt never came: the transport deadline
    *  fired (`response-late`) and no correlated echo has confirmed the row, so
@@ -379,6 +383,20 @@ export const messageReducers = {
     // otherwise flag those discarded chunks as missed.
     if (state.slotState === 'idle') state.lastChunkSeq = undefined
     if (state.activeSlot) delete state.thinkingOrphans?.[safeKey(state.activeSlot)]; if (state.activeSlot) evictMcpApps(state, state.activeSlot); if (state.activeSlot) writeSlotPage(state, state.activeSlot, [], false)
+    // A cleared conversation offers none of its old prompts on ↑.
+    if (state.activeSlot) delete state.sendAttempts?.[safeKey(state.activeSlot)]
+  },
+  /** Remember a prompt at the moment its optimistic bubble is minted, so ↑
+   *  can still recall it if that bubble later leaves the transcript. Kept
+   *  until the slot is cleared or evicted; recall skips it while a row
+   *  carries its `sendId` (see `promptHistoryWithAttempts`). */
+  recordSendAttempt(state: ChatState, action: PayloadAction<{ slot: string; text: string; sendId: string }>) {
+    const { slot, text, sendId } = action.payload
+    if (isUnsafeKey(slot) || !text || !sendId) return
+    const map = (state.sendAttempts ??= {})
+    const list = (map[safeKey(slot)] ??= [])
+    list.push({ text, sendId })
+    if (list.length > SEND_ATTEMPTS_PER_SLOT_MAX) list.splice(0, list.length - SEND_ATTEMPTS_PER_SLOT_MAX)
   },
   /** A server-confirmed clear for a slot that is NOT the active view. The
    *  active-slot case routes through `clearMessages`; this one exists so a
@@ -394,9 +412,27 @@ export const messageReducers = {
     const run = state.slotRun[safeKey(slot)]
     if (run && run.state === 'idle') run.lastChunkSeq = undefined
     delete state.thinkingOrphans?.[safeKey(slot)]
+    delete state.sendAttempts?.[safeKey(slot)]
     evictMcpApps(state, slot)
   },
-  truncateAfterIndex(state: ChatState, action: PayloadAction<number>) { state.messages = state.messages.slice(0, action.payload) },
+  truncateAfterIndex(state: ChatState, action: PayloadAction<number>) {
+    const removed = state.messages.slice(action.payload)
+    state.messages = state.messages.slice(0, action.payload)
+    // An edit-and-resend or regenerate removed these prompts on purpose; ↑
+    // must not offer them back as lost sends. Every record older than the
+    // newest removed one goes too: the user has moved past those sends, so
+    // none of them can be a lost newest prompt (and a rollback that restores
+    // the removed rows must not bring an old lost prompt back ahead of them).
+    const map = state.sendAttempts
+    const key = state.activeSlot ? safeKey(state.activeSlot) : null
+    const list = map && key ? map[key] : undefined
+    if (map && key && list?.length) {
+      const gone = new Set(removed.map(m => m.meta?.sendId).filter((id): id is string => typeof id === 'string' && !!id))
+      let cut = -1
+      for (let i = list.length - 1; i >= 0; i--) if (gone.has(list[i].sendId)) { cut = i; break }
+      if (cut >= 0) map[key] = list.slice(cut + 1)
+    }
+  },
   replaceMessages(state: ChatState, action: PayloadAction<ChatMessage[]>) { state.messages = action.payload },
   /** Path B: seed a non-active slot's message history into the per-slot store
    *  (one-time hydrate on pane mount). Prepends the server history BEFORE any
@@ -416,6 +452,8 @@ export const messageReducers = {
     const { slot, messages, queue, hasMore, bounded, total, running, nextBefore } = action.payload
     if (isUnsafeKey(slot)) return
     if (slot === state.activeSlot) return
+    // A persisted row carrying a send's id proves that send was delivered.
+    pruneDeliveredAttempts(state, slot, persistedSendIds(messages))
     const k = safeKey(slot)
     // Only retainer that can seed a BACKGROUND slot -- the others sit behind an
     // activeSlot guard. Accept paths only: a declined page is not evidence.

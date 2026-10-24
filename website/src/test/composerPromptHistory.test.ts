@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   livePromptHistoryCursor,
   promptHistoryFromMessages,
+  promptHistoryWithAttempts,
   samePromptHistory,
   stepPromptHistory,
   type PromptHistoryCursor,
@@ -250,5 +251,53 @@ describe('samePromptHistory', () => {
     expect(samePromptHistory([{ text: 'a', id: '1' }], [{ text: 'a', id: '2' }])).toBe(false)
     expect(samePromptHistory(hist('a'), [{ text: 'a' }])).toBe(true)
     expect(samePromptHistory(hist('a'), hist('a', 'b'))).toBe(false)
+  })
+})
+
+describe('promptHistoryWithAttempts', () => {
+  const attempt = (text: string, sendId: string) => ({ text, sendId })
+
+  it('adds a submitted prompt no row carries at the newest end, so the first ↑ returns it', () => {
+    const items = promptHistoryWithAttempts([user('earlier', { mid: 'm1' })], [attempt('lost', 's-lost')])
+    expect(items).toEqual([{ text: 'earlier', id: 'm1' }, { text: 'lost', id: 's-lost' }])
+    expect(walk(items, '', ['older', 'older']).shown).toEqual(['lost', 'earlier'])
+  })
+
+  it('skips a prompt whose sendId is on a row, even when the row is spelled differently', () => {
+    const rows = [user('expanded [attached_file 1] /tmp/a.png', { sendId: 's1', mid: 'm1' }), user('later', { mid: 'm2' })]
+    expect(promptHistoryWithAttempts(rows, [attempt('typed', 's1')])).toEqual([
+      { text: 'expanded [attached_file 1] /tmp/a.png', id: 's1' }, { text: 'later', id: 'm2' },
+    ])
+  })
+
+  it('counts a queued row carrying the sendId as present', () => {
+    const rows: ChatMessage[] = [{ role: 'queued', content: 'waiting', cls: 'msg msg-queued', meta: { queueId: 'q1', sendId: 's1' } }]
+    expect(promptHistoryWithAttempts(rows, [attempt('waiting', 's1')])).toEqual([])
+  })
+
+  it('collapses a lost prompt equal to the newest entry', () => {
+    expect(promptHistoryWithAttempts([user('same', { mid: 'm1' })], [attempt('same', 's1')])).toEqual([{ text: 'same', id: 'm1' }])
+    expect(promptHistoryWithAttempts([], [attempt('a', 's1'), attempt('a', 's2'), attempt('b', 's3')]))
+      .toEqual([{ text: 'a', id: 's1' }, { text: 'b', id: 's3' }])
+  })
+
+  it('drops a lost prompt once a later send is on a row, so ↑ returns the last prompt', () => {
+    // A was lost; the user then sent B (or recalled and resent A), which landed.
+    const rows = [user('earlier', { mid: 'm1' }), user('B', { sendId: 's-b' })]
+    const items = promptHistoryWithAttempts(rows, [attempt('A', 's-a'), attempt('B', 's-b')])
+    expect(items).toEqual([{ text: 'earlier', id: 'm1' }, { text: 'B', id: 's-b' }])
+    expect(walk(items, '', ['older']).shown).toEqual(['B'])
+  })
+
+  it('does not bring back a delivered prompt whose row is above the loaded window', () => {
+    // Only the newest send's row is loaded; the two older ones paged out.
+    const rows = [user('third', { sendId: 's3' })]
+    expect(promptHistoryWithAttempts(rows, [attempt('first', 's1'), attempt('second', 's2'), attempt('third', 's3')]))
+      .toEqual([{ text: 'third', id: 's3' }])
+  })
+
+  it('returns the transcript list unchanged with no attempts', () => {
+    const rows = [user('a', { mid: 'm1' })]
+    expect(promptHistoryWithAttempts(rows, [])).toEqual(promptHistoryFromMessages(rows))
   })
 })

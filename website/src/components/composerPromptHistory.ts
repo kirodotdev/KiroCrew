@@ -17,6 +17,7 @@
  */
 
 import type { ChatMessage } from '../types'
+import { rowSendIds } from '../utils/rowSendIds'
 
 /** One sent prompt; `id` is absent when the message carried no usable id. */
 export type PromptHistoryItem = { text: string; id?: string }
@@ -191,6 +192,40 @@ export function promptHistoryFromMessages(messages: readonly ChatMessage[]): Pro
     if (!text || text === out[out.length - 1]?.text) continue
     const id = metaId(m)
     out.push(id ? { text, id } : { text })
+  }
+  return out
+}
+
+/**
+ * `promptHistoryFromMessages`, plus every prompt this tab submitted whose
+ * `sendId` no row carries and that is newer than every send still on a row:
+ * a send whose bubble left the transcript (a refresh dropped the optimistic
+ * row) or never reached it. Those go at the newest end, so the first ↑
+ * returns the prompt that just vanished. Presence is
+ * decided by `sendId` alone (the server keeps it on the row it persists), not
+ * by text, because the persisted row is often spelled differently.
+ */
+export function promptHistoryWithAttempts(
+  messages: readonly ChatMessage[],
+  attempts: readonly { text: string; sendId: string }[],
+): PromptHistoryItem[] {
+  const out = promptHistoryFromMessages(messages)
+  if (!attempts.length) return out
+  const onRows = new Set<string>()
+  // A merged queued row stands for every send in its `sendIds`.
+  for (const m of messages) for (const id of rowSendIds(m.meta)) onRows.add(id)
+  // Only sends AFTER the newest one still on a row can be lost ones. An older
+  // record without a row was either followed by a send the user made since
+  // (a lost prompt recalled and resent, or simply moved past), or its row is
+  // just above the loaded window; offering it at the newest end would put a
+  // stale prompt ahead of the user's last one.
+  let start = 0
+  for (let i = attempts.length - 1; i >= 0; i--) {
+    if (onRows.has(attempts[i].sendId)) { start = i + 1; break }
+  }
+  for (const a of attempts.slice(start)) {
+    if (!a.text || a.text === out[out.length - 1]?.text) continue
+    out.push({ text: a.text, id: a.sendId })
   }
   return out
 }

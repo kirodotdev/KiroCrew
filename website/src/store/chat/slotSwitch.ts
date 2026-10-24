@@ -31,6 +31,7 @@ import { parkActiveTranscript, retainServerTotal, seedContextUsage, setPagingCur
 import { hydrateQueuedBubbles } from './queue'
 import { loadSlotActivity } from './activity'
 import { walkWindowBackTo } from './windowWalk'
+import { persistedSendIds, pruneDeliveredAttempts } from './sendAttempts'
 
 /** `switchSlot`'s argument. The plain-string spelling is the overwhelmingly
  *  common one; the object form exists for caller classes that must opt out of a
@@ -540,6 +541,8 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       if (typeof openArg === 'object' && openArg !== null && openArg.gesture === true) {
         state.userOpen = { key, seq: (state.userOpen?.seq ?? 0) + 1 }
       }
+      // A persisted row carrying a send's id proves that send was delivered.
+      pruneDeliveredAttempts(state, key, persistedSendIds(fetchedMessages))
       const reportedRunning = action.payload.running
       const running = historyReportsRunning(state, key, reportedRunning, action.payload)
       const endedTurnHistory = reportedRunning && !running

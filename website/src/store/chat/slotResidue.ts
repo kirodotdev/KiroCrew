@@ -47,6 +47,7 @@ const slotKeyedMaps = (state: ChatState) => [
   state.slotPaneNextBefore ?? {}, state.slotPaneLoadingOlder ?? {}, state.slotPaneOlderError ?? {},
   state.slotPaneRemovedQueueIds ?? {},
   state.thinkingOrphans,
+  state.sendAttempts ?? {},
 ].filter(Boolean)
 
 /** Every slot key that still has residue anywhere in chat state.
