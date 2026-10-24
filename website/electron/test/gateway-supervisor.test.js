@@ -39,6 +39,7 @@ test("module has no top-level Electron dependency and its factory accepts fakes"
     "syncTunnel",
     "onInstallDispatched",
     "onInstallFailed",
+    "isInstallingUpdate",
   ]);
 });
 
