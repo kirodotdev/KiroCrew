@@ -632,7 +632,45 @@ def load_security_policy(
     ceiling — this function is called more than once per boot with different
     arguments, so a tier the final ceiling never came from must not be able to abort
     boot.
+
+    **Every failure to load is a composition error.**  Any exception that is not
+    already a ``PlatformCompositionError`` -- a ``ValueError`` out of a schema
+    helper, a ``KeyError`` on an unexpected shape, an encoding error -- is raised
+    as one, naming the stage that failed.  Boot runs this loader under handlers
+    that re-raise a composition error and DEGRADE anything else to the ungoverned
+    default context, so a raw exception here would turn "the policy could not be
+    read" into "there is no policy": a fleet that set a ceiling or
+    ``require_policy_signature`` would boot open.  The home file beneath an
+    authority keeps its own skip-and-warn path (:func:`_subordinate_ceiling`
+    catches everything there), so this does not hand its owner a boot lever.
     """
+    stage = _LoadStage()
+    try:
+        return _load_security_policy(bundled_loader, stage)
+    except PlatformCompositionError:
+        raise
+    except Exception as exc:
+        raise PlatformCompositionError(
+            f"security policy could not be loaded ({stage.label}): "
+            f"{type(exc).__name__}: {exc}; refusing to boot ungoverned (fail-closed)"
+        ) from exc
+
+
+class _LoadStage:
+    """Which step of :func:`load_security_policy` is running, for its refusal text."""
+
+    __slots__ = ("label",)
+
+    def __init__(self) -> None:
+        self.label = "start"
+
+
+def _load_security_policy(
+    bundled_loader: Optional[Callable[[], Optional[Mapping[str, object]]]],
+    stage: _LoadStage,
+) -> Optional[GovernanceCeiling]:
+    """The body of :func:`load_security_policy`; *stage* names the step in flight."""
+    stage.label = "companion-bundled policy"
     # Resolved BEFORE the central tier because the fetch source may be declared by
     # a lower tier's ``distribution`` block, and the peek follows the same
     # precedence the tiers themselves do. The bundled resource is resolved even when
@@ -644,11 +682,13 @@ def load_security_policy(
         # ``_TierProcessState.last_bundled``.
         _process_state.last_bundled = bundled
 
+    stage.label = "home policy read"
     home_data, home_error, home_path = _read_home_policy()
     # Read BEFORE the central tier for the same reason the home tier is: the peek
     # below has to see this document's ``distribution`` block. Read once and passed
     # down to ``_subordinate_ceiling`` so the tier and the peek cannot see different
     # bytes.
+    stage.label = f"env policy read ({_POLICY_ENV})"
     env_data, env_path = _read_env_policy()
 
     # Tier 1 — the centrally distributed ceiling. Returns None when distribution is
@@ -671,6 +711,7 @@ def load_security_policy(
     # environment is tracked as a follow-up; it is a new IPC contract, not a change to
     # this ladder.
     central: Optional[GovernanceCeiling] = None
+    stage.label = "distribution declaration"
     # The peek follows the SAME order the tiers do, which is why the env document is
     # in the chain: it is the tier directly beneath central, above bundled and home.
     # Leaving it out meant an env-declared ``distribution.source`` was silently
@@ -700,11 +741,18 @@ def load_security_policy(
     ):
         from kiro_crew.platform.policy_distribution import load_distributed_policy
 
+        stage.label = "central policy"
         distributed = load_distributed_policy(declared)
         if distributed is not None:
             central = replace(distributed, tier=TIER_CENTRAL)
 
     # Tiers 2–4 — the subordinate, first present wins.
+    if env_path is not None:
+        stage.label = f"env policy at {env_path} (from {_POLICY_ENV})"
+    elif bundled is not None:
+        stage.label = "companion-bundled policy"
+    else:
+        stage.label = f"home policy at {home_path}"
     subordinate = _subordinate_ceiling(
         bundled,
         home_data,
@@ -715,6 +763,7 @@ def load_security_policy(
         beneath_authority=central is not None,
     )
 
+    stage.label = "tier composition"
     composed = compose_tier_ladder(central, subordinate)
     # Recorded even when None: a host with no policy at any tier has no fold for a
     # refresh to compare against, and a refresh cannot run there anyway.

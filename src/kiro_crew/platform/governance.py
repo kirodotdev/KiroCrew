@@ -1203,6 +1203,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _declared_distribution,
         _intersect_ceilings,
         _intersect_update_pins,
+        _load_security_policy,
+        _LoadStage,
         _policy_home_path,
         _process_state,
         _read_env_policy,
