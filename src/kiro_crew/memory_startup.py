@@ -19,7 +19,21 @@ from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, UnknownMemoryStore
 
 _lock = threading.RLock()
 _active: MemoryStartup | None = None
+# How long a message turn waits for in-flight preparation before answering that
+# recovery is still running (a transient, per-message grace, not a verdict).
 MEMORY_ADMISSION_WAIT_SECONDS = 30.0
+# The last-resort backstop on the preparation pass. The worker runs restore and
+# store open (SQLite, FAISS, file renames) with no step-level timeout, so a
+# wedged file lock or a stuck I/O op would otherwise leave the fence preparing
+# forever: every turn would then keep answering MEMORY_ADMISSION_WAIT_SECONDS of
+# "still running" with no terminal state and no way forward but a restart that
+# re-enters the same hang. This is NOT a performance budget for a legitimate
+# pass -- it is sized well above the realistic worst case (a large pending
+# restore plus legacy store/schedule repair plus a full index rebuild) so a slow
+# but progressing boot is never false-failed; it exists only to break an
+# otherwise-infinite wait. Past it the boot supervisor converts the hang into a
+# failed fence, so turns get an actionable terminal error instead.
+MEMORY_PREPARATION_DEADLINE_SECONDS = 1800.0
 
 
 class MemoryStartupUnavailable(UnknownMemoryStore):

@@ -25,7 +25,7 @@ from kiro_crew.memory_startup import (
     wait_for_memory_preparation,
 )
 from kiro_crew.slack.gateway import GatewayOrchestrator
-from kiro_crew.testing.wait import await_until, wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until, wait_until
 from kiro_crew.vector_memory import VectorMemoryStore
 
 env = _member_env
@@ -527,6 +527,57 @@ async def test_owner_shutdown_wins_while_restore_worker_remains_fenced(monkeypat
         gateway.vector_memory.init.assert_not_called()
         gateway.vector_memory.close.assert_called_once()
     finally:
+        release.set()
+        await asyncio.gather(supervisor, gateway._memory_startup_task, return_exceptions=True)
+        await asyncio.to_thread(gateway._stop_memory_startup)
+
+
+@pytest.mark.asyncio
+async def test_stuck_preparation_past_deadline_fails_instead_of_blocking_forever(monkeypatch):
+    # A wedged restore that never returns must not leave the fence preparing
+    # forever: past the outer deadline the supervisor flips it to a terminal
+    # failure, so turns get an actionable restart error rather than endlessly
+    # answering that recovery is still running.
+    gateway = _gateway(monkeypatch)
+    stopping = asyncio.Event()
+    monkeypatch.setattr("kiro_crew.slack.gateway.shutdown_event", stopping)
+    monkeypatch.setattr("kiro_crew.memory_startup.MEMORY_PREPARATION_DEADLINE_SECONDS", 0.05)
+    started = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def restore(**kwargs):
+        loop.call_soon_threadsafe(started.set)
+        # Block well past the (patched) deadline; the supervisor must not wait.
+        assert release.wait(5)
+        return {}
+
+    monkeypatch.setattr(memory_backup, "apply_pending_member_restores", restore)
+    supervisor = asyncio.create_task(gateway._wait_for_memory_preparation())
+    try:
+        await await_until(started)
+        startup = gateway._memory_startup
+        # The deadline elapses while the worker is still blocked in restore, so
+        # the fence flips to a terminal failure rather than staying preparing.
+        assert await async_wait_until(lambda: bool(startup.error), timeout=2)
+        assert "did not finish" in startup.error
+        assert not startup.ready
+        # The supervisor keeps the recovery shell reachable (like any failed
+        # pass) until the owner shuts down; it has not returned yet.
+        assert not supervisor.done()
+        # The user-facing paths now surface the terminal error with a restart
+        # directive, never the transient "still running" message again.
+        with pytest.raises(MemoryStartupUnavailable, match="restart the gateway"):
+            require_memory_ready()
+        with pytest.raises(MemoryStartupUnavailable, match="did not finish"):
+            await wait_for_memory_preparation(gateway._memory_startup_task)
+        # Owner shutdown lets the supervisor unwind; consumers never started.
+        stopping.set()
+        assert await await_until(supervisor, timeout=2) is False
+        gateway.vector_memory.init.assert_not_called()
+        gateway._auto_migrate_memory.assert_not_awaited()
+    finally:
+        stopping.set()
         release.set()
         await asyncio.gather(supervisor, gateway._memory_startup_task, return_exceptions=True)
         await asyncio.to_thread(gateway._stop_memory_startup)

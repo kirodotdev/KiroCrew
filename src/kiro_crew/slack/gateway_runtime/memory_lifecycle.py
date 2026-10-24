@@ -208,7 +208,12 @@ def _schedule_memory_preparation(self: GatewayOrchestrator) -> "asyncio.Task[Non
 
 async def _wait_for_memory_preparation(self: GatewayOrchestrator) -> bool:
     """Keep consumers dormant during recovery while observing owner shutdown."""
-    from kiro_crew.memory_startup import MemoryStartupUnavailable, require_memory_prepared
+    from kiro_crew.memory_startup import (
+        MEMORY_PREPARATION_DEADLINE_SECONDS,
+        MemoryStartupUnavailable,
+        memory_startup_preparing,
+        require_memory_prepared,
+    )
 
     task = self._schedule_memory_preparation()
     if task is None:
@@ -220,10 +225,41 @@ async def _wait_for_memory_preparation(self: GatewayOrchestrator) -> bool:
         )
     stopping = asyncio.create_task(shutdown_event.wait())
     try:
-        done, _ = await asyncio.wait({task, stopping}, return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait(
+            {task, stopping},
+            timeout=MEMORY_PREPARATION_DEADLINE_SECONDS,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
         if stopping in done or shutdown_event.is_set():
             startup.stop()
             return False
+        if task not in done:
+            # The preparation pass crossed its last-resort backstop with no
+            # result. The ceiling sits well above the realistic worst case (see
+            # MEMORY_PREPARATION_DEADLINE_SECONDS), so crossing it means a
+            # wedged file lock or a stuck store open that will not return on its
+            # own, not merely a slow pass. The worker thread cannot be
+            # cancelled, so flip the fence to a terminal failure instead of
+            # leaving it preparing forever — turns then get an actionable error
+            # naming a restart rather than endlessly answering that recovery is
+            # "still running". Keep the owner recovery shell reachable until the
+            # owner requests shutdown.
+            if memory_startup_preparing():
+                startup.fail(
+                    MemoryStartupUnavailable(
+                        "Memory preparation did not finish within "
+                        f"{int(MEMORY_PREPARATION_DEADLINE_SECONDS)}s and appears stuck "
+                        "(a restore or store open is not returning)."
+                    )
+                )
+                logger.error(
+                    "Memory preparation exceeded its %ss deadline; marking it failed so "
+                    "agent turns stop blocking. Dashboard recovery remains available.",
+                    int(MEMORY_PREPARATION_DEADLINE_SECONDS),
+                )
+                await stopping
+                startup.stop()
+                return False
         await task
         if startup.stopped:
             return False
