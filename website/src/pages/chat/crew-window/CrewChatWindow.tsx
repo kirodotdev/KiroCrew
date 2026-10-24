@@ -492,6 +492,10 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             // Mid-turn the composer offers steer or queue, as locally.
             canSteer={running}
             onSteer={() => send(true)}
+            // The prompt stash keeps a restored draft until the host confirms
+            // delivery. This peer's send reports no receipt, so a delivered
+            // draft would stay stashed and invite a duplicate send.
+            promptStash={false}
             isQueued={!!slotQ.data?.stopping}
             stopState={slotQ.data?.stop_state}
             stopDeclined={!!slotQ.data?.stop_declined}

@@ -179,6 +179,7 @@ interface ComposerDockViewProps {
   refusedPress: ReturnType<typeof useRefusedPress>['refusedPress']
   setRefusedPress: ReturnType<typeof useRefusedPress>['setRefusedPress']
   send: ReturnType<typeof useComposerSend>['send']
+  composerSend: ReturnType<typeof useComposerSend>['composerSend']
   pickModel: (modelName: string) => void
   setProject: (path: string) => Promise<void>
   switchAgent: (agentName: string, kind?: 'member' | 'template') => Promise<void>
@@ -266,7 +267,7 @@ export default function ComposerDockView({
   automationSnapshotFailed, setAutomationOpen, prefillHint, setPrefillHint, pasteSlice, pendingFiles, pendingSessions, resizedInfo, unstageSessionRef, uploading, agentBtnRect, anchorAgentBtn,
   projectPickerOpen, setProjectPickerOpen, anchorProjectBtn, projectBtnRect, pendingDirs, composerRef, composerVoiceOptions, isMac, cancelUpload, composerUploadFiles, dropTargetProps, handleCapture,
   handleFileOpen, handleOptimizeResult, search, tabsCtl, uploadCount, sendHeld, composerBandRef, scrollBottom, handleResumeSession, composerRootChange, composerUserEdit, followUpMulti,
-  followUpOptions, followUpPicked, followUpPickedRef, followUpSourceKey, toggleFollowUpOption, dashCfg, jevAutoConsented, refusedPress, setRefusedPress, send, pickModel, setProject, switchAgent,
+  followUpOptions, followUpPicked, followUpPickedRef, followUpSourceKey, toggleFollowUpOption, dashCfg, jevAutoConsented, refusedPress, setRefusedPress, send, composerSend, pickModel, setProject, switchAgent,
   currentSlot, activeFolderName, anchorSessionControl, openSessionControl, refreshSessionControlStatuses, sessionControlKey, sessionControlRect, sessionControls, setOpenSessionControl,
   activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, mentionEditRange, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
@@ -469,7 +470,7 @@ export default function ComposerDockView({
               // (typing, paste, undo, picker inserts), never for a parent-driven
               // seed -- so it is the signal that arms the prefill hint's expiry.
               onChange={composerUserEdit}
-              onSend={() => send()}
+              onSend={composerSend}
               terminalCommands={activeSlot && !currentSlot ? 'pending' : currentSlot?.executor === 'remote' ? 'remote' : 'local'}
               canSteer={composerBusy}
               onSteer={steer}

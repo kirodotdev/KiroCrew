@@ -611,7 +611,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     refusedPress, setRefusedPress, showRefusedPress,
   } = useRefusedPress()
   const {
-    send,
+    send, composerSend,
   } = useComposerSend({
     mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef,
     setInput, inputRef, sendingRef, pendingAgentRef, pendingAgentKindRef, setPendingAgent, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, setActionError, showActionError,
@@ -1075,7 +1075,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               uploadCount={uploadCount} sendHeld={sendHeld} composerBandRef={composerBandRef} scrollBottom={scrollBottom} handleResumeSession={handleResumeSession}
               composerRootChange={composerRootChange} composerUserEdit={composerUserEdit} followUpMulti={followUpMulti} followUpOptions={followUpOptions} followUpPicked={followUpPicked}
               followUpPickedRef={followUpPickedRef} followUpSourceKey={followUpSourceKey} toggleFollowUpOption={toggleFollowUpOption} dashCfg={dashCfg} jevAutoConsented={jevAutoConsented}
-              refusedPress={refusedPress} setRefusedPress={setRefusedPress} send={send} pickModel={pickModel} setProject={setProject} switchAgent={switchAgent} currentSlot={currentSlot}
+              refusedPress={refusedPress} setRefusedPress={setRefusedPress} send={send} composerSend={composerSend} pickModel={pickModel} setProject={setProject} switchAgent={switchAgent} currentSlot={currentSlot}
               activeFolderName={activeFolderName} anchorSessionControl={anchorSessionControl} openSessionControl={openSessionControl} refreshSessionControlStatuses={refreshSessionControlStatuses}
               sessionControlKey={sessionControlKey} sessionControlRect={sessionControlRect} sessionControls={sessionControls} setOpenSessionControl={setOpenSessionControl}
               activeAgentName={activeAgentName} attachmentAnnouncement={attachmentAnnouncement} clampOutOfTokens={clampOutOfTokens} handleAddToContext={handleAddToContext}

@@ -149,7 +149,7 @@ export function usePlusMenu({ pickers, value, onChange, composerControl, fileInp
   return { plusOpen, setPlusOpen, sketchOpen, setSketchOpen, plusWrapRef, plusBtnRef, plusMenuRef, plusRect, togglePlus, openTrigger }
 }
 
-export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect }: {
+export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect, stashMenuRows }: {
   plus: ReturnType<typeof usePlusMenu>
   onUploadFiles?: (files: File[]) => void
   uploading: boolean
@@ -167,6 +167,8 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
   collapseMenuRow: ReactNode
   typedCommandMenus: boolean
   onFileSelect: ChatInputProps['onFileSelect']
+  /** The prompt-stash rows the "+" menu hosts (null when the stash is off). */
+  stashMenuRows?: ReactNode
 }) {
   const { plusOpen, setPlusOpen, setSketchOpen, plusWrapRef, plusBtnRef, plusMenuRef, plusRect, togglePlus, openTrigger } = plus
   // The "+" trigger opens its menu on the mouse press (usePressActivation);
@@ -362,6 +364,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
                   </div>
                 </button>}
               </div>
+              {stashMenuRows}
             </div>
           </OverlayPortal>}
           </GuideRevealScope>

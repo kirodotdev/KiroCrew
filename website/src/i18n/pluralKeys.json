@@ -291,5 +291,15 @@
   "pages.settings.chatPanel.follow_default_done",
   "pages.settings.chatPanel.follow_default_model_chats",
   "pages.settings.chatPanel.follow_default_more",
-  "pages.membersPage.goals_heartbeat_per_day"
+  "pages.membersPage.goals_heartbeat_per_day",
+  "components.promptStash.badge",
+  "components.promptStash.stashed",
+  "components.promptStash.stashed_touch",
+  "components.promptStash.restored",
+  "components.promptStash.menu_restore_desc",
+  "components.promptStash.menu_restore_desc_touch",
+  "components.promptStash.clear_others",
+  "components.promptStash.clear_others_confirm",
+  "components.promptStash.cleared_others",
+  "components.promptStash.discarded"
 ]
