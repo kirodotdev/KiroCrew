@@ -4,7 +4,7 @@
  * drawn row gets, the tool-group approval routing, and the off-screen measurement
  * farm's rows (same wrappers, measured with the farm flag up only while it builds).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { isValidElement, type ReactElement, type ReactNode } from 'react'
@@ -12,11 +12,9 @@ import { isValidElement, type ReactElement, type ReactNode } from 'react'
 vi.mock('../api/client', () => ({
   api: {
     artifactSessionDocs: vi.fn(async () => ({ docs: [] })),
-    resolveApproval: vi.fn(async () => undefined),
   },
 }))
 
-import { api } from '../api/client'
 import { loadChatConfig } from './chat/ChatSettings'
 import type { DisplayItem, TurnItem } from './chat/types'
 import type { ChatMessage } from '../types'
@@ -37,7 +35,7 @@ function props(over: Partial<Props> = {}): Props {
     activeSlotRemoteBound: false, automationId: undefined, setAutomationOpen: fn(), handleArtifactOpen: vi.fn(async () => undefined),
     handleFileOpen: fn() as never, handleFolderOpen: fn(), handleOpenDiff: fn(), handleSubagentPanelOpen: fn(), sessionTitles: new Map(),
     handleFork: vi.fn(async () => undefined), highlightTs: null, selectSessionTab: fn(), linkPreviewsOn: false, socialShareOn: false,
-    connectionsUiOn: false, planTaskId: '', showRefusedPress: fn(), approve: vi.fn(async () => undefined), dismissApproval: fn(),
+    connectionsUiOn: false, planTaskId: '', showRefusedPress: fn(), decideRow: vi.fn(async () => undefined),
     revealAppInPanel: fn(), lastTextIdx: -1, regenerating: false, handleRegenerate: fn(), continuable: false, continuing: false,
     freshSession: { phase: 'idle' } as never, handleContinue: fn(), handleFreshSession: fn(), interrupted: false, openDefaultModelSetting: fn(),
     openKiroSignIn: fn(), openMemberCapabilities: fn(), openModelPickerFromError: fn(), openTurnLimitSetting: fn(), quoteWholeMessage: fn(),
@@ -62,7 +60,6 @@ const el = (node: ReactNode) => {
   return node as ReactElement<{ className?: string; style?: { maxWidth?: string }; children?: ReactNode; [k: string]: unknown }>
 }
 
-beforeEach(() => { vi.mocked(api.resolveApproval).mockClear() })
 
 describe('renderTurnItem', () => {
   it('draws nothing for a hidden tool completion and for a hidden invisible-only assistant row', () => {
@@ -88,22 +85,24 @@ describe('renderTurnItem', () => {
     expect(el(result.current.renderTurnItem(group, 0)).props.children).toBeNull()
   })
 
-  it('routes a group approval to the newest unresolved permission, else to the page approve', async () => {
+  it('decides a group approval through the newest unresolved permission row, and a group with none names no row', async () => {
     const { result, p } = render()
+    const pending = { approval_id: 'ap-1', mid: 'm-6' }
     const withId: TurnItem = {
       kind: 'group', startIdx: 4,
-      msgs: [msg('tool', '🔧 a', 't5'), msg('permission', 'p', 't6', { approval_id: 'ap-1' })],
+      msgs: [msg('tool', '🔧 a', 't5'), msg('permission', 'p', 't6', pending)],
     }
     const group = el(el(result.current.renderTurnItem(withId, 0)).props.children)
     expect(group.props.pendingPermCount).toBe(1)
     expect(group.props.count).toBe(1)
     await (group.props.onApprove as (a: string) => Promise<void>)('approve')
-    expect(api.resolveApproval).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(api.resolveApproval).mock.calls[0][0]).toBe('ap-1')
-    expect(p.dismissApproval).toHaveBeenCalledWith('ap-1')
+    // Bound to the row the group shows, never a bare id or a bare slot.
+    expect(p.decideRow).toHaveBeenCalledTimes(1)
+    expect(p.decideRow).toHaveBeenCalledWith(pending, 'approve')
 
     const noId: TurnItem = { kind: 'group', startIdx: 6, msgs: [msg('tool', '🔧 b', 't7')] }
-    expect(el(el(result.current.renderTurnItem(noId, 0)).props.children).props.onApprove).toBe(p.approve)
+    await (el(el(result.current.renderTurnItem(noId, 0)).props.children).props.onApprove as (a: string) => Promise<void>)('approve')
+    expect(p.decideRow).toHaveBeenLastCalledWith(undefined, 'approve')
   })
 })
 
@@ -115,7 +114,7 @@ describe('renderFarmItem', () => {
     { kind: 'single', msg: msg('assistant', 'a', 'f4'), idx: 3 },
   ]
 
-  it('mirrors the transcript row wrappers, with default disclosure, and lowers the farm flag after each build', () => {
+  it('mirrors the transcript row wrappers, with default disclosure, and lowers the farm flag after each build', async () => {
     const farmPassRef = { current: false }
     const { result, p } = render({ renderedDisplayItems: items, farmPassRef })
     expect(result.current.renderFarmItem(99)).toBeNull()
@@ -130,7 +129,9 @@ describe('renderFarmItem', () => {
 
     const group = el(el(result.current.renderFarmItem(2)).props.children)
     expect(group.props.disclosureKey).toBe('farm-ctg-2')
-    expect(group.props.onApprove).toBe(p.approve)
+    // The farm replica names no row, so a press on it could only be refused.
+    await (group.props.onApprove as (a: string) => Promise<void>)('approve')
+    expect(p.decideRow).toHaveBeenCalledWith(undefined, 'approve')
     expect(group.props.activityOpen).toBe(false)
 
     const single = el(result.current.renderFarmItem(3))

@@ -28,7 +28,7 @@ import { mkdirSync } from 'node:fs'
 
 const BASE = process.argv[2] || 'http://127.0.0.1:6824'
 const OUT = process.argv[3] || '../temp-screenshots/spawn-approval-gone'
-const EXPECTED = 'This approval has expired or was already decided'
+const EXPECTED = 'This approval expired, was already decided'
 const LIVENESS_FAILED = "Couldn't check whether it started. Retrying…"
 // How many alerts on the page carry the refusal sentence; the press surface owns it.
 const goneAlerts = async (page) => (await page.getByRole('alert').allInnerTexts()).filter(n => n.includes(EXPECTED)).length

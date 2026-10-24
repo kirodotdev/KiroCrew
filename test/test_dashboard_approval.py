@@ -41,6 +41,7 @@ from kiro_crew.dashboard.state import (
     DashboardState,
     _ChatSlot,
     build_refusal_recovery_prompt,
+    row_mid,
 )
 from kiro_crew.dashboard.turn_dispatch import format_approval_no_budget_card
 from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, ScriptHookResult, ToolHookResult
@@ -1261,7 +1262,15 @@ class TestHostPreDeclinedRowIsBornResolved:
             for i, t in enumerate(timeline)
             if t[:2] == ("ws", "approval_resolved") and t[2].get("id") == "req-1"
         )
-        assert timeline[retire_at][2] == {"id": "req-1", "approved": False, "slot": slot.key}
+        (permission_row,) = [m for m in slot.messages if m.get("role") == "permission"]
+        assert timeline[retire_at][2] == {
+            "id": "req-1",
+            "approved": False,
+            "slot": slot.key,
+            # The runner's own request, named by the row it wrote.
+            "origin": "native",
+            "mid": row_mid(permission_row),
+        }
         denied_at = next(i for i, t in enumerate(timeline) if t[:2] == ("row", "tool"))
         assert retire_at < denied_at, (
             "the failed post did not retire the card before the turn moved on to "
@@ -1335,9 +1344,10 @@ class TestHostPreDeclinedRowIsBornResolved:
             m.get("role") == "error" and m.get("content") == no_budget_card for m in slot.messages
         ), "the no-budget card was rendered for a prompt the user had already approved"
         retire = [t for t in timeline if t[:2] == ("ws", "approval_resolved")]
-        assert retire == [
-            ("ws", "approval_resolved", {"id": "req-1", "approved": True, "slot": slot.key})
-        ]
+        (row,) = [m for m in slot.messages if m.get("role") == "permission"]
+        # The runner's own request, named by the row it wrote.
+        resolved = {"id": "req-1", "approved": True, "slot": slot.key, "origin": "native"}
+        assert retire == [("ws", "approval_resolved", {**resolved, "mid": row_mid(row)})]
         (stored,) = [m for m in slot.messages if m.get("role") == "permission"]
         assert json.loads(stored["cls"])["resolved"] == "approved"
         # The posted Slack card is cleaned up now that the decision is in.
@@ -1391,9 +1401,10 @@ class TestHostPreDeclinedRowIsBornResolved:
         client.approve_tool.assert_awaited_once_with("req-1")
         client.reject_tool.assert_not_awaited()
         retire = [t for t in timeline if t[:2] == ("ws", "approval_resolved")]
-        assert retire == [
-            ("ws", "approval_resolved", {"id": "req-1", "approved": True, "slot": slot.key})
-        ]
+        (row,) = [m for m in slot.messages if m.get("role") == "permission"]
+        # The runner's own request, named by the row it wrote.
+        resolved = {"id": "req-1", "approved": True, "slot": slot.key, "origin": "native"}
+        assert retire == [("ws", "approval_resolved", {**resolved, "mid": row_mid(row)})]
         (stored,) = [m for m in slot.messages if m.get("role") == "permission"]
         assert json.loads(stored["cls"])["resolved"] == "approved"
         # Nothing was posted, so nothing is cleaned up on the Slack side.

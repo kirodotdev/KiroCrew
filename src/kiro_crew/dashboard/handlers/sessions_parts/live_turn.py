@@ -136,19 +136,37 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
         # showed: the request id is minted by the caller and can recur in the same
         # slot, so a card left up from an expired record would otherwise resolve
         # the request that replaced it.
-        slot = request.query.get("slot", "")
+        # ``slot`` must be present but may be empty: a coordinator approval
+        # raised with no owning slot (a cron job's) is bound by its instance
+        # alone, and the record's own empty slot must still match.
+        slot = request.query.get("slot")
         instance = request.query.get("instance", "")
-        if request.query["origin"] != "coordinator" or not slot or not instance:
+        if request.query["origin"] != "coordinator" or slot is None or not instance:
             return web.json_response(
                 {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
             )
+        if not slot:
+            # Imported here: chat_handlers imports this package at module scope.
+            from kiro_crew.dashboard.chat_handlers import bare_approval_decide_allowed
+
+            # Before the empty-slot target existed, a slotless record could be
+            # decided only by id, from the owner's browser session. The target
+            # names the request; it does not widen who may decide it.
+            if not bare_approval_decide_allowed(request):
+                return web.json_response(
+                    {
+                        "error": "only the dashboard owner may decide an approval with no session",
+                        "code": "approval_owner_required",
+                    },
+                    status=403,
+                )
         pending = state._pending_approvals.get(approval_id)
         # No await between checking the record and resolving its state-only future.
+        current = (
+            pending.get("instance") if pending and (pending.get("slot") or "") == slot else None
+        )
         ok = bool(
-            pending
-            and pending.get("slot") == slot
-            and pending.get("instance") == instance
-            and state.resolve_state_approval(approval_id, action == "approve")
+            current == instance and state.resolve_state_approval(approval_id, action == "approve")
         )
     else:
         # Imported here: chat_handlers imports this package at module scope.

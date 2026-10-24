@@ -965,6 +965,24 @@ def with_allowed_links_restored(m: dict) -> dict:
     return {**m, "content": new_text, "meta": new_meta}
 
 
+def _carry_row_mid(meta: dict, msg: dict) -> dict:
+    """*meta* (parsed from a row's ``cls``) with the row's own ``mid`` kept.
+
+    A row whose structured fields live in ``cls`` (a permission row) keeps its
+    delivery identity, ``mid``, in the stored ``meta`` dict instead. The live
+    ``chat_message`` frame merges the two, so a card rendered live carries the
+    mid a native decide is bound by; a reader that rebuilt meta from ``cls``
+    alone dropped it, and every card rendered after a reload (or over the
+    stream) then named no request and refused its own presses. Only the mid is
+    carried: the rest of the stored meta keeps its own handling on each path.
+    """
+    stored = msg.get("meta")
+    mid = stored.get("mid") if isinstance(stored, dict) else None
+    if isinstance(mid, str) and mid and "mid" not in meta:
+        return {**meta, "mid": mid}
+    return meta
+
+
 def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child: str) -> list[dict]:
     """:func:`_prepare_messages` inside its allowed-host scope."""
     out: list[dict] = []
@@ -1030,11 +1048,8 @@ def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child:
             # stamped by _ChatSlot.append) is not in cls, and its approval is
             # bound to that id (register_approval). Keep it for permission rows
             # only, so every other row's wire meta stays exactly as before.
-            stored = m.get("meta")
-            stored_mid = stored.get("mid") if isinstance(stored, dict) else None
-            keep_mid = isinstance(stored_mid, str) and stored_mid and "mid" not in meta
-            if role == "permission" and keep_mid:
-                meta = {**meta, "mid": stored_mid}
+            if role == "permission":
+                meta = _carry_row_mid(meta, m)
             msg_out["meta"] = _expire_dead_child_oauth_meta(
                 role, _redact_meta_for_role(role, meta), live_child
             )

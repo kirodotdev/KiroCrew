@@ -186,6 +186,7 @@ from kiro_crew.dashboard.chat_api.session_relaunch import (  # noqa: F401
     reload_slot_session,
 )
 from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
+    _STRICT_NATIVE_ACTIONS,
     _approval_target_required,
     _deny_approval_mode,
     _deny_trust_pattern,
@@ -425,6 +426,7 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     read_bounded_json,
 )
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request  # noqa: F401
+from kiro_crew.dashboard.interaction_coordinator import native_resolution_target  # noqa: F401
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal  # noqa: F401
 from kiro_crew.dashboard.request_priority import owner_start_priority  # noqa: F401
 from kiro_crew.dashboard.session_folders import (  # noqa: F401

@@ -138,7 +138,7 @@ const API_KEY_ORDER = [
   'instancesCapabilities', 'instancesApprovalState', 'instancesVersions', 'instanceChatSlots', 'crewPeerGet', 'crewPeerPost', 'sessionDetail', 'sessionMeta', 'deleteSession',
   'clearSessions', 'autocomplete', 'spawnList', 'spawn',
   'spawnStatus', 'spawnDelete', 'spawnStopAll', 'spawnRetry',
-  'approvals', 'resolveApproval', 'pendingQuestions', 'answerQuestion',
+  'approvals', 'decideApproval', 'pendingQuestions', 'answerQuestion',
   'dismissQuestionCard', 'logLevel', 'setLogLevel', 'taskRunnerStatus',
   'startTaskRunner', 'cancelTaskRunner', 'pauseTaskRun', 'deleteTaskRun',
   'retryTaskRun', 'renameTaskRun', 'updateTask', 'taskRunToChat',

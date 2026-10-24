@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         post_linked_approval,
         redact_credentials,
         redact_exfiltration_urls,
+        row_mid,
         sel,
         tool_approval_timeout_secs,
     )
@@ -616,6 +617,10 @@ async def _on_permission_prompt(
             only_if_pending=True,
         ):
             slot._dirty = True
+            # Imported here: the runner does not bind this helper.
+            from kiro_crew.dashboard.interaction_coordinator import native_resolution_target
+
+            _resolved_mid = row_mid(permission_row)
             state.broadcast_ws(
                 "approval_resolved",
                 {
@@ -623,6 +628,8 @@ async def _on_permission_prompt(
                     "approved": _approved,
                     # Keys the frame for the slot-scoped WS gate.
                     "slot": slot.key,
+                    # The runner's own request, named by its row.
+                    **native_resolution_target(_resolved_mid),
                 },
             )
             state.push_slots_update()

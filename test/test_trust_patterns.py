@@ -9,9 +9,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from trust_patterns_helpers import (
+    _extract_base_command,
+    _extract_full_command,
+    _matches_trusted_pattern,
+)
 
 from kiro_crew import platform_compat
-from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.dashboard.state import DashboardState, _ChatSlot, row_mid
 from kiro_crew.history import ConversationLog
 from kiro_crew.trust_patterns import (
     approval_command,
@@ -28,31 +33,6 @@ from kiro_crew.trust_patterns import (
     redirect_outside_grant,
 )
 from kiro_crew.trust_patterns import split_command_segments as _canonical_split_command_segments
-
-
-def _legacy_title_command(value: str) -> str:
-    """Adapt old title-shaped fixtures into canonical command input.
-
-    Production helpers do not strip display prefixes.  Most segmentation
-    tests below predate structured ``tool_input`` and still use title-shaped
-    fixtures; explicit boundary regressions exercise the raw helpers directly.
-    """
-    for prefix in ("Running: ", "Reading "):
-        if value.startswith(prefix):
-            return value[len(prefix) :]
-    return value
-
-
-def _extract_base_command(value: str) -> str:
-    return _canonical_extract_base_command(_legacy_title_command(value))
-
-
-def _extract_full_command(value: str) -> str:
-    return _canonical_extract_full_command(_legacy_title_command(value))
-
-
-def _matches_trusted_pattern(value: str, patterns: set[str]) -> str | None:
-    return _canonical_matches_trusted_pattern(_legacy_title_command(value), patterns)
 
 
 def _make_state(tmp_path):
@@ -1200,6 +1180,100 @@ class TestApproveHandlerTrustCommand:
         assert fut.result() == "approved"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("action", "extra"),
+        [
+            ("approved", {}),
+            ("trust", {}),
+            ("trust_reads", {}),
+            ("trust_command", {"pattern": "ls /tmp", "ttl_seconds": 600}),
+            ("trust_base", {"pattern": "ls *", "ttl_seconds": 600}),
+        ],
+    )
+    async def test_strict_native_decide_reaches_the_owner_slot_sharing_the_session(
+        self, tmp_path, action, extra
+    ):
+        """The dashboard's strict native decide (origin + request_mid) finds the
+        owner slot the same way the bare-id route does: a slot sharing the
+        addressed slot's session identity. The row's mid is checked on that
+        owner, so a linked session's approval is still decided from its card.
+
+        Every trust verb the composer sends takes this path, so each one is
+        pinned: a stale mid grants nothing, and the live mid grants exactly
+        the verb's own scope."""
+        state = _make_state(tmp_path)
+        set_policy = MagicMock()
+        state.sessions.set_approval_policy = set_policy
+        addressed = _ChatSlot(key="slot-1")
+        state._slots["slot-1"] = addressed
+        owner = _ChatSlot(key="slot-2")
+        owner.linked_session_key = "dashboard:slot-1"
+        state._slots["slot-2"] = owner
+        unrelated = _ChatSlot(key="slot-3")
+        state._slots["slot-3"] = unrelated
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[str] = loop.create_future()
+        row = owner.append(
+            "permission", "Running: ls /tmp", _trust_meta("req-801", "ls /tmp", "ls")
+        )
+        owner.register_approval("req-801", fut, row)
+        foreign: asyncio.Future[str] = loop.create_future()
+        unrelated._approval_futures["req-801"] = foreign
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            stale = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={
+                    "action": action,
+                    "request_id": "req-801",
+                    "origin": "native",
+                    "request_mid": "not-this-row",
+                    **extra,
+                },
+            )
+            assert stale.status == 404
+            assert not fut.done()
+            # A stale card grants nothing anywhere.
+            for s in (owner, addressed):
+                assert s._trust is False
+                assert s._trust_reads is False
+                assert not s._trusted_patterns
+                assert not s._trusted_pattern_deadlines
+            set_policy.assert_not_called()
+            resp = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={
+                    "action": action,
+                    "request_id": "req-801",
+                    "origin": "native",
+                    "request_mid": row_mid(row),
+                    **extra,
+                },
+            )
+            assert resp.status == 200
+        assert fut.result() == ("approved_trust_reads" if action == "trust_reads" else "approved")
+        assert owner._trust is (action == "trust")
+        # Trust-reads is applied by the session loop once it consumes the
+        # ``approved_trust_reads`` result; nothing else may grant it.
+        assert owner._trust_reads is False
+        # Timed grants (``ttl_seconds``) live in the deadline store only.
+        assert not owner._trusted_patterns
+        granted = set(owner._trusted_pattern_deadlines)
+        if action == "trust_command":
+            assert granted == {"ls /tmp"}
+        elif action == "trust_base":
+            assert granted == set(base_trust_patterns("ls"))
+        else:
+            assert not granted
+        assert addressed._trust is False
+        assert addressed._trust_reads is False
+        assert not addressed._trusted_patterns
+        assert not addressed._trusted_pattern_deadlines
+        # A slot under a different session identity is never the owner.
+        assert not foreign.done()
+
+    @pytest.mark.asyncio
     async def test_trust_policy_keyed_by_linked_session_not_slot_key(self, tmp_path):
         """A linked cron/workflow slot runs under its ``linked_session_key``, so
         'Trust tools' must write the approval policy under THAT key — not
@@ -1457,6 +1531,38 @@ class TestApproveHandlerTrustCommand:
 
         assert state_fut.result() is True
         assert slot._trust is False
+        set_policy.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_state_level_future_trust_reads_approves_once_and_grants_nothing(self, tmp_path):
+        """Trust-reads on a coordinator (state-level) approval is a plain approve.
+
+        The other Trust tiers are refused above; this one resolves the state
+        future as an ordinary approval and leaves no standing grant on the slot,
+        because the state path returns before the slot's trust flags are set.
+        A coordinator approval therefore has no Trust tier that grants anything.
+        """
+        state = _make_state(tmp_path)
+        set_policy = MagicMock()
+        state.sessions.set_approval_policy = set_policy
+        slot = _ChatSlot(key="slot-1")
+        state._slots["slot-1"] = slot
+        loop = asyncio.get_running_loop()
+        state_fut: asyncio.Future[bool] = loop.create_future()
+        state._approval_futures["req-state-reads"] = state_fut
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={"action": "trust_reads", "request_id": "req-state-reads"},
+            )
+            assert resp.status == 200
+
+        assert state_fut.result() is True
+        assert slot._trust_reads is False
+        assert slot._trust is False
+        assert not slot._trusted_patterns
         set_policy.assert_not_called()
 
 
@@ -1717,248 +1823,3 @@ class TestQuotedRedirectIsText:
         with patch.object(platform_compat, "IS_WINDOWS", False):
             assert redirect_outside_grant(command, {"jq '.a > 1' *"}) is True
             assert redirect_outside_grant(command, {"jq '.a > 1' * > out"}) is False
-
-
-class TestMatchesTrustedPatternPiped:
-    """Piped commands: each segment checked independently, ALL must match."""
-
-    def test_all_segments_match(self):
-        patterns = {"cat /etc/*", "grep /Users/a*"}
-        cmd = "Running: cat /etc/hosts | grep /Users/alice"
-        assert _matches_trusted_pattern(cmd, patterns) is not None
-
-    def test_one_segment_fails(self):
-        patterns = {"cat /etc/*", "grep /Users/a*"}
-        cmd = "Running: cat /etc/hosts | grep /Users/bob"
-        assert _matches_trusted_pattern(cmd, patterns) is None
-
-    def test_first_segment_fails(self):
-        patterns = {"cat /etc/*", "grep /Users/a*"}
-        cmd = "Running: cat /var/log/syslog | grep /Users/alice"
-        assert _matches_trusted_pattern(cmd, patterns) is None
-
-    def test_both_segments_fail(self):
-        patterns = {"cat /etc/*", "grep /Users/a*"}
-        cmd = "Running: cat /var/log/syslog | grep /Users/bob"
-        assert _matches_trusted_pattern(cmd, patterns) is None
-
-    def test_single_command_still_works(self):
-        patterns = {"cat /etc/*"}
-        cmd = "Running: cat /etc/hosts"
-        assert _matches_trusted_pattern(cmd, patterns) == "cat /etc/*"
-
-    def test_glob_patterns_per_segment(self):
-        patterns = {"cat *", "wc *"}
-        cmd = "Running: cat /anything | wc -l"
-        assert _matches_trusted_pattern(cmd, patterns) is not None
-
-    def test_glob_one_side_missing(self):
-        patterns = {"cat *"}
-        cmd = "Running: cat /etc/hosts | wc -l"
-        assert _matches_trusted_pattern(cmd, patterns) is None
-
-    def test_three_segments_all_match(self):
-        patterns = {"cat *", "grep *", "wc *"}
-        cmd = "Running: cat /etc/hosts | grep foo | wc -l"
-        assert _matches_trusted_pattern(cmd, patterns) is not None
-
-    def test_three_segments_one_fails(self):
-        patterns = {"cat *", "grep *"}
-        cmd = "Running: cat /etc/hosts | grep foo | wc -l"
-        assert _matches_trusted_pattern(cmd, patterns) is None
-
-    def test_and_chain_all_match(self):
-        patterns = {"make *", "echo *"}
-        cmd = "Running: make build && echo done"
-        assert _matches_trusted_pattern(cmd, patterns) is not None
-
-    def test_and_chain_one_fails(self):
-        patterns = {"make *"}
-        cmd = "Running: make build && rm -rf dist"
-        assert _matches_trusted_pattern(cmd, patterns) is None
-
-    def test_semicolon_chain(self):
-        patterns = {"mkdir *", "cp *"}
-        cmd = "Running: mkdir /tmp/out ; cp file.txt /tmp/out/"
-        assert _matches_trusted_pattern(cmd, patterns) is not None
-
-    def test_independent_patterns_per_segment(self):
-        # cat trusted for .z* paths, grep trusted for /Users/a* paths
-        patterns = {"cat /Users/alice/.z*", "grep /Users/a*"}
-        good = "Running: cat /Users/alice/.zshrc | grep /Users/alice"
-        bad = "Running: cat /Users/alice/.zshrc | grep /Users/bob"
-        assert _matches_trusted_pattern(good, patterns) is not None
-        assert _matches_trusted_pattern(bad, patterns) is None
-
-    def test_background_operator_split(self):
-        patterns = {"cat *"}
-        cmd = "Running: cat foo & rm -rf /"
-        assert _matches_trusted_pattern(cmd, patterns) is None
-
-    def test_background_operator_both_match(self):
-        patterns = {"cat *", "echo *"}
-        cmd = "Running: cat foo & echo done"
-        assert _matches_trusted_pattern(cmd, patterns) is not None
-
-    def test_redirect_ampersand_not_split(self):
-        patterns = {"ls *", "grep *"}
-        cmd = "Running: ls /tmp 2>&1 | grep foo"
-        assert _matches_trusted_pattern(cmd, patterns) is not None
-
-    def test_redirect_stderr_to_file_not_split(self):
-        patterns = {"ls *"}
-        cmd = "Running: ls /tmp 2>&1"
-        assert _matches_trusted_pattern(cmd, patterns) == "ls *"
-
-    def test_redirect_1_to_2_not_split(self):
-        patterns = {"echo *"}
-        cmd = "Running: echo error 1>&2"
-        assert _matches_trusted_pattern(cmd, patterns) == "echo *"
-
-    def test_background_no_space_after(self):
-        patterns = {"cat *"}
-        cmd = "Running: cat foo &rm -rf /"
-        assert _matches_trusted_pattern(cmd, patterns) is None
-
-    def test_background_no_space_disown(self):
-        patterns = {"cat *"}
-        cmd = "Running: cat foo &disown"
-        assert _matches_trusted_pattern(cmd, patterns) is None
-
-    def test_redirect_then_background(self):
-        patterns = {"cat *"}
-        cmd = "Running: cat foo 2>&1& rm -rf /"
-        assert _matches_trusted_pattern(cmd, patterns) is None
-
-    def test_redirect_stdout_stderr_not_split(self):
-        patterns = {"ls *"}
-        cmd = "Running: ls /tmp &> /dev/null"
-        assert _matches_trusted_pattern(cmd, patterns) == "ls *"
-
-    def test_redirect_append_both_not_split(self):
-        """``&>>`` stays inside its segment, and that segment writes a file.
-
-        The matcher still reads the line as one ``ls`` segment; the write it
-        carries is what the grant does not cover.
-        """
-        patterns = {"ls *"}
-        cmd = "Running: ls /tmp &>> /var/log/out"
-        assert _matches_trusted_pattern(cmd, patterns) == "ls *"
-        assert redirect_outside_grant(_legacy_title_command(cmd), patterns) is True
-
-    def test_newline_split(self):
-        patterns = {"ls *"}
-        cmd = "Running: ls /tmp\nrm -rf /"
-        assert _matches_trusted_pattern(cmd, patterns) is None
-
-    def test_newline_both_match(self):
-        patterns = {"ls *", "echo *"}
-        cmd = "Running: ls /tmp\necho done"
-        assert _matches_trusted_pattern(cmd, patterns) is not None
-
-    def test_returns_matched_patterns_for_audit(self):
-        patterns = {"cat *", "grep *"}
-        cmd = "Running: cat /etc/hosts | grep foo"
-        result = _matches_trusted_pattern(cmd, patterns)
-        assert result is not None
-        assert "cat *" in result
-        assert "grep *" in result
-
-    def test_command_substitution_dollar_paren_denied(self):
-        patterns = {"cat *"}
-        cmd = "Running: cat $(echo /etc/passwd)"
-        assert _matches_trusted_pattern(cmd, patterns) is None
-
-    def test_command_substitution_backtick_denied(self):
-        patterns = {"cat *"}
-        cmd = "Running: cat `echo /etc/passwd`"
-        assert _matches_trusted_pattern(cmd, patterns) is None
-
-    def test_process_substitution_denied(self):
-        patterns = {"diff *"}
-        cmd = "Running: diff <(cat /etc/hosts) <(cat /tmp/hosts)"
-        assert _matches_trusted_pattern(cmd, patterns) is None
-
-    def test_wildcard_star_matches_all_segments(self):
-        patterns = {"*"}
-        cmd = "Running: cat /etc/hosts | grep foo | wc -l"
-        assert _matches_trusted_pattern(cmd, patterns) is not None
-
-
-class TestMatchesTrustedPatternQuoted:
-    """Separators inside quotes must NOT split the command (fail-closed regression)."""
-
-    def test_quoted_pipe_not_split(self):
-        # `grep "a|b"` is a single trusted command; the quoted | must not be
-        # treated as a pipe boundary that mis-segments and denies it.
-        patterns = {'grep "a|b" *'}
-        assert _matches_trusted_pattern('Running: grep "a|b" file.txt', patterns) is not None
-
-    def test_quoted_pipe_with_real_pipe(self):
-        # Quoted | stays literal; the real unquoted | still splits — both
-        # segments must match.
-        patterns = {'grep "x|y" *', "wc *"}
-        cmd = 'Running: grep "x|y" f | wc -l'
-        assert _matches_trusted_pattern(cmd, patterns) is not None
-
-    def test_quoted_ampersand_not_background_split(self):
-        patterns = {'echo "a&b" *'}
-        assert _matches_trusted_pattern('Running: echo "a&b" done', patterns) is not None
-
-    def test_quoted_semicolon_not_split(self):
-        patterns = {"echo *"}
-        # The quoted ; is part of echo's arg; single segment, matches echo.
-        assert _matches_trusted_pattern('Running: echo "a;b"', patterns) is not None
-
-    def test_real_pipe_outside_quotes_still_requires_all_segments(self):
-        # Regression guard: quote-masking must NOT weaken the per-segment rule
-        # for genuinely unquoted pipes — an unmatched segment still denies.
-        patterns = {"cat /etc/*"}
-        assert _matches_trusted_pattern("Running: cat /etc/hosts | rm -rf /", patterns) is None
-
-
-class TestSplitterPlaceholderForgery:
-    """A NUL byte in the title forges the splitter's own placeholders.
-
-    ``_split_command_segments`` masks redirects as ``\\x00REDIR\\x00`` and
-    quoted separators as ``\\x00SEP{n}\\x00``. Both schemes assume the input
-    carries no NUL of its own. A model-authored title (or a ``tool_input``
-    command) containing one breaks that assumption two ways: the
-    redirect-restore loop draws more placeholders than it masked and raises
-    ``StopIteration`` — an unhandled exception on the approval path, which
-    aborts the chat turn — and a forged ``\\x00SEP{n}\\x00`` restores to a
-    separator the command never contained. A NUL can reach here because JSON
-    encodes it as ``\\u0000`` and Python decodes that to a real ``\\x00``; it is
-    never legitimate in a command, since ``execve`` cannot carry it in an
-    argument. So every path must deny rather than crash.
-    """
-
-    def test_forged_redirect_placeholder_denies_instead_of_crashing(self):
-        cmd = "Running: echo hi \x00REDIR\x00 there"
-        # Must not raise StopIteration; must not be trusted.
-        assert _matches_trusted_pattern(cmd, {"echo *"}) is None
-        assert _matches_trusted_pattern(cmd, {"*"}) is None
-
-    def test_forged_separator_placeholder_denies(self):
-        cmd = "Running: echo hi \x00SEP0\x00 there"
-        assert _matches_trusted_pattern(cmd, {"echo *"}) is None
-
-    def test_bare_nul_anywhere_denies(self):
-        assert _matches_trusted_pattern("Running: cat /etc/hosts\x00", {"cat *"}) is None
-
-    def test_grant_path_denies_forged_placeholders(self):
-        assert _extract_base_command("Running: echo hi \x00REDIR\x00 there") == ""
-        assert _extract_base_command("Running: echo hi \x00SEP0\x00 there") == ""
-
-    def test_grant_path_does_not_offer_forged_extra_segments(self):
-        # A forged SEP placeholder must not restore into a separator that
-        # widens the offered trust set beyond the first binary.
-        assert _extract_base_command("Running: echo ok\x00SEP0\x00 rm -rf /") == ""
-
-    def test_nul_free_commands_are_unaffected(self):
-        # Guard against the deny becoming over-broad: normal commands, quoted
-        # separators and real redirects all still behave as before.
-        assert _matches_trusted_pattern("Running: cat /etc/hosts", {"cat *"}) is not None
-        assert _matches_trusted_pattern('Running: grep "a|b" f', {'grep "a|b" *'}) is not None
-        assert _matches_trusted_pattern("Running: ls 2>&1", {"ls *"}) is not None
-        assert _extract_base_command("Running: cat f | wc -l") == "cat,wc"

@@ -580,7 +580,7 @@ describe('useWebSocket frame router', () => {
       const { ws } = mount()
       act(() => {
         ws.simulateMessage({ type: 'notification', data: { kind: 'info', title: 'Boom', ts: '1' } })
-        ws.simulateMessage({ type: 'approval', data: { id: 'ap-boom', slot: ACTIVE, tool: 'execute_bash', ts: 2 } })
+        ws.simulateMessage({ type: 'approval', data: { id: 'ap-boom', instance: 'inst-ap-boom', slot: ACTIVE, tool: 'execute_bash', ts: 2 } })
         ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } })
       })
       // Each arm swallowed the listener failure and completed its real work.
