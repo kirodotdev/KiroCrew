@@ -34,8 +34,8 @@ from kiro_crew.telegram import renderer as tg_renderer
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# A fake AWS access key id: matches (?:AKIA|ASIA)[A-Z0-9]{16}, asserted absent.
-_TOKEN = "AKIA" + "STRADDLE0123456A"
+# A fake GitLab-shaped token: matches glpat-[A-Za-z0-9_-]{16,}, asserted absent.
+_TOKEN = "glpat-" + "STRADDLE0123456A"
 
 
 class TestTelegramOptionLabelStraddle:

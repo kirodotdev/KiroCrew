@@ -71,8 +71,10 @@ def test_minimum_length_padded_base64_is_redacted() -> None:
         assert _redacted(_url("d=" + blob + "&lms=LEARN"))
 
 
-def test_aws_key_shaped_value_is_redacted() -> None:
-    assert _redacted(_url("k=" + "AKIA" + "IOSFODNN7EXAMPLE"))
+def test_a_key_id_in_a_url_is_not_redacted() -> None:
+    """An AWS access key ID is Identifier tier: a key ID alone is not grounds to redact."""
+    url = _url("k=" + "AKIA" + "IOSFODNN7EXAMPLE")
+    assert not _redacted(url)
 
 
 def test_heavy_percent_encoding_is_redacted() -> None:

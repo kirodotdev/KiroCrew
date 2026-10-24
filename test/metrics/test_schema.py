@@ -71,7 +71,7 @@ class TestValidateAttrs:
     def test_credential_shaped_value_redacted(self):
         """High-entropy / credential-shaped values MUST be redacted."""
         attrs = {
-            "api_key": "AKIAIOSFODNN7EXAMPLE1",  # AWS key pattern
+            "api_key": "glpat-IOSFODNN7EXAMPLE1",  # token pattern
             "safe_enum": "dashboard",
         }
         result = validate_attrs(attrs)
@@ -127,8 +127,9 @@ class TestValidateAttrs:
 class TestRedact:
     """Verify redact() catches known dangerous patterns."""
 
-    def test_aws_key_redacted(self):
-        assert redact("AKIAIOSFODNN7EXAMPLE1") == "[REDACTED]"
+    def test_aws_key_id_is_an_identifier_and_stays(self):
+        """An AWS access key ID is Identifier tier, so metrics keep it."""
+        assert redact("AKIAIOSFODNN7EXAMPLE1") == "AKIAIOSFODNN7EXAMPLE1"
 
     def test_secret_access_key_pattern_redacted(self):
         """SecretAccessKey= pattern is caught (security-controls fix)."""
@@ -170,7 +171,9 @@ class TestRedact:
         Addresses the security-controls finding: redact() must catch
         base64-encoded credentials, not only raw patterns.
         """
-        encoded_key = base64.b64encode(b"AKIAIOSFODNN7EXAMPLE1").decode("ascii")
+        encoded_key = base64.b64encode(
+            b"aws_secret_access_key=wJalrXUtnFEMI" b"/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        ).decode("ascii")
         assert redact(encoded_key) == "[REDACTED]"
 
         encoded_pk = base64.b64encode(

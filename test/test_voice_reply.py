@@ -140,22 +140,22 @@ class TestStripMarkdown:
         # scan on the RAW text misses it; the strip rejoins the halves. The
         # post-strip redaction pass must catch the reconstructed secret
         # before it reaches TTS.
-        out = strip_markdown("key AKIAIOSF<!-- keep-visible -->ODNN7EXAMPLE end")
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        out = strip_markdown("key glpat-IOSF<!-- keep-visible -->ODNN7EXAMPLE end")
+        assert "glpat-IOSFODNN7EXAMPLE" not in out
 
     def test_credential_rejoined_by_emphasis_strip_is_redacted(self) -> None:
         # Same class, different strip: `**` emphasis markers inside a key id
         # are removed by the [*_~]+ pass. The invariant covers every strip,
         # not just the control-tag one.
-        out = strip_markdown("key AKIAIOSF**ODNN7EXAMPLE** end")
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        out = strip_markdown("key glpat-IOSF**ODNN7EXAMPLE** end")
+        assert "glpat-IOSFODNN7EXAMPLE" not in out
 
     def test_contiguous_credential_still_redacted_after_strip(self) -> None:
         # Idempotence: a credential the pre-strip scan would catch is also
         # caught by the post-strip pass when strip_markdown is used alone
         # (split_sentences path has no pre-strip redaction).
-        out = strip_markdown("key AKIAIOSFODNN7EXAMPLE end")
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        out = strip_markdown("key glpat-IOSFODNN7EXAMPLE end")
+        assert "glpat-IOSFODNN7EXAMPLE" not in out
 
     def test_control_tag_regex_linear_on_adversarial_input(self) -> None:
         # CodeQL py/polynomial-redos, two vectors: (a) "<!--deliver:" + many

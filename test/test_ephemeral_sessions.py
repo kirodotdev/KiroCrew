@@ -706,13 +706,13 @@ class TestMcpCoreSessionKeyPassthrough:
                 code=502,
                 msg="Bad Gateway",
                 hdrs=None,
-                fp=io.BytesIO(b'{"error": "upstream rejected key AKIAIOSFODNN7EXAMPLE"}'),
+                fp=io.BytesIO(b'{"error": "upstream rejected key glpat-IOSFODNN7EXAMPLE"}'),
             )
             from kiro_crew.mcp_core import _post
 
             result = _post("/api/lessons", {"rule": "x"})
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in result["error"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in result["error"]
         assert "REDACTED" in result["error"]
 
     def test_learn_add_tool_maps_unknown_session_to_friendly_message(self):

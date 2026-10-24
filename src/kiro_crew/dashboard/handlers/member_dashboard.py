@@ -43,7 +43,7 @@ from kiro_crew.dashboard.handlers.members import (
 )
 from kiro_crew.dashboard_templates import catalog, instance
 from kiro_crew.members import MemberSlugError
-from kiro_crew.platform.context import redact_code_via_context, redact_via_context
+from kiro_crew.platform.context import redact_via_context
 
 logger = logging.getLogger(__name__)
 
@@ -843,14 +843,12 @@ def _template_text_safe(text: str) -> str:
     so it is the only place the page and the values in it can be covered by one pass.
     ``_page_safe`` covers the resolved values and never the page around them.
 
-    The text of a ``<script>`` or ``<style>`` element is the exception, by one pass: it
-    is code the page runs, and the bare-secret guess rewrites an alphabet or a data URI
-    in it without any error. Its tags, the attributes and the prose get every pass, and
-    a page whose script text the rules would leave as prose gets every pass whole.
+    The text of a ``<script>`` or ``<style>`` element gets the same passes as the
+    prose around it.
     """
     if not text:
         return text
-    return dashboard_frame.map_page_text(text, redact_via_context, redact_code_via_context)
+    return dashboard_frame.map_page_text(text, redact_via_context, redact_via_context)
 
 
 def _manifest_text_safe(manifest: Any) -> Any:

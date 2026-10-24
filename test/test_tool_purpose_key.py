@@ -179,13 +179,13 @@ def test_refinement_purpose_is_redacted() -> None:
             "toolCallId": "tc-4",
             "rawInput": {
                 "command": "aws s3 ls",
-                "__tool_use_purpose": "Use AKIAIOSFODNN7EXAMPLE to list buckets",
+                "__tool_use_purpose": "Use glpat-IOSFODNN7EXAMPLE to list buckets",
             },
         }
     )
     assert event.tool_purpose.startswith("Use ")
     assert event.tool_purpose.endswith("to list buckets")
-    assert "AKIAIOSFODNN7EXAMPLE" not in event.tool_purpose
+    assert "glpat-IOSFODNN7EXAMPLE" not in event.tool_purpose
 
 
 @pytest.mark.parametrize("select_title", [select_tool_title, _select_tool_title])

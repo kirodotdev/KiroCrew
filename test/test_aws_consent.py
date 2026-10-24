@@ -1422,7 +1422,7 @@ class TestAuditDecisionRedactsBeforeTruncate:
     ``detail`` still emits the bare ``service`` with no ``": "`` separator.
     """
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"  # 20-char AWS access key ID
+    SECRET = "glpat-IOSFODNN7EXAMPLE"  # a GitLab-shaped fake token
 
     @staticmethod
     def _capture(monkeypatch):
@@ -1448,7 +1448,7 @@ class TestAuditDecisionRedactsBeforeTruncate:
 
         assert len(calls) == 1
         resources = calls[0]["resources"]
-        assert "AKIA" not in resources, resources
+        assert "glpat-" not in resources, resources
         assert resources.startswith("polly: ")
         # Redaction ran over the full text; only the redacted text was clipped.
         assert len(resources) <= len("polly: ") + 200

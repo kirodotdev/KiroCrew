@@ -82,7 +82,7 @@ async def test_a_refused_replan_fails_the_run_with_the_error_redacted(
     async def _execute(_run, step, _history_key, session_key=""):
         if step.index == 1:
             step.status = StepStatus.FAILED
-            step.error = "broke AKIAIOSFODNN7EXAMPLE here"
+            step.error = "broke glpat-IOSFODNN7EXAMPLE here"
             return False
         step.status = StepStatus.PASSED
         return True
@@ -97,7 +97,7 @@ async def test_a_refused_replan_fails_the_run_with_the_error_redacted(
 
     assert run.status == "failed"
     assert run.error.startswith("Task 1 failed: broke ")
-    assert "AKIAIOSFODNN7EXAMPLE" not in run.error
+    assert "glpat-IOSFODNN7EXAMPLE" not in run.error
 
 
 @pytest.mark.asyncio

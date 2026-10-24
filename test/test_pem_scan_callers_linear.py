@@ -134,6 +134,6 @@ def test_deploy_scan_still_flags_a_quoted_marker() -> None:
 
 
 def test_other_credentials_are_still_found_by_both_callers() -> None:
-    text = "aws key AKIAIOSFODNN7EXAMPLE in a page"
+    text = "aws key glpat-IOSFODNN7EXAMPLE in a page"
     assert _preview(text) is True
     assert any(f.kind == "credential" for f in _scan(text))

@@ -243,7 +243,7 @@ class TestThinkReasoningRedaction:
     """The ``<think>`` reasoning frame is scrubbed render-aware, not literally.
 
     WeCom renders the ``<think>`` block as markdown, so a credential split by
-    emphasis (``AKIA**REST**``) survives a literal byte scan and is reassembled
+    emphasis (``glpat-**REST**``) survives a literal byte scan and is reassembled
     on screen -- the same hazard the answer body is guarded against, on the same
     channel. Asserted against the RENDERED form.
     """
@@ -257,11 +257,11 @@ class TestThinkReasoningRedaction:
         await r.on_turn_start()
         c.frames.clear()
         r._last_send = 0.0  # clear the throttle so the reasoning frame goes out
-        await r.on_thinking("leaking AKIAIOSF**ODNN7EXAMPLE** in the trace")
+        await r.on_thinking("leaking glpat-IOSF**ODNN7EXAMPLE** in the trace")
 
         think = "".join(f["content"] for f in c.frames)
         assert "<think>" in think, f"no reasoning frame was sent: {c.frames}"
-        assert "AKIAIOSFODNN7EXAMPLE" not in canonicalize_display(think)
+        assert "glpat-IOSFODNN7EXAMPLE" not in canonicalize_display(think)
 
     @pytest.mark.asyncio
     async def test_think_reasoning_keeps_clean_text(self) -> None:
@@ -280,7 +280,7 @@ class TestAnswerBodyRedaction:
     """The answer body is scrubbed render-aware at the send, and no cut severs a key.
 
     WeCom renders the body as markdown and extracts no attachments from it, so a
-    credential split by emphasis (``AKIA**REST**``) survives the driver's literal
+    credential split by emphasis (``glpat-**REST**``) survives the driver's literal
     channel-neutral pass and is reassembled on screen. ``_render_slice`` redacts
     each outgoing slice, and the callers pick the cut with ``_safe_raw_cut`` so a
     credential is never split across two bubbles -- the offsets stay in raw
@@ -294,11 +294,11 @@ class TestAnswerBodyRedaction:
 
         c = FakeClient()
         r = _renderer(c)
-        await r.on_text_chunk("the key is AKIAIOSF**ODNN7EXAMPLE** ok")
+        await r.on_text_chunk("the key is glpat-IOSF**ODNN7EXAMPLE** ok")
         await r.on_done()
 
         final = c.frames[-1]["content"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in canonicalize_display(final)
+        assert "glpat-IOSFODNN7EXAMPLE" not in canonicalize_display(final)
 
     def test_text_stays_raw_for_persistence(self) -> None:
         # text() is what drive_turn persists; the redaction lives only on the
@@ -454,12 +454,12 @@ class TestTheCapCutsWhereTheReaderCannotRejoin:
     async def test_a_link_split_key_does_not_cross_two_bubbles(self) -> None:
         # The acceptance case: a Markdown link whose target carries a comma, which no
         # hand-written character class reached across six review rounds.
-        head, tail = "[AKIA](https://ex.test/a,b)", "IOSFODNN7EXAMPLE"
+        head, tail = "[glpat-](https://ex.test/a,b)", "IOSFODNN7EXAMPLE"
         c = await _stream_across_a_rotation(_answer_whose_cap_lands_between(head, tail))
 
         on_screen, in_a_copy = _reader_views(c)
-        assert "AKIAIOSFODNN7EXAMPLE" not in on_screen
-        assert "AKIAIOSFODNN7EXAMPLE" not in in_a_copy
+        assert "glpat-IOSFODNN7EXAMPLE" not in on_screen
+        assert "glpat-IOSFODNN7EXAMPLE" not in in_a_copy
         _assert_nothing_reached_the_reader(c)
 
     @pytest.mark.parametrize(("head", "tail"), CREDENTIAL_STRADDLE_SHAPES)
@@ -599,12 +599,12 @@ class TestACredentialCannotStraddleTheRotationSeam:
         # The acceptance case, at the seam: a Markdown link whose target carries a
         # comma — the shape no hand-written character class reached across six review
         # rounds — with its completion in the bubble AFTER the seal.
-        head, tail = "[AKIA](https://ex.test/a,b)", "IOSFODNN7EXAMPLE"
+        head, tail = "[glpat-](https://ex.test/a,b)", "IOSFODNN7EXAMPLE"
         c = await _stream_across_a_seam(head, tail)
 
         on_screen, in_a_copy = _reader_views(c)
-        assert "AKIAIOSFODNN7EXAMPLE" not in on_screen
-        assert "AKIAIOSFODNN7EXAMPLE" not in in_a_copy
+        assert "glpat-IOSFODNN7EXAMPLE" not in on_screen
+        assert "glpat-IOSFODNN7EXAMPLE" not in in_a_copy
         _assert_nothing_reached_the_reader(c)
 
     @pytest.mark.parametrize(("head", "tail"), CREDENTIAL_STRADDLE_SHAPES)
@@ -626,7 +626,7 @@ class TestACredentialCannotStraddleTheRotationSeam:
         # continuation: a blanket drop would lose legitimate answer text and turn a
         # security guard into data loss (the failure mode the conductor decision
         # rejected — visible dup beats silent loss, and here we do neither).
-        head, tail = "AKIAIOSF", "ODNN7EXAMPLE"
+        head, tail = "glpat-IOSF", "ODNN7EXAMPLE"
         marker_word = "afterwardsuniquetoken"
         c = FakeClient()
         r = _capped_renderer(c)
@@ -640,7 +640,7 @@ class TestACredentialCannotStraddleTheRotationSeam:
         await r.close()
 
         on_screen, _copy = _reader_views(c)
-        assert "AKIAIOSFODNN7EXAMPLE" not in on_screen, "the key must not survive the seam"
+        assert "glpat-IOSFODNN7EXAMPLE" not in on_screen, "the key must not survive the seam"
         delivered = "".join(f["content"] for f in c.frames) + "".join(p[1] for p in c.pushed)
         assert marker_word in delivered, "trailing prose past the completion was dropped"
         _assert_nothing_reached_the_reader(c)
@@ -679,13 +679,13 @@ class TestACredentialCannotStraddleTheRotationSeam:
         # credential-bearing label far back in the seam, so a windowed grade would
         # scan a span the key's start was never inside and pass vacuously. Grading
         # the WHOLE delivered seam closes it.
-        head = "[AKIA](https://ex.test/" + "a" * 600 + ",b)"
+        head = "[glpat-](https://ex.test/" + "a" * 600 + ",b)"
         tail = "IOSFODNN7EXAMPLE"
         c = await _stream_across_a_seam(head, tail, cap=700)
 
         on_screen, in_a_copy = _reader_views(c)
-        assert "AKIAIOSFODNN7EXAMPLE" not in on_screen
-        assert "AKIAIOSFODNN7EXAMPLE" not in in_a_copy
+        assert "glpat-IOSFODNN7EXAMPLE" not in on_screen
+        assert "glpat-IOSFODNN7EXAMPLE" not in in_a_copy
         _assert_nothing_reached_the_reader(c)
 
     @pytest.mark.asyncio
@@ -702,7 +702,7 @@ class TestACredentialCannotStraddleTheRotationSeam:
         c = FakeClient()
         r = _capped_renderer(c, cap=200)
         await r.on_turn_start()
-        await r.on_thinking("thinking, the key is AKIAIOSF")
+        await r.on_thinking("thinking, the key is glpat-IOSF")
         await r._push(force=True)
         # The bubble ages past the stream lifetime with its reasoning ACCEPTED and
         # displayed (not refused): the next push rolls to a fresh bubble.
@@ -725,7 +725,7 @@ class TestACredentialCannotStraddleTheRotationSeam:
             "".join(canonicalize_display(b) for b in _seen(c)),
             canonicalize_display("".join(_seen(c))),
         ):
-            assert "AKIAIOSFODNN7EXAMPLE" not in reading
+            assert "glpat-IOSFODNN7EXAMPLE" not in reading
             assert _default_redactor(reading) == reading, "the key rejoined on screen"
 
     @pytest.mark.asyncio
@@ -741,14 +741,14 @@ class TestACredentialCannotStraddleTheRotationSeam:
         c = FakeClient()
         r = _capped_renderer(c, cap=200)
         await r.on_turn_start()
-        await r.on_thinking("reasoning, the key is AKIAIOSF")
+        await r.on_thinking("reasoning, the key is glpat-IOSF")
         await r._push(force=True)
         await r.on_thinking(" and some more reasoning after it")
         await r._push(force=True)
         # Both reasoning frames are candidates the fresh bubble is graded against —
         # the prefix-ending one is NOT dropped.
         assert any(
-            "AKIAIOSF" in s and s.endswith("AKIAIOSF") for s in r._shown_reasonings
+            "glpat-IOSF" in s and s.endswith("glpat-IOSF") for s in r._shown_reasonings
         ), "the credential-prefix reasoning frame is retained as a candidate"
         # The bubble ages out (reasoning displayed, no answer yet); the answer opens
         # with the completion and rolls to a fresh bubble.
@@ -763,10 +763,10 @@ class TestACredentialCannotStraddleTheRotationSeam:
         # Whichever reasoning the reader sees, the answer head is redacted so no
         # candidate rejoins the key.
         for candidate in (
-            "reasoning, the key is AKIAIOSF",
-            "reasoning, the key is AKIAIOSF and some more reasoning after it",
+            "reasoning, the key is glpat-IOSF",
+            "reasoning, the key is glpat-IOSF and some more reasoning after it",
         ):
-            assert "AKIAIOSFODNN7EXAMPLE" not in canonicalize_display(
+            assert "glpat-IOSFODNN7EXAMPLE" not in canonicalize_display(
                 candidate + answer_frames[-1]
             ), "the key rejoined across the reasoning seam"
 
@@ -781,18 +781,18 @@ class TestACredentialCannotStraddleTheRotationSeam:
         c = FakeClient()
         r = _capped_renderer(c, cap=200)
         await r.on_turn_start()
-        await r.on_thinking("reasoning, the key is AKIAIOSF")
+        await r.on_thinking("reasoning, the key is glpat-IOSF")
         await r._push(force=True)
         # Roll 1: the reasoning bubble is sealed; rolling captures its seam.
         c.dead_streams.add(r._stream_id)
         r._roll_if_sealed()
-        assert any(s.endswith("AKIAIOSF") for s in r._reasoning_seams), "roll 1 captured the seam"
+        assert any(s.endswith("glpat-IOSF") for s in r._reasoning_seams), "roll 1 captured the seam"
         # Roll 2: the fresh bubble is sealed too, still before any answer and with
         # no new reasoning frame — _shown_reasonings is empty.
         c.dead_streams.add(r._stream_id)
         r._roll_if_sealed()
         assert any(
-            s.endswith("AKIAIOSF") for s in r._reasoning_seams
+            s.endswith("glpat-IOSF") for s in r._reasoning_seams
         ), "the second roll wiped the first roll's reasoning seam"
 
     @pytest.mark.asyncio
@@ -807,10 +807,10 @@ class TestACredentialCannotStraddleTheRotationSeam:
         c = FakeClient()
         r = _capped_renderer(c, cap=200)
         await r.on_turn_start()
-        await r.on_thinking("the key is AKIAIOSF")
+        await r.on_thinking("the key is glpat-IOSF")
         await r._push(force=True)
         first = r._shown_reasonings[-1]
-        assert first.endswith("AKIAIOSF"), "the prefix-ending frame was captured"
+        assert first.endswith("glpat-IOSF"), "the prefix-ending frame was captured"
         for i in range(30):
             await r.on_thinking(f" step {i}")
             await r._push(force=True)
@@ -835,7 +835,7 @@ class TestACredentialCannotStraddleTheRotationSeam:
         r = _capped_renderer(c, cap=200)
         await r.on_turn_start()
         # One accepted frame first — this is the one that stays on screen.
-        await r.on_thinking(" the key is AKIAIOSF")
+        await r.on_thinking(" the key is glpat-IOSF")
         await r._push(force=True)
         first = r._shown_reasonings[-1]
         # Now the stream carries an outstanding rejection; later frames are not
@@ -959,7 +959,7 @@ class TestACredentialCannotStraddleTheRotationSeam:
         # Prior rolls already filled _reasoning_seams to the cap; this bubble then
         # sealed on a NEWEST frozen prefix ending at a credential prefix.
         r._reasoning_seams = [f"frozen prefix {i}" for i in range(_MAX_REASONING_CANDIDATES)]
-        r._shown_reasonings = ["reasoning, the key is AKIAIOSF"]
+        r._shown_reasonings = ["reasoning, the key is glpat-IOSF"]
         newest = r._shown_reasonings[-1]
         c.dead_streams.add(r._stream_id)
         r._roll_if_sealed()
@@ -971,12 +971,12 @@ class TestACredentialCannotStraddleTheRotationSeam:
     @pytest.mark.asyncio
     async def test_a_space_separated_continuation_is_not_over_redacted(self) -> None:
         # GPT F1: WeCom shows ONE continuous answer across the seam, so boundary
-        # whitespace is REAL on-screen text. A sealed tail ending `AKIAIOSF` and a
+        # whitespace is REAL on-screen text. A sealed tail ending `glpat-IOSF` and a
         # continuation opening ` ODNN7EXAMPLE` read as two space-separated tokens —
         # NOT a key. The stripped repair (for separate-message channels) would strip
         # the space, see a join, and corrupt harmless prose; the verbatim grade must
         # leave it intact.
-        c = await _stream_across_a_seam("AKIAIOSF", " ODNN7EXAMPLE and ordinary prose")
+        c = await _stream_across_a_seam("glpat-IOSF", " ODNN7EXAMPLE and ordinary prose")
         on_screen, in_a_copy = _reader_views(c)
         # The two tokens are shown with their separating space, unredacted.
         assert "ODNN7EXAMPLE and ordinary prose" in on_screen, (
@@ -987,13 +987,13 @@ class TestACredentialCannotStraddleTheRotationSeam:
 
     @pytest.mark.asyncio
     async def test_a_no_space_split_across_the_seam_is_still_closed(self) -> None:
-        # The verbatim grade still catches a GENUINE split: `AKIAIOSF` directly
+        # The verbatim grade still catches a GENUINE split: `glpat-IOSF` directly
         # abutting `ODNN7EXAMPLE` with no separator forms the key on screen and must
         # be redacted.
-        c = await _stream_across_a_seam("AKIAIOSF", "ODNN7EXAMPLE")
+        c = await _stream_across_a_seam("glpat-IOSF", "ODNN7EXAMPLE")
         on_screen, in_a_copy = _reader_views(c)
-        assert "AKIAIOSFODNN7EXAMPLE" not in on_screen
-        assert "AKIAIOSFODNN7EXAMPLE" not in in_a_copy
+        assert "glpat-IOSFODNN7EXAMPLE" not in on_screen
+        assert "glpat-IOSFODNN7EXAMPLE" not in in_a_copy
         _assert_nothing_reached_the_reader(c)
 
     @pytest.mark.asyncio

@@ -247,7 +247,7 @@ class TestMemberActivityRoute:
             CREW,
             "dashboard_chat-1",
             "persistent",
-            project="/repos/AKIAIOSFODNN7EXAMPLE/app",
+            project="/repos/glpat-IOSFODNN7EXAMPLE/app",
             via="chat",
         )
         with _patched_config([CREW]):
@@ -258,7 +258,7 @@ class TestMemberActivityRoute:
                 assert resp.status == 200
                 data = await resp.json()
         assert len(data["entries"]) == 1
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["entries"][0]["project"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in data["entries"][0]["project"]
 
     @pytest.mark.asyncio
     async def test_display_cap_reports_capped_and_keeps_newest(self, tmp_path):
@@ -722,7 +722,7 @@ class TestMemberBriefingEndpoint:
         """The briefing is an AGENT-written file; a token the crewmate pasted
         into its own notes must not reach the browser verbatim."""
         state = _make_state(tmp_path)
-        self._write_briefing("Deploy key for staging: AKIAIOSFODNN7EXAMPLE — rotate monthly.")
+        self._write_briefing("Deploy key for staging: glpat-IOSFODNN7EXAMPLE — rotate monthly.")
         with _patched_config([CREW]):
             async with TestClient(TestServer(_make_members_app(state))) as client:
                 resp = await client.get(
@@ -730,7 +730,7 @@ class TestMemberBriefingEndpoint:
                 )
                 assert resp.status == 200
                 data = await resp.json()
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["text"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in data["text"]
         assert "rotate monthly" in data["text"]
         # The flag is what lets the panel withhold Edit: the viewer's Save would
         # otherwise write this redacted text over the original.
@@ -745,7 +745,7 @@ class TestMemberBriefingEndpoint:
         drops the trailing split word so nothing ends mid-token."""
         state = _make_state(tmp_path)
         lead = "word " * ((MEMBER_BRIEFING_MAX_CHARS - 10) // 5)  # ends 10 chars short
-        self._write_briefing(lead + "AKIAIOSFODNN7EXAMPLE rest of the line\n" + "tail\n" * 40)
+        self._write_briefing(lead + "glpat-IOSFODNN7EXAMPLE rest of the line\n" + "tail\n" * 40)
         with _patched_config([CREW]):
             async with TestClient(TestServer(_make_members_app(state))) as client:
                 resp = await client.get(
@@ -753,7 +753,7 @@ class TestMemberBriefingEndpoint:
                 )
                 assert resp.status == 200
                 data = await resp.json()
-        assert "AKIA" not in data["text"]
+        assert "glpat-" not in data["text"]
         assert "briefing truncated" in data["text"]
         assert data["redacted"] is True
         assert data["truncated"] is True
@@ -770,7 +770,7 @@ class TestMemberBriefingEndpoint:
         is the flag that lets the panel withhold Edit for that file too."""
         state = _make_state(tmp_path)
         self._write_briefing(
-            "y" * (MEMBER_BRIEFING_MAX_CHARS * 8) + "\nDeploy key: AKIAIOSFODNN7EXAMPLE\n"
+            "y" * (MEMBER_BRIEFING_MAX_CHARS * 8) + "\nDeploy key: glpat-IOSFODNN7EXAMPLE\n"
         )
         with _patched_config([CREW]):
             async with TestClient(TestServer(_make_members_app(state))) as client:
@@ -779,7 +779,7 @@ class TestMemberBriefingEndpoint:
                 )
                 assert resp.status == 200
                 data = await resp.json()
-        assert "AKIA" not in data["text"]
+        assert "glpat-" not in data["text"]
         assert "briefing truncated" in data["text"]
         assert data["redacted"] is False
         assert data["truncated"] is True

@@ -17,18 +17,18 @@ CAPS = TransportCapabilities(max_message_chars=4096, max_buttons=0)
 #: Split so this file never holds the contiguous key: an absence assertion
 #: against a literal the source already carries proves nothing about the literal a
 #: scanner would have to match.
-KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+KEY = "glpat-" + "IOSFODNN7EXAMPLE"
 #: A credential the driver's byte-level stream scan cannot see, because the bold
 #: markers break it. WhatsApp eats those markers, so the reader gets an intact key
 #: unless the renderer re-scans the form it actually sends.
-SPLIT_KEY = f"AKIA**I**{KEY[5:]}"
+SPLIT_KEY = f"glpat-**I**{KEY[7:]}"
 
 
 def shown(text: str) -> str:
     """*text* as a WhatsApp client renders it, with its markup consumed.
 
     Asserting on the delivered bytes is the mistake the display screen exists to
-    prevent: ``AKIA*I*OSFODNN7EXAMPLE`` passes ``KEY not in sent`` while the
+    prevent: ``glpat-*I*OSFODNN7EXAMPLE`` passes ``KEY not in sent`` while the
     reader sees the key.
     """
     return canonicalize_display(text)

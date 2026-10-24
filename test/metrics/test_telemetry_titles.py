@@ -69,11 +69,11 @@ def _cost(*slot_keys: str) -> dict:
 async def test_a_credential_shaped_title_is_redacted():
     # A real AWS-key shape. The scanner recognises it; the point is that this
     # endpoint runs the scanner at all.
-    leaked = "notes for AKIA" + "IOSFODNN7EXAMPLE"
+    leaked = "notes for glpat-" + "IOSFODNN7EXAMPLE"
     slots = {"chat-1-1": SimpleNamespace(display_title=leaked)}
     out = await _with_conversation_titles(_request(slots), _cost("chat-1-1"))
     title = out["conversations"][0]["title"]
-    assert "AKIA" + "IOSFODNN7EXAMPLE" not in title
+    assert "glpat-" + "IOSFODNN7EXAMPLE" not in title
     assert "REDACTED" in title
 
 
@@ -188,7 +188,7 @@ class TestClosedConversations:
 
     @pytest.mark.asyncio
     async def test_a_persisted_title_is_redacted_like_a_live_one(self, tmp_path):
-        leaked = "notes for AKIA" + "IOSFODNN7EXAMPLE"
+        leaked = "notes for glpat-" + "IOSFODNN7EXAMPLE"
         log = ConversationLog(tmp_path)
         log.set_title(slot_transcript_key("chat-1-1"), leaked)
 
@@ -196,7 +196,7 @@ class TestClosedConversations:
             _request({}, conversation_log=log), _cost("chat-1-1")
         )
         title = out["conversations"][0]["title"]
-        assert "AKIA" + "IOSFODNN7EXAMPLE" not in title
+        assert "glpat-" + "IOSFODNN7EXAMPLE" not in title
         assert "REDACTED" in title
 
     @pytest.mark.asyncio

@@ -25,7 +25,7 @@ from kiro_crew.messaging.display_safety import canonicalize_display
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 _JPEG = b"\xff\xd8\xff" + b"\x11" * 64
-_KEY = "AKIAIOSFODNN7EXAMPLE"
+_KEY = "glpat-IOSFODNN7EXAMPLE"
 _TEST_UPLOAD_ROOT = ""
 
 
@@ -156,7 +156,7 @@ class TestSealTimeExtraction:
 
     @pytest.mark.asyncio
     async def test_image_removal_cannot_reassemble_a_credential(self, tmp_path: Path) -> None:
-        bodies = (f"{_KEY[:4]}![x]({(path := _png(tmp_path))}){_KEY[4:]}", f"[{_KEY[:4]}](![x]({path})https://example.com){_KEY[4:]}")
+        bodies = (f"{_KEY[:6]}![x]({(path := _png(tmp_path))}){_KEY[6:]}", f"[{_KEY[:6]}](![x]({path})https://example.com){_KEY[6:]}")
         for body in bodies:
             cli = await _turn(body)
             assert cli.uploaded_files and all(_KEY not in canonicalize_display(text) for text in _bodies(cli))
@@ -222,12 +222,12 @@ class TestSealTimeExtraction:
         monkeypatch.setattr(renderer_module, "sel", lambda: SimpleNamespace(log_api_access=lambda **kw: events.append(kw)))
         big = case in ("oversize", "near_cap")
         _shrink_file_cap(monkeypatch) if big else None
-        name = f"{_KEY[:4]}\u200b{_KEY[4:]}.png" if case == "near_cap" else "chart.png"
+        name = f"{_KEY[:6]}\u200b{_KEY[6:]}.png" if case == "near_cap" else "chart.png"
         path = tmp_path / "nope.png" if case == "sensitive" else _png(tmp_path, name=name, size=4096 if big else 0)
         markup, body = (m := f"![Revenue]({path})"), (f"```md\n{m}\n```\n" if case == "fenced" else f"Chart:\n\n{m}\n")
         caps = replace(DISCORD_CAPABILITIES, files_outbound=False) if case == "no_capability" else None
         root = str(tmp_path / "approved") if case == "sensitive" else str(tmp_path)
-        prefix = "y" * 1700 + f"\n\n{_KEY[:4]}**{_KEY[4:]}**\n\n" if case == "near_cap" else ""
+        prefix = "y" * 1700 + f"\n\n{_KEY[:6]}**{_KEY[6:]}**\n\n" if case == "near_cap" else ""
         cli = await _turn(prefix + body, uploads_allowed=case != "restricted", capabilities=caps, upload_root=root)
         # near_cap's redacted credential now draws the post-answer redaction
         # notice as its own trailing message, so the answer under test is the
@@ -251,7 +251,7 @@ class TestSealTimeExtraction:
         for hidden in (False, True):
             path, (r, cli) = _png(tmp_path), _renderer()
             cli.edit_ok, _ = False, setattr(cli, mode, True)
-            await r.on_text_chunk((f"{_KEY[:4]}**{_KEY[4:]}**\n" if hidden else "Here it is.\n\n") + f"![Revenue]({path})")
+            await r.on_text_chunk((f"{_KEY[:6]}**{_KEY[6:]}**\n" if hidden else "Here it is.\n\n") + f"![Revenue]({path})")
             await r.on_done()
             assert cli.uploads, "the upload was never attempted"
             assert (recovered := [t for t, _ in cli.sent]) and all(_KEY not in canonicalize_display(t) for t in recovered)
@@ -350,7 +350,13 @@ class TestRestrictedGate:
 
 
 class TestDescriptionRedaction:
-    @pytest.mark.parametrize("streamed", [f"key AKIA\\{_KEY[4:]} here", f"https://x.example.com/u?k=AKIA\\{_KEY[4:]}", f"{_KEY[:4]}\u200b{_KEY[4:]}"])
+    def test_a_zero_width_split_credential_is_redacted_in_the_raw_text(self) -> None:
+        from kiro_crew.security import redact_credentials
+        streamed = f"{_KEY[:6]}\u200b{_KEY[6:]}"
+        assert redact_credentials(streamed)[0] != streamed
+        assert _KEY not in canonicalize_display(_description(streamed))
+
+    @pytest.mark.parametrize("streamed", [f"key glpat-\\{_KEY[6:]} here", f"https://x.example.com/u?k=glpat-\\{_KEY[6:]}"])
     def test_a_display_reassembled_credential_is_redacted(self, streamed: str) -> None:
         from kiro_crew.messaging.outbound_files import unescape_md
         from kiro_crew.security import redact_credentials
@@ -552,7 +558,7 @@ class TestDisplayRedactionIsAFloor:
     #: A credential split by Markdown that Discord strips when it renders. The
     #: literal bytes carry ``**``, so a literal-form scan does not match; the
     #: rendered form is one contiguous key.
-    SPLIT_SECRET = "AKIA**IOSFODNN7**EXAMPLE"
+    SPLIT_SECRET = "glpat-**IOSFODNN7**EXAMPLE"
 
     @pytest.mark.asyncio
     async def test_a_restricted_session_still_gets_the_display_pass(self) -> None:

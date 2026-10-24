@@ -1078,7 +1078,7 @@ class TestDrainStderrRedaction:
     @pytest.mark.asyncio
     async def test_raw_stored_redacted_logged(self):
         client = AcpClient()
-        raw = "Error: key=AKIAIOSFODNN7EXAMPLE connect failed"
+        raw = "Error: key=glpat-IOSFODNN7EXAMPLE connect failed"
 
         reader = AsyncMock(spec=["readline"])
         reader.readline = AsyncMock(side_effect=[raw.encode() + b"\n", b""])
@@ -1090,7 +1090,7 @@ class TestDrainStderrRedaction:
         assert list(client._stderr_lines) == [raw]
         # Logged call used redacted text (credential replaced)
         logged_text = mock_logger.warning.call_args[0][2]
-        assert "AKIAIOSFODNN7EXAMPLE" not in logged_text
+        assert "glpat-IOSFODNN7EXAMPLE" not in logged_text
 
 
 class TestDrainStderrSuppression:
@@ -1177,14 +1177,14 @@ class TestReadMessageStderrRedaction:
         client._process.returncode = 1
         client._process.stdout = MagicMock()
         client._process.stdout.readline = AsyncMock(return_value=b"")
-        client._stderr_lines = deque(["secret key=AKIAIOSFODNN7EXAMPLE"])
+        client._stderr_lines = deque(["secret key=glpat-IOSFODNN7EXAMPLE"])
         client._stderr_task = MagicMock()
         client._stderr_task.done.return_value = True
 
         with pytest.raises(AcpError, match="ACP process exited") as exc_info:
             await client._read_message(timeout=1.0)
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in str(exc_info.value)
+        assert "glpat-IOSFODNN7EXAMPLE" not in str(exc_info.value)
 
 
 class TestTrackMetadataCredits:

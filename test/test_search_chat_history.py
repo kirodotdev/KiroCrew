@@ -143,10 +143,10 @@ class TestSearchChatHistoryHandler:
         cl.append(
             "dashboard_chat-leak",
             "user",
-            "the widget deploy used key AKIAIOSFODNN7EXAMPLE today",
+            "the widget deploy used key glpat-IOSFODNN7EXAMPLE today",
         )
         out = mcp_core._call_tool_inner("search_chat_history", {"query": "widget"})
-        assert "AKIAIOSFODNN7EXAMPLE" not in out  # redacted
+        assert "glpat-IOSFODNN7EXAMPLE" not in out  # redacted
         assert "REDACTED" in out
 
     def test_get_chat_session_returns_transcript(self, tmp_path, monkeypatch):
@@ -303,8 +303,10 @@ class TestSessionKeySafety:
         # a crafted credential-bearing key must not appear in the output.
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         _seed_sessions(tmp_path)
-        out = mcp_core._call_tool_inner("get_chat_session", {"session_key": "AKIAIOSFODNN7EXAMPLE"})
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        out = mcp_core._call_tool_inner(
+            "get_chat_session", {"session_key": "glpat-IOSFODNN7EXAMPLE"}
+        )
+        assert "glpat-IOSFODNN7EXAMPLE" not in out
         assert "fp:" in out  # not-found now returns a fingerprint, not the raw/echoed key
 
 
@@ -460,9 +462,9 @@ class TestPostMergeHardening:
     # Redact BEFORE inserting <<<>>> markers so a query that is a substring
     # of a secret in stored content can't split the token and defeat redaction.
     def test_snippet_redacts_credential_even_when_query_is_prefix(self):
-        content = "the cred AKIAIOSFODNN7EXAMPLE was rotated"
-        snip = mcp_core._extract_history_snippet([{"role": "user", "content": content}], "AKIA")
-        assert "AKIAIOSFODNN7EXAMPLE" not in snip
+        content = "the cred glpat-IOSFODNN7EXAMPLE was rotated"
+        snip = mcp_core._extract_history_snippet([{"role": "user", "content": content}], "glpat-")
+        assert "glpat-IOSFODNN7EXAMPLE" not in snip
         assert "REDACTED" in snip
 
     # Casefold length expansion (ß→ss) must not misalign the wrap.

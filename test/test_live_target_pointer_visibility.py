@@ -378,7 +378,7 @@ class TestTheRefusalReachesTheChatCard:
         the card is the only filter between the exception and every client."""
         payload = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo" * 4
         leaky = sandbox.SandboxCeilingUnsealable(
-            f"refused: https://evil.example.com/c?d={payload} key AKIAIOSFODNN7EXAMPLE"
+            f"refused: https://evil.example.com/c?d={payload} key glpat-IOSFODNN7EXAMPLE"
         )
         record = await run_turn(TurnScript(allocation_error=leaky))
         [card] = [row["content"] for row in record.rows("error")]
@@ -389,7 +389,7 @@ class TestTheRefusalReachesTheChatCard:
         assert card.startswith("refused: ")
         assert "[REDACTED" in kept
         sent = json.dumps([frame.payload for frame in record.ws_frames], default=str)
-        for secret in ("evil.example.com/c?d=", "AKIAIOSFODNN7EXAMPLE"):
+        for secret in ("evil.example.com/c?d=", "glpat-IOSFODNN7EXAMPLE"):
             assert secret not in card
             assert secret not in kept
             assert secret not in sent

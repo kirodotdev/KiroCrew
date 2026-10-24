@@ -379,15 +379,15 @@ class TestRedaction:
         async with client_for(app) as client:
             await client.post(f"{BASE}/meetings/standup/init", json={})
             store.write_agent_output(
-                "standup", NOTE_TAKER, "# Notes\n\nkey AKIAIOSFODNN7EXAMPLE here", root
+                "standup", NOTE_TAKER, "# Notes\n\nkey glpat-IOSFODNN7EXAMPLE here", root
             )
             body = await (await client.get(f"{BASE}/meetings/standup/outputs")).json()
-        assert "AKIAIOSFODNN7EXAMPLE" not in body["outputs"]["note-taker"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in body["outputs"]["note-taker"]
 
     @pytest.mark.asyncio
     async def test_the_users_own_edit_is_returned_verbatim(self, app, root: Path):
         """Owner-authored text is not silently rewritten by the model-output scrubber."""
-        marker = "  literal example AKIAIOSFODNN7EXAMPLE and a\ttab\n\n"
+        marker = "  literal example glpat-IOSFODNN7EXAMPLE and a\ttab\n\n"
         async with client_for(app) as client:
             await client.post(f"{BASE}/meetings/standup/init", json={})
             await client.put(

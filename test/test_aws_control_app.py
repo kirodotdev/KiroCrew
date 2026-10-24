@@ -542,7 +542,7 @@ class TestConsentTargetTracksTheOperation:
         from kiro_crew.dashboard.handlers import aws_consent as consent_handlers
         from kiro_crew.deploy import profiles as deploy_profiles
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         snapshot = _snapshot_of(
             _registry([_entry(secret, account=self.ACCOUNT)], default=secret),
             {secret: _identity(False, detail="ExpiredToken")},
@@ -1348,7 +1348,7 @@ class TestLibraryScan:
             version=1,
             description="",
             tags=[],
-            content="aws_secret_access_key = AKIAIOSFODNN7EXAMPLEKEYX",
+            content="aws_secret_access_key = glpat-IOSFODNN7EXAMPLEKEYX",
         )
         with (
             mock.patch.object(library, "get_default_store") as store,

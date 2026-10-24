@@ -238,10 +238,10 @@ class TestSanitization:
         # A failing server's startup error can carry a credential; this payload
         # reaches a browser.
         r = McpSessionReport()
-        r.record_frame(_failed("s", "denied for AKIAIOSFODNN7EXAMPLE"), owned=True)
+        r.record_frame(_failed("s", "denied for glpat-IOSFODNN7EXAMPLE"), owned=True)
         payload = r.payload()
         assert payload is not None
-        assert "AKIAIOSFODNN7EXAMPLE" not in payload["failures"]["s"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in payload["failures"]["s"]
 
     def test_failure_text_is_capped(self):
         r = McpSessionReport()

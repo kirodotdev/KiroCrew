@@ -1234,8 +1234,8 @@ class TestCleaning:
         """The model can echo a secret back in the name it proposes, and a title
         is displayed everywhere the conversation is listed. Mutation: drop the two
         redactor calls — red."""
-        cleaned = auto_title.clean_title("AKIAIOSFODNN7EXAMPLE key rotation")
-        assert "AKIAIOSFODNN7EXAMPLE" not in cleaned
+        cleaned = auto_title.clean_title("glpat-IOSFODNN7EXAMPLE key rotation")
+        assert "glpat-IOSFODNN7EXAMPLE" not in cleaned
 
     def test_the_title_is_capped(self):
         """Mutation: drop the ``[:TITLE_MAX_CHARS]`` slice — red."""

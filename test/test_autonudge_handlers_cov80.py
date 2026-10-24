@@ -202,7 +202,7 @@ async def test_session_monitor_read_admits_webex_legacy_loop(
 async def test_session_monitor_read_redacts_provider_controlled_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     loop = _monitor_loop(slot_key="chat-1-111")
     assert loop.monitor is not None
     loop.monitor.last_observation = {
@@ -431,7 +431,7 @@ async def test_monitor_slot_read_refuses_non_owner_sessions_without_leaking(
 async def test_monitor_list_excludes_persistence_only_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     loop = _monitor_loop()
     assert loop.monitor is not None
     loop.monitor.extra_fields["raw_provider_payload"] = "must-not-escape"

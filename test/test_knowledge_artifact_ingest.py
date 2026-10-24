@@ -190,8 +190,8 @@ class TestIngestArtifact:
     @pytest.mark.asyncio
     async def test_credentials_and_name_redacted(self, pipeline, art_store, kstore):
         sid, _ = ensure_artifact_source(kstore)
-        secret = "AKIAIOSFODNN7EXAMPLE"
-        name_secret = "AKIAIOSFODNN7TITLE00"
+        secret = "glpat-IOSFODNN7EXAMPLE"
+        name_secret = "glpat-IOSFODNN7TITLE00"
         art = art_store.create(
             name=f"Leaky {name_secret}", content=f"config key {secret} here", kind="text")
         await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)

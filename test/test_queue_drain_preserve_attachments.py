@@ -587,7 +587,7 @@ class TestAttachmentPathsAreRedacted:
     def test_credential_in_a_path_is_redacted_before_it_rides_the_entry(self):
         from kiro_crew.dashboard.chat_utils import redact_credentials
 
-        leaky = "/tmp/exports/AKIAIOSFODNN7EXAMPLE-report.pdf"
+        leaky = "/tmp/exports/glpat-IOSFODNN7EXAMPLE-report.pdf"
         expected, changed = redact_credentials(leaky)
         assert changed, "fixture must contain something the redactor rewrites"
         out = attachment_meta({"files": [leaky, _PATH]})
@@ -725,7 +725,7 @@ class TestQueueEditPrunesAttachmentMeta:
         must not drop the entry."""
         from kiro_crew.dashboard.chat_delivery import attachment_meta
 
-        raw = "/tmp/uploads/AKIAIOSFODNN7EXAMPLE-report.pdf"
+        raw = "/tmp/uploads/glpat-IOSFODNN7EXAMPLE-report.pdf"
         lists = attachment_meta({"files": [raw]})
         stored = lists["files"][0]
         assert stored != raw, "the fixture path must be one the redactor rewrites"

@@ -27,8 +27,6 @@ in ``member_dashboard_package_route_helpers.py``.
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
 import string
 from pathlib import Path
@@ -61,7 +59,6 @@ from kiro_crew.artifact_store import dashboard_package as dp
 from kiro_crew.dashboard.handlers import artifacts as artifacts_handler
 from kiro_crew.dashboard.handlers import member_dashboard as md
 from kiro_crew.dashboard.handlers import member_dashboard_fields as mdf
-from kiro_crew.platform.context import redact_via_context
 
 
 @pytest.mark.asyncio
@@ -87,24 +84,23 @@ async def test_the_route_serves_a_script_as_written_and_still_masks_visible_text
     An 80-character palette in a script was replaced by ``[REDACTED: credential]``: the
     script still loaded, so nothing reported an error, and every lookup into the palette
     answered the wrong index. Composing the same page with ``dashboard_frame`` alone
-    served it intact, which is why only the route shows it. A key-shaped run in the
+    served it intact, which is why only the route shows it. A labelled credential in the
     page's VISIBLE text is still masked, in the same response.
     """
     palette = string.ascii_lowercase + string.ascii_uppercase + string.digits + "#$%&*+-=?@^_~:;<>!"
-    key = base64.b64encode(hashlib.sha256(b"kc-bare-0").digest()).decode()[:40]
+    key = "k9Xq2Lm7" + "Pz4Rt8Vw"
     page = (
         '<p data-dashboard-field="goal"></p>'
         f"<script>var ART_CHARS = '{palette}'; window.kirocrew.subscribe('goal', (v) => v);</script>"
-        f"<p>{key}</p>"
+        f"<p>api_key={key}</p>"
     )
-    assert redact_via_context(page) != page, "the premise: the whole-page pass rewrites it"
     wired.store.content = dp.dump_package(_package(html=page))
     status, body = await _call(md.api_member_dashboard, _request(wired.app, "GET", PATH))
     assert status == 200
     rendered = body["rendered_html"]
     assert f"var ART_CHARS = '{palette}';" in rendered
-    assert key not in rendered, "visible text kept a key-shaped run"
-    assert "[REDACTED: credential]" in rendered
+    assert key not in rendered, "visible text kept a labelled credential"
+    assert "api_key=[REDACTED: credential]" in rendered
 
 
 @pytest.mark.asyncio

@@ -24,7 +24,7 @@ from kiro_crew.decisions import gate as gate_mod
 from kiro_crew.decisions.points import compaction_keep as point
 from kiro_crew.decisions.types import Answer, Choice
 
-SECRET = "AKIAIOSFODNN7EXAMPLE"
+SECRET = "glpat-IOSFODNN7EXAMPLE"
 
 
 def tool_row(index: int, *, tool: str = "execute_bash", inp: str = "ls", out: str = "ok") -> dict:

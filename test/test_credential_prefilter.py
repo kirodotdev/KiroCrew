@@ -5,8 +5,8 @@ credentials into persisted chat history. The optimisation it guards is pure
 control flow — a pre-filter that skips a scan already known to be empty, one
 shared base64 scan feeding two passes, a chunk decode that does not re-scan
 its own input, and a bisect-backed span subtraction. None of it may change
-output, so this module pins a plain, unoptimised three-pass implementation as
-a reference oracle and asserts the live function is byte-identical to it, on
+output, so this module pins a plain, unoptimised implementation of the passes
+as a reference oracle and asserts the live function is byte-identical to it, on
 both the returned text AND the warnings.
 
 The oracle deliberately reuses the module's own compiled patterns and gate
@@ -25,19 +25,15 @@ import string
 
 import pytest
 
+from kiro_crew import credential_values
 from kiro_crew.security import (
     _B64_CHUNK_RE,
-    _BARE_SECRET_RUN_RE,
     _CREDENTIAL_PATTERNS,
     _PREFILTER_MIN_LEN,
-    _PRINTABLE_BYTES,
     _REDACTED_CREDENTIAL_TAG,
     _REDACTED_ENCODED_CREDENTIAL_TAG,
-    _SECRET_PRINTABLE_DECODE_RATIO,
-    _contains_bare_secret,
     _decode_b64_chunk,
     _decode_b64_safe,
-    _decodes_to_printable_text,
     _might_contain_credential,
     redact_credentials,
 )
@@ -47,8 +43,12 @@ from kiro_crew.security.redaction import (
     _HTML_REF_QUEST,
     _TOKEN_PARAM_NAME_RE,
     _TOKEN_PARAM_VALUE_CLASS,
+    _context_spans,
     _credential_matches,
+    encoded_credential_spans,
+    redact_credentials_with_records,
 )
+from kiro_crew.security.redaction_normalise import normalised_view, normalised_views
 
 # Mirror the live pass-4 wrapper exactly while keeping the oracle's span and
 # control-flow implementation independent. The name fold is ASCII-scoped so
@@ -84,8 +84,24 @@ def _reference_uncovered(
     return gaps
 
 
+def _reference_claim(
+    taken: list[tuple[int, int, str]],
+    found: list[tuple[int, int]],
+    warnings: list[str],
+) -> list[tuple[int, int, str]]:
+    """*taken* plus the still-plaintext parts of each *found* span, one warning per claim."""
+    added: list[tuple[int, int, str]] = []
+    for start, end in found:
+        gaps = _reference_uncovered(start, end, taken + added)
+        if not gaps:
+            continue
+        warnings.append(f"Redacted credential pattern ({end - start} chars)")
+        added.extend((s, e, _REDACTED_CREDENTIAL_TAG) for s, e in gaps)
+    return sorted(taken + added)
+
+
 def _reference_redact_credentials(text: str) -> tuple[str, list[str]]:
-    """The three-pass body, positioned by span, with no shortcuts. Do not "optimise" this.
+    """The passes, positioned by span, with no shortcuts. Do not "optimise" this.
 
     Every pass records ``(start, end, tag)`` against the ORIGINAL ``text`` and
     the string is rebuilt once at the end. The pre-optimisation source wrote
@@ -93,18 +109,21 @@ def _reference_redact_credentials(text: str) -> tuple[str, list[str]]:
     occurrence of the matched *text* rather than the span the regex actually
     matched. When an earlier, NON-matching lookalike contains the matched text
     as a substring (``xM<jwt>`` before a boundary-anchored ``M<jwt>``; a
-    decodable base64 chunk inside a longer run that does not decode; a bare key
-    inside a longer run the slash ceiling declines), that shape redacted the
-    innocent host and left the real credential in the output in plaintext -- a
-    genuine leak, not a cosmetic difference. See
-    ``test_matched_span_is_redacted_not_an_earlier_lookalike`` and the two
-    ``test_hosted_*`` tests beside it.
+    decodable base64 chunk inside a longer run that does not decode), that shape
+    redacted the innocent host and left the real credential in the output in
+    plaintext -- a genuine leak, not a cosmetic difference. See
+    ``test_matched_span_is_redacted_not_an_earlier_lookalike`` and
+    ``test_hosted_encoded_credential_is_redacted_at_its_own_span``.
 
-    Precedence between passes is positional: pass 1 outranks pass 2 outranks
-    pass 3, and a later pass redacts only the part of its span an earlier pass
-    has not already claimed. Pass 2 warns for every chunk that decodes to a
-    credential (its warning counts credentials found, as the original did);
-    pass 3 warns only when it splices something.
+    Precedence between passes is positional: pass 1 outranks the context rules,
+    which outrank the same rules over the normalised view, which outrank pass 2,
+    which outranks pass 4; a later pass redacts only the part of its span an
+    earlier pass has not already claimed. Pass 2 warns for every run that decodes
+    to a credential (its warning counts credentials found, as the original did).
+
+    The context rules, the normalised view and the encoded-run finder are the
+    module's own helpers; what this oracle isolates is the pre-filter gate, which
+    it never consults.
     """
     warnings: list[str] = []
     taken: list[tuple[int, int, str]] = []
@@ -114,30 +133,36 @@ def _reference_redact_credentials(text: str) -> tuple[str, list[str]]:
         warnings.append(f"Redacted credential pattern ({len(m.group())} chars)")
         taken.append((m.start(), m.end(), _REDACTED_CREDENTIAL_TAG))
 
-    # 2. base64-encoded credentials — own scan, decode via the generic helper
-    pass2: list[tuple[int, int, str]] = []
-    for m in _B64_CHUNK_RE.finditer(text):
-        chunk = m.group()
-        decoded = _decode_b64_safe(chunk)
-        if decoded:
-            warnings.append(f"Redacted base64-encoded credential ({len(chunk)} chars)")
-            for start, end in _reference_uncovered(m.start(), m.end(), taken):
-                pass2.append((start, end, "[REDACTED: encoded credential]"))
-    taken = sorted(taken + pass2)
+    # 1b. labelled values, key pairs and the vendor catalog
+    taken = _reference_claim(taken, [(s, e) for s, e, *_ in _context_spans(text)], warnings)
 
-    # 3. bare 40-char AWS secret keys — own separate scan
-    pass3: list[tuple[int, int, str]] = []
-    for m in _BARE_SECRET_RUN_RE.finditer(text):
-        run = m.group()
-        if not _contains_bare_secret(run):
-            continue
-        gaps = _reference_uncovered(m.start(), m.end(), taken)
-        if not gaps:
-            continue
-        for start, end in gaps:
-            pass3.append((start, end, _REDACTED_CREDENTIAL_TAG))
-        warnings.append(f"Redacted bare secret key ({len(run)} chars)")
-    taken = sorted(taken + pass3)
+    # 1c. the same rules over every normalised layer, mapped back — again ungated
+    mapped = []
+    for view in normalised_views(text):
+        found = [m.span() for m in _credential_matches(view.text)]
+        # A decoded view's separators came from an encoding: no config lines.
+        decoded = credential_values.reading_decoded()
+        try:
+            found += [(s, e) for s, e, *_ in _context_spans(view.text)]
+        finally:
+            credential_values.LINE_PREFIX.reset(decoded)
+        mapped.extend(view.source_span(s, e) for s, e in found)
+    if mapped:
+        taken = _reference_claim(taken, sorted(mapped), warnings)
+
+    # 2. base64-encoded credentials — overlapping runs joined, then claimed
+    pass2: list[tuple[int, int, str]] = []
+    runs: list[tuple[int, int]] = []
+    for start, end in sorted(encoded_credential_spans(text)):
+        if runs and start < runs[-1][1]:
+            runs[-1] = (runs[-1][0], max(runs[-1][1], end))
+        else:
+            runs.append((start, end))
+    for run_start, run_end in runs:
+        warnings.append(f"Redacted base64-encoded credential ({run_end - run_start} chars)")
+        for start, end in _reference_uncovered(run_start, run_end, taken + pass2):
+            pass2.append((start, end, _REDACTED_ENCODED_CREDENTIAL_TAG))
+    taken = sorted(taken + pass2)
 
     # 4. `?token=` / `&token=` parameter values — ungated full scan, value
     # group only, skipping a value that is already a fixed credential tag.
@@ -174,45 +199,59 @@ _LINK_PAYLOAD = "e" * 100  # clears the {96,} floor on the 2-segment link token
 _LINK_SIG = "S" * 43  # token_auth._sign is always exactly 43 base64url chars
 
 BRANCH_SAMPLES: tuple[str, ...] = (
-    "AKIAIOSFODNN7EXAMPLE",  # 0  AWS access key ID
-    f"aws_secret_access_key={AWS_SECRET}",  # 1
-    "aws_session_token=FwoGZXIvYXdzEBYaDNotARealSessionToken",  # 2
-    "AccessKeyId: notarealaccesskeyvalue123",  # 3
-    "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34\n-----END RSA PRIVATE KEY-----",  # 4
-    "xoxb-1234567890-abcdefghijklmnop",  # 5  Slack
-    f"123456789:{_A35}",  # 6  Telegram bot token
-    "M" + "a" * 24 + ".abc123." + "b" * 27,  # 7  Discord bot token
-    "ghp_" + "a" * 36,  # 8  GitHub PAT
-    "github_pat_" + "a" * 40,  # 9
-    "glpat-" + "a" * 20,  # 10
-    "sk_live_" + "a" * 24,  # 11  Stripe
-    "SG.abcdefghijklmnop.abcdefghijklmnop",  # 12  SendGrid
-    "sk-proj-" + "a" * 20,  # 13  OpenAI
-    "sk-ant-" + "a" * 20,  # 14  Anthropic
-    "npm_" + "a" * 30,  # 15
-    "pypi-" + "a" * 20,  # 16
-    "dop_v1_" + "a" * 45,  # 17  DigitalOcean
-    "GOCSPX-" + "a" * 25,  # 18  Google OAuth client secret
-    "postgres://dbuser:s3cr3tpw@db.example.com:5432/app",  # 19  URI userinfo
-    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijklmnop",  # 20  JWS
-    f" eyJ{_LINK_PAYLOAD}.{_LINK_SIG}",  # 21  2-segment dashboard link token
-    "Authorization: Bearer abc.def.ghijklmnop",  # 22  HTTP/JSON bearer
+    "-----BEGIN RSA PRIVATE" " KEY-----\nMIIBOgIBAAJBAKj34\n-----END RSA PRIVATE" " KEY-----",  # 0
+    "xoxb-1234567890-abcdefghijklmnop",  # 1  Slack
+    f"123456789:{_A35}",  # 2  Telegram bot token
+    "M" + "a" * 24 + ".abc123." + "b" * 27,  # 3  Discord bot token
+    "ghp_" + "a" * 36,  # 4  GitHub PAT
+    "github_pat_" + "a" * 40,  # 5
+    "glpat-" + "a" * 20,  # 6
+    "sk_live_" + "a" * 24,  # 7  Stripe
+    "SG.abcdefghijklmnop.abcdefghijklmnop",  # 8  SendGrid
+    "sk-proj-" + "a" * 20,  # 9  OpenAI
+    "sk-ant-" + "a" * 20,  # 10  Anthropic
+    "npm_" + "a" * 30,  # 11
+    "pypi-" + "a" * 20,  # 12
+    "dop_v1_" + "a" * 45,  # 13  DigitalOcean
+    "GOCSPX-" + "a" * 25,  # 14  Google OAuth client secret
+    "IQoJb3Jp" "Z2lu" + "a" * 90,  # 15  AWS STS session token
+    "postgres://dbuser:s3cr3tpw@db.example.com:5432/app",  # 16  URI userinfo
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijklmnop",  # 17  JWS
+    f" eyJ{_LINK_PAYLOAD}.{_LINK_SIG}",  # 18  2-segment dashboard link token
+    "Signature=" + "0123456789abcdef" * 4,  # 19  SigV4 request signature
 )
 
-# ── Unicode case-folding bypass shapes ──
+# ── Labelled, paired and encoded shapes the context rules and the view handle ──
 #
-# `str.lower()` and `re.IGNORECASE` are DIFFERENT case-folding implementations.
-# `re` folds via `sre_compile._equivalences`, which treats U+0131 (dotless i) and
-# U+0130 (I with dot above) as equivalent to `i`/`I`; `str.lower()` leaves U+0131
-# alone and expands U+0130 to two code points. Branch 22 is `(?i:Authorization)`,
-# so it MATCHES these shapes while a `.lower()`-based anchor MISSES them -- the
-# gate returns False, pass 1 is skipped, and the bearer token is persisted
-# verbatim. A `.lower()` anchor fails these.
-UNICODE_CASE_FOLD_BYPASS_SHAPES: tuple[str, ...] = (
-    "Author\u0131zation: Bearer opaque-token-123456",  # U+0131 SMALL LETTER DOTLESS I
-    "AUTHOR\u0130ZATION: Bearer opaque-token-123456",  # U+0130 CAPITAL I WITH DOT ABOVE
-    "author\u0131zation: bearer opaque-token-123456",
-    '{"Author\u0131zation": "Bearer opaque-token-123456"}',
+# None of these is a branch of `_CREDENTIAL_PATTERNS`; they reach the redactor
+# through `redaction_labels`, the vendor catalog or the normalised view, which
+# the pre-filter does not gate. They are in the corpus so the differential also
+# covers the passes that sit between pass 1 and pass 2.
+_GLPAT = "glpat" + "-" + "Xk9fQ2mP4nR7sT1vWq7d"  # assembled; fake value
+CONTEXT_SHAPES: tuple[str, ...] = (
+    f"aws_secret_access_key={AWS_SECRET}",
+    f"AWS_SECRET_ACCESS_KEY = {AWS_SECRET}",
+    f'{{"SecretAccessKey": "{AWS_SECRET}"}}',
+    "aws_session_token=FwoGZXIvYXdzEBYaDNotARealSessionToken",
+    "Authorization: Bearer abc.def.ghijklmnop",
+    "authorization: bearer opaque-token-123456",
+    "api_key=Xk9fQ2mP4nR7",
+    'client_secret: "Vb3nHj8LqW2zYc5d"',
+    f"AKIAIOSFODNN7EXAMPLE {AWS_SECRET}",
+    f"key AKIAIOSFODNN7EXAMPLE then later {AWS_SECRET} in the same note",
+    "aws_secret_access_key%3D" + AWS_SECRET,
+    "glpat%2D" + "a" * 20,
+    '{"k":"gh\\u0070_' + "a" * 36 + '"}',
+    "gh\x1b[0mp_" + "a" * 36,
+    "gl\u200bpat-" + "a" * 20,
+    base64.urlsafe_b64encode(b"\xfb\xff" + _GLPAT.encode() + b" and more prose here").decode(),
+    "-----wrapped-----\n"
+    + "\n".join(
+        base64.b64encode(f"aws_secret_access_key={AWS_SECRET} wrapped".encode()).decode()[
+            i : i + 20
+        ]
+        for i in range(0, 84, 20)
+    ),
 )
 
 
@@ -284,16 +323,14 @@ def _rebuild(branches: list[str]) -> re.Pattern[str]:
 # ── Corpus ──
 
 
-# Fixtures for the pass-2/pass-3 per-run cases below. Deliberately deterministic
-# so corpus ids stay stable across runs.
+# Fixtures for the pass-2 per-run cases below. Deliberately deterministic so
+# corpus ids stay stable across runs.
 _B64_RUN_40 = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0"  # 40 chars, len % 4 == 0
-# base64 of readable prose -> decodes to printable, so the run-level gate in
-# `_contains_bare_secret` returns before the sliding window runs.
+# base64 of readable prose with no secret in it -> decodes, holds nothing.
 _PRINTABLE_BLOB = base64.b64encode(
     b"the quick brown fox jumps over the lazy dog while deploying"
 ).decode()
-# base64 of bytes 0x00-0x2F -> 19 of 48 bytes printable (0.40), below the 0.85
-# ratio, so this reaches the sliding window instead.
+# base64 of bytes 0x00-0x2F -> decodes to mostly control bytes.
 _GARBAGE_BLOB = base64.b64encode(bytes(range(48))).decode()
 # 30 bare UTF-8 continuation bytes: a valid 40-char base64 chunk that decodes to
 # 30 raw bytes but to the EMPTY string once `errors="ignore"` drops them all. This
@@ -312,18 +349,10 @@ _ENCODED_CRED_STEM = (
 # alphabet char yields a 57-char run that cannot decode (length % 4 == 1).
 _HOSTED_ENCODED_CRED = base64.b64encode(b"ghp_" + b"a" * 38).decode()
 _ENCODED_CRED_HOST = "Q" + _HOSTED_ENCODED_CRED
-# Pass 3: a key-shaped 40-char token carrying FOUR slashes. Standing alone it is a
-# bare secret (a 40-char run is the token somebody wrote, so the separator ceiling
-# does not apply); inside a 41-char run every window either is this token (four
-# slashes, over the ceiling) or starts on the leading slash (five), so the host
-# run is declined and survives.
-_SLASHY_SECRET = "wJalrXUtnF/MI/K7MDENG/bPxRf/CYEXAMPLEKEY"
-_SLASHY_SECRET_HOST = "/" + _SLASHY_SECRET
 
 
 def _corpus() -> list[str]:
-    """Every shape the three passes can encounter, plus the awkward boundaries."""
-    glued = "X" + AWS_SECRET  # 41-char run: exact-40 gate fails, sliding window catches
+    """Every shape the passes can encounter, plus the awkward boundaries."""
     cases: list[str] = [
         # degenerate
         "",
@@ -333,27 +362,22 @@ def _corpus() -> list[str]:
         # every branch, alone and embedded in prose
         *BRANCH_SAMPLES,
         *[f"prefix text {s} suffix text" for s in BRANCH_SAMPLES],
-        # Unicode case-folding shapes for the `(?i:Authorization)` branch. The
-        # ORACLE always scans, so it redacts these; a gate that misses them makes
-        # the live function diverge from the oracle. Their absence from this corpus
-        # is what let the `str.lower()` bypass ship, so they are pinned here as
-        # well as in their own dedicated test.
-        *UNICODE_CASE_FOLD_BYPASS_SHAPES,
-        *[f"log line: {s}" for s in UNICODE_CASE_FOLD_BYPASS_SHAPES],
-        # bare 40-char AWS secret keys
+        # labelled, paired and encoded shapes, alone and embedded
+        *CONTEXT_SHAPES,
+        *[f"log line: {s} end" for s in CONTEXT_SHAPES],
+        # an unlabelled 40-char value with nothing beside it is left as it is
         AWS_SECRET,
         f"key is {AWS_SECRET} ok",
-        # a bare secret AS a `?token=` value: pass 3 claims the value, pass 4
-        # must find no gap. This is the mutation pin for the
-        # `taken = sorted(taken + pass3)` fold ahead of pass 4 — without it,
+        # a secret AS a `?token=` value: an earlier pass claims the value, so
+        # pass 4 must find no gap. Without the fold of `taken` ahead of pass 4,
         # pass 4 re-claims the same span, `_splice` gets overlapping spans and
         # the output doubles the tag, which the byte-identical differential
-        # then catches. Legacy-equivalent: legacy pass 3 replaces the same
-        # value and pass 4 does not exist there, so outputs agree.
+        # then catches.
         f"?token={AWS_SECRET}",
-        # Percent-encoded and HTML-reference near misses stay legacy-equivalent:
-        # none becomes a token-parameter delimiter after the one decode performed
-        # by its owning parser stage.
+        f"?token=ghp_{'a' * 36}",
+        # Percent-encoded and HTML-reference near misses: none becomes a
+        # token-parameter delimiter after the one decode performed by its owning
+        # parser stage.
         "?to%6Aen=x",
         "?to%6gen=x",
         "&amptoken=Xk9fQ2mP4nR7sT1v",
@@ -366,8 +390,8 @@ def _corpus() -> list[str]:
         "&#382token=Vb3nHj8LqW2zYc5d",
         "?token&#61123abcWq7dRt2xKp9mZv4c",
         "&#00000000038;token=Qp4mXk9fR2vN7sT1",
-        # the sliding-window cases the existing comment calls out explicitly
-        glued,
+        # a 40-char value glued to more run characters
+        "X" + AWS_SECRET,
         AWS_SECRET + "A",
         "SECRET=" + AWS_SECRET + "ABC",
         AWS_SECRET + "X" + AWS_SECRET,
@@ -399,7 +423,7 @@ def _corpus() -> list[str]:
         ("lorem ipsum dolor sit amet " * 4000),
         ("lorem ipsum dolor sit amet " * 4000) + f" ghp_{'a' * 36}",
         f"ghp_{'a' * 36} " + ("lorem ipsum dolor sit amet " * 4000),
-        # ── blast radius of the pass-2/pass-3 per-run work ──
+        # ── blast radius of the pass-2 per-run work ──
         # Many hex digests in one string. Each is a 64-char base64-alphabet run
         # that IS 4-aligned, so every one reaches the decode; this is the shape
         # the per-run cost was measured on.
@@ -419,10 +443,10 @@ def _corpus() -> list[str]:
         _B64_RUN_40 + "abc" + "=",  # 44 total -> decodes
         _B64_RUN_40 + "abcd" + "=",  # 45 total -> cannot decode
         _B64_RUN_40 + "abcd" + "==",  # 46 total -> cannot decode
-        # Decodes to printable TEXT: the run-level gate exits before the slide.
+        # Decodes to printable text with no secret in it.
         _PRINTABLE_BLOB,
         f"blob {_PRINTABLE_BLOB} end",
-        # Decodes to high-entropy GARBAGE: reaches the sliding window.
+        # Decodes to binary bytes.
         _GARBAGE_BLOB,
         f"blob {_GARBAGE_BLOB} end",
         # Decodes to the EMPTY string once invalid UTF-8 is dropped: the only
@@ -443,47 +467,30 @@ def _corpus() -> list[str]:
         _ENCODED_CRED_STEM + "==",
         _ENCODED_CRED_STEM,
         f"payload {_ENCODED_CRED_STEM}= end",
-        # ── positional shapes on which redacting by value happened to land right ──
-        # The standalone credential comes FIRST, so the value's first occurrence
-        # is its own span and the legacy redactor agrees with the by-span one.
+        # ── positional shapes: the standalone credential comes FIRST ──
         f"{_HOSTED_ENCODED_CRED} {_ENCODED_CRED_HOST}",
-        f"{_SLASHY_SECRET} {_SLASHY_SECRET_HOST}",
-        # The same value twice, once inside a labelled match and once bare: the
-        # bare one is judged on its own span, not on whether the value remains.
+        # The same value twice, once behind a label and once unlabelled: each is
+        # judged on its own span, not on whether the value remains elsewhere.
         f"aws_secret_access_key={AWS_SECRET} {AWS_SECRET}",
         f"{AWS_SECRET} aws_secret_access_key={AWS_SECRET}",
+        f"D{AWS_SECRET}ZGHUT8aws_secret_access_key={AWS_SECRET}",
+        f"sk-proj-{'a' * 20}Z{AWS_SECRET}",
     ]
     return cases
 
 
-# Every shape on which the legacy by-value redactor and the by-span one
-# disagree, paired with the plaintext the legacy output KEEPS and the by-span
-# output removes. Kept apart from `_corpus()` so the legacy-equivalence test
-# below can assert agreement on everything else and disagreement on exactly
-# these.
-LEGACY_DIVERGENT_SHAPES: tuple[tuple[str, str], ...] = (
-    # A decodable chunk hosted inside an earlier non-decodable run (pass 2): the
-    # legacy tag lands inside the host and the WHOLE standalone chunk survives.
+# Shapes paired with plaintext the redactor must remove from them. They join the
+# differential corpus, and `test_every_pinned_plaintext_is_removed` asserts the
+# removal directly, so the oracle cannot agree with the live function on a shape
+# both of them get wrong.
+PLAINTEXT_PINS: tuple[tuple[str, str], ...] = (
+    # A decodable chunk hosted inside an earlier non-decodable run (pass 2):
+    # redacting by value would land the tag inside the host and keep the
+    # standalone chunk.
     (f"{_ENCODED_CRED_HOST} {_HOSTED_ENCODED_CRED}", f" {_HOSTED_ENCODED_CRED}"),
-    # A bare key hosted inside an earlier declined run (pass 3): same, the whole
-    # standalone key survives.
-    (f"{_SLASHY_SECRET_HOST} {_SLASHY_SECRET}", f" {_SLASHY_SECRET}"),
-    # A glued key whose tail is the first word of the label that follows it.
-    # Legacy skips the run (its tail is gone), then the labelled value's own
-    # pass-3 lookup lands inside the run by coincidence of equal text and
-    # redacts exactly the key, leaving the glue around it. With a DIFFERENT
-    # labelled value that coincidence is gone and the glued key leaks whole; the
-    # by-span redactor removes the whole run either way.
-    (f"D{AWS_SECRET}ZGHUT8aws_secret_access_key={AWS_SECRET}", "ZGHUT8"),
-    # A run whose head pass 1 took (`sk-proj-` consumes alphanumerics up to the
-    # first slash): legacy skips the run and the key's 26-char tail survives.
-    (f"sk-proj-{'a' * 20}Z{AWS_SECRET}", AWS_SECRET[14:]),
-    # Pass-4 shapes: an OPAQUE `?token=` / `&token=` value. Divergent for a
-    # different reason than the rows above -- the legacy oracle is the shipped
-    # pre-pass-4 behaviour, so it has no parameter-name pass at all and keeps
-    # the value verbatim; the live redactor and the by-span reference both
-    # remove it. The value is deliberately non-`eyJ` and far under the 40-char
-    # bare-secret floor, so no shape-based pass can mask the divergence.
+    # Pass-4 shapes: an OPAQUE `?token=` / `&token=` value. The value is
+    # deliberately non-`eyJ` and has no vendor prefix, so only the
+    # parameter-name pass removes it.
     (
         "open https://host.example.com/?token=Xk9fQ2mP4nR7sT1v now",
         "Xk9fQ2mP4nR7sT1v",
@@ -542,51 +549,7 @@ LEGACY_DIVERGENT_SHAPES: tuple[tuple[str, str], ...] = (
     ("see ?token&#x000000003D;Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
 )
 
-LEGACY_EQUIVALENT_CORPUS = _corpus()
-CORPUS = LEGACY_EQUIVALENT_CORPUS + [text for text, _ in LEGACY_DIVERGENT_SHAPES]
-
-
-# ── The by-value redactor this change retires, kept verbatim as a second oracle ──
-
-
-def _legacy_redact_credentials(text: str) -> tuple[str, list[str]]:
-    """Passes 2 and 3 as they shipped before the by-span rewrite. Do not fix this.
-
-    This is the SHIPPED behaviour, leak included, so that the rewrite's two
-    claims are both checked in CI rather than asserted in a PR body: on every
-    shape where redacting by value happened to land on the right span, the
-    by-span redactor is byte-identical to it, warnings included
-    (``test_by_span_agrees_with_legacy_wherever_legacy_landed_right``); and on
-    each divergent shape the legacy redactor keeps plaintext the by-span one
-    removes (``test_legacy_diverges_on_every_by_span_shape``). The by-span
-    oracle above shares its algorithm with the live function, so it cannot
-    carry either claim on its own.
-    """
-    warnings: list[str] = []
-    result = text
-
-    def _redact_one(m: "re.Match[str]") -> str:
-        warnings.append(f"Redacted credential pattern ({len(m.group())} chars)")
-        return _REDACTED_CREDENTIAL_TAG
-
-    result = _CREDENTIAL_PATTERNS.sub(_redact_one, result)
-
-    for m in _B64_CHUNK_RE.finditer(text):
-        chunk = m.group()
-        if _decode_b64_safe(chunk):
-            result = result.replace(chunk, "[REDACTED: encoded credential]", 1)
-            warnings.append(f"Redacted base64-encoded credential ({len(chunk)} chars)")
-
-    for m in _BARE_SECRET_RUN_RE.finditer(text):
-        run = m.group()
-        if not _contains_bare_secret(run):
-            continue
-        if run not in result:
-            continue
-        result = result.replace(run, _REDACTED_CREDENTIAL_TAG, 1)
-        warnings.append(f"Redacted bare secret key ({len(run)} chars)")
-
-    return result, warnings
+CORPUS = _corpus() + [text for text, _ in PLAINTEXT_PINS]
 
 
 # ── Differential assertions ──
@@ -613,24 +576,36 @@ def test_reference_token_entity_case_matches_whatwg_decoding() -> None:
         assert redact_credentials(text) == _reference_redact_credentials(text) == expected
 
 
-@pytest.mark.parametrize("text", LEGACY_EQUIVALENT_CORPUS, ids=range(len(LEGACY_EQUIVALENT_CORPUS)))
-def test_by_span_agrees_with_legacy_wherever_legacy_landed_right(text: str) -> None:
-    """Outside the leak shapes, the rewrite changes nothing: text nor warning order."""
-    assert redact_credentials(text) == _legacy_redact_credentials(text)
+@pytest.mark.parametrize(
+    ("text", "plaintext"),
+    PLAINTEXT_PINS,
+    ids=range(len(PLAINTEXT_PINS)),
+)
+def test_every_pinned_plaintext_is_removed(text: str, plaintext: str) -> None:
+    """Each pinned shape loses the plaintext it carries, in the live function and the oracle."""
+    assert plaintext in text, "corpus assumption: the shape carries the plaintext"
+    assert plaintext not in redact_credentials(text)[0], "the redactor left plaintext behind"
+    assert plaintext not in _reference_redact_credentials(text)[0]
 
 
 @pytest.mark.parametrize(
-    ("text", "legacy_keeps"),
-    LEGACY_DIVERGENT_SHAPES,
-    ids=range(len(LEGACY_DIVERGENT_SHAPES)),
+    ("text", "expected"),
+    [
+        (f"aws_secret_access_key={AWS_SECRET}", "aws_secret_access_key=[REDACTED: credential]"),
+        (f'"SecretAccessKey": "{AWS_SECRET}"', '"SecretAccessKey": "[REDACTED: credential]"'),
+        (
+            "Authorization: Bearer abc.def.ghijklmnop",
+            "Authorization: Bearer [REDACTED: credential]",
+        ),
+        ("api_key=Xk9fQ2mP4nR7", "api_key=[REDACTED: credential]"),
+        (f"AKIAIOSFODNN7EXAMPLE {AWS_SECRET}", "AKIAIOSFODNN7EXAMPLE [REDACTED: credential]"),
+        (AWS_SECRET, AWS_SECRET),
+    ],
 )
-def test_legacy_diverges_on_every_by_span_shape(text: str, legacy_keeps: str) -> None:
-    """Each divergent shape is a real pin: legacy keeps plaintext the rewrite removes."""
-    legacy_text, _ = _legacy_redact_credentials(text)
-    live_text, _ = redact_credentials(text)
-    assert legacy_text != live_text
-    assert legacy_keeps in legacy_text, "corpus assumption: the legacy redactor kept this"
-    assert legacy_keeps not in live_text, "the by-span redactor left plaintext behind"
+def test_labelled_and_paired_values_keep_their_label(text: str, expected: str) -> None:
+    """The label and the key ID stay; only the value goes; an unlabelled value is left as is."""
+    assert redact_credentials(text)[0] == expected
+    assert _reference_redact_credentials(text)[0] == expected
 
 
 def test_matched_span_is_redacted_not_an_earlier_lookalike() -> None:
@@ -674,55 +649,6 @@ def test_hosted_encoded_credential_is_redacted_at_its_own_span() -> None:
     assert warnings == [f"Redacted base64-encoded credential ({len(_HOSTED_ENCODED_CRED)} chars)"]
 
 
-def test_hosted_bare_secret_is_redacted_at_its_own_span() -> None:
-    """Pass 3 must redact the run that was judged a key, not an earlier host.
-
-    ``_SLASHY_SECRET_HOST`` is a slash glued to a four-slash key: every 40-char
-    window of the 41-char run carries more slashes than the fragment ceiling
-    allows, so the host is declined and survives. The standalone key that
-    follows is exactly 40 chars, exempt from the ceiling, and IS a bare secret.
-    The ``run not in result`` guard saw the key's text inside the host and
-    ``result.replace(run, tag, 1)`` redacted the host instead.
-    """
-    assert not _contains_bare_secret(_SLASHY_SECRET_HOST), "corpus assumption: the host is declined"
-    assert _contains_bare_secret(_SLASHY_SECRET), "corpus assumption: the key is a bare secret"
-    text = f"{_SLASHY_SECRET_HOST} {_SLASHY_SECRET}"
-    assert not _CREDENTIAL_PATTERNS.search(text), "corpus assumption: pass 1 stays out"
-    assert not any(
-        _decode_b64_chunk(m.group()) for m in _B64_CHUNK_RE.finditer(text)
-    ), "corpus assumption: pass 2 stays out"
-
-    redacted, warnings = redact_credentials(text)
-
-    assert f" {_SLASHY_SECRET}" not in redacted, "the bare key survived redaction"
-    assert redacted == f"{_SLASHY_SECRET_HOST} {_REDACTED_CREDENTIAL_TAG}"
-    assert warnings == [f"Redacted bare secret key ({len(_SLASHY_SECRET)} chars)"]
-
-
-def test_partly_claimed_run_keeps_no_plaintext() -> None:
-    """A later pass redacts whatever of its span an earlier pass left standing.
-
-    A key glued to the ``aws`` of a following ``aws_secret_access_key=`` label
-    forms one base64 run whose last three chars pass 1 claims. The run as a
-    whole is a bare secret; skipping it because part of it is gone would leave
-    the glued key in plaintext, and re-redacting the claimed tail would
-    corrupt the pass-1 tag. Only the unclaimed head is spliced.
-    """
-    run = f"D{AWS_SECRET}ZGHUT8aws"
-    text = f"D{AWS_SECRET}ZGHUT8aws_secret_access_key={AWS_SECRET}"
-    assert [m.group() for m in _B64_CHUNK_RE.finditer(text)] == [run, AWS_SECRET]
-    assert _contains_bare_secret(run), "corpus assumption: the glued run is a bare secret"
-
-    redacted, warnings = redact_credentials(text)
-
-    assert AWS_SECRET not in redacted
-    assert redacted == f"{_REDACTED_CREDENTIAL_TAG}{_REDACTED_CREDENTIAL_TAG}"
-    assert warnings == [
-        f"Redacted credential pattern ({len(text) - len(run) + 3} chars)",
-        f"Redacted bare secret key ({len(run)} chars)",
-    ]
-
-
 def test_redact_credentials_never_substitutes_by_value() -> None:
     """The redactor splices spans; ``str.replace`` on a matched value is the defect class.
 
@@ -749,8 +675,28 @@ def test_corpus_actually_exercises_every_pass() -> None:
     kinds = {w.split("(")[0].strip() for text in CORPUS for w in redact_credentials(text)[1]}
     assert "Redacted credential pattern" in kinds
     assert "Redacted base64-encoded credential" in kinds
-    assert "Redacted bare secret key" in kinds
     assert "Redacted token parameter value" in kinds
+
+    # The context rules share pass 1's warning, so tell them apart by rule id.
+    rules = {m.rule for text in CORPUS for m in redact_credentials_with_records(text)[2]}
+    for rule in (
+        "aws_secret_access_key",
+        "aws_session_token",
+        "authorization_header",
+        "secret_label",
+        "aws_key_pair",
+        "encoded_credential",
+    ):
+        assert rule in rules, f"corpus never triggers {rule}"
+    # The normalised view: a credential that only matches once decoded.
+    view_hits = [
+        text
+        for text in CORPUS
+        if (view := normalised_view(text)) is not None
+        and next(_credential_matches(view.text), None) is not None
+        and next(_credential_matches(text), None) is None
+    ]
+    assert view_hits, "corpus never carries a credential only the normalised view reveals"
 
 
 def test_warnings_never_carry_secret_material() -> None:
@@ -819,7 +765,7 @@ def test_prefilter_soundness_under_fuzz() -> None:
     rng = random.Random(20260830)
     alphabet = string.ascii_letters + string.digits + "_-.:/@=+ \n'\"{},"
 
-    seeds: list[str] = list(BRANCH_SAMPLES) + [AWS_SECRET]
+    seeds: list[str] = list(BRANCH_SAMPLES) + list(CONTEXT_SHAPES) + [AWS_SECRET]
     mutations: list[str] = []
     for seed in seeds:
         if len(seed) > 6:
@@ -843,46 +789,7 @@ def test_prefilter_soundness_under_fuzz() -> None:
     assert checked >= 500, f"fuzz produced only {checked} real matches; too weak"
 
 
-# ── The shared-scan and chunk-decode equivalences the rewrite relies on ──
-
-
-def test_b64_chunk_spans_match_bare_secret_run_spans() -> None:
-    """Pass 2 and pass 3 select the same runs; only `=` padding differs.
-
-    This is what licenses one shared scan feeding both loops.
-    """
-    for text in CORPUS:
-        chunks = [m.group() for m in _B64_CHUNK_RE.finditer(text)]
-        runs = [m.group() for m in _BARE_SECRET_RUN_RE.finditer(text)]
-        assert [c.rstrip("=") for c in chunks] == runs, repr(text[:80])
-
-
-def test_the_two_base64_run_patterns_stay_structurally_coupled() -> None:
-    """Pin both run patterns against a SILENT widening of one of them.
-
-    Pass 3 stopped reading `_BARE_SECRET_RUN_RE` when the shared scan landed -- it
-    derives runs from `_B64_CHUNK_RE` now. `_BARE_SECRET_RUN_RE` is still live for
-    `_text_contains_bare_secret`, so the two can be edited independently, and
-    widening one alone (base64url `-_`, say) would change the URL scan while leaving
-    the redactor untouched. The span-equality test above catches that only if the
-    corpus happens to carry the widened shape, so pin the literals here too: an edit
-    to either fails at this assertion, which names the shared-scan invariant.
-    """
-    assert _B64_CHUNK_RE.pattern == r"[A-Za-z0-9+/]{40,}={0,2}"
-    assert _BARE_SECRET_RUN_RE.pattern == r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}(?![A-Za-z0-9+/])"
-
-    # Assert the coupling itself -- shared alphabet and shared {40,} floor -- so the
-    # intent survives a cosmetic re-spelling of either literal.
-    alphabet = "[A-Za-z0-9+/]"
-    assert _B64_CHUNK_RE.pattern.count(alphabet) == 1
-    assert _BARE_SECRET_RUN_RE.pattern.count(alphabet) == 3  # body plus 2 look-arounds
-    assert "{40,}" in _B64_CHUNK_RE.pattern
-    assert "{40,}" in _BARE_SECRET_RUN_RE.pattern
-
-    # Negative control: prove this assertion can detect a base64url widening.
-    widened = _BARE_SECRET_RUN_RE.pattern.replace("A-Za-z0-9+/", "A-Za-z0-9+/\\-_")
-    assert widened != _BARE_SECRET_RUN_RE.pattern, "control failed to mutate the pattern"
-    assert widened.count(alphabet) != 3, "a widened character class must fail the pin"
+# ── The chunk-decode equivalence the rewrite relies on ──
 
 
 def test_decode_b64_chunk_matches_generic_helper_on_chunks() -> None:
@@ -905,7 +812,7 @@ def test_differential_test_detects_a_dropped_pattern_branch(
     """Break redaction by deleting a branch; the oracle comparison must notice."""
     import kiro_crew.security as security
 
-    crippled = _rebuild([b for i, b in enumerate(BRANCHES) if i != 8])  # drop gh[opsur]_
+    crippled = _rebuild([b for i, b in enumerate(BRANCHES) if i != 4])  # drop gh[opsur]_
     monkeypatch.setattr(security, "_CREDENTIAL_PATTERNS", crippled)
 
     sample = "ghp_" + "a" * 36
@@ -945,61 +852,11 @@ def test_differential_test_detects_a_too_narrow_prefilter(
     assert reference == (_REDACTED_CREDENTIAL_TAG, ["Redacted credential pattern (40 chars)"])
 
 
-# ── Unicode case-folding bypass (regression) ──
-#
-# Shapes are defined once, next to BRANCH_SAMPLES, because the differential corpus
-# consumes them too -- their absence from that corpus is what let this bypass ship.
-
-
-@pytest.mark.parametrize("text", UNICODE_CASE_FOLD_BYPASS_SHAPES)
-def test_unicode_case_folding_cannot_bypass_the_prefilter(text: str) -> None:
-    """A shape the BRANCH matches must never be skipped by the gate."""
-    # Positive control: if the branch stops matching these, the test is vacuous.
-    assert _CREDENTIAL_PATTERNS.search(text), (
-        "sample is not matched by _CREDENTIAL_PATTERNS, so it proves nothing about "
-        "the pre-filter"
-    )
-    assert _might_contain_credential(text), (
-        "pre-filter returned False for a shape the credential branch matches -- "
-        "pass 1 would be skipped and the token persisted"
-    )
-    redacted, warnings = redact_credentials(text)
-    assert "opaque-token-123456" not in redacted, "bearer token survived redaction"
-    assert warnings, "redaction produced no warning for a real credential"
-
-
-def test_prefilter_is_a_superset_under_every_re_ignorecase_equivalence() -> None:
-    """Generalise the regression past the two homoglyphs that were reported.
-
-    Any code point `re.IGNORECASE` folds into a letter of "Authorization" can be
-    substituted to build the same bypass, so assert the property over all of them
-    rather than over a sample list. Fails for `str.lower()`, passes for a
-    `(?i:…)` anchor.
-    """
-    letters = sorted(set("Authorization".lower()))
-    folded: list[tuple[str, str]] = []
-    for code_point in range(0x100, 0x2500):
-        char = chr(code_point)
-        for letter in letters:
-            if re.fullmatch(letter, char, re.IGNORECASE) and char.lower() != letter:
-                folded.append((letter, char))
-    assert folded, "no re.IGNORECASE equivalences found; the probe is broken"
-
-    for letter, char in folded:
-        text = "Authorization: Bearer opaque-token-123456".replace(letter, char, 1)
-        if not _CREDENTIAL_PATTERNS.search(text):
-            continue  # branch does not accept this substitution; nothing to gate
-        assert _might_contain_credential(
-            text
-        ), f"pre-filter misses U+{ord(char):04X} substituted for {letter!r}: {text!r}"
-        assert "opaque-token-123456" not in redact_credentials(text)[0]
-
-
 # ── The widened-branch guard ──
 #
 # The branch-count assertion catches an ADDED branch. It structurally cannot catch
 # a WIDENED one, because widening does not change the count -- and a branch that
-# accepts more than its anchor is exactly the bypass above. So exercise each
+# accepts more than its anchor would be skipped by the gate. So exercise each
 # branch's OWN matcher against the gate: mutate its registered sample, and for
 # every mutation the branch still accepts, require the gate to accept it too.
 
@@ -1031,10 +888,9 @@ def _widening_mutations(sample: str) -> list[str]:
 def test_widening_a_branch_cannot_outgrow_its_anchor() -> None:
     """Per-branch superset property under mutation.
 
-    This is the guard the branch-count assertion cannot provide. It fails on the
-    pre-fix implementation via branch 22 (`Authorization: Bearer`), whose
-    `(?i:…)` matcher accepted homoglyph spellings that the `str.lower()` anchor
-    rejected.
+    This is the guard the branch-count assertion cannot provide: a branch made
+    case-insensitive would accept homoglyph spellings that a case-sensitive or
+    `str.lower()` anchor rejects.
     """
     checked = 0
     for index, (branch, sample) in enumerate(zip(BRANCHES, BRANCH_SAMPLES)):
@@ -1054,19 +910,17 @@ def test_widening_a_branch_cannot_outgrow_its_anchor() -> None:
 
 
 def test_case_insensitive_branches_must_be_anchored_by_the_same_engine() -> None:
-    """Pin the count of case-insensitive branches.
+    """Pin the count of case-insensitive branches at zero.
 
     A case-insensitive branch cannot be gated by a case-sensitive literal, nor by
-    a hand-rolled fold such as `str.lower()` -- only by the same regex engine. If
-    you add another `(?i:…)` branch, this fails so the anchor gets the same
-    treatment as `_CREDENTIAL_PREFILTER_AUTHORIZATION_RE` rather than being
-    approximated.
+    a hand-rolled fold such as `str.lower()` -- only by the same regex engine.
+    Every pre-filter literal is case-sensitive, so a `(?i:…)` branch added here
+    fails this until it is given a same-engine regex anchor.
     """
     case_insensitive = [i for i, branch in enumerate(BRANCHES) if "(?i" in branch]
-    assert case_insensitive == [22], (
+    assert case_insensitive == [], (
         f"case-insensitive branches changed to {case_insensitive}. Every one needs a "
-        f"regex anchor using the same engine -- see "
-        f"_CREDENTIAL_PREFILTER_AUTHORIZATION_RE and the bypass it fixed."
+        f"regex anchor in `_might_contain_credential` using the same engine."
     )
 
 
@@ -1190,8 +1044,13 @@ def _generate_from_sequence(sequence: object) -> list[str]:
                 variants.extend(_generate_from_sequence(alternative))
             variants = variants[:_MAX_GENERATED_VARIANTS]
             out = [s + v for s in out for v in variants][:_MAX_GENERATED_VARIANTS]
-        # Anchors and look-arounds consume nothing, so they contribute no text. A
-        # leading space is prepended by the caller to satisfy left look-behinds.
+        elif name == "assert" and value[0] < 0:
+            # A positive look-behind needs its text BEFORE the match, so it is
+            # written out: `(?<=Signature=)` contributes `Signature=`.
+            variants = _generate_from_sequence(value[1])
+            out = [s + v for s in out for v in variants][:_MAX_GENERATED_VARIANTS]
+        # Other anchors and look-arounds consume nothing, so they contribute no text.
+        # A leading space is prepended by the caller to satisfy left look-behinds.
     return out[:_MAX_GENERATED_VARIANTS]
 
 
@@ -1211,7 +1070,7 @@ def test_a_widened_branch_cannot_outgrow_its_anchor() -> None:
     not), while this one enumerates the branch's alternatives (covering new
     alternatives, which perturbation does not).
 
-    Verified to catch the class it exists for: widening branch 13 to
+    Verified to catch the class it exists for: widening branch 9 to
     `sk-(?:proj|svcacct)-` yields a `sk-svcacct-` variant the anchors reject,
     which the perturbation guard's 13 mutations all miss.
     """
@@ -1244,83 +1103,6 @@ def test_a_widened_branch_cannot_outgrow_its_anchor() -> None:
         f"only {checked} generated samples were assertable across {len(BRANCHES)} "
         f"branches; the generator is too weak to guard them"
     )
-
-
-# ── Per-run work in passes 2 and 3: independent oracles ──
-#
-# `_decodes_to_printable_text` is reached THROUGH `_contains_bare_secret`, which
-# the reference oracle above also calls. So the byte-identity assertion shares
-# that helper with the implementation and structurally cannot detect a change
-# inside it. These tests supply the missing oracle: a verbatim copy of the
-# pre-rewrite body, compared against the live one.
-
-
-def _reference_printable_count(raw: bytes) -> int:
-    """The per-byte sum `_decodes_to_printable_text` used before the rewrite."""
-    return sum(1 for b in raw if 0x20 <= b <= 0x7E or b in (0x09, 0x0A, 0x0D))
-
-
-def _reference_decodes_to_printable_text(token: str) -> bool:
-    """Verbatim pre-rewrite body of `_decodes_to_printable_text`."""
-    try:
-        raw = base64.b64decode(token + "=" * (-len(token) % 4), validate=False)
-    except Exception:
-        return False
-    if not raw:
-        return False
-    printable = _reference_printable_count(raw)
-    return printable / len(raw) >= _SECRET_PRINTABLE_DECODE_RATIO
-
-
-def _translate_count(raw: bytes) -> int:
-    """The live count: delete the printable set in C and measure the remainder."""
-    return len(raw) - len(raw.translate(None, _PRINTABLE_BYTES))
-
-
-def test_printable_count_matches_the_per_byte_sum() -> None:
-    """The translate-based count must equal the per-byte sum for every input.
-
-    Exhaustive over all 256 single-byte values -- which is a complete proof for
-    the membership question itself, since `translate` decides each byte
-    independently -- then fuzzed over multi-byte inputs to cover the length
-    arithmetic.
-    """
-    for b in range(256):
-        raw = bytes([b])
-        assert _translate_count(raw) == _reference_printable_count(raw), hex(b)
-
-    rng = random.Random(20260830)
-    for _ in range(4000):
-        raw = bytes(rng.randrange(256) for _ in range(rng.randint(0, 300)))
-        assert _translate_count(raw) == _reference_printable_count(raw), repr(raw[:24])
-
-
-def test_decodes_to_printable_text_matches_the_reference_implementation() -> None:
-    """The live helper must agree with the pre-rewrite body on every input.
-
-    Covers the shapes the rewrite is exposed to: every base64 run in the corpus,
-    both `=`-stripped and as matched, plus fuzzed runs across every length
-    residue and padding form.
-    """
-    checked = 0
-    for text in CORPUS:
-        for m in _B64_CHUNK_RE.finditer(text):
-            chunk = m.group()
-            for candidate in (chunk, chunk.rstrip("=")):
-                checked += 1
-                assert _decodes_to_printable_text(candidate) == (
-                    _reference_decodes_to_printable_text(candidate)
-                ), repr(candidate[:48])
-    assert checked >= 40, f"only {checked} runs exercised; corpus too weak"
-
-    rng = random.Random(11)
-    alphabet = string.ascii_letters + string.digits + "+/"
-    for _ in range(3000):
-        n = rng.randint(0, 200)
-        token = "".join(rng.choice(alphabet) for _ in range(n)) + rng.choice(("", "=", "=="))
-        assert _decodes_to_printable_text(token) == _reference_decodes_to_printable_text(
-            token
-        ), repr(token[:48])
 
 
 def test_a_decode_length_precondition_would_be_version_dependent() -> None:
@@ -1400,68 +1182,28 @@ def test_decode_gate_agrees_with_the_ungated_helper_across_the_length_gate() -> 
     assert _decode_b64_chunk(cred), "the gate must not hide a real encoded credential"
 
 
-def test_chunk_and_repadded_run_are_not_interchangeable_decode_inputs() -> None:
-    """Records why pass 2's decode is NOT shared with pass 3's.
-
-    Pass 2 decodes the chunk as matched with `validate=True`; pass 3 reaches
-    `_decodes_to_printable_text`, which strips `=`, re-pads to a multiple of 4 and
-    decodes with `validate=False`. Those two inputs coincide only when the chunk
-    as written already carries minimal padding, so the results are NOT one value
-    and sharing the decode between the passes would not be sound.
-    """
-    differing = 0
-    for text in CORPUS:
-        for m in _B64_CHUNK_RE.finditer(text):
-            chunk = m.group()
-            run = chunk.rstrip("=")
-            if run + "=" * (-len(run) % 4) != chunk:
-                differing += 1
-    assert differing > 0, (
-        "no corpus chunk's padding differs from its re-padded run, so the "
-        "decode-sharing hazard is unexercised"
-    )
-
-
-# ── Negative controls for the per-run work: prove these tests can fail ──
-
-
-def test_printable_equivalence_control_detects_a_narrowed_byte_set() -> None:
-    """Prove `test_printable_count_matches_the_per_byte_sum` can fail.
-
-    Drop tab/LF/CR from the byte set -- the exact mistake a hand-written set
-    would make -- and the count must diverge from the per-byte sum.
-    """
-    narrowed = bytes(sorted(set(range(0x20, 0x7F))))
-    raw = b"line one\nline two\ttabbed\r\n"
-
-    narrowed_count = len(raw) - len(raw.translate(None, narrowed))
-    assert narrowed_count != _reference_printable_count(
-        raw
-    ), "the equivalence assertion cannot detect a narrowed printable set"
-    assert _translate_count(raw) == _reference_printable_count(raw)
-
-
 def test_differential_test_detects_a_too_narrow_decoded_blob_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Prove the byte-identity assertion catches a broken decoded-blob gate.
 
     Disarm the pre-filter that pass 2 now consults, so a genuine base64-encoded
-    credential is skipped instead of redacted. The reference oracle decodes via
-    the ungated `_decode_b64_safe`, so it still redacts and the comparison must
-    diverge. Without this control the gate could be arbitrarily narrow and the
-    differential test would still pass.
+    credential is skipped instead of redacted. The payload is one only pass 1's
+    alternation catches (the label and catalog rules are not gated), so the
+    disarmed gate is the only thing between it and the output. The reference
+    oracle's pass 2 is the module's encoded-run finder, so the expected result is
+    captured BEFORE the gate is disarmed.
     """
     import kiro_crew.security as security
 
-    monkeypatch.setattr(security, "_might_contain_credential", lambda text: False)
-
-    payload = f"aws_secret_access_key={AWS_SECRET}"
+    payload = "xoxb-1234567890-abcdefghijklmnop in a sentence"
     sample = "payload " + base64.b64encode(payload.encode()).decode() + " end"
+    reference = _reference_redact_credentials(sample)
+
+    monkeypatch.setattr(security, "_might_contain_credential", lambda text: False)
     assert len(payload) >= _PREFILTER_MIN_LEN, "payload must clear the length gate"
 
     live = security.redact_credentials(sample)
-    reference = _reference_redact_credentials(sample)
     assert live != reference, "the differential test cannot detect a broken blob gate"
     assert "[REDACTED: encoded credential]" in reference[0]
     assert (
@@ -1493,9 +1235,9 @@ def test_a_length_short_circuit_would_leak_an_encoded_credential() -> None:
         if real:
             leaked += 1
 
-    # The base64 decoder rejects these shapes outright, so nothing leaks through
-    # them here. That is precisely why the length guard read as safe when it was
-    # only ever exercised on this interpreter: the bypass it would have opened is
-    # invisible from 3.12, and the in-loop invariant above -- a guard can never
-    # detect more than no guard -- is what actually rules the guard out.
-    assert leaked == 0
+    # The decoder restores stripped padding, so the unpadded stem decodes and is
+    # caught on every interpreter: the length guard would have dropped exactly
+    # that detection. The in-loop invariant above -- a guard can never detect
+    # more than no guard -- is what rules the guard out.
+    assert _decode_b64_chunk(stem), "the unpadded stem must decode"
+    assert leaked >= 1

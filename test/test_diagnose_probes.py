@@ -17,7 +17,7 @@ from kiro_crew import change_card_catalog as catalog
 from kiro_crew import diagnose_probes as dp
 
 #: A credential-shaped value the redactor recognises; it must never reach a finding.
-SECRET = "AKIA" + "Z7Q3XK2LM9PB4TWV"
+SECRET = "glpat-" + "Z7Q3XK2LM9PB4TWV"
 HOUR_MS = 3600 * 1000
 
 

@@ -301,7 +301,7 @@ _ERROR_ROWS = [
     ),
     pytest.param("boom", None, "Prompt error: boom", _tags(), id="non-dict-error"),
     pytest.param(
-        _frame("leak AKIAIOSFODNN7EXAMPLE https://evil.example.com/x?d=secret"),
+        _frame("leak glpat-IOSFODNN7EXAMPLE https://evil.example.com/x?d=secret"),
         None,
         "leak [REDACTED: credential] https://evil.example.com/x?d=secret",
         _tags(),

@@ -877,7 +877,7 @@ async def test_a_late_failure_does_not_clobber_the_live_row(monkeypatch: pytest.
 async def test_a_credential_bearing_url_is_disposed_and_retried_once(
     monkeypatch: pytest.MonkeyPatch, protected_pids: set[int], caplog
 ):
-    tainted = "https://auth.example.com/authorize?client_id=abc&access_token=AKIAIOSFODNN7EXAMPLE"
+    tainted = "https://auth.example.com/authorize?client_id=abc&access_token=glpat-IOSFODNN7EXAMPLE"
 
     class _Tainted(_FakeClient):
         def __init__(self, **kwargs: Any) -> None:
@@ -907,8 +907,8 @@ async def test_a_credential_bearing_url_is_disposed_and_retried_once(
     assert fresh.shutdowns == 0
     assert protected_pids == {fresh._pid}
     assert logged == ["ok url_minted=True"]
-    assert "AKIAIOSFODNN7EXAMPLE" not in caplog.text
-    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(logged)
+    assert "glpat-IOSFODNN7EXAMPLE" not in caplog.text
+    assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(logged)
 
     await mint._dispose_mint(mint._mints["notion"])
     assert fresh.shutdowns == 1
@@ -941,7 +941,7 @@ async def test_a_rejected_url_and_its_retry_are_screened_off_the_event_loop(
 async def test_a_second_credential_bearing_url_surfaces_failure_without_a_third_attempt(
     monkeypatch: pytest.MonkeyPatch, protected_pids: set[int], caplog
 ):
-    tainted = "https://auth.example.com/authorize?client_id=abc&access_token=AKIAIOSFODNN7EXAMPLE"
+    tainted = "https://auth.example.com/authorize?client_id=abc&access_token=glpat-IOSFODNN7EXAMPLE"
 
     class _Tainted(_FakeClient):
         def __init__(self, **kwargs: Any) -> None:
@@ -973,8 +973,8 @@ async def test_a_second_credential_bearing_url_surfaces_failure_without_a_third_
     assert [client.shutdowns for client in _FakeClient.instances] == [1, 1]
     assert protected_pids == set()
     assert logged == ["error reason=mint_url_rejected"]
-    assert "AKIAIOSFODNN7EXAMPLE" not in caplog.text
-    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(logged)
+    assert "glpat-IOSFODNN7EXAMPLE" not in caplog.text
+    assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(logged)
     assert "auth.example.com" not in caplog.text
     assert tainted not in json.dumps(view)
 
@@ -1018,10 +1018,10 @@ async def _reject_twice(
     "tainted",
     [
         # The credential IS the host label: a redacted host would name nothing.
-        "https://AKIAIOSFODNN7EXAMPLE.example.com/authorize?client_id=abc",
+        "https://glpat-IOSFODNN7EXAMPLE.example.com/authorize?client_id=abc",
         # The credential is a PATH segment: the diagnostic pair carries the
         # redaction tag, which is not a path a user could type.
-        "https://idp.example.com/AKIAIOSFODNN7EXAMPLE/authorize",
+        "https://idp.example.com/glpat-IOSFODNN7EXAMPLE/authorize",
         # Nameable host+path, but the extension loader would refuse the host,
         # so naming it would advertise an entry that gets skipped on load.
         _EXEMPTIBLE_URL.replace(_EXEMPTIBLE_HOST, "localhost", 1),
@@ -1030,9 +1030,9 @@ async def _reject_twice(
         _EXEMPTIBLE_URL.replace(_EXEMPTIBLE_HOST, _EXEMPTIBLE_HOST + ":8443", 1),
         # Nameable, loader-valid host+path, but a fixed credential in the query
         # is refused unconditionally -- the allowlist would not clear it.
-        f"https://{_EXEMPTIBLE_HOST}{_EXEMPTIBLE_PATH}?access_token=AKIAIOSFODNN7EXAMPLE",
+        f"https://{_EXEMPTIBLE_HOST}{_EXEMPTIBLE_PATH}?access_token=glpat-IOSFODNN7EXAMPLE",
         # Same, for a fragment: providers never emit one, the gate never allows one.
-        _EXEMPTIBLE_URL + "#AKIAIOSFODNN7EXAMPLE",
+        _EXEMPTIBLE_URL + "#glpat-IOSFODNN7EXAMPLE",
     ],
     ids=[
         "credential-in-host",
@@ -1055,9 +1055,9 @@ async def test_a_rejection_the_helper_cannot_name_leaves_the_card_unnamed(
     assert view is not None
     assert _state_only(view) == {"state": "failed", "reason": "mint_url_rejected"}
     assert logged == ["error reason=mint_url_rejected"]
-    assert "AKIAIOSFODNN7EXAMPLE" not in caplog.text
-    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(logged)
-    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(view)
+    assert "glpat-IOSFODNN7EXAMPLE" not in caplog.text
+    assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(logged)
+    assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(view)
 
 
 @pytest.mark.asyncio

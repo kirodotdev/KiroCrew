@@ -36,7 +36,7 @@ from kiro_crew.dashboard.chat_utils import remember_slack_options
 from kiro_crew.slack.format import build_options_blocks
 from kiro_crew.slack.outbound import PostedOptions
 
-AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+AWS_KEY = "glpat-IOSFODNN7EXAMPLE"
 
 
 def _mirror_slack() -> MagicMock:
@@ -397,7 +397,7 @@ class TestControlPostedAfterTheWindowIsSpent:
         from kiro_crew.dashboard import chat_slack
         from kiro_crew.dashboard.chat_backfill import BackfillSelection
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         reply = {"role": "assistant", "content": f"which key? [OPTIONS: {secret} | cancel]"}
 
         state = _make_state(tmp_path)
@@ -538,7 +538,7 @@ class TestControlPostedAfterTheWindowIsSpent:
         from kiro_crew.slack.format import strip_ansi
 
         # An AWS key broken up by a colour escape mid-token.
-        secret = "AKIA\x1b[0mIOSFODNN7EXAMPLE"
+        secret = "glpat-\x1b[0mIOSFODNN7EXAMPLE"
         blocks = build_options_blocks([secret, "cancel"])
 
         rendered = strip_ansi(json.dumps(blocks))

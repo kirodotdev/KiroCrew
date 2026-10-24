@@ -23,13 +23,11 @@ from kiro_crew.dashboard import chat_utils_display as cud
 from kiro_crew.dashboard import state as dashboard_state
 from kiro_crew.dashboard.state_parts import slot_transcript as st
 from kiro_crew.security import exfil, redact_credentials, redact_exfiltration_urls
-from kiro_crew.security.redaction_switch import code_text, owner_view
+from kiro_crew.security.redaction_switch import owner_view
 
-_AWS = "AKIAIOSFODNN7EXAMPLE"
+_AWS = "glpat-IOSFODNN7EXAMPLE"
 _HOST = "tenant.example.com"
 _EXFIL_URL = f"https://{_HOST}/view?d={base64.b64encode(bytes(range(200))).decode()}"
-#: Redacted as a bare secret outside ``code_text``, spared as an ordered alphabet inside.
-_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 _ZWSP = "\u200b"
 _LIMIT = st._LAST_MESSAGE_PREVIEW_CHARS
 
@@ -178,10 +176,10 @@ def test_an_exempt_host_change_is_not_answered_from_either_memo(monkeypatch):
     assert st._last_message_preview(text) == blocked_preview
 
 
-_SCOPED = [(owner_view, f"key {_AWS} here"), (code_text, f"run {_ALPHABET} ok")]
+_SCOPED = [(owner_view, f"key {_AWS} here")]
 
 
-@pytest.mark.parametrize("scope,text", _SCOPED, ids=["owner_view", "code_text"])
+@pytest.mark.parametrize("scope,text", _SCOPED, ids=["owner_view"])
 def test_redact_for_display_neither_reads_nor_fills_its_cache_inside_the_scope(scope, text):
     outside = _battery(text)
     with scope():
@@ -197,7 +195,7 @@ def test_redact_for_display_neither_reads_nor_fills_its_cache_inside_the_scope(s
         assert cud._redact_for_display(text) == inside
 
 
-@pytest.mark.parametrize("scope,text", _SCOPED, ids=["owner_view", "code_text"])
+@pytest.mark.parametrize("scope,text", _SCOPED, ids=["owner_view"])
 def test_the_preview_memo_neither_reads_nor_fills_inside_the_scope(scope, text):
     outside = _direct_preview(text)
     with scope():

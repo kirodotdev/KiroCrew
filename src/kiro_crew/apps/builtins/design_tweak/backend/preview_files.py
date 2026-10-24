@@ -13,6 +13,7 @@ from typing import Any
 
 from kiro_crew.security import DENIED_ROOT_PARTS
 from kiro_crew.security.redaction import _credential_matches
+from kiro_crew.security.redaction_decode import blocking_context, view_texts
 
 Response = tuple[int, str, bytes]
 
@@ -446,6 +447,17 @@ def contains_credential(runtime: Any, data: bytes) -> bool:
         # Images, fonts, and wasm have no text credentials to scan and must not
         # become false positives merely because they are arbitrary bytes.
         return False
+    # The text as written and every normalised view of it (an escaped
+    # ``{\"SecretAccessKey\": ...}``) get the SAME two checks, so the PEM
+    # marker exemption below holds in a view too.
+    return any(
+        _pattern_blocks(runtime, candidate) or blocking_context(candidate)
+        for candidate in (text, *view_texts(text))
+    )
+
+
+def _pattern_blocks(runtime: Any, text: str) -> bool:
+    """Whether a fixed credential pattern in *text* carries key material."""
     # The shared scanner finds the same matches as the credential pattern in
     # time linear in the text; the raw pattern is quadratic on repeated headers.
     for match in _credential_matches(text):
@@ -457,6 +469,8 @@ def contains_credential(runtime: Any, data: bytes) -> bool:
             # material; require an armoured body before refusing that case.
             continue
         return True
+    # The context rules of the Secret tier are the same predicate the
+    # exfiltration checks block on (``blocking_context``), so the two cannot drift.
     return False
 
 

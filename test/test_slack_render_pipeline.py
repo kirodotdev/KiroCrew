@@ -5,7 +5,7 @@ and self-truncates at ``SLACK_MAX_TEXT`` before converting, and each of those
 defeats credential redaction from a different side:
 
 - **redact then convert** -- the ANSI strip *reassembles* a credential the
-  escapes had broken up, so ``AKIA<esc>IOSF...`` sails past the regex and lands
+  escapes had broken up, so ``glpat-<esc>IOSF...`` sails past the regex and lands
   on Slack whole.
 - **convert then redact** -- the 39,000-char self-truncation cuts a credential in
   half before the regex runs, leaving an unmatchable prefix on the wire.
@@ -78,7 +78,7 @@ _SUPPRESS = "render-ok"
 
 # A representative AWS access key ID: matched by the credential regex, and long
 # enough that a straddling cut leaves a recognisable prefix behind.
-_SECRET = "AKIAIOSFODNN7EXAMPLE"
+_SECRET = "glpat-IOSFODNN7EXAMPLE"
 
 
 def _fake_redactor(text: str) -> str:
@@ -295,7 +295,7 @@ class TestRenderForSlackOrdering:
         removes it -- so a pipeline that redacts before normalising hands Slack
         the whole key. Normalising FIRST is what closes this.
         """
-        obfuscated = _SECRET[:4] + "\x1b[0m" + _SECRET[4:]
+        obfuscated = _SECRET[:6] + "\x1b[0m" + _SECRET[6:]
         body = "\n".join(render_for_slack(f"key is {obfuscated}", redactor=_fake_redactor))
         assert _SECRET not in body
         assert "[REDACTED]" in body
@@ -364,7 +364,7 @@ class TestRenderForSlackOrdering:
         link's closing ``>``. The last is the control: the part holding the whole
         link collapses to its label, and the key is never shown.
         """
-        marked_key = "AKIA*IOSFODNN7EXAMPLE*"
+        marked_key = "glpat-*IOSFODNN7EXAMPLE*"
         chunk_limit = SLACK_MSG_LIMIT - len(CONTINUATION)
         native_link_prefix = "<https://x/"
         filler_length = chunk_limit + key_offset - len(native_link_prefix)
@@ -389,8 +389,8 @@ class TestRenderForSlackOrdering:
             assert parts == slack_format.split_message(converted, limit=SLACK_MSG_LIMIT)
 
     def test_final_native_link_split_fenced_code_cannot_reveal_a_key(self) -> None:
-        marked_key = "AKIA```IOSFODNN7EXAMPLE````"
-        payload = "[doc](https://example.com/" + ("q" * 50) + marked_key + ")"
+        marked_key = "glpat-```IOSFODNN7EXAMPLE````"
+        payload = "[doc](https://example.com/" + ("q" * 48) + marked_key + ")"
         limit = 60
         unsafe_parts = slack_format.split_message(slack_format.to_slack_mrkdwn(payload), limit)
         assert any(_SECRET in part.replace("```", "") for part in unsafe_parts)
@@ -422,7 +422,7 @@ class TestRenderForSlackOrdering:
         ``>``, so the kept text is no link and its ``*...*`` reads as bold.
         """
         limit = 400
-        payload = "<https://x/" + ("q" * 330) + "AKIA*IOSFODNN7EXAMPLE*|label>" + ("t" * 200)
+        payload = "<https://x/" + ("q" * 330) + "glpat-*IOSFODNN7EXAMPLE*|label>" + ("t" * 200)
 
         rendered = render_one_for_slack(payload, limit=limit, redactor=self._credential_redactor)
 
@@ -455,7 +455,7 @@ class TestRenderForSlackOrdering:
 
         limit = 400
         payload = (
-            "<https://example.com/" + ("q" * 320) + "AKIA*IOSFODNN7EXAMPLE*|label>" + ("t" * 200)
+            "<https://example.com/" + ("q" * 320) + "glpat-*IOSFODNN7EXAMPLE*|label>" + ("t" * 200)
         )
         converted = slack_format.to_slack_mrkdwn(payload)
         cut_once = slack_format._truncated(converted, limit)[0]
@@ -494,13 +494,13 @@ class TestRenderForSlackOrdering:
 class TestConvertedSlackDisplayRedaction:
     """The converted mrkdwn must be safe under Slack's display semantics."""
 
-    _TAIL = _SECRET[4:]
+    _TAIL = _SECRET[6:]
     _REVEALING_SHAPES = [
-        ("bold-conversion", f"AKIA**{_TAIL}*"),
-        ("italic", f"AKIA_{_TAIL}_"),
-        ("strike-conversion", f"AKIA~~{_TAIL}~~"),
-        ("inline-code", f"AKIA`{_TAIL}`"),
-        ("native-link", f"AK<u|IA>{_TAIL}"),
+        ("bold-conversion", f"glpat-**{_TAIL}*"),
+        ("italic", f"glpat-_{_TAIL}_"),
+        ("strike-conversion", f"glpat-~~{_TAIL}~~"),
+        ("inline-code", f"glpat-`{_TAIL}`"),
+        ("native-link", f"gl<u|pat->{_TAIL}"),
     ]
     _CONTEXTS = [
         ("plain", "{}"),
@@ -547,8 +547,8 @@ class TestConvertedSlackDisplayRedaction:
         assert rendered.redacted is True
 
     def test_the_reported_input_is_safe_in_the_multipart_pipeline(self) -> None:
-        second_secret = "ASIA" + self._TAIL
-        payload = f"[l](https://x/AKIA**{self._TAIL}*/A``{second_secret[1:]}``|)"
+        second_secret = "sk-ant-" + self._TAIL
+        payload = f"[l](https://x/glpat-**{self._TAIL}*/s``{second_secret[1:]}``|)"
         parts = render_for_slack(payload, redactor=self._credential_redactor)
         assert parts
         joined = "".join(parts)
@@ -568,19 +568,19 @@ class TestConvertedSlackDisplayRedaction:
     @pytest.mark.parametrize(
         ("conversion_name", "conversion_shape"),
         [
-            ("bold", "AKIA**{tail}*"),
-            ("underscore", "AKIA__{tail}__"),
-            ("strike", "AKIA~~{tail}~~"),
+            ("bold", "glpat-**{tail}*"),
+            ("underscore", "glpat-__{tail}__"),
+            ("strike", "glpat-~~{tail}~~"),
         ],
     )
     @pytest.mark.parametrize(
         ("display_name", "display_shape"),
         [
-            ("inline-code", "ASIA`{tail}`"),
-            ("bold", "ASIA*{tail}*"),
-            ("italic", "ASIA_{tail}_"),
-            ("strike", "ASIA~{tail}~"),
-            ("native-link", "A<u|SIA{tail}>"),
+            ("inline-code", "sk-ant-`{tail}`"),
+            ("bold", "sk-ant-*{tail}*"),
+            ("italic", "sk-ant-_{tail}_"),
+            ("strike", "sk-ant-~{tail}~"),
+            ("native-link", "s<u|k-ant-{tail}>"),
         ],
     )
     def test_every_converted_and_displayed_pair_settles(
@@ -606,9 +606,9 @@ class TestConvertedSlackDisplayRedaction:
     @pytest.mark.parametrize(
         "payload",
         [
-            "[l](https://x/AKIA**rest*/ASIA`rest`|)",
-            "[l](https://x/AKIA__rest__/ASIA_rest_|)",
-            "[l](https://x/AKIA~~rest~~/A<u|SIArest>|)",
+            "[l](https://x/glpat-**rest*/sk-ant-`rest`|)",
+            "[l](https://x/glpat-__rest__/sk-ant-_rest_|)",
+            "[l](https://x/glpat-~~rest~~/s<u|k-ant-rest>|)",
         ],
     )
     def test_settling_keeps_keyless_conversion_output_byte_identical(self, payload: str) -> None:
@@ -624,7 +624,7 @@ class TestConvertedSlackDisplayRedaction:
         monkeypatch.setattr(
             slack_format,
             "_render_blocks",
-            lambda *args, **kwargs: (["AKIA", self._TAIL], False),
+            lambda *args, **kwargs: (["glpat-", self._TAIL], False),
         )
         rendered = render_one_for_slack("ignored", redactor=self._credential_redactor)
         assert _SECRET not in slack_mrkdwn_reading(rendered.text)
@@ -634,8 +634,8 @@ class TestConvertedSlackDisplayRedaction:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         self._narrow_generic_screen(monkeypatch)
-        second_secret = "ASIA" + self._TAIL
-        payload = f"[l](https://x/AKIA**{self._TAIL}*/A``{second_secret[1:]}``|)"
+        second_secret = "sk-ant-" + self._TAIL
+        payload = f"[l](https://x/glpat-**{self._TAIL}*/s``{second_secret[1:]}``|)"
         protected = render_for_slack(payload, redactor=self._credential_redactor)
         assert second_secret not in slack_mrkdwn_reading("".join(protected))
 
@@ -650,20 +650,20 @@ class TestConvertedSlackDisplayRedaction:
     @pytest.mark.parametrize(
         ("payload", "expected"),
         [
-            ("AKIA**rest*", "AKIA*rest*"),
-            ("[l](https://x/AKIA**rest*|)", "[l](https://x/AKIA*rest*|)"),
-            ("AKIA__rest_", "AKIA__rest_"),
-            ("[l](https://x/AKIA__rest_|)", "[l](https://x/AKIA__rest_|)"),
-            ("AKIA_rest_", "AKIA_rest_"),
-            ("[l](https://x/AKIA_rest_|)", "[l](https://x/AKIA_rest_|)"),
-            ("AKIA~~rest~~", "AKIA~rest~"),
-            ("[l](https://x/AKIA~~rest~~|)", "[l](https://x/AKIA~rest~|)"),
-            ("AKIA~rest~", "AKIA~rest~"),
-            ("[l](https://x/AKIA~rest~|)", "[l](https://x/AKIA~rest~|)"),
-            ("AKIA`rest`", "AKIA`rest`"),
-            ("[l](https://x/AKIA`rest`|)", "[l](https://x/AKIA`rest`|)"),
-            ("AK<u|IA>rest", "AK<u|IA>rest"),
-            ("[l](https://x/AK<u|IA>rest|)", "[l](https://x/AK<u|IA>rest|)"),
+            ("glpat-**rest*", "glpat-*rest*"),
+            ("[l](https://x/glpat-**rest*|)", "[l](https://x/glpat-*rest*|)"),
+            ("glpat-__rest_", "glpat-__rest_"),
+            ("[l](https://x/glpat-__rest_|)", "[l](https://x/glpat-__rest_|)"),
+            ("glpat-_rest_", "glpat-_rest_"),
+            ("[l](https://x/glpat-_rest_|)", "[l](https://x/glpat-_rest_|)"),
+            ("glpat-~~rest~~", "glpat-~rest~"),
+            ("[l](https://x/glpat-~~rest~~|)", "[l](https://x/glpat-~rest~|)"),
+            ("glpat-~rest~", "glpat-~rest~"),
+            ("[l](https://x/glpat-~rest~|)", "[l](https://x/glpat-~rest~|)"),
+            ("glpat-`rest`", "glpat-`rest`"),
+            ("[l](https://x/glpat-`rest`|)", "[l](https://x/glpat-`rest`|)"),
+            ("gl<u|pat->rest", "gl<u|pat->rest"),
+            ("[l](https://x/gl<u|pat->rest|)", "[l](https://x/gl<u|pat->rest|)"),
         ],
     )
     def test_keyless_markup_stays_byte_identical_to_the_head_output(
@@ -676,7 +676,7 @@ class TestConvertedSlackDisplayRedaction:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         self._narrow_generic_screen(monkeypatch)
-        payload = f"[l](https://x/AKIA**{self._TAIL}*|)"
+        payload = f"[l](https://x/glpat-**{self._TAIL}*|)"
         protected = render_one_for_slack(payload, redactor=self._credential_redactor)
         assert _SECRET not in slack_mrkdwn_reading(protected.text)
         assert protected.redacted is True
@@ -715,7 +715,9 @@ class TestLiteralOnlyRedactionKeepsTheBlockMarkup:
     def _assert_key_gone_and_markup_kept(self, text: str) -> None:
         assert self._SECRET_VALUE not in text
         assert self._SECRET_VALUE not in slack_mrkdwn_reading(text)
-        assert "SecretAccessKey" not in text
+        # The label is kept; only the value is replaced.
+        assert "SecretAccessKey" in text
+        assert "[REDACTED: credential]" in text
         assert f"<{self._URL}|the wiki>" in text
         assert "*so far*" in text
         assert "*runbook*" in text
@@ -733,7 +735,7 @@ class TestLiteralOnlyRedactionKeepsTheBlockMarkup:
         self._assert_key_gone_and_markup_kept(rendered.text)
 
     def test_a_key_the_slack_reading_joins_still_costs_the_markup(self) -> None:
-        payload = f"AKIA**{_SECRET[4:]}* and [the wiki]({self._URL})"
+        payload = f"glpat-**{_SECRET[6:]}* and [the wiki]({self._URL})"
         rendered = render_one_for_slack(payload, redactor=self._credential_redactor)
         assert _SECRET not in slack_mrkdwn_reading(rendered.text)
         assert rendered.redacted is True
@@ -851,7 +853,7 @@ class TestRenderOneForSlackOrdering:
     """render_one_for_slack: the collapsed form used by the streaming sinks."""
 
     def test_ansi_split_credential_is_not_reassembled(self) -> None:
-        obfuscated = _SECRET[:4] + "\x1b[0m" + _SECRET[4:]
+        obfuscated = _SECRET[:6] + "\x1b[0m" + _SECRET[6:]
         out = render_one_for_slack(f"key is {obfuscated}", redactor=_fake_redactor).text
         assert _SECRET not in out
         assert "[REDACTED]" in out
@@ -872,7 +874,7 @@ class TestRenderOneForSlackOrdering:
         So if this flag were not reported, the unredacted stream would stay
         visible on screen.
         """
-        obfuscated = _SECRET[:4] + "\x1b[0m" + _SECRET[4:]
+        obfuscated = _SECRET[:6] + "\x1b[0m" + _SECRET[6:]
         assert render_one_for_slack(f"key {obfuscated}", redactor=_fake_redactor).redacted
 
     def test_it_reports_no_redaction_for_clean_text(self) -> None:
@@ -1011,7 +1013,7 @@ class TestOptionsChoicesAreRedacted:
         assert _SECRET[:8] not in value, "a credential fragment survived into the value"
 
     def test_an_ansi_split_credential_in_a_choice_is_redacted(self) -> None:
-        obfuscated = _SECRET[:4] + "\x1b[0m" + _SECRET[4:]
+        obfuscated = _SECRET[:6] + "\x1b[0m" + _SECRET[6:]
         payload = json.dumps(build_options_blocks([obfuscated], redactor=_fake_redactor))
         assert _SECRET not in payload
 
@@ -1060,7 +1062,7 @@ class TestEmphasisDelimiterRedaction:
     backticks and shows the reader the joined text.
     """
 
-    KEY = "AKIAIOSFODNN7EXAMPLE"
+    KEY = "glpat-IOSFODNN7EXAMPLE"
 
     def _reader_sees(self, wire: str) -> str:
         """Approximate what Slack DISPLAYS: links show their label, delimiters go."""
@@ -1073,11 +1075,11 @@ class TestEmphasisDelimiterRedaction:
     @pytest.mark.parametrize(
         "payload",
         [
-            "AKIA**IOSFODNN7EXAMPLE**",
-            "AKIAIOSF**ODNN**7EXAMPLE",
-            "AKIAIOSF_ODNN_7EXAMPLE",
-            "AKIAIOSF~~ODNN~~7EXAMPLE",
-            "AKIAIOSF`ODNN`7EXAMPLE",
+            "glpat-**IOSFODNN7EXAMPLE**",
+            "glpat-IOSF**ODNN**7EXAMPLE",
+            "glpat-IOSF_ODNN_7EXAMPLE",
+            "glpat-IOSF~~ODNN~~7EXAMPLE",
+            "glpat-IOSF`ODNN`7EXAMPLE",
         ],
     )
     def test_delimiter_split_key_never_reaches_a_reader(self, payload):
@@ -1102,18 +1104,18 @@ class TestEmphasisDelimiterRedaction:
 
     def test_header_is_canonicalised_too(self):
         """A caption is redacted but NOT converted, so it needs the same guard."""
-        parts = render_for_slack("body", header="key AKIA**IOSFODNN7EXAMPLE** ")
+        parts = render_for_slack("body", header="key glpat-**IOSFODNN7EXAMPLE** ")
         assert self.KEY not in self._reader_sees("".join(parts))
 
     @pytest.mark.parametrize(
         "payload",
         [
-            "[AKIA](https://example.com)IOSFODNN7EXAMPLE",
-            "AKIAIOSF[ODNN](https://example.com)7EXAMPLE",
-            "<https://example.com|AKIA>IOSFODNN7EXAMPLE",
+            "[glpat-](https://example.com)IOSFODNN7EXAMPLE",
+            "glpat-IOSF[ODNN](https://example.com)7EXAMPLE",
+            "<https://example.com|glpat->IOSFODNN7EXAMPLE",
             # A balanced pair in the url: Slack links the whole destination, so
             # the screen has to collapse the same link or the halves join unseen.
-            "[AKIA](https://example.com/a_(b))IOSFODNN7EXAMPLE",
+            "[glpat-](https://example.com/a_(b))IOSFODNN7EXAMPLE",
         ],
     )
     def test_link_markup_cannot_smuggle_a_key(self, payload):
@@ -1140,9 +1142,9 @@ class TestEmphasisDelimiterRedaction:
     @pytest.mark.parametrize(
         "choice",
         [
-            "use AKIAIOSF`ODNN`7EXAMPLE",
-            "use AKIA**IOSFODNN7EXAMPLE**",
-            "use [AKIA](https://example.com)IOSFODNN7EXAMPLE",
+            "use glpat-IOSF`ODNN`7EXAMPLE",
+            "use glpat-**IOSFODNN7EXAMPLE**",
+            "use [glpat-](https://example.com)IOSFODNN7EXAMPLE",
         ],
     )
     def test_options_choices_get_the_display_guard(self, choice):

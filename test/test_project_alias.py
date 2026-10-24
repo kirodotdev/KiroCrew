@@ -97,15 +97,15 @@ class TestRedactAndConvert:
         The old spelling ``_redact(desc[:4000])`` sliced first, so a key cut at
         the boundary lost its tail, stopped matching the credential regex, and
         the raw prefix escaped into the dashboard payload.
-        The fabricated AKIA-shaped literal is inlined rather than bound to a
+        The fabricated glpat-shaped literal is inlined rather than bound to a
         ``secret``-named variable, which would trip CodeQL's name-based
         sensitive-source heuristic on this real call path.
         """
         run = _make_run()
         # cut lands 8 chars into the fabricated 20-char key
-        run.description = "x" * 3992 + "AKIAIOSFODNN7EXAMPLE" + " trailing"
+        run.description = "x" * 3992 + "glpat-IOSFODNN7EXAMPLE" + " trailing"
         result = _run_to_project(run)
-        assert "AKIA" not in result["description"]
+        assert "glpat-" not in result["description"]
         assert len(result["description"]) <= 4000
 
     def test_run_to_project_plain_description_truncation_unchanged(self):
@@ -481,7 +481,7 @@ class TestTaskRunnerStatusMcpFilter:
             source="dashboard",
         )
         run.lessons_learned = [
-            "Use token AKIAIOSFODNN7EXAMPLE for the build",
+            "Use token glpat-IOSFODNN7EXAMPLE for the build",
             "A second, clean lesson with no secrets",
         ]
         runner._runs = {"dash1": run}
@@ -495,7 +495,7 @@ class TestTaskRunnerStatusMcpFilter:
         data = json.loads(resp.body)
         lessons = data["runs"][0]["lessons_learned"]
         joined = " ".join(lessons)
-        assert "AKIAIOSFODNN7EXAMPLE" not in joined  # secret scrubbed
+        assert "glpat-IOSFODNN7EXAMPLE" not in joined  # secret scrubbed
         assert "[REDACTED" in lessons[0]  # redaction marker present
         assert lessons[1] == "A second, clean lesson with no secrets"  # clean text intact, list shape preserved
 

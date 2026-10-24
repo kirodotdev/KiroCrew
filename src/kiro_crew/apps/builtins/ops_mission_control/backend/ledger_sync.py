@@ -619,14 +619,14 @@ def _credential_bearing_lines() -> list[int]:
     - ``security.get_credential_patterns()`` — the core accessor, which exists specifically so
       a downstream scan cannot be silently turned into a no-op by a rename, and which means a
       pattern added for any other egress site starts protecting this one too. It carries the
-      AKIA/ASIA shapes.
+      vendor-prefix and labelled AWS secret shapes.
     - ``secrets.redact_tokens`` — this app's own detector, which knows the PROVIDER credential
       shapes the core has no reason to: a `Bearer` header, a prefixed Datadog application key
       (`ddapp_…`), a PagerDuty token.
 
     Review found the omission and was right; measured before fixing, the gap runs in BOTH
     directions — the core patterns miss `ddapp_…` while `redact_tokens` misses
-    `AKIAIOSFODNN7EXAMPLE`. Either detector alone therefore lets a real credential through, so
+    shapes only the core knows. Either detector alone therefore lets a real credential through, so
     a line is credential-bearing if EITHER flags it. A legacy row (written by an older build,
     or by some path other than `POST /ledger`) holding a provider token would otherwise have
     been committed to the team's shared remote.
@@ -638,7 +638,7 @@ def _credential_bearing_lines() -> list[int]:
     would turn a missing file into an unexplained sync failure.
     """
     from kiro_crew.apps.builtins.ops_mission_control.backend.secrets import redact_tokens
-    from kiro_crew.security import get_credential_patterns
+    from kiro_crew.security import get_credential_patterns, redact_credentials
 
     try:
         text = ledger.ledger_path().read_text(encoding="utf-8")
@@ -649,12 +649,30 @@ def _credential_bearing_lines() -> list[int]:
     def _bearing(line: str) -> bool:
         if any(p.search(line) for p in patterns):
             return True
+        # The patterns only search; a secret found by pairing (a value next to an
+        # AWS key ID), by the secret catalog or behind a label is found by the
+        # redactor the write path runs, so a line it would change is bearing too.
+        if redact_credentials(line)[0] != line:
+            return True
         # `redact_tokens` returns the line unchanged when it finds nothing, so inequality IS
         # the detection — and it keeps this in step with the write path automatically: a
         # provider shape added there starts blocking pushes here with no second edit.
         return redact_tokens(line) != line
 
-    return [n for n, line in enumerate(text.splitlines(), start=1) if line.strip() and _bearing(line)]
+    lines = text.splitlines()
+    bearing = {n for n, line in enumerate(lines, start=1) if line.strip() and _bearing(line)}
+    # A secret found only across records (an AWS key ID in one, its unlabelled secret
+    # in the next) is found by the redactor over the whole ledger, never line by line;
+    # the lines that redaction changes are bearing too.
+    whole = redact_credentials(text)[0]
+    if whole != text:
+        import difflib
+
+        matcher = difflib.SequenceMatcher(a=lines, b=whole.splitlines(), autojunk=False)
+        for tag, a_start, a_end, _b_start, _b_end in matcher.get_opcodes():
+            if tag != "equal":
+                bearing.update(range(a_start + 1, max(a_end, a_start + 1) + 1))
+    return sorted(n for n in bearing if n <= len(lines))
 
 
 def schedule_has_conflict() -> bool:

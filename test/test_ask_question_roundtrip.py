@@ -1654,7 +1654,7 @@ class TestErrorCodes:
         from kiro_crew.session_directive import MAX_TOOL_RESULT_CHARS
         from kiro_crew.validation import _ASK_MAX_ANSWER_LEN, format_ask_answers
 
-        key_id = "AKIA" + "ABCDEFGHIJKLMNOP"  # assembled so secret scanners do not flag a fake key
+        key_id = "xoxb-" + "ABCDEFGHIJKLMNO"  # assembled so secret scanners do not flag a fake key
         answer = (f"{key_id} " * 100)[:_ASK_MAX_ANSWER_LEN]
         answers = {k: answer for k in self._max_keys()}
         # As typed (before the scrub format_ask_answers applies) the set fits the cap.

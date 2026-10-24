@@ -184,7 +184,7 @@ class TestGrantEndpointPendingFlow:
         job = svc.add_job(
             "j", "args", every_secs=3600, script=spec, session_key="dashboard:conftest-slot"
         )
-        shaped = "AKIAIOSFODNN7EXAMPLE"  # credential-shaped, slug-valid, not in the vault
+        shaped = "glpat-IOSFODNN7EXAMPLE"  # credential-shaped, slug-valid, not in the vault
         pin = compute_secret_env_pin(
             spec,
             "",
@@ -585,10 +585,12 @@ class TestGrantEndpointPendingFlow:
         exfil-URL-shaped content must not reach the dashboard raw."""
         from kiro_crew.dashboard.handlers.cron import _redacted_grant_map
 
-        out = _redacted_grant_map({"AWS_KEY": "https://evil.example/exfil?d=AKIAIOSFODNN7EXAMPLE"})
+        out = _redacted_grant_map(
+            {"AWS_KEY": "https://evil.example/exfil?d=glpat-IOSFODNN7EXAMPLE"}
+        )
         assert out is not None
         serialized = str(out)
-        assert "AKIAIOSFODNN7EXAMPLE" not in serialized
+        assert "glpat-IOSFODNN7EXAMPLE" not in serialized
         assert _redacted_grant_map({}) is None
         # A benign product-written mapping passes through unchanged.
         assert _redacted_grant_map({"MY_TOKEN": "slack-sandbox"}) == {"MY_TOKEN": "slack-sandbox"}
@@ -874,7 +876,7 @@ class TestGrantEndpointPendingFlow:
 
         app, svc = self._app_and_svc()
         SecretVault(loader_config_dir()).set_sync("slack-sandbox", "xoxb-1")
-        body = 'KEY = "AKIAIOSFODNN7EXAMPLE"\ndef run(ctx): pass\n'
+        body = 'KEY = "glpat-IOSFODNN7EXAMPLE"\ndef run(ctx): pass\n'
         spec = _grant_script(cron_home, body=body)
         job = svc.add_job(
             "j",

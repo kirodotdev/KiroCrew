@@ -557,11 +557,11 @@ class TestSubstitutionWrappersAndRedaction:
 
         # Inject a substitute that embeds an AWS access-key-shaped substring
         # so the dual redactor heuristic actually fires (redact_exfiltration_urls
-        # matches the URL because the query carries an AKIA token, and
-        # redact_credentials matches the standalone AKIA pattern). A bare
+        # matches the URL because the query carries a glpat- token, and
+        # redact_credentials matches the standalone glpat- pattern). A bare
         # arbitrary URL is too tame for the heuristic and would leave the test
         # asserting on a no-op pass-through.
-        url_shaped = "http://attacker.example.com/exfil?token=AKIAIOSFODNN7EXAMPLE"
+        url_shaped = "http://attacker.example.com/exfil?token=glpat-IOSFODNN7EXAMPLE"
 
         sent: list[str] = []
 
@@ -598,7 +598,7 @@ class TestSubstitutionWrappersAndRedaction:
         # inside "[REDACTED: suspicious URL to <host>]" so operators can
         # investigate the leak source -- that is BY DESIGN, not a bypass.
         assert (
-            "AKIAIOSFODNN7EXAMPLE" not in emitted
+            "glpat-IOSFODNN7EXAMPLE" not in emitted
         ), "AWS access-key substring MUST be redacted before logging"
         assert (
             "REDACTED" in emitted
@@ -620,7 +620,7 @@ class TestSubstitutionWrappersAndRedaction:
         client._process.returncode = None
         # AWS access-key-shaped substring guarantees both redactors fire (URL
         # query matches _EXFIL_PATTERNS; standalone key matches _CREDENTIAL_PATTERNS).
-        client._model = "http://attacker.example.com/m?token=AKIAIOSFODNN7EXAMPLE"
+        client._model = "http://attacker.example.com/m?token=glpat-IOSFODNN7EXAMPLE"
 
         async def _send(method, params):
             return 1
@@ -658,7 +658,7 @@ class TestSubstitutionWrappersAndRedaction:
         # See sibling test for the design note: redactor keeps the host as a
         # diagnostic label inside "[REDACTED: suspicious URL to <host>]".
         assert (
-            "AKIAIOSFODNN7EXAMPLE" not in emitted_model
+            "glpat-IOSFODNN7EXAMPLE" not in emitted_model
         ), "AWS access-key substring MUST be redacted before logging"
         assert (
             "REDACTED" in emitted_model
@@ -694,7 +694,7 @@ class TestSubstitutionWrappersAndRedaction:
             # Helper adopted a credential-shaped substitute then gave up without
             # producing a sessionId. Drives the "even after adopting substitute
             # model X" branch where X is credential-shaped.
-            client._model = "AKIAIOSFODNN7EXAMPLE"
+            client._model = "glpat-IOSFODNN7EXAMPLE"
             return {}
 
         client._new_session_following_substitution = _no_session_with_credshaped  # type: ignore[assignment]
@@ -704,7 +704,7 @@ class TestSubstitutionWrappersAndRedaction:
 
         msg = str(excinfo.value)
         assert (
-            "AKIAIOSFODNN7EXAMPLE" not in msg
+            "glpat-IOSFODNN7EXAMPLE" not in msg
         ), "AWS access-key-shaped substitute MUST be redacted before reaching the AcpError message"
         assert "even after adopting substitute model" in msg
 
@@ -718,7 +718,7 @@ class TestSubstitutionWrappersAndRedaction:
         real_err = {
             "code": -32603,
             "message": "Internal error",
-            "data": "request_id: AKIAIOSFODNN7EXAMPLE backend trace failed",
+            "data": "request_id: glpat-IOSFODNN7EXAMPLE backend trace failed",
         }
         msg = MagicMock()
         msg.is_response_for.return_value = True
@@ -736,7 +736,7 @@ class TestSubstitutionWrappersAndRedaction:
             await client._wait_for_response(13, timeout=1.0)
 
         emitted = str(excinfo.value)
-        assert "AKIAIOSFODNN7EXAMPLE" not in emitted, (
+        assert "glpat-IOSFODNN7EXAMPLE" not in emitted, (
             "AWS access-key-shaped substring in msg.error MUST be redacted "
             "before reaching the catch-all AcpError message"
         )

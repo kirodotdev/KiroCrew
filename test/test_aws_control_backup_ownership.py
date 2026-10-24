@@ -493,8 +493,8 @@ class TestLabelIsDisplayOnly:
         assert cleaned.startswith("lap") and cleaned.endswith("top")
         assert backup.sanitize_label("") == ""
         assert backup.sanitize_label(12345) == ""
-        leaked = backup.sanitize_label("key AKIAIOSFODNN7EXAMPLE here")
-        assert "AKIAIOSFODNN7EXAMPLE" not in leaked
+        leaked = backup.sanitize_label("key glpat-IOSFODNN7EXAMPLE here")
+        assert "glpat-IOSFODNN7EXAMPLE" not in leaked
 
     def test_a_published_label_cannot_make_a_foreign_archive_restorable(self):
         # The whole point of the id/label split. A label is a string an install

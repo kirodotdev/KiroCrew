@@ -234,9 +234,9 @@ class TestSlotLastMessageStripsMarkdown:
         # Markdown markers inside a secret split the credential signature past
         # the scanner; stripping afterwards would rejoin the fragments into a
         # valid credential in the broadcast preview.
-        s = self._slot_with(("assistant", "key is AKIA**IOSFODNN7EXAMPLE** ok"))
+        s = self._slot_with(("assistant", "key is glpat-**IOSFODNN7EXAMPLE** ok"))
         msg = s.to_dict()["last_message"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in msg
+        assert "glpat-IOSFODNN7EXAMPLE" not in msg
         assert msg.startswith("key is ")
 
     def test_credential_split_by_zwsp_is_still_redacted(self):
@@ -244,9 +244,9 @@ class TestSlotLastMessageStripsMarkdown:
         # characters had split, so strip-before-redact is load-bearing for
         # this class too: stripping after redaction would rejoin the halves
         # into a live key in the broadcast preview.
-        s = self._slot_with(("assistant", "key is AKIA\u200bIOSFODNN7EXAMPLE ok"))
+        s = self._slot_with(("assistant", "key is glpat-\u200bIOSFODNN7EXAMPLE ok"))
         msg = s.to_dict()["last_message"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in msg
+        assert "glpat-IOSFODNN7EXAMPLE" not in msg
         assert msg.startswith("key is ")
 
 

@@ -24,7 +24,7 @@ from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 
 _JOB = "nightly-dispatch"
 # Assembled at runtime so the source never holds a credential-shaped literal.
-_FAKE_KEY = "AKIA" + "1234567890123456"
+_FAKE_KEY = "glpat-" + "1234567890123456"
 
 
 class _Resp:

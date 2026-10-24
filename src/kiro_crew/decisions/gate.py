@@ -194,15 +194,12 @@ SCRUB_ERRORS = (
 )
 
 #: Credential spellings refused locally, before the canonical scanner. Compiled
-#: here because ``credential_patterns`` exports pattern SOURCE strings. This is the
-#: scrubber-side AWS spelling, not the wider redaction one, and not the whole of
-#: the scrub: ``VENDOR_TOKEN_PATTERNS`` carries a generic ``sk-`` form that
-#: ``redact_credentials`` does not, which is why both run.
+#: here because ``credential_patterns`` exports pattern SOURCE strings. Not the
+#: whole of the scrub: ``VENDOR_TOKEN_PATTERNS`` carries a generic ``sk-`` form
+#: that ``redact_credentials`` does not, which is why both run. An AWS access key
+#: ID is not here: it is Identifier tier, so naming one is no reason to refuse.
 _CREDENTIAL_RE = re.compile(
-    "|".join(
-        [_cred.AWS_KEY_ID, _cred.JWT_MULTI_SEGMENT]
-        + [frag for _label, frag in _cred.VENDOR_TOKEN_PATTERNS]
-    )
+    "|".join([_cred.JWT_MULTI_SEGMENT] + [frag for _label, frag in _cred.VENDOR_TOKEN_PATTERNS])
 )
 
 

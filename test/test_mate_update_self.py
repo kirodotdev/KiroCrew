@@ -631,7 +631,7 @@ def test_the_row_masks_a_credential_shaped_trait_but_the_undo_keeps_it() -> None
     _seed()
     state = FakeState()
     slot = _thread(state, ASSISTANT_MEMBER_NAME)
-    planted = "AKIAIOSFODNN7EXAMPLE"
+    planted = "glpat-IOSFODNN7EXAMPLE"
     status, body = _update(state, {"avatar": {"traits": {"eyes": planted}}})
     assert status == 200, body
     (row,) = _self_rows(slot)

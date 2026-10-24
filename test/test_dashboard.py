@@ -76,7 +76,7 @@ class TestNotificationPersistence:
         """Rows persisted before delivery-time redaction are redacted at load."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         path = tmp_path / "notifications.jsonl"
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         row = {
             "kind": "cron",
             "title": "Job",
@@ -180,9 +180,9 @@ class TestNotificationPersistence:
             start_time=0.0,
         )
         note = state.notification_bus.push(
-            payload_from_legacy("cron", "key AKIAIOSFODNN7EXAMPLE via bus", "b")
+            payload_from_legacy("cron", "key glpat-IOSFODNN7EXAMPLE via bus", "b")
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in note["title"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in note["title"]
 
     def test_deliver_note_redacts_nested_strings(self, monkeypatch, tmp_path) -> None:
         """Redaction descends into nested structures like action labels.
@@ -202,26 +202,26 @@ class TestNotificationPersistence:
             {
                 "ts": "2026-07-12T00:00:00Z",
                 "kind": "cron",
-                "title": "key AKIAIOSFODNN7EXAMPLE in title",
+                "title": "key glpat-IOSFODNN7EXAMPLE in title",
                 "body": "b",
                 "actions": [
-                    {"id": "a1", "label": "key AKIAIOSFODNN7EXAMPLE in label"},
+                    {"id": "a1", "label": "key glpat-IOSFODNN7EXAMPLE in label"},
                 ],
-                "extra": {"nested": ["key AKIAIOSFODNN7EXAMPLE in list"]},
+                "extra": {"nested": ["key glpat-IOSFODNN7EXAMPLE in list"]},
             }
         )
 
         note = state._notification_log[0]
         # Top-level strings still redacted
-        assert "AKIAIOSFODNN7EXAMPLE" not in note["title"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in note["title"]
         # Nested strings inside lists of dicts redacted
-        assert "AKIAIOSFODNN7EXAMPLE" not in note["actions"][0]["label"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in note["actions"][0]["label"]
         assert note["actions"][0]["id"] == "a1"
         # Arbitrary nesting (dict -> list) redacted
-        assert "AKIAIOSFODNN7EXAMPLE" not in note["extra"]["nested"][0]
+        assert "glpat-IOSFODNN7EXAMPLE" not in note["extra"]["nested"][0]
         # Persisted JSONL is clean too
         loaded = _load_notifications()
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(loaded[0])
+        assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(loaded[0])
 
     def test_state_loads_existing_on_init(self, monkeypatch, tmp_path) -> None:
         """DashboardState.__init__ loads existing notifications from disk."""

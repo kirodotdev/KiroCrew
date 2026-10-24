@@ -398,7 +398,7 @@ def test_transport_audit_helpers_redact_event_labels(monkeypatch):
     assert floor is not None, "kiro_crew.permission_floor is missing"
     audit = MagicMock()
     monkeypatch.setattr(floor.sel_mod, "sel", lambda: audit)
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     event = SimpleNamespace(
         title=f"tool {secret}",
         tool_kind=f"kind {secret}",
@@ -442,7 +442,7 @@ def test_loggable_reason_fails_closed(monkeypatch):
     assert floor is not None, "kiro_crew.permission_floor is missing"
     loggable_reason = getattr(floor, "loggable_reason", None)
     assert loggable_reason is not None, "permission floor has no log redaction seam"
-    credential = "AKIAIOSFODNN7EXAMPLE"
+    credential = "glpat-IOSFODNN7EXAMPLE"
     monkeypatch.setattr(
         floor.sel_mod,
         "_redact_and_clip",
@@ -548,7 +548,7 @@ async def test_transport_refusal_log_redacts_reason(
     module = importlib.import_module(module_name)
     floor = _floor_module()
     assert floor is not None, "kiro_crew.permission_floor is missing"
-    credential = "AKIAIOSFODNN7EXAMPLE"
+    credential = "glpat-IOSFODNN7EXAMPLE"
     credential_path = "/home/u/.aws/credentials"
     reason = f"Blocked: {credential_path} contains {credential}"
     monkeypatch.setattr(floor, "refusal_for", lambda event: reason)

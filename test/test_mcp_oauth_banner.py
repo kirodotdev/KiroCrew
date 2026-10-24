@@ -87,14 +87,14 @@ class TestRedactMetaForRole:
         assert out["oauth_url"] == ""
 
     def test_mcp_oauth_url_carrying_credential_is_dropped_on_rehydrate(self):
-        """A tampered history line whose oauth_url embeds an AKIA-style
+        """A tampered history line whose oauth_url embeds a glpat-style
         credential gets emptied out on rehydrate, even if the scheme is https.
         Mirrors the live-emission gate in _emit_mcp_oauth_request."""
         out = _redact_meta_for_role(
             "mcp_oauth",
             {
                 "server_name": "linear",
-                "oauth_url": "https://evil.com/auth?key=AKIAIOSFODNN7EXAMPLE",
+                "oauth_url": "https://evil.com/auth?key=glpat-IOSFODNN7EXAMPLE",
             },
         )
         assert out["oauth_url"] == ""
@@ -107,12 +107,12 @@ class TestRedactMetaForRole:
             {
                 "server_name": "ex",
                 "oauth_url": url,
-                "error": "AKIAIOSFODNN7EXAMPLE leaked",
+                "error": "glpat-IOSFODNN7EXAMPLE leaked",
             },
         )
         assert out["oauth_url"] == url
-        # _redact_value is invoked for non-preserved fields, so AKIA pattern is scrubbed.
-        assert "AKIAIOSFODNN7EXAMPLE" not in out["error"]
+        # _redact_value is invoked for non-preserved fields, so glpat- pattern is scrubbed.
+        assert "glpat-IOSFODNN7EXAMPLE" not in out["error"]
 
     def test_other_role_uses_default_redaction(self):
         # An assistant-meta URL pointing at an exfil-eligible domain should
@@ -183,7 +183,7 @@ class TestEmitMcpOAuthRequest:
             state,
             slot,
             "linear",
-            "https://evil.com/auth?key=AKIAIOSFODNN7EXAMPLE",
+            "https://evil.com/auth?key=glpat-IOSFODNN7EXAMPLE",
         )
         assert len(slot.messages) == 1
         m = slot.messages[0]
@@ -191,7 +191,7 @@ class TestEmitMcpOAuthRequest:
         assert m["meta"]["failed"] is True
         assert m["meta"]["rejected_url"] is True
         assert "oauth_url" not in m["meta"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in m["content"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in m["content"]
         assert "credential" in m["meta"].get("error", "")
 
     def test_rejection_banner_names_the_operator_remedy(self):
@@ -211,7 +211,7 @@ class TestEmitMcpOAuthRequest:
             state,
             slot,
             "self-hosted",
-            "https://evil.com/auth?key=AKIAIOSFODNN7EXAMPLE",
+            "https://evil.com/auth?key=glpat-IOSFODNN7EXAMPLE",
         )
         m = slot.messages[0]
         assert "oauth_endpoints.json" in m["content"]
@@ -220,7 +220,7 @@ class TestEmitMcpOAuthRequest:
         assert m["meta"]["failed"] is True
         assert m["meta"]["rejected_url"] is True
         assert "oauth_url" not in m["meta"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in m["content"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in m["content"]
 
     def test_rejection_banner_names_the_rejected_endpoint(self):
         """A rejected URL must name the SANITIZED host+path that tripped the
@@ -237,7 +237,7 @@ class TestEmitMcpOAuthRequest:
             slot,
             "self-hosted",
             "https://Unlisted-IdP.example/realms/dev/authorize"
-            "?state=topsecretstatevalue&key=AKIAIOSFODNN7EXAMPLE",
+            "?state=topsecretstatevalue&key=glpat-IOSFODNN7EXAMPLE",
         )
         m = slot.messages[0]
         # Sanitized endpoint in the banner text.
@@ -253,7 +253,7 @@ class TestEmitMcpOAuthRequest:
         assert "remedy_shape" not in m["meta"]
         # Query values never leak into any surfaced field.
         serialized = json.dumps(m, ensure_ascii=False)
-        assert "AKIAIOSFODNN7EXAMPLE" not in serialized
+        assert "glpat-IOSFODNN7EXAMPLE" not in serialized
         assert "topsecretstatevalue" not in serialized
 
     def test_redacted_path_never_echoes_the_credential(self):
@@ -373,7 +373,7 @@ class TestEmitMcpOAuthRequest:
         "url",
         [
             # Fixed credential: refused again even at an approved endpoint.
-            "https://evil.com/auth?key=AKIAIOSFODNN7EXAMPLE",
+            "https://evil.com/auth?key=glpat-IOSFODNN7EXAMPLE",
             # http and an explicit port: the carve-out never relaxes either.
             _CF_ACCESS_URL.replace("https://", "http://", 1),
             _CF_ACCESS_URL.replace(".com/", ".com:8443/", 1),
@@ -401,7 +401,7 @@ class TestEmitMcpOAuthRequest:
             state,
             slot,
             "self-hosted",
-            "https://[bad-ipv6/authorize?key=AKIAIOSFODNN7EXAMPLE",
+            "https://[bad-ipv6/authorize?key=glpat-IOSFODNN7EXAMPLE",
         )
         m = slot.messages[0]
         assert m["meta"]["failed"] is True
@@ -409,7 +409,7 @@ class TestEmitMcpOAuthRequest:
         assert "rejected_host" not in m["meta"]
         assert "rejected_path" not in m["meta"]
         assert "remedy_shape" not in m["meta"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in m["content"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in m["content"]
 
     def test_accepts_real_github_oauth_pkce_url(self):
         """Regression: a legitimate GitHub OAuth + PKCE consent URL must be
@@ -459,16 +459,16 @@ class TestEmitMcpOAuthRequest:
         and the meta.server_name (used as the dedupe correlation key)."""
         slot = _ChatSlot("s1")
         state = MagicMock()
-        # AKIA pattern is on the credential-redaction list.
+        # glpat- pattern is on the credential-redaction list.
         _emit_mcp_oauth_request(
             state,
             slot,
-            "evil-AKIAIOSFODNN7EXAMPLE",
+            "evil-glpat-IOSFODNN7EXAMPLE",
             "https://mcp.example.com/authorize",
         )
         m = slot.messages[0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in m["content"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in m["meta"]["server_name"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in m["content"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in m["meta"]["server_name"]
 
     def test_completed_path_redacts_error_string(self):
         """error string is also kiro-cli-controlled and lands in the live WS
@@ -481,13 +481,13 @@ class TestEmitMcpOAuthRequest:
             slot,
             "linear",
             success=False,
-            error="leaked AKIAIOSFODNN7EXAMPLE in error",
+            error="leaked glpat-IOSFODNN7EXAMPLE in error",
         )
         m = slot.messages[0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in (m["meta"].get("error") or "")
+        assert "glpat-IOSFODNN7EXAMPLE" not in (m["meta"].get("error") or "")
         # The broadcast payload also went through redacted meta.
         payload = state.broadcast_ws.call_args[0][1]
-        assert "AKIAIOSFODNN7EXAMPLE" not in (payload["meta"].get("error") or "")
+        assert "glpat-IOSFODNN7EXAMPLE" not in (payload["meta"].get("error") or "")
 
 
 # ── _mark_mcp_oauth_completed ──
@@ -1372,7 +1372,7 @@ class TestOAuthParamCredentialScan:
         # caught even though `state` is an exempted OAuth param.
         url = (
             "https://github.com/login/oauth/authorize?client_id=Iv1.x"
-            "&state=AKIAIOSFODNN7EXAMPLE&response_type=code"
+            "&state=glpat-IOSFODNN7EXAMPLE&response_type=code"
         )
         assert oauth_url_contains_credential(url) is True
 
@@ -1432,7 +1432,7 @@ class TestOAuthParamCredentialScan:
         # the approved endpoint.
         url = (
             "https://mcp.auth.mail.superhuman.com/oauth2/authorize"
-            "?client_id=x&state=AKIAIOSFODNN7EXAMPLE&response_type=code"
+            "?client_id=x&state=glpat-IOSFODNN7EXAMPLE&response_type=code"
         )
         assert oauth_url_contains_credential(url) is True
 

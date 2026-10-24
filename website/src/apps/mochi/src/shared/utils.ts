@@ -44,7 +44,6 @@ export function isSensitiveContent(text: string): boolean {
   }
   // Common secret patterns
   const secretPatterns = [
-    /^(AKIA|ASIA)[A-Z0-9]{16}$/,           // AWS access key
     /^sk-[a-zA-Z0-9]{20,}$/,               // OpenAI API key
     /^ghp_[a-zA-Z0-9]{36}$/,               // GitHub PAT
     /^xox[bpsa]-[a-zA-Z0-9-]+$/,           // Slack token

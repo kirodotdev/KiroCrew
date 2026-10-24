@@ -29,6 +29,7 @@
  */
 
 import { safeSetSessionItem } from './safeStorage'
+import { redactSigningParams } from './sanitize'
 import { errMessage } from './thunkError'
 import { withBase } from '@/lib/basePath'
 
@@ -104,19 +105,38 @@ export const HANDOFF_TTL_MS = 60_000
  * Blank out credential-shaped substrings.
  *
  * Deliberately narrow: over-redaction destroys the diagnostic value that is the
- * whole point of attaching the detail. Mirrors the backend's AKIA/ASIA rule and
- * adds the assignment forms (`token=…`, `"authorization": "…"`) that show up in
- * echoed request bodies and config blobs.
+ * whole point of attaching the detail. An AWS access key ID (`AKIA` / `ASIA`) is
+ * Identifier tier and stays, as in the backend. Covers the assignment forms
+ * (`token=…`, `"authorization": "…"`) that show up in echoed request bodies and
+ * config blobs.
  */
 const REDACTED = '[redacted]'
-const REDACTED_ACCESS_KEY = '[redacted-access-key]'
 const TRUNCATION_SUFFIX = '\n[truncated]'
 
 export function redactSecrets(text: string): string {
-  return text
-    .replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, REDACTED_ACCESS_KEY)
+  // A signing parameter under a percent-encoded name (`S%69gnature=`) first.
+  return redactSigningParams(text, REDACTED)
     // The scheme word goes with the credential: less echoed, nothing lost.
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]{12,}=*/gi, REDACTED)
+    // A presigned/signed link's signing values, in three branches mirroring the
+    // backend's `URL_SIGNING_VALUE`. The key ID in the link is an identifier and
+    // stays visible; removing the signature and session token is what stops the
+    // link being replayed from the error journal or the "Ask the agent" prompt.
+    // The AWS-specific names are taken in any position; a bare `Signature` is taken
+    // only as a URL query parameter or as a 64-hex SigV4 value, so ordinary
+    // signature-labelled diagnostics (`signature = inspect.signature(cb)`) are kept.
+    .replace(
+      /(X-Amz-Signature|X-Amz-Security-Token)(["']?\s*[:=]\s*["']?)[^\s"'&;#<>)\[\]}]+/gi,
+      (_m, name: string, sep: string) => `${name}${sep}${REDACTED}`,
+    )
+    .replace(
+      /([?&]|&amp;|%26)(Signature)(=|%3[Dd])[^\s"'&;#<>)\[\]}]+/gi,
+      (_m, pre: string, name: string, sep: string) => `${pre}${name}${sep}${REDACTED}`,
+    )
+    .replace(
+      /(Signature)(=|%3[Dd])[0-9a-fA-F]{64,}(?![0-9A-Za-z])/gi,
+      (_m, name: string, sep: string) => `${name}${sep}${REDACTED}`,
+    )
     // URL userinfo — `https://x-access-token:<PAT>@github.com/org/repo.git` is
     // the shape a git/registry remote error echoes back verbatim. Both halves
     // go: the username is itself a credential in several token schemes. The
@@ -154,8 +174,7 @@ export function redactSecrets(text: string): string {
  * Scrub, THEN cap. The order is security-critical, not a style choice.
  *
  * Every pattern in {@link redactSecrets} needs a trailing anchor to fire: the
- * userinfo rule needs its `@`, `Bearer` needs 12+ token characters, `AKIA` needs
- * its full 16. Capping first can drop that anchor and leave the credential's head
+ * userinfo rule needs its `@`, `Bearer` needs 12+ token characters. Capping first can drop that anchor and leave the credential's head
  * sitting in the kept prefix — `https://x-access-token:<PAT>` with the `@` on the
  * discarded side no longer matches anything, and that prefix is what reaches the
  * LLM prompt. Scrubbing the whole string first has no such cut to exploit.

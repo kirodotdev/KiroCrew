@@ -258,7 +258,7 @@ def test_get_accepts_the_unique_slug(tmp_path) -> None:
 
 def test_create_rejects_source_that_persistence_would_redact(tmp_path) -> None:
     library = WorkflowDefinitionLibrary(tmp_path)
-    sensitive_source = SOURCE_V1.replace("debug the project", "debug using AKIAIOSFODNN7EXAMPLE")
+    sensitive_source = SOURCE_V1.replace("debug the project", "debug using glpat-IOSFODNN7EXAMPLE")
 
     with pytest.raises(ValueError, match="sensitive data"):
         library.create(source=sensitive_source, name="Sensitive")
@@ -268,7 +268,7 @@ def test_create_rejects_source_that_persistence_would_redact(tmp_path) -> None:
 
 def test_create_redacts_metadata_before_deriving_the_slug(tmp_path) -> None:
     library = WorkflowDefinitionLibrary(tmp_path)
-    credential = "AKIAIOSFODNN7EXAMPLE"
+    credential = "glpat-IOSFODNN7EXAMPLE"
 
     created = library.create(
         source=SOURCE_V1,

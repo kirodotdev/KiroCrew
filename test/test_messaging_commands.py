@@ -604,7 +604,7 @@ class TestLayering:
         assert not stale, f"remove these from _ALLOWED_SURFACE_EDGES: {stale}"
 
 
-_AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+_AWS_KEY = "glpat-" + "IOSFODNN7EXAMPLE"
 
 #: A non-Slack conversation key. Namespaced rather than a bare id because this is
 #: the shape every channel's session key has, and the value is forwarded verbatim.

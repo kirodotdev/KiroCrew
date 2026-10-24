@@ -212,7 +212,7 @@ def test_create_refuses_a_model_the_picker_refuses(tmp_path, monkeypatch):
 
 
 def test_create_refuses_a_credential_shaped_model(tmp_path):
-    credential_shaped_id = "AKIA" + "Q" * 16
+    credential_shaped_id = "glpat-" + "Q" * 16
     assert sc.redact(credential_shaped_id) != credential_shaped_id
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")

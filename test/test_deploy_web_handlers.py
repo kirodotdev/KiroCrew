@@ -103,7 +103,7 @@ def test_deploy_confirm_gate_returns_preview(monkeypatch):
 
 def test_deploy_scan_gate_blocks_secret(monkeypatch):
     _set_profile(monkeypatch)
-    leaky = "<p>AKIAABCDEFGHIJKLMNOP</p>"
+    leaky = "<p>glpat-ABCDEFGHIJKLMNOP</p>"
     monkeypatch.setattr(handlers, "get_default_store", lambda: _fake_store(content=leaky), raising=False)
     monkeypatch.setattr(handlers, "_HAS_ARTIFACTS", True)
     status, payload = _run(handlers._do_deploy({"site_id": "s", "artifact_slug": "a", "confirm": True}))
@@ -114,7 +114,7 @@ def test_deploy_scan_gate_blocks_secret(monkeypatch):
 def test_deploy_credential_finding_cannot_be_overridden(monkeypatch):
     """Credential findings are hard-blocked — override_scan has no effect."""
     _set_profile(monkeypatch)
-    leaky = "<p>AKIAABCDEFGHIJKLMNOP</p>"
+    leaky = "<p>glpat-ABCDEFGHIJKLMNOP</p>"
     monkeypatch.setattr(handlers, "get_default_store", lambda: _fake_store(content=leaky), raising=False)
     monkeypatch.setattr(handlers, "_HAS_ARTIFACTS", True)
 
@@ -318,7 +318,7 @@ def test_deploy_local_dir_scan_gate(monkeypatch, tmp_path):
     monkeypatch.setattr(handlers, "_allowed_local_roots", lambda: [tmp_path.resolve()])
     site = tmp_path / "site"
     site.mkdir()
-    (site / "index.html").write_text("<p>AKIAABCDEFGHIJKLMNOP</p>", encoding="utf-8")
+    (site / "index.html").write_text("<p>glpat-ABCDEFGHIJKLMNOP</p>", encoding="utf-8")
     status, payload = _run(handlers._do_deploy({"site_id": "s", "local_dir": str(site), "confirm": True}))
     assert status == 409 and payload["reason"] == "scan"
 
@@ -330,7 +330,7 @@ def test_deploy_local_dir_scans_non_index_files(monkeypatch, tmp_path):
     site = tmp_path / "site"
     site.mkdir()
     (site / "index.html").write_text("<p>clean</p>", encoding="utf-8")
-    (site / "data.js").write_text("const k = 'AKIAABCDEFGHIJKLMNOP'", encoding="utf-8")
+    (site / "data.js").write_text("const k = 'glpat-ABCDEFGHIJKLMNOP'", encoding="utf-8")
     status, payload = _run(handlers._do_deploy({"site_id": "s", "local_dir": str(site), "confirm": True}))
     assert status == 409 and payload["reason"] == "scan"
 
@@ -1252,18 +1252,18 @@ def test_allowed_local_roots_no_bare_tmp(monkeypatch, tmp_path):
 
 
 def test_scan_tree_nul_prepended_file_detects_credential(tmp_path):
-    """F1 R11: A file with NUL in first 8KiB containing AKIA key must still
+    """F1 R11: A file with NUL in first 8KiB containing glpat- key must still
     produce a credential finding. A binary-detection short-circuit must not skip
     the entire content scan, allowing NUL-prepended secrets to deploy."""
     src = tmp_path / "src"
     src.mkdir()
-    # NUL byte + AKIA key in "JS" that a browser would still parse
-    payload = b"\x00// sneaky NUL-prepended file\nconst key = 'AKIAIOSFODNN7EXAMPLE';\n"
+    # NUL byte + glpat- key in "JS" that a browser would still parse
+    payload = b"\x00// sneaky NUL-prepended file\nconst key = 'glpat-IOSFODNN7EXAMPLE';\n"
     (src / "app.js").write_bytes(payload)
     findings, byte_size = handlers._scan_tree(src)
     cred_findings = [f for f in findings if f.severity == "credential"]
     assert len(cred_findings) >= 1, f"Expected credential finding, got: {findings}"
-    assert any("AKIA" in f.snippet for f in cred_findings)
+    assert any(f.snippet.startswith("[gitlab_token]") for f in cred_findings)
 
 
 def test_scan_tree_real_binary_no_credentials_deploys_clean(tmp_path):

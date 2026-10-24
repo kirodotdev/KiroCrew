@@ -61,7 +61,7 @@ REDACTED_PLACEHOLDER = "••••••••"
 
 #: Provider-token shapes added to redaction so a token cannot ride out inside a
 #: provider payload, a diagnosis, or a Slack message. Complements the core
-#: AKIA/ASIA patterns rather than replacing them.
+#: credential patterns rather than replacing them.
 _TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
     # PagerDuty REST tokens: "u+" / "y_NbAkKc" style prefixes then 20+ chars.
     re.compile(r"\b[uy](?:\+|_)[A-Za-z0-9_\-+]{18,}\b"),
@@ -87,7 +87,7 @@ _TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
     # bare `Bearer` cannot over-capture), so it did not catch this SHAPE either. But core is
     # not the weak link: it matches real vendor keys by their OWN patterns regardless of any
     # `Bearer` prefix — verified for OpenAI `sk-proj-`, Anthropic `sk-ant-`, Slack `xoxb-`,
-    # Stripe `sk_live_`, GitHub `ghp_`, JWTs and AKIA. What slips through core is only an
+    # Stripe `sk_live_`, GitHub `ghp_` and JWTs. What slips through core is only an
     # opaque token with no recognizable prefix, which is exactly the residual case this
     # app-level carrier pattern exists to cover.
     #

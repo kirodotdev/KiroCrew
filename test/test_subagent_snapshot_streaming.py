@@ -84,11 +84,11 @@ def test_snapshot_streaming_preserves_whitespace_and_newlines():
 def test_snapshot_streaming_redacts_credentials():
     """The streaming field is rendered in the Activity Viewer, so credential-
     shaped strings must be redacted at the snapshot boundary."""
-    # AKIA... is the AWS access key pattern
-    text = "Calling AWS with AKIAIOSFODNN7EXAMPLE"
+    # glpat-... is a GitLab token pattern
+    text = "Calling AWS with glpat-IOSFODNN7EXAMPLE"
     a = _agent(streaming_text=text)
     data = build_subagent_snapshot(a, now=1000.0)
-    assert "AKIAIOSFODNN7EXAMPLE" not in data["streaming"]
+    assert "glpat-IOSFODNN7EXAMPLE" not in data["streaming"]
 
 
 def test_snapshot_streaming_field_is_always_present():

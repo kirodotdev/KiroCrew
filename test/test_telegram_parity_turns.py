@@ -286,13 +286,13 @@ class TestVoiceOut:
         """Audio is an egress a reader cannot un-see, so it gets the display floor.
 
         This leg bypasses the renderer, which is where a turn normally gets that
-        floor, and the driver's pass is BYTE-level: `AKIA**IOSFODNN7EXAMPLE**` does
+        floor, and the driver's pass is BYTE-level: `glpat-**IOSFODNN7EXAMPLE**` does
         not match, because the `**` sits inside the key. A synthesizer reads the
         characters and not the markup, so the credential the byte pass missed would
         be spoken aloud.
         """
         d, _, _ = _dispatcher({1})
-        head, tail = "AKIA", "IOSFODNN7EXAMPLE"
+        head, tail = "glpat-", "IOSFODNN7EXAMPLE"
         spoken: list[str] = []
 
         # Real signature: (deliver, text, **settings). A mismatch here is swallowed

@@ -33,14 +33,15 @@ _CHUNK_SIZES = (len(_TEXT), 6, 40)
 _SECRET = "SECRETVALUE0123456789abcdefghijklmnopqrstuv"
 _OTHER_URL = f"https://other.example.net/cb?token={_SECRET}"
 
-# A value pass 1 claims only PARTLY: an AWS-key-shaped head followed by an opaque
+# A value pass 1 claims only PARTLY: a token-shaped head followed by an opaque
 # tail. Only a value no earlier pass touched may be deferred to the whole-segment
 # run; this one must have its uncovered tail redacted per delta, because the
 # whole-segment run skips a value that begins with a fixed tag. The carrier is
 # NOT a URL: `redact_exfiltration_urls` runs first per delta and flags any URL
-# whose query holds an AWS key, which would hide what pass 4 did with the tail.
-_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
-_OPAQUE = "opaquesecretvalue123"
+# whose query holds a token, which would hide what pass 4 did with the tail. The
+# tail opens with `.`, which the token's body cannot absorb.
+_AWS_KEY = "glpat-IOSFODNN7EXAMPLE"
+_OPAQUE = ".opaquesecretvalue123"
 _MIXED_TEXT = f"Callback: approve-cb?token={_AWS_KEY}{_OPAQUE} done."
 # Cuts that keep `?token=` and the whole value inside one delta: one delta; the
 # delta starting at `?`; a mid-carrier cut plus a cut right after the value.
@@ -213,7 +214,7 @@ class TestDeferTokenParamKeyword:
 
     def test_defers_only_pass_4_when_a_prefix_is_installed(self) -> None:
         _install(frozenset({_PREFIX}))
-        delta = f"{self._DELTA} key AKIAIOSFODNN7EXAMPLE"
+        delta = f"{self._DELTA} key glpat-IOSFODNN7EXAMPLE"
         out, warnings = redact_credentials(delta, defer_token_param=True)
         assert out == f"{self._DELTA} key [REDACTED: credential]"
         assert warnings and all("token parameter" not in w for w in warnings)

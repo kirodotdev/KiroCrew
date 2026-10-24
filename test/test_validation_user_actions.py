@@ -231,9 +231,9 @@ class TestMcpCoreUserActions:
 
     def test_spawn_status_redacts_credentials(self):
         with patch("kiro_crew.mcp_core._get") as mock_get:
-            mock_get.return_value = {"result": "Found key AKIAIOSFODNN7EXAMPLE in output"}
+            mock_get.return_value = {"result": "Found key glpat-IOSFODNN7EXAMPLE in output"}
             result = self._simulate_tool_call("spawn_status", {"agent_id": "abc123"})
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert "glpat-IOSFODNN7EXAMPLE" not in result
         assert "[REDACTED" in result
 
     # -- task_run: user says "run this task spec" --

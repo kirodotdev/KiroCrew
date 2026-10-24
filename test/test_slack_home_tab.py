@@ -674,7 +674,7 @@ class TestPublishHomeTabSessions:
         ordering across all three surfaces.
         """
         orch = _make_orch()
-        leaked_key = "AKIAIOSFODNN7EXAMPLE"
+        leaked_key = "glpat-IOSFODNN7EXAMPLE"
         with (
             patch(
                 "kiro_crew.slack.sessions_view._collect_recent_sessions",

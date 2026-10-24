@@ -729,7 +729,7 @@ class TestPreToolUseHookBlockRecovery:
         # internal-content-scan and Semgrep's
         # `detected-aws-access-key-id-value`. Splitting satisfies both, and
         # matches the existing sentinels in code_review_sage's tests.
-        secret = "AKIA" + "1234567890ABCDEF"
+        secret = "glpat-" + "1234567890ABCDEF"
         state, client = _make_state(
             tmp_path,
             context_builder=_context_builder(),
@@ -861,7 +861,7 @@ class TestDenyRowTitleRedaction:
     # Assembled at runtime, never as one literal: the redactor only fires on
     # credential-SHAPED input, and a real key shape in the source trips the
     # source-text scanners (internal-content-scan, Semgrep).
-    _SECRET = "AKIA" + "1234567890ABCDEF"
+    _SECRET = "glpat-" + "1234567890ABCDEF"
 
     def _invalid_title(self) -> str:
         # Over MAX_TOOL_NAME_LEN with is_shell False, so _validate_tool_name

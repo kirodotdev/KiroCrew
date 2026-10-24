@@ -50,8 +50,8 @@ from kiro_crew.testing.wait import async_wait_until, default_timeout, finished, 
 PATH = "/api/chat/slots/follow-default"
 #: Fake AWS access-key shapes, built by concatenation as the repo's other redaction
 #: tests build them, so no secret scanner reads a key literal here.
-_FAKE_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
-_OTHER_FAKE_KEY = "AKIA" + "IOSFODNN7EXAMPLF"
+_FAKE_KEY = "glpat-" + "IOSFODNN7EXAMPLE"
+_OTHER_FAKE_KEY = "glpat-" + "IOSFODNN7EXAMPLF"
 
 OLD = "claude-fable-5"
 PICK = "claude-sonnet-5"

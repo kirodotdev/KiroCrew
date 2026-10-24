@@ -359,12 +359,12 @@ class TestInclusionMetadata:
     def test_free_text_metadata_is_redacted(self, fake_home):
         """``inclusion``/``fileMatchPattern`` are author-supplied text on the
         same never-round-tripped path as the description."""
-        leak = "AKIAIOSFODNN7EXAMPLE1234567890abcdefghij"
+        leak = "glpat-IOSFODNN7EXAMPLE1234567890abcdefghij"
         entry = self._entry(
             fake_home,
             f"---\ninclusion: fileMatch\nfileMatchPattern: {leak}\n---\n# Doc\n",
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in entry["file_match_pattern"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in entry["file_match_pattern"]
 
     def test_free_text_metadata_is_capped(self, fake_home):
         entry = self._entry(
@@ -819,7 +819,7 @@ class TestProjectStateReason:
 class TestRedaction:
     """Listing metadata is redacted; editor content deliberately is not."""
 
-    FAKE = "aws_secret_access_key=AKIAIOSFODNN7EXAMPLE1234567890abcdefghij"
+    FAKE = "aws_secret_access_key=glpat-IOSFODNN7EXAMPLE1234567890abcdefghij"
 
     @pytest.mark.asyncio
     async def test_listing_description_is_redacted(self, fake_home):
@@ -827,7 +827,7 @@ class TestRedaction:
         async with TestClient(TestServer(_make_app(_state()))) as client:
             data = await (await client.get("/api/steering")).json()
         desc = data["files"][0]["description"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in desc
+        assert "glpat-IOSFODNN7EXAMPLE" not in desc
 
     @pytest.mark.asyncio
     async def test_detail_content_is_verbatim(self, fake_home):

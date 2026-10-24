@@ -278,7 +278,7 @@ class TestQueueEntryAttachmentsAreEchoed:
         """A credential in a path is scrubbed the same way it is in the text."""
         from kiro_crew.dashboard.chat_delivery import queue_entry_view
 
-        secret_path = "/tmp/AKIAIOSFODNN7EXAMPLE/report.pdf"
+        secret_path = "/tmp/glpat-IOSFODNN7EXAMPLE/report.pdf"
         view = queue_entry_view(
             {
                 "id": "q1",
@@ -286,8 +286,8 @@ class TestQueueEntryAttachmentsAreEchoed:
                 "meta": {"files": [secret_path]},
             }
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in view["content"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in view["meta"]["files"][0]
+        assert "glpat-IOSFODNN7EXAMPLE" not in view["content"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in view["meta"]["files"][0]
         # Same redaction on both, so `[attached_file 1]` still equals `files[0]`.
         assert view["content"].endswith(view["meta"]["files"][0])
 

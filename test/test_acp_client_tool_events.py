@@ -469,7 +469,7 @@ class TestBuildPermissionEvent:
                     "title": "Run Command",
                     "kind": "execute",
                     "toolCallId": "tc-secret",
-                    "rawInput": {"command": "echo AKIAIOSFODNN7EXAMPLE"},
+                    "rawInput": {"command": "echo glpat-IOSFODNN7EXAMPLE"},
                 }
             }
         )
@@ -487,7 +487,7 @@ class TestBuildPermissionEvent:
         event = client._build_permission_event(permission)
 
         assert event.tool_input_redacted is True
-        assert "AKIAIOSFODNN7EXAMPLE" not in event.tool_input
+        assert "glpat-IOSFODNN7EXAMPLE" not in event.tool_input
         assert "[REDACTED: credential]" in event.tool_input
         assert client._tool_call_input_redacted["tc-secret"] is True
         repeated = client._build_permission_event(permission)

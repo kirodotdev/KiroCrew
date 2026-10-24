@@ -20,7 +20,7 @@ from chat_test_helpers import _make_app, _make_state
 
 from kiro_crew.dashboard.chat import api_chat_slot_queue_cancel
 
-_SECRET = "AKIAIOSFODNN7EXAMPLE"
+_SECRET = "glpat-IOSFODNN7EXAMPLE"
 _TYPED = f"use https://docs.example.com/page?key={_SECRET} for this"
 
 

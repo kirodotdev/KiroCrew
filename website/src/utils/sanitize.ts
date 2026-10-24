@@ -3,11 +3,24 @@
 import { i18nT } from '../i18n/t'
 
 // ── Credential patterns (matches redact_credentials in security.py) ──
+// No AWS access key ID (`AKIA` / `ASIA`) pattern, bare or labelled: it is
+// Identifier tier and stays visible, as in the backend. But a presigned/signed
+// link's signing values (the SigV4/SigV2 signature and the session token) make
+// the link WORK on their own, so those are removed -- mirrors the backend's
+// `URL_SIGNING_VALUE`.
 const CRED_PATTERNS: RegExp[] = [
-  /(?:AKIA|ASIA)[A-Z0-9]{16}/g,
   /(?:SecretAccessKey|aws_secret_access_key)\s*[:=]\s*\S+/gi,
   /(?:SessionToken|aws_session_token)\s*[:=]\s*\S+/gi,
-  /(?:AccessKeyId|aws_access_key_id)\s*[:=]\s*\S+/gi,
+  // Signing values in three branches, mirroring the backend's `URL_SIGNING_VALUE`.
+  // The AWS-specific names (`X-Amz-Signature`, `X-Amz-Security-Token`) do not occur
+  // in prose, so their value is taken in any position. A bare `Signature` is an
+  // ordinary English word and a common identifier (`signature: bytes`,
+  // `signature = sign(body)`), so it is taken only as a URL query parameter — right
+  // after `?`/`&` or their encodings — or as a 64-hex SigV4 value, which prose does
+  // not produce. This keeps displayed script source and diagnostics intact.
+  /(?:X-Amz-Signature|X-Amz-Security-Token)["']?\s*[:=]\s*["']?[^\s"'&;#<>)\[\]}]+/gi,
+  /(?:[?&]|&amp;|%26)(?:Signature|sig|X-Goog-Signature)(?:=|%3[Dd])[^\s"'&;#<>)\[\]}]+/gi,
+  /Signature(?:=|%3[Dd])[0-9a-fA-F]{64,}(?![0-9A-Za-z])/gi,
   /BEGIN\s(?:RSA|DSA|EC|OPENSSH)\sPRIVATE\sKEY/g,
   /xox[bpas]-[0-9a-zA-Z-]{10,}/g,
   // JWS (3 segments) and compact JWE (5 segments). Post-header segments use `*`,
@@ -98,8 +111,71 @@ function decodeB64Safe(chunk: string): string {
   return ''
 }
 
+// One `name=value` (or `name%3Dvalue`) parameter whose name may carry
+// percent-encoded octets. Mirrors the backend log filter's `_PRESIGNED_PARAM_RE`:
+// the name is bounded and cannot start inside a longer run, so it stays linear.
+// A name never runs through an encoded `?`, `&` or `=` (`%3F`, `%26`, `%3D`), and
+// one may start right after an encoded `?` or `&`, so a link nested
+// percent-encoded in another (`o%3FX-Amz-Security-Token%3D...`) is read
+// parameter by parameter: a value ends at an encoded `&` or `?` too, and at a
+// literal `?`, so a link inside another value (`url=...?Signature=`) is read as
+// its own parameters. At any depth of encoding too: a link encoded twice writes
+// its `=` as `%253D` and its `&` as `%2526`.
+// The value runs to its own terminator at any length, so a long session
+// token's tail is never left behind; the name's bound keeps the scan linear.
+const SIGNING_PARAM_RE =
+  /(^|[^A-Za-z0-9%._-]|%(?:25){0,8}(?:3[Ff]|26))((?:[A-Za-z0-9._-]|%(?!(?:25){0,8}(?:3[DdFf]|26))[0-9A-Fa-f]{2}){1,128})(=|%(?:25){0,8}3[Dd])((?:[^\s"'&;#<>)\]}%?]|%(?!(?:25){0,8}(?:26|3[Ff]))|%$)+)/g
+// A signature's own shape: a hex digest, or a base64 run of letters and digits.
+const SIGNATURE_SHAPE_RE =
+  /^(?:[0-9A-Fa-f]{32,}|(?=[A-Za-z0-9+/_%-]*[0-9])(?=[A-Za-z0-9+/_%-]*[A-Za-z])[A-Za-z0-9+/_%-]{20,}={0,2})$/
+const SIGNING_PARAM_NAMES = new Set([
+  'signature',
+  'x-amz-signature',
+  'x-amz-security-token',
+  'x-goog-signature',
+])
+
+/**
+ * Drop the value of every signing parameter, judged on its percent-decoded name,
+ * so `S%69gnature=` reads as `Signature=`. The key ID and ordinary parameters stay.
+ */
+export function redactSigningParams(text: string, replacement: string): string {
+  return text.replace(SIGNING_PARAM_RE, (whole, pre: string, name: string, sep: string, value: string, offset: number) => {
+    // Every signing name is judged here, literal or percent-encoded, so the
+    // callers that run only this scanner (`redactSecrets`) cover them all.
+    // A name encoded more than once (`%2553ignature`) is decoded to its end.
+    let decoded = name
+    for (let i = 0; i < 9; i++) {
+      const next = decoded.replace(/%([0-9A-Fa-f]{2})/g, (_o, hex: string) =>
+        String.fromCharCode(parseInt(hex, 16)),
+      )
+      if (next === decoded) break
+      decoded = next
+    }
+    decoded = decoded.toLowerCase()
+    // `sig` (an Azure SAS signature) is too short a word to judge outside a URL
+    // query, so it counts only right after `?`/`&` or their encodings.
+    // An HTML-escaped separator (`&amp;`, `&#38;`, `&#x26;`) ends in the `;` that
+    // `pre` captured, so the text before the name is read too.
+    const before = text.slice(Math.max(0, offset - 12), offset + pre.length)
+    const inQuery =
+      pre === '?' ||
+      pre === '&' ||
+      /^%(?:25){0,8}(?:3[Ff]|26)$/.test(pre) ||
+      /&(?:amp|#0{0,4}38|#[xX]0{0,4}26);$/.test(before)
+    // A bare `signature` is a common parameter name in code
+    // (`def verify(signature=None)`): outside a query it counts only when its
+    // value has a signature's shape.
+    const signing =
+      decoded === 'signature'
+        ? inQuery || SIGNATURE_SHAPE_RE.test(value)
+        : SIGNING_PARAM_NAMES.has(decoded) || (decoded === 'sig' && inQuery)
+    return signing ? `${pre}${name}${sep}${replacement}` : whole
+  })
+}
+
 export function sanitizeCredentials(text: string): string {
-  let out = text
+  let out = redactSigningParams(text, '[REDACTED]')
   // Plaintext credential patterns
   for (const re of CRED_PATTERNS) {
     re.lastIndex = 0
@@ -164,8 +240,7 @@ const EXFIL_PERCENT_RE = /%[0-9A-Fa-f]{2}(?:%[0-9A-Fa-f]{2}){20,}/i
 // Hard credential markers. Mirrors the backend's _HARD_CREDENTIAL_RE.
 const EXFIL_CREDENTIAL_RE = new RegExp(
   '(?:' +
-    '(?:AKIA|ASIA)[A-Z0-9]{16}' +                    // AWS access key ID
-    '|(?:ssh-rsa|ssh-ed25519)[\\s+%]' +               // SSH public key
+    '(?:ssh-rsa|ssh-ed25519)[\\s+%]' +                // SSH public key
     '|BEGIN[\\s+%](?:RSA|DSA|EC|OPENSSH)[\\s+%]PRIVATE[\\s+%]KEY' + // private key header
     '|xox[bpas]-[0-9a-zA-Z-]+' +                     // Slack token
   ')',

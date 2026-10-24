@@ -1113,11 +1113,6 @@ async def api_browse_dirs(request: web.Request) -> web.Response:
 _HEAD_READ_LIMIT = 4096
 
 
-_MACOS_TEMP_PROJECT_PREFIX_RE = re.compile(
-    r"\A/private/var/folders/[a-z0-9]{2}/[a-z0-9_]{30}/T(?=/|\Z)"
-)
-
-
 async def api_browse_files(request: web.Request) -> web.Response:
     """GET /api/browse-files?path=... — list files and subdirectories for the activity-panel file browser.
 

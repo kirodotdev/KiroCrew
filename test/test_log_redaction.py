@@ -64,7 +64,7 @@ class TestSecretRedactionFilter:
     def test_empty_patterns_builtin_coverage(self) -> None:
         """With no secret patterns, the built-in pattern set is applied.
 
-        Bearer tokens, AWS access key IDs, and standalone JWTs are redacted;
+        Bearer tokens, unconfirmed AWS key ids, and standalone JWTs are redacted;
         other opaque strings pass through (redaction is pattern-based).
         """
         filt = SecretRedactionFilter([])
@@ -75,22 +75,23 @@ class TestSecretRedactionFilter:
         # Bearer token is always redacted
         assert "eyJhbGciOiJSUzI1NiJ9" not in result
 
-    def test_aws_key_id_redacted(self) -> None:
-        """An AWS access key ID is redacted anywhere in the text."""
+    def test_aws_access_key_id_stays_visible(self) -> None:
+        """An ``AKIA`` / ``ASIA`` access key ID is Identifier tier: a log keeps it."""
         filt = SecretRedactionFilter([])
-        result = filt.redact("creds: AKIAIOSFODNN7EXAMPLE for deploy")
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
-        assert "[REDACTED]" in result
+        msg = "creds: AKIA" "IOSFODNN7EXAMPLE and ASIA" "IOSFODNN7EXAMPLE for deploy"
+        assert filt.redact(msg) == msg
 
-    def test_aws_key_id_redacted_when_word_adjacent(self) -> None:
-        """A key abutting word characters (``aws_AKIA…``) is still redacted.
+    def test_unconfirmed_key_id_redacted_when_word_adjacent(self) -> None:
+        """An ``ABIA`` / ``ACCA`` id abutting word characters is still redacted.
 
         ``\\b`` never fires between ``_`` and ``A``, so boundary-anchored
-        patterns miss keys embedded in identifiers or rendered templates.
+        patterns miss ids embedded in identifiers or rendered templates.
         """
         filt = SecretRedactionFilter([])
-        result = filt.redact("aws_AKIAIOSFODNN7EXAMPLE and key=AKIAIOSFODNN7EXAMPLEsuffix")
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        body = "IOSFODNN7EXAMPLE"
+        result = filt.redact(f"aws_ABIA{body} and key=ACCA{body}suffix")
+        assert f"ABIA{body}" not in result and f"ACCA{body}" not in result
+        assert "[REDACTED]" in result
 
     def test_bare_jwt_redacted_outside_bearer_scheme(self) -> None:
         """A standalone JWT (no ``Bearer `` prefix) is redacted."""
@@ -330,11 +331,11 @@ class TestInstallLogRedaction:
         # args must be destroyed so no handler can export the credential.
         assert record.args is None
 
-    def test_lossy_format_aws_credential_in_args_is_destroyed(self) -> None:
-        """An AWS key ID past a ``%.100s`` truncation point cannot survive in args.
+    def test_lossy_format_token_in_args_is_destroyed(self) -> None:
+        """A JWT past a ``%.100s`` truncation point cannot survive in args.
 
         The full-arg scan covers every built-in pattern — the rendered prefix
-        scans clean, but the arg's own string form carries the key ID, so the
+        scans clean, but the arg's own string form carries the token, so the
         record is materialized and cleared.
         """
         install_log_redaction([])
@@ -345,7 +346,7 @@ class TestInstallLogRedaction:
             "",
             0,
             "acp output: %.100s",
-            (long_prefix + " AKIAIOSFODNN7EXAMPLE",),
+            (long_prefix + " eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.sig",),
             None,
         )
         assert record.args is None
@@ -565,3 +566,50 @@ class TestInstallLogRedaction:
         new_imports = imported_after - imported_before
         vault_imports = [m for m in new_imports if "secrets" in m and "kiro_crew" in m]
         assert vault_imports == [], f"log_redaction imported vault modules: {vault_imports}"
+
+
+# ── Secret tier from the shared table ──
+_DOC_SECRET = "wJalrXUtnFEMI" + "/K7MDENG/bPxRfiCY" + "EXAMPLEKEY"
+_DOC_KEY_ID = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        f"aws_secret_access_key={_DOC_SECRET}",
+        f"export AWS_SECRET_ACCESS_KEY={_DOC_SECRET}",
+        f'{{"SecretAccessKey": "{_DOC_SECRET}"}}',
+        "export AWS_SESSION_TOKEN=FwoGZXIvYXdzEXAMPLE0123",
+        "db_password=example-pw-1234",
+        "Authorization: Basic dXNlcjpleGFtcGxlMTIz",
+    ],
+)
+def test_labelled_secrets_are_redacted_and_the_label_kept(line: str) -> None:
+    out = SecretRedactionFilter([]).redact(line)
+    assert "[REDACTED]" in out
+    assert out.split("[REDACTED]")[0] == line[: len(out.split("[REDACTED]")[0])]
+    assert _DOC_SECRET not in out
+
+
+def test_a_key_id_stays_beside_its_redacted_secret() -> None:
+    out = SecretRedactionFilter([]).redact(f"key={_DOC_KEY_ID} aws_secret_access_key={_DOC_SECRET}")
+    assert out == f"key={_DOC_KEY_ID} aws_secret_access_key=[REDACTED]"
+
+
+def test_vendor_tokens_are_redacted() -> None:
+    token = "gl" + "pat-" + "abcdefghij0123456789"
+    assert SecretRedactionFilter([]).redact(f"token {token}") == "token [REDACTED]"
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["Bearer authentication failed", "the password reset is required", "login(api_key=get_key())"],
+)
+def test_prose_after_a_label_is_kept(line: str) -> None:
+    assert SecretRedactionFilter([]).redact(line) == line
+
+
+@pytest.mark.parametrize("line", ["password: required", "api_key=None"])
+def test_a_config_line_value_is_a_literal_whatever_its_word(line: str) -> None:
+    # On a config line (``key: value``, ``KEY=value``) a plain word is the value.
+    assert SecretRedactionFilter([]).redact(line).endswith("[REDACTED]")

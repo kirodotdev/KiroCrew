@@ -168,7 +168,7 @@ class TestStdoutCaptureHygiene:
 
     def test_reason_text_is_never_surfaced(self) -> None:
         """Service-controlled text classifies; it is never shown or logged."""
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         stdout = f"{BANNER}\n\nSessionId: {SESSION_ID} : {IDLE_REASON} {secret}\n\n"
         msg = _tunnel(stdout=stdout)._exit_error(0)
         assert secret not in msg
@@ -189,8 +189,8 @@ class TestStdoutCaptureHygiene:
         the reason text back to nobody, so there is no return value to observe
         it through.
         """
-        raw = f"SessionId: {SESSION_ID} : closed AKIAIOSFODNN7EXAMPLE\n"
-        assert "AKIAIOSFODNN7EXAMPLE" not in _sanitize_ssm_stdout(raw)
+        raw = f"SessionId: {SESSION_ID} : closed glpat-IOSFODNN7EXAMPLE\n"
+        assert "glpat-IOSFODNN7EXAMPLE" not in _sanitize_ssm_stdout(raw)
         # The notice is still classifiable with the credential gone.
         assert _ssm_close_reason(raw) == "closed"
 

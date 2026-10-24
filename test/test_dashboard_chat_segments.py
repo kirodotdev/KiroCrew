@@ -135,7 +135,7 @@ class TestFlushSegment:
 
         from kiro_crew.dashboard.chat import _flush_segment
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
 
         async def _run():
             _flush_segment(state, slot, f'<mcwidget title="W">key={secret}</mcwidget>')
@@ -228,9 +228,9 @@ class TestRunChatSegmentFlush:
         """
         from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
 
-        # AKIAIOSFODNN7EXAMPLE split exactly as in the pentest reproduction.
+        # glpat-IOSFODNN7EXAMPLE split exactly as in the pentest reproduction.
         events = [
-            LLMEvent(kind=EVENT_TEXT_CHUNK, text="The access key is AKIA"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="The access key is glpat-"),
             LLMEvent(kind=EVENT_TEXT_CHUNK, text="IOSFODNN7"),
             LLMEvent(kind=EVENT_TEXT_CHUNK, text="EXAMPLE"),
             LLMEvent(kind=EVENT_COMPLETE),
@@ -252,10 +252,10 @@ class TestRunChatSegmentFlush:
         wire = "".join(contents)
         # No individual frame — and not the reassembled wire — leaks the key.
         for frame in contents:
-            assert "AKIAIOSFODNN7EXAMPLE" not in frame
-        assert "AKIAIOSFODNN7EXAMPLE" not in wire
+            assert "glpat-IOSFODNN7EXAMPLE" not in frame
+        assert "glpat-IOSFODNN7EXAMPLE" not in wire
         # The credential fragments must not be recoverable across frames.
-        assert "AKIA" not in wire.replace("[REDACTED: credential]", "")
+        assert "glpat-" not in wire.replace("[REDACTED: credential]", "")
         assert "[REDACTED: credential]" in wire
         assert wire == "The access key is [REDACTED: credential]"
 
@@ -273,7 +273,7 @@ class TestRunChatSegmentFlush:
         )
 
         events = [
-            LLMEvent(kind=EVENT_THINKING_CHUNK, text="the key looks like AKIA"),
+            LLMEvent(kind=EVENT_THINKING_CHUNK, text="the key looks like glpat-"),
             LLMEvent(kind=EVENT_THINKING_CHUNK, text="IOSFODNN7"),
             LLMEvent(kind=EVENT_THINKING_CHUNK, text="EXAMPLE"),
             LLMEvent(kind=EVENT_TEXT_CHUNK, text="done"),
@@ -295,9 +295,9 @@ class TestRunChatSegmentFlush:
         ]
         wire = "".join(thinking)
         for frame in thinking:
-            assert "AKIAIOSFODNN7EXAMPLE" not in frame
-        assert "AKIAIOSFODNN7EXAMPLE" not in wire
-        assert "AKIA" not in wire.replace("[REDACTED: credential]", "")
+            assert "glpat-IOSFODNN7EXAMPLE" not in frame
+        assert "glpat-IOSFODNN7EXAMPLE" not in wire
+        assert "glpat-" not in wire.replace("[REDACTED: credential]", "")
         assert "[REDACTED: credential]" in wire
 
     @pytest.mark.asyncio

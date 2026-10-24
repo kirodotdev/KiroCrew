@@ -1423,7 +1423,7 @@ class TestIdEmbedsHardCredential:
     # (``_B64_CHUNK_RE``), so every encoded fixture below is padded past that
     # floor — a shorter encoding is not a chunk at all and never decoded.
     def test_literal_credential_is_detected(self) -> None:
-        assert _id_embeds_hard_credential("id-AKIAIOSFODNN7EXAMPLE") is True
+        assert _id_embeds_hard_credential("id-xoxb-IOSFODNN7EXAMPLE") is True
 
     def test_benign_id_is_not_flagged(self) -> None:
         assert _id_embeds_hard_credential("3f9a2b71-0c4d-4e8a-9b11-77d0c2e5a1f4") is False
@@ -1435,7 +1435,7 @@ class TestIdEmbedsHardCredential:
         assert _id_embeds_hard_credential("A" * 41) is False
 
     def test_base64_encoded_credential_is_detected(self) -> None:
-        encoded = base64.b64encode(b"AKIAIOSFODNN7EXAMPLE-with-trailing-filler").decode()
+        encoded = base64.b64encode(b"xoxb-IOSFODNN7EXAMPLE-with-trailing-filler").decode()
         assert len(encoded) >= 40
         assert _id_embeds_hard_credential(encoded) is True
 
@@ -1473,8 +1473,8 @@ class TestRedactRemoteResponseDepthCap:
         assert self._leaf_of(out) == []
 
     def test_string_past_the_cap_is_still_redacted(self) -> None:
-        out = _redact_remote_response(self._at_boundary("AKIAIOSFODNN7EXAMPLE"))
-        assert self._leaf_of(out) != "AKIAIOSFODNN7EXAMPLE"
+        out = _redact_remote_response(self._at_boundary("glpat-IOSFODNN7EXAMPLE"))
+        assert self._leaf_of(out) != "glpat-IOSFODNN7EXAMPLE"
 
     def test_non_string_scalar_past_the_cap_survives(self) -> None:
         out = _redact_remote_response(self._at_boundary(7))
@@ -1485,15 +1485,15 @@ class TestRedactRemoteResponseDepthCap:
         assert self._leaf_of(out) == ""
 
     def test_already_redacted_top_level_key_is_not_rescanned(self) -> None:
-        payload = {"content": "AKIAIOSFODNN7EXAMPLE", "title": "AKIAIOSFODNN7EXAMPLE"}
+        payload = {"content": "glpat-IOSFODNN7EXAMPLE", "title": "glpat-IOSFODNN7EXAMPLE"}
         out = _redact_remote_response(payload, already_redacted=frozenset({"content"}))
-        assert out["content"] == "AKIAIOSFODNN7EXAMPLE"
-        assert out["title"] != "AKIAIOSFODNN7EXAMPLE"
+        assert out["content"] == "glpat-IOSFODNN7EXAMPLE"
+        assert out["title"] != "glpat-IOSFODNN7EXAMPLE"
 
     def test_external_id_keeps_benign_high_entropy_value(self) -> None:
         out = _redact_remote_response({"external_id": "9f8e7d6c5b4a39281706"})
         assert out["external_id"] == "9f8e7d6c5b4a39281706"
 
     def test_external_id_with_hard_credential_is_replaced(self) -> None:
-        out = _redact_remote_response({"external_id": "AKIAIOSFODNN7EXAMPLE"})
+        out = _redact_remote_response({"external_id": "glpat-IOSFODNN7EXAMPLE"})
         assert out["external_id"] == art_handlers._REMOTE_ID_CRED_TAG

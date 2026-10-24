@@ -236,7 +236,7 @@ async def test_a_url_carrying_a_credential_is_refused_rather_than_stored(_stub_a
         [
             {
                 "serverName": "linear",
-                "oauthUrl": "https://linear.example/authorize?state=AKIA" + "IOSFODNN7EXAMPLE1",
+                "oauthUrl": "https://linear.example/authorize?state=glpat-" + "IOSFODNN7EXAMPLE1",
             }
         ],
     )

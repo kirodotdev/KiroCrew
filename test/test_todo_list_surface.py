@@ -188,14 +188,14 @@ class TestParseTodoSnapshot:
     def test_task_id_is_redacted_before_the_cap(self) -> None:
         """A secret in a provider-authored id is redacted like one in the text,
         and before the bound so the cut cannot leave the secret's head behind."""
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         snap = parse_todo_snapshot(
             _update([{"id": f"task {secret}", "task_description": "x", "completed": False}]),
             _name_cache(),
         )
         assert snap is not None
         assert secret not in snap["tasks"][0]["id"]
-        assert "AKIA" not in snap["tasks"][0]["id"]
+        assert "glpat-" not in snap["tasks"][0]["id"]
 
     def test_task_id_is_capped(self) -> None:
         """The id is provider-authored and retained per row (snapshot, override,
@@ -211,7 +211,7 @@ class TestParseTodoSnapshot:
 
     def test_credentials_in_task_text_are_redacted(self) -> None:
         """Task text is agent-authored free text that reaches the browser."""
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         snap = parse_todo_snapshot(
             _update([{"id": "1", "task_description": f"use key {secret}", "completed": False}]),
             _name_cache(),

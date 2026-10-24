@@ -516,7 +516,7 @@ def test_native_options_fallback_is_redacted(monkeypatch):
     slack = _OptionsFooterFailsCapturingSlack()
     # An option containing a credential-shaped token must be redacted in the
     # fallback text, not rendered raw into Slack.
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     provider = FakeProvider(
         [LLMEvent(kind="text_chunk", text=f"pick [OPTIONS: use {secret} | skip]")]
     )
@@ -716,8 +716,8 @@ def test_native_options_fallback_redacts_markup_obfuscated_credential(monkeypatc
     # Slack renders the ``**`` away and shows the reader an intact key. Only a
     # display-safe scan against the rendered form catches it. A literal-only
     # exfil+credential scrub (the bypassed path) lets this through.
-    obfuscated = "AKIAIOSF**ODNN7EXAMPLE**"
-    rendered = "AKIAIOSFODNN7EXAMPLE"
+    obfuscated = "glpat-IOSF**ODNN7EXAMPLE**"
+    rendered = "glpat-IOSFODNN7EXAMPLE"
     provider = FakeProvider(
         [LLMEvent(kind="text_chunk", text=f"pick [OPTIONS: use {obfuscated} | skip]")]
     )

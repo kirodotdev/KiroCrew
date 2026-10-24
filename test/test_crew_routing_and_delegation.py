@@ -201,7 +201,7 @@ class TestRouteCrew:
         from kiro_crew import mcp_core
         from kiro_crew.memory_stores import UnknownMemoryStore
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         reason = f"private memory unavailable: /home/alice/private/memory.db {secret} " + "x" * 1200
         monkeypatch.setattr(
             mcp_core, "resolve_agent_bindings", Mock(side_effect=UnknownMemoryStore(reason))

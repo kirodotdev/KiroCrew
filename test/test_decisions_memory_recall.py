@@ -322,7 +322,7 @@ class TestEgress:
         would either send its tail or drop it silently; redact-then-clip replaces
         it whole and the placeholder is what the bound is applied to.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         raw = "x" * (mr.MAX_SNIPPET_CHARS - 4) + secret
         out = mr.scrubbed(raw, mr.MAX_SNIPPET_CHARS)
         assert secret not in out
@@ -498,7 +498,7 @@ class TestTheGateOwnsRefusals:
         A snippet is redacted first, so this is the second line of defence: a
         spelling ``scrubbed`` misses refuses the request rather than sending it.
         """
-        state = mr.build_state("hi", [{"key": "a", "snippet": "AKIAIOSFODNN7EXAMPLE"}])
+        state = mr.build_state("hi", [{"key": "a", "snippet": "glpat-IOSFODNN7EXAMPLE"}])
         assert gate.scrub_reason(state, mr.build_questions([{"key": "a"}])) == (
             gate.ERROR_SCRUBBED_CREDENTIAL
         )

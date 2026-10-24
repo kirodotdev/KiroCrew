@@ -39,7 +39,7 @@ from kiro_crew.dashboard.chat_utils import _history_key_for, _prepare_messages
 
 # A credential shape `redact_credentials` catches, kept in one place so a change
 # to the detector surfaces as one failure rather than six.
-SECRET = "AKIAIOSFODNN7EXAMPLE"
+SECRET = "glpat-IOSFODNN7EXAMPLE"
 
 
 def _seed(state, slot_key: str, role: str, content: str) -> None:

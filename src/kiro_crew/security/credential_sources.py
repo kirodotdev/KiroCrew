@@ -64,6 +64,8 @@ SESSION_TOKEN_RULES = frozenset({"aws_session_token"})
 #: Rules the AWS credentials-file templates cover, with the key each reads.
 _AWS_TEMPLATE_KEYS = {
     "aws_secret_access_key": "aws_secret_access_key",
+    "aws_key_pair": "aws_secret_access_key",
+    # Records written before the entropy pass was removed still name it.
     "bare_aws_secret": "aws_secret_access_key",
     "aws_session_token": "aws_session_token",
     "aws_access_key_id": "aws_access_key_id",

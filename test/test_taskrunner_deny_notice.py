@@ -304,11 +304,11 @@ async def test_audit_lands_before_the_steer(tmp_path, monkeypatch):
 async def test_agent_authored_text_is_redacted_before_it_reaches_the_model(tmp_path):
     provider = _Provider()
     ctx = _ctx(
-        ToolHookResult(action=TOOL_DENY, reason="denied: token AKIAIOSFODNN7EXAMPLE1234 in args")
+        ToolHookResult(action=TOOL_DENY, reason="denied: token glpat-IOSFODNN7EXAMPLE1234 in args")
     )
     await _run_step(provider, ctx, on_tool_approval=AsyncMock(return_value=True), tmp_path=tmp_path)
     (notice,) = provider.steered
-    assert "AKIAIOSFODNN7EXAMPLE1234" not in notice
+    assert "glpat-IOSFODNN7EXAMPLE1234" not in notice
 
 
 # ── Behavioural: task_planner (decomposition) ────────────────────────────────

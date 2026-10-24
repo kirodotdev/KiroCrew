@@ -718,9 +718,9 @@ class TestWatchdogFindingHelpers:
         from kiro_crew.apps.builtins.auto_research import handlers as h
 
         p = tmp_path / "cycle_001.json"
-        p.write_text(json.dumps({"summary": "leaked AKIAIOSFODNN7EXAMPLE here"}))
+        p.write_text(json.dumps({"summary": "leaked glpat-IOSFODNN7EXAMPLE here"}))
         out = h._read_finding_file(p)
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(out)
+        assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(out)
 
     def test_read_finding_file_bad_json_returns_empty(self, tmp_path: Path):
         from kiro_crew.apps.builtins.auto_research import handlers as h

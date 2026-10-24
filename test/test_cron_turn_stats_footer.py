@@ -114,7 +114,7 @@ def test_stats_drop_non_finite_numbers_and_unbounded_models() -> None:
 
 
 def test_stats_redact_a_credential_shaped_model() -> None:
-    key = "AKIA" + "ABCDEFGHIJKLMNOP"
+    key = "glpat-" + "ABCDEFGHIJKLMNOP"
     stats = turn_stats_meta(10, 0.0, 0.0, key)
     assert stats is not None
     assert key not in stats.get("model", "")

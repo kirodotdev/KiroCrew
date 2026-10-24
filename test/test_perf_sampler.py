@@ -196,8 +196,8 @@ class TestRendering:
         assert "someone" not in label
 
     def test_sanitize_redacts_a_credential(self):
-        dirty = "fn (pkg/mod.py:1);AKIAIOSFODNN7EXAMPLE 3"
-        assert "AKIAIOSFODNN7EXAMPLE" not in perf_sampler.sanitize_profile(dirty)
+        dirty = "fn (pkg/mod.py:1);glpat-IOSFODNN7EXAMPLE 3"
+        assert "glpat-IOSFODNN7EXAMPLE" not in perf_sampler.sanitize_profile(dirty)
 
 
 # ── py-spy integration (out-of-process) ──

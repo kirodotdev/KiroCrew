@@ -230,7 +230,7 @@ async def test_slack_agent_authored_reason_is_redacted_before_it_reaches_the_mod
     provider = _SlackSteerProvider(
         [AcpEvent(kind=EVENT_PERMISSION_REQUEST, request_id="rq2", title="W")]
     )
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     await _slack_hook_deny(slack_harness, provider, reason=f"matched key {secret} in the command")
     (notice,) = provider.steered
     assert secret not in notice

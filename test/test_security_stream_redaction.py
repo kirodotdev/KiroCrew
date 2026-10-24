@@ -32,9 +32,9 @@ class TestRedactAndTruncate:
         assert len(result) <= 100
 
     def test_redacts_credentials_in_truncated(self) -> None:
-        text = "Key: AKIAIOSFODNN7EXAMPLE in output"
+        text = "Key: glpat-IOSFODNN7EXAMPLE in output"
         result = redact_and_truncate(text)
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert "glpat-IOSFODNN7EXAMPLE" not in result
 
     def test_handles_none(self) -> None:
         assert redact_and_truncate(None) == ""
@@ -43,18 +43,18 @@ class TestRedactAndTruncate:
         """A secret spanning the max_chars cut must not leak a partial (security-review e27617c6).
 
         Redaction runs over the full text before truncation. Truncating first
-        would slice AKIA...EXAMPLE in half, leaving an unredactable prefix that
+        would slice glpat-...EXAMPLE in half, leaving an unredactable prefix that
         does not match the credential regex and would leak on the wire.
         """
         prefix = "prefix "  # 7 chars
-        secret = "AKIAIOSFODNN7EXAMPLE"  # 20-char AWS access key ID
+        secret = "glpat-IOSFODNN7EXAMPLE"  # a GitLab-shaped fake token
         text = prefix + secret + " trailing"
         # Boundary lands 8 chars into the 20-char key.
         max_chars = len(prefix) + 8
         result = redact_and_truncate(text, max_chars=max_chars)
         assert len(result) <= max_chars
-        # No fragment of the access key ID (which starts with "AKIA") survives.
-        assert "AKIA" not in result
+        # No fragment of the token (which starts with "glpat-") survives.
+        assert "glpat-" not in result
 
 
 class TestSELEmittersRedactBeforeTruncate:
@@ -63,8 +63,8 @@ class TestSELEmittersRedactBeforeTruncate:
     Slicing to 200 chars before redacting writes a credential straddling the
     200-char boundary to the durable audit event with its tail cut off, in the
     shape the credential regex cannot match. Each test plants the 20-char
-    AWS access key ID 'AKIAIOSFODNN7EXAMPLE' straddling index 200 and asserts no
-    fragment of it (its 'AKIA' prefix) survives in the emitted event's metadata.
+    fake token 'glpat-IOSFODNN7EXAMPLE' straddling index 200 and asserts no
+    fragment of it (its 'glpat-' prefix) survives in the emitted event's metadata.
 
     These call the emitters DIRECTLY, so they pin the emitter's own ordering and
     nothing about what a caller feeds it. Redaction here is case-sensitive by
@@ -73,7 +73,7 @@ class TestSELEmittersRedactBeforeTruncate:
     (``test_allow_audit_records_the_raw_command_not_the_matching_view``).
     """
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"  # 20-char AWS access key ID
+    SECRET = "glpat-IOSFODNN7EXAMPLE"  # a GitLab-shaped fake token
 
     def test_push_allow_event_redacts_straddling_secret(
         self, monkeypatch: pytest.MonkeyPatch
@@ -102,7 +102,7 @@ class TestSELEmittersRedactBeforeTruncate:
         assert len(logged) == 1
         event = logged[0]
         assert event.event_type == "push_allowed"
-        assert not any("AKIA" in str(value) for value in event.metadata.values()), event.metadata
+        assert not any("glpat-" in str(value) for value in event.metadata.values()), event.metadata
 
     def test_injection_dropped_event_redacts_straddling_secret(
         self, monkeypatch: pytest.MonkeyPatch
@@ -133,7 +133,7 @@ class TestSELEmittersRedactBeforeTruncate:
         assert len(logged) == 1
         event = logged[0]
         assert event.event_type == "prompt_injection_dropped"
-        assert not any("AKIA" in str(value) for value in event.metadata.values()), event.metadata
+        assert not any("glpat-" in str(value) for value in event.metadata.values()), event.metadata
 
 
 class TestScanHistory:
@@ -186,11 +186,11 @@ class TestStreamRedactor:
         return emits
 
     def test_credential_split_across_chunks(self) -> None:
-        emits = self._run(["The access key is AKIA", "IOSFODNN7", "EXAMPLE"])
+        emits = self._run(["The access key is glpat-", "IOSFODNN7", "EXAMPLE"])
         # No single emit leaks a raw fragment
         for e in emits:
-            assert "AKIAIOSFODNN7EXAMPLE" not in e
-            assert not ("AKIA" in e and "REDACTED" not in e)
+            assert "glpat-IOSFODNN7EXAMPLE" not in e
+            assert not ("glpat-" in e and "REDACTED" not in e)
         joined = "".join(emits)
         assert joined == "The access key is [REDACTED: credential]"
 
@@ -198,8 +198,8 @@ class TestStreamRedactor:
         from kiro_crew.security import StreamRedactor
 
         r = StreamRedactor()
-        out = "".join(r.feed(c) for c in "x AKIAIOSFODNN7EXAMPLE y") + r.flush()
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        out = "".join(r.feed(c) for c in "x glpat-IOSFODNN7EXAMPLE y") + r.flush()
+        assert "glpat-IOSFODNN7EXAMPLE" not in out
         assert "[REDACTED: credential]" in out
 
     def test_no_data_loss_benign(self) -> None:
@@ -207,8 +207,8 @@ class TestStreamRedactor:
         assert joined == "Hello world, this is fine."
 
     def test_single_chunk_credential(self) -> None:
-        joined = "".join(self._run(["key=AKIAIOSFODNN7EXAMPLE done"]))
-        assert "AKIAIOSFODNN7EXAMPLE" not in joined
+        joined = "".join(self._run(["key=glpat-IOSFODNN7EXAMPLE done"]))
+        assert "glpat-IOSFODNN7EXAMPLE" not in joined
         assert "REDACTED" in joined
 
     def test_github_token_split(self) -> None:
@@ -220,7 +220,7 @@ class TestStreamRedactor:
         from kiro_crew.security import StreamRedactor
 
         r = StreamRedactor()
-        assert r.feed("AKIA") == ""  # held
+        assert r.feed("glpat-") == ""  # held
         r.reset()
         assert r.flush() == ""  # nothing left after reset
 

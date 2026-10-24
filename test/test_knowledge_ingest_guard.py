@@ -481,15 +481,15 @@ def test_oversized_file_message_redacts_the_caller_supplied_name(tmp_path, monke
         big.write_text("x" * 4096)
         _set_limit_mb(monkeypatch, 0.001)
 
-        leaky = "report AKIAIOSFODNN7EXAMPLE.md"
+        leaky = "report glpat-IOSFODNN7EXAMPLE.md"
         with caplog.at_level(logging.WARNING):
             with pytest.raises(FileTooLargeError) as excinfo:
                 asyncio.get_event_loop().run_until_complete(
                     pipe.ingest_file(str(big), original_name=leaky))
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in str(excinfo.value)
+        assert "glpat-IOSFODNN7EXAMPLE" not in str(excinfo.value)
         assert "REDACTED" in str(excinfo.value)
-        assert "AKIAIOSFODNN7EXAMPLE" not in caplog.text
+        assert "glpat-IOSFODNN7EXAMPLE" not in caplog.text
     finally:
         store.close()
 
@@ -548,7 +548,7 @@ async def test_an_auto_added_source_scrubs_secrets_before_extraction(
     own text is therefore scrubbed ahead of chunking, extraction and storage.
     """
     doc = tmp_path / "runbook.md"
-    doc.write_text("# Runbook\n\nUse AKIAIOSFODNN7EXAMPLE to rotate the fleet.\n")
+    doc.write_text("# Runbook\n\nUse glpat-IOSFODNN7EXAMPLE to rotate the fleet.\n")
     src = kstore.add_source(
         name="project docs", source_type="local_folder", uri=str(tmp_path),
         properties={"sync_status": "active", "auto_added": True})
@@ -559,14 +559,14 @@ async def test_an_auto_added_source_scrubs_secrets_before_extraction(
         r["content"] or "" for r in kstore.db.execute(
             "SELECT content FROM items WHERE source_id = ?", (src,)).fetchall())
     assert stored, "the document should have been ingested"
-    assert "AKIAIOSFODNN7EXAMPLE" not in stored, (
+    assert "glpat-IOSFODNN7EXAMPLE" not in stored, (
         "an auto-added source must not store a raw credential")
     # What the extractor was handed must be scrubbed too -- that is the call that
     # leaves the machine.
     sent = " ".join(
         str(c) for call in pipeline.extractor.extract_batch.await_args_list
         for c in (call.args[0] if call.args else []))
-    assert "AKIAIOSFODNN7EXAMPLE" not in sent, (
+    assert "glpat-IOSFODNN7EXAMPLE" not in sent, (
         "the credential must not reach the extraction worker")
 
 
@@ -578,7 +578,7 @@ async def test_a_hand_registered_source_is_left_alone(pipeline, kstore, tmp_path
     indexed text would be a behaviour change for every existing source.
     """
     doc = tmp_path / "notes.md"
-    doc.write_text("# Notes\n\nUse AKIAIOSFODNN7EXAMPLE to rotate the fleet.\n")
+    doc.write_text("# Notes\n\nUse glpat-IOSFODNN7EXAMPLE to rotate the fleet.\n")
     src = kstore.add_source(name="my docs", source_type="local_folder",
                             uri=str(tmp_path), properties={"sync_status": "active"})
 
@@ -587,7 +587,7 @@ async def test_a_hand_registered_source_is_left_alone(pipeline, kstore, tmp_path
     stored = " ".join(
         r["content"] or "" for r in kstore.db.execute(
             "SELECT content FROM items WHERE source_id = ?", (src,)).fetchall())
-    assert "AKIAIOSFODNN7EXAMPLE" in stored, (
+    assert "glpat-IOSFODNN7EXAMPLE" in stored, (
         "a hand-registered source keeps its existing behaviour")
 
 

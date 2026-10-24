@@ -217,8 +217,8 @@ def test_an_old_relay_slot_loads_as_a_read_only_archive(tmp_path):
 
 
 def test_peer_text_is_redacted_and_clean_text_passes_unchanged():
-    secret = "key AKIAIOSFODNN7EXAMPLE here"
-    assert "AKIAIOSFODNN7EXAMPLE" not in redact_peer_text(secret)
+    secret = "key glpat-IOSFODNN7EXAMPLE here"
+    assert "glpat-IOSFODNN7EXAMPLE" not in redact_peer_text(secret)
     assert redact_peer_text("plain words") == "plain words"
 
 

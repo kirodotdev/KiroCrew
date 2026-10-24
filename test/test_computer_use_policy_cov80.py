@@ -253,7 +253,7 @@ class TestRedactResult:
         assert policy.redact_result("zibble wobble") == "zibble wobble"
 
     def test_a_credential_shaped_string_does_not_survive_verbatim(self) -> None:
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         assert secret not in policy.redact_result(f"key={secret}")
 
 

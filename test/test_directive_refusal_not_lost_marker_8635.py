@@ -330,7 +330,7 @@ class TestTheRefusalTagSurvivesDelivery:
         re-attached at the cut, the way the App render marker already is."""
         from kiro_crew.security import redact_credentials
 
-        tagged = session_directive.tag_refusal(("Error: " + ("AKIAIOSFODNN7EXAMPLE " * 380))[:7960])
+        tagged = session_directive.tag_refusal(("Error: " + ("xoxb-IOSFODNN7EXAMPL " * 380))[:7960])
         assert len(tagged) <= session_directive.MAX_TOOL_RESULT_CHARS
         grown, _ = redact_credentials(tagged)
         assert len(grown) > len(tagged), "redaction did not grow the text"

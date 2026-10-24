@@ -259,7 +259,7 @@ class TestRedaction:
         exactly what the redactor must recognise while leaving no scannable literal
         in the source.
         """
-        secret = "AKIA" + "IOSFODNN7EXAMPLE"
+        secret = "glpat-" + "IOSFODNN7EXAMPLE"
         payload = {"series": [{"env": f"AWS_SECRET_ACCESS_KEY={secret}"}]}
         with patch.object(server, "_get", return_value=payload):
             raw = server._call_tool("debug_snapshots", {})

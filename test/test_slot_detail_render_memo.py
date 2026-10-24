@@ -22,7 +22,7 @@ from kiro_crew.history import _safe_key
 from kiro_crew.security import exfil
 from kiro_crew.security.redaction_switch import owner_view
 
-SECRET = "AKIAIOSFODNN7EXAMPLE"
+SECRET = "glpat-IOSFODNN7EXAMPLE"
 TENANT_URL = (
     "https://tenant.example.com/collect?data=c2VjcmV0LXRva2VuLXZhbHVlLTEyMzQ1Njc4OTAxMjM0NTY3ODkw"
 )

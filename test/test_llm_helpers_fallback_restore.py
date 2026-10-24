@@ -431,10 +431,10 @@ class TestFallbackStorySafety:
         setattr(
             exc,
             FALLBACK_STORY_ATTR,
-            "AKIAIOSFODNN7EXAMPLE throttled; fallbacks fb-1 also unavailable",
+            "glpat-IOSFODNN7EXAMPLE throttled; fallbacks fb-1 also unavailable",
         )
         story = fallback_story_of(exc)
-        assert "AKIAIOSFODNN7EXAMPLE" not in story
+        assert "glpat-IOSFODNN7EXAMPLE" not in story
         assert "also unavailable" in story
 
     def test_story_read_survives_hostile_exception_attr(self) -> None:

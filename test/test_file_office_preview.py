@@ -166,7 +166,7 @@ async def test_pptx_slides_are_redacted_before_the_cap(tmp_path, mock_sel):
     # Same rule as the flat text (test_redaction_runs_before_truncation): a
     # credential straddling the per-slide cut must not leak as a prefix.
     f = tmp_path / "creds.pptx"
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     _write_pptx(str(f), [["x" * (_OFFICE_PREVIEW_CAP - 10) + secret], ["next"]])
     with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
         async with TestClient(TestServer(_make_app())) as client:
@@ -416,8 +416,8 @@ async def test_redaction_runs_before_truncation(tmp_path, mock_sel):
     """
     f = tmp_path / "creds.docx"
     # One paragraph: filler that ends 10 chars before the cap, then a fake
-    # AKIA credential ID that straddles the boundary.
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    # glpat- credential ID that straddles the boundary.
+    secret = "glpat-IOSFODNN7EXAMPLE"
     filler = "x" * (_OFFICE_PREVIEW_CAP - 10)
     _write_docx(str(f), [filler + secret])
     with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
@@ -480,28 +480,28 @@ async def test_docx_credential_straddling_the_cap_near_either_edge_is_masked(
     """The token is never cut at the cap, however little or much of it sits before it.
 
     test_redaction_runs_before_truncation covers the middle. A character-granular
-    budget would serve the ``AKIA`` prefix at both of these offsets; 4 is the
+    budget would serve the ``glpat-`` prefix at both of these offsets; 4 is the
     shortest prefix that still names the key family, 16 leaves only the last
     four characters past the cap.
     """
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     f = tmp_path / "edge.docx"
     _write_docx(str(f), ["x" * (_OFFICE_PREVIEW_CAP - before_cap) + secret + " tail", "next"])
     body = await _preview(f)
     assert body["truncated"] is True
-    assert "AKIA" not in body["text"]
+    assert "glpat-" not in body["text"]
     assert len(body["text"]) <= _OFFICE_PREVIEW_CAP
 
 
 @pytest.mark.asyncio
 async def test_docx_credential_in_the_paragraph_that_meets_the_budget_is_masked(tmp_path, mock_sel):
     """The paragraph the budget stops at is extracted whole, so its secret is seen whole."""
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     f = tmp_path / "own-paragraph.docx"
     _write_docx(str(f), ["x" * (_OFFICE_PREVIEW_CAP - 10), secret, "next"])
     body = await _preview(f)
     assert body["truncated"] is True
-    assert "AKIA" not in body["text"]
+    assert "glpat-" not in body["text"]
     assert len(body["text"]) <= _OFFICE_PREVIEW_CAP
 
 
@@ -519,13 +519,13 @@ async def test_docx_redaction_shrink_above_the_cap_pulls_no_unmasked_text_under_
     head = [jwt] * 4
     used = sum(len(p) + 1 for p in head)
     margin = files_mod._STREAM_HOLDBACK_JWT_MAX
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     f = tmp_path / "shrink.docx"
     _write_docx(str(f), [*head, "a" * (_OFFICE_PREVIEW_CAP + margin - 6 - used) + secret, "keep"])
     body = await _preview(f)
     assert body["truncated"] is True
     assert jwt not in body["text"]
-    assert "AKIA" not in body["text"]
+    assert "glpat-" not in body["text"]
     assert len(body["text"]) <= _OFFICE_PREVIEW_CAP
 
 
@@ -581,13 +581,13 @@ async def test_pptx_credential_straddling_the_cap_is_masked_in_slides_and_text(
     test_pptx_slides_are_redacted_before_the_cap covers the middle; these offsets
     are the ones a character-granular budget would leak (see the .docx twin).
     """
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     f = tmp_path / "edge.pptx"
     _write_pptx(str(f), [["x" * (_OFFICE_PREVIEW_CAP - before_cap) + secret + " tail"], ["next"]])
     body = await _preview(f)
     assert body["truncated"] is True
-    assert "AKIA" not in _slides_text(body)
-    assert "AKIA" not in body["text"]
+    assert "glpat-" not in _slides_text(body)
+    assert "glpat-" not in body["text"]
     assert sum(len(s["text"]) for s in body["slides"]) <= _OFFICE_PREVIEW_CAP
     assert len(body["text"]) <= _OFFICE_PREVIEW_CAP
 
@@ -603,15 +603,15 @@ async def test_pptx_redaction_shrink_in_one_slide_frees_no_unmasked_text_in_the_
     carries a raw secret.
     """
     jwt = _jwt(3000)
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     filler = "a" * (_OFFICE_PREVIEW_CAP - 6 - 4 * (len(jwt) + 1))
     f = tmp_path / "shrink.pptx"
     _write_pptx(str(f), [[jwt] * 4, [filler], [secret + " more"], ["keep"]])
     body = await _preview(f)
     assert body["truncated"] is True
     assert jwt not in _slides_text(body)
-    assert "AKIA" not in _slides_text(body)
-    assert "AKIA" not in body["text"]
+    assert "glpat-" not in _slides_text(body)
+    assert "glpat-" not in body["text"]
 
 
 @pytest.mark.asyncio
@@ -684,7 +684,7 @@ async def test_blocks_text_is_credential_redacted(tmp_path, mock_sel):
     """The blocks payload carries the same document text the text mode does, so
     it goes through the same redaction — per string, so structure survives."""
     f = tmp_path / "leaky.docx"
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     write_docx(
         str(f),
         docx_para(f"key {secret} here", style="Heading1") + docx_table([[f"cell {secret}"]]),
@@ -706,7 +706,7 @@ async def test_a_credential_split_across_two_runs_is_still_redacted(tmp_path, mo
     place while the text mode -- which redacts the whole joined extraction --
     masks it, so the blocks payload would be the weaker of the two surfaces."""
     f = tmp_path / "split.docx"
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     head, tail = secret[:8], secret[8:]
     write_docx(
         str(f),
@@ -748,7 +748,7 @@ def test_an_unknown_string_field_is_redacted_by_default():
     """The point of the inversion. Enumerating the keys that hold text means a
     block shape added later carries its text out unredacted until someone extends
     the list, and nothing fails while they have not."""
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     out = files_mod._redact_block({"type": "caption", "some_future_field": secret})
     assert isinstance(out, dict)
     assert secret not in str(out["some_future_field"])

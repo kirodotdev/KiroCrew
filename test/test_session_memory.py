@@ -89,10 +89,10 @@ def test_a_credential_in_a_title_is_redacted_at_the_output_boundary() -> None:
     client-supplied body["title"] to slot.title with no scan, so a title can reach
     this serializer unredacted. running_agents_for redacts task text in the same
     payload; titles must not be treated more loosely."""
-    leaky = "Debug AKIAIOSFODNN7EXAMPLE rotation"
+    leaky = "Debug glpat-IOSFODNN7EXAMPLE rotation"
     out = sm.session_title("dashboard:chat-9", lambda k: _FakeSlot(leaky))
 
-    assert "AKIAIOSFODNN7EXAMPLE" not in str(out["title"])
+    assert "glpat-IOSFODNN7EXAMPLE" not in str(out["title"])
     assert out["title"] == "Debug [REDACTED: credential] rotation"
 
 

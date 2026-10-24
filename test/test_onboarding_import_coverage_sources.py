@@ -531,7 +531,7 @@ class TestLineageMemoryDatabase:
         scan = _scan(tmp_path, "predecessor")
         _lineage_db(
             scan.root / "memory.db",
-            semantic=[("pref.key", '"AKIAIOSFODNN7EXAMPLE"', 1.0, 0, "default", None)],
+            semantic=[("pref.key", '"glpat-IOSFODNN7EXAMPLE"', 1.0, 0, "default", None)],
         )
 
         lineage_source._scan_lineage_memory_db(scan)
@@ -557,12 +557,24 @@ class TestLineageMemoryDatabase:
 
     def test_secret_fields_inside_a_decoded_value_are_omitted(self, tmp_path: Path) -> None:
         scan = _scan(tmp_path, "predecessor")
-        payload = json.dumps({"api_key": "abc"})
+        # A reference passes the raw-text credential screen, so the decoded
+        # field-name check is the screen that has to catch it.
+        payload = json.dumps({"api_key": "${API_KEY}"})
         _lineage_db(scan.root / "memory.db", semantic=[("pref.k", payload, 1.0, 0, "", None)])
 
         lineage_source._scan_lineage_memory_db(scan)
 
         assert "secret_fields_omitted" in _reasons(scan)
+
+    def test_a_short_quoted_api_key_is_screened_as_a_credential(self, tmp_path: Path) -> None:
+        scan = _scan(tmp_path, "predecessor")
+        payload = json.dumps({"api_key": "abc"})
+        _lineage_db(scan.root / "memory.db", semantic=[("pref.k", payload, 1.0, 0, "", None)])
+
+        lineage_source._scan_lineage_memory_db(scan)
+
+        assert "credential_bearing_memory" in _reasons(scan)
+        assert scan.items.get("memories", []) == []
 
     def test_an_escape_hidden_injection_is_caught_after_decoding(self, tmp_path: Path) -> None:
         scan = _scan(tmp_path, "predecessor")
@@ -615,7 +627,7 @@ class TestLineageMemoryDatabase:
         scan = _scan(tmp_path, "predecessor")
         _lineage_db(
             scan.root / "memory.db",
-            episodic=[("e1", "the key is AKIAIOSFODNN7EXAMPLE", 0.5, 0, "", None)],
+            episodic=[("e1", "the key is glpat-IOSFODNN7EXAMPLE", 0.5, 0, "", None)],
         )
 
         lineage_source._scan_lineage_memory_db(scan)
@@ -870,7 +882,7 @@ class TestSkillPackaging:
     def test_a_credential_bearing_asset_drops_the_package(self, tmp_path: Path) -> None:
         scan = _scan(tmp_path, "codex")
         manifest = self._skill(scan.root, "demo")
-        (manifest.parent / "notes.md").write_text("AKIAIOSFODNN7EXAMPLE", encoding="utf-8")
+        (manifest.parent / "notes.md").write_text("glpat-IOSFODNN7EXAMPLE", encoding="utf-8")
 
         assert onboarding_scan._skill_package(scan, scan.root, manifest) is None
         assert "credential_bearing_skill" in _reasons(scan)

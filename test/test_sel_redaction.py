@@ -46,8 +46,9 @@ class TestMetadataRedaction:
     test file itself never contains a credential-shaped literal.
     """
 
-    AKIA_TOKEN = "AKIA" + "IOSFODNN7EXAMPLE"
-    EXFIL_URL = "https://attacker.example/upload/" + "AKIA" + "IOSFODNN7EXAMPLE"
+    AKIA_TOKEN = "glpat-" + "IOSFODNN7EXAMPLE"
+    EXFIL_URL = "https://attacker.example/upload/" + "glpat-" + "IOSFODNN7EXAMPLE"
+    KEY_ID = "AKIA" + "IOSFODNN7EXAMPLE"
 
     def _disk_text(self, sel_dir: Path) -> str:
         return (sel_dir / "security_events.jsonl").read_text(encoding="utf-8")
@@ -242,27 +243,24 @@ class TestMetadataRedaction:
         assert data["caller_identity"] == "dashboard:slot-AKIA-not-a-key"
         assert data["downstream_service"] == "kirocrew-core"
 
-    def test_lowercased_aws_key_never_reaches_disk(self, log, sel_dir):
-        """SEL callers may normalize case before logging (the file-search
-        handler lowercases its query); a lowercased key is trivially
-        reversible, so the write-time pass must catch it case-insensitively."""
-        lowered = self.AKIA_TOKEN.lower()
+    def test_a_key_id_in_any_case_stays_visible(self, log, sel_dir):
+        """An AWS access key ID is Identifier tier, so an audit row keeps it in
+        whatever case the caller logged it (the file-search handler lowercases
+        its query)."""
+        lowered = self.KEY_ID.lower()
         log.log_tool_invocation(
             session_key="dashboard:slot1",
             tool_name="file_search",
             outcome="allowed",
-            resources=f"q={lowered} kinds=all",
+            resources=f"q={lowered} kinds=all {self.KEY_ID}",
             metadata={"query": lowered},
         )
-        raw = self._disk_text(sel_dir)
-        assert lowered not in raw
-        data = json.loads(raw.strip())
-        assert "[REDACTED: credential]" in data["resources"]
-        assert "[REDACTED: credential]" in data["metadata"]["query"]
+        data = json.loads(self._disk_text(sel_dir).strip())
+        assert data["resources"] == f"q={lowered} kinds=all {self.KEY_ID}"
+        assert data["metadata"]["query"] == lowered
 
-    def test_anycase_pass_leaves_ordinary_words_alone(self, log, sel_dir):
-        """The case-insensitive net is bounded: prose containing 'akia' or
-        'asia' inside longer tokens must not be rewritten."""
+    def test_ordinary_words_are_left_alone(self, log, sel_dir):
+        """Prose containing 'akia' or 'asia' inside longer tokens is not rewritten."""
         text = "asian markets akiary search results for East Asia region"
         log.log_tool_invocation(
             session_key="dashboard:slot1",

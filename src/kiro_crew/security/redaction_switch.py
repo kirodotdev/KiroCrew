@@ -141,39 +141,6 @@ def credential_pass_bypassed() -> bool:
     return _OWNER_VIEW_BYPASS.get()
 
 
-#: Whether the calling context is redacting CODE rather than prose. A ContextVar for
-#: :func:`owner_view`'s reason: a scope the caller must open cannot be inherited by a
-#: sink that forgot to opt out.
-_CODE_TEXT: ContextVar[bool] = ContextVar("kirocrew_redaction_code_text", default=False)
-
-
-@contextmanager
-def code_text() -> Iterator[None]:
-    """Mark the enclosed redaction calls as running over CODE, so pass 3 spares two shapes.
-
-    Pass 3 reads a run of base64-alphabet characters as a bare secret key by its entropy
-    and shape, a guess about PROSE. In code it rewrites what the author wrote on purpose
-    and the program then runs on the redaction marker with no error. Inside this scope it
-    leaves a run alone only when the run is an ordered alphabet (``abc...xyz``) or a payload
-    of 64 characters or more behind a ``data:<type>;base64,`` header; any other run is judged
-    exactly as outside. Every other pass keys on a fixed format and runs unchanged, as does
-    the exfiltration-URL pass. A scope rather than an argument because
-    ``platform.context.redact_via_context`` takes none; open it only through
-    ``platform.context.redact_code_via_context``. Re-entrant and task-local.
-    """
-    token = _CODE_TEXT.set(True)
-    try:
-        yield
-    finally:
-        _CODE_TEXT.reset(token)
-
-
-def bare_secret_pass_enabled() -> bool:
-    """Whether pass 3 judges every run for THIS call: false only inside :func:`code_text`,
-    where it spares an ordered alphabet and a data URI payload."""
-    return not _CODE_TEXT.get()
-
-
 #: Serialises the read-modify-write in :func:`set_enabled`. An in-process lock,
 #: for the same reason ``file_delivery_consent._STORE_LOCK`` gives: the store has
 #: exactly one writer (the owner-gated dashboard handler in the gateway process),

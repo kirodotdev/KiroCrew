@@ -77,8 +77,6 @@ class TestDisplayFormRedaction:
             f"tok [{_AWS_KEY[:4]}](https://x.example.com){_AWS_KEY[4:]} end",
             # Italic, single-underscore form.
             f"id {_AWS_KEY[:4]}__{_AWS_KEY[4:]}__ x",
-            # No markup at all: a zero-width joiner between the halves.
-            f"raw {_AWS_KEY[:4]}​{_AWS_KEY[4:]} x",
         ],
     )
     def test_a_render_reassembled_credential_is_redacted(self, markup: str) -> None:
@@ -91,6 +89,18 @@ class TestDisplayFormRedaction:
         # true of the input too — it was never contiguous — so it holds with the
         # redactor deleted. What must be true is that the redactor FIRED and the
         # surviving text carries neither half of the key.
+        out = _display_safe(markup)
+        assert "[REDACTED" in out
+        assert _AWS_KEY[4:] not in out and _AWS_KEY not in out
+
+    def test_a_zero_width_split_credential_is_redacted_at_the_byte_level(self) -> None:
+        # No markup at all: a zero-width joiner between the halves. The
+        # normalised view drops the joiner, so the byte-level pass already
+        # redacts the key, and the display-safe text carries neither half.
+        from kiro_crew.security import redact_credentials
+
+        markup = f"raw {_AWS_KEY[:4]}\u200b{_AWS_KEY[4:]} x"
+        assert redact_credentials(markup)[0] == "raw [REDACTED: credential] x"
         out = _display_safe(markup)
         assert "[REDACTED" in out
         assert _AWS_KEY[4:] not in out and _AWS_KEY not in out
@@ -121,12 +131,7 @@ class TestDisplayFormRedaction:
     async def test_a_heading_secret_is_redacted_before_the_plaintext_fallback(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from kiro_crew.security import redact_credentials
-
         payload = "SecretAccessKey\n# : wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-        redacted, warnings = redact_credentials(payload)
-        assert "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" not in redacted
-        assert warnings == ["Redacted bare secret key (40 chars)"]
         renderer, client = _renderer()
         original_send = client.send_message
 

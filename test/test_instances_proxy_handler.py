@@ -360,7 +360,7 @@ class TestProxyRedactsPeerReplies:
     the read-path redaction point: a credential the peer emits never reaches
     the browser, in a JSON body or in an SSE frame."""
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    SECRET = "glpat-IOSFODNN7EXAMPLE"
 
     def _req(self, tmp_path, monkeypatch, *, path, chunks, content_type):
         _enable(tmp_path, monkeypatch)
@@ -537,7 +537,7 @@ class TestRedactSseEvent:
     """The browser joins an event's data lines before parsing, so redaction
     must see the joined payload, whatever the line ending."""
 
-    SECRET = "AKIA" + "IOSFODNN7EXAMPLE"
+    SECRET = "glpat-" + "IOSFODNN7EXAMPLE"
 
     def test_secret_split_over_data_lines_behind_an_escape_is_redacted(self):
         from kiro_crew.dashboard.handlers_instances import _redact_sse_event

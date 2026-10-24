@@ -18,16 +18,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from kiro_crew import credential_patterns as _cred
 from kiro_crew.decisions import log as log_mod
 from kiro_crew.decisions.points import message_steer as ms
 from kiro_crew.decisions.types import Answer
 
-#: An AWS key id assembled from the prefix list rather than written out, for the
-#: reason ``test_decisions_gate`` gives: a contiguous key-shaped literal is refused
-#: by the repo's own secret scanners, correctly, since neither they nor Semgrep can
-#: tell a test vector from a leak.
-_AWS_KEY = _cred.AWS_KEY_ID_PREFIXES.split("|")[0] + "A2B3C4D5E6F7G8H9"
+#: A Secret-tier token assembled at run time rather than written out, for the
+#: reason ``test_decisions_gate`` gives: a contiguous token literal is refused by
+#: the repo's own secret scanners.
+_AWS_KEY = "glpat-" + "A2B3C4D5E6F7G8H9"
 
 
 @pytest.fixture

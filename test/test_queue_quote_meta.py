@@ -87,19 +87,25 @@ class TestQuoteMeta:
         # An app token's quote is not the session's human's words: it rides
         # every frame redacted, the same as its text.
         out = quote_meta(
-            {"quote": {"role": "user", "text": "key AKIAIOSFODNN7EXAMPLE here"}}, user_origin=False
+            {"quote": {"role": "user", "text": "key glpat-IOSFODNN7EXAMPLE here"}},
+            user_origin=False,
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in out["quote"]["text"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in out["quote"]["text"]
 
     def test_a_user_row_s_record_survives_the_emit_redaction_and_another_role_s_does_not(self):
         from kiro_crew.dashboard.chat_utils import _redact_meta_for_role
 
-        meta = {"quote": {"role": "user", "text": "key AKIAIOSFODNN7EXAMPLE here"}, "sendId": "s-1"}
+        meta = {
+            "quote": {"role": "user", "text": "key glpat-IOSFODNN7EXAMPLE here"},
+            "sendId": "s-1",
+        }
         assert (
-            _redact_meta_for_role("user", meta)["quote"]["text"] == "key AKIAIOSFODNN7EXAMPLE here"
+            _redact_meta_for_role("user", meta)["quote"]["text"]
+            == "key glpat-IOSFODNN7EXAMPLE here"
         )
         assert (
-            "AKIAIOSFODNN7EXAMPLE" not in _redact_meta_for_role("assistant", meta)["quote"]["text"]
+            "glpat-IOSFODNN7EXAMPLE"
+            not in _redact_meta_for_role("assistant", meta)["quote"]["text"]
         )
 
     def test_a_user_row_s_record_is_still_bounded_on_emit(self):
@@ -118,8 +124,8 @@ class TestQuoteMeta:
     def test_the_quoted_text_is_stored_as_given_so_it_matches_the_row_block(self):
         # The row's content opens with the same block as typed; a record
         # redacted on its own would never match it and the card would not draw.
-        out = quote_meta({"quote": {"role": "user", "text": "key AKIAIOSFODNN7EXAMPLE here"}})
-        assert out["quote"]["text"] == "key AKIAIOSFODNN7EXAMPLE here"
+        out = quote_meta({"quote": {"role": "user", "text": "key glpat-IOSFODNN7EXAMPLE here"}})
+        assert out["quote"]["text"] == "key glpat-IOSFODNN7EXAMPLE here"
 
 
 class TestQuoteRidesTheQueue:
@@ -162,9 +168,9 @@ class TestQuoteRidesTheQueue:
     def test_queue_entry_view_redacts_the_quote_of_an_entry_that_is_not_the_human_s(self):
         # A restored entry carries no origin stamp: it is not the dashboard's
         # human's and its record is redacted like its text.
-        hot = {"role": "user", "text": "key AKIAIOSFODNN7EXAMPLE here"}
+        hot = {"role": "user", "text": "key glpat-IOSFODNN7EXAMPLE here"}
         view = queue_entry_view({"id": "q1", "content": "x", "meta": {"quote": hot}})
-        assert "AKIAIOSFODNN7EXAMPLE" not in view["meta"]["quote"]["text"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in view["meta"]["quote"]["text"]
         view = queue_entry_view(
             {"id": "q1", "content": "x", "meta": {"quote": hot}, "_directive_user_origin": True}
         )
@@ -280,13 +286,13 @@ class TestQuoteThroughTheHandler:
         from test_queue_drain_preserve_attachments import _drain_once, _user_rows
 
         state, slot = _busy_state(tmp_path, monkeypatch)
-        hot = {"role": "user", "text": "key AKIAIOSFODNN7EXAMPLE here"}
-        slot.queue_append("> key AKIAIOSFODNN7EXAMPLE here\n\nwhy?", meta={"quote": dict(hot)})
+        hot = {"role": "user", "text": "key glpat-IOSFODNN7EXAMPLE here"}
+        slot.queue_append("> key glpat-IOSFODNN7EXAMPLE here\n\nwhy?", meta={"quote": dict(hot)})
         state.subagents = None
         slot._turn_admission_reserved = False
         await _drain_once(state, slot)
         row = _user_rows(slot)[-1]
-        assert "AKIAIOSFODNN7EXAMPLE" not in row["meta"]["quote"]["text"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in row["meta"]["quote"]["text"]
 
     def test_the_requeue_push_frame_carries_the_quote_beside_the_lists(self, tmp_path, monkeypatch):
         """The `queue_push` a requeued steer broadcasts is the card every open

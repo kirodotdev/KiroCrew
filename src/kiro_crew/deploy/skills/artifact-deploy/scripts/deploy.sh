@@ -115,10 +115,10 @@ if python3 -c "import kiro_crew.security" 2>/dev/null; then
   CRED_HITS=$(python3 - "$SNAPSHOT_DIR" <<'PYEOF'
 import sys, os, re
 from pathlib import Path
-from kiro_crew.security import get_credential_patterns, is_sensitive_path
+from kiro_crew.deploy.scan import is_credential_finding, scan_content
+from kiro_crew.security import is_sensitive_path
 
 target = Path(sys.argv[1])
-patterns = [p for p in get_credential_patterns()]
 hits = []
 for root, dirs, files in os.walk(target):
     dirs[:] = [d for d in dirs if d != '.git']
@@ -145,10 +145,11 @@ for root, dirs, files in os.walk(target):
             data = fpath.read_text(errors='ignore')
         except (OSError, UnicodeDecodeError):
             continue
-        for pat in patterns:
-            if pat.search(data):
-                hits.append(str(fpath))
-                break
+        # The canonical scan, not a pattern list: it reads labels, encodings
+        # (a percent-encoded value), key pairs and the vendor catalog, and a
+        # documented placeholder stays an overridable finding.
+        if any(is_credential_finding(f) for f in scan_content(data)):
+            hits.append(str(fpath))
 if hits:
     for h in hits:
         print(h)

@@ -566,7 +566,7 @@ class TestTheActionHeaderIsRedacted:
     control — but the header was concatenated AFTER that pass, and ``detail`` is not
     our prose: every driver confirmation interpolates app-supplied text. ``_click_text``
     embeds ``app.name``, which is the process name macOS reports and is therefore
-    attacker-controlled: a process named ``Notes key=AKIA…`` put a raw credential
+    attacker-controlled: a process named ``Notes key=glpat-…`` put a raw credential
     directly in front of a fully redacted tree.
 
     A single unredacted egress path is the whole failure — the redaction elsewhere

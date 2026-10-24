@@ -246,7 +246,7 @@ class TestBackfillFormatting:
     async def test_credentials_are_redacted(self, tmp_path):
         state = _state(tmp_path)
         slot = state.get_or_create_slot("s1")
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         _seed(slot, [("user", "here are creds"), ("assistant", f"key is {secret}")])
 
         posted = await _drain(state, slot)
@@ -340,7 +340,7 @@ class TestBackfillFormatting:
 
         state = _state(tmp_path)
         slot = state.get_or_create_slot("s1")
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         split_secret = secret[:6] + "\x1b[0m" + secret[6:]
 
         # split_message reserves room for CONTINUATION and, with no newline to
@@ -372,10 +372,10 @@ class TestBackfillFormatting:
         """
         state = _state(tmp_path)
         slot = state.get_or_create_slot("s1")
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         # An ANSI reset dropped into the middle of the key: invisible to the
         # credential regex, removed entirely by _strip_ansi.
-        split_secret = secret[:4] + "\x1b[0m" + secret[4:]
+        split_secret = secret[:6] + "\x1b[0m" + secret[6:]
         _seed(slot, [("user", "paste"), ("assistant", f"key is {split_secret}")])
 
         posted = await _drain(state, slot)
@@ -399,7 +399,7 @@ class TestBackfillFormatting:
         """
         state = _state(tmp_path)
         slot = state.get_or_create_slot("s1")
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         filler = "x" * (SLACK_MAX_TEXT - 10)
         content = filler + secret
         assert len(content) > SLACK_MAX_TEXT

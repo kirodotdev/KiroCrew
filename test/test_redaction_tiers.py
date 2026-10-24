@@ -1,7 +1,7 @@
 """Every redaction rule carries exactly one tier from ``credential_patterns``.
 
-The tier is metadata: these tests pin that the table is complete and well formed,
-and that tagging a rule changes nothing about what is redacted.
+These tests pin that the table is complete and well formed. What each tier does
+to a value is pinned in ``test_redaction_key_id_identifier.py``.
 """
 
 from __future__ import annotations
@@ -13,8 +13,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import credential_patterns as cp
-from kiro_crew import security
-from kiro_crew.security import redaction
+from kiro_crew.security import redaction, redaction_labels, secret_catalog
 
 SECURITY_DIR = Path(redaction.__file__).resolve().parent
 
@@ -22,8 +21,8 @@ SECURITY_DIR = Path(redaction.__file__).resolve().parent
 def _core_rule_ids() -> set[str]:
     """Rule ids the core credential redactor can write into a record."""
     ids = {rule for _pattern, rule in redaction._PASS1_RULES}
-    ids |= {rule for _pattern, rule in redaction._AWS_LABEL_RULES}
-    # Passes 2-4 and the pass-1 fallback name their rule as ``("<id>", "")``.
+    ids |= set(redaction_labels.RULE_IDS)
+    # Passes 2 and 4 and the pass-1 fallback name their rule as ``("<id>", "")``.
     tree = ast.parse(Path(redaction.__file__).read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if (
@@ -81,7 +80,8 @@ def test_rule_tier_refuses_an_unknown_rule() -> None:
 @pytest.mark.parametrize(
     ("text", "rule", "tier"),
     [
-        ("id AKIAIOSFODNN7EXAMPLE end", "aws_access_key_id", cp.TIER_IDENTIFIER),
+        ("tok glpat-IOSFODNN7EXAMPLE end", "gitlab_token", cp.TIER_SECRET),
+        ("https://h.example/o?Signature=abcdef0123", "request_signature", cp.TIER_BEARER_LINK),
         (
             "aws_secret_access_key=not-a-real-secret-value",
             "aws_secret_access_key",
@@ -95,8 +95,34 @@ def test_recorded_rules_have_the_expected_tier(text: str, rule: str, tier: str) 
     assert [(r.rule, cp.rule_tier(r.rule)) for r in records] == [(rule, tier)]
 
 
-def test_identifier_tier_is_still_redacted() -> None:
-    """Tagging a key ID as an identifier does not change what is redacted yet."""
-    assert cp.rule_tier("aws_access_key_id") == cp.TIER_IDENTIFIER
-    cleaned, _warnings = security.redact_credentials("id AKIAIOSFODNN7EXAMPLE end")
-    assert cleaned == "id [REDACTED: credential] end"
+def test_no_rule_carries_the_identifier_tier() -> None:
+    """An identifier is never redacted, so no redaction rule names one."""
+    assert cp.TIER_IDENTIFIER not in cp.RULE_TIERS.values()
+
+
+def test_every_catalog_rule_has_a_tier() -> None:
+    """The generated catalog names a tier for every rule, from the same vocabulary."""
+    ids = secret_catalog.catalog_rule_ids()
+    assert ids, "the generated catalog is empty"
+    assert {secret_catalog.catalog_rule_tier(rule) for rule in ids} <= {
+        cp.TIER_SECRET,
+        cp.TIER_IDENTIFIER,
+    }
+
+
+@pytest.mark.parametrize(
+    ("text", "rule"),
+    [
+        (
+            "export AWS_SECRET_" + "ACCESS_KEY=" + "wJalrXUtnFEMI/K7MDENG" + "/bPxRfiCYEXAMPLEKEY",
+            "aws_secret_access_key",
+        ),
+        ('{"SessionToken": "FwoGZXIvYXdzEXAMPLETOKEN0123"}', "aws_session_token"),
+        ("Authorization: Basic dXNlcjpleGFtcGxlMTIz", "authorization_header"),
+        ("db_password = example-pw-1234", "secret_label"),
+        ("AKIAIOSFODNN7EXAMPLE wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "aws_key_pair"),
+    ],
+)
+def test_context_rules_are_secret_tier(text: str, rule: str) -> None:
+    _cleaned, _warnings, records = redaction.redact_credentials_with_records(text)
+    assert [(r.rule, cp.rule_tier(r.rule)) for r in records] == [(rule, cp.TIER_SECRET)]

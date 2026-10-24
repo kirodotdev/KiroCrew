@@ -204,7 +204,7 @@ class TestProbeStoreBlocking:
         env.declare(_FINANCE)
 
         def _refuse(_name: str) -> None:
-            raise MemoryStartupUnavailable("boom AKIAIOSFODNN7EXAMPLE")
+            raise MemoryStartupUnavailable("boom glpat-IOSFODNN7EXAMPLE")
 
         # ``require_memory_ready`` is imported inside ``_probe_store_blocking`` from
         # ``kiro_crew.memory_startup``, so patching a name on ``memory_admin`` itself
@@ -214,7 +214,7 @@ class TestProbeStoreBlocking:
         monkeypatch.setattr(memory_startup, "require_memory_ready", _refuse)
         row = memory_admin._probe_store_blocking(_FINANCE)
         assert "unavailable_reason" in row
-        assert "AKIAIOSFODNN7EXAMPLE" not in row["unavailable_reason"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in row["unavailable_reason"]
         assert row["exists"] is False
 
     def test_nonexistent_file_stops_before_opening_sqlite(self, env) -> None:
@@ -368,7 +368,7 @@ class TestApiMemoryBackups:
         env.tier(_FINANCE).close()
 
         def _boom(_db_path: Path) -> dict:
-            raise ValueError("boom AKIAIOSFODNN7EXAMPLE")
+            raise ValueError("boom glpat-IOSFODNN7EXAMPLE")
 
         monkeypatch.setattr(memory_backup, "pending_restore_status", _boom)
         resp = await memory_admin.api_memory_backups(
@@ -376,7 +376,7 @@ class TestApiMemoryBackups:
         )
         assert resp.status == 503
         assert _body(resp)["code"] == "restore_status_unavailable"
-        assert "AKIAIOSFODNN7EXAMPLE" not in resp.text
+        assert "glpat-IOSFODNN7EXAMPLE" not in resp.text
 
     @pytest.mark.asyncio
     async def test_undeclared_store_is_a_404_before_any_listing(self, env) -> None:
@@ -421,7 +421,7 @@ class TestApiMemoryRestoreCancel:
         env.tier(_FINANCE).close()
 
         def _boom(_db_path: Path) -> bool:
-            raise ValueError("refused AKIAIOSFODNN7EXAMPLE")
+            raise ValueError("refused glpat-IOSFODNN7EXAMPLE")
 
         monkeypatch.setattr(memory_backup, "cancel_pending_restore", _boom)
         resp = await memory_admin.api_memory_restore_cancel(
@@ -429,7 +429,7 @@ class TestApiMemoryRestoreCancel:
         )
         assert resp.status == 409
         assert _body(resp)["code"] == "restore_refused"
-        assert "AKIAIOSFODNN7EXAMPLE" not in resp.text
+        assert "glpat-IOSFODNN7EXAMPLE" not in resp.text
 
     @pytest.mark.asyncio
     async def test_unchanged_cancel_still_reports_ok_with_no_pending(self, env) -> None:
@@ -563,7 +563,7 @@ class TestApiMemoryRestore:
         assert backup is not None
 
         def _boom(_db_path: Path, _backup: Path, _store: str) -> None:
-            raise MemoryStartupUnavailable("boom AKIAIOSFODNN7EXAMPLE")
+            raise MemoryStartupUnavailable("boom glpat-IOSFODNN7EXAMPLE")
 
         monkeypatch.setattr(memory_admin, "_restore_blocking", _boom)
         resp = await memory_admin.api_memory_restore(
@@ -576,7 +576,7 @@ class TestApiMemoryRestore:
         )
         assert resp.status == 503
         assert _body(resp)["code"] == "store_unavailable"
-        assert "AKIAIOSFODNN7EXAMPLE" not in resp.text
+        assert "glpat-IOSFODNN7EXAMPLE" not in resp.text
 
     @pytest.mark.asyncio
     async def test_integrity_refusal_answers_409_with_redaction(self, env, monkeypatch) -> None:
@@ -588,7 +588,7 @@ class TestApiMemoryRestore:
         assert backup is not None
 
         def _boom(_db_path: Path, _backup: Path, _store: str) -> None:
-            raise ValueError("corrupt AKIAIOSFODNN7EXAMPLE")
+            raise ValueError("corrupt glpat-IOSFODNN7EXAMPLE")
 
         monkeypatch.setattr(memory_admin, "_restore_blocking", _boom)
         resp = await memory_admin.api_memory_restore(
@@ -601,7 +601,7 @@ class TestApiMemoryRestore:
         )
         assert resp.status == 409
         assert _body(resp)["code"] == "restore_refused"
-        assert "AKIAIOSFODNN7EXAMPLE" not in resp.text
+        assert "glpat-IOSFODNN7EXAMPLE" not in resp.text
 
     @pytest.mark.asyncio
     async def test_unexpected_exception_during_restore_answers_500_and_audits(

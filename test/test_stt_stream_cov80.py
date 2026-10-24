@@ -233,11 +233,11 @@ async def test_handler_redacts_before_the_text_leaves_the_process() -> None:
     ws = _fake_ws()
     endpointer = MagicMock()
     await _handler_for(ws, endpointer).handle_transcript_event(
-        _event(_result("the key is AKIAIOSFODNN7EXAMPLE ok", is_partial=True))
+        _event(_result("the key is glpat-IOSFODNN7EXAMPLE ok", is_partial=True))
     )
 
     sent = ws.send_json.await_args.args[0]["text"]
-    assert "AKIAIOSFODNN7EXAMPLE" not in sent
+    assert "glpat-IOSFODNN7EXAMPLE" not in sent
     # The endpointer sees the SAME redacted text that went on the wire.
     assert endpointer.note_partial.call_args.args[0] == sent
 

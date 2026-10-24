@@ -68,7 +68,7 @@ class TestTheRepairIsJudgedByTheReadingThatRefusedTheCut:
     #: One link to the canonical grammar, which collapses it to its label and drops
     #: the url with the key inside it. The narrower link grammar leaves the url as
     #: text, where the emphasis pass joins the key across the ``~~`` pair.
-    PARENTHESISED_URL = "see [l](https://x/(a)/AKIA~~IOSFODNN7EXAMPLE~~) done"
+    PARENTHESISED_URL = "see [l](https://x/(a)/glpat-~~IOSFODNN7EXAMPLE~~) done"
     #: A field name and its assignment held apart by a heading marker the text
     #: keeps mid-line. A cut before the marker opens a piece with it, and the plain
     #: reading of that piece drops it.

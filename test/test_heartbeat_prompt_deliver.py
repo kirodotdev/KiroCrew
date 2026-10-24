@@ -322,8 +322,8 @@ class TestLogTaskException:
         caplog.set_level(logging.ERROR)
 
         async def leaky():
-            # AKIA-prefixed key is a recognized credential pattern
-            raise RuntimeError("creds leaked: AKIAIOSFODNN7EXAMPLE")
+            # glpat--prefixed key is a recognized credential pattern
+            raise RuntimeError("creds leaked: glpat-IOSFODNN7EXAMPLE")
 
         task = asyncio.create_task(leaky())
         try:
@@ -335,7 +335,7 @@ class TestLogTaskException:
         assert "Background task failed" in log_output
         # Recognized credential pattern must not appear anywhere in the log output
         # (including in the traceback frames, not just the exception message).
-        assert "AKIAIOSFODNN7EXAMPLE" not in log_output
+        assert "glpat-IOSFODNN7EXAMPLE" not in log_output
         assert "[REDACTED: credential]" in log_output
 
     @pytest.mark.asyncio()

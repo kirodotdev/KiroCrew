@@ -592,7 +592,7 @@ class TestRegistryInstallStreamSecurity:
         async def _fake_install(name: str, log_lines: list[str] | None = None) -> dict[str, Any]:
             if log_lines is not None:
                 # AWS access key ID pattern — caught by redact_credentials
-                log_lines.append("Found key AKIAIOSFODNN7EXAMPLE in config")
+                log_lines.append("Found key glpat-IOSFODNN7EXAMPLE in config")
             return {"ok": True, "name": name, "message": "ok", "log": "\n".join(log_lines or [])}
 
         monkeypatch.setattr(
@@ -611,6 +611,6 @@ class TestRegistryInstallStreamSecurity:
             )
             body = await resp.text()
             # The raw AWS key should NOT appear in the streamed output
-            assert "AKIAIOSFODNN7EXAMPLE" not in body
+            assert "glpat-IOSFODNN7EXAMPLE" not in body
             # But the redaction marker should be present
             assert "REDACTED" in body

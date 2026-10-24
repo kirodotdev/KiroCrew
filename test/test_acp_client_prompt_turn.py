@@ -917,7 +917,7 @@ class TestDispatchSubagentEvents:
                         "update": {
                             "sessionUpdate": "tool_call_chunk",
                             "toolCallId": "tc-1",
-                            "title": "leak AKIAIOSFODNN7EXAMPLE now",
+                            "title": "leak glpat-IOSFODNN7EXAMPLE now",
                         },
                     }
                 ),
@@ -930,7 +930,7 @@ class TestDispatchSubagentEvents:
                         "sessionId": "s1",
                         "update": {
                             "sessionUpdate": "agent_message_chunk",
-                            "content": {"text": "secret AKIAIOSFODNN7EXAMPLE here"},
+                            "content": {"text": "secret glpat-IOSFODNN7EXAMPLE here"},
                         },
                     }
                 ),
@@ -951,13 +951,13 @@ class TestDispatchSubagentEvents:
         acts = [e for e in events if e.kind == EVENT_SUBAGENT_ACTIVITY]
         tc = [a for a in acts if a.tool_call_id == "tc-1"]
         txt = [a for a in acts if a.text]
-        # Title redacted (credential scrubbed, no raw AKIA leaks through).
+        # Title redacted (credential scrubbed, no raw glpat- leaks through).
         assert len(tc) == 1
-        assert "AKIAIOSFODNN7EXAMPLE" not in tc[0].title
+        assert "glpat-IOSFODNN7EXAMPLE" not in tc[0].title
         assert "[REDACTED" in tc[0].title
         # Nested content.text was extracted (robustness) AND redacted (security).
         assert len(txt) == 1 and txt[0].sub_session_id == "s1"
-        assert "AKIAIOSFODNN7EXAMPLE" not in txt[0].text
+        assert "glpat-IOSFODNN7EXAMPLE" not in txt[0].text
         assert "[REDACTED" in txt[0].text
 
     @pytest.mark.asyncio

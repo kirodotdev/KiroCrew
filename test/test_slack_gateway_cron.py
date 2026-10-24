@@ -572,7 +572,7 @@ class TestInitCron:
         an agent can create a cron via the ``cron_add`` tool, so a credential can
         land in that field and ride into the channel header.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
         orch.ctx_builder = _mock_context_builder()
@@ -1443,7 +1443,7 @@ class TestDeliverCronResponse:
         orch, slack = self._orch_with_slack()
         orch.sessions.get_channel = MagicMock(return_value="C123")
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         posted = await orch._deliver_cron_response("cron:job1", f"tok {secret}")
 
         assert posted is True
@@ -1464,8 +1464,8 @@ class TestDeliverCronResponse:
         orch, slack = self._orch_with_slack()
         orch.sessions.get_channel = MagicMock(return_value="C123")
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
-        obfuscated = secret[:4] + "\x1b[0m" + secret[4:]
+        secret = "glpat-IOSFODNN7EXAMPLE"
+        obfuscated = secret[:6] + "\x1b[0m" + secret[6:]
         posted = await orch._deliver_cron_response("cron:job1", f"tok {obfuscated}")
 
         assert posted is True

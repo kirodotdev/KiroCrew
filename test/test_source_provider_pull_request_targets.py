@@ -16,19 +16,19 @@ from kiro_crew.monitoring.targets import (
     [
         (
             "github_pull_request",
-            "https://github.com/AKIAIOSFODNN7EXAMPLE/widgets/pull/7",
+            "https://github.com/glpat-IOSFODNN7EXAMPLE/widgets/pull/7",
         ),
         (
             "gitlab_merge_request",
-            "https://gitlab.com/AKIAIOSFODNN7EXAMPLE/widgets/-/merge_requests/8",
+            "https://gitlab.com/glpat-IOSFODNN7EXAMPLE/widgets/-/merge_requests/8",
         ),
         (
             "azure_devops_pull_request",
-            "https://dev.azure.com/AKIAIOSFODNN7EXAMPLE/project/_git/widgets/pullrequest/9",
+            "https://dev.azure.com/glpat-IOSFODNN7EXAMPLE/project/_git/widgets/pullrequest/9",
         ),
         (
             "bitbucket_pull_request",
-            "https://bitbucket.org/AKIAIOSFODNN7EXAMPLE/widgets/pull-requests/10",
+            "https://bitbucket.org/glpat-IOSFODNN7EXAMPLE/widgets/pull-requests/10",
         ),
     ],
 )

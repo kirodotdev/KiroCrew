@@ -122,7 +122,7 @@ class TestMemberPinMatches:
         ("mode", "current", "requested", "expected"),
         [
             (DM_SLOT_MODE, "dr. eggbot", "dr. eggbot", True),
-            (DM_SLOT_MODE, "AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE", False),
+            (DM_SLOT_MODE, "glpat-IOSFODNN7EXAMPLE", "glpat-IOSFODNN7EXAMPLE", False),
             (DM_SLOT_MODE, "crew password=shortvalue", "crew password=shortvalue", False),
             (DM_SLOT_MODE, "dr. eggbot", "other", False),
             ("", "dr. eggbot", "dr. eggbot", False),
@@ -181,7 +181,7 @@ class TestDispatchableLegacyNfcName:
 
 class TestReadableMemberName:
     NFD = "Cafe\u0301"
-    CREDENTIAL_SHAPED = "".join(["AKIA", "IOSFODNN7", "EXAMPLE"])
+    CREDENTIAL_SHAPED = "".join(["glpat-", "IOSFODNN7", "EXAMPLE"])
 
     def test_readable_member_accepts_a_safe_nfd_name(self):
         assert is_readable_member_name(self.NFD) is True

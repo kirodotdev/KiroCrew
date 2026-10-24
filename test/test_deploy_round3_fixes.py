@@ -9,20 +9,18 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 
-# ─── F1: scanner detects base64-encoded AKIA and bare 40-char secrets ───────
+# ─── F1: scanner detects bare 40-char secrets; a key ID is not one ───────
 
 
-def test_scan_detects_base64_encoded_akia():
-    """F1: A base64-encoded AKIA key is detected by scan_content."""
+def test_scan_does_not_block_a_base64_encoded_key_id():
+    """An AWS access key ID is Identifier tier, encoded or not: no hard finding."""
     from kiro_crew.deploy.scan import scan_content
 
-    # "AKIAIOSFODNN7EXAMPLE" base64-encoded
-    raw_key = "AKIAIOSFODNN7EXAMPLE"
+    raw_key = "AKIA" + "IOSFODNN7EXAMPLE"
     encoded = base64.b64encode(raw_key.encode()).decode()
     text = f"some config\naws_key = {encoded}\nmore stuff"
     findings = scan_content(text)
-    cred_findings = [f for f in findings if f.severity == "credential"]
-    assert len(cred_findings) >= 1, f"Expected credential finding for base64 AKIA, got: {findings}"
+    assert [f for f in findings if f.severity == "credential"] == [], findings
 
 
 def test_scan_detects_bare_40_char_secret():

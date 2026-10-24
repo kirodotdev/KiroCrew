@@ -46,7 +46,7 @@ from unittest import mock
 import pytest
 
 pytestmark = pytest.mark.skipif(
-    not __import__('kiro_crew.sandbox', fromlist=['userns_available']).userns_available(),
+    not __import__("kiro_crew.sandbox", fromlist=["userns_available"]).userns_available(),
     reason="requires unprivileged user namespaces (sandbox backend)",
 )
 
@@ -757,7 +757,11 @@ class TestPushRefusesCredentialMaterial(_TwoInstances):
         ledger.upsert(
             entry.create(
                 pattern="cross-account assume-role denied",
-                fix="aws sts assume-role --access-key AKIAIOSFODNN7EXAMPLE",
+                fix="git clone https://oauth2:"
+                + "gl"
+                + "pat-"
+                + "IOSFODNN7EXAMPLE0"
+                + "@gitlab.example",
             )
         )
         detail = await sync.sync_safely(direction="push")
@@ -767,7 +771,7 @@ class TestPushRefusesCredentialMaterial(_TwoInstances):
     async def test_the_refusal_names_lines_not_the_secret(self):
         """Reporting the matched text would copy the secret into the log and the console."""
         ledger, sync, entry = self._use(self.home_a)
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "gl" + "pat-" + "IOSFODNN7EXAMPLE0"
         ledger.upsert(entry.create(pattern="assume-role denied", fix=f"key {secret}"))
         detail = await sync.sync_safely(direction="push")
         self.assertNotIn(secret, detail)
@@ -787,6 +791,13 @@ class TestPushRefusesCredentialMaterial(_TwoInstances):
         shapes = {
             "datadog application key": "ddapp_0123456789abcdef0123456789abcdef01234567",
             "bearer header": "curl -H 'Authorization: Bearer abcdefghijklmnop1234567890'",
+            # Found only by pairing with the key ID or by the secret catalog: no
+            # search pattern holds either shape.
+            "secret beside its key id": "AKIA"
+            + "IOSFODNN7EXAMPLE,"
+            + "wJalrXUtnFEMI/K7MDENG/bPxRfiCY"
+            + "EXAMPLEKEY",
+            "catalog token": "LINEAR=lin_api_" + "a1b2c3d4e5" * 4,
         }
         for label, material in shapes.items():
             with self.subTest(shape=label):
@@ -867,9 +878,7 @@ class TestTheAppCommitsUnderItsOwnIdentity(unittest.TestCase):
         assert argv[0] == ledger_sync._GIT_BINARY
         # `-c` pairs BEFORE the subcommand: git only accepts them there, and they must also
         # precede it to override a repo-local `user.email` an agent could have written.
-        assert argv[1 : 1 + len(ledger_sync._COMMIT_IDENTITY)] == list(
-            ledger_sync._COMMIT_IDENTITY
-        )
+        assert argv[1 : 1 + len(ledger_sync._COMMIT_IDENTITY)] == list(ledger_sync._COMMIT_IDENTITY)
         assert argv[1 + len(ledger_sync._COMMIT_IDENTITY)] == "commit"
         joined = " ".join(argv)
         assert "user.name=" in joined and "user.email=" in joined

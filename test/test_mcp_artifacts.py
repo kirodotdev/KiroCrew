@@ -196,7 +196,7 @@ class TestArtifactReferenceLink:
     def test_link_label_redacts_credential_in_name(self) -> None:
         # given a non-widget artifact whose LLM-provided name embeds a
         # credential pattern (the name becomes the visible link text)
-        leaked_credential = "AKIAIOSFODNN7EXAMPLE"
+        leaked_credential = "glpat-IOSFODNN7EXAMPLE"
         with patch(
             "kiro_crew.mcp_core._post",
             return_value={
@@ -245,7 +245,8 @@ class TestArtifactReferenceLink:
         assert f"[Doc]({ARTIFACT_ROUTE_PREFIX}evilxhttpattackertest)" in result
 
     def test_link_url_redacts_credential_in_slug(self) -> None:
-        leaked_credential = "AKIAIOSFODNN7EXAMPLE"
+        # given a save whose server-returned slug carries a credential pattern
+        leaked_credential = "glpat-IOSFODNN7EXAMPLE"
         with patch(
             "kiro_crew.mcp_core._post",
             return_value={
@@ -608,12 +609,12 @@ class TestArtifactGet:
                 "slug": "x",
                 "name": "X",
                 "version": 1,
-                "content": "<p>AKIAIOSFODNN7EXAMPLE</p>",
+                "content": "<p>glpat-IOSFODNN7EXAMPLE</p>",
             },
         ):
             result = _call_tool_inner("artifact_get", {"slug": "x"})
         # Raw credential pattern must not appear.
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert "glpat-IOSFODNN7EXAMPLE" not in result
 
 
 class TestArtifactList:
@@ -1180,10 +1181,10 @@ class TestArtifactPostCommentTool:
         ) as post:
             _call_tool_inner(
                 "artifact_post_comment",
-                {"slug": "doc", "text": "key AKIAIOSFODNN7EXAMPLE leaked"},
+                {"slug": "doc", "text": "key glpat-IOSFODNN7EXAMPLE leaked"},
             )
         _, payload = post.call_args.args
-        assert "AKIAIOSFODNN7EXAMPLE" not in payload["text"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in payload["text"]
 
     def test_post_comment_surfaces_backend_error(self) -> None:
         with patch(
@@ -1261,10 +1262,10 @@ class TestArtifactReplyCommentTool:
             _call_tool_inner(
                 "artifact_reply_comment",
                 {"slug": "doc", "parent_id": "c1",
-                 "text": "key AKIAIOSFODNN7EXAMPLE leaked"},
+                 "text": "key glpat-IOSFODNN7EXAMPLE leaked"},
             )
         _, payload = post.call_args.args
-        assert "AKIAIOSFODNN7EXAMPLE" not in payload["text"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in payload["text"]
 
     def test_reply_comment_surfaces_backend_error(self) -> None:
         with patch(

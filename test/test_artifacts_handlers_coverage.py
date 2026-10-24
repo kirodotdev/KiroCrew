@@ -319,13 +319,13 @@ class TestSessionDocs:
         self, store: ArtifactStore, monkeypatch: pytest.MonkeyPatch, audit: list
     ) -> None:
         def _boom(*_a: Any, **_k: Any) -> list[dict[str, Any]]:
-            raise RuntimeError("token=AKIAIOSFODNN7EXAMPLE blew up")
+            raise RuntimeError("token=glpat-IOSFODNN7EXAMPLE blew up")
 
         monkeypatch.setattr(h, "_scan_session_docs", _boom)
         resp = await h.api_artifact_session_docs(_req(conversation_log=_FakeLog()))
         assert resp.status == 500
         assert audit[-1]["outcome"] == "error"
-        assert "AKIAIOSFODNN7EXAMPLE" not in audit[-1]["error"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in audit[-1]["error"]
 
 
 # ── POST /api/artifacts/materialize ──────────────────────────────────────────
@@ -541,11 +541,11 @@ class TestMaterialize:
         monkeypatch.setattr(h, "_materialize_and_pin", _boom)
         await h.api_artifact_materialize(
             _req(
-                body={"path": "/tmp/AKIAIOSFODNN7EXAMPLE/a.md"},
+                body={"path": "/tmp/glpat-IOSFODNN7EXAMPLE/a.md"},
                 conversation_log=_FakeLog(),
             )
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(audit[-1]["extra"])
+        assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(audit[-1]["extra"])
 
 
 # ── PATCH /api/artifacts/{slug}/relocate ─────────────────────────────────────
@@ -876,9 +876,9 @@ class TestPostCommentProviderPush:
                 body={
                     "text": "note",
                     "is_agent": True,
-                    "author": "AKIAIOSFODNN7EXAMPLE",
+                    "author": "glpat-IOSFODNN7EXAMPLE",
                     "anchor": {
-                        "quote": "AKIAIOSFODNN7EXAMPLE",
+                        "quote": "glpat-IOSFODNN7EXAMPLE",
                         "prefix": "p",
                         "suffix": "s",
                         "version_number": 1,
@@ -890,8 +890,8 @@ class TestPostCommentProviderPush:
         assert resp.status == 201
         stored = published.list_comments("doc")[0]
         assert stored.is_agent is True
-        assert "AKIAIOSFODNN7EXAMPLE" not in stored.author
-        assert "AKIAIOSFODNN7EXAMPLE" not in (stored.anchor_quote or "")
+        assert "glpat-IOSFODNN7EXAMPLE" not in stored.author
+        assert "glpat-IOSFODNN7EXAMPLE" not in (stored.anchor_quote or "")
 
 
 class TestReplyCommentProviderPush:
@@ -1183,11 +1183,11 @@ class TestEditComment:
         )
         await h.api_artifact_edit_comment(
             _req(
-                body={"text": "creds AKIAIOSFODNN7EXAMPLE"},
+                body={"text": "creds glpat-IOSFODNN7EXAMPLE"},
                 match={"slug": "doc", "comment_id": "local-1"},
             )
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in published.list_comments("doc")[0].body
+        assert "glpat-IOSFODNN7EXAMPLE" not in published.list_comments("doc")[0].body
 
 
 class TestResolveAndReopen:
@@ -1374,12 +1374,12 @@ class TestCommentsFetchOnViewErrors:
         _use_provider(
             monkeypatch,
             _StubProvider(
-                {Capability.COMMENTS_READ}, fail=RuntimeError("bad AKIAIOSFODNN7EXAMPLE creds")
+                {Capability.COMMENTS_READ}, fail=RuntimeError("bad glpat-IOSFODNN7EXAMPLE creds")
             ),
         )
         resp = await h.api_artifact_comments(_req(match={"slug": "doc"}))
         assert resp.status == 200
-        assert "AKIAIOSFODNN7EXAMPLE" not in _j(resp)["remote_sync_error"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in _j(resp)["remote_sync_error"]
 
 
 # ── _annotate_local_slugs ────────────────────────────────────────────────────

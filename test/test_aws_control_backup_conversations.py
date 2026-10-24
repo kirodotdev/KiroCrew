@@ -128,7 +128,7 @@ class TestTheScratchExportIsPinned:
         MUTATION: drop `_O_NOFOLLOW` from the open and this reddens.
         """
         secret = tmp_path / "credentials"
-        secret.write_bytes(b"aws_secret_access_key = AKIA-not-real\n")
+        secret.write_bytes(b"aws_secret_access_key = glpat--not-real\n")
         (tmp_path / "conversations.sqlite3").symlink_to(secret)
         fd = self._dir_fd(tmp_path)
         try:
@@ -146,7 +146,7 @@ class TestTheScratchExportIsPinned:
         MUTATION: drop the `st_nlink` check and this reddens.
         """
         secret = tmp_path / "credentials"
-        secret.write_bytes(b"aws_secret_access_key = AKIA-not-real\n")
+        secret.write_bytes(b"aws_secret_access_key = glpat--not-real\n")
         os.link(secret, tmp_path / "conversations.sqlite3")
         fd = self._dir_fd(tmp_path)
         try:
@@ -296,7 +296,7 @@ class TestConversationExport:
         try:
             conn.execute(
                 "INSERT INTO conversations_v2 (conversation_id, value) VALUES (?, ?)",
-                ("c1", "here is my key AKIAIOSFODNN7EXAMPLE, use it"),
+                ("c1", "here is my key glpat-IOSFODNN7EXAMPLE, use it"),
             )
             conn.commit()
         finally:
@@ -306,7 +306,7 @@ class TestConversationExport:
         _, db_bytes, _ = _export_to_tar(tmp_path)
 
         assert db_bytes is not None
-        assert b"AKIAIOSFODNN7EXAMPLE" not in db_bytes
+        assert b"glpat-IOSFODNN7EXAMPLE" not in db_bytes
         assert b"REDACTED" in db_bytes
 
     def test_the_redaction_is_byte_stable_across_exports(self, tmp_path, monkeypatch):
@@ -328,7 +328,7 @@ class TestConversationExport:
         try:
             conn.execute(
                 "INSERT INTO conversations_v2 (conversation_id, value) VALUES (?, ?)",
-                ("c1", "key AKIAIOSFODNN7EXAMPLE and token ghp_" + "a" * 36),
+                ("c1", "key glpat-IOSFODNN7EXAMPLE and token ghp_" + "a" * 36),
             )
             conn.commit()
         finally:

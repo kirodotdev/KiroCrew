@@ -178,10 +178,10 @@ class TestRedaction:
         # own stream redaction.
         transport = _Transport()
         await mod._send_to_channel_target(
-            _state(webex=transport), "webex", "user:a@b.com", "key AKIAIOSFODNN7EXAMPLE here"
+            _state(webex=transport), "webex", "user:a@b.com", "key glpat-IOSFODNN7EXAMPLE here"
         )
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in transport.sent[0][1]
+        assert "glpat-IOSFODNN7EXAMPLE" not in transport.sent[0][1]
 
     @pytest.mark.asyncio
     async def test_a_delimiter_split_credential_is_redacted_too(self) -> None:
@@ -193,10 +193,10 @@ class TestRedaction:
         """
         transport = _Transport()
         await mod._send_to_channel_target(
-            _state(webex=transport), "webex", "user:a@b.com", "AKIA**IOSF**ODNN7EXAMPLE"
+            _state(webex=transport), "webex", "user:a@b.com", "glpat-**IOSF**ODNN7EXAMPLE"
         )
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in transport.sent[0][1].replace("*", "")
+        assert "glpat-IOSFODNN7EXAMPLE" not in transport.sent[0][1].replace("*", "")
 
     @pytest.mark.asyncio
     async def test_broadcast_mentions_are_defanged_where_the_platform_parses_them(self) -> None:
@@ -232,10 +232,10 @@ class TestRedaction:
         """Skipping the defang must not skip the display-form credential scan."""
         transport = _Transport(mention_grammars=False)
         await mod._send_to_channel_target(
-            _state(webex=transport), "webex", "user:a@b.com", "AKIA**IOSF**ODNN7EXAMPLE"
+            _state(webex=transport), "webex", "user:a@b.com", "glpat-**IOSF**ODNN7EXAMPLE"
         )
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in transport.sent[0][1].replace("*", "")
+        assert "glpat-IOSFODNN7EXAMPLE" not in transport.sent[0][1].replace("*", "")
 
 
 class TestAuditing:

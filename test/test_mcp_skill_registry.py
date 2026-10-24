@@ -290,9 +290,9 @@ class TestSkillDiscover:
         calls, responses = fake_get
         responses["/discover?"] = {"results": [], "providers": ["skillsh"]}
         mcp_core._call_tool_inner(
-            "skill_discover", {"query": "creds AKIAIOSFODNN7EXAMPLE here"}
+            "skill_discover", {"query": "creds glpat-IOSFODNN7EXAMPLE here"}
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in calls[-1]
+        assert "glpat-IOSFODNN7EXAMPLE" not in calls[-1]
         # The rest of the query survives — redaction is surgical, not a wipe.
         assert "creds" in calls[-1]
 
@@ -397,9 +397,9 @@ class TestSkillFetch:
         calls, responses = fake_get
         responses["/discover/preview"] = self._preview()
         mcp_core._call_tool_inner(
-            "skill_fetch", {"id": "o/r/AKIAIOSFODNN7EXAMPLE"}
+            "skill_fetch", {"id": "o/r/glpat-IOSFODNN7EXAMPLE"}
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in calls[-1]
+        assert "glpat-IOSFODNN7EXAMPLE" not in calls[-1]
 
     def test_real_id_is_unaffected_by_redaction(self, fake_get):
         """A legitimate owner/repo/skill id matches no credential shape, so

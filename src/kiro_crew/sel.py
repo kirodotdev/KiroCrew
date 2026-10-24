@@ -40,7 +40,6 @@ import json  # noqa: F401
 import logging
 import os  # noqa: F401
 import queue
-import re
 import stat  # noqa: F401
 import sys as _sys
 import tempfile  # noqa: F401
@@ -62,7 +61,7 @@ from kiro_crew import sel_rotation as _sel_rotation
 from kiro_crew import sel_trust_root as _sel_trust_root
 from kiro_crew.atomic_write import atomic_write  # noqa: F401
 from kiro_crew.config.paths import config_dir
-from kiro_crew.credential_patterns import AWS_KEY_ID_PREFIXES
+from kiro_crew.credential_patterns import AWS_KEY_ID_PREFIXES  # noqa: F401  (facade surface)
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sel_chain_lock import _on_event_loop
 from kiro_crew.sel_request_provenance import current_request_forwarded
@@ -141,38 +140,18 @@ def _redact_deep(obj: object, redactor: Callable[[str], str]) -> object:
     return obj
 
 
-# AWS access-key ids case-insensitively. The shared redactor's pattern is
-# case-SENSITIVE (a real key is upper-case, and loosening it there would
-# false-positive on ordinary prose across every egress surface). SEL callers,
-# however, log NORMALIZED text — e.g. the dashboard file-search handler
-# lowercases the query before logging it in ``resources`` — and a lowercased
-# key is trivially reversible, so the audit trail needs the case-insensitive
-# net that ordinary egress does not. Bounded on both sides so a longer
-# alphanumeric run (where extra chars change the case-restore candidates)
-# stays out of scope.
-_AWS_KEY_ANYCASE_RE = re.compile(
-    # Prefixes come from the shared home; the BODY deliberately does not. This net
-    # is mixed-case and boundary-bounded, so it is a different pattern from the
-    # scrubber's uppercase-only one rather than another spelling of it.
-    f"(?<![A-Za-z0-9])(?:{AWS_KEY_ID_PREFIXES})"
-    r"[A-Za-z0-9]{16}(?![A-Za-z0-9])",
-    re.IGNORECASE,
-)
-
-
 def _redact_text(text: str) -> str:
     """Apply the baseline credential/exfiltration passes to one string.
 
-    Adds a case-insensitive AWS access-key pass on top of ``security.redact``:
-    SEL callers may normalize case before logging (see ``_AWS_KEY_ANYCASE_RE``),
-    which would slip a lowercased key past the shared case-sensitive pattern.
+    An AWS access key ID is Identifier tier and stays visible here as on every
+    other surface, so an audit row can be joined to the key it names.
     """
     # circular import: kiro_crew.security imports SecurityEvent/SecurityEventLog
     # from this module at top level, so the redactor can only be imported
     # lazily here (same pattern as _forward_event / log_governance_decision).
     from kiro_crew.security import redact
 
-    return _AWS_KEY_ANYCASE_RE.sub("[REDACTED: credential]", redact(text))
+    return redact(text)
 
 
 # Free-form string fields on SecurityEvent that carry caller-influenced text

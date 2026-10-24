@@ -197,8 +197,19 @@ def compose(text: str) -> tuple[str, list[str], list[str]]:
     if cred_spans:  # credential pass first, then the URL pass on what is left
         after_creds, rows = _splice(text, cred_spans)
         found, warnings = _url_spans(after_creds)
-        spans += _map_back(found, rows)
-        url_warnings = _merge_warnings(url_warnings, warnings)
+        # A URL the URL pass passed on its original bytes (a presigned link whose
+        # signature the credential pass then tagged) is not flagged for the tag.
+        first = _Claimed()
+        for start, end, _tag in url_spans:
+            first.add(start, end)
+        kept = [
+            span
+            for span in _map_back(found, rows)
+            if first.overlaps(span[0], span[1]) or _url_spans(text[span[0] : span[1]])[0]
+        ]
+        spans += kept
+        if kept:
+            url_warnings = _merge_warnings(url_warnings, warnings)
 
     merged = _splice_union(text, _hide_hosts_with_credentials(text, spans))
     merged, again = redaction.redact_credentials(merged)

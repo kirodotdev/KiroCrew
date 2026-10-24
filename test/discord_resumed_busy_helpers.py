@@ -18,7 +18,7 @@ from test_discord_sessions import _bind_to_chat1, _dispatcher, _log
 # The refusal every case in the test_discord_resumed_busy*.py suites either avoids or keeps.
 _REFUSAL = "busy with a turn started elsewhere"
 # A credential the display redaction rewrites, inside otherwise ordinary text.
-_SECRET = "AKIAIOSFODNN7EXAMPLE"
+_SECRET = "glpat-IOSFODNN7EXAMPLE"
 _TYPED = f"use https://docs.example.com/page?key={_SECRET} for this"
 
 

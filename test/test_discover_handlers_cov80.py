@@ -543,7 +543,7 @@ async def test_install_502_scrubs_the_provider_error(
     """
     provider = _BundleProvider()
     provider.fetch_skill_bundle = AsyncMock(  # type: ignore[method-assign]
-        side_effect=RuntimeError("fetch failed for key AKIAIOSFODNN7EXAMPLE")
+        side_effect=RuntimeError("fetch failed for key glpat-IOSFODNN7EXAMPLE")
     )
     registry.register(provider)
     request = _mk("POST", "/i", state=state, body={"provider": "covprov", "skill_id": "cov-skill"})
@@ -551,7 +551,7 @@ async def test_install_502_scrubs_the_provider_error(
     assert response.status == 502
     assert _body(response) == {"error": "Failed to fetch skill from provider"}
     logged = sel_mock.log_tool_invocation.call_args.kwargs["error"]
-    assert "AKIAIOSFODNN7EXAMPLE" not in logged
+    assert "glpat-IOSFODNN7EXAMPLE" not in logged
     assert "REDACTED" in logged
 
 

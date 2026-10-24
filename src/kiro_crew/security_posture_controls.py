@@ -79,7 +79,8 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (*_GATEWAY_SINKS, *_DELIVER
 _CREDENTIAL_FAMILIES: tuple[tuple[str, str], ...] = (
     (
         "AWS access keys",
-        "AKIA / ASIA key IDs, plus labelled secret-access-key and session-token forms",
+        "labelled secret-access-key and session-token forms; AKIA / ASIA key IDs "
+        "are identifiers and stay visible",
     ),
     (
         "Private keys",
@@ -99,8 +100,13 @@ _CREDENTIAL_FAMILIES: tuple[tuple[str, str], ...] = (
     ("PyPI tokens", "pypi- API tokens"),
     ("DigitalOcean tokens", "dop / doo / dor v1 personal, OAuth, and refresh tokens"),
     ("Google OAuth secrets", "GOCSPX- client secrets"),
+    ("AWS session tokens", "STS session tokens (IQoJb3JpZ2lu / FwoGZXIvYXdz)"),
     ("Telegram bot tokens", "numeric bot id joined to a URL-safe secret"),
     ("JWT / JWE tokens", "3-segment signed and 5-segment encrypted compact tokens"),
+    (
+        "Request signatures",
+        "SigV4 request signatures and the signature of a presigned or signed link",
+    ),
     # Phrased WITHOUT a literal "Authorization: Bearer <token>" sequence: that
     # exact shape is what the scanner matches, so spelling it out here would make
     # this very description self-redacting wherever the payload is itself scanned

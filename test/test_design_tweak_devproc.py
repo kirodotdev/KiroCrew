@@ -486,7 +486,7 @@ class TestStartDevProc:
         # Build the AWS-access-key-shaped fixture by concatenation so no
         # real-looking token literal sits in the source (the content scanner
         # reads added lines).
-        secret = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+        secret = "glpat-" + "IOSFODNN7" + "EXAMPLE"
         payload = f"config error near key {secret} while starting"
         fake = FakePopen(pid=202, returncode=1)
 

@@ -421,7 +421,7 @@ class TestTheWarning:
         ring fans out to the dashboard, so a credential-shaped ref would appear
         there verbatim. Redaction is not optional on a sink like that.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         spec = {"tools": [f"@{secret}"], "mcpServers": {}}
         with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
             found = warn_unresolved_server_refs(
@@ -449,7 +449,7 @@ class TestTheWarning:
         second line was never the exposure there. Redaction is the half ``%r``
         cannot do: it would print a secret-shaped name in full, just quoted.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         spec = {"tools": ["@ghost"], "mcpServers": {}}
         with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
             warn_unresolved_server_refs(
@@ -508,11 +508,11 @@ class TestTheWarning:
     def test_the_rebuild_runs_after_the_redactors_not_instead_of_them(self, caplog):
         """Order is the load-bearing part: the alphabet alone would leak a key.
 
-        ``AKIAIOSFODNN7EXAMPLE`` is pure alphanumerics, so a rebuild would pass it
+        ``glpat-IOSFODNN7EXAMPLE`` is pure alphanumerics, so a rebuild would pass it
         through verbatim. Redaction is what removes the secret; the rebuild removes
         the punctuation and the dataflow.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         assert mcp_ref_guard._log_safe(secret) == secret  # the alphabet alone: no help
         spec = {"tools": [f"@{secret}"], "mcpServers": {}}
         with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):

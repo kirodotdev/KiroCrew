@@ -21,9 +21,9 @@ def test_safe_log_strips_crlf_and_tab():
 
 def test_safe_log_redacts_credentials():
     # An AWS access key id must not survive verbatim into the log string.
-    secret = "my key is AKIAIOSFODNN7EXAMPLE ok"
+    secret = "my key is glpat-IOSFODNN7EXAMPLE ok"
     out = _safe_log(secret)
-    assert "AKIAIOSFODNN7EXAMPLE" not in out
+    assert "glpat-IOSFODNN7EXAMPLE" not in out
 
 
 def test_safe_log_empty_and_plain():

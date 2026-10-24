@@ -45,10 +45,10 @@ def _synth_pem() -> str:
     return f"{rule}{begin}{rule}\n{body}\n{rule}{end}{rule}\n"
 
 
-def _synth_aws_key() -> str:
-    """An AWS-access-key-SHAPED token: fixed public prefix plus synthetic body."""
-    prefix = "A" + "KIA"
-    body = hashlib.sha256(b"kc-7770-aws").hexdigest().upper()[:16]
+def _synth_token() -> str:
+    """A vendor-token-SHAPED value: fixed public prefix plus synthetic body."""
+    prefix = "gl" + "pat" + "-"
+    body = hashlib.sha256(b"kc-7770-token").hexdigest()[:20]
     return prefix + body
 
 
@@ -77,7 +77,7 @@ def _synth_wide_flagged_media(encoding: str) -> bytes:
     ``-le``/``-be`` spellings are used so no byte-order mark is prepended and the
     run starts where this function says it does.
     """
-    return b"\x89PNG\r\n\x1a\n\xff\xfe" + _synth_aws_key().encode(encoding) + b"\x80\x81"
+    return b"\x89PNG\r\n\x1a\n\xff\xfe" + _synth_token().encode(encoding) + b"\x80\x81"
 
 
 def _synth_wide_clean_media(encoding: str) -> bytes:
@@ -120,8 +120,8 @@ class TestSynthesizedMaterialActuallyTrips:
             raw.decode("utf-8")
         assert binary_content_is_flagged(raw)
 
-    def test_synth_aws_key_is_detected(self):
-        key = _synth_aws_key()
+    def test_synth_token_is_detected(self):
+        key = _synth_token()
         assert security.redact(key) != key
 
 
@@ -1485,16 +1485,16 @@ class TestWideEncodedCredentialsReachTheScan:
     A negative answer from the scan skips the owner conjunct on the download
     route entirely, so a miss here does not degrade to "owner only": the bytes
     leave to any authenticated caller, including the Slack allow-listed non-owner
-    that conjunct exists to stop. The first test below is what keeps the rest
-    honest -- it asserts the material really is invisible to a single-byte
-    projection, so a scan that only did the narrow pass would fail them.
+    that conjunct exists to stop. The redactor's normalised view drops the NUL
+    padding, so even a single-byte projection of the container is caught; the
+    first test pins that, and the rest pin the binary scan itself.
     """
 
     @pytest.mark.parametrize("encoding", _WIDE_ENCODINGS)
-    def test_the_wide_key_is_invisible_to_a_single_byte_projection(self, encoding):
+    def test_the_wide_key_is_caught_in_a_single_byte_projection(self, encoding):
         raw = _synth_wide_flagged_media(encoding)
         narrow = raw.decode("latin-1")
-        assert security.redact(narrow) == narrow
+        assert security.redact(narrow) != narrow
 
     @pytest.mark.parametrize("encoding", _WIDE_ENCODINGS)
     def test_a_wide_key_in_allow_listed_media_is_flagged(self, encoding):
@@ -1560,7 +1560,7 @@ class TestAuditDecisionRedactsBeforeTruncate:
 
     def test_a_credential_straddling_the_clip_is_fully_redacted(self, monkeypatch):
         calls = self._capture(monkeypatch)
-        key = _synth_aws_key()
+        key = _synth_token()
         pad = "d" * (200 - 4)
         detail = pad + key + " " + "z" * 300
         assert len(detail) > 200
@@ -1740,7 +1740,7 @@ class TestARefusalNamesTheFileItHeldBack:
         """A name that IS the credential must not be copied verbatim into the log."""
         from kiro_crew.mcp_tools.messaging import file_send
 
-        key = _synth_aws_key()
+        key = _synth_token()
         calls = self._capture(monkeypatch)
         src = tmp_path / f"notes-{key}.txt"
         src.write_text("no credential in the body")

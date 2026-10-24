@@ -371,7 +371,7 @@ class TestRestoreRecentSessions:
                 {"role": "user", "content": "show me the key", "ts": "2026-03-23T10:00:00"},
                 {
                     "role": "assistant",
-                    "content": "Here: AKIAIOSFODNN7EXAMPLE",
+                    "content": "Here: glpat-IOSFODNN7EXAMPLE",
                     "ts": "2026-03-23T10:00:01",
                 },
             ],
@@ -390,14 +390,14 @@ class TestRestoreRecentSessions:
 
         emitted = _prepare_messages(slot.messages, False, live_child="")
         rendered = " ".join(m.get("content", "") for m in emitted)
-        assert "AKIAIOSFODNN7EXAMPLE" not in rendered
+        assert "glpat-IOSFODNN7EXAMPLE" not in rendered
         assert "[REDACTED" in rendered
         # ...and from the prompt-building paths that leave the process.
         from kiro_crew.dashboard.chat_persistence import _build_history_prefix
         from kiro_crew.dashboard.side_context import _format_parent_snapshot
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in _build_history_prefix(slot)
-        assert "AKIAIOSFODNN7EXAMPLE" not in _format_parent_snapshot(slot)
+        assert "glpat-IOSFODNN7EXAMPLE" not in _build_history_prefix(slot)
+        assert "glpat-IOSFODNN7EXAMPLE" not in _format_parent_snapshot(slot)
 
     def test_zero_window_restores_all_sessions(self, tmp_path, monkeypatch):
         """window_minutes=0 means infinite — restores sessions regardless of age."""

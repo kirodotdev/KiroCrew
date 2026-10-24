@@ -156,7 +156,7 @@ def test_noncanonical_pending_dir_name_is_hidden(loader):
     credential-shaped text; a non-canonical slug must not surface in the list."""
     root = loader._pending_root()
     root.mkdir(parents=True, exist_ok=True)
-    bad = root / "AKIAIOSFODNN7EXAMPLE"
+    bad = root / "glpat-IOSFODNN7EXAMPLE"
     bad.mkdir()
     (bad / "SKILL.md").write_text("# x", encoding="utf-8")
     assert loader.list_pending_skills() == []
@@ -195,7 +195,7 @@ def test_approve_rejects_regular_file_named_scripts(loader):
     could ride live unredacted."""
     _stage(loader, "scriptfile")
     (loader._pending_root() / "scriptfile" / "scripts").write_text(
-        "AKIAIOSFODNN7EXAMPLE", encoding="utf-8"
+        "glpat-IOSFODNN7EXAMPLE", encoding="utf-8"
     )
     with pytest.raises(PendingApprovalRefused) as refused:
         loader.approve_pending_skill_checked("scriptfile")
@@ -295,10 +295,10 @@ def test_meta_credential_key_is_redacted(loader):
     _stage(loader, "keytest")
     meta = loader._pending_root() / "keytest" / ".meta.json"
     d = _json.loads(meta.read_text(encoding="utf-8"))
-    d["AKIAIOSFODNN7EXAMPLE"] = "v"
+    d["glpat-IOSFODNN7EXAMPLE"] = "v"
     meta.write_text(_json.dumps(d), encoding="utf-8")
     red = loader._read_pending_meta("keytest")
-    assert not any("AKIA" in k for k in red)
+    assert not any("glpat-" in k for k in red)
 
 
 def test_approve_refuses_symlink_in_candidate(loader):

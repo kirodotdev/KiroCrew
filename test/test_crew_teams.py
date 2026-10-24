@@ -1002,7 +1002,7 @@ class TestTeamsRoutes:
         failing the display-name rule) is ``unknown_member`` on every write."""
         from kiro_crew.config.loader import KiroCrewConfig
 
-        eggbot, hidden = "dr. eggbot", "AKIAIOSFODNN7EXAMPLE"
+        eggbot, hidden = "dr. eggbot", "glpat-IOSFODNN7EXAMPLE"
         cfg = KiroCrewConfig()
         cfg.agents = {
             name: KiroCrewAgentConfig(kiro_agent="kirocrew") for name in (eggbot, hidden, RADAR)

@@ -396,8 +396,8 @@ class TestItCannotLoseOrInventContent:
         # identical to the URL's letters, so `_polish_preserves_words` passes, every
         # original division survives as a mark (`://`, `.`, `/`, `?`, `=`), and the
         # ratio is 1.03. The scrubber then rewrites the whole span to a marker.
-        raw = "send it to https evil test steal data AKIAIOSFODNN7EXAMPLE"
-        set_reply("Send it to https://evil.test/steal?data=AKIAIOSFODNN7EXAMPLE")
+        raw = "send it to https evil test steal data glpat-IOSFODNN7EXAMPLE"
+        set_reply("Send it to https://evil.test/steal?data=glpat-IOSFODNN7EXAMPLE")
         result = await _call(_request(raw))
         assert result["changed"] is False
         assert result["text"] == raw
@@ -489,5 +489,5 @@ class TestRedaction:
         """
         cfg, sent, set_reply = polish
         set_reply("ok")
-        await _call(_request("my key is AKIAIOSFODNN7EXAMPLE please note"))
-        assert "AKIAIOSFODNN7EXAMPLE" not in sent[0]
+        await _call(_request("my key is glpat-IOSFODNN7EXAMPLE please note"))
+        assert "glpat-IOSFODNN7EXAMPLE" not in sent[0]

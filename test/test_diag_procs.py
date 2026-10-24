@@ -502,12 +502,14 @@ def test_cmdline_credentials_are_redacted(tmp_path: Path) -> None:
     table.add(
         GATEWAY,
         OUTSIDER,
-        cmdline=nul_argv(b"/v/bin/python3", b"-m", b"kiro_crew.cli", b"--key=AKIAIOSFODNN7EXAMPLE"),
+        cmdline=nul_argv(
+            b"/v/bin/python3", b"-m", b"kiro_crew.cli", b"--key=glpat-IOSFODNN7EXAMPLE"
+        ),
         env=dict(MARKER),
     )
     roster = table.scan()
     rendered = roster.nodes[GATEWAY].cmdline
-    assert "AKIAIOSFODNN7EXAMPLE" not in rendered
+    assert "glpat-IOSFODNN7EXAMPLE" not in rendered
     assert "REDACTED" in rendered
     assert "kiro_crew.cli" in rendered, "redaction must not eat the identifying argv"
 
@@ -774,16 +776,18 @@ def test_a_credential_straddling_the_bound_is_still_redacted(tmp_path: Path) -> 
     table = FakeProcTable(tmp_path / "proc")
     # Pad so the credential sits astride MAX_CMDLINE_CHARS.
     pad = b"x" * (procs.MAX_CMDLINE_CHARS - 10)
-    argv = nul_argv(b"/v/bin/python3", b"-m", b"kiro_crew.cli", pad + b"--key=AKIAIOSFODNN7EXAMPLE")
+    argv = nul_argv(
+        b"/v/bin/python3", b"-m", b"kiro_crew.cli", pad + b"--key=glpat-IOSFODNN7EXAMPLE"
+    )
     table.add(GATEWAY, OUTSIDER, cmdline=argv, env=dict(MARKER))
 
     roster = table.scan()
     stored = roster.nodes[GATEWAY].cmdline
     assert len(stored) <= procs.MAX_CMDLINE_CHARS
-    assert "AKIAIOSFODNN7EXAMPLE" not in stored
+    assert "glpat-IOSFODNN7EXAMPLE" not in stored
     # Neither may a recognisable fragment of it survive the cut.
     for cut in range(6, 20):
-        assert "AKIAIOSFODNN7EXAMPLE"[:cut] not in stored
+        assert "glpat-IOSFODNN7EXAMPLE"[:cut] not in stored
 
 
 def test_a_credential_straddling_the_env_bound_is_still_redacted(tmp_path: Path) -> None:
@@ -793,11 +797,11 @@ def test_a_credential_straddling_the_env_bound_is_still_redacted(tmp_path: Path)
         GATEWAY,
         OUTSIDER,
         cmdline=GATEWAY_ARGV,
-        env={**MARKER, "KIROCREW_HOME": pad + "AKIAIOSFODNN7EXAMPLE"},
+        env={**MARKER, "KIROCREW_HOME": pad + "glpat-IOSFODNN7EXAMPLE"},
     )
     stored = table.scan().nodes[GATEWAY].env["KIROCREW_HOME"]
     assert len(stored) <= procs.MAX_PATH_CHARS
-    assert "AKIAIOSFODNN7EXAMPLE" not in stored
+    assert "glpat-IOSFODNN7EXAMPLE" not in stored
 
 
 def test_a_chain_deeper_than_the_recursion_limit_still_renders(tmp_path: Path) -> None:

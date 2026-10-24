@@ -357,8 +357,8 @@ class TestEmptyTurnIsNeverAFinishedReply:
         cli = FakeClient()
         r = DiscordRenderer(cli, "chan1", DISCORD_CAPABILITIES, session_key="sk")  # type: ignore[arg-type]
         await r.on_turn_start()
-        # Assembled at runtime so no source line spells a key id.
-        key = "AK" + "IA" + "IOSFODNN7EXAMPLE"
+        # Assembled at runtime so no source line spells a whole token.
+        key = "glpat-" + "Ab1Cd2Ef3Gh4Ij5Kl6Mn"
         r.note_steer(f"use {key} for the bucket")
         await r.close()
 
@@ -431,7 +431,7 @@ class TestEmptyTurnIsNeverAFinishedReply:
         self, tmp_path: Path
     ) -> None:
         """Flushing the withheld tail must still be a redacted flush."""
-        key = "AK" + "IA" + "IOSFODNN7EXAMPLE"  # assembled so no source line spells a key id
+        key = "glpat-" + "Ab1Cd2Ef3Gh4Ij5Kl6Mn"  # assembled so no source line spells a whole token
         d, cli, _sess, log = _dispatcher(_UnclosedAfterTextProvider(f"key {key}"), tmp_path)
 
         await d.handle_message(_inbound("what is the key?"))

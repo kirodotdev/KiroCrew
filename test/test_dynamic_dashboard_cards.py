@@ -801,8 +801,9 @@ def test_markup_cannot_hold_a_labelled_credential_apart_from_its_label():
     assert _redact_card_output(json.dumps({"html": _SPLIT_LABEL_MARKUP, "data": {}}), None) is None
     joined = "<p>aws_secret_access_key: " + "A" * 40 + "</p>"
     assert _redact(joined) != joined
-    # Parity with plain text is the bar: a value the text scan takes for the
-    # credential is refused here too, and a label with no value publishes.
+    # Parity with plain text is the bar: a word the text scan keeps after the label
+    # publishes here too, and so does a label with no value.
+    assert _redact("aws_secret_access_key: rotated") == "aws_secret_access_key: rotated"
     assert (
         _redact_card_output(
             json.dumps(
@@ -810,7 +811,7 @@ def test_markup_cannot_hold_a_labelled_credential_apart_from_its_label():
             ),
             None,
         )
-        is None
+        is not None
     )
     labelled = {"html": "<p><b>aws_secret_access_key:</b> <code></code></p>", "data": {}}
     assert _redact_card_output(json.dumps(labelled), None) is not None
@@ -842,9 +843,9 @@ def test_markup_cannot_hide_a_split_credential_behind_a_character_reference(refe
 @pytest.mark.parametrize(
     "split",
     [
-        "<span>AKIAIOSFOD</span><span>NN7EXAMPLE</span>",
-        "AKIAIOS<b></b>FODNN7EXAMPLE",
-        "<p>AKIAIOSFOD</p><p>NN7EXAMPLE</p>",
+        "<span>glpat-IOSFOD</span><span>NN7EXAMPLE</span>",
+        "glpat-IOS<b></b>FODNN7EXAMPLE",
+        "<p>glpat-IOSFOD</p><p>NN7EXAMPLE</p>",
     ],
 )
 def test_markup_cannot_split_a_credential_token_across_tags(split):
@@ -858,7 +859,7 @@ def test_markup_cannot_split_a_credential_token_across_tags(split):
 
     from kiro_crew.dashboard.card_lifecycle import _hides_secret, _redact, _redact_card_output
 
-    token = "AKIAIOSFODNN7EXAMPLE"
+    token = "glpat-IOSFODNN7EXAMPLE"
     assert _redact("<p>" + token + "</p>") != "<p>" + token + "</p>"
     markup = "<p>" + split + "</p>"
     assert token not in markup
@@ -1154,9 +1155,9 @@ async def test_remote_executor_revokes_completed_and_read_cards(
 def test_a_stray_text_lt_before_a_tag_cannot_hide_a_split_credential():
     from kiro_crew.dashboard import card_lifecycle
 
-    # A browser shows "x < AKIAIOSFODNN7EXAMPLE": the "< " is text, and the
+    # A browser shows "x < glpat-IOSFODNN7EXAMPLE": the "< " is text, and the
     # stray </b> inside the paragraph is ignored.
-    split = "Deploy key: x < AKIA</b>IOSFODNN7EXAMPLE"
+    split = "Deploy key: x < glpat-</b>IOSFODNN7EXAMPLE"
     assert card_lifecycle._hides_secret(split)
     html = f'<div><p>{split}</p><p data-dashboard-field="s"></p></div>'
     assert (
@@ -1169,14 +1170,14 @@ def test_a_stray_text_lt_before_a_tag_cannot_hide_a_split_credential():
     # none of it, so a key split by one reads joined.
     # Every ending the HTML tokenizer honours.
     for comment in ("<!-- > -->", "<!---->", "<!-- <b> -->", "<!--x--!>", "<!-->", "<!--->"):
-        assert card_lifecycle._hides_secret(f"Deploy key: AKIA{comment}IOSFODNN7EXAMPLE"), comment
+        assert card_lifecycle._hides_secret(f"Deploy key: glpat-{comment}IOSFODNN7EXAMPLE"), comment
     assert card_lifecycle._html_texts("a<!-- b > c")[1] == "a"
     assert card_lifecycle._html_texts("a<!-->b")[1] == "ab"
     assert card_lifecycle._html_texts("a<!--x--!>b<!---->c")[1] == "abc"
     # A "<!--" inside an attribute value is attribute text, not a comment, so the
     # text after the tag is still shown and still scanned.
-    split = '<p title="<!--">AKIA<b>IOSFODNN7EXAMPLE</b></p>'
-    assert card_lifecycle._html_texts(split)[1] == "AKIAIOSFODNN7EXAMPLE"
+    split = '<p title="<!--">glpat-<b>IOSFODNN7EXAMPLE</b></p>'
+    assert card_lifecycle._html_texts(split)[1] == "glpat-IOSFODNN7EXAMPLE"
     assert card_lifecycle._hides_secret(split)
     # The browser's comment endings live in the override; a stdlib refactor that
     # stopped calling it would silently fall back to the stdlib's own rule.
@@ -1370,8 +1371,8 @@ async def test_a_published_card_read_under_a_busy_lock_is_unavailable_not_blank(
 #: ``page.evaluate("m => { const b = document.createElement('body');
 #: b.innerHTML = m; return b.textContent }", key)``.
 _BROWSER_TEXT = {
-    "x < AKIA</b>b": "x < AKIAb",
-    '<p title="<!--">AKIA<b>IOSF</b></p>': "AKIAIOSF",
+    "x < glpat-</b>b": "x < glpat-b",
+    '<p title="<!--">glpat-<b>IOSF</b></p>': "glpat-IOSF",
     "a<!-- > -->b": "ab",
     "a<!---->b": "ab",
     "a<!--x--!>b": "ab",
@@ -1380,15 +1381,15 @@ _BROWSER_TEXT = {
     "a<!-- b > c": "a",
     "a<!-- <b> -->b": "ab",
     "a<!--x-- >b-->c": "ac",
-    "x </ AKIA</b>IOSF": "x IOSF",
-    "x </1AKIA>IOSF": "x IOSF",
-    "x </>AKIA": "x AKIA",
-    "x <?php AKIA>IOSF": "x IOSF",
-    "x <!AKIA>IOSF": "x IOSF",
+    "x </ glpat-</b>IOSF": "x IOSF",
+    "x </1glpat->IOSF": "x IOSF",
+    "x </>glpat-": "x glpat-",
+    "x <?php glpat->IOSF": "x IOSF",
+    "x <!glpat->IOSF": "x IOSF",
     "x <a1>b": "x b",
-    "x </b>AKIA": "x AKIA",
-    "&#65;KIA": "AKIA",
-    "<svg><text>AKIA<![CDATA[IOSF]]>X</text></svg>": "AKIAIOSFX",
+    "x </b>glpat-": "x glpat-",
+    "&#103;lpat-": "glpat-",
+    "<svg><text>glpat-<![CDATA[IOSF]]>X</text></svg>": "glpat-IOSFX",
 }
 
 
@@ -1403,9 +1404,10 @@ def test_cdata_is_kept_as_text_where_the_browser_would_hide_it():
     """Showing more than the browser hides nothing; showing less could split a key."""
     from kiro_crew.dashboard import card_lifecycle
 
-    # Chromium renders "AKIAX" here (a bogus comment inside a MathML text point).
+    # Chromium renders "glpat-X" here (a bogus comment inside a MathML text point).
     assert (
-        card_lifecycle._html_texts("<math><mi>AKIA<![CDATA[IOSF]]>X</mi></math>")[1] == "AKIAIOSFX"
+        card_lifecycle._html_texts("<math><mi>glpat-<![CDATA[IOSF]]>X</mi></math>")[1]
+        == "glpat-IOSFX"
     )
 
 

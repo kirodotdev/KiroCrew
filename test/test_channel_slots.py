@@ -547,13 +547,13 @@ class TestSurfaceChannelSession:
     def test_redacts_titles_and_messages(self, dashboard_state: Any) -> None:
         slot = channel_slots.surface_channel_session(
             dashboard_state,
-            _session("slack:1.1", title="key AKIAIOSFODNN7EXAMPLE"),
+            _session("slack:1.1", title="key glpat-IOSFODNN7EXAMPLE"),
             {},
-            [{"role": "assistant", "content": "token AKIAIOSFODNN7EXAMPLE"}],
+            [{"role": "assistant", "content": "token glpat-IOSFODNN7EXAMPLE"}],
         )
         assert slot is not None
-        assert "AKIAIOSFODNN7EXAMPLE" not in slot.title
-        assert "AKIAIOSFODNN7EXAMPLE" not in slot.messages[0]["content"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in slot.title
+        assert "glpat-IOSFODNN7EXAMPLE" not in slot.messages[0]["content"]
 
 
 class _FakeLog:

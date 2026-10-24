@@ -347,7 +347,7 @@ def test_path_collapses_counted_apart_from_secrets(tmp_path, monkeypatch):
     home = tmp_path / "home"
     _isolate(monkeypatch, home)
     # One real secret + a couple of home-path frames (no secret in them).
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     (home / "gateway.log").write_text(
         f"AWS key {secret}\n"
         f'  File "{home}{os.sep}gateway.log", line 1, in a\n'

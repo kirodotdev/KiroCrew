@@ -235,10 +235,10 @@ async def test_eval_audit_lands_before_the_steer(monkeypatch):
 async def test_eval_gate_reason_is_redacted_before_it_reaches_the_model(monkeypatch):
     provider = _Provider(title="Run: aws s3 ls")
     await _run_eval_turn(
-        provider, monkeypatch, gate_reason="denied: token AKIAIOSFODNN7EXAMPLE1234 in args"
+        provider, monkeypatch, gate_reason="denied: token glpat-IOSFODNN7EXAMPLE1234 in args"
     )
     (notice,) = provider.steered
-    assert "AKIAIOSFODNN7EXAMPLE1234" not in notice
+    assert "glpat-IOSFODNN7EXAMPLE1234" not in notice
 
 
 # ── Behavioural: eval judge ──────────────────────────────────────────────────

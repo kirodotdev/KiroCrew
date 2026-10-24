@@ -75,12 +75,12 @@ class TestRunScriptSandboxedErrorPaths:
         the raw head reaches the diagnostic.
         """
         # Built at runtime so no credential-shaped literal lands in the repo.
-        fake_key = "AKIA" + "B" * 16  # matches the AWS access-key-id pattern
+        fake_key = "xoxb-" + "B" * 15  # matches the Slack token pattern
         # Sized so the 200-char head window ends 10 chars into the credential:
-        # a slice-then-redact order keeps "AKIA" + 6 B's — too short for the
+        # a slice-then-redact order keeps "xoxb-" + 6 B's — too short for the
         # pattern to match, so the raw head leaks into the diagnostic.
         padding = "p" * 190
-        stdout_text = padding + fake_key + "e" * 50
+        stdout_text = padding + fake_key + "." * 50
         mock_proc = MagicMock()
         mock_proc.returncode = 0
         mock_proc.communicate.return_value = (stdout_text, "")
@@ -91,7 +91,7 @@ class TestRunScriptSandboxedErrorPaths:
         ):
             result = run_script_sandboxed("/f.py:run", "j1", "")
         assert result["status"] == "error"
-        assert "AKIA" not in result["error"]
+        assert "xoxb-" not in result["error"]
         assert fake_key not in result["error"]
         # Positive proof the payload flowed through redaction (not a vacuous
         # pass on an empty diagnostic): the 200-char head window ends 10 chars
@@ -125,14 +125,14 @@ class TestRunScriptSandboxedErrorPaths:
             return real_redact(text)
 
         monkeypatch.setattr(cron_script, "redact", _spy)
-        fake_key = "AKIA" + "B" * 16  # matches the AWS access-key-id pattern
+        fake_key = "xoxb-" + "B" * 15  # matches the Slack token pattern
         # The -500 cut lands ONE character into the key: slice-then-redact
         # would leak the 19-char fragment, and a window that failed to reach
         # back past the cut would leak it the same way.
         # Newline-separated filler: the window then starts inside an ordinary
         # short line, so only that line's severed remainder is masked and the
         # straddling credential is still exercised against the pattern pass.
-        stderr_text = ("n" * 100 + "\n") * 200 + "W" * 300 + fake_key + "X" * 481
+        stderr_text = ("n" * 100 + "\n") * 200 + "W" * 300 + fake_key + "." * 481
         mock_proc = MagicMock()
         mock_proc.returncode = 1
         mock_proc.communicate.return_value = ("", stderr_text)
@@ -170,7 +170,7 @@ class TestRunScriptSandboxedErrorPaths:
             return real_redact(text)
 
         monkeypatch.setattr(cron_script, "redact", _spy)
-        fake_key = "AKIA" + "B" * 16  # matches the AWS access-key-id pattern
+        fake_key = "xoxb-" + "B" * 15  # matches the Slack token pattern
         # The 200-char head cut lands 10 chars into the key; the trailing run
         # pushes the capture far past the window so the bound is discriminating.
         stdout_text = "p" * 190 + fake_key + "e" * 30000

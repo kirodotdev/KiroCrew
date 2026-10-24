@@ -450,7 +450,7 @@ class TestShowThinkingToggle:
 
     @pytest.mark.asyncio
     async def test_reasoning_is_redacted_before_it_is_posted(self) -> None:
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         renderer, client, _ = _renderer(show_thinking=True)
         await renderer.on_turn_start()
         await renderer.on_thinking(f"the key is {secret}")

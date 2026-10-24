@@ -190,8 +190,8 @@ class TestNotifyMood:
             seen: list[tuple[str, dict]] = []
             runtime.publish = lambda ch, data: seen.append((ch, data))  # type: ignore[assignment]
             # Fake AWS key, split to avoid a CodeQL clear-text-storage FP on a
-            # redaction-control test (runtime value is a full AKIA key).
-            planted = "AKIA" + "IOSFODNN7EXAMPLE"
+            # redaction-control test (runtime value is a full glpat- key).
+            planted = "glpat-" + "IOSFODNN7EXAMPLE"
             runtime.notify_user({"summary": f"use {planted} now"})
             notify = next(d for ch, d in seen if ch == "mochi:notify")
             assert planted not in notify["summary"]

@@ -1017,7 +1017,7 @@ def test_reclaim_reports_a_teardown_that_left_the_home_behind(tmp_path):
 
 def test_reclaim_redacts_the_teardown_stderr(tmp_path):
     """Teardown stderr can carry a secret from the pod's own output."""
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     cp = SimpleNamespace(returncode=1, stdout="", stderr=f"stop failed: {secret}")
 
     with (

@@ -1,14 +1,14 @@
-"""The stream redactor's AWS key-value anchor and its multi-carrier discard.
+"""The stream redactor's label anchor and its multi-carrier discard.
 
-The batch AWS key-value branches in ``redaction._CREDENTIAL_PATTERNS``
-(``aws_secret_access_key=``, ``"SessionToken": "`` and the rest) redact a value
-only while its key label is in the same ``redact()`` call, and nothing else
-catches a value with no long base64 run. ``StreamRedactor`` therefore treats a
-trailing label as STRONG evidence: it holds the label and its value together up
-to ``_STREAM_HOLDBACK_JWT_MAX``, then fails closed. The key list is read off
-``redaction._AWS_LABEL_RULES`` so the two cannot drift apart.
+The batch label rules in ``redaction_labels`` (``aws_secret_access_key=``,
+``"SessionToken": "``, ``password:`` and the rest) redact a value only while
+its label is in the same ``redact()`` call, and nothing else catches a value
+with no prefix. ``StreamRedactor`` therefore treats a trailing label as STRONG
+evidence: it holds the label and its value together up to
+``_STREAM_HOLDBACK_JWT_MAX``, then fails closed. The label names are the shared
+spellings in ``credential_patterns``, so the two cannot drift apart.
 
-The anchor matches from a key whose separator has not arrived yet (that
+The anchor matches from a label whose separator has not arrived yet (that
 whitespace is outside the stream's credential class too) through a value
 already closed by its quote while the run after the quote is still
 credential-class (the natural cut would otherwise walk back over the quote into
@@ -20,52 +20,41 @@ from __future__ import annotations
 import functools
 import re
 
-import kiro_crew.security.redaction as redaction
+from kiro_crew.credential_patterns import (
+    AWS_SECRET_LABEL,
+    AWS_SESSION_LABEL,
+    GENERIC_SECRET_LABEL,
+    LABEL_VALUE,
+)
 
-#: Value class of the batch AWS key-value branches: a value ends at whitespace or
-#: a JSON structural delimiter.
-VALUE_CLASS = r"[^\s\"',}]"
+#: Value class of the batch label rules: a value ends at whitespace, a quote or
+#: a structural delimiter.
+VALUE_CLASS = LABEL_VALUE.removesuffix("+")
 
-_SEPARATOR_RE = r"[:=]\s*[\"']?"
-_KEY_QUOTE_RE = r"[\"']?\s*"
+#: The separators of ``credential_patterns.LABEL_SEPARATOR``: ``=>`` and ``:=`` as
+#: well as ``:``, ``=``, an XML ``>`` and the fullwidth colon and equals sign.
+_SEP_CHARS = ":=>\uff1a\uff1d"
+_SEP_RE = "(?:=>|:=|[:=>\uff1a\uff1d])"
+_SEPARATOR_RE = _SEP_RE + r"[*_]{0,3}\s*[\"']?"
+#: A closing quote, then markdown emphasis, after a key name, then blanks. One
+#: quote at most, so only the first label head at or after a value can anchor it
+#: (see :func:`find`).
+_KEY_QUOTE_RE = r"[\"']?[*_]{0,2}\s*"
 #: Longer than every key name; bounds the backward key search.
 _KEY_NAME_MAX = 64
 
-
-#: The label tail every batch AWS rule ends with. A rule of another shape fails
-#: ``test_every_aws_label_rule_has_the_shape_the_stream_anchor_reads``, not the
-#: import, so a reshaped rule cannot stop the package from loading.
-_LABEL_TAIL_RE = _KEY_QUOTE_RE + _SEPARATOR_RE
-
-
-def _key_name(label: re.Pattern[str]) -> str:
-    """The key name alternation of a batch AWS label rule."""
-    return label.pattern.removesuffix(_LABEL_TAIL_RE)
-
-
-_KEY_NAMES_RE = "(?:" + "|".join(_key_name(label) for label, _ in redaction._AWS_LABEL_RULES) + ")"
-
-
-def _literal_names(alternation: str) -> tuple[str, ...]:
-    """The plain key names of one ``(?:a|b)`` alternation, for a substring prefilter."""
-    return tuple(alternation.removeprefix("(?:").removesuffix(")").split("|"))
-
-
-#: Every match starts with one of these, so a buffer naming none of them has no
-#: anchor. Substring checks keep the common no-AWS stream at C speed. That the
-#: names are plain literals is pinned by the same shape test as the label tail.
-_KEY_LITERALS = tuple(
-    name for label, _ in redaction._AWS_LABEL_RULES for name in _literal_names(_key_name(label))
-)
+#: Every label name a batch rule reads a value after, case-insensitively.
+_KEY_NAMES_RE = f"(?:{AWS_SECRET_LABEL}|{AWS_SESSION_LABEL}|{GENERIC_SECRET_LABEL})"
+_KEY_NAME_SEARCH_RE = re.compile(_KEY_NAMES_RE)
 
 
 def names_a_key(buf: str) -> bool:
-    """Whether *buf* contains any AWS key name, by substring check."""
-    return any(name in buf for name in _KEY_LITERALS)
+    """Whether *buf* contains any label name, matched by the same engine as the rules."""
+    return _KEY_NAME_SEARCH_RE.search(buf) is not None
 
 
 _KEY_NAME_TAIL_RE = re.compile(_KEY_NAMES_RE + r"\Z")
-_LABEL_HEAD_RE = re.compile(_KEY_NAMES_RE + _KEY_QUOTE_RE + "[:=]")
+_LABEL_HEAD_RE = re.compile(_KEY_NAMES_RE + _KEY_QUOTE_RE + _SEP_RE)
 
 
 @functools.lru_cache(maxsize=4)
@@ -75,18 +64,32 @@ def anchor_re(cred_class: frozenset[str]) -> re.Pattern[str]:
     return re.compile(
         _KEY_NAMES_RE
         + _KEY_QUOTE_RE
-        + rf"(?:(?P<sep>[:=])\s*(?P<open>[\"']?)(?P<val>{VALUE_CLASS}*)"
+        + rf"(?:(?P<sep>{_SEP_RE})[*_]{{0,3}}\s*(?P<open>[\"']?)(?P<val>{VALUE_CLASS}*)"
         + rf"(?P<close>[\"']{cred}*)?)?\Z"
     )
 
 
-def _skip_back(buf: str, pos: int, chars: str, *, space: bool = False, once: bool = False) -> int:
-    """Walk *pos* back over *chars* (and whitespace when *space*), at most once if *once*."""
+def _skip_back(
+    buf: str, pos: int, chars: str, *, space: bool = False, once: bool = False, limit: int = 0
+) -> int:
+    """Walk *pos* back over *chars* (and whitespace when *space*).
+
+    At most once if *once*, at most *limit* characters when *limit* is set.
+    """
+    steps = 0
     while pos > 0 and (buf[pos - 1] in chars or (space and buf[pos - 1].isspace())):
         pos -= 1
-        if once:
+        steps += 1
+        if once or (limit and steps >= limit):
             break
     return pos
+
+
+def _skip_tail(buf: str, pos: int) -> int:
+    """Walk back from *pos* over what ``_KEY_QUOTE_RE`` allows after a key name."""
+    pos = _skip_back(buf, pos, "", space=True)
+    pos = _skip_back(buf, pos, "*_", limit=2)
+    return _skip_back(buf, pos, "\"'", once=True)
 
 
 def _key_ending_at(buf: str, end: int) -> int | None:
@@ -122,17 +125,19 @@ def find(buf: str, cred_class: frozenset[str], cut: int) -> re.Match[str] | None
     low -= _run_end(_VALUE_RUN_RE, buf[low - 1 :: -1] if low else "", 0)
     starts: list[int] = []
     sep = _skip_back(buf, _skip_back(buf, low, "\"'", once=True), "", space=True)
+    sep = _skip_back(buf, sep, "*_", limit=2)
     for sep_end in (sep, low + 1):
         # The separator ends the label either before the value run (whitespace
         # or a quote between them) or as the run's first byte, which is a
         # value-class byte itself (`Key\n:v`).
-        if 0 < sep_end <= n and buf[sep_end - 1] in ":=":
-            key_end = _skip_back(
-                buf, _skip_back(buf, sep_end - 1, "", space=True), "\"'", once=True
-            )
+        if 0 < sep_end <= n and buf[sep_end - 1] in _SEP_CHARS:
+            sep_start = sep_end - 1
+            if sep_start > 0 and buf[sep_start - 1 : sep_start + 1] in ("=>", ":="):
+                sep_start -= 1
+            key_end = _skip_tail(buf, sep_start)
             if (start := _key_ending_at(buf, key_end)) is not None:
                 starts.append(start)
-    bare_end = _skip_back(buf, _skip_back(buf, n, "", space=True), "\"'", once=True)
+    bare_end = _skip_tail(buf, n)
     if (start := _key_ending_at(buf, bare_end)) is not None:
         starts.append(start)
     if (head := _LABEL_HEAD_RE.search(buf, low)) is not None:
@@ -156,14 +161,14 @@ def has_separator(anchor: re.Match[str]) -> bool:
 #: ``Authorization`` header name. The AWS value class covers ``:`` and ``=``, so
 #: a discard would otherwise run through such a label glued to the dropped value.
 _GLUED_LABEL_RE = re.compile(rf"(?P<aws>{_KEY_NAMES_RE})|(?i:authorization)")
-_LABEL_SEPARATOR_RE = re.compile(r"[\"']?\s*[:=]")
+_LABEL_SEPARATOR_RE = re.compile(r"[\"'*_]{0,3}\s*" + _SEP_RE)
 # The batch pass reads an Authorization value only after whitespace (`: Bearer x`),
 # so a value glued to its separator stays part of the dropped run.
 _AUTH_SEPARATOR_RE = re.compile(r"[\"']?\s*[:=]\s")
 #: Bytes a fully consumed discard keeps for the next pass: the longest label
 #: name, so a label split across chunks is whole there. The carried bytes are
 #: dropped with the rest unless a label starts inside them.
-LABEL_CARRY = max(len("authorization"), *(len(name) for name in _KEY_LITERALS))
+LABEL_CARRY = len("secret_access_key") + 4
 
 
 def label_backoff(buf: str, run: int, start: int = 0) -> int:

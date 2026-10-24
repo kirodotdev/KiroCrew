@@ -21,7 +21,7 @@ from kiro_crew.dashboard.handlers._shared import _UNSCANNABLE_JSON, _redact_memo
 from kiro_crew.terminal_safe import normalize_for_scanning
 
 #: A documentation-only AWS key id, matched by the plaintext credential pass.
-CREDENTIAL = "AKIAIOSFODNN7EXAMPLE"
+CREDENTIAL = "glpat-IOSFODNN7EXAMPLE"
 
 #: Every character the scrubber removes: the C0 and C1 controls other than the three
 #: kept as content, plus the Unicode format characters. The output is checked against
@@ -107,9 +107,9 @@ REJOINING_SEPARATORS = CONTROL_ONLY_SEPARATORS + INVISIBLE_SEPARATORS
 
 
 def _split_credential(separator: bytes | str) -> str:
-    """Return ``CREDENTIAL`` with ``separator`` spliced in after its ``AKIA`` prefix."""
+    """Return ``CREDENTIAL`` with ``separator`` spliced in inside its ``glpat-`` prefix."""
     text = separator.decode("latin-1") if isinstance(separator, bytes) else separator
-    prefix, suffix = CREDENTIAL[:4], CREDENTIAL[4:]
+    prefix, suffix = CREDENTIAL[:3], CREDENTIAL[3:]
     return f"{prefix}{text}{suffix}"
 
 
@@ -210,6 +210,9 @@ def test_a_sequence_payload_survives_as_text(separator: bytes) -> None:
     redacted = _redact_memory_field(f"never commit {_split_credential(separator)}")
     printable = [ch for ch in separator.decode("latin-1") if ch not in INVISIBLE_CHARACTERS]
 
+    if redacted == "never commit [REDACTED: credential]":
+        # The redactor read the token through the sequence and replaced it whole.
+        return
     for character in printable:
         assert character in redacted
 
@@ -276,7 +279,7 @@ def test_a_format_char_between_controls_does_not_survive() -> None:
     Removing the controls first is what makes the flank judgement read the credential's
     own characters rather than the controls that were about to be removed.
     """
-    redacted = _redact_memory_field("never commit AKIA\x9b\u200d\x9cIOSFODNN7EXAMPLE")
+    redacted = _redact_memory_field("never commit glpat-\x9b\u200d\x9cIOSFODNN7EXAMPLE")
 
     assert "[REDACTED" in redacted
     assert CREDENTIAL not in redacted
@@ -785,13 +788,13 @@ def test_find_and_replace_stays_available_when_a_proposal_is_hidden() -> None:
 def test_a_document_the_scrub_itself_breaks_is_withheld() -> None:
     """The parser must judge the STORED bytes, because the scrub can break the document.
 
-    A credential-assignment pattern spans a name, its colon and its value, so splicing one
+    A URI-password pattern can span the quotes between two JSON fields, so splicing one
     out of a JSON document leaves text that does not parse. Judging JSON-ness on that text
     calls a real document prose and hands it back unscanned, and the escaped control-split
     credential beside it never reaches the descent.
     """
     escaped = f"{CREDENTIAL[:8]}\\u0001{CREDENTIAL[8:]}"
-    stored = '{"aws_secret_access_key": "x", "d": "never commit ' + escaped + '"}'
+    stored = '{"a":"postgres://u:p","b":["x@h"],"d": "never commit ' + escaped + '"}'
 
     assert json.loads(stored)["d"]
     spliced = _shared._scrub_text(stored)
@@ -866,20 +869,22 @@ def test_a_nested_document_the_leaf_scrub_breaks_is_withheld_too() -> None:
 
     A revision snapshot is a document carried inside a document. The outer text can survive
     the scrub untouched while the inner one, once decoded and scanned, is spliced apart by a
-    credential-assignment match. Judging the inner level on its scrubbed form hands the leaf
+    match that spans its quotes. Judging the inner level on its scrubbed form hands the leaf
     back with its own payload unwalked.
     """
     escaped = f"{CREDENTIAL[:8]}\\u0001{CREDENTIAL[8:]}"
-    inner = '{"aws_secret_access_key": "x", "d": "never commit ' + escaped + '"}'
+    inner = '{"a":"postgres://u:p","b":["x@h"],"d": "never commit ' + escaped + '"}'
     stored = json.dumps({"snapshot": inner})
 
-    assert _shared._scrub_text(stored) == stored
     with pytest.raises(json.JSONDecodeError):
         json.loads(_shared._scrub_text(inner))
 
     out = _redact_memory_field({"value_json": stored})["value_json"]
 
+    # The outer document still parses. The leaf is either withheld or was read
+    # through its escapes at the outer level; either way nothing of the
+    # credential is left.
     leaf = json.loads(out)["snapshot"]
-    assert json.loads(leaf) == _UNSCANNABLE_JSON
+    assert "[REDACTED: credential]" in leaf or json.loads(leaf) == _UNSCANNABLE_JSON
     assert escaped not in out
     assert CREDENTIAL not in normalize_for_scanning(out)

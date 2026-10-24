@@ -241,7 +241,7 @@ class TestSyncRefusesCredentialShapedNames:
     this source too.
     """
 
-    PROBE = "AKIAIOSFODNN7EXAMPLE"
+    PROBE = "glpat-IOSFODNN7EXAMPLE"
 
     @pytest.mark.asyncio
     async def test_a_credential_shaped_discovered_name_is_not_synced(self):

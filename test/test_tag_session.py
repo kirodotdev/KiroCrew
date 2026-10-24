@@ -258,14 +258,14 @@ class TestAutoTagRedaction:
     async def test_credential_in_project_name_is_redacted(self, patch_save_slot):
         state = _make_state()
         # This extreme case: project dir named with an AWS key
-        slot = _make_slot(project="/x/deploy-AKIAIOSFODNN7EXAMPLE")
+        slot = _make_slot(project="/x/deploy-glpat-IOSFODNN7EXAMPLE")
 
         await maybe_auto_tag(state, slot)
 
         # Credential must NOT survive into the tag definition name
         if state._tags:
             tag_name = state._tags[0]["name"]
-            assert "AKIAIOSFODNN7EXAMPLE" not in tag_name
+            assert "glpat-IOSFODNN7EXAMPLE" not in tag_name
 
 
 # ── Production-shaped slot keys ─────────────────────────────────────────────
@@ -655,7 +655,7 @@ class TestTopicTags:
         assert by_tag["st"]["error"] == "status_tag_requires_set_state"
 
     async def test_credentials_are_redacted_before_the_prompt(self, patch_save_slot, topic_model):
-        secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+        secret = "glpat-" + "ABCDEFGHIJKLMNOP"
         state = _make_state()
         slot = _topic_slot(message=f"my key is {secret} please help")
 
@@ -665,7 +665,7 @@ class TestTopicTags:
 
     async def test_credential_in_the_reply_is_never_stored(self, patch_save_slot, topic_model):
         # Upper-case key shape: the redactor must see it before any case folding.
-        topic_model["reply"] = "AKIA" + "ABCDEFGHIJKLMNOP\ndebugging"
+        topic_model["reply"] = "glpat-" + "ABCDEFGHIJKLMNOP\ndebugging"
         state = _make_state()
         slot = _topic_slot(project="")
 
@@ -787,7 +787,7 @@ class TestTopicTags:
     ):
         from kiro_crew.dashboard.chat_auto_tag import _TOPIC_MESSAGE_CHARS
 
-        key = "AKIA" + "ABCDEFGHIJKLMNOP"
+        key = "glpat-" + "ABCDEFGHIJKLMNOP"
         pad = "x " * ((_TOPIC_MESSAGE_CHARS - 8) // 2)
         state = _make_state()
         slot = _topic_slot(project="", message=pad + key + " tail")

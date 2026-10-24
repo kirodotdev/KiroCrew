@@ -217,7 +217,7 @@ async def test_wait_for_compaction_drain_failed_with_a_credential_shaped_summary
             params={
                 "sessionId": "sA",
                 "status": {"type": "failed"},
-                "summary": "backend error: key AKIAIOSFODNN7EXAMPLE rejected",
+                "summary": "backend error: key glpat-IOSFODNN7EXAMPLE rejected",
             },
         )
     )
@@ -225,7 +225,7 @@ async def test_wait_for_compaction_drain_failed_with_a_credential_shaped_summary
     result = await handle.wait_for_compaction(timeout=3.0)
 
     assert result["type"] == "failed"
-    assert "AKIAIOSFODNN7EXAMPLE" not in result["summary"]
+    assert "glpat-IOSFODNN7EXAMPLE" not in result["summary"]
     assert "[REDACTED: credential]" in result["summary"]
 
 

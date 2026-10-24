@@ -152,7 +152,8 @@ describe('errorReport journal', () => {
 
 describe('redaction', () => {
   it('blanks credential-shaped substrings', () => {
-    expect(redactSecrets('key AKIAIOSFODNN7EXAMPLE here')).toContain('[redacted-access-key]')
+    // An access key ID is Identifier tier: it stays, as in the backend.
+    expect(redactSecrets('key AKIAIOSFODNN7EXAMPLE here')).toBe('key AKIAIOSFODNN7EXAMPLE here')
     expect(redactSecrets('Authorization: Bearer abcdef1234567890')).not.toContain('abcdef1234567890')
     expect(redactSecrets('{"token": "s3cr3t-value-x"}')).not.toContain('s3cr3t-value-x')
     expect(redactSecrets('password=hunter2hunter2')).not.toContain('hunter2hunter2')
@@ -210,7 +211,7 @@ describe('redaction', () => {
   it('scrubs BEFORE capping, so a cut cannot orphan a pattern anchor', () => {
     // Regression: capping first was a redaction bypass. Every rule needs a
     // trailing anchor to fire — the userinfo rule needs its `@`, `Bearer` needs
-    // 12+ token chars, `AKIA` its full 16 — and a cut landing before that anchor
+    // 12+ token chars — and a cut landing before that anchor
     // leaves the credential's HEAD in the kept prefix, matching nothing. The
     // credential is positioned to straddle each cap.
     const pad = (n: number) => 'x'.repeat(n)
@@ -233,23 +234,15 @@ describe('redaction', () => {
     expect(bearer.message).not.toContain('eyJhbGciOiJIUzI1NiJ9')
     expect(bearer.detail).not.toContain('eyJhbGciOiJIUzI1NiJ9')
 
-    // AKIA: the 16 trailing characters straddle the cap.
-    const akia = recordError({
-      source: 'api',
-      message: `denied ${pad(MAX_MESSAGE - 10)}AKIAIOSFODNN7EXAMPLE`,
-      detail: `denied ${pad(MAX_DETAIL - 10)}AKIAIOSFODNN7EXAMPLE`,
-    })
-    expect(akia.message).not.toContain('AKIAIOSFODNN7EXAMPLE')
-    expect(akia.detail).not.toContain('AKIAIOSFODNN7EXAMPLE')
   })
 
   it('applies redaction to the stored message and detail', () => {
     const r = recordError({
       source: 'api',
-      message: 'auth failed for AKIAIOSFODNN7EXAMPLE',
+      message: 'auth failed for Bearer abcdef1234567890',
       detail: 'session_key=abcdef123456',
     })
-    expect(r.message).not.toContain('AKIAIOSFODNN7EXAMPLE')
+    expect(r.message).not.toContain('abcdef1234567890')
     expect(r.detail).not.toContain('abcdef123456')
   })
 

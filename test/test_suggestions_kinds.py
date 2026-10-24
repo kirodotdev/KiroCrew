@@ -42,9 +42,9 @@ def test_unparseable_response_yields_empty() -> None:
 
 
 def test_redaction_keeps_kind() -> None:
-    out = _redact_suggestions([{"text": "Deploy with AKIAIOSFODNN7EXAMPLE", "kind": "ops"}])
+    out = _redact_suggestions([{"text": "Deploy with glpat-IOSFODNN7EXAMPLE", "kind": "ops"}])
     assert out[0]["kind"] == "ops"
-    assert "AKIAIOSFODNN7EXAMPLE" not in out[0]["text"]
+    assert "glpat-IOSFODNN7EXAMPLE" not in out[0]["text"]
 
 
 def test_a_cache_that_never_generated_holds_no_cards() -> None:

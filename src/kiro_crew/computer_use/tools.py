@@ -761,7 +761,7 @@ def _run(
     # redacted inside ``render_tree``, but the header was concatenated after that
     # pass — and ``detail`` is not our prose: every driver confirmation interpolates
     # app-supplied text (``_click_text`` embeds ``app.name``, the process name macOS
-    # reports), so a process named ``Notes key=AKIA…`` put a raw credential in front
+    # reports), so a process named ``Notes key=ghp_…`` put a raw credential in front
     # of a fully redacted tree. Verified: the string survived end-to-end before this
     # line, and ``redact_credentials`` masks it.
     #

@@ -398,20 +398,26 @@ The memory recovery, record editor, and member recall/copy APIs each register
 their own output boundary. Their response fields pass through the shared
 credential and exfiltration-URL chain before reaching the dashboard or MCP caller.
 
-- `redact_credentials()` runs four passes:
-  1. Fixed patterns: cloud access key IDs and secret keys, private-key blocks,
-     chat and forge tokens, package-registry tokens, JWTs, `Authorization: Bearer`
-     headers, and database connection URIs carrying embedded credentials.
-  2. Base64: it decodes base64-looking chunks and re-runs pass 1 on the bytes.
-  3. Bare secret key: an entropy and shape heuristic for an unlabelled
-     40-character cloud secret key, with exemptions for shapes it would otherwise
-     misread (digests, document links, code literals and others).
-  4. Token parameter: the value of a `token` URL parameter, keyed on the name.
+- `redact_credentials()` decides by what a value can do, never by a guess from
+  its entropy. Its passes:
+  1. Fixed patterns: private-key blocks, chat and forge tokens, package-registry
+     tokens, JWTs, signing values and database connection URIs carrying embedded
+     credentials.
+  2. Context rules and the vendor catalog: a value behind a secret label (the
+     cloud secret key and session token, `Authorization` headers, generic secret
+     fields), the secret half of a cloud key pair next to its key ID, and a
+     catalog of vendor token formats generated at build time.
+  3. The same rules over a normalised view of the text (percent-decoded,
+     JSON-unescaped, control and invisible characters dropped), mapped back to
+     the original characters.
+  4. Base64: a standard, URL-safe or wrapped run whose decoded text holds a secret.
+  5. Token parameter: the value of a `token` URL parameter, keyed on the name.
 
-  Key-value matching is JSON-aware and value classes stop at JSON structural
-  delimiters, so a match in compact JSON does not run into the next field. A
-  labelled match replaces the label together with the value, so
-  `{"AccessKeyId": "..."}` becomes `{"[REDACTED: credential]"}`.
+  A labelled match replaces only the value and keeps the label, so
+  `{"SecretAccessKey": "..."}` becomes `{"SecretAccessKey": "[REDACTED: credential]"}`
+  and the output still parses. Identifiers (cloud key IDs, account IDs, ARNs,
+  digests, request IDs) are never redacted. A value with no prefix, no label and
+  no key ID beside it is not redacted.
 - `redact_exfiltration_urls()` / `scan_exfiltration_urls()` judge the payload
   first. A credential in a URL is an unconditional floor; long query strings,
   base64 blobs and heavy URL-encoding are heuristics. A flagged URL is replaced
@@ -423,8 +429,7 @@ credential and exfiltration-URL chain before reaching the dashboard or MCP calle
   read-only leaf) skip only the length and base64 heuristics. The credential
   checks still run on those last three.
 - The owner's switch (Settings → Security) applies only inside the Files view,
-  and there it turns all credential redaction off. A code-text scope spares two
-  source-code shapes from pass 3 and nothing else.
+  and there it turns all credential redaction off.
 - `redact()` composes both in order for a single call site.
 - `StreamRedactor` handles the case per-chunk redaction structurally cannot: a
   credential split across a streaming boundary, where neither fragment matches on
@@ -702,10 +707,10 @@ would not be noticed.
 minimum length are decoded and re-checked, so a shorter encoded fragment, or one
 split across messages, can pass. Cross-message correlation would extend it.
 
-**A bare secret key is a guess.** Pass 3 judges an unlabelled 40-character run by
-entropy and shape, which cannot tell a random secret from a random digest, so it
-carries exemptions and still misreads some benign values. The recorded direction
-replaces it with case-insensitive labels and key-ID pairing; see
+**A bare secret pasted alone is not redacted.** A random secret and a random
+digest look the same, so a value is redacted only when a prefix, a secret label
+or an adjacent cloud key ID says what it is. A secret with none of those, on its
+own, is the accepted residual; see
 [the redaction tier decision](../decisions/2026-10-20-redaction-classifies-by-what-a-value-can-do.md).
 
 **Write protection covers Kiro Crew's own trust root, not the user's shell

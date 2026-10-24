@@ -452,7 +452,7 @@ class TestSpawnSubAgents:
             mock_post.return_value = {"id": "a1"}
             mock_get.return_value = {
                 "done": True,
-                "agent": "agent AKIAIOSFODNN7EXAMPLE here",
+                "agent": "agent glpat-IOSFODNN7EXAMPLE here",
                 "result": "ok",
             }
 
@@ -461,7 +461,7 @@ class TestSpawnSubAgents:
                 "solo_reason": "bulk_data",
             })
 
-            assert "AKIAIOSFODNN7EXAMPLE" not in result
+            assert "glpat-IOSFODNN7EXAMPLE" not in result
 
     def test_redacts_result_text(self):
         with patch("kiro_crew.mcp_core._post") as mock_post, \
@@ -472,7 +472,7 @@ class TestSpawnSubAgents:
             mock_get.return_value = {
                 "done": True,
                 "agent": "w",
-                "result": "key AKIAIOSFODNN7EXAMPLE found",
+                "result": "key glpat-IOSFODNN7EXAMPLE found",
             }
 
             result = _call_tool("spawn_sub_agents", {
@@ -480,7 +480,7 @@ class TestSpawnSubAgents:
                 "solo_reason": "bulk_data",
             })
 
-            assert "AKIAIOSFODNN7EXAMPLE" not in result
+            assert "glpat-IOSFODNN7EXAMPLE" not in result
 
     def test_passes_cwd_to_spawn(self):
         with patch("kiro_crew.mcp_core._post") as mock_post, \
@@ -802,12 +802,12 @@ class TestSpawnSubAgentsFailedChildTranscript:
             "done": True,
             "agent": "w",
             "error": "crashed",
-            "result": "key AKIAIOSFODNN7EXAMPLE found",
+            "result": "key glpat-IOSFODNN7EXAMPLE found",
         })
 
         assert blocks[0]["status"] == "error"
         assert "found" in blocks[0]["text"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in blocks[0]["text"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in blocks[0]["text"]
 
     def test_large_transcript_of_a_failed_child_is_summarized_with_its_path(self):
         from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS

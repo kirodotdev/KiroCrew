@@ -115,7 +115,7 @@ def test_store_writes_no_temp_leftover_and_is_valid_json(tmp_path) -> None:
 def test_store_marks_redacted_source_as_non_original(tmp_path) -> None:
     store = _store(tmp_path)
     reg = RunRegistry(store=store)
-    source = "META={}\n" "async def workflow(ctx):\n" "    return 'AKIAIOSFODNN7EXAMPLE'\n"
+    source = "META={}\n" "async def workflow(ctx):\n" "    return 'glpat-IOSFODNN7EXAMPLE'\n"
     _seed(reg, run_id="wf_000012", source=source)
     reg.mark_terminal("wf_000012", STATUS_FINISHED, result={})
 

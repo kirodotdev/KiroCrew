@@ -459,18 +459,18 @@ class TestOneRedactionRule:
     """§3.6 — one transcript cannot have two redaction policies."""
 
     def test_model_authored_content_is_scrubbed_on_the_channel_path(self, log):
-        log.append(SLACK_KEY, "assistant", "token is AKIAIOSFODNN7EXAMPLE ok")
+        log.append(SLACK_KEY, "assistant", "token is glpat-IOSFODNN7EXAMPLE ok")
         stored = log.read_messages(SLACK_KEY)[0]["content"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in stored
+        assert "glpat-IOSFODNN7EXAMPLE" not in stored
 
     def test_user_typed_content_is_stored_verbatim(self, log):
         """Matches the dashboard's own gate; the user's words are not rewritten."""
-        log.append(SLACK_KEY, "user", "my key is AKIAIOSFODNN7EXAMPLE")
-        assert "AKIAIOSFODNN7EXAMPLE" in log.read_messages(SLACK_KEY)[0]["content"]
+        log.append(SLACK_KEY, "user", "my key is glpat-IOSFODNN7EXAMPLE")
+        assert "glpat-IOSFODNN7EXAMPLE" in log.read_messages(SLACK_KEY)[0]["content"]
 
     def test_append_if_absent_stays_idempotent_under_redaction(self, log):
         """Dedup compares the stored form, so a scrubbed message is recognised."""
-        content = "leaked AKIAIOSFODNN7EXAMPLE here"
+        content = "leaked glpat-IOSFODNN7EXAMPLE here"
         assert log.append_if_absent(SLACK_KEY, "assistant", content) is True
         assert log.append_if_absent(SLACK_KEY, "assistant", content) is False
         assert len(log.read_messages(SLACK_KEY)) == 1

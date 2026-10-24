@@ -327,7 +327,7 @@ class TestProbeServerStderrCapture:
         stub.write_text(
             "#!/bin/sh\n"
             "echo 'config error: AWS_SECRET_"
-            "ACCESS_KEY=AKIAIOSFODNN7"
+            "ACCESS_KEY=glpat-IOSFODNN7"
             "EXAMPLEXXX' >&2\n"
             "exit 1\n"
         )
@@ -343,7 +343,7 @@ class TestProbeServerStderrCapture:
 
         assert result.status == "error"
         # The literal secret must not appear verbatim in the error field.
-        assert "AKIAIOSFODNN7" "EXAMPLEXXX" not in (result.error or "")
+        assert "glpat-IOSFODNN7" "EXAMPLEXXX" not in (result.error or "")
 
     @pytest.mark.asyncio
     async def test_long_probe_error_keeps_remedy_sentence(self, monkeypatch) -> None:
@@ -358,7 +358,7 @@ class TestProbeServerStderrCapture:
         # A credential early in the message must be REDACTED (not merely
         # truncated away): raising the cap must not widen a disclosure hole.
         long_msg = (
-            "Sandbox backend unavailable, token=AKIAIOSFODNN7"
+            "Sandbox backend unavailable, token=glpat-IOSFODNN7"
             "EXAMPLEXXX. "
             "Probe detail: not Linux. "
             + ("x" * 300)
@@ -383,7 +383,7 @@ class TestProbeServerStderrCapture:
         assert "sandbox_allow_unsandboxed_exec=true" in (result.error or "")
         assert len(result.error or "") <= _PROBE_ERROR_MAX_CHARS
         # The credential is redacted before it reaches server.error.
-        assert "AKIAIOSFODNN7" "EXAMPLEXXX" not in (result.error or "")
+        assert "glpat-IOSFODNN7" "EXAMPLEXXX" not in (result.error or "")
 
 
 class TestProbeStdioMalformedResponse:

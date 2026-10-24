@@ -705,7 +705,7 @@ class TestExpandDollarSkills:
         state, slot = _state(tmp_path), _slot()
         skills = MagicMock()
         skills.resolve_dollar_skills.return_value = [
-            ("$deploy", "deploy", "step one AKIAIOSFODNN7EXAMPLE")
+            ("$deploy", "deploy", "step one glpat-IOSFODNN7EXAMPLE")
         ]
 
         with patch.object(chat_runner, "_get_skills", return_value=skills):
@@ -715,7 +715,7 @@ class TestExpandDollarSkills:
 
         assert count == 1
         assert "[Skill: deploy]" in expanded
-        assert "AKIAIOSFODNN7EXAMPLE" not in expanded
+        assert "glpat-IOSFODNN7EXAMPLE" not in expanded
         assert slot.messages[-1]["role"] == "system"
 
 

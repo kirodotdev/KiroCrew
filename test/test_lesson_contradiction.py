@@ -1355,7 +1355,7 @@ class TestApiLessonsSanitizesStoredFields:
                 "key": "lesson.y",
                 "value_json": json.dumps(
                     {
-                        "rule": "use key AKIAIOSFODNN7EXAMPLE for the bucket",
+                        "rule": "use key glpat-IOSFODNN7EXAMPLE for the bucket",
                         "category": "tool",
                         "negative": None,
                     }
@@ -1364,7 +1364,7 @@ class TestApiLessonsSanitizesStoredFields:
             }
         ]
         lessons = await self._get(rows)
-        assert "AKIAIOSFODNN7EXAMPLE" not in lessons[0]["rule"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in lessons[0]["rule"]
         assert lessons[0]["category"] == "tool"
 
     async def test_credential_bearing_category_is_redacted(self):
@@ -1376,7 +1376,7 @@ class TestApiLessonsSanitizesStoredFields:
                 "value_json": json.dumps(
                     {
                         "rule": "a rule",
-                        "category": "token AKIAIOSFODNN7EXAMPLE",
+                        "category": "token glpat-IOSFODNN7EXAMPLE",
                         "negative": None,
                     }
                 ),
@@ -1384,7 +1384,7 @@ class TestApiLessonsSanitizesStoredFields:
             }
         ]
         lessons = await self._get(rows)
-        assert "AKIAIOSFODNN7EXAMPLE" not in lessons[0]["category"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in lessons[0]["category"]
 
     async def test_non_string_jsonl_rule_does_not_crash(self):
         """The JSONL fallback branch: ``load_all`` builds Lesson rows without

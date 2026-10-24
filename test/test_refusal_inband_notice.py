@@ -626,11 +626,11 @@ class TestHookErrorExplainsItself:
             _Slot(),
             _Event(),
             session_key="s",
-            error="hook saw AKIAIOSFODNN7EXAMPLE",
+            error="hook saw glpat-IOSFODNN7EXAMPLE",
             refusal_notices=notices,
             refusal_reasons=[],
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in client.steered[0]
+        assert "glpat-IOSFODNN7EXAMPLE" not in client.steered[0]
 
     @pytest.mark.asyncio
     async def test_hook_error_records_a_fallback_entry(self):
@@ -643,12 +643,12 @@ class TestHookErrorExplainsItself:
             _Slot(),
             _Event(),
             session_key="s",
-            error="hook saw AKIAIOSFODNN7EXAMPLE",
+            error="hook saw glpat-IOSFODNN7EXAMPLE",
             refusal_reasons=reasons,
             refusal_notices=None,
         )
         assert reasons
-        assert "AKIAIOSFODNN7EXAMPLE" not in reasons[0][1]
+        assert "glpat-IOSFODNN7EXAMPLE" not in reasons[0][1]
 
 
 class TestEveryHostDenyCallSiteIsWired:

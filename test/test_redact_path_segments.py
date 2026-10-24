@@ -27,13 +27,13 @@ from kiro_crew.security.redaction import (
 )
 
 # Two DISTINCT credential-shaped tokens. key_a is the documented example id the
-# Semgrep allowlist knows; key_b stays a split literal because the AKIA-shaped
+# Semgrep allowlist knows; key_b stays a split literal because the xoxb-shaped
 # detector cannot tell a fixture from a real leak.
-_KEY_A = "AKIAIOSFODNN7EXAMPLE"
-_KEY_B = "AKIA" + "JKLMNOPQRSTUVWXY"
-# A bare 40-char secret-shaped key that contains ``/`` -- it spans two path
+_KEY_A = "xoxb-IOSFODNN7EXAMPLE"
+_KEY_B = "xoxb-" + "JKLMNOPQRSTUVWXY"
+# A labelled 40-char secret-shaped key that contains ``/`` -- it spans path
 # segments and is matched only by the whole-string pass.
-_SPANNING_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+_SPANNING_SECRET = "secret_key=" + "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 
 _SEP = _PATH_SEGMENT_DISCRIMINATOR_SEP
 

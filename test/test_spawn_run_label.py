@@ -67,14 +67,14 @@ class TestNormalize:
     def test_a_key_straddling_the_cut_is_redacted_before_the_cut(self) -> None:
         """Cut first, the label would keep the key's first characters, which no
         later redactor recognizes as a key any more."""
-        key = "AKIAIOSFODNN7EXAMPLE"
+        key = "glpat-IOSFODNN7EXAMPLE"
         out = normalize_spawn_label("x" * 68 + key)
-        assert "AKIA" not in out
+        assert "glpat-" not in out
         assert key[:12] not in out
 
     def test_a_key_anywhere_in_the_label_is_redacted(self) -> None:
-        out = normalize_spawn_label("audit AKIAIOSFODNN7EXAMPLE now")
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        out = normalize_spawn_label("audit glpat-IOSFODNN7EXAMPLE now")
+        assert "glpat-IOSFODNN7EXAMPLE" not in out
         assert out.startswith("audit ")
 
 

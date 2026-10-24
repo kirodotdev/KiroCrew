@@ -231,7 +231,7 @@ def test_dispatchability_is_silent_for_an_nfd_only_legacy_name(members, capsys):
 
 def test_nondispatchable_member_name_is_reported_by_count_without_disclosure(members, capsys):
     cfg, _, _, writes = members
-    name = "AKIAIOSFODNN7EXAMPLE"
+    name = "glpat-IOSFODNN7EXAMPLE"
     cfg.agents[name] = KiroCrewAgentConfig()
     cfg.save()
     cfg = KiroCrewConfig.load()
@@ -256,7 +256,7 @@ def test_nondispatchable_member_name_is_reported_by_count_without_disclosure(mem
 
 def test_memory_binding_diagnostic_skips_nondispatchable_record(members, capsys):
     cfg, home, private_store, writes = members
-    name = "AKIAIOSFODNN7EXAMPLE"
+    name = "glpat-IOSFODNN7EXAMPLE"
     cfg.agents[name] = KiroCrewAgentConfig()
     cfg.save()
     cfg = KiroCrewConfig.load()
@@ -296,7 +296,7 @@ def _composition_failed(monkeypatch):
 
 def test_dispatchability_survives_a_platform_composition_failure(members, capsys, monkeypatch):
     cfg, _, _, writes = members
-    name = "AKIAIOSFODNN7EXAMPLE"
+    name = "glpat-IOSFODNN7EXAMPLE"
     cfg.agents[name] = KiroCrewAgentConfig()
     cfg.save()
     cfg = KiroCrewConfig.load()
@@ -318,7 +318,7 @@ def test_dispatchability_survives_a_platform_composition_failure(members, capsys
 
 def test_memory_bindings_survive_a_platform_composition_failure(members, capsys, monkeypatch):
     cfg, home, _, writes = members
-    name = "AKIAIOSFODNN7EXAMPLE"
+    name = "glpat-IOSFODNN7EXAMPLE"
     cfg.agents[name] = KiroCrewAgentConfig()
     cfg.save()
     cfg = KiroCrewConfig.load()

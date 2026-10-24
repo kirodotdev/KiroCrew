@@ -104,7 +104,7 @@ class TestSlackUploadBinary:
         # PDF with embedded AWS key pattern in binary content
         pdf.write_bytes(
             b"%PDF-1.4\n\x00\xff"
-            b"AKIAIOSFODNN7EXAMPLE"
+            b"glpat-IOSFODNN7EXAMPLE"
             b"\x00\xff" * 20
         )
 

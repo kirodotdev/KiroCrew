@@ -69,9 +69,10 @@ def test_scan_clean_content():
     assert "No secrets" in summarize(findings)
 
 
-def test_scan_flags_aws_access_key():
+def test_scan_flags_a_key_id_as_an_overridable_warning():
+    """An AWS access key ID is Identifier tier: an info finding, not a hard block."""
     findings = scan_content("key AKIAABCDEFGHIJKLMNOP here")
-    assert any(f.kind == "credential" for f in findings)
+    assert [(f.kind, f.severity) for f in findings] == [("aws-key-id", "info")]
 
 
 def test_scan_flags_internal_host_and_arn():
@@ -95,7 +96,7 @@ def test_scan_account_id_not_double_counted_with_arn():
 
 
 def test_summarize_reports_line_numbers():
-    text = "clean line\nAKIAABCDEFGHIJKLMNOP\n"
+    text = "clean line\nglpat-ABCDEFGHIJKLMNOP\n"
     s = summarize(scan_content(text))
     assert "line 2" in s
     assert "credential" in s
@@ -103,10 +104,10 @@ def test_summarize_reports_line_numbers():
 
 def test_scan_credential_snippet_is_masked():
     """Credential snippets MUST NOT contain the raw matched text (security)."""
-    findings = scan_content("key AKIAABCDEFGHIJKLMNOP here")
+    findings = scan_content("key glpat-ABCDEFGHIJKLMNOP here")
     cred = [f for f in findings if f.kind == "credential"][0]
-    # Must be a masked fingerprint: first 4 chars + length
-    assert cred.snippet == "AKIA…(20 chars)"
+    # Must be a masked fingerprint: the rule and the length, no character of the match
+    assert cred.snippet == "[gitlab_token]…(22 chars)"
     # Must NOT contain the full key
     assert "ABCDEFGHIJKLMNOP" not in cred.snippet
 

@@ -253,14 +253,14 @@ class TestDrain:
     @pytest.mark.asyncio
     async def test_model_output_is_redacted(self, root: Path):
         async def runner(_prompt: str) -> str:
-            return "token AKIAIOSFODNN7EXAMPLE here"
+            return "token glpat-IOSFODNN7EXAMPLE here"
 
         queue = _queue(root, runner=runner)
         queue.enqueue("A real sentence here.")
         await queue.drain()
 
         text = store.read_translations("m1", root)["lines"][0]["text"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in text
+        assert "glpat-IOSFODNN7EXAMPLE" not in text
 
     @pytest.mark.asyncio
     async def test_clear_drops_pending_work(self, root: Path):

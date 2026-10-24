@@ -79,7 +79,7 @@ class TestGuardrails:
         rec.counter(
             "kirocrew.test.count",
             1,
-            attrs={"api_key": "AKIAIOSFODNN7EXAMPLE1", "safe": "ok"},
+            attrs={"api_key": "glpat-IOSFODNN7EXAMPLE1", "safe": "ok"},
         )
         points = _data_points(reader)
         assert points, "metric should have recorded"

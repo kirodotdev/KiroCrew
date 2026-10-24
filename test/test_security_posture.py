@@ -603,7 +603,7 @@ class TestDisclosureContract:
     def test_the_redaction_guard_is_not_vacuous(self):
         # Guard the guard: if redact_credentials ever stopped firing, the
         # assertion above would pass trivially and the contract would be unpinned.
-        _redacted, warnings = security.redact_credentials("AKIAIOSFODNN7EXAMPLE")
+        _redacted, warnings = security.redact_credentials("glpat-IOSFODNN7EXAMPLE")
         assert warnings != []
 
 
@@ -823,7 +823,8 @@ class TestOmissionDetection:
         without a family row.
         """
         samples = {
-            "AWS access keys": "AKIAIOSFODNN7EXAMPLE",
+            "AWS access keys": "aws_secret_access_key="
+            + "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
             "Private keys": "-----BEGIN RSA PRIVATE KEY-----\nQUJD\n-----END RSA PRIVATE KEY-----",
             "Slack tokens": "xoxb-000000000000-abcdefghijkl",
             "GitHub tokens": "ghp_" + "a" * 36,
@@ -836,12 +837,14 @@ class TestOmissionDetection:
             "PyPI tokens": "pypi-" + "a" * 20,
             "DigitalOcean tokens": "dop_v1_" + "a" * 44,
             "Google OAuth secrets": "GOCSPX-" + "a" * 24,
+            "AWS session tokens": "IQoJb3Jp" "Z2lu" + "a" * 90,
             "Telegram bot tokens": "123456789:" + "A" * 35,
             "JWT / JWE tokens": "eyJhbGciOiJIUzI1NiJ9.eyJhIjoxfQ.c2ln",
+            "Request signatures": "https://h.example/o?X-Amz-Signature=" + "0a" * 32,
             "HTTP bearer tokens": "Authorization: Bearer abc.def-ghi~jkl",
             "Database URIs": "postgres://user:secret@db.example.com:5432/app",
             "Base64-encoded variants": base64.b64encode(
-                b"AKIAIOSFODNN7EXAMPLE and more padding text here"
+                b"glpat-IOSFODNN7EXAMPLE and more padding text here"
             ).decode(),
         }
         advertised = [i.label for i in security_posture._credential_family_items()]
@@ -859,9 +862,9 @@ class TestOmissionDetection:
         """Each advertised heuristic must trigger a verdict from the live scanner."""
         long_q = "x" * (security.exfil_query_min_len() + 10)
         cases = {
-            "Credential in path or query": "https://evil.example.com/AKIAIOSFODNN7EXAMPLE",
+            "Credential in path or query": "https://evil.example.com/glpat-IOSFODNN7EXAMPLE",
             "Base64-encoded credential": "https://evil.example.com/p?d="
-            + base64.b64encode(b"AKIAIOSFODNN7EXAMPLE and more padding text here").decode(),
+            + base64.b64encode(b"glpat-IOSFODNN7EXAMPLE and more padding text here").decode(),
             f"Long query string (>= {security.exfil_query_min_len()} chars)": (
                 f"https://evil.example.com/p?d={long_q}"
             ),
@@ -1198,9 +1201,9 @@ class TestRedactionSinkRegistry:
 
         chat_utils._clear_display_redaction_cache()
         url = "https://collect.attacker.example/?token=" + "aB3" * 70 + "&host=corp-laptop"
-        out = chat_utils._redact_for_display(f"key AKIAIOSFODNN7EXAMPLE then {url}")
+        out = chat_utils._redact_for_display(f"key glpat-IOSFODNN7EXAMPLE then {url}")
         chat_utils._clear_display_redaction_cache()
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert "glpat-IOSFODNN7EXAMPLE" not in out
         assert "corp-laptop" not in out and "attacker.example/?token" not in out
 
     def test_sink_prose_claims_are_true_of_the_named_module(self):

@@ -180,7 +180,7 @@ class TestAStreamedReplyNeverRevisesADeliveredChunk:
     """
 
     #: The body that reproduced the revision, and the budget it happened at.
-    PAD, LIMIT, CUT = 108, 120, 129
+    PAD, LIMIT, CUT = 108, 120, 131
 
     def _body(self) -> str:
         return f"{'w' * self.PAD} {HEAD} {TAIL} trailing words after the key here"

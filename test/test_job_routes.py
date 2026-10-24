@@ -387,7 +387,7 @@ async def test_unknown_kind_error_is_scrubbed_before_it_is_reflected(
     surface at all.
     """
     _setup_guards(tmp_path, monkeypatch)
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = "glpat-IOSFODNN7EXAMPLE"
     async with TestClient(TestServer(_make_app())) as client:
         resp = await client.post(f"{_base()}/aws_secret_access_key{secret}/start")
         assert resp.status == 404

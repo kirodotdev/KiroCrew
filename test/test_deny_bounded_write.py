@@ -1546,7 +1546,7 @@ class TestLoggableRequestId:
         assert "ghp_" not in out and "attacker.example" not in out
 
     def test_a_credential_straddling_the_display_cap_leaks_no_fragment(self) -> None:
-        token = "AKIA" + "STRADDLE0123456A"
+        token = "glpat-" + "STRADDLE0123456A"
         cap = acp_dispatch._REQUEST_ID_LOG_CAP
         hostile = "x" * (cap - 9) + token + " tail"
         out = _loggable_request_id(hostile)
@@ -1555,7 +1555,7 @@ class TestLoggableRequestId:
     def test_a_credential_straddling_the_cap_leaks_no_fragment(self) -> None:
         # Redact-before-bound: the cap falls inside the token; a slice taken
         # before redaction would leave the token's head in the output.
-        token = "AKIA" + "STRADDLE0123456A"
+        token = "glpat-" + "STRADDLE0123456A"
         cap = acp_dispatch._REQUEST_ID_LOG_CAP
         hostile = "x" * (cap - 9) + token + " tail"
         start = repr(hostile).index(token)

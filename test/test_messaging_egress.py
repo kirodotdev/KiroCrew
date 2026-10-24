@@ -34,7 +34,7 @@ from kiro_crew.slack import gateway as gw
 _CAPS = TransportCapabilities(max_message_chars=120)
 
 #: A credential the client reassembles once it renders the emphasis away.
-_COLLAPSING = "AKIA**IOSF**ODNN7EXAMPLE"
+_COLLAPSING = "glpat-**IOSF**ODNN7EXAMPLE"
 
 #: Long enough to need several parts under ``_CAPS``, fenced so a blind slice
 #: would orphan the code, with a credential and a trailing control tag.
@@ -67,7 +67,7 @@ class _Transport:
 
 def _no_credential(parts: list[str]) -> None:
     joined = "\n".join(parts)
-    assert "AKIAIOSFODNN7EXAMPLE" not in joined.replace("*", "")
+    assert "glpat-IOSFODNN7EXAMPLE" not in joined.replace("*", "")
 
 
 # ─── The owner's contract ────────────────────────────────────────────────

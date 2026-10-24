@@ -21,17 +21,6 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-# The AWS key-ID prefix group is taken from ``kiro_crew.credential_patterns`` when
-# that import works, because a second hand-written copy of it is exactly the drift a
-# repo guard exists to catch (``test_no_module_spells_the_prefix_group_by_hand``).
-# The literal fallback keeps this module runnable standalone, which is the property
-# that lets it be exercised as ``python -m packaging.build`` from the crew directory
-# alone -- so the fallback is the exception, not the normal path.
-try:  # pragma: no cover - exercised by whichever branch the environment allows
-    from kiro_crew.credential_patterns import AWS_KEY_ID_PREFIXES as _AWS_KEY_PREFIXES
-except Exception:  # pragma: no cover
-    _AWS_KEY_PREFIXES = "AKIA|ASIA"
-
 # The vendor and forge token spellings are imported from the shared module so this
 # subset cannot drift from the scrubber: a format added there reaches here with no
 # edit, and no one-sided omission can hide. The fallback restates the same shapes
@@ -56,12 +45,27 @@ _VENDOR_TOKEN_COMPILED: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (label, re.compile(rf"\b{fragment}\b")) for label, fragment in _VENDOR_TOKEN_PATTERNS
 )
 
+# A presigned/signed link's signing value, sourced from the shared module so this
+# subset cannot drift from it. The key ID (``AKIA`` / ``ASIA``, ``X-Amz-Credential``)
+# is Identifier tier and stays allowed; what this refuses is the VALUE that makes the
+# link work -- the SigV4/SigV2 signature and the session token -- so a bundle cannot
+# ship a live bearer link. The fallback restates the same three alternatives for the
+# standalone case where ``kiro_crew`` is not importable.
+try:  # pragma: no cover - exercised by whichever branch the environment allows
+    from kiro_crew.credential_patterns import URL_SIGNING_VALUE as _URL_SIGNING_VALUE
+except Exception:  # pragma: no cover
+    _URL_SIGNING_VALUE = (
+        r"""(?i:X-Amz-Signature|X-Amz-Security-Token)["']?\s*[:=]\s*["']?[^\s"'&;#<>)\]}]+"""
+        r"""|(?:[?&]|&amp;|%26)(?i:Signature)(?:=|%3[Dd])[^\s"'&;#<>)\]}]+"""
+        r"""|(?i:Signature)(?:=|%3[Dd])[0-9a-fA-F]{64,}(?![0-9A-Za-z])"""
+    )
+
 _HARD_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("aws-access-key", re.compile(rf"\b(?:{_AWS_KEY_PREFIXES})[0-9A-Z]{{16}}\b")),
-    # A LABELLED secret. The pattern above matches an AWS key ID, which has a
-    # recognisable prefix; the secret access key is 40 characters of base64 with no
-    # prefix at all, so nothing above can see it and `SecretAccessKey=<secret>` in a
-    # prompt reached the deployed image. What makes it findable is the label, which is
+    # No AWS access key ID (``AKIA`` / ``ASIA``) row: it is Identifier tier, so a bundle
+    # that names one is not refused.
+    # A LABELLED secret. The secret access key is 40 characters of base64 with no
+    # prefix at all, so `SecretAccessKey=<secret>` in a prompt reached the deployed
+    # image until this pattern. What makes it findable is the label, which is
     # how this repo's own detector finds it (`security.py:_HARD_CREDENTIAL_RE`,
     # described in security_posture_controls.py as covering "labelled secret-access-key and
     # session-token forms"). Spelled here from that same shape, and the canonical
@@ -74,6 +78,11 @@ _HARD_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.IGNORECASE,
         ),
     ),
+    # A presigned/signed link's signing value. Dropping the AKIA row above left the
+    # standalone fallback with nothing that refused a signed link, so a bundle exported
+    # without ``kiro_crew`` installed shipped a live SigV4/SigV2 bearer link intact. The
+    # key ID stays allowed; only the signature and session token are refused.
+    ("aws-signing-parameter", re.compile(_URL_SIGNING_VALUE)),
     ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----")),
     # The same header after URL or form encoding, where the spaces have become ``+`` or
     # ``%20``. The shared detector spells its separator ``[\s+%]`` for exactly this, and
@@ -121,8 +130,7 @@ class Leak:
 #: local ``_HARD_PATTERNS`` above is a self-contained SUBSET and was documented as a
 #: real narrowing; a review then found the exact gap that narrowing left (a labelled
 #: AWS secret access key). So prefer the canonical one and keep the subset as the
-#: fallback that lets this module run without ``kiro_crew`` installed -- the same
-#: bargain ``_AWS_KEY_PREFIXES`` strikes, for the same reason.
+#: fallback that lets this module run without ``kiro_crew`` installed.
 try:  # pragma: no cover - exercised by whichever branch the environment allows
     from kiro_crew.security import _HARD_CREDENTIAL_RE
 
@@ -145,7 +153,17 @@ except Exception:  # pragma: no cover
     _CANONICAL_REDACTOR = None
 
 
+#: A percent-encoded letter, digit, ``-`` or ``_``: the octets a parameter NAME is
+#: spelled with, never a query separator.
+_PCT_ALNUM_RE = re.compile(r"%(3[0-9]|4[1-9A-Fa-f]|5[0-9Aa]|6[1-9A-Fa-f]|7[0-9Aa]|2[Dd]|5[Ff])")
+
 _BARE_SECRET_RUN_RE = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}(?![A-Za-z0-9+/])")
+#: A digest's name right before its run: the algorithm prefix of a
+#: subresource-integrity digest (``sha256-``), or a field that names a hash
+#: (``sha256: ``, ``"digest": "``, ``checksum=``).
+_DIGEST_PREFIX_RE = re.compile(
+    r"(?i:sha(?:1|224|256|384|512)|digest|checksum|integrity|hash)[\"' \t:=-]{1,4}\Z"
+)
 _BARE_SECRET_LEN = 40
 _BARE_SECRET_ENTROPY_MIN = 4.3
 _BARE_SECRET_MAX_LOWER_RUN = 5
@@ -212,9 +230,10 @@ def _bare_secret_window_is_key(token: str) -> bool:
 def _scan_bare_secret_runs(text: str, origin: str) -> list[Leak]:
     """Findings for a bare, unlabelled AWS secret access key in *text*.
 
-    The canonical redactor catches this by shape in its bare-secret pass; the standalone path
-    has only labelled patterns and a decode pass, and a bare 40-char secret carries no label
-    and decodes to non-UTF-8 bytes, so without this it ships. A structural DETECTOR rather than
+    Neither the canonical redactor (it redacts no value without a prefix, a label or a key ID
+    beside it) nor the standalone patterns and decode pass catch it: a bare 40-char secret
+    carries no label and decodes to non-UTF-8 bytes, so without this it ships. This gate
+    refuses a build rather than rewriting output, so it runs in both modes. A structural DETECTOR rather than
     a fourth literal pattern -- the shape that converges. A genuine 40-char key glued to
     adjacent base64 characters yields a 41+ char run, so a 40-char window is slid across each
     run (disjoint spans keep it linear); a run that decodes whole to printable text is a
@@ -223,20 +242,38 @@ def _scan_bare_secret_runs(text: str, origin: str) -> list[Leak]:
     found: list[Leak] = []
     for match in _BARE_SECRET_RUN_RE.finditer(text):
         run = match.group(0)
+        if _DIGEST_PREFIX_RE.search(text, max(0, match.start() - 16), match.start()):
+            # A digest (``sha256-<base64>``, ``sha256: <base64>``) is a hash of a
+            # file the bundle ships, not a key: its name says so.
+            continue
         if _bare_secret_decodes_to_printable(run):
             continue
-        for start in range(0, len(run) - _BARE_SECRET_LEN + 1):
-            window = run[start : start + _BARE_SECRET_LEN]
-            if _bare_secret_window_is_key(window):
-                found.append(
-                    Leak(
-                        origin=origin,
-                        kind="bare-secret",
-                        line=0,
-                        snippet=window[:4] + "…(%d chars)" % len(window),
-                    )
+        # Inside a URL the run is a path, and its ``/`` joins path segments
+        # (``kirodotdev/KiroCrew/blob/<sha>/src``): each segment is judged alone,
+        # so a window never straddles two names. A key that is itself a path
+        # segment is still found, and a run no segment of which is long enough
+        # to be one is judged whole.
+        token_start = max(text.rfind(c, 0, match.start()) for c in " \t\n\"'(<") + 1
+        pieces = re.findall(r"[^/]+", run) if "://" in text[token_start : match.start()] else [run]
+        if max(map(len, pieces), default=0) < _BARE_SECRET_LEN:
+            # No segment could hold a key alone, so a key with its own ``/`` in
+            # it (``.../wJalr.../K7MDENG/...``, ``?k=<key>``) is read whole.
+            pieces = [run]
+        windows = (
+            piece[i : i + _BARE_SECRET_LEN]
+            for piece in pieces
+            for i in range(0, len(piece) - _BARE_SECRET_LEN + 1)
+        )
+        leak = next((w for w in windows if _bare_secret_window_is_key(w)), None)
+        if leak is not None:
+            found.append(
+                Leak(
+                    origin=origin,
+                    kind="bare-secret",
+                    line=0,
+                    snippet=leak[:4] + "…(%d chars)" % len(leak),
                 )
-                break
+            )
     return found
 
 
@@ -244,8 +281,11 @@ def scan_text(text: str, origin: str) -> list[Leak]:
     """Hard credential findings in *text*. A finding aborts the build."""
     leaks: list[Leak] = []
     for lineno, line in enumerate(text.splitlines(), start=1):
+        # A name may be spelled with percent-encoded letters (``X-Amz-S%69gnature``);
+        # read the line with those letters decoded too. Separators stay encoded.
+        decoded = _PCT_ALNUM_RE.sub(lambda o: chr(int(o.group(1), 16)), line)
         for kind, pattern in _HARD_PATTERNS:
-            m = pattern.search(line)
+            m = pattern.search(line) or (pattern.search(decoded) if decoded != line else None)
             if m:
                 token = m.group(0)
                 snippet = token[:4] + "…(%d chars)" % len(token)
@@ -292,12 +332,12 @@ def scan_text(text: str, origin: str) -> list[Leak]:
         # one pattern per shape is the shape that does not converge, and a decoder
         # inherits every future pattern for free where a pattern list would not.
         leaks.extend(_scan_decoded_runs(text, origin))
-        # The canonical redactor's bare-secret pass has no counterpart in the patterns above,
-        # so a label-less 40-char AWS secret access key -- which matches no ``_HARD_PATTERNS``
-        # entry and base64-decodes to non-UTF-8 bytes the decode pass skips -- would ship only
-        # in this standalone mode. The structural detector closes that so the deployment-path
-        # scan is not weaker than the canonical one for this shape.
-        leaks.extend(_scan_bare_secret_runs(text, origin))
+    # A label-less 40-char secret matches none of the passes above in either mode: the
+    # canonical redactor judges a value by its label or the key ID beside it, never by
+    # its shape alone. That is right for text it rewrites, but this gate refuses a build,
+    # so the structural detector runs in both modes and a bare key never ships. A digest
+    # is skipped by its name (``_DIGEST_PREFIX_RE``).
+    leaks.extend(_scan_bare_secret_runs(text, origin))
     return leaks
 
 

@@ -581,11 +581,11 @@ class TestMcpToolClient:
     def test_stderr_tail_redacts_credentials(self, tmp_path):
         from kiro_crew.cron_script import McpToolClient
         stderr_path = tmp_path / "stderr.log"
-        stderr_path.write_text("boom AKIA1234567890123456 failure")
+        stderr_path.write_text("boom xoxb-123456789012345 failure")
         client = object.__new__(McpToolClient)
         client._stderr_file = SimpleNamespace(name=str(stderr_path))
         tail = client._stderr_tail()
-        assert "AKIA1234567890123456" not in tail
+        assert "xoxb-123456789012345" not in tail
         assert "boom" in tail
 
     def test_stderr_tail_redacts_credential_straddling_the_slice_boundary(self, tmp_path):
@@ -601,16 +601,16 @@ class TestMcpToolClient:
         from kiro_crew.cron_script import McpToolClient
         stderr_path = tmp_path / "stderr.log"
         filler = "x" * 1000
-        # Synthetic key id: deliberately well-formed so the redaction regex has
+        # Synthetic token: deliberately well-formed so the redaction regex has
         # a real target; it is not a credential.
-        secret = "AKIA" + "1234567890123456"
+        secret = "gl" + "pat-" + "12345678901234567890"
         stderr_path.write_text(filler + secret + "x" * 1006 + " failure")
         client = object.__new__(McpToolClient)
         client._stderr_file = SimpleNamespace(name=str(stderr_path))
         tail = client._stderr_tail()
         assert len(tail) <= 1024
         assert secret not in tail
-        assert "AKIA" not in tail
+        assert "pat-1234" not in tail
         assert re.search(r"\d{4,}", tail) is None
         assert "failure" in tail
 
@@ -650,14 +650,14 @@ class TestMcpToolClient:
 
         stderr_path = tmp_path / "stderr.log"
         noise = ("log line\n" * (4 * cron_script._STDERR_TAIL_READ_SPAN // 9))
-        # Synthetic key id, split so no scanner reads it as a credential.
-        payload = noise + "key " + "AKIA" + "1234567890123456" + "\nfailure"
+        # Synthetic token, split so no scanner reads it as a credential.
+        payload = noise + "key " + "gl" + "pat-" + "12345678901234567890" + "\nfailure"
         stderr_path.write_text(payload)
         client = object.__new__(McpToolClient)
         client._stderr_file = SimpleNamespace(name=str(stderr_path))
         tail = client._stderr_tail()
         assert len(tail) <= 1024
-        assert "AKIA" not in tail
+        assert "pat-1234" not in tail
         assert tail.endswith("failure")
 
     def test_stderr_tail_drops_the_line_severed_by_the_read_start(self, tmp_path):
@@ -717,7 +717,7 @@ class TestMcpToolClient:
         from kiro_crew.cron_script import McpToolClient
         stderr_path = tmp_path / "stderr.log"
         # Long innocuous query (>= 200 chars) triggers redact_exfiltration_urls'
-        # length-based heuristic. We can't use a credential-shaped value (AKIA,
+        # length-based heuristic. We can't use a credential-shaped value (xoxb-,
         # base64 blob) because redact_credentials runs first and would replace
         # it before the URL redactor sees it, leaving a short benign query.
         long_query = "data=" + ("a" * 250)
@@ -781,7 +781,7 @@ class TestScriptContextNotify:
         with patch(
             "kiro_crew.cron_script.loopback_urlopen", return_value=mock_response
         ) as mock_urlopen:
-            ctx.notify("secret AKIA1234567890123456 text")
+            ctx.notify("secret xoxb-123456789012345 text")
             # Verify the request was made (redaction happens internally)
             mock_urlopen.assert_called_once()
 

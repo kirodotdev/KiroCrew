@@ -47,19 +47,20 @@ from kiro_crew.hooks import (
 )
 
 # Built at runtime so no credential-shaped literal lands in the repo.
-_FAKE_KEY = "AKIA" + "B" * 16  # matches the AWS access-key-id pattern
+_FAKE_KEY = "xoxb-" + "B" * 15  # matches the Slack token pattern
 _MARKER = "[REDACTED:"
 _MARKER_TAIL = "credential]"  # the redaction marker ends "...: credential]"
 
 
 def _straddling(bound: int) -> str:
-    """A stream whose last *bound* chars begin 4 chars INTO the fake key.
+    """A stream whose last *bound* chars begin 5 chars INTO the fake key.
 
-    A raw ``[-bound:]`` keeps ``"B" * 16 + tail``: no ``AKIA`` prefix, so the
+    A raw ``[-bound:]`` keeps ``"B" * 15 + tail``: no ``xoxb-`` prefix, so the
     fragment matches nothing and leaks; the same is true after a slice-then-
-    redact reorder. Redact-then-slice yields the marker's tail instead.
+    redact reorder. Redact-then-slice yields the marker's tail instead. The tail
+    is ``.``, which the token's body cannot absorb.
     """
-    tail = "e" * (bound - 16)
+    tail = "." * (bound - 15)
     return "p" * 40 + _FAKE_KEY + tail
 
 
@@ -70,7 +71,7 @@ def _two_markers(bound: int) -> str:
 
 def _assert_straddle_redacted(excerpt: str, bound: int) -> None:
     assert _FAKE_KEY not in excerpt
-    assert "B" * 16 not in excerpt, excerpt  # the raw right half must not survive
+    assert "B" * 15 not in excerpt, excerpt  # the raw right half must not survive
     # Positive proof the payload flowed through redaction (not a vacuous pass on
     # an empty excerpt): the tail window opens INSIDE the replacement marker, so
     # the marker's tail, not the key's, is what survives the cut.

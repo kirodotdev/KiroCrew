@@ -747,7 +747,7 @@ async def test_dispatch_subagent_activity_text_is_redacted():
                         "sessionId": "sub-3",
                         "update": {
                             "sessionUpdate": "agent_message_chunk",
-                            "text": "leaked AKIAIOSFODNN7EXAMPLE key",
+                            "text": "leaked glpat-IOSFODNN7EXAMPLE key",
                         },
                     },
                 }
@@ -757,7 +757,7 @@ async def test_dispatch_subagent_activity_text_is_redacted():
         await await_until(driver, what="the driver finishing its turn")
         sa = [e for e in events if e.kind == EVENT_SUBAGENT_ACTIVITY]
         assert len(sa) == 1
-        assert "AKIAIOSFODNN7EXAMPLE" not in sa[0].text
+        assert "glpat-IOSFODNN7EXAMPLE" not in sa[0].text
         assert "[REDACTED: credential]" in sa[0].text
     finally:
         await _stop_reader(task)

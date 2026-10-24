@@ -557,11 +557,11 @@ async def test_side_stream_redacts_credential_split_across_chunks(tmp_path, monk
     the wire, and the stored/final text must be redacted.
 
     broadcast_side_result redacts each frame, but per-frame redaction alone
-    misses a secret split across deltas (``...AKIA`` | ``IOSFODNN7...``). The
+    misses a secret split across deltas (``...glpat-`` | ``IOSFODNN7...``). The
     StreamRedactor withholds the trailing credential-class run until it's safe,
     matching the main chat path.
     """
-    raw_cred = "AKIAIOSFODNN7EXAMPLE"
+    raw_cred = "glpat-IOSFODNN7EXAMPLE"
     # Long-query URL so redact_exfiltration_urls() actually flags it (bare /
     # short-query URLs are intentionally left alone). The unique payload is what
     # must never survive — the redaction label itself names the host.
@@ -586,9 +586,9 @@ async def test_side_stream_redacts_credential_split_across_chunks(tmp_path, monk
         # Split the credential across two deltas so a naive per-frame redactor
         # would leak the reassembled token across the stream. Also include an
         # exfiltration URL to prove redact() applies BOTH passes (URLs + creds).
-        on_chunk("here is a key AKIA")
+        on_chunk("here is a key glpat-")
         on_chunk(f"IOSFODNN7EXAMPLE see {exfil_url} done")
-        return f"here is a key AKIAIOSFODNN7EXAMPLE see {exfil_url} done"
+        return f"here is a key glpat-IOSFODNN7EXAMPLE see {exfil_url} done"
 
     monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", _fake_stream)
 

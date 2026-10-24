@@ -274,11 +274,18 @@ def _key_shaped(seed: int, length: int = 40) -> str:
 
 
 def _inline_png_html() -> bytes:
-    """A self-contained HTML page with a base64 PNG, the reported file shape."""
+    """A self-contained HTML page with a base64 PNG and a labelled credential.
+
+    The page is the reported file shape; the ``api_key=`` comment is what makes
+    the scanner flag it, so the grant tests below exercise a flagged download.
+    """
     rng = random.Random(17404)
     pixels = b"\x89PNG\r\n\x1a\n" + bytes(rng.randrange(256) for _ in range(900))
     b64 = base64.b64encode(pixels).decode("ascii")
-    return f'<html><body><img src="data:image/png;base64,{b64}"></body></html>'.encode()
+    secret = "api_key=" + _key_shaped(5, 24).replace("+", "x").replace("/", "y")
+    return (
+        f'<html><body><!-- {secret} --><img src="data:image/png;base64,{b64}"></body></html>'
+    ).encode()
 
 
 def _grant() -> None:

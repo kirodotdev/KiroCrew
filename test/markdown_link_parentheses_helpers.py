@@ -58,7 +58,7 @@ def _regex_destination(rest: str) -> tuple[str | None, int]:
 
 #: The AWS example access key, split by a link so that only a reader who sees the
 #: link rendered away sees it whole.
-_KEY = "AKIAIOSFODNN7EXAMPLE"
+_KEY = "glpat-IOSFODNN7EXAMPLE"
 
 
 def _screen_readings(text: str) -> list[str]:
@@ -79,12 +79,12 @@ def _discord_reader_sees(text: str) -> str:
 
 #: The trigger that makes ``redact_for_display`` emit the canonical form: a link
 #: whose url holds the key split by ``**``, whole on a plain-text sink only.
-_URL_SPLIT_TRIGGER = f"[l](https://x/AKIA**{_KEY[4:]}**)"
+_URL_SPLIT_TRIGGER = f"[l](https://x/glpat-**{_KEY[6:]}**)"
 
 
 def _nested_link(depth: int) -> str:
-    """``[AKIA](u)`` wrapped in *depth* more ``[...](u)`` links, one level per pass."""
-    link = "[AKIA](u)"
+    """``[glpat-](u)`` wrapped in *depth* more ``[...](u)`` links, one level per pass."""
+    link = "[glpat-](u)"
     for _ in range(depth):
         link = f"[{link}](u)"
     return link

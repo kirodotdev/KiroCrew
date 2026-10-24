@@ -837,11 +837,11 @@ class TestTagVocabulary:
             tag = await (await client.post("/api/chat/tags", json={"name": "Safe"})).json()
             resp = await client.patch(
                 f"/api/chat/tags/{tag['id']}",
-                json={"name": "key-AKIAIOSFODNN7EXAMPLE"},
+                json={"name": "key-glpat-IOSFODNN7EXAMPLE"},
             )
             assert resp.status == 200
             data = await resp.json()
-            assert "AKIAIOSFODNN7EXAMPLE" not in data["name"]
+            assert "glpat-IOSFODNN7EXAMPLE" not in data["name"]
 
     @pytest.mark.asyncio
     async def test_update_tag_redacts_credential_straddling_truncation(self, tmp_path, monkeypatch):
@@ -855,11 +855,11 @@ class TestTagVocabulary:
             tag = await (await client.post("/api/chat/tags", json={"name": "Redact"})).json()
             resp = await client.patch(
                 f"/api/chat/tags/{tag['id']}",
-                json={"name": "x" * 50 + "AKIAIOSFODNN7EXAMPLE"},
+                json={"name": "x" * 50 + "glpat-IOSFODNN7EXAMPLE"},
             )
             assert resp.status == 200
             data = await resp.json()
-            assert "AKIA" not in data["name"]
+            assert "glpat-" not in data["name"]
 
     @pytest.mark.asyncio
     async def test_create_tag_redacts_credential_straddling_truncation(self, tmp_path, monkeypatch):
@@ -869,11 +869,11 @@ class TestTagVocabulary:
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
                 "/api/chat/tags",
-                json={"name": "x" * 50 + "AKIAIOSFODNN7EXAMPLE"},
+                json={"name": "x" * 50 + "glpat-IOSFODNN7EXAMPLE"},
             )
             assert resp.status == 201
             data = await resp.json()
-            assert "AKIA" not in data["name"]
+            assert "glpat-" not in data["name"]
 
     @pytest.mark.asyncio
     async def test_delete_tag_persists_vocab_before_slots(self, tmp_path, monkeypatch):

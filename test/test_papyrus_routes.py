@@ -1090,6 +1090,9 @@ class TestFieldCoercion:
 
 _FAKE_PAT = "ghp_" + "A" * 36
 _FAKE_AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+# A self-identifying token for the surfaces that carry no label (a path, a ref
+# name, a title): assembled from pieces so no complete token sits in the source.
+_FAKE_GITLAB_PAT = "glpat-" + "Ab1Cd2Ef3Gh4Ij5Kl6Mn"
 
 
 @pytest.mark.asyncio
@@ -1130,7 +1133,7 @@ class TestSubprocessOutputIsRedacted:
         A `\\input{...}` names any path the document chose and TeX echoes it back, so
         redacting `message` and not its sibling left the identical leak one key over.
         """
-        leaky_path = f"/tmp/{_FAKE_AWS_SECRET}.tex"
+        leaky_path = f"/tmp/{_FAKE_GITLAB_PAT}.tex"
         result = latex.CompileResult(
             ok=False,
             log="! LaTeX Error",
@@ -1143,7 +1146,7 @@ class TestSubprocessOutputIsRedacted:
                 _request("POST", "/api/apps/papyrus/compile", {"name": "my-paper"})
             )
         payload = _json_of(response)
-        assert _FAKE_AWS_SECRET not in payload["errors"][0]["file"]
+        assert _FAKE_GITLAB_PAT not in payload["errors"][0]["file"]
         assert "[REDACTED" in payload["errors"][0]["file"]
 
     async def test_the_git_branch_name_is_redacted_too(
@@ -1155,7 +1158,7 @@ class TestSubprocessOutputIsRedacted:
         the diagnostic `file`: redact the list fields, miss the scalar beside them."""
         status = gitops.GitStatus(
             is_git=True,
-            branch=f"feature/{_FAKE_AWS_SECRET}",
+            branch=f"feature/{_FAKE_GITLAB_PAT}",
             changes=["M main.tex"],
             recent_commits=["abc123 fix"],
         )
@@ -1164,7 +1167,7 @@ class TestSubprocessOutputIsRedacted:
                 _request("GET", "/api/apps/papyrus/git/status?name=my-paper", None)
             )
         payload = _json_of(response)
-        assert _FAKE_AWS_SECRET not in payload["branch"]
+        assert _FAKE_GITLAB_PAT not in payload["branch"]
         assert "[REDACTED" in payload["branch"]
 
     async def test_a_push_failure_does_not_echo_the_remote_token(
@@ -1191,7 +1194,7 @@ class TestSubprocessOutputIsRedacted:
             is_git=True,
             branch="main",
             recent_commits=[f"abc1234 wire up token {_FAKE_PAT}"],
-            changes=[f" M creds-{_FAKE_AWS_SECRET}.tex"],
+            changes=[f" M creds-{_FAKE_GITLAB_PAT}.tex"],
         )
         with mock.patch.object(gitops, "status", mock.AsyncMock(return_value=status)):
             response = await routes._handle_git_status(
@@ -1199,7 +1202,7 @@ class TestSubprocessOutputIsRedacted:
             )
         body = json.dumps(_json_of(response))
         assert _FAKE_PAT not in body
-        assert _FAKE_AWS_SECRET not in body
+        assert _FAKE_GITLAB_PAT not in body
 
     async def test_file_content_is_deliberately_not_redacted(
         self, enabled: None, project: Path
@@ -1836,7 +1839,7 @@ class TestPaperTitleRoute:
             _request(
                 "PUT",
                 "/api/apps/papyrus/title",
-                {"name": "my-paper", "generation": _gen(), "title": f"key {_FAKE_AWS_SECRET}"},
+                {"name": "my-paper", "generation": _gen(), "title": f"key {_FAKE_GITLAB_PAT}"},
             )
         )
-        assert _FAKE_AWS_SECRET not in _json_of(response)["title"]
+        assert _FAKE_GITLAB_PAT not in _json_of(response)["title"]

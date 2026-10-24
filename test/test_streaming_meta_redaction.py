@@ -15,14 +15,14 @@ class TestStreamingMetaRedaction:
         """tool_input containing AWS credentials should be redacted."""
         meta_json = json.dumps({
             "request_id": "req-123",
-            "tool_input": "aws configure set aws_access_key_id AKIAIOSFODNN7EXAMPLE",
+            "tool_input": "aws configure set aws_access_key_id glpat-IOSFODNN7EXAMPLE",
             "is_read_only": "1",
         })
         msg = {"role": "permission", "content": "shell", "cls": meta_json, "ts": "t1"}
         chunk = _build_streaming_chunk(msg)
 
         assert "meta" in chunk
-        assert "AKIAIOSFODNN7EXAMPLE" not in chunk["meta"]["tool_input"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in chunk["meta"]["tool_input"]
 
     def test_exfiltration_url_in_tool_input_is_redacted(self):
         """tool_input containing exfiltration URL with long query is redacted."""
@@ -61,9 +61,9 @@ class TestStreamingMetaRedaction:
 
     def test_nested_structure_credentials_redacted(self):
         """Credentials in nested structures should be redacted."""
-        nested = {"params": {"secret": "AKIAIOSFODNN7EXAMPLE"}, "tags": ["safe", "AKIAIOSFODNN7EXAMPLE"]}
+        nested = {"params": {"secret": "glpat-IOSFODNN7EXAMPLE"}, "tags": ["safe", "glpat-IOSFODNN7EXAMPLE"]}
         result = _redact_deep(nested)
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in result["params"]["secret"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in result["tags"][1]
+        assert "glpat-IOSFODNN7EXAMPLE" not in result["params"]["secret"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in result["tags"][1]
         assert result["tags"][0] == "safe"

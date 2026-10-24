@@ -1203,28 +1203,6 @@ def redact_owner_view_via_context(text: str) -> str:
         return redact_via_context(text)
 
 
-def redact_code_via_context(text: str) -> str:
-    """:func:`redact_via_context` for text known to be CODE: it spares an alphabet and a data URI.
-
-    Runs the same context-aware redaction -- a loaded companion's extra patterns and
-    exfiltration carve-outs apply -- inside a ``redaction_switch.code_text`` scope, where pass 3
-    of the core credential pass leaves alone an ordered alphabet and a data URI payload of 64
-    characters or more, and judges every other run as it does anywhere. That pass reads a run
-    of letters and digits as a key by its entropy and shape: in prose it errs towards masking,
-    in code it rewrites an alphabet or a base64 data URI that the program reads back, which
-    breaks the program with no error. Every other rule still runs, so a key id, a PEM block,
-    a JWT or a prefixed token written into code is masked as anywhere else, and so is a key in
-    any shape a script holds it. Only text that is code may be served as this returns it.
-    ``member_dashboard._template_text_safe`` takes :func:`redact_via_context` over a whole
-    page as its baseline and puts this function's result in place of the baseline's for the
-    text of the page's ``<script>`` and ``<style>`` elements.
-    """
-    from kiro_crew.security.redaction_switch import code_text
-
-    with code_text():
-        return redact_via_context(text)
-
-
 #: Substituted for a log line's text when redaction could not be composed. Names
 #: the cause, because on the host where this fires the operator's real problem is
 #: the failed companion composition, not the missing line.

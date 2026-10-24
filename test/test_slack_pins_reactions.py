@@ -93,7 +93,7 @@ class TestSlackPins:
         scrub each text field before returning it to the caller."""
         slack = MagicMock()
         slack.list_pins = AsyncMock(
-            return_value=[{"ts": TS, "text": "key AKIAIOSFODNN7EXAMPLE here"}]
+            return_value=[{"ts": TS, "text": "key glpat-IOSFODNN7EXAMPLE here"}]
         )
         app = _make_app(slack)
         with _patch_tracked(True):
@@ -104,7 +104,7 @@ class TestSlackPins:
                 )
                 body = await resp.json()
         assert resp.status == 200
-        assert "AKIAIOSFODNN7EXAMPLE" not in body["pins"][0]["text"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in body["pins"][0]["text"]
 
     @pytest.mark.asyncio
     async def test_pin_untracked_channel_denied(self):

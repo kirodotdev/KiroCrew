@@ -128,7 +128,9 @@ class TestChildEnv:
         """The dev script is untrusted project code: an inherited SSH agent
         socket or SSH override command would let it authenticate to a remote
         (`git push`, a bare `ssh`) AS the operator, with no confinement."""
-        monkeypatch.setenv(name, "/tmp/agent.sock" if name == "SSH_AUTH_SOCK" else "ssh -i /secret/key")
+        monkeypatch.setenv(
+            name, "/tmp/agent.sock" if name == "SSH_AUTH_SOCK" else "ssh -i /secret/key"
+        )
         env = server._child_env(tmp_path)
         assert name not in env
 
@@ -298,9 +300,9 @@ class TestClientReadTimeout:
         """`socketserver` only honours the attribute via `StreamRequestHandler.setup`."""
         import socketserver
 
-        assert socketserver.StreamRequestHandler.timeout is None, (
-            "the base class has no timeout, which is exactly why each handler declares one"
-        )
+        assert (
+            socketserver.StreamRequestHandler.timeout is None
+        ), "the base class has no timeout, which is exactly why each handler declares one"
 
     def _api_probe(self, headers, body):
         probe = server.Handler.__new__(server.Handler)
@@ -313,9 +315,9 @@ class TestClientReadTimeout:
         probe = self._api_probe({"Content-Length": "64"}, b"nope")
         with pytest.raises(server._IncompleteBody):
             probe._read_raw_body()
-        assert probe.close_connection is True, (
-            "the missing bytes would be parsed as the next request on a keep-alive socket"
-        )
+        assert (
+            probe.close_connection is True
+        ), "the missing bytes would be parsed as the next request on a keep-alive socket"
 
     def test_complete_body_is_returned(self):
         probe = self._api_probe({"Content-Length": "5"}, b"hello")
@@ -350,9 +352,9 @@ class TestStaticReadIsPinnedToTheInode:
         code, _ctype, _body = server._static_response(str(root), "index.html", "/p/")
         assert code == 200
         assert seen, "the served bytes did not go through the fd-pinned helper"
-        assert seen[0]["within_root"] == str(root.resolve()), (
-            "without the root the helper cannot reject an fd that resolved outside it"
-        )
+        assert seen[0]["within_root"] == str(
+            root.resolve()
+        ), "without the root the helper cannot reject an fd that resolved outside it"
         assert seen[0]["max_bytes"] == server.MAX_STATIC_BYTES
 
     def test_a_rejected_read_is_refused_not_served_empty(self, monkeypatch, tmp_path):
@@ -921,9 +923,7 @@ class TestHtmlScanDoesNotFollowSymlinks:
 
         assert "public" in seen
 
-    @pytest.mark.skipif(
-        sys.platform != "win32", reason="junctions are a Windows reparse point"
-    )
+    @pytest.mark.skipif(sys.platform != "win32", reason="junctions are a Windows reparse point")
     def test_a_real_windows_junction_is_not_enumerated(self, tmp_path):
         """No stub and no elevation: the real reparse point, so the stubbed tests
         above stand in for something rather than for nothing."""
@@ -1407,8 +1407,19 @@ class TestStaticCredentialBackstop:
 
     def test_labelled_credential_in_ordinary_file_is_refused(self, tmp_path):
         status, _, _ = self._serve(
-            tmp_path, "config.js", b"export const KEY = 'AKIA" + b"A" * 16 + b"';\n"
+            tmp_path, "config.js", b"export const KEY = 'glpat-" + b"A" * 16 + b"';\n"
         )
+        assert status == 403
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "aws_secret_" + "access_key=" + "wJalrXUtnFEMI" + "/K7MDENG/bPxRfiCY" + "EXAMPLEKEY",
+            "Authorization: " + "Bearer " + "opaque-" + "EMnY9tlicZLh",
+        ],
+    )
+    def test_a_labelled_aws_secret_or_bearer_header_is_refused(self, tmp_path, line):
+        status, _, _ = self._serve(tmp_path, "settings.env.js", (line + "\n").encode())
         assert status == 403
 
     def test_vendor_prefixed_token_is_refused(self, tmp_path):

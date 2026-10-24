@@ -125,7 +125,7 @@ class TestListPushable:
         )
         newer = NS(
             slug="fresh",
-            name="key=AKIAIOSFODNN7EXAMPLEKEYX secret",
+            name="key=glpat-IOSFODNN7EXAMPLEKEYX secret",
             kind="markdown",
             version=1,
             updated_at="2026-06-01T00:00:00Z",
@@ -139,7 +139,7 @@ class TestListPushable:
         # Newest updatedAt sorts first.
         assert [r["slug"] for r in rows] == ["fresh", "pushed"]
         # The credential-shaped fragment in the name is redacted away.
-        assert "AKIAIOSFODNN7EXAMPLEKEYX" not in rows[0]["name"]
+        assert "glpat-IOSFODNN7EXAMPLEKEYX" not in rows[0]["name"]
         # An un-pushed artifact carries null push-state; the pushed one carries
         # the ledger's version.
         assert rows[0]["pushedVersion"] is None

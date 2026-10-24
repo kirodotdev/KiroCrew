@@ -301,12 +301,12 @@ class TestUpdateMessageEndpoint:
                 json={
                     "channel": _CHANNEL,
                     "ts": _TS,
-                    "text": "key AKIAIOSFODNN7EXAMPLE done",
+                    "text": "key glpat-IOSFODNN7EXAMPLE done",
                 },
             )
             assert resp.status == 200
         posted = slack.update_message.await_args.args[2]
-        assert "AKIAIOSFODNN7EXAMPLE" not in posted
+        assert "glpat-IOSFODNN7EXAMPLE" not in posted
 
     @pytest.mark.asyncio
     async def test_outbound_blocks_are_sanitized(self) -> None:
@@ -322,7 +322,7 @@ class TestUpdateMessageEndpoint:
                             "type": "section",
                             "text": {
                                 "type": "mrkdwn",
-                                "text": "key AKIAIOSFODNN7EXAMPLE",
+                                "text": "key glpat-IOSFODNN7EXAMPLE",
                             },
                         }
                     ],
@@ -330,7 +330,7 @@ class TestUpdateMessageEndpoint:
             )
             assert resp.status == 200
         sent_blocks = slack.update_message.await_args.args[3]
-        assert "AKIAIOSFODNN7EXAMPLE" not in str(sent_blocks)
+        assert "glpat-IOSFODNN7EXAMPLE" not in str(sent_blocks)
 
     @pytest.mark.asyncio
     async def test_remote_media_blocks_are_refused_on_edit(self) -> None:
@@ -377,7 +377,7 @@ class TestUpdateMessageEndpoint:
                     "blocks": [
                         {
                             "type": "section",
-                            "text": {"type": "mrkdwn", "text": "key AKIA*IOSFODNN7EXAMPLE*"},
+                            "text": {"type": "mrkdwn", "text": "key glpat-*IOSFODNN7EXAMPLE*"},
                         }
                     ],
                 },
@@ -385,7 +385,7 @@ class TestUpdateMessageEndpoint:
             assert resp.status == 200
         sent = str(slack.update_message.await_args.args[3])
         # Neither the joined secret nor its bolded tail may survive.
-        assert "AKIAIOSFODNN7EXAMPLE" not in sent
+        assert "glpat-IOSFODNN7EXAMPLE" not in sent
         assert "IOSFODNN7EXAMPLE" not in sent
 
     @pytest.mark.asyncio

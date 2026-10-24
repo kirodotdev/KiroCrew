@@ -633,14 +633,14 @@ class TestHTTPHandlers:
                 cid = (await r.json())["id"]
                 d = h._campaign_dir(cid)
                 (d / "FINDINGS.md").write_text(
-                    "# Summary\nFound key aws_secret=AKIAIOSFODNN7EXAMPLE in the config."
+                    "# Summary\nFound key aws_secret=glpat-IOSFODNN7EXAMPLE in the config."
                 )
                 r = await c.post(f"/api/apps/auto-research/campaigns/{cid}/to-knowledge", json={})
                 assert r.status == 201
                 # A sanitized copy is created and the raw credential is gone.
                 sanitized = d / "findings_for_knowledge.md"
                 assert sanitized.exists()
-                assert "AKIAIOSFODNN7EXAMPLE" not in sanitized.read_text(encoding="utf-8")
+                assert "glpat-IOSFODNN7EXAMPLE" not in sanitized.read_text(encoding="utf-8")
                 # The source ingested is the sanitized file, never raw FINDINGS.md.
                 assert added["uri"] == str(sanitized.resolve())
 
@@ -745,7 +745,7 @@ class TestHTTPHandlers:
                 # Findings containing a credential-shaped token must be redacted
                 # before it lands in the shareable artifact.
                 (d / "FINDINGS.md").write_text(
-                    "# Summary\nToken bucket is common. aws_secret=AKIAIOSFODNN7EXAMPLE"
+                    "# Summary\nToken bucket is common. aws_secret=glpat-IOSFODNN7EXAMPLE"
                 )
                 r = await c.post(f"/api/apps/auto-research/campaigns/{cid}/to-artifact", json={})
                 assert r.status == 201
@@ -755,7 +755,7 @@ class TestHTTPHandlers:
                 # The stored artifact must not contain the raw credential.
                 art = ArtifactStore(root=tmp_path / "artifacts").get(body["slug"])
                 content = art.content or ""
-                assert "AKIAIOSFODNN7EXAMPLE" not in content
+                assert "glpat-IOSFODNN7EXAMPLE" not in content
                 # The malicious origin must be HTML-escaped, not raw.
                 assert "<script>alert(1)</script>" not in content
                 assert "&lt;script&gt;" in content
@@ -776,7 +776,7 @@ class TestHTTPHandlers:
                 # step on this path is actually exercised (not vacuously true).
                 return (
                     "```html\n<!DOCTYPE html><html><body><h1>Nice Report</h1>"
-                    "<p>Found aws_secret=AKIAIOSFODNN7EXAMPLE</p>"
+                    "<p>Found aws_secret=glpat-IOSFODNN7EXAMPLE</p>"
                     "</body></html>\n```"
                 )
 
@@ -803,7 +803,7 @@ class TestHTTPHandlers:
                 cid = (await r.json())["id"]
                 d = h._campaign_dir(cid)
                 (d / "FINDINGS.md").write_text(
-                    "# Summary\nToken bucket. aws_secret=AKIAIOSFODNN7EXAMPLE"
+                    "# Summary\nToken bucket. aws_secret=glpat-IOSFODNN7EXAMPLE"
                 )
                 r = await c.post(f"/api/apps/auto-research/campaigns/{cid}/to-artifact", json={})
                 assert r.status == 201
@@ -811,7 +811,7 @@ class TestHTTPHandlers:
                 content = ArtifactStore(root=tmp_path / "artifacts").get(slug).content or ""
                 assert "Nice Report" in content  # LLM-authored HTML was used
                 assert "```" not in content  # code fence stripped
-                assert "AKIAIOSFODNN7EXAMPLE" not in content  # still redacted
+                assert "glpat-IOSFODNN7EXAMPLE" not in content  # still redacted
 
     @pytest.mark.asyncio
     async def test_to_artifact_reuse_regenerates(self, app, tmp_path: Path):
@@ -1105,7 +1105,7 @@ class TestForkAndGrillTreeHTTP:
 
         from kiro_crew.apps.builtins.auto_research import handlers as h
 
-        tree = [{"id": "n1", "kind": "research", "text": "leaked AKIAIOSFODNN7EXAMPLE in node"}]
+        tree = [{"id": "n1", "kind": "research", "text": "leaked glpat-IOSFODNN7EXAMPLE in node"}]
         camp = h.create_campaign(
             {
                 "question": "Redacted tree question padded enough",
@@ -1120,7 +1120,7 @@ class TestForkAndGrillTreeHTTP:
             r = await c.get(f"/api/apps/auto-research/campaigns/{cid}/grill-tree")
             assert r.status == 200
             body = await r.text()
-        assert "AKIAIOSFODNN7EXAMPLE" not in body
+        assert "glpat-IOSFODNN7EXAMPLE" not in body
 
     @pytest.mark.asyncio
     async def test_grill_tree_redacts_string_elements(self, app):
@@ -1144,13 +1144,13 @@ class TestForkAndGrillTreeHTTP:
         d = h._safe_campaign_dir(cid)
         assert d is not None
         (d / "grill_tree.json").write_text(
-            json.dumps([{"id": "n1", "text": "ok"}, "leaked AKIAIOSFODNN7EXAMPLE here"])
+            json.dumps([{"id": "n1", "text": "ok"}, "leaked glpat-IOSFODNN7EXAMPLE here"])
         )
         async with TestClient(TestServer(app)) as c:
             r = await c.get(f"/api/apps/auto-research/campaigns/{cid}/grill-tree")
             assert r.status == 200
             body = await r.text()
-        assert "AKIAIOSFODNN7EXAMPLE" not in body
+        assert "glpat-IOSFODNN7EXAMPLE" not in body
 
     @pytest.mark.asyncio
     async def test_grill_tree_redacts_nested_list_elements(self, app):
@@ -1173,13 +1173,15 @@ class TestForkAndGrillTreeHTTP:
         d = h._safe_campaign_dir(cid)
         assert d is not None
         (d / "grill_tree.json").write_text(
-            json.dumps([{"id": "n1", "text": "ok"}, ["benign", "leaked AKIAIOSFODNN7EXAMPLE here"]])
+            json.dumps(
+                [{"id": "n1", "text": "ok"}, ["benign", "leaked glpat-IOSFODNN7EXAMPLE here"]]
+            )
         )
         async with TestClient(TestServer(app)) as c:
             r = await c.get(f"/api/apps/auto-research/campaigns/{cid}/grill-tree")
             assert r.status == 200
             body = await r.text()
-        assert "AKIAIOSFODNN7EXAMPLE" not in body
+        assert "glpat-IOSFODNN7EXAMPLE" not in body
 
     @pytest.mark.asyncio
     async def test_grill_tree_non_list_fails_closed(self, app):
@@ -1201,14 +1203,16 @@ class TestForkAndGrillTreeHTTP:
         # A dict (not a list) with an embedded secret simulates tampering.
         d = h._safe_campaign_dir(cid)
         assert d is not None
-        (d / "grill_tree.json").write_text(json.dumps({"text": "leaked AKIAIOSFODNN7EXAMPLE here"}))
+        (d / "grill_tree.json").write_text(
+            json.dumps({"text": "leaked glpat-IOSFODNN7EXAMPLE here"})
+        )
         async with TestClient(TestServer(app)) as c:
             r = await c.get(f"/api/apps/auto-research/campaigns/{cid}/grill-tree")
             assert r.status == 200
             body = await r.json()
             text = json.dumps(body)
         assert body["tree"] == []
-        assert "AKIAIOSFODNN7EXAMPLE" not in text
+        assert "glpat-IOSFODNN7EXAMPLE" not in text
 
     @pytest.mark.asyncio
     async def test_grill_tree_empty_when_absent(self, app):

@@ -159,7 +159,7 @@ class TestTheOutboundScrubCoversWhatItClaims:
             '{"version": 3, "components": {"memory": "unresolved"}}',
             "The token budget per turn is about 13k, mostly fixed overhead.",
             '{"password": ""}',
-            '{"password": "changeme"}',
+            '{"password": "${DB_PASSWORD}"}',
             '{"path": "workspace/memory/notes.md"}',
             "kiro_crew.snapshot_redact.redact_bundle_for_egress",
             '{"created_at": "2026-08-14T10:00:00Z"}',

@@ -836,7 +836,7 @@ class TestSttTranscribe:
         a chance to screen what was said."""
         monkeypatch.setattr(
             "kiro_crew.transcribe.transcribe_audio",
-            AsyncMock(return_value="the key is AKIAIOSFODNN7EXAMPLE thanks"),
+            AsyncMock(return_value="the key is glpat-IOSFODNN7EXAMPLE thanks"),
         )
         field = SimpleNamespace(
             name="audio",
@@ -846,7 +846,7 @@ class TestSttTranscribe:
         resp = await core_mod.api_stt_transcribe(_multipart_req(field))
         assert resp.status == 200
         text = json.loads(resp.body)["text"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in text
+        assert "glpat-IOSFODNN7EXAMPLE" not in text
         # The surrounding speech survives: redaction replaces the secret, it does
         # not discard the transcript the user is waiting for.
         assert text.startswith("the key is ")

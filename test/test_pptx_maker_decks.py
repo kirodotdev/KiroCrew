@@ -394,12 +394,11 @@ if __name__ == "__main__":
 
 _FAKE_AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 
-# An AKIA-shaped access key ID. Used for the deck-ID test specifically, because the
+# A GitLab-shaped fake token. Used for the deck-ID test specifically, because the
 # SECRET above contains "/" and so is already refused by `SEGMENT_RE` as a directory
 # name — a deck-ID test built on it passes without the redaction check and proves
-# nothing. An access key ID is all `[A-Z0-9]`, so it IS a legal directory name and is
-# the value that actually reached the dashboard.
-_FAKE_AKIA = "AKIAIOSFODNN7EXAMPLE"
+# nothing. This token is all `[A-Za-z0-9-]`, so it IS a legal directory name.
+_FAKE_AKIA = "glpat-IOSFODNN7EXAMPLE"
 
 
 class TestAgentMetadataIsRedacted:
@@ -415,10 +414,10 @@ class TestAgentMetadataIsRedacted:
         deck = tmp_path / "deck-1"
         deck.mkdir()
         (deck / "deck.json").write_text(
-            json.dumps({"name": f"Q3 review {_FAKE_AWS_SECRET}"}), encoding="utf-8"
+            json.dumps({"name": f"Q3 review {_FAKE_AKIA}"}), encoding="utf-8"
         )
         name = decks._deck_name(deck)
-        assert _FAKE_AWS_SECRET not in name
+        assert _FAKE_AKIA not in name
         assert "REDACTED" in name
 
     def test_a_credential_shaped_deck_ID_is_refused_entirely(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -453,8 +452,8 @@ class TestAgentMetadataIsRedacted:
         FALLBACK slug path, which is why the outline's grammar is not a defence.
 
         `_slide_order` prefers `specs/outline.md`, whose `[a-z0-9-]+` slug grammar
-        cannot spell an AKIA key. But with no outline it falls back to the slide
-        FILENAMES, and `SEGMENT_RE` allows `[A-Za-z0-9._-]` — so an `AKIA…`-named
+        cannot spell a glpat- key. But with no outline it falls back to the slide
+        FILENAMES, and `SEGMENT_RE` allows `[A-Za-z0-9._-]` — so an `glpat-…`-named
         slide file carried the credential into `/deck`, both as the slide's own label
         and inside every `preview/<deckId>/…` artifact URL built from it.
 
@@ -490,7 +489,7 @@ class TestAgentMetadataIsRedacted:
         """Third instance of one class, which is why the guard is in `_preview_url`.
 
         The engine names preview PNGs, so the filename is agent-authored and
-        `SEGMENT_RE` permits `[A-Za-z0-9._-]` — an `AKIA…`-named PNG put the
+        `SEGMENT_RE` permits `[A-Za-z0-9._-]` — an `glpat-…`-named PNG put the
         credential straight into `thumbnailUrl`. After `deckId` and the slide slug,
         this was the same defect a third time, so every artifact URL is now screened
         segment-by-segment at the one point they are all built.
@@ -584,12 +583,15 @@ class TestAgentMetadataIsRedacted:
         """Slicing first could cut a credential in half and let the tail through."""
         deck = tmp_path / "deck-3"
         (deck / "specs").mkdir(parents=True)
-        padding = "x" * (decks.BRIEF_PREVIEW_CHARS - 20)
+        label = "aws_secret_access_key = "
+        # The value starts 16 chars before the cut, so it straddles the preview end.
+        padding = "x" * (decks.BRIEF_PREVIEW_CHARS - 16 - len(label))
         (deck / "specs" / "brief.md").write_text(
-            f"{padding}{_FAKE_AWS_SECRET}\n", encoding="utf-8"
+            f"{padding}{label}{_FAKE_AWS_SECRET}\n", encoding="utf-8"
         )
         preview = decks._read_brief(deck)
-        assert _FAKE_AWS_SECRET not in preview
+        assert label in preview
+        assert _FAKE_AWS_SECRET[:12] not in preview
         assert len(preview) <= decks.BRIEF_PREVIEW_CHARS
 
     def test_an_ordinary_name_is_unchanged(self, tmp_path: Path):
@@ -609,7 +611,7 @@ class TestAgentMetadataIsRedacted:
         # An ACCESS KEY ID, not `_FAKE_AWS_SECRET`: the secret-key fixture contains
         # `/`, so it cannot appear in a single path segment. A key id is the shape a
         # directory name can actually carry, which is what makes this reachable.
-        key_id = "AKIAIOSFODNN7EXAMPLE"
+        key_id = "glpat-IOSFODNN7EXAMPLE"
         deck = tmp_path / f"deck-{key_id}"
         deck.mkdir()
         # No deck.json at all: the directory name is what gets returned.

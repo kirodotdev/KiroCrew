@@ -113,7 +113,7 @@ class TestParseRefusal:
         assert info == RefusalInfo()
 
     def test_explanation_is_redacted_and_capped(self):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         info = parse_refusal(
             {
                 "stopReason": "CONTENT_FILTERED",
@@ -251,7 +251,7 @@ class TestEveryFieldIsScrubbed:
     """Round-2 GPT finding: ``category`` / ``recommendedModel`` reach the same
     log line and card as ``explanation``, so all three pass the two redactors."""
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    SECRET = "glpat-IOSFODNN7EXAMPLE"
 
     @pytest.mark.parametrize("field", ["category", "explanation", "recommendedModel"])
     def test_credential_in_any_field_is_redacted(self, field, caplog):
@@ -356,7 +356,7 @@ class TestRedactionSeesTheWholeValue:
     full value; only the result is capped."""
 
     def test_credential_beyond_the_cap_is_still_redacted(self):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         padding = "https://evil.example/" + "u" * 300 + " "
         value = padding * 3 + secret + " tail"
         assert len(value) > 4 * 128

@@ -36,7 +36,7 @@ class TestTheCrewsReplyIsRedactedBeforeItReachesTheCaller:
     in a transcript, so it is redacted on the way out like every other peer reply.
     """
 
-    _KEY = "AKIAIOSFODNN7EXAMPLE"
+    _KEY = "glpat-IOSFODNN7EXAMPLE"
 
     @pytest.mark.asyncio
     async def test_a_non_streamed_reply_is_redacted(self, monkeypatch):
@@ -370,7 +370,7 @@ class TestTheCrewsRefusalIsRedactedBeforeItIsCut:
     redacted whole, and only then cut.
     """
 
-    _KEY = "AKIAIOSFODNN7EXAMPLE"
+    _KEY = "glpat-IOSFODNN7EXAMPLE"
 
     @staticmethod
     def _detail(out):
@@ -459,7 +459,7 @@ class TestANonStreamedCrewErrorIsARefusalNotAContentTypeComplaint:
     capped, redacted slice the streamed frame carries.
     """
 
-    _KEY = "AKIAIOSFODNN7EXAMPLE"
+    _KEY = "glpat-IOSFODNN7EXAMPLE"
 
     @staticmethod
     def _payload(resp):

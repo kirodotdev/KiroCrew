@@ -44,11 +44,10 @@ from conftest import make_dir_link
 from kiro_crew.apps.builtins.pptx_maker.backend import engine, paths, provision, routes
 from kiro_crew.testing.wait import async_wait_until
 
-# An AKIA-shaped access key ID. The canonical AWS documentation example, so it is
-# a real pattern match without being a live secret.
-_FAKE_AKIA = "AKIAIOSFODNN7EXAMPLE"
+# A GitLab-shaped fake token: a real pattern match without being a live secret.
+_FAKE_AKIA = "glpat-IOSFODNN7EXAMPLE"
 
-# Verified clean against `_ENCODED_CREDENTIAL_RE` at every size used below.
+# A fixed seed, so the raster payload is the same on every host.
 _RASTER_SEED = 20260803
 
 
@@ -56,10 +55,9 @@ def _raster_body(size: int) -> bytes:
     """`size` bytes of high-entropy but DETERMINISTIC raster payload.
 
     These tests assert a genuine raster is *exempted* from redaction, which needs its
-    base64 body to carry no credential pattern. `os.urandom` cannot promise that on its
-    own, but `_ENCODED_CREDENTIAL_RE` requires each alternative's separator (`-`/`_`),
-    which base64 cannot contain, so a chance match cannot happen — and a fixed seed is
-    the right fixture: it keeps the payload high-entropy, which is the property
+    base64 body to carry no credential pattern. A credential marker needs a separator
+    (`-`/`_`/`.`) that base64 cannot contain, so a chance match cannot happen — and a
+    fixed seed is the right fixture: it keeps the payload high-entropy, which is the property
     under test since it is what makes the bare-secret heuristic fire, while fixing the
     outcome on every host.
     """
@@ -461,7 +459,7 @@ class TestPreviewRedaction(_RoutesFixture):
     async def test_a_fake_bitmap_data_uri_cannot_smuggle_a_credential(self) -> None:
         """The `data:image/...` label is written by the same agent as the rest of
         the artifact, so it is a CLAIM, not a fact. Excising on the label alone
-        would make the bitmap carve-out a smuggling channel: `AKIA…` is entirely
+        would make the bitmap carve-out a smuggling channel: `glpat-…` is entirely
         base64-alphabet, so a model could wrap a key in a fake bitmap URI and skip
         the scanner. Only a blob whose decoded bytes really start with a raster
         signature is excised."""
@@ -603,8 +601,8 @@ class TestPreviewRedaction(_RoutesFixture):
         directly after the body forfeits the exemption. It costs only the inline art of
         an artifact that was already malformed.
 
-        `pypi`, `glpat`, the JWT and the `:`/`~` forms are NOT in
-        `_ENCODED_CREDENTIAL_RE` — they are caught by this rule, not by enumeration.
+        `pypi`, `glpat`, the JWT and the `:`/`~` forms are caught by this rule, not
+        by enumeration.
         """
         raster = base64.b64encode(b"\x89PNG\r\n\x1a\n" + _raster_body(3000)).decode()
         appended = {
@@ -1013,13 +1011,13 @@ class TestLibraryRoutes(_RoutesFixture):
         """A valid raster signature must not launder a key in the payload.
 
         `_scanned_bitmap_bytes` originally checked only the first bytes, so a blob
-        beginning `\\x89PNG…` and continuing `tEXtComment\\0AKIA…` was exempted from
+        beginning `\\x89PNG…` and continuing `tEXtComment\\0glpat-…` was exempted from
         the scan and reached the browser verbatim. Every container here (PNG tEXt,
         JPEG COM, EXIF, WebP XMP) has a metadata chunk that can hold arbitrary text,
         so the signature is necessary but not sufficient.
         """
         evil = base64.b64encode(
-            b"\x89PNG\r\n\x1a\n" + b"tEXtComment\x00AKIAIOSFODNN7EXAMPLE" + b"\x00" * 64
+            b"\x89PNG\r\n\x1a\n" + b"tEXtComment\x00glpat-IOSFODNN7EXAMPLE" + b"\x00" * 64
         ).decode()
         doc = '{"img": "data:image/png;base64,' + evil + '"}'
         self.assertEqual(routes._scanned_bitmap_bytes(evil), (None, True))
@@ -1043,7 +1041,6 @@ class TestLibraryRoutes(_RoutesFixture):
         raster = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 40).decode()
         for marker in (
             _FAKE_AKIA,
-            "ASIAIOSFODNN7EXAMPLE",
             "ghp_0123456789abcdefghij",
             "xoxb-1234567890-abcdefg",
             "sk-ant-api03-abcdefghijklmnop",
@@ -1067,7 +1064,7 @@ class TestLibraryRoutes(_RoutesFixture):
         """`coverHtml` is a SLICE of the same agent-authored file `/style` serves
         whole, and the Library tab loads it on every visit — so redacting only the
         full document left the identical bytes reachable by the commoner route."""
-        cover = '<html><body>key AKIAIOSFODNN7EXAMPLE</body></html>'
+        cover = '<html><body>key glpat-IOSFODNN7EXAMPLE</body></html>'
         with _enabled(True), mock.patch.object(
             routes.library, "list_styles",
             return_value=[{"name": "brand", "coverHtml": cover}],
@@ -1075,7 +1072,7 @@ class TestLibraryRoutes(_RoutesFixture):
             resp = await self.client.get(self.url("/styles"))
         self.assertEqual(resp.status, 200)
         styles = (await resp.json())["styles"]
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", styles[0]["coverHtml"])
+        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", styles[0]["coverHtml"])
         self.assertEqual(styles[0]["name"], "brand")
 
     async def test_style_metadata_is_redacted_not_just_the_cover(self) -> None:
@@ -1129,14 +1126,14 @@ class TestLibraryRoutes(_RoutesFixture):
         """A style is an HTML document written by the `pptx-maker-style` AGENT, so it is
         model output on its way to the dashboard and gets the same pass a textual
         deck artifact does."""
-        styled = '<html><body>key AKIAIOSFODNN7EXAMPLE</body></html>'
+        styled = '<html><body>key glpat-IOSFODNN7EXAMPLE</body></html>'
         with _enabled(True), mock.patch.object(
             routes.library, "style_html", return_value=styled
         ):
             resp = await self.client.get(self.url("/style?name=brand"))
         self.assertEqual(resp.status, 200)
         body = await resp.json()
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", body["fullHtml"])
+        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", body["fullHtml"])
         self.assertEqual(body["name"], "brand")
 
     async def test_style_html_keeps_its_inline_art(self) -> None:
@@ -1233,9 +1230,9 @@ class TestLibraryRoutes(_RoutesFixture):
 
     async def test_a_worker_error_is_redacted_before_it_reaches_the_dashboard(self) -> None:
         """Library errors interpolate the caller's own name, and a name only has to
-        satisfy `SEGMENT_RE` — which accepts `AKIAIOSFODNN7EXAMPLE`. So a
+        satisfy `SEGMENT_RE` — which accepts `glpat-IOSFODNN7EXAMPLE`. So a
         credential-shaped style name was echoed verbatim into the dashboard by the
-        duplicate-import path (`style 'AKIA…' already exists`).
+        duplicate-import path (`style 'glpat-…' already exists`).
 
         Redacted at `_worker_response`, the one chokepoint every worker error passes
         through, rather than at each `f"…{name}…"` — so a message added later cannot
@@ -1719,7 +1716,7 @@ class TestAuditRedaction(unittest.TestCase):
 
     Every `_audit` call site interpolates a value the user or the agent chose — a
     style/template name, a deck root, a `deckId/subpath`, an exception string — and
-    an `AKIA`-shaped name is legal under `SEGMENT_RE`. Unredacted, that credential
+    an `glpat-`-shaped name is legal under `SEGMENT_RE`. Unredacted, that credential
     was written verbatim into the audit log and served back by `GET /api/sel/events`.
     Unlike a response body, a leak here persists.
 
@@ -1740,9 +1737,9 @@ class TestAuditRedaction(unittest.TestCase):
 
     def test_a_credential_in_the_resources_field_is_redacted(self) -> None:
         seen = self._capture(
-            operation="style_import", resources="AKIAIOSFODNN7EXAMPLE", outcome="ok"
+            operation="style_import", resources="glpat-IOSFODNN7EXAMPLE", outcome="ok"
         )
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", seen["resources"])
+        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", seen["resources"])
         self.assertIn("REDACTED", seen["resources"])
 
     def test_a_credential_in_the_error_field_is_redacted(self) -> None:
@@ -1750,9 +1747,9 @@ class TestAuditRedaction(unittest.TestCase):
             operation="style_import",
             resources="brand",
             outcome="failed",
-            error="write failed for AKIAIOSFODNN7EXAMPLE",
+            error="write failed for glpat-IOSFODNN7EXAMPLE",
         )
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", seen["error"])
+        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", seen["error"])
 
     def test_redaction_runs_before_truncation(self) -> None:
         """Order is load-bearing. Truncating FIRST can slice a credential in half so
@@ -1760,11 +1757,11 @@ class TestAuditRedaction(unittest.TestCase):
         artifact reader documents. The credential is placed so that it straddles the
         200-char boundary, which is exactly the case a truncate-then-redact
         implementation leaks."""
-        error = "x" * 190 + "AKIAIOSFODNN7EXAMPLE" + "y" * 50
+        error = "x" * 190 + "glpat-IOSFODNN7EXAMPLE" + "y" * 50
         seen = self._capture(
             operation="style_import", resources="brand", outcome="failed", error=error
         )
-        self.assertNotIn("AKIA", seen["error"])
+        self.assertNotIn("glpat-", seen["error"])
         # Still bounded.
         self.assertLessEqual(len(seen["error"]), 200)
 

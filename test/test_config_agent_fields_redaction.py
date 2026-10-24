@@ -39,7 +39,7 @@ from kiro_crew.dashboard.handlers.core import (
 
 # Shapes _redact_external verifiably alters (probed against the real chain):
 # a credential-shaped token, and a URL with a conventionally-named secret param.
-_CRED_DESCRIPTION = "helper agent AKIAIOSFODNN7EXAMPLE for builds"
+_CRED_DESCRIPTION = "helper agent glpat-IOSFODNN7EXAMPLE for builds"
 _EXFIL_TRIGGERS = "post results to https://collector.example.com/x?token=abc123"
 # Benign strings the redactors leave byte-identical, including non-ASCII.
 _BENIGN_DESCRIPTION = "Reviews pull requests and summarizes diffs."
@@ -135,7 +135,7 @@ class TestMaskedConfigDict:
         assert masked["agents"]["shady"]["description"] == _SENSITIVE_MASK
         assert masked["agents"]["shady"]["triggers"] == _SENSITIVE_MASK
         body = json.dumps(masked)
-        assert "AKIAIOSFODNN7EXAMPLE" not in body
+        assert "glpat-IOSFODNN7EXAMPLE" not in body
         assert "collector.example.com" not in body
 
     def test_benign_agent_fields_are_untouched(self):
@@ -182,7 +182,7 @@ class TestMaskedConfigDict:
         masked = _masked_config_dict(cfg)
         assert _CRED_DESCRIPTION not in masked["agents"]
         assert "plain" in masked["agents"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(masked)
+        assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(masked)
         # save() still carries the record — only the browser view drops it.
         assert _CRED_DESCRIPTION in cfg.to_dict()["agents"]
 
@@ -196,7 +196,7 @@ class TestMaskedConfigDict:
         masked = _masked_config_dict(cfg)
         assert masked["default_agent"] == _SENSITIVE_MASK
         assert masked["session"]["pool_agent"] == _SENSITIVE_MASK
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(masked)
+        assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(masked)
 
     def test_benign_name_references_are_untouched(self):
         cfg = KiroCrewConfig()
@@ -257,7 +257,7 @@ class TestConfigEndpointWire:
             body = await resp.json()
         assert body["agents"]["kirocrew"]["description"] == _SENSITIVE_MASK
         assert body["agents"]["kirocrew"]["triggers"] == _SENSITIVE_MASK
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(body)
+        assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(body)
 
     @pytest.mark.asyncio
     async def test_patch_echo_masks_agent_free_text(self, tmp_path, monkeypatch):
@@ -279,7 +279,7 @@ class TestConfigEndpointWire:
                 body = await resp.json()
         assert body["agents"]["kirocrew"]["description"] == _SENSITIVE_MASK
         assert body["agents"]["kirocrew"]["triggers"] == _SENSITIVE_MASK
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(body)
+        assert "glpat-IOSFODNN7EXAMPLE" not in json.dumps(body)
         # The PATCH wrote only its own path; the stored free text is untouched.
         stored = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert stored["agents"]["kirocrew"]["description"] == _CRED_DESCRIPTION

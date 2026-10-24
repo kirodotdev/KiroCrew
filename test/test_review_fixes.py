@@ -254,13 +254,13 @@ class TestSelForwardCallback:
 
         sel.log_api_access(
             caller="test",
-            operation="AKIAIOSFODNN7EXAMPLE",
+            operation="glpat-IOSFODNN7EXAMPLE",
             outcome="allowed",
             source="test",
         )
 
         assert len(events) == 1
-        assert "AKIAIOSFODNN7EXAMPLE" not in events[0]["operation"]
+        assert "glpat-IOSFODNN7EXAMPLE" not in events[0]["operation"]
 
         SecurityEventLog._instance = None
         SecurityEventLog._initialized = False

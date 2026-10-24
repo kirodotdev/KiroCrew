@@ -441,7 +441,7 @@ class TestMirrorBackfillFidelity:
     async def test_credentials_are_redacted(self, tmp_path, monkeypatch):
         state, transport = self._linked(tmp_path, monkeypatch)
         slot = state.get_or_create_slot("s1")
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         slot.append("user", "creds")
         slot.append("assistant", f"key is {secret}")
         slot.drain()

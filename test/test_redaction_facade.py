@@ -1,7 +1,7 @@
 """The output redaction facade keeps the patch seams the one module had.
 
 ``kiro_crew.security.redaction`` is a mirror facade (:mod:`kiro_crew._facade_mirror`) over the
-owners ``redaction_patterns`` and ``redaction_entropy``; the batch redactor with its pass plan,
+owners ``redaction_patterns`` and ``redaction_decode``; the batch redactor with its pass plan,
 the pass-4 token-parameter grammar, the redaction tags, the binary masker and the path passes
 stay in the facade itself. The moved code reads its names as plain module globals, so a patch
 reaches it only because the mirror writes the patch into every module holding the name. Two
@@ -55,9 +55,11 @@ PACKAGE = "kiro_crew.security"
 LEAF = "redaction"
 SECURITY_DIR = Path(redaction.__file__).resolve().parent
 #: The owner modules, in the layer order ``_OWNERS`` must list them.
-OWNERS = ("redaction_patterns", "redaction_entropy")
+OWNERS = ("redaction_patterns", "redaction_decode")
 #: Siblings that share the ``redaction_`` prefix and are not owners of this facade.
-NON_OWNER_SIBLINGS = frozenset({"redaction_allow", "redaction_switch"})
+NON_OWNER_SIBLINGS = frozenset(
+    {"redaction_allow", "redaction_labels", "redaction_normalise", "redaction_switch"}
+)
 _THIS_FILE = Path(__file__).resolve()
 #: Text every file that reaches the facade by name holds: a dotted spelling (an import,
 #: a string target, a ``sys.modules`` key, an attribute chain off the package) or an import
@@ -67,9 +69,8 @@ _SPELLS_THE_FACADE = re.compile(
 )
 
 #: Names the test trees are known to patch, by the spelling they use: the alternation, the
-#: pre-filter literals and gate, the JWT branch scan, the bare-secret gates, the
-#: commit-permalink pattern, the macOS directory id, the token-parameter destination guard, the
-#: path label key and the redactor itself. The scan must find all of them, so a scanner that
+#: pre-filter literals and gate, the JWT branch scan, the token-parameter destination guard,
+#: the path label key and the redactor itself. The scan must find all of them, so a scanner that
 #: stops matching goes red instead of passing over nothing.
 _KNOWN_SEAMS: dict[str, frozenset[str]] = {
     FACADE: frozenset(
@@ -77,8 +78,6 @@ _KNOWN_SEAMS: dict[str, frozenset[str]] = {
             "_CREDENTIAL_PATTERNS",
             "_CREDENTIAL_PATTERNS_NO_PEM_BLOCK",
             "_PATH_LABEL_KEY",
-            "_ROUTED_COMMIT_RE",
-            "_host_darwin_user_dir_id",
             "_jwt_branch_matches_at",
             "_segment_run_end",
             "_token_param_destination_signal",
@@ -90,10 +89,6 @@ _KNOWN_SEAMS: dict[str, frozenset[str]] = {
         {
             "_CREDENTIAL_PREFILTER_LITERALS",
             "_might_contain_credential",
-            "_looks_like_secret_key",
-            "_SECRET_MAX_SLASHES",
-            "_shannon_entropy",
-            "_decodes_to_printable_text",
         }
     ),
 }

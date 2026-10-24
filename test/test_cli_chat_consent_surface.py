@@ -935,7 +935,7 @@ class TestChatPermissionRequestConsentSurface(_TestChatPermissionRequestHarness)
 
         import kiro_crew.cli_chat as cli_chat
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "glpat-IOSFODNN7EXAMPLE"
         trace: list = []
         gate = self._gate()
         monkeypatch.setattr(

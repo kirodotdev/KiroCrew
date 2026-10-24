@@ -39,7 +39,7 @@ from kiro_crew.security import is_sensitive_path, redact_credentials
 # pre-change loop implementation. Secret-shaped fixtures are written as adjacent
 # literals so no single source line is a complete provider token (matches the
 # convention in test_security.py, which keeps secret scanners quiet).
-_AKIA = "AKIAIOSFODNN7EXAMPLE"
+_SLACK20 = "xoxb-" "IOSFODNN7EXAMPL"  # 20 chars
 _GHP = "ghp_" "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"
 _ANT = "sk-ant-api03-" "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP"
 _GLPAT = "glpat-" "xxxx1234xxxx5678xxxx"
@@ -48,7 +48,7 @@ _TAG = "[REDACTED: credential]"
 
 REDACTION_GOLDEN: list[tuple[str, str, list[str]]] = [
     (
-        f"Found key {_AKIA} in output",
+        f"Found key {_SLACK20} in output",
         f"Found key {_TAG} in output",
         ["Redacted credential pattern (20 chars)"],
     ),
@@ -56,7 +56,7 @@ REDACTION_GOLDEN: list[tuple[str, str, list[str]]] = [
     # This is the case the old `str.replace(matched, tag, 1)` shape depended on
     # positional luck for -- sub() splices each matched span in place.
     (
-        f"a {_AKIA} b {_AKIA} c",
+        f"a {_SLACK20} b {_SLACK20} c",
         f"a {_TAG} b {_TAG} c",
         [
             "Redacted credential pattern (20 chars)",
@@ -66,7 +66,7 @@ REDACTION_GOLDEN: list[tuple[str, str, list[str]]] = [
     # Three DIFFERENT credentials -- pins warning ORDER (20, 38, 26 chars),
     # which is the ordering guarantee sub() has to preserve.
     (
-        f"first {_AKIA} then {_GHP} and {_XOXB} tail",
+        f"first {_SLACK20} then {_GHP} and {_XOXB} tail",
         f"first {_TAG} then {_TAG} and {_TAG} tail",
         [
             "Redacted credential pattern (20 chars)",
@@ -75,14 +75,15 @@ REDACTION_GOLDEN: list[tuple[str, str, list[str]]] = [
         ],
     ),
     (
+        # A labelled value keeps its label; only the value is replaced.
         "SecretAccessKey=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-        _TAG,
-        ["Redacted credential pattern (56 chars)"],
+        f"SecretAccessKey={_TAG}",
+        ["Redacted credential pattern (40 chars)"],
     ),
     (
         "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG",
-        _TAG,
-        ["Redacted credential pattern (45 chars)"],
+        f"aws_secret_access_key = {_TAG}",
+        ["Redacted credential pattern (21 chars)"],
     ),
     (
         f"Token is {_XOXB}",
@@ -143,11 +144,11 @@ def test_pass1_warning_order_tracks_match_order_not_length() -> None:
     A replacement callback that batched or reordered its appends would still
     produce identical TEXT, so this asserts the ordering separately.
     """
-    text = f"{_ANT} {_AKIA} {_GHP}"
+    text = f"{_ANT} {_SLACK20} {_GHP}"
     _, warnings = redact_credentials(text)
     assert warnings == [
         f"Redacted credential pattern ({len(_ANT)} chars)",
-        f"Redacted credential pattern ({len(_AKIA)} chars)",
+        f"Redacted credential pattern ({len(_SLACK20)} chars)",
         f"Redacted credential pattern ({len(_GHP)} chars)",
     ]
 
@@ -170,13 +171,50 @@ def test_pass1_is_linear_on_credential_dense_text() -> None:
     sub-second as one ``sub()`` pass; the generous ceiling keeps this off slow
     CI's flake list while still failing hard if the per-match rebuild returns.
     """
-    dense = f"{_AKIA} " * 4000
+    dense = f"{_SLACK20} " * 4000
     started = time.perf_counter()
     result, warnings = redact_credentials(dense)
     elapsed = time.perf_counter() - started
     assert len(warnings) == 4000
-    assert _AKIA not in result
+    assert _SLACK20 not in result
     assert elapsed < 5.0, f"pass 1 took {elapsed:.2f}s -- per-match string rebuild is back"
+
+
+def test_log_floor_presigned_scan_cannot_restart_inside_a_run() -> None:
+    """Complexity guard for the log floor's signing-parameter scan.
+
+    The quadratic shape is the engine restarting a match at every position in a
+    long ``[A-Za-z0-9%._-]`` run and backtracking it to the end. Two structural
+    properties of the name group forbid that, and both are asserted on the
+    pattern's SHAPE rather than on wall-clock time -- a loaded CI runner can pause
+    a worker for seconds between two clock reads, so an absolute time ceiling
+    measures the scheduler, not the matcher: (1) a negative look-behind, so a
+    match cannot START inside a run; (2) a bounded ``{1,N}`` repetition, so the
+    per-position attempt is constant work. The behaviour is pinned alongside: a
+    long credential-free run is returned whole.
+    """
+    from kiro_crew.log_redaction import _PRESIGNED_PARAM_RE, SecretRedactionFilter
+
+    src = _PRESIGNED_PARAM_RE.pattern
+    # The name starts outside a run, or right after an encoded ``?``/``&`` at
+    # any depth (``%3F``, ``%253F``: the name class itself never holds one), and
+    # repeats a bounded unit.
+    m = re.match(
+        r"\(\?:\(\?<!\[A-Za-z0-9%\._-\]\)\|\(\?<=%3\[Ff\]\)\|\(\?<=%26\)"
+        r"\|\(\?<=253\[Ff\]\)\|\(\?<=2526\)\)"
+        r"\(\(\?:\[A-Za-z0-9\._-\]\|%\(\?!\(\?:25\)\{0,8\}\(\?:3\[DdFf\]\|26\)\)"
+        r"\[0-9A-Fa-f\]\{2\}\)\{1,(\d+)\}\)",
+        src,
+    )
+    assert m, f"name group must be a left-anchored, bounded class; got {src!r}"
+    assert int(m.group(1)) <= 256, "name bound keeps the per-position attempt constant"
+    line = "X-Amz-Date " + "A" * 64000
+    assert SecretRedactionFilter([]).redact(line) == line
+    encoded = "X-Amz-Date " + "%3F" * 20000
+    assert SecretRedactionFilter([]).redact(encoded) == encoded
+    for run in ("%2526" * 20000, "2526" * 20000, "%25" * 20000):
+        line = "X-Amz-Date " + run
+        assert SecretRedactionFilter([]).redact(line) == line
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -219,10 +257,11 @@ def test_credential_pattern_module_still_compiles_one_alternation() -> None:
 
     assert isinstance(security_mod._CREDENTIAL_PATTERNS, re.Pattern)
     # `redact_credentials` is a wrapper over the one plan both redactors share;
-    # the scan lives in that plan.
+    # the scan lives in that plan's passes (``_planned_spans``), which
+    # ``_credential_redaction_plan`` runs inside the catalog keyword context.
     from kiro_crew.security import redaction as redaction_mod
 
-    body = inspect_source(redaction_mod._credential_redaction_plan)
+    body = inspect_source(redaction_mod._planned_spans)
     assert "_credential_matches(text)" in body
     assert "_credential_search(text, pos, starts)" in inspect_source(
         redaction_mod._credential_matches

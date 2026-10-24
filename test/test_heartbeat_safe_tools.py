@@ -587,7 +587,7 @@ class TestHeartbeatApproval:
         monkeypatch.setattr("kiro_crew.slack.gateway.sel", lambda: sel_mock)
         # Title carries an AWS access key (a polled CR comment or ticket
         # body could mention one, and the tool-name path is LLM-controlled).
-        bad_title = "tool_with_secret AKIAIOSFODNN7EXAMPLE inside"
+        bad_title = "tool_with_secret glpat-IOSFODNN7EXAMPLE inside"
         event = _make_event(bad_title)
         with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.gateway"):
             await orchestrator._heartbeat_approval(event)
@@ -595,7 +595,7 @@ class TestHeartbeatApproval:
         # by this callback — redact_credentials should have replaced it.
         for record in caplog.records:
             assert (
-                "AKIAIOSFODNN7EXAMPLE" not in record.getMessage()
+                "glpat-IOSFODNN7EXAMPLE" not in record.getMessage()
             ), f"Unredacted credential leaked into log: {record.getMessage()}"
 
     @pytest.mark.asyncio

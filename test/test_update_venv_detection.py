@@ -257,14 +257,14 @@ class TestVenvPipInstall:
         errors = _track_errors(state)
 
         def fake_sync(repo, target_py, emit=None, timeout=None, **_kw):
-            emit("failed: AKIAIOSFODNN7EXAMPLE token leaked", True)
+            emit("failed: glpat-IOSFODNN7EXAMPLE token leaked", True)
             return 1
 
         monkeypatch.setattr(dep_sync, "sync_or_reinstall", fake_sync)
         assert await _venv_pip_install(str(proj), state) is False
         # The raw AWS access key id should NOT appear verbatim in the error string.
         assert errors, "expected an error to be reported"
-        assert "AKIAIOSFODNN7EXAMPLE" not in errors[0], errors
+        assert "glpat-IOSFODNN7EXAMPLE" not in errors[0], errors
 
 
 class TestRestartGateway:

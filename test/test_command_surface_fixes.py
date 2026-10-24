@@ -492,7 +492,7 @@ async def test_a_hook_reply_is_redacted_before_it_reaches_the_channel(
 ) -> None:
     """This path skips TurnDriver, which is what redacts everything else."""
     _patch_pipeline(monkeypatch)
-    leaked = "key AKIAIOSFODNN7EXAMPLE here"
+    leaked = "key glpat-IOSFODNN7EXAMPLE here"
     renderer = _PipelineRenderer()
     persisted: list[tuple[str, str, bool]] = []
 
@@ -502,9 +502,9 @@ async def test_a_hook_reply_is_redacted_before_it_reaches_the_channel(
         ctx_builder=_CtxBuilder(HookResult.reply(leaked)),
     )
 
-    assert renderer.chunks and "AKIAIOSFODNN7EXAMPLE" not in renderer.chunks[0]
+    assert renderer.chunks and "glpat-IOSFODNN7EXAMPLE" not in renderer.chunks[0]
     # And the transcript records what was shown, not the raw credential.
-    assert "AKIAIOSFODNN7EXAMPLE" not in persisted[0][1]
+    assert "glpat-IOSFODNN7EXAMPLE" not in persisted[0][1]
 
 
 @pytest.mark.asyncio

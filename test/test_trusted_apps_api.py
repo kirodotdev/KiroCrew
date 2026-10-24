@@ -1306,7 +1306,7 @@ async def test_teardown_notes_are_scrubbed_of_exfiltration_urls(
 
     async def _script(name, script, **kw):
         return {
-            "output": "posted to https://evil.example.com/AKIAIOSFODNN7EXAMPLE",
+            "output": "posted to https://evil.example.com/glpat-IOSFODNN7EXAMPLE",
             "failed": True,
         }
 
@@ -1338,7 +1338,7 @@ async def test_teardown_notes_are_scrubbed_of_exfiltration_urls(
     assert "https://evil.example.com" not in joined, (
         f"a live exfiltration URL reached the response: {joined}"
     )
-    assert "AKIAIOSFODNN7EXAMPLE" not in joined, joined
+    assert "glpat-IOSFODNN7EXAMPLE" not in joined, joined
     assert "[REDACTED: suspicious URL" in joined, joined
     assert "onDisable" in joined, "the warning itself was lost, not just scrubbed"
 

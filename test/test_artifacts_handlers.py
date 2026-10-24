@@ -648,7 +648,9 @@ class TestCreate:
         -- and for a COPY there is no live pointer left to recover the real bytes.
         """
         src = linkable_project / "notes.md"
-        real = "secret = swordfish-actual"
+        # A code reference: what is checked is where the bytes come from, and the
+        # egress pass leaves a dotted name behind a label alone.
+        real = "secret = settings.swordfish"
         src.write_text(real, encoding="utf-8")
         body = {
             "name": "cfg",

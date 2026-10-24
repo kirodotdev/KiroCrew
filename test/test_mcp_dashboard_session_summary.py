@@ -197,7 +197,7 @@ def test_the_payload_is_redacted_on_the_way_out(tmp_path, monkeypatch):
     """A scrubber rule added after the sidecar was written still covers it."""
     _pin_summaries(monkeypatch, True)
     state, caller, _target = _pair(tmp_path)
-    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    secret = "glpat-" + "ABCDEFGHIJKLMNOP"
 
     async def _cached(_log, _slot):
         return {"intents": [{"title": f"key {secret}"}], "constraints": []}, False

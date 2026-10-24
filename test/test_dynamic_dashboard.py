@@ -248,7 +248,7 @@ class TestWhatAnAgenticValueCarriesToThePage:
 
     #: An AWS access key id by shape, matching the redactor's own pattern. It is a
     #: documentation example and names no account.
-    KEY = "AKIAIOSFODNN7EXAMPLE"
+    KEY = "xoxb-IOSFODNN7EXAMPL"
 
     #: A long base64-looking query on a host nobody allowed, which is the shape the
     #: exfiltration redactor removes.
@@ -658,7 +658,7 @@ class TestTheMistakeBookFold:
         it verbatim on the dashboard. Nothing between the refusal and that render
         inspects it, which is what makes this an output boundary.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"  # noqa: S105 - a public AWS doc example value
+        secret = "xoxb-IOSFODNN7EXAMPL"  # noqa: S105 - a fake token
         entry = dashboard_agentic.refusal_entry(
             dashboard_agentic.WriteRefused("unknown_field", secret, f"no such field {secret}")
         )
@@ -1258,7 +1258,7 @@ class TestThePackageSeam:
             },
         )
         model = self.read().model
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = "xoxb-IOSFODNN7EXAMPL"
         written = dashboard_agentic.check_write(model, "rows", [{"key": secret}])
         landed = json.dumps(written["value"])
         assert secret not in landed, "a credential reached the stored value unscrubbed"

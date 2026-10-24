@@ -432,14 +432,15 @@ def test_cli_learn_list_prints_a_credential_shaped_scope_as_unusable(tmp_path, c
 
 
 def test_cli_learn_list_judges_the_scope_after_stripping_terminal_controls() -> None:
-    """A credential split by an embedded escape sequence passes the redactor whole
-    and would be reassembled by the control stripping the CLI applies before
-    printing -- so the printed (stripped) text is what gets judged."""
+    """A credential split by an embedded escape sequence is reassembled by the
+    control stripping the CLI applies before printing -- so the printed
+    (stripped) text is what gets judged. The redactor's normalised view reads
+    the same reassembly, so it redacts the split form too."""
     from kiro_crew import cli_commands
     from kiro_crew.security import redact
 
     split = "repos/ghp_ABCDEFGHIJKLMNOPQRST\x1b[0mUVWXYZabcdefghij1234"
-    assert redact(split) == split, "fixture must pass the redactor unstripped"
+    assert redact(split) == "repos/[REDACTED: credential]"
     assert cli_commands._lesson_scope_suffix(split) == " (scope: unusable)"
     assert cli_commands._lesson_scope_suffix("src/pkg") == " (scope: src/pkg)"
     assert cli_commands._lesson_scope_suffix("src/\x1b[31mpkg") == " (scope: src/pkg)"
