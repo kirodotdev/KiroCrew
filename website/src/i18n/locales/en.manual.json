@@ -10107,8 +10107,7 @@
     "publicIpHint": "Off by default. Private subnets need outbound connectivity for the runtime and integrations. This setting does not create network routes or open inbound ports.",
     "profilesFargateHint": "A profile is a named, reusable environment for remote sessions. Each Fargate profile records the cluster, task definition, network and working directory to use. The AWS CLI profile field inside it is the name of a credentials profile already configured on the machine that runs {{productName}}. Choose a profile in a chat's composer to run that session on it.",
     "verifyHintFargate": "Checks that each profile's task definition is ready and the AWS Session Manager plugin is installed on the machine that runs {{productName}}, and which git hosts {{productName}} can sign in to. No task is started.",
-    "checkTaskDefinitionOk": "{{name}}: task definition {{taskDefinition}} is ready",
-    "workspaceFargateTask": "Fargate session task"
+    "checkTaskDefinitionOk": "{{name}}: task definition {{taskDefinition}} is ready"
   },
   "crewEditorNext": {
     "section_general": "General",

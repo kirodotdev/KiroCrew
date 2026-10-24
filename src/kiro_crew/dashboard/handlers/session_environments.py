@@ -333,8 +333,9 @@ async def api_session_environments_workspaces_get(request: web.Request) -> web.R
             session_tasks = SessionTaskRegistry(
                 data_home() / "fargate" / "session-tasks.json"
             ).all()
-        except SessionEnvironmentUnavailable:
-            session_tasks = []
+        except SessionEnvironmentUnavailable as exc:
+            # Not an empty inventory: tasks may still be running and billing.
+            raise _WorkspacesUnreadable(str(exc)) from exc
         for task in session_tasks:
             out.append(
                 {
