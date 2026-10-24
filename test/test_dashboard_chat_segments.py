@@ -331,13 +331,11 @@ class TestRunChatSegmentFlush:
 
         await _run_chat(state, slot, "hello")
 
-        # Check persisted messages (exclude transient roles)
         assistant_msgs = [m for m in slot.messages if m.get("role") == "assistant"]
         assert len(assistant_msgs) == 2
         assert assistant_msgs[0]["content"] == "Before tool"
         assert assistant_msgs[1]["content"] == "After tool"
 
-        # Verify both chat_segment and tool_call are broadcast
         ws_calls = [(c.args[0], c.args[1]) for c in state.broadcast_ws.call_args_list]
         ws_types = [t for t, _ in ws_calls]
         assert "chat_segment" in ws_types

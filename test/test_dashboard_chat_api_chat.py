@@ -478,10 +478,11 @@ class TestApiChatAgentPassing:
         state = _make_state(tmp_path)
         with patch("kiro_crew.dashboard.chat_handlers._emit_agent_assignment") as mock_emit:
             async with TestClient(TestServer(_make_app(state))) as client:
-                await client.post(
+                resp = await client.post(
                     "/api/chat?ws=1",
                     json={"message": "hi", "slot": "no-agent-slot"},
                 )
+            assert resp.status == 200
             mock_emit.assert_not_called()
 
     @pytest.mark.asyncio

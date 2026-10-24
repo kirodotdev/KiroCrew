@@ -523,7 +523,6 @@ class TestFolderCRUD:
             )
             data = await resp.json()
             assert data["default_agent"] == "msad"
-            # Verify persistence
             assert state._folders[0]["default_agent"] == "msad"
 
     @pytest.mark.asyncio

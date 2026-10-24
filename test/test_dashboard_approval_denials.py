@@ -512,7 +512,6 @@ class TestToolCompletionTracking:
         with _patch_stats():
             await _run_chat(state, slot, "hello")
 
-        # Verify tool_call broadcast includes tool_call_id
         calls = [c for c in state.broadcast_ws.call_args_list if c[0][0] == "tool_call"]
         assert len(calls) > 0
         assert calls[0][0][1]["tool_call_id"] == "tc-42"
@@ -845,8 +844,9 @@ class TestStateMetaAndPermissions:
 
     def test_mark_permission_resolved_not_found(self):
         slot = _make_slot()
-        # Should not raise
+        slot.append("permission", "tool_x", '{"request_id": "req-42"}', broadcast=False)
         slot.mark_permission_resolved("nonexistent", "approved")
+        assert slot.messages[-1]["cls"] == '{"request_id": "req-42"}'
 
     def test_parse_cls_meta_normalizes_request_id(self):
         meta = parse_cls_meta('{"request_id": "req-1", "tool_input": "x"}')

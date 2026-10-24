@@ -384,11 +384,17 @@ class TestPrecomputeTelemetry:
         monkeypatch.setattr(
             hs, "_get_static_system_info", MagicMock(side_effect=RuntimeError("no os"))
         )
+        telemetry = MagicMock()
+        telemetry.record_event.side_effect = RuntimeError("sink down")
         monkeypatch.setattr(
-            srv, "current_context", MagicMock(side_effect=RuntimeError("no context"))
+            srv, "current_context", MagicMock(return_value=SimpleNamespace(telemetry=telemetry))
         )
 
         srv._precompute_telemetry(_state())  # must not raise
+
+        telemetry.record_event.assert_called_once_with(
+            "gateway_start", {"owner_id_hash": "unknown", "os_type": "", "arch": ""}
+        )
 
     def test_gateway_start_event_carries_the_precomputed_fields(
         self, monkeypatch
@@ -712,9 +718,19 @@ class TestPreventSleepShutdown:
     @pytest.mark.asyncio
     async def test_nothing_armed_is_a_clean_no_op(self) -> None:
         app = web.Application()
-        srv._register_prevent_sleep_shutdown(app, _state())
+        state = _state()
+        srv._register_prevent_sleep_shutdown(app, state)
+        ran: list[str] = []
 
-        await _run_cleanup(app)  # neither task nor inhibitor exists yet
+        async def _later_hook(_app: web.Application) -> None:
+            ran.append("later")
+
+        app.on_cleanup.append(_later_hook)
+
+        await _run_cleanup(app)
+
+        assert ran == ["later"]
+        assert vars(state) == {"_background_tasks": set()}
 
     @pytest.mark.asyncio
     async def test_cancels_the_poll_and_releases_the_os_block(self) -> None:
@@ -740,11 +756,19 @@ class TestPreventSleepShutdown:
         """``on_cleanup`` hooks run in sequence and a raise aborts the rest, so a
         stubborn OS inhibitor must never propagate."""
         app = web.Application()
-        srv._register_prevent_sleep_shutdown(
-            app, _state(_sleep_inhibitor=_FakeInhibitor(raise_on=False))
-        )
+        inhibitor = _FakeInhibitor(raise_on=False)
+        srv._register_prevent_sleep_shutdown(app, _state(_sleep_inhibitor=inhibitor))
+        ran: list[str] = []
+
+        async def _later_hook(_app: web.Application) -> None:
+            ran.append("later")
+
+        app.on_cleanup.append(_later_hook)
 
         await _run_cleanup(app)
+
+        assert inhibitor.states == [False]
+        assert ran == ["later"]
 
 
 # ── _arm_prevent_sleep_poll ─────────────────────────────────────────────

@@ -48,15 +48,39 @@ class TestCronUpdateAgent:
         assert "agent" not in kwargs
 
     @pytest.mark.asyncio
-    async def test_agent_id_key_still_accepted_for_scripted_callers(self):
-        """Scripted callers that already use 'agent_id' must keep working."""
-        request = _make_request({"agent_id": "bxt-brain-worker"})
+    @pytest.mark.parametrize(
+        "body, agent_id",
+        [
+            # Scripted callers that already use 'agent_id' must keep working.
+            pytest.param(
+                {"agent_id": "bxt-brain-worker"},
+                "bxt-brain-worker",
+                id="agent_id_key_still_accepted_for_scripted_callers",
+            ),
+            # 'agent': '' is a legitimate update value: it clears the assignment.
+            pytest.param({"agent": ""}, "", id="empty_agent_clears_assignment"),
+            # Whitespace-padded agent values are stripped, matching api_crons_create.
+            pytest.param(
+                {"agent": "  bxt-brain-leader  "}, "bxt-brain-leader", id="agent_value_is_stripped"
+            ),
+            # The scripted 'agent_id' path is also stripped for consistency.
+            pytest.param(
+                {"agent_id": "\tbxt-brain-worker\n"},
+                "bxt-brain-worker",
+                id="agent_id_value_is_stripped",
+            ),
+            # JSON null for 'agent' is coerced to empty string, clearing the assignment.
+            pytest.param({"agent": None}, "", id="null_agent_coerces_to_empty_string"),
+        ],
+    )
+    async def test_agent_forwarded(self, body, agent_id):
+        request = _make_request(body)
 
         resp = await api_cron_update(request)
 
         assert resp.status == 200
         _, kwargs = request.app["state"].crons.update_job_async.call_args
-        assert kwargs.get("agent_id") == "bxt-brain-worker"
+        assert kwargs.get("agent_id") == agent_id
 
     @pytest.mark.asyncio
     async def test_agent_wins_over_agent_id_when_both_present(self):
@@ -68,18 +92,6 @@ class TestCronUpdateAgent:
         assert resp.status == 200
         _, kwargs = request.app["state"].crons.update_job_async.call_args
         assert kwargs.get("agent_id") == "winner"
-
-    @pytest.mark.asyncio
-    async def test_empty_agent_clears_assignment(self):
-        """Sending 'agent': '' must clear the agent assignment (revert to default)."""
-        request = _make_request({"agent": ""})
-
-        resp = await api_cron_update(request)
-
-        assert resp.status == 200
-        _, kwargs = request.app["state"].crons.update_job_async.call_args
-        # Empty string is a legitimate update value (clear the agent).
-        assert kwargs.get("agent_id") == ""
 
     @pytest.mark.asyncio
     async def test_other_fields_still_patched_alongside_agent(self):
@@ -116,39 +128,6 @@ class TestCronUpdateAgent:
         assert resp.status == 200
         _, kwargs = request.app["state"].crons.update_job_async.call_args
         assert "agent_id" not in kwargs
-
-    @pytest.mark.asyncio
-    async def test_agent_value_is_stripped(self):
-        """Whitespace-padded agent values are stripped, matching api_crons_create."""
-        request = _make_request({"agent": "  bxt-brain-leader  "})
-
-        resp = await api_cron_update(request)
-
-        assert resp.status == 200
-        _, kwargs = request.app["state"].crons.update_job_async.call_args
-        assert kwargs.get("agent_id") == "bxt-brain-leader"
-
-    @pytest.mark.asyncio
-    async def test_agent_id_value_is_stripped(self):
-        """The scripted 'agent_id' path is also stripped for consistency."""
-        request = _make_request({"agent_id": "\tbxt-brain-worker\n"})
-
-        resp = await api_cron_update(request)
-
-        assert resp.status == 200
-        _, kwargs = request.app["state"].crons.update_job_async.call_args
-        assert kwargs.get("agent_id") == "bxt-brain-worker"
-
-    @pytest.mark.asyncio
-    async def test_null_agent_coerces_to_empty_string(self):
-        """JSON null for 'agent' is coerced to empty string, clearing the assignment."""
-        request = _make_request({"agent": None})
-
-        resp = await api_cron_update(request)
-
-        assert resp.status == 200
-        _, kwargs = request.app["state"].crons.update_job_async.call_args
-        assert kwargs.get("agent_id") == ""
 
     @pytest.mark.asyncio
     async def test_job_not_found_returns_404(self):

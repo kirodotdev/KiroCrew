@@ -125,7 +125,6 @@ class TestPrepareMessages:
 
         queued = [m for m in slot.messages if m.get("role") == "queued"]
         assert len(queued) == 1, "second queued placeholder must survive"
-        # Verify the surviving placeholder is the one with qid2
         surviving_cls = json.loads(queued[0].get("cls", "{}"))
         assert surviving_cls.get("queue_id") == qid2
 
@@ -346,7 +345,6 @@ class TestHistorySaveOnClose:
             data = await resp.json()
             assert data["ok"] is True
 
-        # Verify saved to disk
         msgs = state.conversation_log.read_messages("dashboard:s1")
         assert len(msgs) == 2
         assert msgs[0]["role"] == "user"
@@ -692,30 +690,24 @@ class TestHistoryKeyPrefix:
 class TestHistoryKeyFor:
     """Tests for _history_key_for — canonical history key from slot key."""
 
-    def test_already_canonical(self):
+    @pytest.mark.parametrize(
+        "slot_key, expected",
+        [
+            pytest.param("dashboard:chat-1-100", "dashboard:chat-1-100", id="already_canonical"),
+            pytest.param("dashboard_chat-1-100", "dashboard:chat-1-100", id="strips_single_prefix"),
+            pytest.param(
+                "dashboard_dashboard_chat-1-100", "dashboard:chat-1-100", id="strips_double_prefix"
+            ),
+            pytest.param(
+                "dashboard_dashboard_dashboard_x", "dashboard:x", id="strips_triple_prefix"
+            ),
+            pytest.param("chat-1-100", "dashboard:chat-1-100", id="raw_key_gets_prefix"),
+        ],
+    )
+    def test_history_key(self, slot_key: str, expected: str):
         from kiro_crew.dashboard.chat import _history_key_for
 
-        assert _history_key_for("dashboard:chat-1-100") == "dashboard:chat-1-100"
-
-    def test_strips_single_prefix(self):
-        from kiro_crew.dashboard.chat import _history_key_for
-
-        assert _history_key_for("dashboard_chat-1-100") == "dashboard:chat-1-100"
-
-    def test_strips_double_prefix(self):
-        from kiro_crew.dashboard.chat import _history_key_for
-
-        assert _history_key_for("dashboard_dashboard_chat-1-100") == "dashboard:chat-1-100"
-
-    def test_strips_triple_prefix(self):
-        from kiro_crew.dashboard.chat import _history_key_for
-
-        assert _history_key_for("dashboard_dashboard_dashboard_x") == "dashboard:x"
-
-    def test_raw_key_gets_prefix(self):
-        from kiro_crew.dashboard.chat import _history_key_for
-
-        assert _history_key_for("chat-1-100") == "dashboard:chat-1-100"
+        assert _history_key_for(slot_key) == expected
 
 
 class TestHistoryResumeInterruptedTurnMarker:

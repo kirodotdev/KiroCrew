@@ -421,6 +421,8 @@ class TestBroadcastContextReset:
         state.broadcast_context_usage = MagicMock(side_effect=RuntimeError("no clients"))
         # Must not raise: a failed broadcast cannot fail the model switch.
         ch._broadcast_context_reset(state, "s1", None)
+        _, payload = state.broadcast_context_usage.call_args.args
+        assert (payload["slot"], payload["reset"]) == ("s1", True)
 
 
 # ── _redact_followup_item ────────────────────────────────────────────────────

@@ -498,8 +498,9 @@ class TestApprovalModes:
         with _patch_stats():
             await _run_chat(state, slot, "hello")
 
-        client.approve_tool.assert_called_once()
+        client.approve_tool.assert_called_once_with("req-1")
         client.reject_tool.assert_not_called()
+        assert not any("hook blocked" in m.get("content", "").lower() for m in _tool_messages(slot))
 
     @pytest.mark.asyncio
     async def test_auto_approve_deny_by_default_on_unexpected_hook_output(self, tmp_path):
@@ -519,7 +520,8 @@ class TestApprovalModes:
 
         # Deny-by-default: auto-approve must NOT silently approve on bad hook output.
         client.approve_tool.assert_not_called()
-        client.reject_tool.assert_called_once()
+        client.reject_tool.assert_called_once_with("req-1")
+        assert [m["content"] for m in _tool_messages(slot)] == ["🚫 fs_write (hook error)"]
 
     @pytest.mark.asyncio
     @pytest.mark.xdist_group(name="serial")
@@ -538,7 +540,13 @@ class TestApprovalModes:
             await _run_chat(state, slot, "hello")
         await _drain(rejecter)
 
-        client.reject_tool.assert_called_once()
+        client.reject_tool.assert_called_once_with("req-1")
+        client.approve_tool.assert_not_called()
+        msgs = _tool_messages(slot)
+        assert [json.loads(m["cls"])["resolved"] for m in msgs if m["role"] == "permission"] == [
+            "rejected"
+        ]
+        assert "🚫 fs_write (rejected)" in [m["content"] for m in msgs]
 
     @pytest.mark.asyncio
     async def test_interactive_approve_with_empty_hooks(self, tmp_path):

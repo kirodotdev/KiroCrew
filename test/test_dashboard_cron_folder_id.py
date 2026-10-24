@@ -86,20 +86,20 @@ class TestCronUpdateFolderId:
         return request
 
     @pytest.mark.asyncio
-    async def test_update_forwards_folder_id(self):
-        request = self._update_request({"folder_id": "myf01"})
+    @pytest.mark.parametrize(
+        "folder_id, forwarded",
+        [
+            pytest.param("myf01", "myf01", id="update_forwards_folder_id"),
+            pytest.param("", "", id="update_clears_folder_id"),
+            pytest.param(None, "", id="update_coerces_null_folder_id_to_empty"),
+        ],
+    )
+    async def test_update_folder_id(self, folder_id, forwarded):
+        request = self._update_request({"folder_id": folder_id})
         resp = await api_cron_update(request)
         assert resp.status == 200
         _, kwargs = request.app["state"].crons.update_job_async.call_args
-        assert kwargs.get("folder_id") == "myf01"
-
-    @pytest.mark.asyncio
-    async def test_update_clears_folder_id(self):
-        request = self._update_request({"folder_id": ""})
-        resp = await api_cron_update(request)
-        assert resp.status == 200
-        _, kwargs = request.app["state"].crons.update_job_async.call_args
-        assert kwargs.get("folder_id") == ""
+        assert kwargs.get("folder_id") == forwarded
 
     @pytest.mark.asyncio
     async def test_update_rejects_non_string_folder_id(self):
@@ -125,14 +125,6 @@ class TestCronUpdateFolderId:
             resp = await api_crons_create(request)
             assert resp.status == 400, f"folder_id={bad!r} should be rejected"
             assert json.loads(resp.body)["code"] == "invalid_folder_id"
-
-    @pytest.mark.asyncio
-    async def test_update_coerces_null_folder_id_to_empty(self):
-        request = self._update_request({"folder_id": None})
-        resp = await api_cron_update(request)
-        assert resp.status == 200
-        _, kwargs = request.app["state"].crons.update_job_async.call_args
-        assert kwargs.get("folder_id") == ""
 
     @pytest.mark.asyncio
     async def test_folder_id_appears_in_list_response(self):

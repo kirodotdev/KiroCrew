@@ -348,7 +348,6 @@ async def test_delete_pin_by_id(tmp_path):
         data = await del_resp.json()
         assert data == {"ok": True}
 
-        # Verify gone
         list_resp = await client.get("/api/chat/pins?slot=slot-1")
         list_data = await list_resp.json()
         assert len(list_data["pins"]) == 0
@@ -981,7 +980,6 @@ async def test_delete_by_query_removes_pin(tmp_path):
         data = await del_resp.json()
         assert data == {"ok": True}
 
-        # Verify gone
         list_resp = await client.get("/api/chat/pins?slot=slot-q")
         list_data = await list_resp.json()
         assert len(list_data["pins"]) == 0

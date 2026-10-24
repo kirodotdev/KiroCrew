@@ -124,26 +124,29 @@ class TestCronCreateTimezonePersistenceOwner:
         return request, mock_state
 
     @pytest.mark.asyncio
-    async def test_timezone_passed_through_add_job_every(self):
+    @pytest.mark.parametrize(
+        "schedule, timezone",
+        [
+            pytest.param(
+                {"every": 300}, "America/New_York", id="timezone_passed_through_add_job_every"
+            ),
+            pytest.param(
+                {"cron": "0 9 * * *"},
+                "Europe/London",
+                id="timezone_passed_through_add_job_cron_expr",
+            ),
+        ],
+    )
+    async def test_timezone_passed_through_add_job(self, schedule, timezone):
         request, state = self._make_request(
-            {"name": "t", "message": "m", "every": 300, "timezone": "America/New_York"}
+            {"name": "t", "message": "m", **schedule, "timezone": timezone}
         )
         resp = await api_crons_create(request)
         assert resp.status == 200
         # timezone reaches the create call (folded into the single first _save),
         # NOT a post-hoc job.timezone assignment.
         _, kwargs = state.crons.add_job_async.call_args
-        assert kwargs.get("timezone") == "America/New_York"
-
-    @pytest.mark.asyncio
-    async def test_timezone_passed_through_add_job_cron_expr(self):
-        request, state = self._make_request(
-            {"name": "t", "message": "m", "cron": "0 9 * * *", "timezone": "Europe/London"}
-        )
-        resp = await api_crons_create(request)
-        assert resp.status == 200
-        _, kwargs = state.crons.add_job_async.call_args
-        assert kwargs.get("timezone") == "Europe/London"
+        assert kwargs.get("timezone") == timezone
 
     @pytest.mark.asyncio
     async def test_no_post_hoc_timezone_only_save_not_called_for_tz_alone(self):
@@ -191,22 +194,23 @@ class TestCronCreateModel:
         assert resp.status == 200
 
     @pytest.mark.asyncio
-    async def test_invalid_model_format_rejected(self):
-        request = self._make_request(
-            {"name": "t", "message": "m", "every": 300, "model": "../../etc/passwd"}
-        )
-        resp = await api_crons_create(request)
-        assert resp.status == 400
-        body = json.loads(resp.body)
-        assert "invalid model format" in body["error"]
-
-    @pytest.mark.asyncio
-    async def test_malformed_model_rejected(self):
-        # A value that violates _MODEL_NAME_RE (contains a space and "!") is
-        # still rejected by the FORMAT gate — that gate is retained.
-        request = self._make_request(
-            {"name": "t", "message": "m", "every": 300, "model": "bad model!"}
-        )
+    @pytest.mark.parametrize(
+        "model",
+        [
+            pytest.param("../../etc/passwd", id="invalid_model_format_rejected"),
+            # A value that violates _MODEL_NAME_RE (contains a space and "!") is
+            # still rejected by the FORMAT gate -- that gate is retained.
+            pytest.param("bad model!", id="malformed_model_rejected"),
+            # Brackets alone are not a free pass: an id that keeps an illegal
+            # character inside the qualifier is still refused by the format gate.
+            pytest.param("gpt-6-astra[high]!", id="qualified_model_with_illegal_char_rejected"),
+            # A numeric/bool JSON `model` must be rejected as a clean 400, not raise
+            # AttributeError on .strip() and leak an HTTP 500.
+            pytest.param(123, id="non_string_model_rejected"),
+        ],
+    )
+    async def test_model_rejected(self, model):
+        request = self._make_request({"name": "t", "message": "m", "every": 300, "model": model})
         resp = await api_crons_create(request)
         assert resp.status == 400
         body = json.loads(resp.body)
@@ -267,28 +271,6 @@ class TestCronCreateModel:
         assert resp.status == 400
         assert "invalid model format" in json.loads(resp.body)["error"]
         request.app["state"].crons.add_job_async.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_qualified_model_with_illegal_char_rejected(self):
-        # Brackets alone are not a free pass: an id that keeps an illegal
-        # character inside the qualifier is still refused by the format gate.
-        request = self._make_request(
-            {"name": "t", "message": "m", "every": 300, "model": "gpt-6-astra[high]!"}
-        )
-        resp = await api_crons_create(request)
-        assert resp.status == 400
-        body = json.loads(resp.body)
-        assert "invalid model format" in body["error"]
-
-    @pytest.mark.asyncio
-    async def test_non_string_model_rejected(self):
-        # A numeric/bool JSON `model` must be rejected as a clean 400, not raise
-        # AttributeError on .strip() and leak an HTTP 500.
-        request = self._make_request({"name": "t", "message": "m", "every": 300, "model": 123})
-        resp = await api_crons_create(request)
-        assert resp.status == 400
-        body = json.loads(resp.body)
-        assert "invalid model format" in body["error"]
 
 
 class TestCronListFields:

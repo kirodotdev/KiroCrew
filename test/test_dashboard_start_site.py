@@ -58,9 +58,11 @@ def _eaddrinuse() -> OSError:
 async def test_start_site_succeeds_immediately() -> None:
     """Happy path: site.start() works on the first attempt."""
     site = _make_site()
-    await _start_site(site, 7777, retries=5, delay=0.01)
-    site.start.assert_awaited_once()
+    reclaim = AsyncMock()
+    await _start_site(site, 7777, retries=5, delay=0.01, reclaim=reclaim)
+    site.start.assert_awaited_once_with()
     site.stop.assert_not_awaited()
+    reclaim.assert_not_awaited()
 
 
 @pytest.mark.asyncio

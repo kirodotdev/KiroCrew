@@ -510,8 +510,26 @@ class TestTheCodeTextOfAPage:
     def texts(html: str) -> list[str]:
         return [html[start:end] for start, end in dashboard_frame.code_spans(html)]
 
-    def test_a_page_with_neither_element_has_no_span(self) -> None:
-        assert self.texts('<p data-dashboard-field="goal"></p><b onclick="f()">x</b>') == []
+    @pytest.mark.parametrize(
+        "html",
+        [
+            pytest.param(
+                '<p data-dashboard-field="goal"></p><b onclick="f()">x</b>',
+                id="a_page_with_neither_element_has_no_span",
+            ),
+            pytest.param(
+                "<scripted>x</scripted><styles>y</styles>", id="a_longer_name_is_not_one_of_them"
+            ),
+            pytest.param("<script></script><style></style>", id="an_empty_element_has_no_span"),
+            pytest.param("<plaintext><script>a</script>", id="plaintext_ends_the_scan"),
+            pytest.param(
+                "<a =x><script>a</script>",
+                id="an_attribute_name_the_scan_cannot_read_ends_the_scan",
+            ),
+        ],
+    )
+    def test_no_span(self, html: str) -> None:
+        assert self.texts(html) == []
 
     def test_the_span_is_the_text_and_the_tags_stay_markup(self) -> None:
         html = '<p>a</p><script type="module">let x = 1;</script><b>b</b><style>.a{c:red}</style>'
@@ -520,22 +538,32 @@ class TestTheCodeTextOfAPage:
     def test_the_names_fold_case_and_an_end_tag_may_carry_whitespace(self) -> None:
         assert self.texts("<SCRIPT>a</Script ><Style>b</STYLE\n>") == ["a", "b"]
 
-    def test_a_longer_name_is_not_one_of_them(self) -> None:
-        assert self.texts("<scripted>x</scripted><styles>y</styles>") == []
-
-    def test_an_empty_element_has_no_span(self) -> None:
-        assert self.texts("<script></script><style></style>") == []
-
-    def test_an_end_tag_must_end_its_name(self) -> None:
-        assert self.texts("<script>a</scripts>b</script>") == ["a</scripts>b"]
-
-    def test_the_first_end_tag_ends_the_element_as_the_parser_reads_it(self) -> None:
-        assert self.texts("<script>var s = '</script>';</script>") == ["var s = '"]
-
-    def test_a_style_inside_a_script_is_script_text(self) -> None:
-        assert self.texts("<script>var a = '<style>x</style>';</script>") == [
-            "var a = '<style>x</style>';"
-        ]
+    @pytest.mark.parametrize(
+        "html, spans",
+        [
+            pytest.param(
+                "<script>a</scripts>b</script>", ["a</scripts>b"], id="an_end_tag_must_end_its_name"
+            ),
+            pytest.param(
+                "<script>var s = '</script>';</script>",
+                ["var s = '"],
+                id="the_first_end_tag_ends_the_element_as_the_parser_reads_it",
+            ),
+            pytest.param(
+                "<script>var a = '<style>x</style>';</script>",
+                ["var a = '<style>x</style>';"],
+                id="a_style_inside_a_script_is_script_text",
+            ),
+            pytest.param(
+                "<script data-note=\">\" data-k='>'>var x</script><p>t</p>",
+                ["var x"],
+                id="a_greater_than_inside_a_quoted_value_does_not_end_the_start_tag",
+            ),
+            pytest.param("1 < 2 and 3 <4 <script>a</script>", ["a"], id="a_lone_less_than_is_text"),
+        ],
+    )
+    def test_the_span_is_the_element_text(self, html: str, spans: list[str]) -> None:
+        assert self.texts(html) == spans
 
     def test_a_limit_stops_the_scan_after_that_many(self) -> None:
         html = "<script>a</script><style>b</style><script>c</script>"
@@ -560,9 +588,6 @@ class TestTheCodeTextOfAPage:
         assert self.texts('<p title="<style>">x</p>') == []
         assert self.texts("<p title='<script>'>x</p><script>a</script>") == ["a"]
         assert self.texts('<a href="x" data-t="<script>">t</a><style>b</style>') == ["b"]
-
-    def test_a_greater_than_inside_a_quoted_value_does_not_end_the_start_tag(self) -> None:
-        assert self.texts("<script data-note=\">\" data-k='>'>var x</script><p>t</p>") == ["var x"]
 
     @pytest.mark.parametrize("name", ["textarea", "title", "xmp", "iframe", "noembed", "noframes"])
     def test_the_content_of_a_raw_text_element_is_text(self, name: str) -> None:
@@ -603,9 +628,6 @@ class TestTheCodeTextOfAPage:
         assert self.texts("<![CDATA[<script>x</script>]]><script>a</script>") == ["a"]
         assert self.texts("<?xml <script> ?><script>a</script>") == ["a"]
         assert self.texts("</ <script>><script>a</script>") == ["a"]
-
-    def test_a_lone_less_than_is_text(self) -> None:
-        assert self.texts("1 < 2 and 3 <4 <script>a</script>") == ["a"]
 
     # -- names are read as the tokenizer reads them, not as Python folds them ---------
 
@@ -714,12 +736,6 @@ class TestTheCodeTextOfAPage:
         """HTML ignores the slash and opens a script; a value ending in ``/`` looks the same."""
         assert self.texts("<p><script/></p><script>a</script>") == []
         assert self.texts("<script src=a/><script>a</script>") == []
-
-    def test_plaintext_ends_the_scan(self) -> None:
-        assert self.texts("<plaintext><script>a</script>") == []
-
-    def test_an_attribute_name_the_scan_cannot_read_ends_the_scan(self) -> None:
-        assert self.texts("<a =x><script>a</script>") == []
 
     def test_a_page_that_needs_more_steps_than_the_bound_gets_no_more_spans(self) -> None:
         reads = dashboard_frame._MAX_SCAN_STEPS

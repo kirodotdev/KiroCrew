@@ -11,6 +11,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_ready_kiro_prerequisite, _make_state
 from dashboard_chat_helpers import _provider_mock
 
+from kiro_crew.dashboard.chat_utils_slots import effective_session_key
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
 
@@ -66,6 +67,7 @@ class TestStopReasonCancelled:
 
         state.sessions.record_success.assert_not_called()
         state.sessions.record_failure.assert_not_called()
+        assert [m["content"] for m in slot.messages if m.get("role") == "assistant"] == ["partial"]
 
     @staticmethod
     def _wire_reinjection(state, tmp_path, monkeypatch):
@@ -118,8 +120,8 @@ class TestStopReasonCancelled:
 
         await _run_chat(state, slot, "hello")
 
-        state.sessions.consume_needs_reinjection.assert_called()
-        state.sessions.mark_needs_reinjection.assert_called_once()
+        state.sessions.consume_needs_reinjection.assert_called_with(effective_session_key(slot))
+        state.sessions.mark_needs_reinjection.assert_called_once_with(effective_session_key(slot))
 
     @pytest.mark.asyncio
     async def test_exception_mid_turn_restores_the_reinjection_flag(self, tmp_path, monkeypatch):
@@ -144,7 +146,7 @@ class TestStopReasonCancelled:
 
         await _run_chat(state, slot, "hello")
 
-        state.sessions.mark_needs_reinjection.assert_called_once()
+        state.sessions.mark_needs_reinjection.assert_called_once_with(effective_session_key(slot))
 
     @pytest.mark.asyncio
     async def test_landed_turn_does_not_restore_the_reinjection_flag(self, tmp_path, monkeypatch):
@@ -166,7 +168,9 @@ class TestStopReasonCancelled:
 
         await _run_chat(state, slot, "hello")
 
+        state.sessions.consume_needs_reinjection.assert_called_with(effective_session_key(slot))
         state.sessions.mark_needs_reinjection.assert_not_called()
+        state.sessions.record_success.assert_called_once_with(effective_session_key(slot))
 
     @pytest.mark.asyncio
     async def test_handler_stop_reason_cancelled_skips_consolidation(self, tmp_path, monkeypatch):
@@ -187,6 +191,7 @@ class TestStopReasonCancelled:
         await _run_chat(state, slot, "hello")
 
         state.consolidator.maybe_consolidate.assert_not_called()
+        assert [m["content"] for m in slot.messages if m.get("role") == "assistant"] == ["partial"]
 
     @pytest.mark.asyncio
     async def test_handler_stop_reason_end_turn_preserves_existing_behavior(
@@ -209,8 +214,8 @@ class TestStopReasonCancelled:
 
         await _run_chat(state, slot, "hello")
 
-        state.sessions.record_success.assert_called_once()
-        state.consolidator.maybe_consolidate.assert_called_once()
+        state.sessions.record_success.assert_called_once_with(effective_session_key(slot))
+        state.consolidator.maybe_consolidate.assert_called_once_with(effective_session_key(slot))
 
     @pytest.mark.asyncio
     async def test_monitor_wake_turn_does_not_write_user_memory(self, tmp_path, monkeypatch):
@@ -231,7 +236,7 @@ class TestStopReasonCancelled:
 
         await _run_chat(state, slot, f"{MONITOR_WAKE_PREFIX}\nChecks failed.")
 
-        state.sessions.record_success.assert_called_once()
+        state.sessions.record_success.assert_called_once_with(effective_session_key(slot))
         state.consolidator.maybe_consolidate.assert_not_called()
 
     @pytest.mark.asyncio
@@ -560,7 +565,6 @@ class TestStopTurnSlotState:
         async def fake_stop_turn(
             key, *, force=False, preserve_queue=False, on_soft=None, on_hard=None
         ):
-            # Verify the stop_event was inserted before callbacks
             stop_msgs = [m for m in slot.messages if _is_stop_event(m)]
             assert len(stop_msgs) == 1
             pre_data = json.loads(stop_msgs[0]["content"])

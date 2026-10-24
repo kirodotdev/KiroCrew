@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import functools
+import logging
 import os
 import socket
 import stat
@@ -62,9 +63,12 @@ requires_unix_socket = pytest.mark.skipif(
 
 
 class TestRemoveStaleUnixSocket:
-    def test_absent_path_is_not_an_error(self, tmp_path: Path) -> None:
+    def test_absent_path_is_not_an_error(self, tmp_path: Path, caplog) -> None:
         """A missing socket file is the normal first-boot case, not a failure."""
+        caplog.set_level(logging.WARNING, logger=srv.logger.name)
         srv._remove_stale_unix_socket(tmp_path / "never-existed.sock")
+        assert [r.getMessage() for r in caplog.records if r.name == srv.logger.name] == []
+        assert list(tmp_path.iterdir()) == []
 
     def test_a_regular_file_is_left_in_place(self, tmp_path: Path, caplog) -> None:
         """Only a socket inode may be removed.
@@ -1480,6 +1484,8 @@ class TestStartDashboardWiring:
         runner, state, _spies = await _start_dashboard(tmp_path, monkeypatch)
         try:
             spy.assert_awaited_once()
+            assert spy.await_args.kwargs["allowed_origins"] == runner.app["allowed_origins"]
+            assert state.tunnel_manager is None
         finally:
             await runner.cleanup()
             await _cancel_stray_tasks()
@@ -1503,7 +1509,7 @@ class TestGatewayShutdownIsGuaranteed:
         try:
             # cleanup dispatches _hooks_shutdown; the finally must still sweep.
             await runner.cleanup()
-            spies["on_gateway_shutdown"].assert_awaited_once()
+            spies["on_gateway_shutdown"].assert_awaited_once_with()
         finally:
             await _cancel_stray_tasks()
             _release_process_handles(state)

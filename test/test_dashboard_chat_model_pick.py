@@ -96,6 +96,7 @@ class TestSlotProbeWrapsSharedRestoreBody:
         ) as probe:
             await chat_runner._probe_fallback_restore_for_slot(slot, MagicMock())
         probe.assert_not_awaited()
+        assert (slot.model, slot._fallback_primary_model) == ("", "primary-m")
 
     def test_sticky_clear_drops_marker_and_slot_fields(self):
         from kiro_crew.dashboard import chat_runner

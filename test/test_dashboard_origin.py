@@ -31,44 +31,41 @@ class TestBindAddressFor:
     never widen it).
     """
 
-    def test_default_is_loopback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(
+        "local_only, expected",
+        [
+            pytest.param(True, "127.0.0.1", id="default_is_loopback"),
+            pytest.param(False, "0.0.0.0", id="local_only_false_binds_all"),
+        ],
+    )
+    def test_without_the_env_var(
+        self, monkeypatch: pytest.MonkeyPatch, local_only: bool, expected: str
+    ) -> None:
         monkeypatch.delenv("KIROCREW_BIND", raising=False)
-        assert bind_address_for(True) == "127.0.0.1"
+        assert bind_address_for(local_only) == expected
 
-    def test_local_only_false_binds_all(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("KIROCREW_BIND", raising=False)
-        assert bind_address_for(False) == "0.0.0.0"
-
-    def test_env_override_binds_all_interfaces(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("KIROCREW_BIND", "0.0.0.0")
-        assert bind_address_for(True) == "0.0.0.0"
-
-    def test_env_override_specific_interface(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("KIROCREW_BIND", "10.0.0.7")
-        assert bind_address_for(True) == "10.0.0.7"
-
-    def test_env_override_ipv6_any(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("KIROCREW_BIND", "::")
-        assert bind_address_for(True) == "::"
-
-    def test_env_override_whitespace_stripped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("KIROCREW_BIND", " 0.0.0.0 ")
-        assert bind_address_for(True) == "0.0.0.0"
-
-    def test_invalid_value_falls_back_to_loopback(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Fail-narrow: a typo must degrade to loopback, never widen exposure.
-        monkeypatch.setenv("KIROCREW_BIND", "all-interfaces-please")
-        assert bind_address_for(True) == "127.0.0.1"
-
-    def test_hostname_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Only IP literals: a hostname would resolve at bind time with
-        # environment-dependent results; reject rather than guess.
-        monkeypatch.setenv("KIROCREW_BIND", "eth0.local")
-        assert bind_address_for(True) == "127.0.0.1"
-
-    def test_empty_value_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("KIROCREW_BIND", "")
-        assert bind_address_for(True) == "127.0.0.1"
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            pytest.param("0.0.0.0", "0.0.0.0", id="env_override_binds_all_interfaces"),
+            pytest.param("10.0.0.7", "10.0.0.7", id="env_override_specific_interface"),
+            pytest.param("::", "::", id="env_override_ipv6_any"),
+            pytest.param(" 0.0.0.0 ", "0.0.0.0", id="env_override_whitespace_stripped"),
+            # Fail-narrow: a typo must degrade to loopback, never widen exposure.
+            pytest.param(
+                "all-interfaces-please", "127.0.0.1", id="invalid_value_falls_back_to_loopback"
+            ),
+            # Only IP literals: a hostname would resolve at bind time with
+            # environment-dependent results; reject rather than guess.
+            pytest.param("eth0.local", "127.0.0.1", id="hostname_rejected"),
+            pytest.param("", "127.0.0.1", id="empty_value_is_ignored"),
+        ],
+    )
+    def test_with_the_env_var(
+        self, monkeypatch: pytest.MonkeyPatch, value: str, expected: str
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_BIND", value)
+        assert bind_address_for(True) == expected
 
     def test_override_does_not_touch_local_only_urls(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The override changes the TCP bind ONLY: URL building keeps
@@ -108,19 +105,30 @@ class TestBuildAllowedOrigins:
         with_empty = build_allowed_origins(5476, local_only=True, dashboard_url="")
         assert baseline == with_empty
 
-    def test_dashboard_url_https_adds_origin(self) -> None:
-        origins = build_allowed_origins(
-            5476, local_only=True, dashboard_url="https://kirocrew.local"
-        )
-        assert "https://kirocrew.local" in origins
-
-    def test_dashboard_url_http_with_port(self) -> None:
-        origins = build_allowed_origins(5476, local_only=True, dashboard_url="http://myhost:8080")
-        assert "http://myhost:8080" in origins
-
-    def test_dashboard_url_no_scheme_normalized(self) -> None:
-        origins = build_allowed_origins(5476, local_only=True, dashboard_url="myhost:8080")
-        assert "http://myhost:8080" in origins
+    @pytest.mark.parametrize(
+        "dashboard_url, origin",
+        [
+            pytest.param(
+                "https://kirocrew.local",
+                "https://kirocrew.local",
+                id="dashboard_url_https_adds_origin",
+            ),
+            pytest.param(
+                "http://myhost:8080", "http://myhost:8080", id="dashboard_url_http_with_port"
+            ),
+            pytest.param(
+                "myhost:8080", "http://myhost:8080", id="dashboard_url_no_scheme_normalized"
+            ),
+            pytest.param(
+                "https://kirocrew.local:8443",
+                "https://kirocrew.local:8443",
+                id="dashboard_url_keeps_non_default_port",
+            ),
+        ],
+    )
+    def test_dashboard_url_adds_its_origin(self, dashboard_url: str, origin: str) -> None:
+        origins = build_allowed_origins(5476, local_only=True, dashboard_url=dashboard_url)
+        assert origin in origins
 
     def test_dashboard_url_preserves_existing_origins(self) -> None:
         origins = build_allowed_origins(
@@ -133,25 +141,19 @@ class TestBuildAllowedOrigins:
         assert "https://kirocrew.local" in origins
         assert "http://localhost:5476" in origins
 
-    def test_dashboard_url_strips_default_https_port(self) -> None:
-        origins = build_allowed_origins(
-            5476, local_only=True, dashboard_url="https://kirocrew.local:443"
-        )
-        assert "https://kirocrew.local" in origins
-        assert "https://kirocrew.local:443" not in origins
-
-    def test_dashboard_url_strips_default_http_port(self) -> None:
-        origins = build_allowed_origins(
-            5476, local_only=True, dashboard_url="http://kirocrew.local:80"
-        )
-        assert "http://kirocrew.local" in origins
-        assert "http://kirocrew.local:80" not in origins
-
-    def test_dashboard_url_keeps_non_default_port(self) -> None:
-        origins = build_allowed_origins(
-            5476, local_only=True, dashboard_url="https://kirocrew.local:8443"
-        )
-        assert "https://kirocrew.local:8443" in origins
+    @pytest.mark.parametrize(
+        "origin, port",
+        [
+            pytest.param(
+                "https://kirocrew.local", 443, id="dashboard_url_strips_default_https_port"
+            ),
+            pytest.param("http://kirocrew.local", 80, id="dashboard_url_strips_default_http_port"),
+        ],
+    )
+    def test_dashboard_url_strips_the_default_port(self, origin: str, port: int) -> None:
+        origins = build_allowed_origins(5476, local_only=True, dashboard_url=f"{origin}:{port}")
+        assert origin in origins
+        assert f"{origin}:{port}" not in origins
 
     def test_dashboard_url_malformed_port_ignored(self) -> None:
         origins = build_allowed_origins(5476, local_only=True, dashboard_url="https://host:abc")
@@ -159,37 +161,25 @@ class TestBuildAllowedOrigins:
 
 
 class TestDashboardOrigin:
-    def test_empty_returns_empty(self) -> None:
-        assert dashboard_origin("") == ""
-
-    def test_none_returns_empty(self) -> None:
-        # None-safety guard: an explicit "url": null in config must be treated
-        # as "no origin", not crash the caller.
-        assert dashboard_origin(None) == ""  # type: ignore[arg-type]
-
-    def test_https_url(self) -> None:
-        assert dashboard_origin("https://kirocrew.local") == "https://kirocrew.local"
-
-    def test_bare_host_defaults_to_http(self) -> None:
-        assert dashboard_origin("myhost:8080") == "http://myhost:8080"
-
-    def test_strips_default_https_port(self) -> None:
-        assert dashboard_origin("https://host:443") == "https://host"
-
-    def test_malformed_port_returns_empty(self) -> None:
-        assert dashboard_origin("https://host:abc") == ""
-
-    def test_ipv6_brackets_preserved(self) -> None:
-        assert dashboard_origin("http://[::1]:8080") == "http://[::1]:8080"
-
-    def test_ipv6_no_port(self) -> None:
-        assert dashboard_origin("http://[::1]") == "http://[::1]"
-
-    def test_ftp_scheme_rejected(self) -> None:
-        assert dashboard_origin("ftp://host") == ""
-
-    def test_file_scheme_rejected(self) -> None:
-        assert dashboard_origin("file:///etc/passwd") == ""
+    @pytest.mark.parametrize(
+        "url, expected",
+        [
+            pytest.param("", "", id="empty_returns_empty"),
+            # None-safety guard: an explicit "url": null in config must be treated
+            # as "no origin", not crash the caller.
+            pytest.param(None, "", id="none_returns_empty"),
+            pytest.param("https://kirocrew.local", "https://kirocrew.local", id="https_url"),
+            pytest.param("myhost:8080", "http://myhost:8080", id="bare_host_defaults_to_http"),
+            pytest.param("https://host:443", "https://host", id="strips_default_https_port"),
+            pytest.param("https://host:abc", "", id="malformed_port_returns_empty"),
+            pytest.param("http://[::1]:8080", "http://[::1]:8080", id="ipv6_brackets_preserved"),
+            pytest.param("http://[::1]", "http://[::1]", id="ipv6_no_port"),
+            pytest.param("ftp://host", "", id="ftp_scheme_rejected"),
+            pytest.param("file:///etc/passwd", "", id="file_scheme_rejected"),
+        ],
+    )
+    def test_origin_of(self, url: str | None, expected: str) -> None:
+        assert dashboard_origin(url) == expected  # type: ignore[arg-type]
 
 
 class TestSchemeAgreement:
@@ -211,22 +201,20 @@ class TestParseDashboardUrlMalformed:
     def _clean_port_env(self, monkeypatch):
         monkeypatch.delenv("KIROCREW_PORT", raising=False)
 
-    def test_malformed_ipv6_falls_back_to_defaults(self) -> None:
-        # urlparse("http://[::1") raises ValueError('Invalid IPv6 URL').
-        host, port = parse_dashboard_url("http://[::1")
-        assert host == ""
-        assert port == 5476  # _DEFAULT_PORT
-
-    def test_non_integer_port_falls_back_to_defaults(self) -> None:
-        # parsed.port raises ValueError on a non-numeric port.
-        host, port = parse_dashboard_url("http://myhost:notaport")
-        assert host == ""
-        assert port == 5476
-
-    def test_valid_url_still_parses(self) -> None:
-        host, port = parse_dashboard_url("http://myhost:9090")
-        assert host == "myhost"
-        assert port == 9090
+    @pytest.mark.parametrize(
+        "url, expected",
+        [
+            # urlparse("http://[::1") raises ValueError('Invalid IPv6 URL'); 5476 is _DEFAULT_PORT.
+            pytest.param("http://[::1", ("", 5476), id="malformed_ipv6_falls_back_to_defaults"),
+            # parsed.port raises ValueError on a non-numeric port.
+            pytest.param(
+                "http://myhost:notaport", ("", 5476), id="non_integer_port_falls_back_to_defaults"
+            ),
+            pytest.param("http://myhost:9090", ("myhost", 9090), id="valid_url_still_parses"),
+        ],
+    )
+    def test_parse(self, url: str, expected: tuple[str, int]) -> None:
+        assert parse_dashboard_url(url) == expected
 
 
 # Patch target for TestFormatDashboardUrls below. format_dashboard_urls lives in
@@ -400,17 +388,19 @@ class TestFormatDashboardUrls:
         proxy_line = [ln for ln in lines if "Proxy" in ln][0]
         assert "proxy.devspaces.example.com?token=abc" in proxy_line
 
-    def test_not_local_without_token_raises(self) -> None:
+    @pytest.mark.parametrize(
+        "url, local_only",
+        [
+            pytest.param("http://host:5476", False, id="not_local_without_token_raises"),
+            pytest.param(
+                "http://host:5476?debug=1", False, id="not_local_with_non_token_query_raises"
+            ),
+            pytest.param("http://host:5476", "yes", id="truthy_non_bool_local_only_raises"),
+        ],
+    )
+    def test_a_remote_url_without_a_token_raises(self, url: str, local_only: object) -> None:
         with pytest.raises(ValueError, match="token is required"):
-            format_dashboard_urls("http://host:5476", port=5476, local_only=False)
-
-    def test_not_local_with_non_token_query_raises(self) -> None:
-        with pytest.raises(ValueError, match="token is required"):
-            format_dashboard_urls("http://host:5476?debug=1", port=5476, local_only=False)
-
-    def test_truthy_non_bool_local_only_raises(self) -> None:
-        with pytest.raises(ValueError, match="token is required"):
-            format_dashboard_urls("http://host:5476", port=5476, local_only="yes")  # type: ignore[arg-type]
+            format_dashboard_urls(url, port=5476, local_only=local_only)  # type: ignore[arg-type]
 
 
 class TestCheckOriginLoopbackTrust:
@@ -441,14 +431,78 @@ class TestCheckOriginLoopbackTrust:
         request.app = {"allowed_origins": allowed}
         return request
 
-    def test_localhost_different_port_rejected_by_default(self) -> None:
-        """A loopback origin on a non-bound port is NOT trusted by default (CSRF guard)."""
-        request = self._make_request("http://localhost:8777")
-        assert check_origin(request) is False
-
-    def test_127_0_0_1_different_port_rejected_by_default(self) -> None:
-        request = self._make_request("http://127.0.0.1:9999")
-        assert check_origin(request) is False
+    @pytest.mark.parametrize(
+        "origin, remote, host, trusted",
+        [
+            # A loopback origin on a non-bound port is NOT trusted by default (CSRF guard).
+            pytest.param(
+                "http://localhost:8777",
+                "127.0.0.1",
+                "",
+                False,
+                id="localhost_different_port_rejected_by_default",
+            ),
+            pytest.param(
+                "http://127.0.0.1:9999",
+                "127.0.0.1",
+                "",
+                False,
+                id="127_0_0_1_different_port_rejected_by_default",
+            ),
+            # Standard case: origin matches allowed set exactly.
+            pytest.param(
+                "http://localhost:5476", "127.0.0.1", "", True, id="exact_match_still_works"
+            ),
+            # Remote origin not in allowed set should be rejected.
+            pytest.param(
+                "http://evil.com:5476", "127.0.0.1", "", False, id="non_loopback_origin_rejected"
+            ),
+            # No Origin header from loopback remote (local process) is trusted.
+            pytest.param("", "127.0.0.1", "", True, id="no_origin_loopback_remote_trusted"),
+            # No Origin header from non-loopback remote is rejected.
+            pytest.param("", "10.0.0.5", "", False, id="no_origin_non_loopback_remote_rejected"),
+            # Same-origin loopback fallback (embedded multi-instance iframe): the
+            # iframe is served at <host>:<tunnelPort> and opens its WS to that same
+            # location.host, so Origin == Host. Trust it even though the port is
+            # not in allowed_origins.
+            pytest.param(
+                "http://kirocrew.localhost:7779",
+                "127.0.0.1",
+                "kirocrew.localhost:7779",
+                True,
+                id="same_origin_loopback_port_trusted",
+            ),
+            pytest.param(
+                "http://127.0.0.1:8777",
+                "127.0.0.1",
+                "127.0.0.1:8777",
+                True,
+                id="same_origin_127_loopback_port_trusted",
+            ),
+            # SEC-016 boundary preserved: a malicious local page on an arbitrary port
+            # sends its own Origin while the Host is the gateway's -- they differ, so
+            # the same-origin fallback must NOT trust it.
+            pytest.param(
+                "http://localhost:9999",
+                "127.0.0.1",
+                "kirocrew.localhost:7779",
+                False,
+                id="origin_host_mismatch_rejected",
+            ),
+            # The fallback is loopback-only: a public host with Origin == Host must
+            # still go through the allowlist (not auto-trusted).
+            pytest.param(
+                "http://evil.com:7779",
+                "127.0.0.1",
+                "evil.com:7779",
+                False,
+                id="same_origin_non_loopback_not_trusted_by_fallback",
+            ),
+        ],
+    )
+    def test_default_allowed_set(self, origin: str, remote: str, host: str, trusted: bool) -> None:
+        request = self._make_request(origin, remote=remote, host=host)
+        assert check_origin(request) is trusted
 
     def test_opted_in_loopback_port_trusted(self) -> None:
         """A loopback port the operator added (via KIROCREW_ALLOWED_LOOPBACK_PORTS,
@@ -461,55 +515,6 @@ class TestCheckOriginLoopbackTrust:
         }
         request = self._make_request("http://localhost:8777", allowed=allowed)
         assert check_origin(request) is True
-
-    def test_exact_match_still_works(self) -> None:
-        """Standard case: origin matches allowed set exactly."""
-        request = self._make_request("http://localhost:5476")
-        assert check_origin(request) is True
-
-    def test_non_loopback_origin_rejected(self) -> None:
-        """Remote origin not in allowed set should be rejected."""
-        request = self._make_request("http://evil.com:5476")
-        assert check_origin(request) is False
-
-    def test_no_origin_loopback_remote_trusted(self) -> None:
-        """No Origin header from loopback remote (local process) is trusted."""
-        request = self._make_request("", remote="127.0.0.1")
-        assert check_origin(request) is True
-
-    def test_no_origin_non_loopback_remote_rejected(self) -> None:
-        """No Origin header from non-loopback remote is rejected."""
-        request = self._make_request("", remote="10.0.0.5")
-        assert check_origin(request) is False
-
-    # --- same-origin loopback fallback (embedded multi-instance iframe) ---
-
-    def test_same_origin_loopback_port_trusted(self) -> None:
-        """The embedded instance iframe is served at <host>:<tunnelPort> and opens
-        its WS to that same location.host, so Origin == Host. Trust it even though
-        the port is not in allowed_origins."""
-        request = self._make_request(
-            "http://kirocrew.localhost:7779",
-            host="kirocrew.localhost:7779",
-        )
-        assert check_origin(request) is True
-
-    def test_same_origin_127_loopback_port_trusted(self) -> None:
-        request = self._make_request("http://127.0.0.1:8777", host="127.0.0.1:8777")
-        assert check_origin(request) is True
-
-    def test_origin_host_mismatch_rejected(self) -> None:
-        """SEC-016 boundary preserved: a malicious local page on an arbitrary port
-        sends its own Origin while the Host is the gateway's — they differ, so the
-        same-origin fallback must NOT trust it."""
-        request = self._make_request("http://localhost:9999", host="kirocrew.localhost:7779")
-        assert check_origin(request) is False
-
-    def test_same_origin_non_loopback_not_trusted_by_fallback(self) -> None:
-        """The fallback is loopback-only: a public host with Origin == Host must
-        still go through the allowlist (not auto-trusted)."""
-        request = self._make_request("http://evil.com:7779", host="evil.com:7779")
-        assert check_origin(request) is False
 
 
 class TestAllowedLoopbackPortsEnv:

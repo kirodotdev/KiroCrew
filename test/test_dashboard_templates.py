@@ -686,9 +686,17 @@ class TestTheScaffoldsFieldList:
         template's own test can never report, because the test cannot import it either."""
         mod = _scaffold()
         fields = mod.parse_fields(["settled:fraction:requested", "goal:str|unsaid"])
-        for path, text in mod.emit("probe_board", "work", fields, Path("/nonexistent")).items():
+        emitted = mod.emit("probe_board", "work", fields, Path("/nonexistent"))
+        compiled = []
+        for path, text in emitted.items():
             if path.suffix == ".py":
                 compile(text, str(path), "exec", dont_inherit=True)
+                compiled.append(path.name)
+        assert sorted(compiled) == [
+            "probe_board_contract.py",
+            "probe_board_provider.py",
+            "test_dashboard_template_probe_board.py",
+        ]
 
 
 class TestTheScaffoldedTemplateHoldsTheInvariants:

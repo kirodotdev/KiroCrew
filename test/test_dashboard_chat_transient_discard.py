@@ -564,7 +564,7 @@ class TestRunChatTransientRetryPoisonedDiscard:
         self._wire_sessions(state, client)
         slot = state.get_or_create_slot("s1")
         slot._titled = True
-        # Arrange: an escalation already consumed the one-shot mid-streak.
+        # An escalation already consumed the one-shot mid-streak.
         slot._poisoned_reset_used = True
         slot._prestream_exhausted_cycles = 3
 

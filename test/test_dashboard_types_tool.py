@@ -115,17 +115,21 @@ class TestTheRenderedCatalog:
         assert "last.decision: string" in out
         assert '"properties"' not in out
 
-    def test_an_array_says_a_path_cannot_reach_inside_it(self) -> None:
-        out = _render_types(dt.describe({}))
-        assert "moments: array -- a path cannot reach inside it" in out
-
-    def test_an_opaque_object_names_its_key(self) -> None:
-        out = _render_types(dt.describe({}))
-        assert "by_model: object, keyed by a model id" in out
-
-    def test_a_nullable_leaf_is_marked(self) -> None:
-        out = _render_types(dt.describe({}))
-        assert "parent_item: string (may be null)" in out
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param(
+                "moments: array -- a path cannot reach inside it",
+                id="an_array_says_a_path_cannot_reach_inside_it",
+            ),
+            pytest.param(
+                "by_model: object, keyed by a model id", id="an_opaque_object_names_its_key"
+            ),
+            pytest.param("parent_item: string (may be null)", id="a_nullable_leaf_is_marked"),
+        ],
+    )
+    def test_the_catalog_says(self, line: str) -> None:
+        assert line in _render_types(dt.describe({}))
 
     def test_an_empty_catalog_is_reported_rather_than_rendered_blank(self) -> None:
         out = _render_types({"types": []})

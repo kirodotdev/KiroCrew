@@ -63,7 +63,6 @@ class TestRuntimeWiringTurn:
             lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
 
-        # Create a context builder with mocked build_message
         from kiro_crew.context import ContextBuilder
         from kiro_crew.memory import MemoryStore
         from kiro_crew.skills import SkillsLoader
@@ -171,7 +170,6 @@ class TestRuntimeWiringTurn:
             )
             return
 
-        # Verify build_message was called with memory_store
         state.sessions.record_failure.assert_not_awaited()
         assert len(build_message_calls) == 1
         assert build_message_calls[0]["kwargs"].get("memory_store") == private_store
