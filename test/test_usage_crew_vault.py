@@ -1,9 +1,11 @@
-"""Credit usage from Crew's own sign-in vault, with no kiro-cli on the host.
+"""Credit usage and signed-in identity from Crew's own sign-in vault, with no kiro-cli on the host.
 
-Covers the vault branch of ``_fetch_usage_bg`` (``_refresh_from_vault``), the
-harness-scoped ownership verdict (``_vault_owns_usage_sync``), the readiness-gate
-bypass on ``/api/sessions/usage`` and its refresh route, and the single-credential
-API client ``fetch_usage_limits_with_credential``.
+Covers the vault branch of ``_fetch_usage_bg`` (``_refresh_from_vault``) and the
+account labels it publishes, the harness-scoped ownership verdict
+(``_vault_owns_usage_sync``, including the bundle route), the vault answer of the
+dashboard's identity door (``fetch_local_identity``), the readiness-gate bypass on
+``/api/sessions/usage`` and its refresh route, and the single-credential API
+client ``fetch_usage_limits_with_credential``.
 """
 
 from __future__ import annotations
@@ -21,6 +23,8 @@ import kiro_crew.dashboard.handlers.sessions as sessions_mod
 
 _FP_A = "fp-a"
 _FP_B = "fp-b"
+#: The vault's public claims for a Google sign-in, as ``vault_identity_claims`` returns them.
+_CLAIMS = {"identity": "social", "provider": "Google"}
 _USAGE = {
     "credits_plan": 1000.0,
     "credits_used": 42.0,
@@ -51,14 +55,22 @@ def _reset():
 
 
 def _vault(*, fps=(_FP_A, _FP_A), current=None, result=None):
-    """Patch the vault seams: fingerprint sequence, provider, API client."""
+    """Patch the vault seams: fingerprint sequence, provider, API client.
+
+    One vault read serves both the fingerprint and the claims
+    (``vault_identity_claims``), so the sequence is patched there: the
+    before-read takes the first fingerprint, the after-read the second.
+    """
     fp_iter = iter(fps)
     provider = MagicMock()
     provider.current = current or AsyncMock(return_value=_cred())
     if result is None:
         result = api.UsageResult(dict(_USAGE), api.AUTH_OK)
     return [
-        patch("kiro_crew.auth.bridge.vault_identity_fingerprint", lambda: next(fp_iter)),
+        patch(
+            "kiro_crew.auth.bridge.vault_identity_claims",
+            lambda: (next(fp_iter), dict(_CLAIMS)),
+        ),
         patch("kiro_crew.auth.bridge.default_token_store", MagicMock()),
         patch("kiro_crew.auth.provider.KasAuthProvider", MagicMock(return_value=provider)),
         patch.object(
@@ -90,6 +102,17 @@ class TestRefreshFromVault:
         assert "_profile_arn" not in sessions_mod._usage_cache
         assert sessions_mod._usage_cache_vault_fp == _FP_A
         resolve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reading_is_labelled_with_the_vault_account_kind(self):
+        # The account modal's provider badge reads ``account_type`` in whoami's
+        # vocabulary; on this path it comes from the vault's own claims, with no
+        # kiro-cli spawned. No e-mail: the vault stores none, and an empty one
+        # would read as "known blank".
+        await _run(_vault())
+        assert sessions_mod._usage_cache["account_type"] == "SocialGoogle"
+        assert "email" not in sessions_mod._usage_cache
+        assert "start_url" not in sessions_mod._usage_cache
 
     @pytest.mark.asyncio
     async def test_not_vault_owned_takes_kiro_cli_path(self):
@@ -187,12 +210,39 @@ class TestRefreshFromVault:
         assert sessions_mod._usage_cache == {"available": False}
 
 
-def _config(backend: str):
-    return SimpleNamespace(agent=SimpleNamespace(acp_backend=backend))
+def _config(backend: str, *, kas_bundle: bool = False):
+    return SimpleNamespace(agent=SimpleNamespace(acp_backend=backend, kas_bundle=kas_bundle))
 
 
 class TestVaultOwnership:
     """The vault owns usage only for the harness that draws its credential from it."""
+
+    def test_kas_bundle_route_owns_whatever_the_vault_holds(self):
+        # The bundle route spawns the engine without kiro-cli and its token
+        # callback reaches Crew alone, so the vault is the only credential there
+        # is: signed in or not, the kiro-cli gate has nothing to say about it.
+        with (
+            patch(
+                "kiro_crew.config.loader.KiroCrewConfig.load",
+                return_value=_config("kas", kas_bundle=True),
+            ),
+            self._holds(False) as holds,
+        ):
+            assert sessions_mod._vault_owns_usage_sync() is True
+        holds.assert_not_called()
+
+    def test_kiro_cli_backend_with_bundle_flag_never_owns(self):
+        # ``kas_bundle`` is a KAS-route setting; it grants the vault nothing on
+        # another harness.
+        with (
+            patch(
+                "kiro_crew.config.loader.KiroCrewConfig.load",
+                return_value=_config("kiro", kas_bundle=True),
+            ),
+            self._holds(True) as holds,
+        ):
+            assert sessions_mod._vault_owns_usage_sync() is False
+        holds.assert_not_called()
 
     @staticmethod
     def _store(token):
@@ -254,6 +304,56 @@ class TestVaultOwnership:
     def test_unreadable_config_keeps_gated_path(self):
         with patch("kiro_crew.config.loader.KiroCrewConfig.load", side_effect=OSError("nope")):
             assert sessions_mod._vault_owns_usage_sync() is False
+
+
+class TestIdentityDoor:
+    """``fetch_local_identity`` answers from the vault whenever the vault owns the credential."""
+
+    @pytest.mark.asyncio
+    async def test_vault_owned_answers_from_the_vault_and_spawns_nothing(self):
+        resolve = AsyncMock(return_value="/bin/kiro-cli")
+        whoami = AsyncMock(return_value={"email": "cli@example.com"})
+        snapshot = AsyncMock(return_value=(_FP_A, {"account_type": "BuilderId"}))
+        with (
+            patch.object(sessions_mod, "_vault_owns_usage", AsyncMock(return_value=True)),
+            patch.object(sessions_mod, "vault_identity_snapshot", snapshot),
+            patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", resolve),
+            patch.object(sessions_mod, "_fetch_whoami_or_none", whoami),
+        ):
+            assert await sessions_mod.fetch_local_identity() == {"account_type": "BuilderId"}
+        # A kiro-cli on PATH is NOT consulted: its login is not the account the
+        # sessions here run as.
+        resolve.assert_not_called()
+        whoami.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_vault_owned_but_signed_out_is_nothing_to_inherit(self):
+        # The bundle route with an empty vault: ``{}`` (a READ answer, no sign-in
+        # to inherit), never ``None`` and never a kiro-cli whoami.
+        resolve = AsyncMock(return_value="/bin/kiro-cli")
+        with (
+            patch.object(sessions_mod, "_vault_owns_usage", AsyncMock(return_value=True)),
+            patch.object(sessions_mod, "vault_identity_snapshot", AsyncMock(return_value=("", {}))),
+            patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", resolve),
+        ):
+            assert await sessions_mod.fetch_local_identity() == {}
+        resolve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_not_vault_owned_keeps_kiro_cli_whoami(self):
+        whoami = AsyncMock(return_value={"email": "cli@example.com"})
+        snapshot = AsyncMock()
+        with (
+            patch.object(sessions_mod, "_vault_owns_usage", AsyncMock(return_value=False)),
+            patch.object(sessions_mod, "vault_identity_snapshot", snapshot),
+            patch.object(
+                sessions_mod, "_resolve_kiro_bin_for_spawn", AsyncMock(return_value="/bin/kiro-cli")
+            ),
+            patch.object(sessions_mod, "_fetch_whoami_or_none", whoami),
+        ):
+            assert await sessions_mod.fetch_local_identity() == {"email": "cli@example.com"}
+        whoami.assert_awaited_once_with("/bin/kiro-cli")
+        snapshot.assert_not_called()
 
 
 def _request(method="GET", path="/api/sessions/usage"):
@@ -328,6 +428,29 @@ class TestUsageGateBypass:
         # B's freshly published reading is left in place for the next poll.
         assert sessions_mod._usage_cache == b_reading
         assert sessions_mod._usage_cache_vault_fp == _FP_B
+
+    @pytest.mark.asyncio
+    async def test_kiro_cli_reading_is_foreign_to_a_signed_out_bundle_vault(self):
+        # The kiro-cli path published a reading (no vault fingerprint); the user
+        # then turns the bundle route on while the vault is empty. Both
+        # fingerprints are "", and equality would keep kiro-cli's account's
+        # balance on screen as the bundle route's for a whole refresh interval.
+        sessions_mod._usage_cache_ts = 10**12  # fresh: the timer would not refresh
+        sessions_mod._usage_cache = {"credits_plan": 5.0, "credits_used": 1.0}
+        sessions_mod._usage_cache_vault_fp = ""
+        fetch = AsyncMock(return_value=None)
+        fingerprint = MagicMock(return_value="")
+        with (
+            patch.object(sessions_mod, "_vault_owns_usage", AsyncMock(return_value=True)),
+            patch("kiro_crew.auth.bridge.vault_identity_fingerprint", fingerprint),
+            patch.object(sessions_mod, "_fetch_usage_bg", fetch),
+        ):
+            resp = await sessions_mod.api_sessions_usage(_request())
+            await asyncio.sleep(0)
+        assert json.loads(resp.body) == {"usage": {"available": False}}
+        fetch.assert_awaited_once_with(vault_owned=True)
+        # Decided from the payload's own provenance, with no vault read needed.
+        fingerprint.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_vault_reading_is_never_served_once_vault_stops_owning(self):

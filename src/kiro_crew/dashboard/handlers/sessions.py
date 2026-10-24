@@ -226,6 +226,7 @@ from kiro_crew.dashboard.handlers import kiro_usage_api
 from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
 )
+from kiro_crew.dashboard.handlers.kiro_vault_identity import vault_identity_snapshot
 from kiro_crew.dashboard.handlers.sessions_parts.usage_scrape import (
     _REASON_ACCOUNT_UNPROVEN,
     _WHOAMI_DIFFERENT,
@@ -561,14 +562,25 @@ def _cache_vault_failure(vault_fp: str, reason: str | None = None) -> None:
 
 
 def _vault_owns_usage_sync() -> bool:
-    """True when the default harness is KAS AND Crew's sign-in vault holds a usable identity.
+    """True when Crew's sign-in vault is the credential the default harness runs on.
 
     That is exactly when the session the user is chatting in draws its credential
-    from the vault (the KAS spawn asks the same :func:`vault_holds_identity`
-    question), so the vault account IS the account whose credits the pill must
-    show. Any other harness -- the kiro-cli backend above all -- keeps the
-    kiro-cli path, so a leftover Crew sign-in never relabels another account's
-    usage. Blocking (a config read and a vault read); never raises.
+    from the vault, so the vault account IS the account whose credits the pill
+    must show and whose identity the dashboard names (:func:`fetch_local_identity`).
+    Two shapes, both on the KAS harness:
+
+    * the bundle route (``agent.kas_bundle``): the engine runs without kiro-cli
+      and its access-token callback reaches Crew alone, so the vault is the only
+      credential there is -- signed in or not. A signed-out vault then reports
+      ``signin_required`` from the vault path rather than consulting a kiro-cli
+      readiness gate that has nothing to say about this route;
+    * the relay route: the vault owns the spawn only when it holds a usable
+      identity (the KAS spawn asks the same :func:`vault_holds_identity`
+      question); otherwise kiro-cli owns the login and the kiro-cli path applies.
+
+    Any other harness -- the kiro-cli backend above all -- keeps the kiro-cli
+    path, so a leftover Crew sign-in never relabels another account's usage.
+    Blocking (a config read and a vault read); never raises.
     """
     try:
         # Deferred: kiro_crew.auth pulls the ``cryptography`` wheel, which must
@@ -577,7 +589,10 @@ def _vault_owns_usage_sync() -> bool:
         from kiro_crew.auth.bridge import vault_holds_identity
         from kiro_crew.config.loader import KiroCrewConfig
 
-        if KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS:
+        agent = KiroCrewConfig.load().agent
+        if agent.acp_backend == ACP_BACKEND_KAS:
+            if agent.kas_bundle:
+                return True
             # The spawn's own predicate, with its diagnostics at DEBUG: an unusable
             # entry is a spawn-time WARNING, and this runs on every 30s poll of
             # every open tab.
@@ -614,9 +629,17 @@ async def _cached_reading_is_foreign(payload: dict[str, object], payload_fp: str
     not the live globals: the fingerprint read below yields, and a refresh that
     publishes B's reading in that window would otherwise make a check against
     the globals pass while the caller still holds A's payload.
+
+    A reading published under NO fingerprint is the kiro-cli path's (every
+    publish there leaves ``vault_fp`` empty), so it is foreign here whatever the
+    vault holds -- including nothing: on the bundle route the vault owns usage
+    while signed out, and an empty current fingerprint must not match the empty
+    one a kiro-cli reading carries and keep kiro-cli's account on screen.
     """
     if payload.get("credits_plan") is None:
         return False
+    if not payload_fp:
+        return True
     return await _vault_fingerprint() != payload_fp
 
 
@@ -637,6 +660,15 @@ async def _refresh_from_vault() -> None:
     refresh waits on the identity's cross-process lock, so a sign-in that
     replaces the account can land while it waits, and judging against ``before``
     would then keep the previous account's reading on screen under the new one.
+
+    The reading is labelled with the account it belongs to (``account_type``,
+    in whoami's vocabulary) from the vault's own claims, taken in the SAME read
+    as the after-fingerprint (:func:`vault_identity_snapshot`): once that
+    fingerprint matches ``before``, the fields describe the account the
+    credential was read for, as the kiro-cli path labels its reading from the
+    whoami adjacent to the publish. The vault stores no e-mail, so none is
+    published; the enterprise profile name rides in from the usage API as it
+    does for the kiro-cli path.
     """
     # Deferred: see _vault_owns_usage_sync.
     from kiro_crew.auth.bridge import default_token_store
@@ -695,7 +727,7 @@ async def _refresh_from_vault() -> None:
             cred.profile_arn,
         ),
     )
-    after = await _vault_fingerprint()
+    after, identity = await vault_identity_snapshot()
     if after != before:
         logger.info(
             "Kiro usage: the Crew sign-in changed during the refresh; "
@@ -707,6 +739,9 @@ async def _refresh_from_vault() -> None:
     if usage and usage.get("credits_plan") is not None:
         usage = {k: _redact_strings(v) for k, v in usage.items()}
         usage.pop("_profile_arn", None)
+        # Whose reading this is: the vault's own claims, from the read whose
+        # fingerprint just proved the account unchanged across the credential read.
+        usage.update(identity)
         _publish_usage(usage, vault_fp=before)
         logger.info(
             "Kiro usage refreshed (api, Crew sign-in): %s / %s credits",
@@ -776,16 +811,28 @@ def _cache_transient_failure(identity: dict[str, object] | None, reason: str | N
 async def fetch_local_identity() -> dict[str, object] | None:
     """Return this machine's signed-in Kiro identity, ``{}`` or ``None``.
 
-    The one dashboard-side door to ``kiro-cli whoami``: it resolves the same
-    binary chat spawns and runs :func:`_fetch_whoami_or_none` at the configured
-    sandbox tier. Other handlers (the Remote Crew launch form's identity
-    preselect) call this instead of reaching into the ACP layer themselves, so
-    the agent-backend boundary stays where this module already crosses it.
-    ``{}`` when kiro-cli is absent (non-Kiro provider) or whoami answered with
-    no identity -- this machine has no sign-in to inherit; ``None`` when whoami
-    could not answer -- the identity is unknown, and a caller must not present
-    the default as if it had been read.
+    The one dashboard-side door to the signed-in identity. Other handlers (the
+    Remote Crew launch form's identity preselect) call this instead of reaching
+    into the ACP layer themselves, so the agent-backend boundary stays where
+    this module already crosses it. Which credential it describes follows the
+    same verdict as the credit reading (:func:`_vault_owns_usage`):
+
+    * Crew's vault owns the harness's credential -- the KAS bundle route, or
+      the relay route with a usable Crew sign-in: the answer is the vault's own
+      identity fields (:func:`vault_identity_snapshot`), with no kiro-cli
+      spawned. On a host without kiro-cli there is nothing else to ask, and on
+      one with it, ``kiro-cli whoami`` would name kiro-cli's login -- an account
+      the sessions here never run as. ``{}`` when the vault is signed out:
+      this machine has no sign-in to inherit.
+    * Otherwise ``kiro-cli whoami``: it resolves the same binary chat spawns and
+      runs :func:`_fetch_whoami_or_none` at the configured sandbox tier. ``{}``
+      when kiro-cli is absent (non-Kiro provider) or whoami answered with no
+      identity; ``None`` when whoami could not answer -- the identity is
+      unknown, and a caller must not present the default as if it had been read.
     """
+    if await _vault_owns_usage():
+        _fingerprint, identity = await vault_identity_snapshot()
+        return identity
     kiro_bin = await _resolve_kiro_bin_for_spawn()
     if not kiro_bin:
         return {}

@@ -111,6 +111,26 @@ _VAULT_IDENTITY_CLAIMS = (
 )
 
 
+#: The two fingerprinted claims that name a KIND of account and nothing else:
+#: the store slot the identity came from (``builder_id`` / ``identity_center`` /
+#: ``external_idp`` / ``social``) and the governance classification (``BuilderId``
+#: / ``Enterprise`` / ``ExternalIdp`` / ``Google`` / ``Github``). What
+#: :func:`vault_identity_claims` returns in the clear: the ARN, region and client
+#: registration stay inside the digest.
+_VAULT_PUBLIC_CLAIMS = ("identity", "provider")
+
+
+def _identity_digest(token: KasToken) -> str:
+    """The identity fingerprint of one resolved token (see :data:`_VAULT_IDENTITY_CLAIMS`)."""
+    digest = hashlib.sha256()
+    for claim in _VAULT_IDENTITY_CLAIMS:
+        digest.update(claim.encode())
+        digest.update(b"=")
+        digest.update(str(getattr(token, claim, None) or "").encode())
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def vault_identity_fingerprint() -> str:
     """Digest naming which account Crew's own vault is signed in as, or ``""``.
 
@@ -123,19 +143,34 @@ def vault_identity_fingerprint() -> str:
     empty vault is ``""``, which the caller treats as "no Crew identity").
     Blocking file IO -- call off the loop.
     """
+    return vault_identity_claims()[0]
+
+
+def vault_identity_claims() -> tuple[str, dict[str, str]]:
+    """ONE vault read: the identity fingerprint and the claims naming the account's kind.
+
+    The dashboard labels a credit reading with the account it was read for, and
+    it brackets the credential read with the fingerprint to prove no sign-in
+    replaced that account meanwhile. Both halves come from the same ``resolve()``
+    so the labels a caller publishes describe the fingerprinted account, never
+    one that landed between a fingerprint read and a separate claims read. The
+    claims are :data:`_VAULT_PUBLIC_CLAIMS` -- the slot and the provider class,
+    which together say "a Builder ID sign-in", "a Google sign-in" -- and no
+    secret, ARN or registration detail. ``("", {})`` when nothing is stored or
+    the vault cannot be read; never raises. Blocking file IO -- call off the loop.
+    """
     try:
         token = default_token_store().resolve()
     except Exception:  # noqa: BLE001 - detection must never fail a turn
-        return ""
+        return "", {}
     if token is None:
-        return ""
-    digest = hashlib.sha256()
-    for claim in _VAULT_IDENTITY_CLAIMS:
-        digest.update(claim.encode())
-        digest.update(b"=")
-        digest.update(str(getattr(token, claim, None) or "").encode())
-        digest.update(b"\n")
-    return digest.hexdigest()
+        return "", {}
+    claims = {
+        claim: value
+        for claim in _VAULT_PUBLIC_CLAIMS
+        if isinstance(value := getattr(token, claim, None), str) and value
+    }
+    return _identity_digest(token), claims
 
 
 def describe_vault_identity() -> str | None:
