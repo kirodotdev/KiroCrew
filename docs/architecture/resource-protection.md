@@ -268,11 +268,12 @@ set-property --runtime kirocrew-agents.slice MemoryHigh=<N>M`, run by the unpriv
 manager that owns the slice. `--runtime` keeps the drop-in under `$XDG_RUNTIME_DIR` (it
 vanishes with the login session), so no persistent unit files accumulate and a stale ceiling
 never outlives the login session. Reconciliation before each scope wrap is a no-op string
-compare in steady state. It shares the scope
+compare in steady state; after a re-login (a new enforcement epoch from the probe) the first
+spawn applies the ceiling to the new user manager. It shares the scope
 wrapper's availability gate (`_probe_cgroup_scope`: Linux, cgroup v2, `memory` controller
 delegated, systemd user session); where that gate fails, or `systemctl` itself fails, the
-ceiling degrades to a no-op with **one loud SECURITY warning** and agent spawns proceed
-uncontained at the slice level — per-scope `MemoryMax` still applies.
+ceiling degrades to a no-op with **one loud SECURITY warning** per login session and agent
+spawns proceed uncontained at the slice level — per-scope `MemoryMax` still applies.
 
 Throttling past `memory.high` is otherwise **silent**: agents just slow down, nothing kills,
 and nothing alerts (per-scope `MemoryMax` never fired). To keep "agents mysteriously slow"
@@ -299,7 +300,8 @@ with no single cgroup ever breaching its own limit — and `compute_max_subagent
 exactly that concurrency (up to 32 subagents by default). cgroup v2 bounds a descendant by
 the **minimum** effective limit of itself and all its ancestors, so the parent slice every
 scope already nests under is the natural aggregate boundary.
-`sandbox.ensure_agents_slice_limits()` puts a ceiling on it at gateway startup:
+`sandbox.ensure_agents_slice_limits()` puts a ceiling on it at gateway startup, or on the
+first agent spawn of a login session that started after the gateway did:
 
 - **`MemoryMax`** plus **`MemorySwapMax=0`** on `kirocrew-agents.slice`, default **80% of
   physical RAM** (`_CGROUP_TOTAL_MEMORY_FRACTION`; 12288 MB fallback when RAM cannot be
@@ -530,8 +532,12 @@ itself and the injection works as described above.
    *counts* (subagent count, turn budget, pool size), not memory or CPU. The slice's
    runtime property is dropped when the user manager restarts (logout/reboot); the
    resource-pressure sampler detects the vanished ceiling on its next tick and
-   re-applies it, so the unprotected window is at most one sample interval — but only
-   on hosts where the gateway applied it in the first place.
+   re-applies it, so the unprotected window is at most one sample interval. A gateway
+   that started while the user was logged out never applied it, so the sampler has
+   nothing to restore; the first agent spawn after the login applies it instead (once
+   per login session). `MemoryHigh` follows the login session the same way: the first
+   spawn after a re-login re-applies it, and a failed apply disarms it only until the
+   next login session.
 
 4. **The xdist auto-cap is snapshotted at session spawn, not at test-run time.** Agent
    sessions are long-lived: a session spawned while memory was ample carries its generous

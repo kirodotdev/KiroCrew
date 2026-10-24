@@ -454,8 +454,10 @@ def _disarm_agent_slice_memory_high():
     user manager — exactly the class of side effect the root conftest's
     host-service guard refuses (``set-property`` is a mutating verb), turning
     those tests into guard failures. Pre-disarm via the module's own kill
-    switch and restore all four state globals after, so tests of the
-    reconciler itself can re-arm explicitly in their own body.
+    switch and restore all the state globals after, so tests of the
+    reconciler itself can re-arm explicitly in their own body. The epoch
+    stamps are reset too: a stamp left by an earlier test would mark the
+    kill switch as a failure from an older session and re-arm it.
     """
     import kiro_crew.sandbox as _sb
 
@@ -463,7 +465,11 @@ def _disarm_agent_slice_memory_high():
     saved_applied = _sb._SLICE_MEMHIGH_APPLIED
     saved_events_seen = _sb._SLICE_MEMHIGH_EVENTS_SEEN
     saved_climb_warned = _sb._SLICE_MEMHIGH_CLIMB_WARNED
+    saved_memhigh_epoch = _sb._SLICE_MEMHIGH_EPOCH
+    saved_limits_epoch = _sb._SLICE_LIMITS_EPOCH
     _sb._SLICE_MEMHIGH_DISABLED = True
+    _sb._SLICE_MEMHIGH_EPOCH = None
+    _sb._SLICE_LIMITS_EPOCH = None
     try:
         yield
     finally:
@@ -471,6 +477,8 @@ def _disarm_agent_slice_memory_high():
         _sb._SLICE_MEMHIGH_APPLIED = saved_applied
         _sb._SLICE_MEMHIGH_EVENTS_SEEN = saved_events_seen
         _sb._SLICE_MEMHIGH_CLIMB_WARNED = saved_climb_warned
+        _sb._SLICE_MEMHIGH_EPOCH = saved_memhigh_epoch
+        _sb._SLICE_LIMITS_EPOCH = saved_limits_epoch
 
 
 @pytest.fixture(autouse=True)

@@ -22,6 +22,7 @@ from kiro_crew.sandbox_cgroup import (
     _CGROUP_AGENTS_SLICE,
     _agents_slice_name,
     _cgroup_limits_from_config,
+    _cgroup_scope_epoch,
     _cpu_controller_delegated,
     _probe_cgroup_scope,
     _warn_cgroup_unavailable,
@@ -60,13 +61,36 @@ _SLICE_FALLBACK_MEMORY_HIGH_MB = 12288
 # Last MemoryHigh value applied to the slice by THIS process ("24576M" /
 # "infinity"), or None before the first reconcile. The desired value is
 # host-derived and constant for the process's life (no config input), so
-# after the first successful apply every later reconcile reduces to a
-# string compare and no-ops. Kept as a reconcile (rather than a one-shot)
-# so an apply that failed transiently is retried on the next spawn.
+# after the first successful apply every later reconcile in the same login
+# session reduces to a string compare and no-ops.
 _SLICE_MEMHIGH_APPLIED: str | None = None
-# Process-level kill switch: set after a failed apply so a broken systemctl is
-# warned about ONCE and never hammered on every subsequent spawn.
+# Kill switch: set after a failed apply so a broken systemctl is warned about
+# ONCE per login session and never hammered on every subsequent spawn.
 _SLICE_MEMHIGH_DISABLED = False
+# The enforcement epoch (``_cgroup_scope_epoch``) the two values above were
+# recorded in, or None when nothing was recorded by a reconcile. The applied
+# value is a ``--runtime`` property that vanishes with the login session, and a
+# failure seen while the user manager was going away says nothing about the
+# next one, so state from an older epoch is discarded before the next
+# reconcile. A kill switch set from outside a reconcile carries no stamp and
+# stays set.
+_SLICE_MEMHIGH_EPOCH: int | None = None
+
+
+def _slice_memory_high_is_stale() -> bool:
+    """Whether the recorded MemoryHigh state belongs to an earlier login session."""
+    stamp = _SLICE_MEMHIGH_EPOCH
+    return stamp is not None and stamp != _cgroup_scope_epoch()
+
+
+def _forget_stale_slice_memory_high() -> None:
+    """Drop MemoryHigh state recorded under an earlier epoch, re-arming the reconcile."""
+    global _SLICE_MEMHIGH_APPLIED, _SLICE_MEMHIGH_DISABLED, _SLICE_MEMHIGH_EPOCH
+    if not _slice_memory_high_is_stale():
+        return
+    _SLICE_MEMHIGH_APPLIED = None
+    _SLICE_MEMHIGH_DISABLED = False
+    _SLICE_MEMHIGH_EPOCH = None
 
 
 def _default_slice_memory_high_mb() -> int:
@@ -102,12 +126,14 @@ def _ensure_agent_slice_memory_high() -> None:
     outlive the login session that set it.
 
     Never raises: agent spawns must not fail because the ceiling could not be
-    applied. On failure it logs one loud warning and disarms for the rest of
-    the process.
+    applied. On failure it logs one loud warning and disarms until the user
+    manager's next login session (see :data:`_SLICE_MEMHIGH_EPOCH`).
     """
-    global _SLICE_MEMHIGH_APPLIED, _SLICE_MEMHIGH_DISABLED
+    global _SLICE_MEMHIGH_APPLIED, _SLICE_MEMHIGH_DISABLED, _SLICE_MEMHIGH_EPOCH
+    _forget_stale_slice_memory_high()
     if _SLICE_MEMHIGH_DISABLED:
         return
+    epoch = _cgroup_scope_epoch()
     desired = f"{_default_slice_memory_high_mb()}M"
     if desired == _SLICE_MEMHIGH_APPLIED:
         return
@@ -134,6 +160,7 @@ def _ensure_agent_slice_memory_high() -> None:
             raise RuntimeError((proc.stderr or proc.stdout or "").strip() or "non-zero exit")
     except Exception as exc:
         _SLICE_MEMHIGH_DISABLED = True
+        _SLICE_MEMHIGH_EPOCH = epoch
         logger.warning(
             "SECURITY: could not apply MemoryHigh=%s to %s (%s); the AGGREGATE "
             "agent memory ceiling is NOT enforced on this host — per-scope "
@@ -145,6 +172,7 @@ def _ensure_agent_slice_memory_high() -> None:
         )
         return
     _SLICE_MEMHIGH_APPLIED = desired
+    _SLICE_MEMHIGH_EPOCH = epoch
     logger.info("agent slice %s: MemoryHigh=%s applied", _CGROUP_AGENTS_SLICE, desired)
 
 
@@ -239,13 +267,19 @@ def _reconcile_slice_memory_high_off_thread() -> None:
     spawn still bounds it, and every later spawn re-reconciles. The worker
     also runs :func:`_check_slice_memory_pressure`, so throttle visibility
     shares the reconcile cadence (per spawn) and its kill switch.
+
+    The worker first applies the slice's hard aggregate ceiling
+    (:func:`_reapply_slice_limits_for_new_session`) when the current login
+    session never got it, as for a gateway that started while the user was
+    logged out: no other caller would apply it there.
     """
-    global _SLICE_MEMHIGH_DISABLED
-    if _SLICE_MEMHIGH_DISABLED:
+    global _SLICE_MEMHIGH_DISABLED, _SLICE_MEMHIGH_EPOCH
+    if _SLICE_MEMHIGH_DISABLED and not _slice_memory_high_is_stale():
         return
 
     def _worker() -> None:
         with _SLICE_MEMHIGH_MUTEX:
+            _reapply_slice_limits_for_new_session()
             _ensure_agent_slice_memory_high()
             _check_slice_memory_pressure()
 
@@ -256,6 +290,7 @@ def _reconcile_slice_memory_high_off_thread() -> None:
         # never abort the spawn. Disarm like any other reconciliation
         # failure: per-scope MemoryMax still applies.
         _SLICE_MEMHIGH_DISABLED = True
+        _SLICE_MEMHIGH_EPOCH = _cgroup_scope_epoch()
         logger.warning(
             "SECURITY: could not start the MemoryHigh reconciliation thread "
             "(%s); the AGGREGATE agent memory ceiling is NOT enforced on this "
@@ -599,6 +634,25 @@ def _slice_limits_from_config() -> tuple[int, int]:
 
 
 _SLICE_LIMITS_APPLIED = False
+# The enforcement epoch (``_cgroup_scope_epoch``) of the last apply attempt that
+# passed the capability probe, successful or not; None before any. One attempt
+# per epoch keeps a broken systemctl from being retried on every spawn.
+_SLICE_LIMITS_EPOCH: int | None = None
+
+
+def _reapply_slice_limits_for_new_session() -> None:
+    """Apply the slice's hard aggregate ceiling when this login session never got it.
+
+    Covers a gateway that started while the user was logged out: the startup
+    apply found no user manager, and the pressure sampler's self-heal only
+    re-applies a ceiling that was applied before. A ceiling that is applied
+    is left to that self-heal, so the two never act on the same state.
+
+    Blocking (may shell out): runs only on the reconcile worker thread.
+    """
+    if _SLICE_LIMITS_APPLIED or _SLICE_LIMITS_EPOCH == _cgroup_scope_epoch():
+        return
+    ensure_agents_slice_limits()
 
 
 def ensure_agents_slice_limits() -> bool:
@@ -608,14 +662,17 @@ def ensure_agents_slice_limits() -> bool:
     :data:`_CGROUP_AGENTS_SLICE`, setting ``MemoryMax`` (aggregate across ALL
     concurrent agent scopes), ``MemorySwapMax=0`` (consistent with the
     per-scope property: a true RSS ceiling, no swap escape), and ``TasksMax``
-    (aggregate fork-bomb ceiling). Called once at gateway startup.
+    (aggregate fork-bomb ceiling). Called at gateway startup, and from the
+    spawn path's reconcile worker when it was not applied in the current
+    login session (:func:`_reapply_slice_limits_for_new_session`). A ceiling
+    that was applied and then vanished at a logout is re-applied by the
+    pressure sampler's self-heal (:func:`check_agents_slice_pressure`).
 
     ``--runtime`` over a shipped unit drop-in, deliberately: the property is
     re-derived from config and re-applied on every gateway start, so a config
     change can never leave a stale on-disk artifact behind, and uninstalling
     leaves nothing to clean up. The property persists on the user manager
-    until logout/reboot — long enough, since the gateway is the long-lived
-    process that re-applies it.
+    until logout/reboot.
 
     Gated on the same :func:`_probe_cgroup_scope` capability check as the
     per-scope wrapper: where delegation is unavailable this is skipped and the
@@ -626,13 +683,14 @@ def ensure_agents_slice_limits() -> bool:
 
     Returns True when the ceiling is in place (now or from an earlier call).
     """
-    global _SLICE_LIMITS_APPLIED
+    global _SLICE_LIMITS_APPLIED, _SLICE_LIMITS_EPOCH
     if _SLICE_LIMITS_APPLIED:
         return True
     available, reason = _probe_cgroup_scope()
     if not available:
         _warn_cgroup_unavailable(reason)
         return False
+    _SLICE_LIMITS_EPOCH = _cgroup_scope_epoch()
     total_mem_mb, total_tasks = _slice_limits_from_config()
     # PATH can legitimately lead with agent-writable directories (a worktree
     # venv's bin, ~/.local/bin), so a bare "systemctl" would let a planted
