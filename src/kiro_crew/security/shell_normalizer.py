@@ -81,6 +81,7 @@ from .shell_normalizer_walk import (  # noqa: F401  (also re-exported for import
     _PROCESS_SUBSTITUTION_OPENERS,
     _SHELL_ACTIVE_CHARS,
     _SHELL_ASSIGN_RE,
+    _SHELL_TITLE_PREFIX,
     _SHELL_WRAPPER_CHARS,
     _VAR_USE_RE,
     _arms_case_context,
@@ -90,6 +91,7 @@ from .shell_normalizer_walk import (  # noqa: F401  (also re-exported for import
     _dequote_token,
     _ends_argv,
     _fold_line_continuations,
+    _gh_data_newlines_as_spaces,
     _is_computed_value,
     _is_shell_variable_reference,
     _iter_shell_chars,
@@ -1133,6 +1135,7 @@ def _nested_shell_payloads(
     *,
     allow_join: bool = True,
     joined_out: "set[str] | None" = None,
+    printf_decode: bool = True,
 ) -> "list[str]":
     """Literal shell-script payloads carried as an argument inside *tokens*.
 
@@ -1155,6 +1158,9 @@ def _nested_shell_payloads(
     origin main'`` is fused to ``git push origin main`` by the first join, so the
     publish is visible at the first joined frame and the chain would only
     re-derive suffixes of an answer already in hand.
+
+    *printf_decode* False makes the evaluator-pipe branch yield the producer
+    token as bash reads it; see :func:`_shell_payload_walk`.
     """
     payloads: list[str] = []
     # Both scans below look for the FIRST token after a program that satisfies a stop
@@ -1396,9 +1402,22 @@ def _nested_shell_payloads(
         # so the "is this a command line?" test is applied to the DECODED text -- otherwise
         # the token still looks like a single word and is never recognised as a payload at
         # all.  Splitting on any whitespace (not just a space) also admits a tab escape.
+        # The bash-read walk (*printf_decode* False) yields the producer token
+        # UNDECODED: ``echo`` / ``printf '%s'`` print ``\\x27`` as four characters,
+        # which the shell reads as ``x27``, not a quote. A ``printf`` FORMAT decodes
+        # exactly ONCE, so that walk also yields the once-decoded text and never
+        # decodes it again (``\\x5cx27`` prints ``\\x27``, still ``x27`` to bash).
+        # The multi-word test still reads the decoded text, so this walk admits
+        # every token the decoded one does.
         for token in tokens:
             decoded = _decode_printf_escapes(token)
-            if len(decoded.split()) > 1:
+            if printf_decode:
+                if len(decoded.split()) > 1:
+                    payloads.append(decoded)
+                continue
+            if len(token.split()) > 1:
+                payloads.append(token)
+            if decoded != token and len(decoded.split()) > 1:
                 payloads.append(decoded)
         # ``xargs`` is different in shape: it does not read a whole script, it APPENDS
         # the piped words to its own command.  ``echo <verb> | xargs <name>`` therefore
@@ -1413,8 +1432,13 @@ def _nested_shell_payloads(
 # ``${a[@]}`` / ``${a[*]}`` / ``$a[@]`` -- the whole array as separate words.
 
 
-def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
+def _shell_payload_walk(
+    text_lower: str, printf_decode: bool = True
+) -> "list[tuple[str, list[str]]]":
     """``(source, argv)`` for *text_lower* and every nested shell payload in it.
+
+    *printf_decode* False keeps each payload as bash reads it, with no printf
+    escape decoded (an unquoted ``\\x27`` is ``x27`` to bash, not a quote).
 
     ``bash -c "kirocrew token"`` tokenizes to ``['bash', '-c', 'kirocrew token']``
     -- the dangerous command is a single opaque token, so a direct scan cannot
@@ -1465,12 +1489,15 @@ def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
         # reads folded, and the fold preserves single-quoted and ANSI-C spans, so a
         # continuation that bash keeps literal stays literal in the body too.
         joined_here: set[str] = set()
-        nested = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
+        nested = _nested_shell_payloads(
+            tokens, allow_join=allow_join, joined_out=joined_here, printf_decode=printf_decode
+        )
         for payload in list(nested) + _substitution_bodies(_fold_line_continuations(source)):
             # Descend through EVERY literal payload, to any depth.  Termination is
             # structural, not a cap: a payload is carried inside one token of its
             # parent, so it is strictly shorter than the parent's source text.
-            payload = _decode_printf_escapes(payload)
+            if printf_decode:
+                payload = _decode_printf_escapes(payload)
             if len(payload) >= parent_len or payload in seen:
                 continue
             seen.add(payload)

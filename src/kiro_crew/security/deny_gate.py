@@ -622,12 +622,40 @@ def is_denied(
         # the nested coverage and nothing else. Failing closed here instead
         # would refuse ordinary commands on any walk hiccup.
         payload_sources = [lower]
+    # The walk printf-decodes each payload, which can make a quote bash never
+    # sees (``\x27`` is ``x27`` to bash), so the bash-read sources are judged too.
+    if "\\" in lower:
+        try:
+            for source, _tokens in _argv._shell_payload_walk(lower, printf_decode=False):
+                if source not in payload_sources:
+                    payload_sources.append(source)
+        except Exception:
+            # Same no-raise contract as above; the decoded sources still stand.
+            pass
     # Tags are collected across EVERY publish source, not just the top-level
     # string, and gated once afterwards. Reading only ``lower`` made one wrapper a
     # complete bypass of the sole enforcement pushes have; gating once at the end
     # keeps the per-rule opt-out semantics exactly as written -- a rule an operator
     # disabled stays disabled at whatever depth it fires.
-    publish_sources = [source for source in payload_sources if _argv._is_git_publish(source)]
+    # A source whose every push line lies inside a literal gh text value is not
+    # a publish, so the floor never reads it and it records no ``push_allowed``
+    # audit either. That reading holds only where the source IS the script the
+    # shell runs, so a source keeps the per-line reading whenever the command
+    # holds a backslash or a printf conversion. Every escape decoder here can
+    # make a quote the shell never sees: lowercasing turns ``\X27`` (text) into
+    # ``\x27`` (a quote), a printf FORMAT reads ``\0047`` as ``\004`` + ``7``,
+    # and bash's echo prints ``\47`` as text. A conversion its arguments fill
+    # (``%s`` -> ``"``) can close the body before the push line; ``%%`` is a
+    # literal ``%``. A command with neither is decoded by nothing.
+    _spaced = _submodule("shell_normalizer")._gh_data_newlines_as_spaces
+    undecoded = "\\" not in tool_name
+    publish_sources = [
+        source
+        for source in payload_sources
+        if _argv._is_git_publish(
+            _spaced(source) if undecoded and "%" not in source.replace("%%", "") else source
+        )
+    ]
     if publish_sources:
         floor_tags: frozenset[str] = frozenset()
         for publish_source in publish_sources:

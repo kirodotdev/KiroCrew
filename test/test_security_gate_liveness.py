@@ -503,7 +503,25 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 8, from 32,518, for one ``_WRITE_PROTECTED_HOME_PATHS`` entry in
 #: ``paths_lists``: the crewmate agent folder, write-denied to the agent file tools
 #: like ``~/.kiro/agents``. Data, not rule logic: the matcher is unchanged.
-_PACKAGE_LINE_BUDGET = 32_526
+#:
+#: Raised again, from 32,526, for ``shell_normalizer_walk._gh_data_newlines_as_spaces``
+#: and its caller in ``is_denied``: a ``git push`` line inside a literal ``gh pr|issue|release``
+#: text-flag value is read as the one word bash hands gh. One closed shape, read
+#: over ``_iter_shell_chars`` steps, and every other command keeps its per-line
+#: push reading. ``_SHELL_TITLE_PREFIX`` moves to that module so the helper reads
+#: a ``Running: `` title through the constant ``denied_rules`` already uses.
+#: Sixteen more for ``_shell_payload_walk(printf_decode=False)`` and the publish
+#: gate's read of it: a ``-c`` payload is also judged as bash reads it, with no
+#: printf escape decoded, so ``\x27`` is read as bash reads it: not a quote.
+#: Ten more for the evaluator pipe: the same walk yields an ``echo`` / ``printf
+#: '%s'`` producer token undecoded too, as the shell on the other end reads it.
+#: Nine more for a ``printf`` FORMAT producer: it decodes exactly once, so that
+#: walk also yields the once-decoded text and never decodes it a second time.
+#: Twelve more for the publish gate's guard on that reading: a command with a
+#: backslash, or a source with an unresolved printf conversion, keeps its
+#: per-line push reading, since every escape decoder can make a quote bash
+#: never prints (``\X27`` lowercased, a printf format's ``\0047``, echo's ``\47``).
+_PACKAGE_LINE_BUDGET = 32_668
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
