@@ -14,6 +14,7 @@ import { i18nT } from '../../i18n/t'
 import { fmtElapsed } from '../../i18n/format'
 import { queuedWaitText } from './subagentQueuedReason'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import { useSecondClock } from '../../hooks/useSecondClock'
 const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
 
 /**
@@ -88,8 +89,18 @@ const STALL_KEYS = {
  * a long tool name could clip off the idle figure — the very number that
  * justifies the warning — right off the end of the row.
  */
-function StallText({ tool, idleSecs }: { tool: string; idleSecs?: number }) {
-  const hasSecs = typeof idleSecs === 'number'
+function StallText({ tool, idleSecs: idleBase, stalledAt }: { tool: string; idleSecs?: number; stalledAt?: number }) {
+  // The backend sends `idle_secs` once, on the stalled transition, so a bare
+  // render would freeze at that value beside the live elapsed figure on the
+  // row above. `stalled` means no activity by definition, so advancing it
+  // locally from the receipt instant is sound. Only this sentence subscribes
+  // to the clock, so the tick repaints it and nothing else on the row.
+  const hasSecs = typeof idleBase === 'number'
+  const sinceStall = useSecondClock(
+    now => (stalledAt ? Math.max(0, Math.round((now - stalledAt) / 1000)) : 0),
+    hasSecs && !!stalledAt,
+  )
+  const idleSecs = hasSecs ? idleBase + sinceStall : undefined
   // The key expression is inlined into the call, not bound to a local first, so
   // the i18n key gate can resolve every branch of it statically.
   const sentence = i18nT(
@@ -108,6 +119,23 @@ function StallText({ tool, idleSecs }: { tool: string; idleSecs?: number }) {
       <span className="min-w-0 truncate font-mono">{tool}</span>
       {after && <span className="shrink-0 whitespace-pre">{after}</span>}
     </>
+  )
+}
+
+/**
+ * A row's elapsed figure and tool count. Its own component so the 1 Hz clock
+ * repaints this span, not the whole chip.
+ *
+ * An assumed start time cannot produce an elapsed figure: the agent may have
+ * been running long before the frame that minted its entry. The row then
+ * shows the SAME `--` placeholder the card does, rather than omitting the
+ * figure: an empty slot where a number belongs reads as "this agent has not
+ * started", while `--` reads as "the elapsed time is not known".
+ */
+function RowElapsed({ startedAt, assumed, toolCount }: { startedAt: number; assumed?: boolean; toolCount?: number }) {
+  const elapsed = useSecondClock(now => Math.max(0, Math.round((now - startedAt) / 1000)), !assumed)
+  return (
+    <span className="shrink-0 font-mono tabular-nums text-muted/50">{!assumed ? fmtElapsed(elapsed * 1000, { wholeSeconds: true }) : '--'}{typeof toolCount === 'number' && toolCount > 0 ? ` · ${i18nT('pages.chat.subagentProgressBar.tool', { count: toolCount })}` : ''}</span>
   )
 }
 
@@ -254,12 +282,11 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
     dispatch(selectSubagent(id))
     dispatch(openActivityToTab('subagents'))
   }, [dispatch])
-  const [, setTick] = useState(0)
-  // 1Hz tick to update elapsed timers + 30s reconciliation to clear phantom agents
+  // 30s reconciliation to clear phantom agents. The elapsed and idle figures
+  // tick in their own leaves (RowElapsed, StallText), not here.
   useEffect(() => {
     if (!hasActive || !slot) return
     let cancelled = false
-    const t = setInterval(() => setTick(n => 1 - n), 1000)
     const reconcile = setInterval(() => {
       const read = api.spawnList()
       read.then(d => {
@@ -295,7 +322,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
         )
       }
     }, 30_000)
-    return () => { cancelled = true; clearInterval(t); clearInterval(reconcile) }
+    return () => { cancelled = true; clearInterval(reconcile) }
   }, [hasActive, slot, dispatch])
   if (!hasActive) return null
   return (
@@ -439,23 +466,6 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
               || taskPreview
               || sanitizeLlmOutput(a.agent)
               || (a.id ? `agent #${a.id.slice(-6)}` : 'agent')
-            const elapsed = Math.round((Date.now() - a.startedAt) / 1000)
-            // An assumed start time cannot produce an elapsed figure: the agent
-            // may have been running long before the frame that minted its entry.
-            // The row then shows the SAME `--` placeholder the card does, rather
-            // than omitting the figure: an empty slot where a number belongs reads
-            // as "this agent has not started", while `--` reads as "the elapsed
-            // time is not known", which is what is true.
-            const elapsedShown = !a.startedAtAssumed
-            // The backend sends `idle_secs` once, on the stalled transition, so a
-            // bare render would freeze at that value beside the live `elapsed`
-            // above — the same two-numbers-disagree confusion this row exists to
-            // remove. `stalled` means no activity by definition, so advancing it
-            // locally from the receipt instant is sound. The 1Hz tick above
-            // re-renders it.
-            const idleShown = typeof a.idleSecs === 'number'
-              ? a.idleSecs + (a.stalledAt ? Math.max(0, Math.round((Date.now() - a.stalledAt) / 1000)) : 0)
-              : undefined
             const stoppable = a.status === 'running' || a.status === 'tool'
             return (
               <div key={a.id} data-testid="subagent-row" className="flex items-start gap-1">
@@ -477,7 +487,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                             do without a hover. */}
                         {a.label && taskPreview ? <span className="text-muted"> · {taskPreview}</span> : null}
                       </span>
-                      <span className="shrink-0 font-mono tabular-nums text-muted/50">{elapsedShown ? fmtElapsed(elapsed * 1000, { wholeSeconds: true }) : '--'}{typeof a.toolCount === 'number' && a.toolCount > 0 ? ` · ${i18nT('pages.chat.subagentProgressBar.tool', { count: a.toolCount })}` : ''}</span>
+                      <RowElapsed startedAt={a.startedAt} assumed={a.startedAtAssumed} toolCount={a.toolCount} />
                     </span>
                     {isSpawnApprovalGone(a) ? (
                       <span className="text-muted flex items-center gap-1" data-testid="subagent-row-checking">
@@ -515,7 +525,8 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                         <span className="min-w-0 flex items-baseline">
                           <StallText
                             tool={a.lastTool ? sanitizeLlmOutput(a.lastTool) : ''}
-                            idleSecs={idleShown}
+                            idleSecs={a.idleSecs}
+                            stalledAt={a.stalledAt}
                           />
                         </span>
                       </span>
