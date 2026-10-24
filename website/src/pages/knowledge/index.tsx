@@ -35,6 +35,8 @@ const STATUS_LABEL_KEY = {
 } as const
 
 import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
+import { GuideRevealScope } from '../../guide/GuideRevealScope'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { editableEventTarget } from '../../utils/editableTarget'
 import { useRovingTabs } from '../../components/Tablist'
@@ -647,7 +649,21 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
           sits outside it because a tablist may only own tabs. */}
       <div className="flex gap-1 px-4 md:px-6 border-b border-border overflow-x-auto">
         <div role="tablist" aria-label={i18nT('pages.knowledge.index.knowledge_library')} className="flex gap-1">
-          {TABS.map((t, i) => (
+          {TABS.map((t, i) => t === 'sources' ? (
+            // Registered with find_ui (uiLocations/areas/capabilities.ts). The index
+            // reads a registered tab's label from its render site, so this branch
+            // writes out the icon and label key; its other props match the branch
+            // below. The marker's ref replaces the roving one and forwards to it,
+            // so the marker spread must come after the roving spread.
+            <button key={t} type="button" role="tab" id={tabId(t)}
+              aria-selected={tab === t} aria-controls={TAB_PANEL_ID}
+              {...rovingTab(i)}
+              {...uiLocation('knowledge.sources-tab', rovingTab(i).ref)}
+              onClick={() => selectTab(t)}
+              className={`flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium border-b-2 transition-all bg-transparent cursor-pointer shrink-0 whitespace-nowrap ${tab === t ? 'border-accent text-text font-semibold' : 'border-transparent text-muted hover:text-text'}`}>
+              <FolderSync size={14} /> {i18nT('pages.knowledge.index.sources_tab')}
+            </button>
+          ) : (
             <button key={t} type="button" role="tab" id={tabId(t)}
               aria-selected={tab === t} aria-controls={TAB_PANEL_ID}
               {...rovingTab(i)}
@@ -667,6 +683,10 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
       <div id={TAB_PANEL_ID} role="tabpanel" aria-labelledby={tabId(tab)}
         className={`flex-1 px-4 md:px-6 py-4 min-h-0 ${tab === 'graph' ? 'flex flex-col' : 'overflow-y-auto'}`} ref={listContainerRef}>
         <EmbeddingStatus />
+        {/* Owns the find_ui reveal scope for the Sources view, outside the
+            conditional so it can report "closed" while SourcesList is
+            unmounted (same pattern as ConnectionsPage's MCP Servers tab). */}
+        <GuideRevealScope id="open:knowledge.sources-tab" open={tab === 'sources'}>
         {isEmpty && tab === 'list' ? (
           <>
             {listFilterBar}
@@ -791,6 +811,7 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
         ) : (
           <SourcesList onIngest={handleFiles} uploadNamespace={uploadNamespace} setUploadNamespace={setUploadNamespace} namespaces={namespaces} ingestionJobs={ingestion.jobs} uploadAccept={uploadAccept} supportedFormatsDisplay={supportedFormatsDisplay} acceptsNoExtension={acceptsNoExtension} />
         )}
+        </GuideRevealScope>
       </div>
 
       {/* Stats bar */}
