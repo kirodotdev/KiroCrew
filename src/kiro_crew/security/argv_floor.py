@@ -291,6 +291,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _dequote_token,
         _ends_argv,
         _glob_could_expand_to,
+        _inert_quoted_line_heads,
         _is_mint_verb,
         _is_self_program,
         _iter_shell_chars,

@@ -38,6 +38,7 @@ from .text_redaction import redact_and_truncate
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from types import ModuleType
 
 
 def _schedule_push_allow_audit(command: str) -> None:
@@ -416,6 +417,35 @@ def _inline_interpreter_bindings(text: str) -> str:
     return _INTERP_IDENT_RE.sub(lambda m: bindings.get(m.group(0), m.group(0)), text)
 
 
+def _own_line_fix_applies(_argv: ModuleType, lower: str) -> bool:
+    """Whether a line starts inside a quote and moving each ``git`` command after a
+    separator (behind any ``env``/assignment prefix) onto its own line clears the
+    push floor, so the hint is true.
+
+    Only an ACTIVE separator is moved: a ``; git push`` inside the quoted message
+    is message text, and splitting there would leave it in every resubmission. The
+    rewrite is judged the way the floor judges a resubmission, over the source of
+    every nested shell payload, so a ``bash -c`` push that stays unverifiable on its
+    own line does not earn the hint."""
+    _shell = _submodule("shell_normalizer")
+    if not any(entry[0] for entry in _shell._quoted_line_entries(lower)[1:]):
+        return False
+    try:
+        active = {step.offset for step in _shell._iter_shell_chars(lower) if step.active}
+        rewritten = re.sub(
+            r"[ \t]*(;|&&?|\|\|)[ \t]*(?=(?:env\s+)?(?:\w+=\S*\s+)*git\s)",
+            lambda m: "\n" if active.issuperset(range(*m.span(1))) else m.group(0),
+            lower,
+        )
+        sources = _argv._shell_payload_sources(rewritten)
+    except Exception:
+        # Advice only: a walk that fails cannot show the fix works, so leave it out.
+        return False
+    return not any(
+        _argv._git_publish_floor_tags(source) for source in sources if _argv._is_git_publish(source)
+    )
+
+
 def is_denied(
     tool_name: str,
     extra_patterns: list[str] | None = None,
@@ -644,8 +674,14 @@ def is_denied(
             return _reason(
                 ungated_pattern,
                 "Matched structurally on the command's argv, not by the pattern text above: "
-                "shell substitution or expansion fuses text into the push target, so the "
-                "destination branch cannot be determined before the push runs.",
+                + (
+                    "the push shares a line with a multi-line quoted argument, so its "
+                    "destination branch cannot be read before the push runs. Put the push "
+                    "on its own line."
+                    if _own_line_fix_applies(_argv, lower)
+                    else "shell substitution or expansion fuses text into the push target, so "
+                    "the destination branch cannot be determined before the push runs."
+                ),
                 rule="git-publish-target-unverifiable",
                 component="git-publish-floor",
             )
