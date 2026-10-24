@@ -143,10 +143,12 @@ jobs:
       # issue itself. A blank issue (no form) simply has no answer to read.
       - name: Apply release-channel label
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
 
           case "$ISSUE" in
-            ''|*[!0-9]*) echo "::error::issue must be a positive integer, got '$ISSUE'"; exit 1 ;;
+            ''|*[!0-9]*) err "issue must be a positive integer, got '$ISSUE'"; exit 1 ;;
           esac
 
           gh api "repos/$REPO/issues/$ISSUE" \
@@ -154,12 +156,12 @@ jobs:
             > channel-issue.json
 
           if [ "$(jq -r '.is_pr' channel-issue.json)" = "true" ]; then
-            echo "::notice::#$ISSUE is a pull request; no channel label."
+            notice "#$ISSUE is a pull request; no channel label."
             exit 0
           fi
 
           if [ "$(jq '[.labels[] | select(startswith("channel: "))] | length' channel-issue.json)" != "0" ]; then
-            echo "::notice::#$ISSUE already carries a channel label; leaving it alone."
+            notice "#$ISSUE already carries a channel label; leaving it alone."
             exit 0
           fi
 
@@ -196,12 +198,12 @@ jobs:
             # "Not sure", a blank issue, or a form whose section was edited
             # away. No label is the right answer — a maintainer can still read
             # the version field.
-            echo "::notice::#$ISSUE has no usable release-channel answer; no channel label."
+            notice "#$ISSUE has no usable release-channel answer; no channel label."
             exit 0
           fi
 
           if [ -n "$DRY_RUN" ]; then
-            echo "::notice::[dry run] would add '$LABEL' to #$ISSUE"
+            notice "[dry run] would add '$LABEL' to #$ISSUE"
             exit 0
           fi
 
@@ -211,12 +213,14 @@ jobs:
       - name: Collect issue and label catalog
         id: collect
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
 
           # workflow_dispatch takes free text; keep it a bare number so it can
           # only ever address an issue.
           case "$ISSUE" in
-            ''|*[!0-9]*) echo "::error::issue must be a positive integer, got '$ISSUE'"; exit 1 ;;
+            ''|*[!0-9]*) err "issue must be a positive integer, got '$ISSUE'"; exit 1 ;;
           esac
 
           # Every label currently defined in the repository, with its
@@ -245,7 +249,7 @@ jobs:
           # `on: issues` never fires for pull requests, but workflow_dispatch
           # accepts any number and PRs share the issues namespace.
           if [ "$(jq -r '.is_pr' issue.json)" = "true" ]; then
-            echo "::notice::#$ISSUE is a pull request, not an issue; nothing to triage."
+            notice "#$ISSUE is a pull request, not an issue; nothing to triage."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -265,7 +269,7 @@ jobs:
           NEEDED="$(jq -r '[to_entries[] | select(.value) | .key] | join(",")' needed.json)"
 
           if [ -z "$NEEDED" ]; then
-            echo "::notice::#$ISSUE already has a label in every dimension; leaving it alone."
+            notice "#$ISSUE already has a label in every dimension; leaving it alone."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -293,6 +297,7 @@ jobs:
           MODEL_IDS: ${{ vars.ISSUE_TRIAGE_BEDROCK_MODEL_ID || 'global.anthropic.claude-opus-5-5 global.anthropic.claude-sonnet-5-5' }}
           NEEDED: ${{ steps.collect.outputs.needed }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
 
           # Bound the prompt: a 200KB stack-trace paste carries no more
@@ -372,7 +377,7 @@ jobs:
 
             if ! aws bedrock-runtime converse --cli-input-json file://req.json \
                  > resp.json 2> bedrock.err; then
-              echo "::warning::model $MODEL failed: $(head -c 200 bedrock.err | tr '\n' ' ')"
+              warn "model $MODEL failed: $(head -c 200 bedrock.err | tr '\n' ' ')"
               continue
             fi
             jq -j '[.output.message.content[]?.text // empty] | join("")' resp.json > raw.txt
@@ -389,7 +394,7 @@ jobs:
               GENERATED=1
               break
             fi
-            echo "::warning::model $MODEL did not return a JSON object; trying next"
+            warn "model $MODEL did not return a JSON object; trying next"
           done
           test -n "$GENERATED"
 
@@ -399,6 +404,7 @@ jobs:
           NEEDED: ${{ steps.collect.outputs.needed }}
           CLASSIFIED: ${{ steps.classify.outcome }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
 
           if [ "$CLASSIFIED" != "success" ]; then
@@ -407,7 +413,7 @@ jobs:
             else
               REASON="the classification step produced no verdict — see the warnings above"
             fi
-            echo "::warning::Leaving #$ISSUE unlabelled: $REASON"
+            warn "Leaving #$ISSUE unlabelled: $REASON"
             {
               echo "### Issue triage: skipped"
               echo
@@ -467,7 +473,7 @@ jobs:
 
           ACCEPTED="$(jq -r '.accepted | join(", ")' final.json)"
           UNKNOWN="$(jq -r '.unknown | join(", ")' final.json)"
-          [ -z "$UNKNOWN" ] || echo "::warning::Dropped labels outside the allowlist: $UNKNOWN"
+          [ -z "$UNKNOWN" ] || warn "Dropped labels outside the allowlist: $UNKNOWN"
 
           VERB="applied"
           [ -z "$DRY_RUN" ] || VERB="proposed (dry run)"

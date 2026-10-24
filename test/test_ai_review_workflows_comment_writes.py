@@ -20,6 +20,7 @@ from ai_review_workflows_helpers import (
     _step_script,
     _workflow,
 )
+from workflow_annotation_helpers import annotation_calls
 
 #: Every review lane's notice step, with the slot-lookup shape it is allowed to
 #: carry. ``defines_lookup`` says the step declares ``find_existing``; ``creates``
@@ -209,7 +210,7 @@ class TestNoticeSlotLookupLicensesEveryCreate:
         assert any('[ "$head_now" != "$HEAD" ]' in line for line in code), code
         # Both refusals are visible in the run log, and each names the revision
         # whose notice was withheld.
-        assert sum(1 for line in code if "::warning::" in line) == 2, code
+        assert len(annotation_calls("\n".join(code), "warning")) == 2, code
         assert sum(1 for line in code if "$HEAD" in line) >= 2, code
         # The read carries the same budget as the slot read above it, because the
         # two run inside one exhaustion window: a lane that has just spent up to
@@ -1135,7 +1136,7 @@ class TestReviewLaneVerdictVisibilityAcrossLanes:
         missed = [
             n
             for n, line in enumerate(code)
-            if "::error::" in line
+            if 'err "' in line
             and (
                 "could not publish" in line
                 or "slot is already taken" in line
@@ -1171,7 +1172,7 @@ class TestReviewLaneVerdictVisibilityAcrossLanes:
         assert "    published|superseded) ;;" in tail
         exits = [n for n, line in enumerate(tail) if line.strip() == "exit 1"]
         assert len(exits) == 1, exits
-        assert "::error::" in tail[exits[0] - 1]
+        assert annotation_calls(tail[exits[0] - 1], "error")
         # And that arm is gated on the body carrying a head-scoped stamp: an
         # incomplete or refused run has no verdict to miss the slot with, and
         # the gate below fails it closed on its own evidence.

@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from workflow_annotation_helpers import annotation_calls, annotation_helpers
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -115,7 +116,7 @@ def _harness(lane: str) -> str:
     script = _publish_step(lane)
     helper = _slice(script, 'READ_ERR_FILE="', "}")
     fn = _slice(script, "retry_comment_write() {", "}")
-    return helper + "\n" + fn + "\n"
+    return annotation_helpers(script) + helper + "\n" + fn + "\n"
 
 
 def _shell_function(script: str, name: str) -> str:
@@ -296,8 +297,8 @@ class TestTheGuardedReadsKeepTheirError:
         for line in script.split("\n"):
             if "READ_FAILURE_NOTE:+" not in line:
                 continue
-            assert (
-                "::error::" in line or "::warning::" in line
+            assert annotation_calls(line, "error") or annotation_calls(
+                line, "warning"
             ), f"{lane}: the note reached a line that is not a failure annotation: {line}"
             for claim in ("Published ", "Updated existing"):
                 assert (

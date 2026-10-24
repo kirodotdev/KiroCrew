@@ -105,7 +105,7 @@ class TestScreenshotEvidence:
         # A reviewer scanning the run log must see that evidence was waived.
         wf = _read("screenshot-evidence.yml")
         assert (
-            "::warning::'<!-- no-visual-delta -->' marker present" in wf
+            "warn \"'<!-- no-visual-delta -->' marker present" in wf
         ), "waiver must emit a warning annotation naming the marker"
 
     def test_remediation_sends_evidence_through_gh_attach_not_the_tree(self):

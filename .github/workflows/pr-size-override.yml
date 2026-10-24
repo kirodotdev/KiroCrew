@@ -64,6 +64,8 @@ jobs:
           COMMENT_ID: ${{ github.event.comment.id }}
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
 
           script=base/.github/scripts/pr_size.py
@@ -118,7 +120,7 @@ jobs:
           done
           rm -f "$perm_err"
           if [ -z "$perm_read_ok" ]; then
-            echo "::error::Could not read $ACTOR's collaborator permission after 3 attempts. Refusing the approval without recording it."
+            err "Could not read $ACTOR's collaborator permission after 3 attempts. Refusing the approval without recording it."
             post_notice "PR Size approval not recorded: your repository permission could not be READ (the collaborator-permission API did not answer after 3 attempts). This is not a permission denial. Re-issue the command once the API is healthy."
             exit 1
           fi
@@ -132,7 +134,7 @@ jobs:
           body="$(REASON="$reason" python3 "$script" render-comment \
             --actor "$ACTOR" --files "$files" --head "$head" --source "$COMMENT_ID")"
           post_notice "$body"
-          echo "::warning::PR size approved by @$ACTOR at $files files."
+          warn "PR size approved by @$ACTOR at $files files."
           echo "head=$head" >> "$GITHUB_OUTPUT"
 
       # The approval is already recorded above, so nothing below may fail the run:
@@ -146,6 +148,7 @@ jobs:
           PR: ${{ github.event.issue.number }}
           HEAD: ${{ steps.record.outputs.head }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
 
           post_notice() {
@@ -158,7 +161,7 @@ jobs:
           if ! latest="$(gh api \
             "repos/$REPO/actions/workflows/pr-size.yml/runs?head_sha=$HEAD&event=pull_request&per_page=20" \
             --jq '.workflow_runs | sort_by(.id) | last | select(. != null) | "\(.id) \(.status)"' 2>"$err")"; then
-            echo "::warning::Reading the PR Size runs failed ($(tr '\n' ' ' < "$err" | cut -c1-200))."
+            warn "Reading the PR Size runs failed ($(tr '\n' ' ' < "$err" | cut -c1-200))."
             post_notice "The approval is recorded, but the PR Size runs could not be read. Re-run the PR Size check by hand."
             exit 0
           fi
@@ -180,12 +183,12 @@ jobs:
             done
           fi
           if [ "$status" != "completed" ]; then
-            echo "::warning::PR Size run $run_id did not stop in time."
+            warn "PR Size run $run_id did not stop in time."
             post_notice "The approval is recorded, but PR Size run $run_id did not stop in time. Re-run the PR Size check by hand."
             exit 0
           fi
           if ! gh api --method POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null 2>"$err"; then
-            echo "::warning::Could not re-run PR Size run $run_id ($(tr '\n' ' ' < "$err" | cut -c1-200))."
+            warn "Could not re-run PR Size run $run_id ($(tr '\n' ' ' < "$err" | cut -c1-200))."
             post_notice "The approval is recorded, but PR Size could not be re-run automatically. Re-run the PR Size check by hand."
             exit 0
           fi

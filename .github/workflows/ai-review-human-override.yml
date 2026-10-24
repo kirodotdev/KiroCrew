@@ -64,6 +64,7 @@ jobs:
           WORKFLOW_SHA: ${{ github.sha }}
           RELEASE_RECORD: ${{ runner.temp }}/release_record.py
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           dest="$RELEASE_RECORD"
           for attempt in 1 2 3; do
@@ -77,7 +78,7 @@ jobs:
               sleep "$attempt"
             fi
           done
-          echo "::error::Could not load .github/scripts/release_record.py from $WORKFLOW_SHA after 3 attempts, so the command cannot be read."
+          err "Could not load .github/scripts/release_record.py from $WORKFLOW_SHA after 3 attempts, so the command cannot be read."
           jq -n --arg body "AI-review override not recorded: the handler could not load its command reader (a GitHub read failed, not your command). Re-issue the command." '{body: $body}' \
             | gh api --method POST "repos/$REPO/issues/$PR/comments" --input - >/dev/null || true
           exit 1
@@ -97,6 +98,8 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
           RELEASE_RECORD: ${{ runner.temp }}/release_record.py
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
 
           post_notice() {
@@ -191,7 +194,7 @@ jobs:
           done
           rm -f "$perm_err"
           if [ -z "$perm_read_ok" ]; then
-            echo "::error::Could not read $ACTOR's collaborator permission after 3 attempts, so this handler cannot tell a non-writer from an unreadable permission API. Refusing the override without recording it."
+            err "Could not read $ACTOR's collaborator permission after 3 attempts, so this handler cannot tell a non-writer from an unreadable permission API. Refusing the override without recording it."
             post_notice "AI-review override not recorded: your repository permission could not be READ (the collaborator-permission API did not answer after 3 attempts). This is not a permission denial -- re-issue the command once the API is healthy."
             exit 1
           fi
@@ -229,7 +232,7 @@ jobs:
             done
             rm -f "$issue_err"
             if [ -z "$issue_read" ]; then
-              echo "::error::Could not read issue #$release_issue after 3 attempts, so this handler cannot tell whether the deferral is tracked."
+              err "Could not read issue #$release_issue after 3 attempts, so this handler cannot tell whether the deferral is tracked."
               post_notice "AI-review override not recorded: issue #$release_issue could not be READ (the issues API did not answer after 3 attempts). This is not a judgement about the issue -- re-issue the command once the API is healthy."
               exit 1
             fi
@@ -270,8 +273,8 @@ jobs:
             "$marker" "$record_line" "$ACTOR" "$release_class" "$release_class" "$target" "$head" "$reason"
           post_notice "$decision_body"
           if [ -n "$legacy_warning" ]; then
-            echo "::warning::$legacy_warning"
-            post_notice "$legacy_warning" || echo "::warning::could not post the old-grammar notice"
+            warn "$legacy_warning"
+            post_notice "$legacy_warning" || warn "could not post the old-grammar notice"
           fi
 
           {
@@ -306,6 +309,7 @@ jobs:
           IS_FORK: ${{ steps.context.outputs.fork }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
 
           post_notice() {
@@ -322,7 +326,7 @@ jobs:
           failed_lanes=""
           rerun_count=0
           fail_lane() {
-            echo "::warning::$2"
+            warn "$2"
             failed_lanes="${failed_lanes:+$failed_lanes, }$1"
           }
 
@@ -575,7 +579,7 @@ jobs:
 
           if [ -n "$failed_lanes" ]; then
             post_notice "Human judgment recorded, but the following reviewer lane(s) could not be re-run automatically: **$failed_lanes**. Re-run the lane's latest workflow run for \`$HEAD\` manually from the Actions tab." \
-              || echo "::warning::could not post the rerun-failure notice"
+              || warn "could not post the rerun-failure notice"
           fi
 
           # PR Readiness recomputes here whenever no lane run is about to
@@ -591,6 +595,6 @@ jobs:
               >/dev/null 2>"$ERR_FILE"; then
               echo "Dispatched PR Readiness for #$PR at $HEAD."
             else
-              echo "::warning::could not dispatch PR Readiness for #$PR at $HEAD ($(read_error)); its next sweep recomputes the verdict."
+              warn "could not dispatch PR Readiness for #$PR at $HEAD ($(read_error)); its next sweep recomputes the verdict."
             fi
           fi

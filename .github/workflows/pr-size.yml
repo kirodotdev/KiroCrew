@@ -54,13 +54,14 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
         run: |
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -uo pipefail
           # BOOTSTRAP GUARD (shadow only). The pull request that adds this
           # workflow runs it before the script exists on the default branch.
           # Enforcing PR_SIZE_ENFORCED removes this guard (a test pins that),
           # because a missing script must then be a red check, not a pass.
           if [ ! -f base/.github/scripts/pr_size.py ]; then
-            echo "::notice::PR Size is not on the default branch yet; nothing measured."
+            notice "PR Size is not on the default branch yet; nothing measured."
             exit 0
           fi
           python3 base/.github/scripts/pr_size.py check

@@ -136,6 +136,8 @@ jobs:
           # read from the environment, never interpolated into this script.
           HEAD_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           export TITLE="$SOURCE_NAME macOS leg is failing on main"
           # The 6-hour bump window, in the exact shape the issues API's
@@ -204,7 +206,7 @@ jobs:
           if [ "$streak" = "first" ]; then
             prev_runs="$(gh api "repos/$REPO/actions/workflows/$WORKFLOW_ID/runs?branch=main&event=push&status=completed&per_page=30" \
             --jq '[.workflow_runs[] | select(.id < (env.RUN_ID | tonumber) and .conclusion != "cancelled" and .conclusion != "skipped")] | .[:10][] | "\(.id) \(.head_sha) \(.html_url)"')" \
-            || { echo "::warning::Could not read earlier push runs of $SOURCE_NAME; paging as a first red."; prev_runs=""; }
+            || { warn "Could not read earlier push runs of $SOURCE_NAME; paging as a first red."; prev_runs=""; }
           fi
           while read -r prev_id prev_sha prev_url; do
             [ -n "$prev_id" ] || continue
@@ -214,7 +216,7 @@ jobs:
               red) streak="continues"; streak_sha="${prev_sha:0:12}"; streak_url="$prev_url"; break ;;
               green) break ;;
               none) continue ;;
-              *) echo "::warning::Could not read the jobs of earlier run $prev_url; paging as a first red."; break ;;
+              *) warn "Could not read the jobs of earlier run $prev_url; paging as a first red."; break ;;
             esac
           done <<< "$prev_runs"
           echo "Red streak: $streak${streak_sha:+ (already red at $streak_sha)}"
@@ -249,10 +251,10 @@ jobs:
             if gh api "repos/$REPO/issues/$pr_number/comments" -f body="$pr_body" >/dev/null; then
               pr_line="PR #$pr_number carries a comment about this run."
             else
-              echo "::warning::Could not comment on PR #$pr_number for $RUN_URL; the tracking issue below still records the red."
+              warn "Could not comment on PR #$pr_number for $RUN_URL; the tracking issue below still records the red."
             fi
           else
-            echo "::notice::No trailing (#N) on the first line of $SHORT_SHA's message; no PR to comment on. The tracking issue below records the red unassigned."
+            notice "No trailing (#N) on the first line of $SHORT_SHA's message; no PR to comment on. The tracking issue below records the red unassigned."
           fi
 
           # 5. The tracking issue. The label must exist before the list and the
@@ -263,7 +265,7 @@ jobs:
             --color B60205 \
             --description "A macOS leg went red on a push to main; filed by main-macos-failure-watch.yml" \
             >/dev/null \
-            || echo "::notice::Could not ensure the main-macos-failure label (continuing); it may already exist or label writes may be refused."
+            || notice "Could not ensure the main-macos-failure label (continuing); it may already exist or label writes may be refused."
           existing="$(gh issue list --repo "$REPO" --state open --label main-macos-failure \
             --limit 100 --json number,title \
             --jq 'map(select(.title == env.TITLE)) | .[0].number // empty')"
@@ -309,9 +311,9 @@ jobs:
               new_number="$(printf '%s' "$created" | sed -nE 's#.*/issues/([0-9]+)[[:space:]]*$#\1#p')"
               if [ -n "$new_number" ]; then
                 gh issue edit "$new_number" --repo "$REPO" --add-assignee "$assignee" >/dev/null \
-                  || echo "::notice::Could not assign @$assignee to #$new_number (continuing)."
+                  || notice "Could not assign @$assignee to #$new_number (continuing)."
               else
-                echo "::notice::Issue created but its number could not be read from the create output; not assigning @$assignee."
+                notice "Issue created but its number could not be read from the create output; not assigning @$assignee."
               fi
             fi
           fi

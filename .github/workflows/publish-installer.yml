@@ -89,6 +89,7 @@ jobs:
         env:
           ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           # main-only, enforced here rather than trusted from the trigger.
           # `push` is already filtered to main, but workflow_dispatch lets a
@@ -100,7 +101,7 @@ jobs:
           # by every new user. Fails loudly rather than skipping, so a mistaken
           # dispatch leaves a clear reason in the run log.
           if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
-            echo "::error::Refusing to publish from '${GITHUB_REF}'. cli.sh is published from main only -- it is publicly executable, so it must be reviewed and merged first."
+            err "Refusing to publish from '${GITHUB_REF}'. cli.sh is published from main only -- it is publicly executable, so it must be reviewed and merged first."
             exit 1
           fi
           missing=""
@@ -108,10 +109,10 @@ jobs:
           [ -n "${BUCKET}" ] || missing="${missing} vars.CLI_DIST_BUCKET"
           [ -n "${CDN_BASE}" ] || missing="${missing} vars.CLI_CDN_BASE"
           if [ -n "$missing" ]; then
-            echo "::error::Installer publish is misconfigured (missing:${missing}). Refusing to report success without publishing."
+            err "Installer publish is misconfigured (missing:${missing}). Refusing to report success without publishing."
             exit 1
           fi
-          test -f cli.sh || { echo "::error::cli.sh is missing from the checkout."; exit 1; }
+          test -f cli.sh || { err "cli.sh is missing from the checkout."; exit 1; }
 
       # The strict installer ships fail-closed: until KMS provisioning pins a
       # real key fingerprint, cli.sh carries CLI_MANIFEST_KEY_ID=UNCONFIGURED
@@ -124,33 +125,34 @@ jobs:
       # brick the documented install path.
       - name: Refuse to publish an unconfigured trust root
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           key_id=$(sed -n 's/^CLI_MANIFEST_KEY_ID="\(.*\)"$/\1/p' cli.sh | head -n 1)
           if [ -z "$key_id" ]; then
-            echo "::error::cli.sh no longer pins CLI_MANIFEST_KEY_ID; refusing to publish an installer without a manifest trust root."
+            err "cli.sh no longer pins CLI_MANIFEST_KEY_ID; refusing to publish an installer without a manifest trust root."
             exit 1
           fi
           if [ "$key_id" = "UNCONFIGURED" ]; then
-            echo "::error::cli.sh pins CLI_MANIFEST_KEY_ID=UNCONFIGURED (fail-closed pre-KMS state). Publishing it would brick 'curl … | sh' for every channel. Complete packaging/signing/README.md steps 1-6 and pin the real key fingerprint first."
+            err "cli.sh pins CLI_MANIFEST_KEY_ID=UNCONFIGURED (fail-closed pre-KMS state). Publishing it would brick 'curl … | sh' for every channel. Complete packaging/signing/README.md steps 1-6 and pin the real key fingerprint first."
             exit 1
           fi
           public_key_b64=$(sed -n 's/^CLI_MANIFEST_PUBLIC_KEY_B64="\(.*\)"$/\1/p' cli.sh | head -n 1)
           if [ -z "$public_key_b64" ]; then
-            echo "::error::cli.sh no longer pins CLI_MANIFEST_PUBLIC_KEY_B64; refusing to publish an installer without an embedded public key."
+            err "cli.sh no longer pins CLI_MANIFEST_PUBLIC_KEY_B64; refusing to publish an installer without an embedded public key."
             exit 1
           fi
           if ! printf '%s' "$public_key_b64" | base64 -d > /tmp/cli-manifest-public.pem; then
-            echo "::error::cli.sh pins a malformed base64 manifest public key; refusing to publish."
+            err "cli.sh pins a malformed base64 manifest public key; refusing to publish."
             exit 1
           fi
           if ! openssl pkey -pubin -in /tmp/cli-manifest-public.pem \
               -outform DER -out /tmp/cli-manifest-public.der; then
-            echo "::error::cli.sh pins an invalid manifest public key; refusing to publish."
+            err "cli.sh pins an invalid manifest public key; refusing to publish."
             exit 1
           fi
           derived_key_id="sha256:$(sha256sum /tmp/cli-manifest-public.der | awk '{print $1}')"
           if [ "$key_id" != "$derived_key_id" ]; then
-            echo "::error::CLI_MANIFEST_KEY_ID '${key_id}' does not match the embedded public key fingerprint '${derived_key_id}'; refusing to publish an installer that would reject every signed feed."
+            err "CLI_MANIFEST_KEY_ID '${key_id}' does not match the embedded public key fingerprint '${derived_key_id}'; refusing to publish an installer that would reject every signed feed."
             exit 1
           fi
           echo "Manifest trust root pinned and self-consistent: ${key_id}"
@@ -166,20 +168,22 @@ jobs:
       # signature checks cli.sh itself performs (cli-manifest.py verify).
       - name: Verify every live channel feed against the pinned key
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
           sed -n 's/^CLI_MANIFEST_PUBLIC_KEY_B64="\(.*\)"$/\1/p' cli.sh | head -n 1 \
             | base64 -d > /tmp/pinned-public.pem
-          test -s /tmp/pinned-public.pem || { echo "::error::cli.sh pins no manifest public key."; exit 1; }
+          test -s /tmp/pinned-public.pem || { err "cli.sh pins no manifest public key."; exit 1; }
           for channel in nightly insider stable; do
             feed_url="${CDN_BASE}/feed/${channel}/latest-cli.json"
             status=$(curl -fsS --proto '=https' -o "/tmp/feed-${channel}.json" \
               -w '%{http_code}' "$feed_url" || true)
             if [ "$status" = "404" ] || [ "$status" = "403" ]; then
-              echo "::warning::channel '${channel}' serves no feed (${status}); not installable today, so not a publish regression. Skipping."
+              warn "channel '${channel}' serves no feed (${status}); not installable today, so not a publish regression. Skipping."
               continue
             fi
             if [ "$status" != "200" ]; then
-              echo "::error::channel '${channel}' feed fetch failed (${status}); refusing to publish without proving it verifiable."
+              err "channel '${channel}' feed fetch failed (${status}); refusing to publish without proving it verifiable."
               exit 1
             fi
             if ! python3 packaging/signing/cli-manifest.py verify \
@@ -187,7 +191,7 @@ jobs:
                 --public-key /tmp/pinned-public.pem \
                 --expected-channel "$channel" \
                 --artifact-base "${CDN_BASE}"; then
-              echo "::error::channel '${channel}' live feed does not verify against the pinned key. Publishing the strict installer would brick '${channel}' installs. Publish signed feeds (packaging/signing/README.md step 6) first."
+              err "channel '${channel}' live feed does not verify against the pinned key. Publishing the strict installer would brick '${channel}' installs. Publish signed feeds (packaging/signing/README.md step 6) first."
               exit 1
             fi
           done
@@ -198,10 +202,11 @@ jobs:
       # channel names match publish-cli.yml; this is the cheap shell-level gate.
       - name: Check the installer parses and rejects a bad channel
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           sh -n cli.sh
           if sh cli.sh --channel definitely-not-a-channel 2>/dev/null; then
-            echo "::error::cli.sh accepted an unknown channel; it must fail before reaching the CDN."
+            err "cli.sh accepted an unknown channel; it must fail before reaching the CDN."
             exit 1
           fi
 
@@ -235,6 +240,7 @@ jobs:
       # cover edge revalidation, then fail closed.
       - name: Verify the published installer is live
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           EXPECTED=$(sha256sum cli.sh | awk '{print $1}')
           # The checkout above pins main's tip, which is NOT necessarily the
@@ -249,7 +255,7 @@ jobs:
               echo "Verified ${URL} == cli.sh@${PUBLISHED_SHA} (sha256 ${EXPECTED})"
               CACHE=$(curl -fsSI "$URL" | tr -d '\r' | awk -F': ' 'tolower($1)=="cache-control"{print $2}')
               [ "$CACHE" = "no-cache" ] || {
-                echo "::error::Published installer is served with cache-control='${CACHE}', expected 'no-cache'."
+                err "Published installer is served with cache-control='${CACHE}', expected 'no-cache'."
                 exit 1
               }
               {
@@ -263,5 +269,5 @@ jobs:
             echo "Attempt ${attempt}: live sha256 '${ACTUAL:-<fetch failed>}' != '${EXPECTED}'; retrying..."
             sleep 10
           done
-          echo "::error::${URL} did not converge on the published bytes. The upload may have landed without going live -- check the CloudFront behaviour for the bucket root."
+          err "${URL} did not converge on the published bytes. The upload may have landed without going live -- check the CloudFront behaviour for the bucket root."
           exit 1

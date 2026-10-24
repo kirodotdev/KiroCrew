@@ -53,6 +53,7 @@ jobs:
           # See the UNKNOWN re-list below.
           RECHECK_DELAY_SECONDS: "60"
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
 
           # Ensure the label exists (idempotent).
@@ -75,7 +76,7 @@ jobs:
           }
           prs="$(list_prs)"
           if [ "$(jq 'length' <<<"$prs")" -ge "$PR_LIST_LIMIT" ]; then
-            echo "::warning::Open-PR list hit its ceiling of $PR_LIST_LIMIT;" \
+            warn "Open-PR list hit its ceiling of $PR_LIST_LIMIT;" \
               "the oldest open PRs were dropped and were not considered." \
               "Raise PR_LIST_LIMIT in this workflow."
           fi
@@ -138,7 +139,7 @@ jobs:
             "re-listing once in ${RECHECK_DELAY_SECONDS}s."
           sleep "$RECHECK_DELAY_SECONDS"
           if ! relisted="$(list_prs)"; then
-            echo "::warning::Re-listing open PRs failed; UNKNOWN PRs are left for the next sweep."
+            warn "Re-listing open PRs failed; UNKNOWN PRs are left for the next sweep."
             exit 0
           fi
           sync_prs "$(jq --argjson ids "$unknown_ids" \
