@@ -57,6 +57,7 @@ import {
   noteDirPath,
   savePref,
   shiftListItem,
+  vaultContentPath,
 } from './utils'
 import { useMdNotebookPageState } from './useMdNotebookPageState'
 
@@ -126,6 +127,9 @@ export default function MdNotebookPage() {
   // sources. Derived here rather than in `Preview` because the vault's local
   // path lives in this page's state, not in the note body.
   const noteDir = noteDirPath(activeVault, activePath)
+  // Root of the vault's content, which a root-relative image (`/images/a.png`)
+  // falls back to when it is not a real absolute path.
+  const vaultRoot = activeVault ? vaultContentPath(activeVault) : undefined
   // `pending` means "differs from the last commit", which is only actionable when
   // there is a remote the note has not reached yet. On a local-only vault it has
   // no destination, clears itself on the next autosave, and reads as "not saved"
@@ -1027,6 +1031,7 @@ export default function MdNotebookPage() {
               <Preview
                 content={content}
                 noteDir={noteDir}
+                vaultRoot={vaultRoot}
                 onToggleCheckbox={toggleCheckbox}
                 editRange={editBlock}
                 onStartEdit={startBlockEdit}

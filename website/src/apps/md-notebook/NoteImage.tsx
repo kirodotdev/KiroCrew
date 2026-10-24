@@ -23,13 +23,23 @@
  * SVGs get a definite width basis instead, because one authored with only a
  * `viewBox` has no intrinsic size and would collapse under a max-width cap.
  *
+ * A root-relative source (`/images/a.png`) is served as an absolute path first,
+ * so a real absolute path still loads on the first request. When that fails and
+ * the open vault is known, the image tries the same path against the vault root
+ * once, the convention Obsidian-style vaults use, and only then falls back to
+ * the alt text. The retry asks `/api/file-raw` for a path under the vault and
+ * nothing a plain absolute path could not already ask for.
+ *
  * No click handler: in this app a click means "edit the source of this line",
  * and the surrounding block already carries that gesture. Swallowing the click
  * to open a lightbox would make the image the only span in a note you cannot
  * click to edit.
  */
 import { ImageOff } from 'lucide-react'
-import { useState } from 'react'
+import { useContext, useState } from 'react'
+
+import { vaultRootImageSrc } from './utils'
+import { VaultRootCtx } from './vaultRootContext'
 
 /** File name of a source, used as the fallback label when alt is empty. */
 function srcLabel(src: string): string {
@@ -39,9 +49,17 @@ function srcLabel(src: string): string {
 }
 
 export function NoteImage({ src, alt, rawSrc }: { src: string | null; alt: string; rawSrc: string }) {
-  const [failed, setFailed] = useState(false)
+  const vaultRoot = useContext(VaultRootCtx)
+  // The second try, or null when the source is not root-relative or cannot be
+  // placed safely inside the vault. It encodes both the source and the root, so
+  // keying the state on it starts over whenever either changes.
+  const fallback = src === null ? null : vaultRootImageSrc(rawSrc, vaultRoot)
+  const [triedFallback, setTriedFallback] = useState<string | null>(null)
+  const [failedSrc, setFailedSrc] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
-  if (src === null || failed) {
+  const onFallback = fallback !== null && triedFallback === fallback
+  const active = onFallback ? fallback : src
+  if (active === null || failedSrc === active) {
     // The glyph, not the muted colour, is what says "this was an image": alt
     // text alone reads as an ordinary sentence, so a renamed or refused file
     // would look like prose the author wrote. Same signal the chat renderer
@@ -59,10 +77,10 @@ export function NoteImage({ src, alt, rawSrc }: { src: string | null; alt: strin
   return (
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- `onLoad`/`onError` are resource events (release the layout floor, swap in the fallback), not gestures; the image deliberately carries no click, per the note above
     <img
-      src={src}
+      src={active}
       alt={alt}
       onLoad={() => setLoaded(true)}
-      onError={() => setFailed(true)}
+      onError={() => (fallback !== null && !onFallback ? setTriedFallback(fallback) : setFailedSrc(active))}
       style={{
         maxWidth: '100%',
         maxHeight: '60vh',

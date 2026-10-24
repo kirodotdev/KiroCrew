@@ -29,6 +29,7 @@ import { BlockEditor } from './BlockEditor'
 import { CodeFenceBlock } from './CodeFenceBlock'
 import { MermaidBlock } from './MermaidBlock'
 import { NoteImage } from './NoteImage'
+import { VaultRootCtx } from './vaultRootContext'
 import {
   FM_RE,
   LIST_MARKER_RE,
@@ -228,6 +229,12 @@ export interface PreviewProps {
    * sources; without it those images fall back to their alt text.
    */
   noteDir?: string
+  /**
+   * Absolute content root of the open vault. Lets a root-relative image source
+   * (`/images/a.png`) fall back to that path under the vault; without it such
+   * an image is served as an absolute path only.
+   */
+  vaultRoot?: string
 }
 
 export function Preview({
@@ -240,6 +247,7 @@ export function Preview({
   onSplitEdit,
   onDirtyEdit,
   noteDir,
+  vaultRoot,
 }: PreviewProps) {
   const body = content.replace(FM_RE, '')
   // `split('\n')` yields a trailing EMPTY segment whenever the body ends with a
@@ -598,7 +606,7 @@ export function Preview({
         minHeight: '100%',
       }}
     >
-      {out}
+      <VaultRootCtx.Provider value={vaultRoot}>{out}</VaultRootCtx.Provider>
     </div>
   )
 }
