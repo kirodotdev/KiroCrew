@@ -233,6 +233,14 @@ above it. The `body::before` / `body::after` idiom in `overrides.css` is not
 covered by this rule: it paints at the document root and therefore over the
 whole shell, header included.
 
+**L2 overlay triggers.** An overlay's `trigger` is `continuous`, `activate`, or
+`idle-<N>s`. An `idle-<N>s` overlay mounts after N seconds without input and
+unmounts on the next one. Input is a key press, a pointer press, or a wheel or
+touch scroll anywhere in the dashboard: inside a scroll container, and in the
+built-in terminal, which stops propagation of the events it consumes, so
+`ThemeExperienceLayer` listens in the capture phase. Under
+`prefers-reduced-motion: reduce` no overlay mounts at all.
+
 ## Brand identity
 
 An installed L1/L2 theme can brand the main left command palette without CSS or
@@ -492,7 +500,11 @@ code:
 - **`loader/*.png` `.webp` `.gif` `.svg`** — ship your **own images** (Level 1).
   Ship **one** and it renders on its own; ship **2–8** and the stock carousel
   cycles them. Animated WebP/APNG/GIF and animated SVG **self-animate** inside
-  the `<img>`, so a single fully-authored loop is a first-class loader. Ordered
+  the `<img>`, so a single fully-authored loop is a first-class loader. Under
+  `prefers-reduced-motion: reduce` each image is painted once, at its first
+  frame, onto a `<canvas>` instead (`src/pages/chat/PackLoaderImage.tsx`),
+  because the page cannot pause an image's own animation; make that first
+  frame read as the loader at rest. Ordered
   by filename; each is served with a strict Content-Type + `nosniff` under the
   sandboxed asset CSP (`default-src 'none'; sandbox`), referenced only as an
   `<img>`. SVG is safe here for the same reason `logo.svg` is: an `<img>`-loaded

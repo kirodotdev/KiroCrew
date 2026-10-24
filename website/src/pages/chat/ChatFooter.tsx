@@ -9,6 +9,7 @@ import { resolveThemeLoaderIcons } from '../../themeLoaderIcons'
 import { useOptionalTheme } from '../../hooks/useTheme'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import { PackLoaderImage } from './PackLoaderImage'
 type StopState = 'idle' | 'soft_pending' | 'killing'
 
 /** One carousel beat — the cadence the .csb4 cross-fade was built around. */
@@ -97,13 +98,24 @@ type LoaderAssets = {
   loaderImages?: readonly string[]
 }
 
+/** One component per loader-image URL. The footer resolves its loader on every
+ *  render, and a fresh component type each time would remount the image in its
+ *  carousel slot: an animated image restarts, and a held still frame goes blank
+ *  until it is painted again. */
+const loaderImageIcons = new Map<string, ComponentType>()
+
 /** A theme-supplied loader image (raster art the pack ships). Decorative: no alt
  *  text, aria-hidden, same sizing class as the mascot poses so it drops into the
- *  carousel unchanged. */
+ *  carousel unchanged, and held on its first frame under reduced motion. */
 function loaderImageIcon(url: string): ComponentType {
-  return function LoaderImage() {
-    return <img className="kp" src={url} alt="" aria-hidden="true" draggable={false} />
+  let Icon = loaderImageIcons.get(url)
+  if (!Icon) {
+    Icon = function LoaderImage() {
+      return <PackLoaderImage className="kp" src={url} />
+    }
+    loaderImageIcons.set(url, Icon)
   }
+  return Icon
 }
 
 /** The installed-pack slug behind an active theme id, or undefined for a built-in. */
@@ -336,16 +348,13 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
                 ? <loader.Component />
                 : loader.kind === 'image'
                   // The pack shipped a single image — rendered on its own, self-
-                  // animating if it's an animated WebP/APNG/GIF or SVG. Sized to a
-                  // carousel slot (14px) with object-contain so an intrinsically
-                  // large image cannot expand the footer band; decorative, so
-                  // aria-hidden + no alt.
-                  ? <img
+                  // animating if it's an animated WebP/APNG/GIF or SVG, and held on
+                  // its first frame under reduced motion. Sized to a carousel slot
+                  // (14px) with object-contain so an intrinsically large image
+                  // cannot expand the footer band; decorative, so aria-hidden + no alt.
+                  ? <PackLoaderImage
                       className="kp"
                       src={loader.src}
-                      alt=""
-                      aria-hidden="true"
-                      draggable={false}
                       style={{ width: 14, height: 14, objectFit: 'contain' }}
                     />
                   : <SwapCarousel icons={loader.icons} />}

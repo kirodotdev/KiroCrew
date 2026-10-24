@@ -98,7 +98,7 @@
 .csb4{display:flex;gap:5px;padding:2px 0}
 .csb4 .slot{position:relative;width:14px;height:14px}
 .csb4 .slot .lyr{position:absolute;inset:0;display:block;color:var(--accent)}
-.csb4 .slot .lyr>svg,.csb4 .slot .lyr>img{display:block;width:100%;height:100%;overflow:visible}
+.csb4 .slot .lyr>svg,.csb4 .slot .lyr>img,.csb4 .slot .lyr>canvas{display:block;width:100%;height:100%;overflow:visible}
 .csb4 .slot .lyr:nth-child(1){animation:csb-a 2.8s ease-in-out infinite both}
 .csb4 .slot .lyr:nth-child(2){animation:csb-b 2.8s ease-in-out infinite both}
 .csb4 .slot:nth-child(2) .lyr{animation-delay:.25s}
