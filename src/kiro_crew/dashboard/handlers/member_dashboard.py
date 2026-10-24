@@ -1358,16 +1358,17 @@ def _egress_decision(owner_agent: str = "", session_key: str = "") -> _EgressDec
     from kiro_crew.platform.governance import MODE_DENY, ScopedRuleset
 
     try:
-        from kiro_crew.platform.governance import last_composed_ceiling
+        from kiro_crew.platform.governance import last_composed_ceiling, policy_level_control
 
         ceiling = last_composed_ceiling()
-        controls = (ceiling.controls or {}) if ceiling is not None else {}
+        # The policy level as ``resolve`` enforces it: in an enterprise build an
+        # unnamed ``network.egress`` is the built-in baseline (off), not absent.
+        control = policy_level_control(ceiling, "network.egress")
         # NO CEILING, OR NONE GOVERNING EGRESS, IS NOT AN ANSWER -- it only means the
         # outer bound restricts nothing, and the profile below still decides. Returning
         # True here was the hole: the standalone default is every install that
         # configures no policy, and a profile can restrict egress in all of them.
-        if "network.egress" in controls:
-            control = controls["network.egress"]
+        if control is not None:
             if not isinstance(control, ScopedRuleset):
                 return _EgressDecision(False, "policy", "ceiling_egress_control_unreadable")
             # Only one shape leaves the agent unrestricted: deny-mode denying nothing.

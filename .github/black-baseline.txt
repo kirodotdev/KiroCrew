@@ -508,7 +508,6 @@ test/test_frontend_edition_build.py
 test/test_frontmatter.py
 test/test_gateway_appkit_endpoints.py
 test/test_gitlab_client_coverage.py
-test/test_governance_policy_viewer.py
 test/test_handler_cron_list.py
 test/test_handlers_channel_clear_context.py
 test/test_handlers_channel_presets.py

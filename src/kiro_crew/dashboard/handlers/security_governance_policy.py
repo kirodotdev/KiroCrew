@@ -30,6 +30,7 @@ from kiro_crew.platform.governance import (
     ScopedRuleset,
     _AndRuleset,
     _compose_controls,
+    policy_level_control,
 )
 from kiro_crew.platform.governance_profiles import (
     HOST_SESSION_KEY,
@@ -262,7 +263,9 @@ def build_governance_policy_snapshot() -> dict:
             # would be a permanently-ungoverned duplicate row.
             if scope in _SCOPE_ALIASES:
                 continue
-            policy_control = ceiling.get(scope) if ceiling is not None else None
+            # The policy level as ``resolve`` enforces it: in an enterprise build an
+            # unnamed scope reports the built-in baseline, not "ungoverned".
+            policy_control = policy_level_control(ceiling, scope)
             profile_control = profile.get(scope) if profile is not None else None
 
             if policy_control is not None and profile_control is not None:

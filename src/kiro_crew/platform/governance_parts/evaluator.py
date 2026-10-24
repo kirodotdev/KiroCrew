@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Mapping, Optional, Tuple
 
+from kiro_crew import edition
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance_parts.archetypes import (
     CapabilityGate,
@@ -24,7 +25,10 @@ from kiro_crew.platform.governance_parts.archetypes import (
     _AndRuleset,
     _dedup,
 )
+from kiro_crew.platform.governance_parts.baseline import BASELINE_UNGATED
 from kiro_crew.platform.governance_parts.carriers import GovernanceCeiling, Profile
+from kiro_crew.platform.governance_parts.catalog import _SCOPE_ALIASES
+from kiro_crew.platform.governance_parts.parsing import baseline_controls
 from kiro_crew.platform.governance_parts.tool_calls import (
     _governed_targets,
     classify_tool_args,
@@ -41,12 +45,64 @@ from kiro_crew.platform.guest_paths import guest_also_local, guest_root
 
 _PERMIT_NOT_GOVERNED = Decision(True, "not governed", rule="default", layer="default")
 
+_BASELINE_REASON = "enterprise baseline"
+
+# A scope with neither a baseline row nor an ungated reason (one registered at run
+# time) is refused in an enterprise build: an empty allow-set denies every item.
+_DENY_UNLISTED = ScopedRuleset(mode="allow", allow=())
+
+
+def _policy_level(
+    ceiling: Optional[GovernanceCeiling], scope: str, *, baseline: bool = True
+) -> Tuple[object, bool]:
+    """The policy level's control for *scope*, and whether the baseline supplied it.
+
+    The remote policy answers a scope it names. In an enterprise build a scope it
+    does not name is answered by the built-in baseline (RFC D3), never left
+    ungoverned. Only the POLICY level is filled in this way: a profile narrows the
+    policy beneath it, so an unnamed profile scope stays ``None`` and cannot
+    impose the baseline again under a remote widening. That is why a ``Profile``
+    passed in the ceiling's place (``governance_profiles`` asks ``may_skip_gate``
+    about one profile alone) and a caller asking about the profile layer alone
+    (``baseline=False``) get no baseline.
+    """
+    control = ceiling.get(scope) if ceiling is not None else None
+    if (
+        control is not None
+        or not baseline
+        or isinstance(ceiling, Profile)
+        or not edition.is_enterprise()
+    ):
+        return control, False
+    # A policy's ``folders.*`` rule is stored under its ``filesystem.*`` scope at
+    # parse time, so an alias query must find it there before the baseline answers.
+    canonical = _SCOPE_ALIASES.get(scope, scope)
+    named = ceiling.get(canonical) if ceiling is not None else None
+    if named is not None:
+        return named, False
+    if canonical in BASELINE_UNGATED:
+        return None, False
+    return baseline_controls().get(canonical, _DENY_UNLISTED), True
+
+
+def policy_level_control(ceiling: Optional[GovernanceCeiling], scope: str) -> Optional[object]:
+    """The control the policy level enforces for *scope* (see :func:`_policy_level`).
+
+    For readers that inspect a ceiling's control directly instead of calling
+    :func:`resolve`, such as ``governance.may_skip_gate``; reading
+    ``ceiling.get`` there would treat an unnamed scope as ungoverned in an
+    enterprise build and skip the gate the baseline is enforced at.
+    """
+    return _policy_level(ceiling, scope)[0]
+
 
 def _query_level(control: object, scope: str, item: str) -> Decision:
     """Query ONE level's control for *item* in *scope* (Rule 1).
 
     A ``None`` control means the level does not govern this scope → permit
-    (truth-table "not-governed" rows).  Dispatch is by archetype, not scope
+    (truth-table "not-governed" rows).  In an enterprise build the POLICY level
+    is never ``None`` here for a gated scope: :func:`_policy_level` supplies the
+    built-in baseline first, so only a profile reaches this permit.  Dispatch is by archetype, not scope
     name.  ``scope`` is used only to locate the sub-leaf for the structured
     archetypes (capabilities.<cap>.<inner>, channels member).
     """
@@ -83,6 +139,8 @@ def resolve(
     profile: Optional[Profile],
     scope: str,
     item: str,
+    *,
+    baseline: bool = True,
 ) -> Decision:
     """Resolve whether *item* is permitted in *scope* — ``policy ∩ profile``.
 
@@ -90,10 +148,15 @@ def resolve(
     Policy is the hard ceiling; the profile can only further restrict.  Either
     level being ``None`` (or not governing the scope) contributes a permit, so
     ``resolve(None, None, …)`` permits everything (the ungoverned standalone
-    default) and a policy-deny is final regardless of the profile.
+    default) and a policy-deny is final regardless of the profile. In an
+    enterprise build a scope the policy does not name is answered by the built-in
+    baseline instead (:func:`_policy_level`); ``baseline=False`` asks the profile
+    layer alone, for a caller that judges each layer separately.
     """
-    policy_control = ceiling.get(scope) if ceiling is not None else None
+    policy_control, from_baseline = _policy_level(ceiling, scope, baseline=baseline)
     policy_dec = _query_level(policy_control, scope, item)
+    if from_baseline:
+        policy_dec = replace(policy_dec, reason=f"{_BASELINE_REASON}: {policy_dec.reason}")
     profile_control = profile.get(scope) if profile is not None else None
     if not policy_dec.permitted:
         # Same provenance rule as ``_AndRuleset.permits``: a policy allow-mode
@@ -274,15 +337,21 @@ def gate_decision(
         if not spellings:
             continue
         refusal: Optional[Decision] = None
-        for layer_ceiling, layer_profile in ((ceiling, None), (None, profile)):
-            if layer_ceiling is None and layer_profile is None:
+        # The profile pass asks the profile alone: filling its empty policy slot
+        # with the baseline would refuse beneath a remote grant what the ceiling
+        # pass already admitted.
+        layers = ((ceiling, None, True), (None, profile, False))
+        for layer_ceiling, layer_profile, layer_baseline in layers:
+            if layer_ceiling is None and layer_profile is None and not layer_baseline:
                 continue
             admitted = False
             last_refusal: Optional[Decision] = None
             for spelling in spellings:
                 spelling_ok = True
                 for scope, item in dict.fromkeys(classify_tool_title(spelling)):
-                    decision = resolve(layer_ceiling, layer_profile, scope, item)
+                    decision = resolve(
+                        layer_ceiling, layer_profile, scope, item, baseline=layer_baseline
+                    )
                     if decision.permitted:
                         continue
                     if decision.explicit_deny:

@@ -79,6 +79,10 @@ class ScopeSpec:
 # validate`` reports a partially-governed ``capabilities`` block so the gap is
 # visible instead of implied.
 #
+# An ENTERPRISE build is the exception: there an unnamed scope is answered by the
+# built-in baseline (``baseline.py``, RFC D3), so a new row here also needs a row
+# in ``BASELINE_CONTROLS`` or ``BASELINE_UNGATED``; a test fails until it has one.
+#
 # The absent-key semantics below are verified by executing parse_policy + resolve,
 # not inferred from the comments.
 

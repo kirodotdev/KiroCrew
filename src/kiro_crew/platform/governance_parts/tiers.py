@@ -19,6 +19,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Dict, Mapping, Optional, Tuple
 
+from kiro_crew import edition
 from kiro_crew.config.paths import config_dir
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance_parts.archetypes import _compose_controls
@@ -33,6 +34,7 @@ from kiro_crew.platform.governance_parts.carriers import (
 from kiro_crew.platform.governance_parts.parsing import (
     _SANDBOX_FLAGS_SCOPE,
     _read_json_file,
+    baseline_controls,
     parse_policy,
 )
 from kiro_crew.platform.governance_parts.signature import _verify_policy_signature
@@ -389,11 +391,15 @@ def compose_tier_ladder(
     Extracted so that boot and a live central refresh cannot drift: a refresh that
     installed the fetched document alone would silently drop every local restriction
     below it.
+
+    In an enterprise build the authority's unnamed scopes are first filled from the
+    built-in baseline (:func:`_with_enterprise_baseline`), so a lower tier that names
+    such a scope narrows the baseline instead of supplying the scope's whole answer.
     """
     present = [tier for tier in tiers if tier is not None]
     if not present:
         return None
-    ceiling = present[0]
+    ceiling = _with_enterprise_baseline(present[0])
     # The distribution pins ride OUTSIDE ``controls`` (they are values the core
     # consumes, not a governed scope), so they are not carried by the per-scope
     # compose the rest of this fold uses -- every path that REBUILDS a ceiling has
@@ -424,6 +430,39 @@ def compose_tier_ladder(
         # single document was installed untouched.
         return replace(ceiling, distribution=distribution)
     return ceiling
+
+
+def _with_enterprise_baseline(authority: GovernanceCeiling) -> GovernanceCeiling:
+    """*authority* with every scope it does not name filled from the baseline.
+
+    RFC D3 (``docs/request-for-change/rfc-crew-enterprise-edition.md``): in an
+    enterprise build only the remote policy may turn a control on, and a scope it
+    does not name holds its minimal set. :func:`_intersect_ceilings` lets a lower
+    tier supply a scope its authority left out, which is a tightening only while an
+    unnamed scope means "unrestricted". Filling the authority first keeps that fold
+    tighten-only in an enterprise build too: a local tier composes WITH the baseline
+    and can narrow it, never replace it. Only a central authority's named scopes
+    replace the baseline; a local authority (no central document present) is
+    intersected with it scope by scope. The ``oss`` edition returns *authority*
+    unchanged (the same object).
+    """
+    if not edition.is_enterprise():
+        return authority
+    baseline = baseline_controls()
+    if authority.tier != TIER_CENTRAL:
+        # No central document above it: the authority is itself a LOCAL tier, so
+        # its named scopes may only narrow the baseline, never replace it.
+        merged: Dict[str, object] = dict(authority.controls)
+        for scope, control in baseline.items():
+            named = merged.get(scope)
+            merged[scope] = control if named is None else _compose_controls(control, named)
+        return replace(authority, controls=merged)
+    missing = {
+        scope: control for scope, control in baseline.items() if scope not in authority.controls
+    }
+    if not missing:
+        return authority
+    return replace(authority, controls={**authority.controls, **missing})
 
 
 def _subordinate_ceiling(
