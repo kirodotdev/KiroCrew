@@ -11,6 +11,7 @@ import { useAppDispatch, useAppSelector } from '../../store'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent } from '../../components/ui/dropdown-menu'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from '../../components/ui/context-menu'
 import { offlineProps } from '../../utils/offline'
+import { OfflineReasonRow } from '../../components/OfflineMenuReason'
 import { crewOf } from '../../hooks/useInstanceSessions'
 import { switchSlot, selectSidebarWorkflowActive, selectAutomationForSlot } from '../../store/chatSlice'
 import { slotIsRemoteBound } from '../../store/dashboardSlice'
@@ -181,6 +182,9 @@ interface SessionRowActions {
   onRenameChange: (value: string) => void
   onRenameCommit: (key: string, value: string) => void
   onRenameCancel: () => void
+  /** The slot whose rename was refused offline, so only that row shows the
+   *  neutral notice. Null when no refusal stands. */
+  renameOfflineSlot: string | null
   /** The row menu's "Regenerate title": re-derives the title from the
    *  conversation without making the session active. */
   onAutoTitle: (key: string) => void
@@ -279,7 +283,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   } = view.shell
   const {
     onNativeDragStart, onNativeDragEnd, onPinnedKeyboardReorder, onManualKeyboardReorder,
-    renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle,
+    renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, renameOfflineSlot, onAutoTitle,
     onDuplicate, onCloseSession, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession,
     openElsewhere, toggleConductor,
   } = actions
@@ -1585,6 +1589,12 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             <div
               data-session-title
               className={`${ROW_TITLE_CLS} font-semibold text-text ${renamingHere ? '' : 'truncate'}`}
+              {...(renamingHere ? {} : offlineProps(connected, i18nT('utils.offline.rename_sessions')))}
+              // AFTER the spread, deliberately: `offlineProps` would otherwise
+              // replace this with its own tooltip, and this one is the only
+              // place a truncated session name is shown in full. The row's own
+              // offline tooltip and the notice below already say why rename is
+              // refused, so only the aria-disabled affordance is taken here.
               title={tooltipTitle}
             >
               {/* No separate fork glyph: forked titles already carry the
@@ -1613,6 +1623,17 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 </>
               )}
             </div>
+            {/* An offline refusal is not a failure: nothing was sent, so this is
+                the shared neutral reason row, not the row's danger surface. It
+                sits under the title it refused, beside a draft the commit kept,
+                and it is keyed by slot so it cannot appear under every row. */}
+            {renameOfflineSlot === s.key && (
+              <OfflineReasonRow
+                testId={`session-rename-offline-${s.key}`}
+                className="mt-1 leading-snug whitespace-normal [overflow-wrap:anywhere] group-hover:pr-20"
+                message={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.rename_sessions') })}
+              />
+            )}
             {/* Secondary line: one ordered resolver decides both the words and the
                 marker leading them (#3830), so the two can no longer disagree.
                 The tail is `last_message`, which is also where the `unread` dot

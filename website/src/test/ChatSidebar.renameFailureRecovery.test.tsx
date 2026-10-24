@@ -22,7 +22,7 @@
  * to the server value delivered by `api.chatSlots`.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { fireEvent, render, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -93,15 +93,15 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatSidebar from '../pages/ChatSidebar'
 import type { ChatSlot } from '../types'
-import { sseSlotTitle } from '../store/dashboardSlice'
+import { sseSlotTitle, sseDisconnected } from '../store/dashboardSlice'
 
 const slot = { key: SLOT_KEY, title: SERVER_TITLE, running: false, tags: [], created: '', last_ts: '' } as unknown as ChatSlot
 
-function renderSidebar(extraSlots: ChatSlot[] = []) {
+function renderSidebar(extraSlots: ChatSlot[] = [], connected = true) {
   const allSlots = [slot, ...extraSlots]
   const store = createTestStore({
     dashboard: {
-      status: {}, connected: true, slots: allSlots, approvalMode: 'normal',
+      status: {}, connected, slots: allSlots, approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
@@ -344,5 +344,72 @@ describe('sidebar rename failure recovery (#10151)', () => {
     // ...and the optimistic title is deliberately left in place (no guess).
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(titleInStore(store)).toBe('Optimistic Draft')
+  })
+})
+
+describe('sidebar rename offline gate', () => {
+  it('refuses to open the row editor while offline and names the reason on that row', () => {
+    const { container } = renderSidebar([], false)
+    const wrap = container.querySelector(`[data-slot-key="${SLOT_KEY}"]`) as HTMLElement
+    const row = wrap.querySelector('.session-row') as HTMLElement
+    const title = within(row).getByTitle(SERVER_TITLE)
+    fireEvent.doubleClick(title, { detail: 2 })
+
+    expect(wrap.querySelector('textarea')).toBeNull()
+    const notice = container.querySelector(`[data-testid="session-rename-offline-${SLOT_KEY}"]`)
+    expect(notice).toBeTruthy()
+    expect(notice?.textContent).toContain('reconnect to rename sessions')
+    expect(notice?.getAttribute('role')).toBe('status')
+    expect(renameSlotMock).not.toHaveBeenCalled()
+  })
+
+  it('marks the row title aria-disabled while offline', () => {
+    const { container } = renderSidebar([], false)
+    const row = (container.querySelector(`[data-slot-key="${SLOT_KEY}"]`) as HTMLElement)
+      .querySelector('.session-row') as HTMLElement
+    const title = within(row).getByTitle(SERVER_TITLE)
+    expect(title.getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('keeps the row editor and its draft when the gateway drops mid-edit', async () => {
+    const { store, container } = renderSidebar()
+    const wrap = container.querySelector(`[data-slot-key="${SLOT_KEY}"]`) as HTMLElement
+    const row = wrap.querySelector('.session-row') as HTMLElement
+    const title = within(row).getByTitle(SERVER_TITLE)
+    fireEvent.doubleClick(title, { detail: 2 })
+    fireEvent.change(currentTextarea(container), { target: { value: 'Typed while up' } })
+    // The drop lands with the editor already open, which is the case the
+    // open-time gate cannot catch.
+    act(() => { store.dispatch(sseDisconnected()) })
+    fireEvent.blur(currentTextarea(container))
+
+    await waitFor(() => {
+      expect(container.querySelector(`[data-testid="session-rename-offline-${SLOT_KEY}"]`)).toBeTruthy()
+    })
+    // Still open, still carrying the draft: nothing was sent, so closing would
+    // have discarded the typed name.
+    expect(currentTextarea(container).value).toBe('Typed while up')
+    expect(renameSlotMock).not.toHaveBeenCalled()
+    expect(titleInStore(store)).toBe(SERVER_TITLE)
+  })
+
+  // Holding the editor open earns nothing when the name is the slot's own: a
+  // click-away would then be unable to close it until the gateway returned,
+  // with no draft at stake. The header control closes in this case too.
+  it('closes a row editor holding an unchanged name instead of keeping it open', async () => {
+    const { store, container } = renderSidebar()
+    const wrap = container.querySelector(`[data-slot-key="${SLOT_KEY}"]`) as HTMLElement
+    const row = wrap.querySelector('.session-row') as HTMLElement
+    fireEvent.doubleClick(within(row).getByTitle(SERVER_TITLE), { detail: 2 })
+    expect(currentTextarea(container).value).toBe(SERVER_TITLE)
+    act(() => { store.dispatch(sseDisconnected()) })
+    fireEvent.blur(currentTextarea(container))
+
+    await waitFor(() => {
+      expect(wrap.querySelector('textarea')).toBeNull()
+    })
+    expect(container.querySelector(`[data-testid="session-rename-offline-${SLOT_KEY}"]`)).toBeNull()
+    expect(renameSlotMock).not.toHaveBeenCalled()
+    expect(titleInStore(store)).toBe(SERVER_TITLE)
   })
 })

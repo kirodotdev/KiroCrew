@@ -17,6 +17,8 @@ import { DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
 import { ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
 import { muteFlagErrorKey } from '../store/dashboardSlice'
 import { useAppSelector } from '../store'
+import { useConnected } from '../hooks/useConnected'
+import { offlineMenuRow } from '../utils/offline'
 import { selectSlotSubagentsActive } from '../store/chatSlice'
 import { useTagPopover } from '../hooks/useTagPopover'
 import { api } from '../api/client'
@@ -142,6 +144,11 @@ export default function SessionActionsMenu({
   variant, slotKey, mode, onReveal, onRename, onAutoTitle, onOpenInNewTab, onDuplicate, closeHint, closeLabel, closeNeutral = false, infoSlots, onColorPicked, sidebarOnScreen = false, omitPopout = false,
 }: SessionActionsMenuProps) {
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
+  // Rename is the only item here that writes a title, and in `MobileTopBar` it
+  // is the ONLY rename entry: that host renders this menu until Rename fires
+  // and only then mounts the title editor, so the editor's own open-time gate
+  // never sees the phone's rename at all.
+  const connected = useConnected()
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
 
   // Generic, surface-agnostic actions — one definition, wired straight to the store.
@@ -205,7 +212,11 @@ export default function SessionActionsMenu({
     // Modifiers to the tab itself
     [
       onRename && (
-        <Item key="rename" onSelect={onRename} {...uiLocation('sessions.row-menu.rename')}>
+        <Item
+          key="rename"
+          {...uiLocation('sessions.row-menu.rename')}
+          {...offlineMenuRow(connected, i18nT('utils.offline.rename_sessions'), i18nT('components.sessionActionsMenu.rename'), onRename)}
+        >
           <Pencil size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.rename')}
         </Item>
       ),

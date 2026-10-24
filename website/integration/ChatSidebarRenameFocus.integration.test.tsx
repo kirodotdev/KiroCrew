@@ -50,6 +50,7 @@ vi.mock('@radix-ui/react-dropdown-menu', () => import('./__mocks__/@radix-ui/rea
 
 import ChatSidebar from '../src/pages/ChatSidebar'
 import { renderWithProviders } from './helpers'
+import { createConnectedTestStore } from '../src/test/helpers'
 import { server } from './mocks/server'
 import { __resetAuthRecoveryStateForTests } from '../src/api/client'
 
@@ -155,7 +156,10 @@ async function flushFrames(n = 3) {
 
 describe('board card rename focus', () => {
   it('right-click → Rename keeps the input open through the menu close (edit not cancelled)', async () => {
-    const { container } = renderWithProviders(<ChatSidebar {...(props as any)} />)
+    // Connected, because the subject is the menu's focus restore and rename is
+    // gated on a live gateway: the default test store boots offline, where
+    // the editor never opens and this case would pass vacuously.
+    const { container } = renderWithProviders(<ChatSidebar {...(props as any)} />, { store: createConnectedTestStore() })
 
     fireEvent.contextMenu(rowFor(container))
     const rename = await screen.findByRole('menuitem', { name: /Rename/ })

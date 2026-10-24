@@ -9176,6 +9176,7 @@
       "name_not_saved_keep_field_open": "Gateway offline — not saved yet. Keep this field open and reconnect; closing it discards the name.",
       "optimize": "optimize",
       "rename_folders": "rename folders",
+      "rename_sessions": "rename sessions",
       "resume_sessions": "resume sessions",
       "save_folder_names": "save folder names",
       "send": "send",
