@@ -55,6 +55,46 @@ def test_a_symlinked_briefing_is_refused_not_followed(tmp_path):
     assert target.read_text(encoding="utf-8") == "untouched"
 
 
+def test_notes_that_are_not_text_are_refused_before_any_write():
+    with pytest.raises(member_notes.NotesError) as refused:
+        member_notes.write_member_notes("ada", ["not", "text"])  # type: ignore[arg-type]
+    assert refused.value.code == "invalid_notes"
+    assert not (members.members_root() / "ada").exists()
+
+
+def test_a_platform_without_the_open_time_controls_refuses_the_write(monkeypatch):
+    monkeypatch.setattr(members, "member_briefing_supported", lambda: False)
+    with pytest.raises(member_notes.NotesError) as refused:
+        member_notes.write_member_notes("ada", "anything")
+    assert refused.value.code == "notes_unsupported"
+    assert not (members.members_root() / "ada").exists()
+
+
+@_requires_nofollow
+def test_a_plain_file_where_the_member_directory_belongs_is_refused():
+    root = members.members_root()
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "ada").write_text("not a directory", encoding="utf-8")
+    with pytest.raises(member_notes.NotesError) as refused:
+        member_notes.write_member_notes("ada", "notes")
+    assert refused.value.code == "notes_unwritable"
+    assert (root / "ada").read_text(encoding="utf-8") == "not a directory"
+
+
+@_requires_nofollow
+def test_a_failed_write_keeps_the_previous_notes(monkeypatch):
+    member_notes.write_member_notes("ada", "The notes before.")
+
+    def failing_write(*_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(member_notes, "atomic_write_at", failing_write)
+    with pytest.raises(member_notes.NotesError) as refused:
+        member_notes.write_member_notes("ada", "The notes after.")
+    assert refused.value.code == "notes_unwritable"
+    assert members.read_member_briefing("ada") == "The notes before."
+
+
 def test_the_tool_is_listed_validated_and_granted():
     from kiro_crew import agent
     from kiro_crew.validation import MCP_MATE_SCHEMAS

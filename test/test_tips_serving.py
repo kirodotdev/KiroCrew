@@ -417,6 +417,23 @@ class TestProseParagraphExtraction:
         )
         assert first_prose_paragraph(body) == "The real opening sentence."
 
+    @pytest.mark.parametrize("fence", ["```", "~~~"])
+    def test_a_fence_spanning_blank_lines_is_skipped_whole(self, fence: str) -> None:
+        # Blocks are split on blank lines, so a code sample with a blank line
+        # inside arrives as several blocks; the ones after the opening line
+        # read like prose and must not become the tip.
+        body = (
+            f"\n\n   \n\n{fence}text\nfirst line of the sample\n\n"
+            "Looks like a sentence inside the sample.\n\n"
+            f"last line of the sample\n{fence}\n\n"
+            "The real opening sentence.\n"
+        )
+        assert first_prose_paragraph(body) == "The real opening sentence."
+
+    def test_an_unclosed_fence_hides_the_rest_of_the_body(self) -> None:
+        body = "\n```\nsample\n\nStill inside the open fence.\n"
+        assert first_prose_paragraph(body) == ""
+
     def test_no_prose_returns_empty_rather_than_markup(self) -> None:
         assert first_prose_paragraph("\n> only an admonition\n") == ""
 
