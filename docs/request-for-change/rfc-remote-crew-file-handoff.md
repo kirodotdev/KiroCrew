@@ -3,8 +3,8 @@ title: Remote crew file hand-off — attachments past the upload cap, and files 
 status: draft
 author: koenvincent
 created: 2026-10-12
-last-audited: 2026-10-12
-audited-at: d866dd2607
+last-audited: 2026-10-24
+audited-at: 69e016c117
 doc-pr: 19460
 implementation-prs: []
 tracking-issues: [19405]
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Remote crew file hand-off
 
-Status: draft. Nothing built. Every code reference below was read at `d866dd2607`.
+Status: draft. Nothing built. Every code reference below was read at `69e016c117`.
 
 This document lands on its own, before any implementation, because it changes what a
 user can attach and where those bytes go, and because part 2 adds a surface the
@@ -33,9 +33,12 @@ per-file ceiling is `dashboard.upload_max_mb` (`dashboard/upload_limits.py`
 Only video gets more: `max_bytes = _MAX_VIDEO_UPLOAD_BYTES if is_video else
 max_upload_bytes` gives video 512 MB. Media parts stream to disk
 (`_stream_media_part`, through `part_stream.stream_part_to_file`); every other
-accepted part is read into a `bytearray` in memory up to the ceiling. So raising the
-ceiling raises the memory a single request can hold (up to 20 parts), and a dataset,
-a folder of documents or a build artifact above 512 MB cannot be attached at all.
+accepted part is read into a `bytearray` in memory up to the ceiling, one part at a
+time (the handler writes each part to disk before it reads the next), with a `bytes()`
+copy of it for the signature check and the write. So raising the ceiling raises the
+memory one request holds by about one part at the new ceiling plus that copy, and a
+dataset, a folder of documents or a build artifact above 512 MB cannot be attached at
+all.
 
 **No file path to a remote crew at all.** The crew window that opens a peer's own slot
 (`website/src/pages/chat/crew-window/CrewChatWindow.tsx`) does not pass Attach to the
@@ -106,9 +109,14 @@ proxied chat request. Instead:
 4. **Tell the session.** The next turn's context names the inbox path and what arrived,
    the same way a local attachment is named.
 5. **Files back.** Each session on the peer gets an outbox. When a run ends, or when the
-   user asks, the peer packs the outbox the same way and the hub fetches and verifies it.
-   Small results land automatically; a result above a threshold is announced and fetched
-   on request.
+   user asks, the peer packs the outbox the same way and the hub fetches it. The agent
+   wrote the outbox, so the hub verifies it the way the peer verifies an inbox in step 3:
+   it checks the total size and free disk before it writes, then every entry's size and
+   hash, and refuses the whole archive when any entry is not a regular file or directory,
+   or when its path is absolute, contains `..`, or would land outside the hub's
+   `uploads/handoff/<slot>/` through a symlink. An outbox whose total is at most
+   `dashboard.upload_max_mb`, the hub's own per-file upload ceiling, lands automatically;
+   a larger one is announced in the chat and fetched only when the user asks (§6, Q5).
 
 **Where the files live.** On the peer, per slot: `data_home()/uploads/handoff/<slot>/in/<transfer-id>/`
 for the inbox and `.../out/` for the outbox, under the same `uploads` directory that
@@ -127,7 +135,11 @@ snapshot but never write or list one, so one compromised session cannot change w
 other sessions start from.
 
 Retention: inbox and outbox copies held by a provider expire after a configurable period.
-Shared snapshots do not expire.
+Shared snapshots do not expire. The default tunnel-hop copies under
+`uploads/handoff/<slot>/` have no age limit: on the peer, a transfer's inbox stays for
+the life of the slot and is removed with it, and an outbox is removed once the hub has
+fetched and verified it; on the hub, a fetched outbox is kept like any composer
+attachment, and main prunes nothing under `uploads` by age.
 
 ## 4. Prior art
 
@@ -162,3 +174,5 @@ generalizes that path; it does not add a second one.
 3. Is an object-store provider in scope for core, or should it be an app?
 4. Should the inbox and outbox live under the peer's `uploads` directory, as proposed,
    or inside the session's workspace?
+5. Should an outbox at or under `dashboard.upload_max_mb` land on the hub automatically
+   by default, as proposed, or should every result wait until the user fetches it?
