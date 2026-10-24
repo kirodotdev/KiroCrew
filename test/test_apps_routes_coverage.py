@@ -881,6 +881,52 @@ class TestRegisterExternal:
         assert json.loads(listing_text)[0]["source"] == safe_source
 
     @pytest.mark.asyncio
+    async def test_registration_republishes_declared_config_keys_off_the_loop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A self-managed app's manifest can declare ``config_keys``. Config validation
+        reads them from a snapshot install and update republish; registering must
+        republish it too, or the app's section reads as an unrecognized key until a
+        restart. The refresh scans the apps directory, so it runs off the loop."""
+        from kiro_crew.config import validation
+
+        _setup_env(tmp_path, monkeypatch)
+        refresh_threads: list[int] = []
+        from kiro_crew.apps.manager import refresh_app_config_keys as real_refresh
+
+        def _observed_refresh() -> frozenset[str]:
+            refresh_threads.append(threading.get_ident())
+            return real_refresh()
+
+        # raising=False: the route reads the name through this facade, and on a
+        # build where the route never refreshes the name is absent.
+        monkeypatch.setattr(routes_mod, "refresh_app_config_keys", _observed_refresh, raising=False)
+        validation.replace_extension_config_keys("apps", ())
+        try:
+            async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+                response = await client.post(
+                    "/api/apps/register",
+                    json={
+                        "name": "ext-app",
+                        "version": "1.0.0",
+                        "displayName": "External App",
+                        "manifest": {
+                            "name": "ext-app",
+                            "version": "1.0.0",
+                            "displayName": "External App",
+                            "description": "Test app",
+                            "config_keys": ["ext_app"],
+                        },
+                    },
+                )
+            assert response.status == 201, await response.text()
+            assert validation.extension_config_keys("apps") == frozenset({"ext_app"})
+            assert len(refresh_threads) == 1
+            assert refresh_threads[0] != threading.get_ident()
+        finally:
+            validation.replace_extension_config_keys("apps", ())
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("repository_bound", [False, True])
     async def test_registry_owned_refresh_preserves_server_provenance(
         self,

@@ -25,6 +25,7 @@ from kiro_crew.apps.manager import (
     app_lifecycle_lock,
     get_app,
     install_app,
+    refresh_app_config_keys,
     register_external_app,
     update_app,
 )
@@ -297,6 +298,13 @@ async def handle_register_external(request: web.Request) -> web.Response:
                 lifecycle=body.get("lifecycle", "app"),
             ),
         )
+        if result.ok:
+            # The manifest just written can declare config_keys; republish the
+            # snapshot config validation reads, as install and update do. A
+            # directory scan, so it runs in the same executor.
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), refresh_app_config_keys
+            )
     if not result.ok:
         sel().log_api_access(
             caller="dashboard",

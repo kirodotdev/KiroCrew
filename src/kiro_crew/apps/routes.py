@@ -81,6 +81,7 @@ from kiro_crew.apps.manager import (
     install_app,
     is_app_enabled,
     list_apps,
+    refresh_app_config_keys,
     register_external_app,
     resolve_mcp_backend_url,
     trust_grant_removal_blocked,
