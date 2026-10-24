@@ -275,10 +275,15 @@ def _clean_fleet_cache():
     saved = dict(mod._FLEET_CACHE)
     saved_inflight = mod._FLEET_INFLIGHT
     saved_epoch = mod._FLEET_EPOCH
+    saved_adopted = mod._FLEET_ADOPTED_EPOCH
     saved_tombs = dict(mod._FLEET_TOMBSTONES)
     mod._FLEET_CACHE.update({"data": None, "ts": 0.0})
     fleet_state_mod._FLEET_INFLIGHT = None
     fleet_state_mod._FLEET_EPOCH = 0
+    # Both epochs, together: `_fleet_build` re-reads when the adoption epoch is
+    # past its start, so an adoption epoch left behind by another test against a
+    # reset `_FLEET_EPOCH` makes every build here run twice.
+    fleet_state_mod._FLEET_ADOPTED_EPOCH = 0
     fleet_state_mod._FLEET_TOMBSTONES = {}
     try:
         yield
@@ -287,6 +292,7 @@ def _clean_fleet_cache():
         mod._FLEET_CACHE.update(saved)
         fleet_state_mod._FLEET_INFLIGHT = saved_inflight
         fleet_state_mod._FLEET_EPOCH = saved_epoch
+        fleet_state_mod._FLEET_ADOPTED_EPOCH = saved_adopted
         fleet_state_mod._FLEET_TOMBSTONES = saved_tombs
 
 

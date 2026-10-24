@@ -1901,7 +1901,8 @@
         "highlight_5": "UIからポッドログをストリーム配信してポッドアクセストークンを発行",
         "highlight_6": "Kiro Crew自体を開発している人向けに構築 — 日常の使用には不要",
         "highlight_7": "ポッドは Linux（systemd --user）と macOS（launchd）で実行されます。ただし、macOS のポッドにはメモリ/CPU 上限が強制されません。Make Live はすべてのプラットフォームでポインタをステージし、自動再起動には systemd --user ユニットまたは macOS LaunchAgent が必要です。フリート表示、PR 状態、同期、リベース、削除はどのプラットフォームでも利用できます",
-        "page_label": "Dev Fleet"
+        "page_label": "Dev Fleet",
+        "highlight_8": "最新の安定版リリースに固定されたワークツリーです。出荷済みのビルドを自分のブランチと並べてポッドとして起動できます。自分のインストールがどのチャネルから更新されるかは変わりません"
       }
     },
     "fileExplorer": {
@@ -13097,7 +13098,32 @@
       "orphan_pods_label": "孤立した Pod ホーム: {{value}}",
       "total_disk_used_by_running_pod_homes": "実行中の Pod ホームが使用するディスク合計",
       "pod_homes_left_on_disk_with_no_live_pod": "稼働中の Pod がないままディスクに残る Pod ホーム",
-      "disk_usage_unavailable": "ディスク使用量を取得できません"
+      "disk_usage_unavailable": "ディスク使用量を取得できません",
+      "creating": "作成中…",
+      "release_channel_unpublished": "{{lane}} リリースはまだ取得していません — 作成すると最新のリリースを取得します",
+      "release_channel_create_fetches": "作成すると {{lane}} リリースのタグを取得し、最新のリリースを detached でチェックアウトします",
+      "release_channel_no_release": "リリースではありません",
+      "release_channel_unresolved_short": "{{lane}} リリースチャネルを解決できませんでした",
+      "no_worktree_yet": "ワークツリーなし",
+      "not_applicable_short": "対象外",
+      "release_channel_has_no_pr": "リリースワークツリーはタグに detached で接続されるため、プルリクエストはありません",
+      "release_channel_create_failed": "リリースチャネルのワークツリーを作成できませんでした",
+      "release_channel_create_run_lost": "作成の実行が失われました（ゲートウェイが再起動）— フリートを更新してからやり直してください",
+      "create_worktree": "ワークツリーを作成",
+      "release_channel_created": "{{ref}} に {{lane}} ワークツリーを作成しました — 次: {{action}}",
+      "release_channel_would_create_at": "作成すると最新の {{lane}} リリース {{version}} を detached でチェックアウトします",
+      "release_channel_pinned_at": "{{lane}} リリースチャネルの {{ref}} に固定されています",
+      "release_channel_unresolved": "{{lane}} リリースチャネルを解決できませんでした: {{error}}",
+      "release_channel_on_older_release": "{{version}} を使用中です。{{lane}} チャネルの最新リリースは {{tip}} です",
+      "release_channel_version_behind_tip": "{{version}} · 最新 {{tip}}",
+      "release_channel_on_release_tip_unknown": "{{version}} を使用中です。{{lane}} チャネルの最新リリースは解決できませんでした",
+      "release_channel_on_no_release": "{{lane}} リリースタグ上にありません。チャネルの最新リリースは {{tip}} です",
+      "release_channel_on_no_release_tip_unknown": "{{lane}} リリースタグ上になく、チャネルの最新リリースも解決できませんでした",
+      "release_channel_name_taken_by_branch": "{{name}} は {{lane}} リリースワークツリー用に予約された名前ですが、このチェックアウトはブランチ上にあります。名前を空けるには、チェックアウトの名前を変更するか削除してください: マージ済み削除は PR がマージされた後に削除します。シェルで `git worktree move` / `git worktree remove` を実行することもできます",
+      "reserved_name_on_a_branch": "ブランチ上にあるため {{lane}} リリースはこの名前を使用できません — 名前を変更するか削除すると空きます",
+      "release_rows_measured_by_version": "リリース行はバージョンで判断します — バッジを参照してください",
+      "no_worktree_yet_create_checks_out": "ワークツリーはまだありません — 作成すると {{version}} をチェックアウトします",
+      "rows_pending_other": "ワークツリー {{count}} 件 · 作成可能 {{pending}} 件"
     },
     "developer": {
       "agentBackendTab": {
