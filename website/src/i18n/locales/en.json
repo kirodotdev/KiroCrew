@@ -6763,7 +6763,8 @@
         "tool_one": "{{count}} tool",
         "tool_other": "{{count}} tools",
         "waiting_for_your_approval_to_start": "Waiting for your approval to start",
-        "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit"
+        "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit",
+        "parent_stopped": "parent stopped — still running"
       },
       "subagentQueued": {
         "low_memory": "waiting to start — needs {{required}} of free memory, {{available}} free now; free up memory to continue",

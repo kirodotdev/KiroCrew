@@ -505,6 +505,7 @@ export interface SubagentActivity {
    *  the cap dropped old calls or the scale coalescer merged frames. */
   /** `id` is the call's `tool_call_id` when the frame carried one. */
   toolCalls?: { tool: string; id?: string }[]
+  parentStopped?: boolean  // parent turn was stopped; agent is still running but orphaned
   stalled?: boolean       // reaper flagged this subagent as idle/stalled
   /** Seconds of no stream activity measured when the reaper raised `stalled`
    *  (the `idle_secs` the backend already sends with `subagent_stalled`).

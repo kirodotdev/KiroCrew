@@ -4518,6 +4518,29 @@ Only on Linux is the sandbox layer known. On macOS and Windows the runs do not
 show the sub-agent was sandboxed at all, so they say the path works, not that
 it works inside a Kiro Crew sandbox; that question is tracked in #19601.
 
+### Dashboard Stop and the `parent_stopped` event
+
+When the user presses the dashboard Stop button (`api_chat_slot_stop`), the
+parent turn is cancelled but its in-flight subagents keep running.  This is by
+design: Stop and Stop all are separate verbs (Stop ends the turn; Stop all ends
+the subagents).
+
+The `parent_stopped` WebSocket event notifies the frontend that the parent turn
+has been stopped, so it can mark the slot's active subagent cards as orphaned —
+dimmed with a "parent stopped" label — while keeping Stop all reachable so the
+user can kill the processes if desired.
+
+| Caller                             | Broadcasts `parent_stopped`? |
+|------------------------------------|-------------------------------|
+| `api_chat_slot_stop` (Stop button) | Yes                           |
+| `stop_slot_turn` (shared helper)   | No (used by steer, session-control, work-ledger) |
+| `api_chat_slot_interrupt`          | No (promotes a queued message) |
+| Messaging-API stop                 | No (has its own `cancel_for_parent` path) |
+
+The event is slot-scoped (`{slot: name}`); the frontend marks whichever agents
+it currently tracks for that slot.  No agent processes are killed.  A subsequent
+`subagent_done` event for each agent clears the orphaned state naturally.
+
 ### Parent end ends the children, on every backend
 
 Reaping the companion runtime ends the children of a harness that multiplexes
