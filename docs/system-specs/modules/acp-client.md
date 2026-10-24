@@ -388,7 +388,34 @@ view fails as `AcpRuntimeError` carrying the projection's sentence, the error th
 provider's startup paths translate; a session refused for a
 settings file names the file instead of that guard, and the guard remains for
 what it was written for: an element neither granted nor pre-empted while the
-files allow it.
+files allow it. Registry mode never reaches that guard: it is a whole-install
+`registry` access ceiling (`_mcp_registry_mode`) in which kiro-cli resolves every
+managed entry against the admin's catalog by map key, so no agent's
+`kirocrew-core` can carry a per-session identity element. The projection reads
+that mode at preparation and, under registry mode, leaves each agent EXACTLY as
+authored on BOTH clients -- its `skill://` resources kept, no managed element, no
+`skill_search` injected, and NOT a search agent -- rather than stripping the
+resources on the promise of a `skill_search` that can never bind, which would cost
+a governed agent its native skills AND leave `skill_search` answering
+`identity_unattested` (shared runtime) or dropped outright (direct client). The
+decision is gated on `registry_mode` alone, not on `per_session_element`, because
+kiro-cli's registry filter is symmetric: it keeps only entries carrying `"type":
+"registry"` and drops every unmarked one. So the managed `kirocrew-core` element
+can never bind for any agent on either client -- the shared runtime cannot mint
+the per-session identity element, and the direct client's injected `kirocrew-core`
+entry is unmarked, so kiro-cli drops it; gating on the element would still strip
+and inject on the direct client, promising a `skill_search` whose server kiro-cli
+then drops. With no search agent to collide with, the mount's empty registry-mode
+verdict refuses no session, and the agent runs its native skills under the admin's
+catalog. The inheritance overlay follows the same ceiling: it turns off kiro-cli's
+native default-resource inheritance, and under registry mode no client replaces
+that with Crew's own discovery (the unmarked managed entry is dropped by the
+registry filter on both clients), so the overlay is skipped for BOTH clients under
+the mode -- native inheritance is restored rather than disabled -- keeping the
+decision identical across clients so alternating spawns on one workspace do not
+rewrite it against each other. The app launch copy (`apps.agent_launch`) runs
+the same per-agent transform (`project_agent_view`), which reads the mode itself
+when no caller passes it, so a governed app agent is left as authored too.
 
 The workspace overlay owns `chat.disableInheritingDefaultResources=true` while
 Crew supplies discovery. Only literal JSON `true` in the original native setting
