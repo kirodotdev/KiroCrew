@@ -3,6 +3,14 @@ import { defaultUrlTransform } from 'react-markdown'
 export const ALLOWED_PROTOCOLS = new Set([
   'vscode:',
   'vscode-insiders:',
+  // Obsidian deep links (`obsidian://open?vault=…&file=…`). Like the editor
+  // schemes above, these hand off to a locally-registered protocol handler
+  // rather than navigating the browser, so a markdown link to one must render
+  // as a clickable anchor instead of inert text (issue #20958). The shape
+  // `defaultUrlTransform` refuses cannot express a `javascript:`/`data:`
+  // payload, and `MdAnchor` keeps these in-place (not `target=_blank`), same
+  // trade the vscode schemes make.
+  'obsidian:',
 ])
 
 /** Windows drive-letter absolute path (`C:/…` or `C:\…`). THE single copy of
