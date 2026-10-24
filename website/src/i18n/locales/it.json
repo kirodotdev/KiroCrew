@@ -17105,6 +17105,7 @@
         "configured_instances": "Crew remote configurate",
         "connect": "Connetti",
         "connect_failed": "Connessione a {{id}} non riuscita: {{error}}",
+        "connect_disabled_needs_restart": "Il gateway è attivo ma non ancora operativo: riavvialo per connetterti.",
         "connect_needs_restart": "Connessione a {{id}} non riuscita: prima occorre riavviare il gateway. Vedi la nota qui sotto.",
         "connected_switch_from_tab_strip": "Connessione a «{{name}}» effettuata. Passa a quell’istanza dalla barra delle schede nell’intestazione in alto.",
         "connecting": "Connessione…",

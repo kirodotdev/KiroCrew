@@ -1082,6 +1082,7 @@ export function RemoteCrewPanel() {
                     fetchingSignin={signinMutation.isPending && signinMutation.variables === signinJobIdFor(inst)}
                     signinNotice={signinNotice && signinNotice.jobId === signinJobIdFor(inst) ? signinNotice : null}
                     busy={busy}
+                    connectBlocked={needsRestart}
                     deleting={inst.ssm_target ? deletingTags.has(cloudTagByInstanceId.get(inst.ssm_target) ?? '') : false}
                     confirmDelete={confirmDeleteTag !== null && confirmDeleteTag === (inst.ssm_target ? cloudTagByInstanceId.get(inst.ssm_target) : null)}
                     confirmRemove={confirmRemoveId === inst.id}

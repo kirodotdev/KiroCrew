@@ -16563,6 +16563,7 @@
         "configured_instances": "設定されたリモートクルー",
         "connect": "接続",
         "connect_failed": "{{id}} への接続に失敗しました: {{error}}",
+        "connect_disabled_needs_restart": "ゲートウェイはオンですがまだ有効化されていません。接続するには再起動してください。",
         "connect_needs_restart": "{{id}} への接続に失敗しました: 先にゲートウェイを再起動する必要があります。下の案内をご覧ください。",
         "connected_switch_from_tab_strip": "「{{name}}」に接続しました。上部ヘッダーのタブストリップから切り替えられます。",
         "connecting": "接続中…",

@@ -17105,6 +17105,7 @@
         "configured_instances": "Crews remotas configuradas",
         "connect": "Conectar",
         "connect_failed": "Falha ao conectar a {{id}}: {{error}}",
+        "connect_disabled_needs_restart": "O gateway está ligado, mas ainda não ativo — reinicie-o para conectar.",
         "connect_needs_restart": "Falha ao conectar a {{id}}: primeiro é preciso reiniciar o gateway. Veja a nota abaixo.",
         "connected_switch_from_tab_strip": "Conectado a “{{name}}”. Alterne para ela na barra de abas do cabeçalho superior.",
         "connecting": "Conectando…",
