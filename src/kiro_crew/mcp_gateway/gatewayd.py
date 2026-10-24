@@ -528,12 +528,11 @@ async def run_gatewayd(
     # kiro-cli as intermittent "transport closed". The lock lets exactly one
     # daemon win; losers exit cleanly below. The OS releases the lock on
     # process death, so there is no stale-lock mode.
-    lock_fd = transport.acquire_singleton_lock(socket_path)
+    lock_fd = await asyncio.to_thread(transport.acquire_singleton_lock, socket_path)
     if lock_fd is None:
         logger.warning(
-            "gatewayd: another instance already owns %s — exiting without "
-            "binding (singleton guard)",
-            socket_path,
+            "gatewayd: exiting without binding (singleton guard): %s",
+            transport.singleton_refusal_message(socket_path),
         )
         return
     # The lock proves no other daemon serves this socket, so a backend record
@@ -554,7 +553,7 @@ async def run_gatewayd(
             "gatewayd: could not move the previous backend record aside -- refusing to start",
             exc_info=True,
         )
-        os.close(lock_fd)
+        await asyncio.to_thread(transport.release_singleton_lock, lock_fd)
         raise
     await transport.remove_stale(socket_path)
 
@@ -970,7 +969,7 @@ async def run_gatewayd(
         # Release the singleton lock (the OS also releases it on process
         # death; this is the clean-path release).
         with contextlib.suppress(OSError):
-            os.close(lock_fd)
+            await asyncio.to_thread(transport.release_singleton_lock, lock_fd)
         logger.info("gatewayd stopped")
 
 

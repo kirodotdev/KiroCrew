@@ -21,6 +21,7 @@ import os
 import shutil
 import socket
 import stat
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Iterator
@@ -207,6 +208,42 @@ def test_singleton_lock_file_is_created_beside_the_endpoint(tmp_path: Path) -> N
         assert transport.lock_path_for(sock).exists()
     finally:
         os.close(fd)
+
+
+# Independent of the code under test: an open Windows file cannot be unlinked,
+# so the delete-then-acquire sequence does not exist there.
+_POSIX_UNLINK_WHILE_OPEN = sys.platform != "win32"
+
+
+@pytest.mark.skipif(not _POSIX_UNLINK_WHILE_OPEN, reason="Windows cannot unlink an open file")
+def test_deleting_the_lock_file_does_not_admit_a_second_daemon(tmp_path: Path) -> None:
+    """The incumbent keeps its flock on the unlinked inode; the next
+    daemon must still lose, because the anchor directory is still held."""
+    sock = tmp_path / "gateway.sock"
+    transport.prepare_dir(sock)
+    first = transport.acquire_singleton_lock(sock)
+    assert first is not None
+    try:
+        transport.lock_path_for(sock).unlink()
+        assert transport.acquire_singleton_lock(sock) is None
+        assert transport.singleton_lock_free(sock) is False
+        # The anchor holds an entry, so a plain rmdir cannot retire it either.
+        with pytest.raises(OSError):
+            os.rmdir(transport.anchor_path_for(sock))
+    finally:
+        # Plain os.close, as existing callers do: the next acquire finds the
+        # anchor stale and frees it.
+        os.close(first)
+    second = transport.acquire_singleton_lock(sock)
+    assert second is not None
+    os.close(second)
+
+
+def test_singleton_refusal_says_what_to_do_instead_of_deleting(tmp_path: Path) -> None:
+    sock = tmp_path / "gateway.sock"
+    msg = transport.singleton_refusal_message(sock)
+    assert "kirocrew restart" in msg
+    assert f"Do not delete {transport.lock_path_for(sock)}" in msg
 
 
 # --- POSIX serve / connect ---------------------------------------------------
@@ -1072,7 +1109,8 @@ async def test_gatewayd_offloads_prepare_dir_from_the_event_loop(
     monkeypatch.setattr(gw, "warm_code_fingerprint", AsyncMock(return_value="fp-test"))
     # Lose the singleton election immediately after prepare_dir so the daemon
     # returns without binding anything.
-    monkeypatch.setattr(gw.transport, "acquire_singleton_lock", lambda _p: None)
+    lock_probe = _LoopProbe()
+    monkeypatch.setattr(gw.transport, "acquire_singleton_lock", lock_probe)
 
     await gw.run_gatewayd(
         socket_path=tmp_path / "gateway.sock",
@@ -1083,6 +1121,8 @@ async def test_gatewayd_offloads_prepare_dir_from_the_event_loop(
 
     assert probe.calls == 1
     assert probe.on_event_loop is False, "prepare_dir ran inline on the daemon loop"
+    assert lock_probe.calls == 1
+    assert lock_probe.on_event_loop is False, "singleton lock ran inline on the daemon loop"
 
 
 # --- connect() honours the server principal verdict ---------------------------
