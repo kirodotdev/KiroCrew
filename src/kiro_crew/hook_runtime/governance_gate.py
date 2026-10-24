@@ -184,6 +184,12 @@ def _script_hooks_capability_denied(session_key: str = "") -> str | None:
         decision = governance_permits("capabilities.script_hooks", "", session_key=session_key)
         if not getattr(decision, "permitted", True):
             return getattr(decision, "reason", "script_hooks capability disabled")
+        from kiro_crew.edition_locks import UNNAMED_REASON, follows_policy
+
+        # Enterprise: every hook, by any name, follows this key and is off by default
+        # (RFC enterprise edition, Red "Hooks by name").
+        if not follows_policy(decision):
+            return f"script_hooks {UNNAMED_REASON}"
         return None
     except PlatformCompositionError:
         raise
@@ -198,6 +204,11 @@ def _script_hooks_capability_denied(session_key: str = "") -> str | None:
             )
         except Exception:
             logger.debug("governance degrade audit unavailable", exc_info=True)
+        from kiro_crew.edition_locks import locked_off
+
+        # Enterprise: hooks are off by default, so an unreadable answer keeps them off.
+        if locked_off():
+            return "script_hooks governance unavailable (fail-closed)"
         return None
 
 

@@ -85,11 +85,16 @@ def _allow_unsandboxed_exec() -> bool:
     obtain a LOOSER sandbox than the operator configured.
     """
     try:
-        from kiro_crew.config.loader import (
-            KiroCrewConfig,  # circular import: sandbox is a low-level dep of config.loader
+        from kiro_crew.config.loader import (  # circular import: sandbox is a low-level dep
+            KiroCrewConfig,
+            unsandboxed_exec_platform_default,
         )
+        from kiro_crew.edition_locks import unsandboxed_exec_floor
 
-        return bool(getattr(KiroCrewConfig.load().agent, "sandbox_allow_unsandboxed_exec", False))
+        allow = bool(getattr(KiroCrewConfig.load().agent, "sandbox_allow_unsandboxed_exec", False))
+        # Enterprise: a declared ``true`` reads as this platform's default, so local
+        # config cannot widen it (RFC enterprise edition, Red "Minimum sandbox level").
+        return unsandboxed_exec_floor(allow, unsandboxed_exec_platform_default())
     except Exception:
         return False
 

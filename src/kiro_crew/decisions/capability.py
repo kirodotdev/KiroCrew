@@ -43,6 +43,7 @@ import logging
 
 from kiro_crew.platform.governance_profiles import (
     governance_answer_generation,
+    governance_permits,
     poll_profiles_fresh,
     vet_and_audit,
 )
@@ -221,7 +222,22 @@ def _answer_generation() -> int | None:
 
 def _row_denied(surface_key: str, scope: str) -> bool:
     """Evaluate and audit ONE capability row. Fail-closed; see :func:`is_decisions_denied`."""
+    from kiro_crew.edition_locks import UNNAMED_REASON, follows_policy, locked_off
+
     try:
+        if scope == DECISIONS_SCOPE and locked_off():
+            # Enterprise: content sent to a decision provider follows this hosted
+            # row and is off by default (RFC enterprise edition, Red "Content sent
+            # to external decisions"). Evaluated without the seam's own audit, so
+            # the one row written records the final answer.
+            decision = governance_permits(
+                scope, "", session_key=surface_key, log_warning=False, fail_closed=True
+            )
+            permitted = bool(getattr(decision, "permitted", False))
+            denied = not permitted or not follows_policy(decision)
+            reason = UNNAMED_REASON if permitted and denied else getattr(decision, "reason", "")
+            _audit_row(surface_key, scope, "denied" if denied else "allowed", reason)
+            return denied
         decision = vet_and_audit(
             scope,
             "",
@@ -243,6 +259,11 @@ def _row_denied(surface_key: str, scope: str) -> bool:
 
 def _audit_unevaluable(surface_key: str, scope: str = DECISIONS_SCOPE) -> None:
     """Best-effort SEL record for the path ``vet_and_audit`` never reached. Never raises."""
+    _audit_row(surface_key, scope, "denied", _UNEVALUABLE_REASON)
+
+
+def _audit_row(surface_key: str, scope: str, outcome: str, reason: str) -> None:
+    """Best-effort SEL ``governance_decision`` row this module writes itself. Never raises."""
     try:
         # Local import is DELIBERATE (matches the other SEL sites): the test suite
         # patches ``kiro_crew.sel.sel``, which a load-time binding would bypass.
@@ -253,8 +274,8 @@ def _audit_unevaluable(surface_key: str, scope: str = DECISIONS_SCOPE) -> None:
             tool_name=AUDIT_TOOL,
             scope=scope,
             item="",
-            outcome="denied",
-            reason=_UNEVALUABLE_REASON,
+            outcome=outcome,
+            reason=reason,
         )
     except Exception:
         # SEL writes to a file, but an audit failure must never wedge the read.

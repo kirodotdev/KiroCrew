@@ -1218,6 +1218,33 @@ def _merge_kiro_hooks(hooks: dict, user_hooks: dict) -> dict:
     return merged
 
 
+def _user_kiro_hooks_locked() -> bool:
+    """Whether an enterprise build withholds the user's kiro hooks from the agent.
+
+    kiro-cli runs these scripts itself, so the Crew script-hook gate never sees
+    them. In an enterprise build they follow ``capabilities.script_hooks`` like
+    every other hook (RFC enterprise edition, Red "Hooks by name"), asked on the
+    host key because the agent file is built for the whole host. An unreadable
+    answer withholds them. An ``oss`` build returns False without asking.
+    """
+    from kiro_crew.edition_locks import locked_off
+
+    if not locked_off():
+        return False
+    from kiro_crew.hooks import _script_hooks_capability_denied
+    from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY
+
+    try:
+        reason = _script_hooks_capability_denied(HOST_SESSION_KEY)
+    except Exception:
+        reason = "governance unavailable (fail-closed)"
+    if reason is None:
+        return False
+    agent_mod.logger.info("kiro_hooks: user hooks not installed: %s", reason)
+    agent_mod._sel_hook_rejected("user_hooks", "", reason)
+    return True
+
+
 def _apply_user_kiro_hooks(config: dict, mc_cfg: dict) -> None:
     """Merge user-defined kiro_hooks from kirocrew config into *config* (additive).
 
@@ -1238,6 +1265,8 @@ def _apply_user_kiro_hooks(config: dict, mc_cfg: dict) -> None:
     ``_MAX_TOTAL_USER_HOOKS``) are enforced across both sources combined,
     not per-source.
     """
+    if _user_kiro_hooks_locked():
+        return
     agent_cfg = mc_cfg.get("agent") if isinstance(mc_cfg.get("agent"), dict) else {}
     user_hooks = agent_cfg.get("kiro_hooks") if isinstance(agent_cfg, dict) else None
     autoimport_enabled = True

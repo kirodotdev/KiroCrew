@@ -140,18 +140,26 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             status=503,
         )
     if not switch_on:
+        from kiro_crew.edition_locks import LOCKED_REASON, locked_off
+
+        # The edition lock reads as a switched-off store; say which one refused.
+        by_edition = locked_off()
         _sel().log_api_access(
             caller=request.remote or "unknown",
             operation="hooks.agent",
             outcome="denied",
             source="webhook",
-            error="webhooks disabled by operator",
+            error=f"webhooks {LOCKED_REASON}" if by_edition else "webhooks disabled by operator",
         )
         await asyncio.to_thread(
             webhooks.run_store().record,
             outcome=webhooks.OUTCOME_DISABLED,
             name="Rejected",
-            detail="Inbound webhooks are switched off in the dashboard",
+            detail=(
+                f"Inbound webhooks are {LOCKED_REASON}"
+                if by_edition
+                else "Inbound webhooks are switched off in the dashboard"
+            ),
         )
         return web.json_response(
             {"error": "inbound webhooks are disabled", "code": "webhooks_disabled"}, status=503

@@ -839,8 +839,14 @@ def agentcore_posture(ceiling: Optional[GovernanceCeiling]) -> Optional[str]:
     with a known posture. ``None`` when there is no ceiling, the capability is
     omitted, disabled, or fail-closed-disabled. The single reader later work
     must use — do not re-parse raw policy JSON for this field.
+
+    Always ``None`` in an enterprise build, which also empties the Gateway URL and
+    workload name read through it (RFC enterprise edition, Red "Workload identity"
+    and "Identity settings").
     """
-    if ceiling is None:
+    from kiro_crew.edition_locks import locked_off
+
+    if ceiling is None or locked_off():
         return None
     stored = ceiling.agentcore_identity_posture
     if stored not in _AGENTCORE_POSTURES:
