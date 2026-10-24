@@ -271,6 +271,15 @@ class TestTheProfileIsAskedTooNotJustThePolicy:
 class TestTheUngovernedDefaults:
     """Every install that configures no policy is unchanged."""
 
+    def test_enterprise_unnamed_egress_is_the_baseline_and_gets_NO_scripts(
+        self, ceiling, monkeypatch
+    ) -> None:
+        """In an enterprise build an unnamed ``network.egress`` is the built-in
+        baseline (off), so the page stays static (RFC D3)."""
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+        ceiling(None, governed=False)
+        assert md.owner_agent_egress_unrestricted() is False
+
     def test_no_ceiling_gets_scripts(self, monkeypatch) -> None:
         monkeypatch.setattr(gov, "last_composed_ceiling", lambda: None)
         assert md.owner_agent_egress_unrestricted() is True
