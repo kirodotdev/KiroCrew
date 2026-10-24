@@ -52,6 +52,7 @@ from .store_parts.entity_graph import SimpleDiGraph  # noqa: F401
 from .store_parts.entity_graph import _EdgeView  # noqa: F401
 from .store_parts.entity_graph import _NodeView  # noqa: F401
 from .store_parts.fulltext_index import FTS_INDEX_VERSION  # noqa: F401
+from .store_parts.item_ownership import _CLAIM_HASH_COL  # noqa: F401
 from .store_parts.item_ownership import _DOC_STATE_KEY_COL  # noqa: F401
 from .store_parts.item_ownership import _DOC_STATE_TABLES  # noqa: F401
 from .store_parts.item_ownership import _OWNERSHIP_HASH_COL  # noqa: F401
@@ -653,8 +654,11 @@ class KnowledgeStore:
     # Item locations and document ownership: ``kiro_crew.knowledge.store_parts.item_ownership``.
     agent_owned_item_ids = _item_ownership.agent_owned_item_ids
     _adopt_reassigned_item = _item_ownership._adopt_reassigned_item
+    _drop_fuzzy_claimants = _item_ownership._drop_fuzzy_claimants
+    _revive_fuzzy_claimants = _item_ownership._revive_fuzzy_claimants
     detach_source_location_by_hash = _item_ownership.detach_source_location_by_hash
     release_stale_claim = _item_ownership.release_stale_claim
+    claimed_hash_of = _item_ownership.claimed_hash_of
     surviving_group_in_txn = _item_ownership.surviving_group_in_txn
     add_source_location = _item_ownership.add_source_location
     add_source_location_in_txn = _item_ownership.add_source_location_in_txn

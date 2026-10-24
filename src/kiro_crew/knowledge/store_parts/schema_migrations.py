@@ -142,6 +142,11 @@ def _init_schema(self: KnowledgeStore):
             -- document over one physical item set, and collapsing that pair deletes
             -- the surviving copy. The marker records the relationship instead, so
             -- deleting the surviving source can clear it and let this row re-ingest.
+            -- claimed_hash is the items.content_hash of the copy a collapse moved
+            -- this row's claim onto. A fuzzy collapse merges documents whose text
+            -- differs, so the row's own hash names no item any more; releasing or
+            -- adopting the claim has to use this one. NULL means the claim, if any,
+            -- is on the row's own hash.
             CREATE TABLE IF NOT EXISTS folder_file_state (
                 source_id TEXT NOT NULL REFERENCES sources(id),
                 file_path TEXT NOT NULL,
@@ -153,6 +158,7 @@ def _init_schema(self: KnowledgeStore):
                 status TEXT DEFAULT 'pending',
                 error_message TEXT,
                 merged_into_source_id TEXT,
+                claimed_hash TEXT,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (source_id, file_path)
             );
@@ -178,6 +184,7 @@ def _init_schema(self: KnowledgeStore):
                 name TEXT,
                 status TEXT DEFAULT 'active',
                 merged_into_source_id TEXT,
+                claimed_hash TEXT,
                 kind TEXT,
                 PRIMARY KEY (source_id, slug)
             );
@@ -200,6 +207,7 @@ def _init_schema(self: KnowledgeStore):
                 name TEXT,
                 status TEXT DEFAULT 'active',
                 merged_into_source_id TEXT,
+                claimed_hash TEXT,
                 source_uri TEXT,
                 PRIMARY KEY (source_id, slug)
             );
@@ -523,6 +531,11 @@ def _migrate(self: KnowledgeStore):
         self.db.execute("ALTER TABLE folder_file_state ADD COLUMN error_message TEXT")
     if "merged_into_source_id" not in ffs_cols:
         self.db.execute("ALTER TABLE folder_file_state ADD COLUMN merged_into_source_id TEXT")
+    # The hash a dedup collapse moved this row's claim onto -- see the CREATE
+    # TABLE comment. Not backfilled: a legacy row reads NULL and releases its
+    # claim by its own hash, exactly as before the column existed.
+    if "claimed_hash" not in ffs_cols:
+        self.db.execute("ALTER TABLE folder_file_state ADD COLUMN claimed_hash TEXT")
     # The extracted-text hash, in the same domain as items.content_hash --
     # see _OWNERSHIP_HASH_COL. Deliberately NOT backfilled: it can only be
     # derived from a row's own items, and a legacy row that owns nothing has
@@ -552,6 +565,8 @@ def _migrate(self: KnowledgeStore):
         self.db.execute("ALTER TABLE artifact_item_state ADD COLUMN status TEXT DEFAULT 'active'")
     if "merged_into_source_id" not in ais_cols:
         self.db.execute("ALTER TABLE artifact_item_state ADD COLUMN merged_into_source_id TEXT")
+    if "claimed_hash" not in ais_cols:
+        self.db.execute("ALTER TABLE artifact_item_state ADD COLUMN claimed_hash TEXT")
     # The artifact kind AS INGESTED. Reconcile needs it to tell an
     # artifact whose kind changed while sync was off (stale chunks, must
     # be reaped) from one the user merely excluded by narrowing
@@ -567,6 +582,8 @@ def _migrate(self: KnowledgeStore):
         self.db.execute("ALTER TABLE agent_item_state ADD COLUMN status TEXT DEFAULT 'active'")
     if "merged_into_source_id" not in agent_cols:
         self.db.execute("ALTER TABLE agent_item_state ADD COLUMN merged_into_source_id TEXT")
+    if "claimed_hash" not in agent_cols:
+        self.db.execute("ALTER TABLE agent_item_state ADD COLUMN claimed_hash TEXT")
     # The document's own REDACTED locator, attached to agent-source search
     # hits so a citation names where the document came from instead of the
     # aggregate's control uri. Legacy rows carry NULL, which citation

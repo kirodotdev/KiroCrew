@@ -87,6 +87,18 @@ _OWNERSHIP_HASH_COL: dict[str, str] = {
 # ``text_hash`` and the row becomes correct for transformed documents too.
 
 
+# The hash of the content a row's CLAIM is on, for the lookups that resolve a claim
+# rather than the row's own document. A dedup collapse moves a loser's claim onto
+# the winner's items and records their hash in ``claimed_hash``; after a FUZZY
+# collapse that differs from the row's own hash, which then names no item at all.
+# A row with no ``claimed_hash`` (never collapsed, or written before the column
+# existed) claims under its own hash, exactly as before.
+_CLAIM_HASH_COL: dict[str, str] = {
+    table: f"COALESCE(NULLIF(claimed_hash, ''), {own})"
+    for table, own in _OWNERSHIP_HASH_COL.items()
+}
+
+
 def agent_owned_item_ids(self: KnowledgeStore, source_id: str) -> set[str] | None:
     """Every item id a live ``agent_item_state`` row names for a source.
 
@@ -118,6 +130,81 @@ def agent_owned_item_ids(self: KnowledgeStore, source_id: str) -> set[str] | Non
     return ids_owned
 
 
+def _drop_fuzzy_claimants(self: KnowledgeStore, item_id: str, exclude_source_id: str) -> str | None:
+    """Stop sources that reach *item_id* only through a FUZZY claim from holding it.
+
+    A fuzzy loser's location on the winner's item stands for DIFFERENT text, so when
+    the winner's copy goes it must never inherit it: it is rebuilt from its own bytes
+    instead (see :func:`_revive_fuzzy_claimants`). Called before an heir is chosen,
+    so only genuine holders remain candidates. A source that also holds this content
+    as its own (a row whose own hash names it) keeps its location. Returns the item's
+    hash when any claimant matched, so the caller can revive those rows once every
+    chunk of the group has been handled; ``claimed_hash`` is not cleared here,
+    because each chunk is matched through it.
+    """
+    row = self.db.execute("SELECT content_hash FROM items WHERE id = ?", (item_id,)).fetchone()
+    content_hash = row["content_hash"] if row else None
+    if not content_hash:
+        return None
+    claimants: set[str] = set()
+    for table, _healthy in _DOC_STATE_TABLES:
+        claimants.update(
+            r["source_id"]
+            for r in self.db.execute(
+                f"SELECT source_id FROM {table} "  # noqa: S608
+                "WHERE claimed_hash = ? AND source_id != ?",
+                (content_hash, exclude_source_id),
+            ).fetchall()
+        )
+    for sid in claimants:
+        own = any(
+            self.db.execute(
+                f"SELECT 1 FROM {table} WHERE source_id = ? "  # noqa: S608
+                f"AND {_OWNERSHIP_HASH_COL[table]} = ? LIMIT 1",
+                (sid, content_hash),
+            ).fetchone()
+            for table, _healthy in _DOC_STATE_TABLES
+        )
+        if not own:
+            self.db.execute(
+                "DELETE FROM source_locations WHERE source_id = ? AND item_id = ?",
+                (sid, item_id),
+            )
+    return content_hash if claimants else None
+
+
+def _revive_fuzzy_claimants(
+    self: KnowledgeStore, hashes: AbstractSet[str], exclude_source_id: str
+) -> None:
+    """Return rows whose fuzzy claim was dropped to how main revives a deferred row.
+
+    A folder row goes back to ``pending`` and the next scan rebuilds it from its own
+    bytes. A push-driven row has no scanner: it keeps ``deduped`` and only loses its
+    marker, as on main. Only rows whose source no longer reaches the claimed content
+    are touched, so a claim that survived (another source still holds it as its own
+    text in the same source) is left alone.
+    """
+    for content_hash in hashes:
+        for table, _healthy in _DOC_STATE_TABLES:
+            for r in self.db.execute(
+                f"SELECT rowid, source_id FROM {table} "  # noqa: S608
+                "WHERE claimed_hash = ? AND source_id != ?",
+                (content_hash, exclude_source_id),
+            ).fetchall():
+                if self.db.execute(
+                    "SELECT 1 FROM source_locations sl JOIN items i ON i.id = sl.item_id "
+                    "WHERE sl.source_id = ? AND i.content_hash = ? LIMIT 1",
+                    (r["source_id"], content_hash),
+                ).fetchone():
+                    continue
+                status = ", status = 'pending'" if table == "folder_file_state" else ""
+                self.db.execute(
+                    f"UPDATE {table} SET merged_into_source_id = NULL, "  # noqa: S608
+                    f"claimed_hash = NULL{status} WHERE rowid = ?",
+                    (r["rowid"],),
+                )
+
+
 def _adopt_reassigned_item(self: KnowledgeStore, item_id: str, new_source_id: str) -> None:
     """Let the new owner's state row know it owns *item_id*.
 
@@ -127,10 +214,13 @@ def _adopt_reassigned_item(self: KnowledgeStore, item_id: str, new_source_id: st
     the content stays searchable, which is the strand this whole model exists to
     prevent. So the row that describes this content adopts the item.
 
-    Matched on ``content_hash`` because that is what identifies the document
-    independently of which source holds it. Appends rather than replaces, so a
-    multi-item group (a chunked file) is not truncated to one, and clears any
-    deferral marker: a row that owns an item is not deferring to anyone.
+    Matched on the row's OWN ``content_hash`` because that is what identifies the
+    document independently of which source holds it. Never through a fuzzy
+    ``claimed_hash``: that claim is on different text, and a loser is rebuilt from
+    its own bytes rather than handed the winner's (see :func:`_drop_fuzzy_claimants`).
+    Appends rather than replaces, so a multi-item group (a chunked file) is not
+    truncated to one, and clears any deferral marker: a row that owns an item is not
+    deferring to anyone.
 
     A hash is only an identifier while it picks out ONE row. Two distinct
     documents in one source may legitimately hold identical text, and writing the
@@ -193,6 +283,10 @@ def detach_source_location_by_hash(
     or the source stays a candidate to inherit a document it does not have and the
     content resurfaces there as searchable text with no file behind it.
 
+    Callers pass the row's claim hash -- its ``claimed_hash`` when a collapse
+    recorded one, else its own -- and the claimant count reads the same claim hash
+    on every row here.
+
     Identified by ``content_hash`` because that is the only handle such a row has:
     it owns no item ids, and the winner's ids must never be written into it -- a
     row naming another source's items becomes a second document over one physical
@@ -213,7 +307,7 @@ def detach_source_location_by_hash(
         return 0
     claimants = 0
     for table, _healthy in _DOC_STATE_TABLES:
-        hash_col = _OWNERSHIP_HASH_COL[table]
+        hash_col = _CLAIM_HASH_COL[table]
         if table == "folder_file_state" and exclude_folder_paths:
             # Filtered here rather than as a NOT IN list: a sweep can remove more
             # files than SQLite accepts as bound parameters.
@@ -253,6 +347,7 @@ def release_stale_claim(
     new_hash: str,
     prev_item_ids: list[str],
     prev_text_hash: str | None = None,
+    prev_claimed_hash: str | None = None,
 ) -> int:
     """Release a claim made for content this source does not have.
 
@@ -275,10 +370,37 @@ def release_stale_claim(
     already a text hash (artifacts, agent documents) pass nothing and the
     fallback uses *prev_hash* unchanged. A legacy folder row with no text hash
     also falls back, and matches nothing exactly as it does today.
+
+    *prev_claimed_hash* is the row's ``claimed_hash``: a collapse moved its claim
+    onto that content, so that is the hash released. Only a FUZZY collapse records
+    one; it is released even when the bytes did not change, because the caller
+    re-ingests the document and rewrites the row, which drops the column -- a claim
+    kept past that would be held under a hash no row names. An exact claim has no
+    ``claimed_hash`` and follows the own-hash rule.
     """
-    if prev_item_ids or not prev_hash or prev_hash == new_hash:
+    if prev_item_ids or not prev_hash:
+        return 0
+    if prev_claimed_hash:
+        return self.detach_source_location_by_hash(source_id, prev_claimed_hash)
+    if prev_hash == new_hash:
         return 0
     return self.detach_source_location_by_hash(source_id, prev_text_hash or prev_hash)
+
+
+def claimed_hash_of(self: KnowledgeStore, table: str, source_id: str, key: str) -> str | None:
+    """The ``claimed_hash`` a dedup collapse recorded on one document's row, if any.
+
+    For the release paths whose state read predates the column (artifacts and
+    agent documents): they pass it to :meth:`release_stale_claim` or use it in
+    place of the row's own hash when detaching.
+    """
+    key_col = _DOC_STATE_KEY_COL[table]
+    row = self.db.execute(
+        f"SELECT claimed_hash FROM {table} "  # noqa: S608
+        f"WHERE source_id = ? AND {key_col} = ?",
+        (source_id, key),
+    ).fetchone()
+    return (row["claimed_hash"] or None) if row else None
 
 
 def surviving_group_in_txn(self: KnowledgeStore, table: str, source_id: str, key: str) -> list[str]:
