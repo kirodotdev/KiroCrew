@@ -347,6 +347,8 @@ describe('the model-routing fixture in the decisions spec', () => {
       truncated: 0,
       applied: true,
       modelUsed: 'model-c',
+      effortChosen: 'high',
+      baselineEffort: 'medium',
       error: null,
     })
   })
@@ -357,6 +359,8 @@ describe('the model-routing fixture in the decisions spec', () => {
       'p', 'latency_ms', 'history_chars', 'truncated', 'error',
       // What the turn RAN on, which is not always what was chosen.
       'applied', 'model_used',
+      // The routed effort and the owner's, which the strip draws side by side.
+      'effort_chosen', 'baseline_effort',
     ]) {
       expect(Object.keys(fixture), `the spec fixture no longer carries ${key}`).toContain(key)
     }

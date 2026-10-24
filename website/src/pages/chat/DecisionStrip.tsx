@@ -5,6 +5,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { fmtCompact, fmtList, fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import { effortLabel } from '../../lib/effort'
 import { DECISIONS_LIVE_POINT } from '../settings/decisionsPreview'
 import {
   isModelRecord,
@@ -128,6 +129,14 @@ function ModelRouteStrip({
               </span>
             )}
           </span>
+          {record.effortChosen && (
+            <span className="shrink-0" data-testid="decision-strip-model-effort">
+              {i18nT('pages.chat.decisionStrip.model_effort', {
+                effort: effortLabel(record.effortChosen),
+                baseline: record.baselineEffort && effortLabel(record.baselineEffort),
+              })}
+            </span>
+          )}
           {record.p !== null && (
             <span
               className="shrink-0 tabular-nums"

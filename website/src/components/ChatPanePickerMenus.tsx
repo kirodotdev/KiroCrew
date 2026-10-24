@@ -4,7 +4,7 @@ import { Btn } from './ui'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter, defaultWriteKind, isCrewmateChat } from './AgentDropdownList'
 import ModelDropdownList from './ModelDropdownList'
 import ReasoningEffortDropdown from './ReasoningEffortDropdown'
-import { ManageModelsFooter, MORE_BELOW_MASK } from './ModelEffortDropdown'
+import { JevEffortSpan, JevRangeError, ManageModelsFooter, MORE_BELOW_MASK } from './ModelEffortDropdown'
 import { routeModelPickerKeys } from './modelPickerKeyRouting'
 import { settingsPath } from './settingsPath'
 import { legacyCodexEffort } from '../hooks/useInteractiveModels'
@@ -80,7 +80,7 @@ export function ChatPaneAgentMenu({ paneSlot, models, actions, navigate }: Omit<
 }
 
 export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate }: MenuProps) {
-  const { modelDD, modelBtnRect, hiddenModelsQ, attachModelList, modelListEdges, shownModel, modelPickerConfigured, effortSupported, codexPairModels, defaultEffort, effortLevelsOverride } = models
+  const { modelDD, modelBtnRect, hiddenModelsQ, attachModelList, modelListEdges, shownModel, modelPickerConfigured, effortSupported, codexPairModels, defaultEffort, effortLevelsOverride, jevRange } = models
   const { modelDialogIme, onModelListKeyDown, switchModel } = actions
   return (
     <>
@@ -141,8 +141,9 @@ export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate
           )}
           {/* Same bottom fade as ModelEffortDropdown's list (see MORE_BELOW_MASK). */}
           <div ref={attachModelList} role="listbox" aria-label={i18nT('components.chatPane.model_list')} className={`min-h-[96px] flex-1 overflow-y-auto max-h-[280px] ${modelListEdges.bottom ? MORE_BELOW_MASK : ''}`}>
-            <ModelDropdownList models={modelDD.filtered} activeModel={jevRouteShownModel(shownModel, paneSlot)} onSelect={(name) => { switchModel(name); modelDD.setOpen(false) }} />
+            <ModelDropdownList models={modelDD.filtered} activeModel={jevRouteShownModel(shownModel, paneSlot)} onSelect={(name) => { switchModel(name); modelDD.setOpen(false) }} jevRange={jevRange} />
           </div>
+          {jevRange && <JevRangeError jevRange={jevRange} />}
           {!modelPickerConfigured && <ManageModelsFooter onManage={() => {
             modelDD.setOpen(false)
             navigate(settingsPath({ tab: 'chat', sub: 'models', highlight: 'key:dashboard.model_picker_hidden_models' }))
@@ -160,6 +161,7 @@ export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate
                 onClose={() => modelDD.setOpen(false)}
                 embedded
               />
+              {jevRange && <JevEffortSpan slot={slotKey} levelsOverride={effortLevelsOverride} jevRange={jevRange} />}
             </div>
           )}
          </div>

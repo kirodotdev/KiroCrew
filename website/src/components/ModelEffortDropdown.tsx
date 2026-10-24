@@ -1,10 +1,12 @@
 import { useEffect } from 'react'
 import { Trans } from 'react-i18next'
 import { Settings2, Pin, Check, Ban, ChevronRight, LoaderCircle } from 'lucide-react'
-import { Btn, Input } from './ui'
+import { Btn, Input, Slider, Toggle } from './ui'
 import ErrorNotice from './ErrorNotice'
 import ModelDropdownList, { type ModelItem } from './ModelDropdownList'
-import ReasoningEffortDropdown from './ReasoningEffortDropdown'
+import ReasoningEffortDropdown, { useEffortLevels } from './ReasoningEffortDropdown'
+import { EFFORT_LEVELS, effortLabel } from '../lib/effort'
+import { useJevRange, type JevRangeEdit } from './useJevRange'
 import { routeModelPickerKeys } from './modelPickerKeyRouting'
 
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -105,6 +107,7 @@ export default function ModelEffortDropdown({
   modelsFailed = false, onRetryModels, retryingModels = false, writeEffort, onWriteError,
 }: Props) {
   const ime = useImeGuard()
+  const jevRange = useJevRange(slot, models, activeModel, filter)
   const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
   // A filter narrowing `models` changes the list's scroll height without a
   // scroll or a box resize once the box sits at its max height, so re-measure
@@ -185,8 +188,9 @@ export default function ModelEffortDropdown({
                 a row half-hidden under the effort block's border read as
                 overlap (see MORE_BELOW_MASK). */}
             <div ref={attachList} role="listbox" aria-label={i18nT('components.modelEffortDropdown.model_list')} className={`min-h-[96px] flex-1 max-h-[240px] overflow-y-auto ${listEdges.bottom ? MORE_BELOW_MASK : ''}`}>
-              <ModelDropdownList models={models} activeModel={activeModel} onSelect={onSelectModel} loading={modelsLoading} failed={modelsFailed} />
+              <ModelDropdownList models={models} activeModel={activeModel} onSelect={onSelectModel} loading={modelsLoading} failed={modelsFailed} jevRange={jevRange} />
             </div>
+            {jevRange && <JevRangeError jevRange={jevRange} />}
             {onManageModels && <ManageModelsFooter onManage={onManageModels} />}
             {/* Room between the list's faded last row and this border: with
                 the two touching, a row cut by the fold read as the effort block
@@ -194,6 +198,7 @@ export default function ModelEffortDropdown({
             {hasEffort && slot && (
               <div className="mt-2 shrink-0 border-t border-border">
                 <ReasoningEffortDropdown slot={slot} currentEffort={currentEffort} defaultEffort={defaultEffort} onClose={onClose} embedded levelsOverride={effortLevelsOverride} writeEffort={writeEffort} onWriteError={onWriteError} />
+                {jevRange && <JevEffortSpan slot={slot} levelsOverride={effortLevelsOverride} jevRange={jevRange} />}
               </div>
             )}
             {onPinToAgent && agentName && (
@@ -271,5 +276,75 @@ export function ManageModelsFooter({ onManage }: { onManage: () => void }) {
         <ChevronRight className="lucide-inline shrink-0" />
       </span>
     </Btn>
+  )
+}
+
+/** A refused Jev range save; the picker already shows the stored range again. */
+export function JevRangeError({ jevRange }: { jevRange: JevRangeEdit }) {
+  if (!jevRange.error) return null
+  return (
+    <div className="shrink-0 px-1.5 py-1">
+      <ErrorNotice
+        variant="inline"
+        askAgent
+        title={i18nT('components.modelEffortDropdown.jev_range_save_failed')}
+        message={jevRange.error.message}
+      />
+    </div>
+  )
+}
+
+/** The lowest and highest effort Jev may route to, over the levels the range
+ *  endpoint accepts. Each bound's "Use my level" switch stores '' (no bound) and
+ *  disables its slider, and a move stops at the other slider's level. */
+export function JevEffortSpan({ slot, levelsOverride, jevRange }: { slot: string; levelsOverride?: string[]; jevRange: JevRangeEdit }) {
+  const levels = useEffortLevels(slot, levelsOverride)
+  const { range, set } = jevRange
+  // A stored bound the session does not offer stays on the axis, so it shows and can be moved off.
+  const axis: string[] = EFFORT_LEVELS.filter(l => l && (levels.includes(l) || l === range.effort_min || l === range.effort_max))
+  if (!axis.some(l => levels.includes(l))) return null
+  const top = axis.length - 1
+  const yours = i18nT('components.modelEffortDropdown.jev_your_level')
+  const lowestMine = i18nT('components.modelEffortDropdown.jev_lowest_mine')
+  const highestMine = i18nT('components.modelEffortDropdown.jev_highest_mine')
+  const lo = axis.indexOf(range.effort_min)
+  const hi = axis.indexOf(range.effort_max)
+  return (
+    <div className="flex flex-col gap-2.5 px-3 pb-2.5">
+      <Slider
+        label={i18nT('components.modelEffortDropdown.jev_lowest_effort')}
+        showValue
+        formatValue={v => (lo < 0 ? yours : effortLabel(axis[v]))}
+        min={0}
+        max={top}
+        value={Math.max(lo, 0)}
+        disabled={lo < 0}
+        onChange={v => {
+          const next = hi < 0 ? v : Math.min(v, hi)
+          if (next !== lo) set({ ...range, effort_min: axis[next] })
+        }}
+      />
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[12px] text-text">{lowestMine}</span>
+        <Toggle checked={lo < 0} onChange={on => set({ ...range, effort_min: on ? '' : axis[0] })} label={lowestMine} />
+      </div>
+      <Slider
+        label={i18nT('components.modelEffortDropdown.jev_highest_effort')}
+        showValue
+        formatValue={v => (hi < 0 ? yours : effortLabel(axis[v]))}
+        min={0}
+        max={top}
+        value={hi < 0 ? top : hi}
+        disabled={hi < 0}
+        onChange={v => {
+          const next = Math.max(v, lo)
+          if (next !== hi) set({ ...range, effort_max: axis[next] })
+        }}
+      />
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[12px] text-text">{highestMine}</span>
+        <Toggle checked={hi < 0} onChange={on => set({ ...range, effort_max: on ? '' : axis[top] })} label={highestMine} />
+      </div>
+    </div>
   )
 }
