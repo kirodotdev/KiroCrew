@@ -12076,6 +12076,17 @@
         "outcome_discarded": "破棄しました。ライブページは変わっていません。",
         "outcome_closed": "プレビューは終わりました。これが今のライブページです。",
         "outcome_undo": "元に戻すには、{{name}} に前のダッシュボードに戻すよう頼んでね。"
+      },
+      "messageReactionBar": {
+        "react": "リアクション",
+        "reaction_placed": "{{emoji}} のリアクション済み",
+        "remove_reaction": "{{emoji}} のリアクションを取り消す",
+        "react_with": "{{emoji}} でリアクションする",
+        "reaction_failed": "リアクションを追加できませんでした。+ を開いてもう一度選んでね。",
+        "reaction_failed_emoji": "{{emoji}} を追加できませんでした。+ を開いてもう一度選んでね。",
+        "unreaction_failed": "リアクションを取り消せませんでした。もう一度試してね。",
+        "reaction_limit_reached": "このチャットはリアクションの上限に達しました。別のリアクションを追加するには、1つ取り消してね。",
+        "reactions_load_failed": "このチャットのリアクションを読み込めませんでした。自動で再試行するよ。"
       }
     },
     "chatPage": {

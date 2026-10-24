@@ -12442,6 +12442,17 @@
         "outcome_discarded": "Scartata. La pagina live non è cambiata.",
         "outcome_closed": "Anteprima finita. Ora questa è la pagina live.",
         "outcome_undo": "Per annullare, chiedi a {{name}} di ripristinare la dashboard precedente."
+      },
+      "messageReactionBar": {
+        "react": "Reagisci",
+        "reaction_placed": "Reazione {{emoji}} aggiunta",
+        "remove_reaction": "Rimuovi la reazione {{emoji}}",
+        "react_with": "Reagisci con {{emoji}}",
+        "reaction_failed": "Impossibile aggiungere la reazione. Apri + e sceglila di nuovo.",
+        "reaction_failed_emoji": "Impossibile aggiungere {{emoji}}. Apri + e sceglila di nuovo.",
+        "unreaction_failed": "Impossibile rimuovere la reazione. Riprova.",
+        "reaction_limit_reached": "Questa chat ha raggiunto il limite di reazioni. Rimuovi una reazione per aggiungerne un'altra.",
+        "reactions_load_failed": "Impossibile caricare le reazioni per questa chat. Nuovo tentativo automatico."
       }
     },
     "chatPage": {

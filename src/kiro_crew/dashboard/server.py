@@ -848,6 +848,9 @@ async def start_dashboard(
     await asyncio.to_thread(state.load_cron_folders)
     # Off-loop: a large chat_pins.json must not block the event loop at startup.
     await asyncio.to_thread(state.load_chat_pins)
+    # chat_reactions.json is loaded lazily on the first reaction request
+    # (state.ensure_chat_reactions_loaded), not here: a stored-data-sized parse
+    # must not run on the gateway boot path before the site starts listening.
     # Off-loop: load_tags runs a synchronous save_tags() during load (status
     # back-fill / seed) which fsyncs on the event loop; a large tags.json —
     # including preserved-but-malformed rows — must not stall startup.

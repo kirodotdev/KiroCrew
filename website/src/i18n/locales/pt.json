@@ -12442,6 +12442,17 @@
         "outcome_discarded": "Descartada. A página no ar não mudou.",
         "outcome_closed": "Prévia encerrada. Esta é a página no ar agora.",
         "outcome_undo": "Para desfazer, peça para {{name}} restaurar o painel anterior."
+      },
+      "messageReactionBar": {
+        "react": "Reagir",
+        "reaction_placed": "Reação {{emoji}} adicionada",
+        "remove_reaction": "Remover a reação {{emoji}}",
+        "react_with": "Reagir com {{emoji}}",
+        "reaction_failed": "Não foi possível adicionar a reação. Abra + e escolha de novo.",
+        "reaction_failed_emoji": "Não foi possível adicionar {{emoji}}. Abra + e escolha de novo.",
+        "unreaction_failed": "Não foi possível remover a reação. Tente de novo.",
+        "reaction_limit_reached": "Esta conversa atingiu o limite de reações. Remova uma reação para adicionar outra.",
+        "reactions_load_failed": "Não foi possível carregar as reações deste chat. Tentando de novo automaticamente."
       }
     },
     "chatPage": {

@@ -73,6 +73,17 @@ vi.mock('../api/client', () => ({
   },
   SEARCH_MIN_CHARS: 2,
 }))
+// Reactions API: resolve empty so the reactions GET succeeds. Unmocked, its
+// read fails and ChatPage's `reactions_load_failed` notice renders a second
+// `role="alert"` beside the worktree-failure notice the assertions look up.
+vi.mock('../api/reactions', async importOriginal => ({
+  ...(await importOriginal<typeof import('../api/reactions')>()),
+  reactionsApi: {
+    list: vi.fn().mockResolvedValue({ reactions: [] }),
+    create: vi.fn().mockResolvedValue({}),
+    remove: vi.fn().mockResolvedValue({ ok: true }),
+  },
+}))
 vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: false, transcribing: false, toggle: vi.fn() }), voiceInputSupported: false }))
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
 vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: 'default' }) }))

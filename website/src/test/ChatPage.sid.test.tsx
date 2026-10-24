@@ -43,6 +43,19 @@ vi.mock('../pages/chat', () => ({ ChatFooter: () => null, AssistantMessage: () =
 vi.mock('../pages/ChatSidebar', () => ({ default: () => null, SIDEBAR_MIN: 200, SIDEBAR_MAX: 500 }))
 vi.mock('../pages/chat/ChatSettings', () => ({ loadChatConfig: () => ({ contentWidth: 'compact' }), CONTENT_WIDTH: { compact: { messages: '900px', input: '916px' }, comfortable: { messages: '84%', input: '85%' }, full: { messages: '92%', input: '93%' } } }))
 
+// Reactions API: resolve empty so the reactions GET succeeds. Unmocked, its
+// read fails and ChatPage's `reactions_load_failed` notice renders a SECOND
+// `role="alert"` in a file that counts them — the same reason the `api` client
+// mock above returns `{}` for `chatSlotsUnrestored`.
+vi.mock('../api/reactions', async importOriginal => ({
+  ...(await importOriginal<typeof import('../api/reactions')>()),
+  reactionsApi: {
+    list: vi.fn().mockResolvedValue({ reactions: [] }),
+    create: vi.fn().mockResolvedValue({}),
+    remove: vi.fn().mockResolvedValue({ ok: true }),
+  },
+}))
+
 // --- Stub hooks ---
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
 vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: null }) }))

@@ -120,6 +120,11 @@ from kiro_crew.dashboard.chat_pins import (  # noqa: F401
     api_chat_pins_delete_by_query,
     api_chat_pins_list,
 )
+from kiro_crew.dashboard.chat_reactions import (  # noqa: F401
+    api_chat_reactions_create,
+    api_chat_reactions_delete_by_query,
+    api_chat_reactions_list,
+)
 from kiro_crew.dashboard.chat_regenerate import (  # noqa: F401
     _MAX_VARIANTS,
     api_chat_slot_edit_resend,

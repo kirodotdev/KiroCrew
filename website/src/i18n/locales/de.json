@@ -12259,6 +12259,17 @@
         "outcome_discarded": "Verworfen. Die Live-Seite hat sich nicht geändert.",
         "outcome_closed": "Vorschau beendet. Das ist jetzt die Live-Seite.",
         "outcome_undo": "Zum Rückgängigmachen bitte {{name}}, das vorherige Dashboard wiederherzustellen."
+      },
+      "messageReactionBar": {
+        "react": "Reagieren",
+        "reaction_placed": "{{emoji}}-Reaktion gesetzt",
+        "remove_reaction": "{{emoji}}-Reaktion entfernen",
+        "react_with": "Mit {{emoji}} reagieren",
+        "reaction_failed": "Die Reaktion konnte nicht hinzugefügt werden. Öffne + und wähl sie noch mal.",
+        "reaction_failed_emoji": "{{emoji}} konnte nicht hinzugefügt werden. Öffne + und wähl es noch mal.",
+        "unreaction_failed": "Die Reaktion konnte nicht entfernt werden. Versuch es noch mal.",
+        "reaction_limit_reached": "Dieser Chat hat sein Reaktionslimit erreicht. Entferne eine Reaktion, um eine weitere hinzuzufügen.",
+        "reactions_load_failed": "Die Reaktionen für diesen Chat konnten nicht geladen werden. Es wird automatisch erneut versucht."
       }
     },
     "chatPage": {

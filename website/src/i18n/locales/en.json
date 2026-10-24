@@ -6823,6 +6823,17 @@
         "unpin_message": "Unpin message",
         "edit_replaces_below": "Sending replaces the replies below"
       },
+      "messageReactionBar": {
+        "react": "React",
+        "reaction_placed": "{{emoji}} reaction placed",
+        "remove_reaction": "Remove {{emoji}} reaction",
+        "react_with": "React with {{emoji}}",
+        "reaction_failed": "Could not add the reaction. Open + and choose it again.",
+        "reaction_failed_emoji": "Could not add {{emoji}}. Open + and choose it again.",
+        "unreaction_failed": "Could not remove the reaction. Try again.",
+        "reaction_limit_reached": "This chat has reached its reaction limit. Remove a reaction to add another.",
+        "reactions_load_failed": "Could not load reactions for this chat. Retrying automatically."
+      },
       "workflowCompletionCard": {
         "open_in_the_workflows_panel": "Open in the Workflows panel",
         "panel": "Panel"

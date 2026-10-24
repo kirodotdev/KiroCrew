@@ -12076,6 +12076,17 @@
         "outcome_discarded": "버렸어요. 라이브 페이지는 바뀌지 않았어요.",
         "outcome_closed": "미리보기가 끝났어요. 이제 이게 라이브 페이지예요.",
         "outcome_undo": "되돌리려면 {{name}}에게 이전 대시보드로 되돌려 달라고 해요."
+      },
+      "messageReactionBar": {
+        "react": "반응",
+        "reaction_placed": "{{emoji}} 반응 추가됨",
+        "remove_reaction": "{{emoji}} 반응 제거",
+        "react_with": "{{emoji}}(으)로 반응",
+        "reaction_failed": "반응을 추가하지 못했어요. +를 열어 다시 선택해 줘.",
+        "reaction_failed_emoji": "{{emoji}}을(를) 추가하지 못했어요. +를 열어 다시 선택해 줘.",
+        "unreaction_failed": "반응을 제거하지 못했어. 다시 해 봐.",
+        "reaction_limit_reached": "이 채팅은 반응 한도에 도달했어요. 다른 반응을 추가하려면 하나를 제거해 줘.",
+        "reactions_load_failed": "이 채팅의 반응을 불러오지 못했어. 자동으로 다시 시도할게."
       }
     },
     "chatPage": {

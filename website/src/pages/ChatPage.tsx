@@ -25,6 +25,7 @@ import { useFollowupCardActions, useFollowupStarts } from './chat/page/followupC
 import { usePaneLayoutState, usePanelLayout } from './chat/page/paneLayout'
 import { usePageSelectionActions, useMessageActions } from './chat/page/messageActions'
 import { useTranscriptPins } from './chat/page/transcriptPins'
+import { useTranscriptReactions } from './chat/page/transcriptReactions'
 import { useTranscriptRendering } from './chat/page/transcriptRendering'
 import { useSessionsDrawer } from './chat/page/sessionsDrawer'
 import { useWelcomeState } from './chat/page/welcomeState'
@@ -82,6 +83,7 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 
 import { i18nT } from '../i18n/t'
+import ErrorNotice from '../components/ErrorNotice'
 
 /**
  * Horizontal room the chat pane reclaims (negative margin) while the desktop
@@ -876,6 +878,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     isWelcomeState, activeSlotRemoteBound, scrollerRef, search, navToDisplayIndex, pinnedJumpChrome, scrollToPinnedPrompt, setHighlightTs, splitFeatureEnabled, regenerating, setEditLast, editSeqRef,
     renderedDisplayItems, renderedTranscript,
   })
+  const { reactionsFor, handleToggleReactionForMessage, reactionErrorFor, clearReactionError, reactionsLoadFailed } = useTranscriptReactions(activeSlot)
   // Search steps and clicks, the approval bar's "Show in chat", and ?msg= deep links.
   const { jumpToSearchResult } = useTranscriptJumps({
     search,
@@ -902,7 +905,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     approve, dismissApproval, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, continuable, continuing, freshSession, handleContinue, handleFreshSession, interrupted,
     openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openModelPickerFromError, openTurnLimitSetting, quoteWholeMessage, handleAsk, handleQuote, handleEditResend, editLast, farmPassRef,
     handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote,
-    handleTogglePinForMessage,
+    handleTogglePinForMessage, reactionsFor, handleToggleReactionForMessage, reactionErrorFor, clearReactionError,
   })
   const {
     mobileSessions, drawerMounted, drawerX, drawerPanelRef, drawerScrimRef, sideOverlayX, sideOverlayPanelRef, sideOverlayPhase, drawerScrim, openSidebar, closedSessionActions, sidebarFolderActions,
@@ -1044,6 +1047,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               sidePanelWantsMount={sidePanelWantsMount} mobileNewSessionItem={mobileNewSessionItem} mobileSessionsToggle={mobileSessionsToggle} popOutTip={popOutTip} activityTip={activityTip}
             />
             <ChatDropOverlay active={dragOver} />
+            {/* A failed reactions GET must not read as "no reactions": without
+                this notice `data: reactions = []` would silently drop every
+                message's existing markers (errors-use-error-notice). No
+                hand-off: the agent cannot refetch a dashboard query and the
+                navigation would discard the composer draft; the query retries
+                on its own. */}
+            {reactionsLoadFailed && (
+              <ErrorNotice
+                variant="inline"
+                message={i18nT('pages.chat.messageReactionBar.reactions_load_failed')}
+                className="mx-4 mt-1"
+              />
+            )}
             <ChatTranscriptView
               embedded={embedded} popout={popout} activeSlot={activeSlot} appToolCallIds={appToolCallIds} titleInTopbar={titleInTopbar} activityOpen={activityOpen}
               completedTurnCount={completedTurnCount} cursorIsForActiveSlot={cursorIsForActiveSlot} kiroCrewVersion={kiroCrewVersion} loadingOlder={loadingOlder} olderFailed={olderFailed}

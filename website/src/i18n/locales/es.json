@@ -12442,6 +12442,17 @@
         "outcome_discarded": "Descartada. La página activa no cambió.",
         "outcome_closed": "Vista previa terminada. Esta es la página activa ahora.",
         "outcome_undo": "Para deshacerlo, pídele a {{name}} que restaure el panel anterior."
+      },
+      "messageReactionBar": {
+        "react": "Reaccionar",
+        "reaction_placed": "Reacción {{emoji}} añadida",
+        "remove_reaction": "Quitar la reacción {{emoji}}",
+        "react_with": "Reaccionar con {{emoji}}",
+        "reaction_failed": "No se pudo añadir la reacción. Abre + y elígela otra vez.",
+        "reaction_failed_emoji": "No se pudo añadir {{emoji}}. Abre + y elígela otra vez.",
+        "unreaction_failed": "No se pudo quitar la reacción. Inténtalo de nuevo.",
+        "reaction_limit_reached": "Este chat alcanzó su límite de reacciones. Quita una reacción para añadir otra.",
+        "reactions_load_failed": "No se pudieron cargar las reacciones de este chat. Se reintenta automáticamente."
       }
     },
     "chatPage": {

@@ -110,6 +110,10 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/chat/pins", chat.api_chat_pins_create)
     app.router.add_delete("/api/chat/pins/by-query", chat.api_chat_pins_delete_by_query)
     app.router.add_delete("/api/chat/pins/{id}", chat.api_chat_pins_delete)
+    # Message reactions — fixed emoji set, toggled per (slot, mid, emoji).
+    app.router.add_get("/api/chat/reactions", chat.api_chat_reactions_list)
+    app.router.add_post("/api/chat/reactions", chat.api_chat_reactions_create)
+    app.router.add_delete("/api/chat/reactions", chat.api_chat_reactions_delete_by_query)
     # Tags
     app.router.add_get("/api/chat/tags", chat.api_chat_tags)
     app.router.add_post("/api/chat/tags", chat.api_chat_tag_create)

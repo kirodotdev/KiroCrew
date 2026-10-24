@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Message reactions capture</title>
+    <!-- Capture-only: a color emoji webfont so the screenshot tool (which may
+         run on a headless box with no system emoji font) renders the fixed
+         reaction glyphs as real color emoji rather than tofu boxes. The
+         shipped app relies on the OS/browser's own emoji font, same as any
+         other emoji a user types; this link never ships to production. -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Color+Emoji" />
+    <style>
+      [data-testid="reaction-trigger"] span { font-family: "Noto Color Emoji", sans-serif; }
+      /* The hover-reveal is a pure CSS `group-hover` opacity fade, which this
+         harness's synthetic pointer cannot trigger. For the `hover` scene,
+         force the add `+` trigger opaque so the screenshot shows it the way a
+         real hover does. (Placed chips are opaque already.) */
+      [data-scene="hover"] [data-testid="reaction-add-trigger"] { opacity: 1 !important; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/capture/message-reactions.tsx"></script>
+  </body>
+</html>

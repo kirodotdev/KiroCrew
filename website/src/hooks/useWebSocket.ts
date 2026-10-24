@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useQueryClient } from '@tanstack/react-query'
+import { invalidateReactionsForSlot } from './reactionToggleLedger'
 import { useAppDispatch } from '../store'
 import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, fetchSlots, remoteSlotRead, sseSubagentStatus, sseSubagentText, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, clearAllNotifications } from '../store/notificationsSlice'
@@ -313,6 +314,25 @@ export function useWebSocket() {
             const slotKey = (data as { slot_key?: string }).slot_key
             if (slotKey) {
               queryClient.invalidateQueries({ queryKey: ['chat-pins', slotKey] })
+            }
+            break
+          }
+          case 'reactions_changed': {
+            // A reaction was toggled on another tab or pop-out (or via the
+            // API). Mirror pins_changed: invalidate only the affected slot's
+            // ['chat-reactions', slotKey] cache so a second view updates
+            // without a remount, instead of holding stale reactions behind the
+            // app-wide staleTime: Infinity. The payload carries slot_key only
+            // — no reaction content crosses the WebSocket.
+            const slotKey = (data as { slot_key?: string }).slot_key
+            if (slotKey) {
+              // Refetch this slot's reactions — but hold it back if a local
+              // toggle is still in flight, or it would drop that toggle's
+              // optimistic entry and a queued off-toggle would then read the
+              // identity as absent and POST instead of DELETE. The deferred
+              // refresh is flushed when the last local toggle settles, so the
+              // other tab's change still lands (reactionToggleLedger).
+              invalidateReactionsForSlot(queryClient, slotKey)
             }
             break
           }

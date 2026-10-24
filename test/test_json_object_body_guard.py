@@ -163,6 +163,10 @@ _CAP_REASONS = {
 _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # Pre-existing capped sites -- the bounded read's live consumers.
     "chat_pins.py::api_chat_pins_create": ("<default>", _BOUNDED_BY_DEFAULT),
+    # A reaction create body is a slot key, a message id and one fixed-set
+    # emoji -- all short control fields, like the pin create above -- so the
+    # shared default ceiling sits far above any legitimate body.
+    "chat_reactions.py::api_chat_reactions_create": ("<default>", _BOUNDED_BY_DEFAULT),
     # A checklist tick is one task id and one boolean, so the shared default
     # ceiling is far above any legitimate body.
     "chat_todo.py::api_chat_slot_todo": ("<default>", _BOUNDED_BY_DEFAULT),
