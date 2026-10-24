@@ -307,6 +307,46 @@ def override_reviewer_names(target, bindings, keys=DEFAULT_OVERRIDE_TARGET_KEYS)
     return {name} if name else set()
 
 
+def disposition_reviewer_names(target, bindings, keys=DEFAULT_OVERRIDE_TARGET_KEYS):
+    """Lowercased reviewer name(s) a disposition ``target=`` answers for.
+
+    Like ``override_reviewer_names`` it shares the alias map (``fable`` -> the
+    Opus reviewer), and it also accepts the literal reviewer name a span
+    resolves to. Unlike the override path it does NOT expand ``all``: the
+    override command's wildcard clears every lane for one head, but a
+    disposition record covers exactly one finding, so letting ``target=all``
+    answer for every lane would let one record claim a span from any lane and
+    slip the cross-lane check. ``target=all`` therefore resolves to no lane
+    here, which is why a span-bearing ``target=all`` record stays a cross-lane
+    violation.
+    """
+    text = (target or "").lower()
+    if text == OVERRIDE_TARGET_ALL:
+        return set()
+    names = {name.lower() for name in override_reviewer_names(text, bindings, keys)}
+    if text in {name.lower() for name in (bindings or {}).values()}:
+        names.add(text)
+    return names
+
+
+def target_spelling_for_reviewer(reviewer, bindings, keys=DEFAULT_OVERRIDE_TARGET_KEYS):
+    """Return the ``target=`` spelling that answers for ``reviewer``, else the name.
+
+    The inverse of ``disposition_reviewer_names`` for one lane: the override
+    command and the disposition marker spell the Opus lane ``fable``, not
+    ``opus``, so a message telling an author to retarget a finding must name the
+    spelling the parser accepts. ``reviewer`` is a lowercased reviewer name
+    (``opus``); the spellings and marker keys are case-insensitive here.
+    """
+    want = (reviewer or "").lower()
+    key_for = dict(keys or ())
+    for spelling, marker_key in key_for.items():
+        bound = (bindings or {}).get(marker_key)
+        if bound and bound.lower() == want:
+            return spelling
+    return reviewer
+
+
 def _accepted_overrides(comments, head_sha, authors):
     """Yield ``(target, actor, comment)`` for each trusted record naming ``head_sha`` EXACTLY.
 
@@ -1436,6 +1476,13 @@ def disposition_violations(
     so an older ``head=`` does not exempt malformed, multi-finding, or cross-lane
     claims. Lanes without parseable finding identities remain exempt from the
     requirement to claim one.
+
+    The record's ``target=`` spelling is resolved to the reviewer name(s) it
+    answers for before any lane comparison, because the writer spelling and the
+    reviewer name are not always identical -- ``fable`` is the ``target=``
+    spelling of the OPUS lane. Comparing the raw spelling reported a correctly
+    targeted ``target=fable`` disposition for an opus span as a cross-lane claim
+    "from lane opus" that no edit could clear.
     """
     lanes = {name.lower() for name in (bindings or {}).values()}
 
@@ -1462,6 +1509,20 @@ def disposition_violations(
             )
             continue
         target = record.get("target") or ""
+        # The target spelling is the one the override command and the lane
+        # headings use (`fable`, `gpt`, `design`, `ux`, `first-principles`),
+        # which is NOT always the reviewer name a finding's span resolves to:
+        # `fable` is the writer spelling of the OPUS lane. Resolve it to the
+        # reviewer name(s) it answers for and compare against THAT -- otherwise a
+        # correctly-targeted `target=fable` disposition for an opus span reads as
+        # cross-lane "from lane opus", and the message even tells the author to
+        # write `target=opus`, a spelling the parser does not accept. For every
+        # self-named lane (gpt/design/ux/first-principles) the resolved name
+        # equals the spelling, so their behaviour is unchanged. `target=all`
+        # resolves to NO lane here (see disposition_reviewer_names): the override
+        # wildcard must not let one record answer for every lane, so a
+        # span-bearing `target=all` record stays a cross-lane violation.
+        target_lanes = disposition_reviewer_names(target, bindings)
         spans = record.get("spans") or []
         judged_head = record.get("head") or ""
         if judged_head and len(judged_head) < 40:
@@ -1492,7 +1553,10 @@ def disposition_violations(
                 "so post one comment per finding even when the findings "
                 "share a span id".format(bullets, where, target)
             )
-        if not spans and target in lanes and (target in judged_lanes or target in current_lanes):
+        target_has_findings = bool(target_lanes & judged_lanes) or bool(
+            target_lanes & current_lanes
+        )
+        if not spans and target_lanes & lanes and target_has_findings:
             out.add(
                 "disposition record claims no span= finding identity ({}; "
                 "target={}) while that lane has findings on the head it "
@@ -1501,15 +1565,19 @@ def disposition_violations(
             )
         for span in spans:
             lane = judged_map.get(span) or current_map.get(span)
-            if lane is not None and lane != target:
+            if lane is not None and lane not in target_lanes:
                 out.add(
                     "cross-lane disposition ({}; target={}) claims span {} "
                     "from lane {} - one comment covers exactly one lane, so "
                     "give that finding its own comment with target={}".format(
-                        where, target, span, lane, lane
+                        where,
+                        target,
+                        span,
+                        lane,
+                        target_spelling_for_reviewer(lane, bindings),
                     )
                 )
-            elif lane is None and target in lanes and target in judged_lanes:
+            elif lane is None and target_lanes & lanes and target_lanes & judged_lanes:
                 out.add(
                     "disposition record claims span {} that resolves to no "
                     "finding ({}; target={}) - claim the span=<id> exactly as "
