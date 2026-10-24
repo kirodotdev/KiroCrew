@@ -83,6 +83,8 @@ from kiro_crew.security import redact
 from kiro_crew.validation import _MODEL_NAME_RE, MAX_ACP_SESSION_ID_LEN, MAX_SHORT_STRING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from collections.abc import Callable
+
     from kiro_crew.dashboard.state import DashboardState
 
 # The module's original logger name, which log filters and caplog assertions key on.
@@ -92,6 +94,16 @@ logger = logging.getLogger("kiro_crew.dashboard.session_control")
 # template: a crew member carrying this name is a leftover of an older agent
 # sync, and selecting it fences a shared-store conductor's dispatch.
 _STOCK_WORKER_AGENT = WORKER_AGENT_FILENAME.removesuffix(".json")
+
+# How a spawn makes its queued reparent edge visible to a concurrent adoption's loop
+# guard. The guard and its edge store live in ``session_tree``, a HIGHER owner layer
+# than this one, so this module must not import them -- the owner layering (one import
+# direction, lowest layer first) forbids it. ``session_tree`` instead injects its
+# ``_note_pending_edge`` here at import, the allowed direction (it already imports
+# ``_record_spawn`` from this module). ``None`` until it does; ``_record_spawn`` skips
+# the registration when it is unset, which is only ever before the facade is built, long
+# before any spawn runs. Signature: ``(child_slot, parent_slot, fence_future) -> None``.
+_register_spawn_pending_edge: "Callable[[str, str, asyncio.Future[bool]], None] | None" = None
 
 
 async def create_session(
@@ -1631,25 +1643,97 @@ async def _record_spawn(caller_key: str, child: Any) -> bool:
     creator_slot = str(getattr(child, "_created_by", "") or "")
     creator_sid = str(getattr(child, "_created_by_sid", "") or "")
     child_slot = str(getattr(child, "key", "") or "")
-    if not creator_sid or not creator_slot or creator_slot != caller_key:
+    # ``not child_slot`` stays in the guard, not only for the emit: the pending-edge
+    # registrar keys the edge store by the child slot and writes unconditionally, so an
+    # empty child slot would plant a ``"" -> creator`` edge that nothing drops. A spawn
+    # with no child slot has no edge to record either, so returning here is right.
+    if not creator_sid or not creator_slot or not child_slot or creator_slot != caller_key:
         return True
+    # The queued reparent edge this spawn adds -- the child gains *creator_slot* as its
+    # parent -- made visible to a concurrent adoption's loop guard for exactly as long as
+    # the append is in flight, the same contract adopt_target registers under its append's
+    # fence. Without it a spawn and an overlapping adoption read only the settled tree,
+    # neither of which carries the other's queued edge, and the two can close a cycle
+    # (child -> creator queued by the spawn, creator -> child committed by the adoption)
+    # the fold cannot present. The edge is keyed by the child and dropped by a done
+    # callback on *fence*. The fence is resolved ONLY when on_session_spawned actually
+    # settles (its ``on_settled`` -> _resolve_fence_threadsafe, which covers the early
+    # False, the written, the failed and the permanently-dropped outcomes), so the edge
+    # survives exactly as long as the append is queued -- mirroring how adopt leaves its
+    # fence standing on a timeout because awaiting_commit returning False does NOT mean the
+    # job was withdrawn: it may still land, and dropping the edge then would let an
+    # overlapping adoption re-close the cycle.
+    #
+    # The guard's edge store lives in ``session_tree``, a higher owner layer, so the
+    # registrar is injected here (``_register_spawn_pending_edge``) rather than imported
+    # upward. It is unset only before the facade is built, long before a spawn runs; with
+    # no registrar there is simply no queued-edge guard to feed and the append is unchanged.
+    register = _register_spawn_pending_edge
+
+    loop = asyncio.get_running_loop()
+    fence: "asyncio.Future[bool]" = loop.create_future()
+    if register is not None:
+        register(child_slot, creator_slot, fence)
+
+    def _resolve_fence(wrote: bool) -> None:
+        if not fence.done():
+            fence.set_result(wrote)
+
+    def _resolve_fence_threadsafe(wrote: bool) -> None:
+        # The append settles on the crew-log writer thread, not this loop. A Future is
+        # not thread-safe, so its result is set back on the loop via call_soon_threadsafe
+        # -- the same hop _tree_append_waiter makes -- and the done callback that drops the
+        # pending edge then also runs on the loop. Guard against a closed loop (shutdown
+        # racing a late settle): resolving inline is a last resort that still drops the
+        # edge, and the value is read by nothing after the loop is gone.
+        try:
+            loop.call_soon_threadsafe(_resolve_fence, wrote)
+        except RuntimeError:
+            _resolve_fence(wrote)
+
+    # Whether the append was handed to the writer. Until it is, ``on_session_spawned`` has
+    # not promised to call ``on_settled``, so an emitter that raised before queuing is the
+    # one case the fence has no settle path and the ``finally`` must drop the edge itself.
+    queued = False
     try:
         if not crew_log_emit.enabled():
             return True
-        landed = await crew_log_emit.awaiting_commit(
-            lambda settled: crew_log_emit.on_session_spawned(
+
+        def _emit_one(settled: "Callable[[bool], None]") -> None:
+            def _on_settled(wrote: bool) -> None:
+                # Drop the queued edge the moment the append settles, then hand the
+                # outcome on to awaiting_commit's own waiter. This is the ONLY path that
+                # resolves the fence on a settle: it fires for every outcome the writer
+                # reports (early False, written, failed, permanently dropped), so the edge
+                # lives exactly as long as the append is queued. on_session_spawned may
+                # call this from the writer thread, so the fence is resolved on the loop.
+                _resolve_fence_threadsafe(wrote)
+                settled(wrote)
+
+            crew_log_emit.on_session_spawned(
                 creator_sid,
                 creator_slot=creator_slot,
                 child_slot=child_slot,
-                on_settled=settled,
-            ),
-            what="session/spawned",
-        )
+                on_settled=_on_settled,
+            )
+
+        landed = await crew_log_emit.awaiting_commit(_emit_one, what="session/spawned")
+        # The job is queued once awaiting_commit has run _emit_one without raising, even
+        # when it then returns False on a timeout: on a timeout the write is still in
+        # flight and ``on_settled`` is still coming, so the fence must be LEFT standing.
+        queued = True
     except asyncio.CancelledError:
         raise
     except Exception:
         logger.warning("session_control: could not record session/spawned", exc_info=True)
         return False
+    finally:
+        # Backstop for the ONLY path with no settle: the emitter raised before queuing, so
+        # ``on_settled`` will never fire and the edge would otherwise stand forever. A
+        # queued append (including one that only timed out) keeps its edge until the real
+        # settle drops it, exactly as adopt leaves its fence standing on a timeout.
+        if not queued:
+            _resolve_fence(False)
     if not landed:
         logger.warning(
             "session_control: the creating edge for %s did not land in its creator's crew "

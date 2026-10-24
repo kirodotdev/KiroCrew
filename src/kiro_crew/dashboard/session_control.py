@@ -189,6 +189,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _inherited_pin_foreign_to_child,
         _model_pin_refusal,
         _record_spawn,
+        _register_spawn_pending_edge,
         _store_s_crewmate,
         create_session,
     )
