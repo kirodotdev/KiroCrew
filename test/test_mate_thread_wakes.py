@@ -15,6 +15,28 @@ from kiro_crew import members as members_mod
 from kiro_crew.dashboard import mate_thread_wakes as wakes
 
 
+@pytest.fixture(autouse=True)
+def _drain_gc_cycles():
+    """Collect GC cycles before the next test can be blamed for them.
+
+    Two tests in this module call asyncio.run() with a DashboardState that
+    stores tmp_path (a PosixPath) inside its ConversationLog.  When the loop
+    closes, any pending asyncio objects that reference state form a reference
+    cycle with the PosixPath.  CPython's cyclic collector defers the cycle
+    until the next GC pass; if that pass lands inside a completely unrelated
+    test, the tp_clear that breaks the cycle blanks the PosixPath's slots
+    (_drv, _str) before the object's __del__ fires, raising AttributeError
+    inside sys.unraisablehook and blaming the innocent victim.  Collecting
+    here, after each test in this module finishes, pays the GC cost at the
+    right place.
+    """
+    import gc
+
+    yield
+    gc.collect()
+    gc.collect()
+
+
 class _Slot:
     def __init__(self, key: str, *, mode: str = "", agent: str = "", created_by: str = ""):
         self.key = key
