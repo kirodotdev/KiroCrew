@@ -209,22 +209,20 @@ class TestHandleMessage:
         assert sum("The answer is 42" in u for u in updates) >= 2, updates
 
     @pytest.mark.asyncio
-    async def test_adds_eyes_reaction(self):
+    @pytest.mark.parametrize(
+        "emoji",
+        [
+            pytest.param("eyes", id="test_adds_eyes_reaction"),
+            pytest.param("lobster", id="test_adds_checkmark_after"),
+        ],
+    )
+    async def test_adds_phase_reaction(self, emoji):
         slack = MockSlackClient()
         sessions = FakeSessionManager()
         await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
 
         reacts = [a for a in slack.actions if a[0] == "react"]
-        assert any(r[1]["emoji"] == "eyes" for r in reacts)
-
-    @pytest.mark.asyncio
-    async def test_adds_checkmark_after(self):
-        slack = MockSlackClient()
-        sessions = FakeSessionManager()
-        await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
-
-        reacts = [a for a in slack.actions if a[0] == "react"]
-        assert any(r[1]["emoji"] == "lobster" for r in reacts)
+        assert any(r[1]["emoji"] == emoji for r in reacts)
 
     @pytest.mark.asyncio
     async def test_thinking_posted_then_updated(self):
@@ -524,8 +522,16 @@ class TestHandleMessage:
         assert "After!" in final
 
     @pytest.mark.asyncio
-    async def test_trusted_bot_access_disabled(self):
-        """from_trusted_bot=False (untrusted bot): error replies are NOT suppressed."""
+    @pytest.mark.parametrize(
+        ("text", "user"),
+        [
+            # An untrusted bot's task message: error replies are NOT suppressed.
+            pytest.param("[TASK:abc]", "U_BOT", id="test_trusted_bot_access_disabled"),
+            # A plain message with an ACP error still gets its error reply.
+            pytest.param("hi", "U1", id="test_non_trusted_bot_error_still_posts_reply"),
+        ],
+    )
+    async def test_untrusted_sender_error_reply_posted(self, text, user):
         from kiro_crew.acp.client import AcpError
 
         class _RaisingProvider(FakeProvider):
@@ -539,40 +545,12 @@ class TestHandleMessage:
             slack,
             sessions,
             "C1",
-            "[TASK:abc]",
+            text,
             None,
             "msg1",
-            "U_BOT",
+            user,
             from_trusted_bot=False,
         )
-        all_text = " ".join(
-            a[1].get("text", "") for a in slack.actions if a[0] in ("post", "stop_stream", "update")
-        )
-        assert "auth expired" in all_text or "error" in all_text.lower()
-
-    @pytest.mark.asyncio
-    async def test_non_trusted_bot_error_still_posts_reply(self):
-        """from_trusted_bot=False + ACP error → error reply still posted (regression guard)."""
-        from kiro_crew.acp.client import AcpError
-
-        class _RaisingProvider(FakeProvider):
-            async def stream(self, message, timeout=120.0):
-                raise AcpError("auth expired")
-                yield  # pragma: no cover
-
-        slack = MockSlackClient()
-        sessions = FakeSessionManager(_RaisingProvider())
-        await handle_message(
-            slack,
-            sessions,
-            "C1",
-            "hi",
-            None,
-            "msg1",
-            "U1",
-            from_trusted_bot=False,
-        )
-        # Some reply (post or stop_stream) should mention the error
         all_text = " ".join(
             a[1].get("text", "") for a in slack.actions if a[0] in ("post", "stop_stream", "update")
         )
@@ -991,7 +969,6 @@ class TestToolApproval:
             _build_approval_blocks,
         )
 
-        # Create tool_input that exceeds the limit
         long_input = "x" * (_SLACK_SECTION_TEXT_LIMIT + 500)
         event = LLMEvent(
             kind="permission_request",
@@ -1138,15 +1115,21 @@ class TestAgentCommand:
         set_allowed_users(set())
 
     @pytest.mark.asyncio
-    async def test_agent_short_name_resolves(self):
-        """!agent odind-investigator suffix-matches the prefixed filename."""
+    @pytest.mark.parametrize(
+        "name",
+        [
+            # Suffix-matches the prefixed filename.
+            pytest.param("odind-investigator", id="test_agent_short_name_resolves"),
+            # Works when filename == internal name.
+            pytest.param("fyi-amazon-writer", id="test_agent_filename_equals_name"),
+        ],
+    )
+    async def test_agent_name_resolves(self, name):
         slack = MockSlackClient()
         sessions = FakeSessionManager()
-        await handle_message(
-            slack, sessions, "C1", "!agent odind-investigator", None, "m1", "U_OWNER"
-        )
+        await handle_message(slack, sessions, "C1", f"!agent {name}", None, "m1", "U_OWNER")
         posts = [a for a in slack.actions if a[0] == "post"]
-        assert any("odind-investigator" in p[1]["text"] for p in posts)
+        assert any(name in p[1]["text"] for p in posts)
         assert not any("❌" in p[1]["text"] for p in posts)
 
     @pytest.mark.asyncio
@@ -1169,18 +1152,6 @@ class TestAgentCommand:
         # Must resolve to internal name, not the full filename
         assert "OdinAICapabilities-odind-investigator" not in switched[0][1]["text"]
         assert "odind-investigator" in switched[0][1]["text"]
-
-    @pytest.mark.asyncio
-    async def test_agent_filename_equals_name(self):
-        """!agent fyi-amazon-writer works when filename == internal name."""
-        slack = MockSlackClient()
-        sessions = FakeSessionManager()
-        await handle_message(
-            slack, sessions, "C1", "!agent fyi-amazon-writer", None, "m1", "U_OWNER"
-        )
-        posts = [a for a in slack.actions if a[0] == "post"]
-        assert any("fyi-amazon-writer" in p[1]["text"] for p in posts)
-        assert not any("❌" in p[1]["text"] for p in posts)
 
     @pytest.mark.asyncio
     async def test_agent_unknown_shows_error(self):

@@ -50,17 +50,17 @@ class TestRedactDeep:
 
 
 class TestExtractBashCommand:
-    def test_json_input(self):
-        assert extract_bash_command('{"command": "ls -la"}') == "ls -la"
-
-    def test_raw_input(self):
-        assert extract_bash_command("ls -la") == "ls -la"
-
-    def test_empty_json(self):
-        assert extract_bash_command("{}") == ""
-
-    def test_invalid_json(self):
-        assert extract_bash_command("not json {") == "not json {"
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            pytest.param('{"command": "ls -la"}', "ls -la", id="test_json_input"),
+            pytest.param("ls -la", "ls -la", id="test_raw_input"),
+            pytest.param("{}", "", id="test_empty_json"),
+            pytest.param("not json {", "not json {", id="test_invalid_json"),
+        ],
+    )
+    def test_extract_bash_command(self, raw, expected):
+        assert extract_bash_command(raw) == expected
 
 
 class TestNormalizeModel:
@@ -99,17 +99,23 @@ class TestValidateToolName:
 
 
 class TestHistoryKeyFor:
-    def test_raw_key(self):
-        assert _history_key_for("chat-1-123") == "dashboard:chat-1-123"
-
-    def test_already_prefixed(self):
-        assert _history_key_for("dashboard:chat-1-123") == "dashboard:chat-1-123"
-
-    def test_filesystem_roundtrip(self):
-        assert _history_key_for("dashboard_chat-1-123") == "dashboard:chat-1-123"
-
-    def test_stacked_prefixes(self):
-        assert _history_key_for("dashboard_dashboard_chat-1") == "dashboard:chat-1"
+    @pytest.mark.parametrize(
+        "key,expected",
+        [
+            pytest.param("chat-1-123", "dashboard:chat-1-123", id="test_raw_key"),
+            pytest.param(
+                "dashboard:chat-1-123", "dashboard:chat-1-123", id="test_already_prefixed"
+            ),
+            pytest.param(
+                "dashboard_chat-1-123", "dashboard:chat-1-123", id="test_filesystem_roundtrip"
+            ),
+            pytest.param(
+                "dashboard_dashboard_chat-1", "dashboard:chat-1", id="test_stacked_prefixes"
+            ),
+        ],
+    )
+    def test_history_key_for(self, key, expected):
+        assert _history_key_for(key) == expected
 
 
 class TestRemoveQueuedById:
@@ -554,7 +560,6 @@ class TestRedactToolField:
 
     def test_multibyte_capped_on_bytes_not_chars(self):
         # 200 emoji × 4 bytes = 800 bytes UTF-8 (each "🎉" is 4 bytes).
-        # Pre-fix this would have passed through if limit were char-based ≥ 200.
         # With true byte cap at 100, the encoded prefix must be ≤ 100 bytes.
         text = "🎉" * 200
         result = _redact_tool_field(text, limit=100)

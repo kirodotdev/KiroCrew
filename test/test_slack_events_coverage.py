@@ -487,6 +487,8 @@ class TestHandleChannelCmd:
         with patch("kiro_crew.slack.events.is_owner", return_value=True):
             await ev._handle_channel_cmd(orch, "U_OWNER", "", respond)
         orch.slack.views_open.assert_awaited_once()
+        assert orch.slack.views_open.await_args.kwargs["trigger_id"] == "T3"
+        assert "C1" in str(orch.slack.views_open.await_args.kwargs["view"])
         respond.assert_not_called()
 
     @pytest.mark.asyncio
@@ -758,8 +760,11 @@ class TestOnEventDispatch:
         with patch(
             "kiro_crew.slack.events.dispatch_interactive", new_callable=AsyncMock
         ) as dispatch:
-            await on_event(_client(ack_fails=True), _req("interactive"))
+            client = _client(ack_fails=True)
+            await on_event(client, _req("interactive"))
+        client.send_socket_mode_response.assert_awaited_once()
         dispatch.assert_not_called()
+        assert orch._handler_tasks == set()
 
     @pytest.mark.asyncio
     async def test_interactive_is_dispatched(self):
@@ -775,7 +780,7 @@ class TestOnEventDispatch:
     @pytest.mark.asyncio
     async def test_update_pause_refuses_before_interaction_ack(self):
         orch = _socket_orch()
-        orch.sessions.reserve_inbound_callback = lambda: None
+        orch.sessions.reserve_inbound_callback = MagicMock(return_value=None)
         on_event = await _install_on_event(orch, ev.SeenCache())
         client = _client()
         with patch(
@@ -786,6 +791,7 @@ class TestOnEventDispatch:
 
         client.send_socket_mode_response.assert_not_awaited()
         dispatch.assert_not_awaited()
+        orch.sessions.reserve_inbound_callback.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_slash_command_is_dispatched(self):
@@ -800,9 +806,11 @@ class TestOnEventDispatch:
     async def test_unknown_envelope_type_ignored(self):
         orch = _socket_orch()
         on_event = await _install_on_event(orch, ev.SeenCache())
+        client = _client()
         with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
-            await on_event(_client(), _req("hello"))
+            await on_event(client, _req("hello"))
         route.assert_not_called()
+        client.send_socket_mode_response.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_member_joined_channel_routed_to_prompt(self):
@@ -811,7 +819,7 @@ class TestOnEventDispatch:
         payload = {"event": {"type": "member_joined_channel", "channel": "C1"}}
         with patch("kiro_crew.slack.events._maybe_prompt_owner") as prompt:
             await on_event(_client(), _req("events_api", payload))
-        prompt.assert_called_once()
+        prompt.assert_called_once_with(orch, payload["event"])
 
     @pytest.mark.asyncio
     async def test_home_tab_published_for_allowed_user(self, _mock_sel):
@@ -845,19 +853,23 @@ class TestOnEventDispatch:
     async def test_home_tab_other_tab_ignored(self):
         orch = _socket_orch()
         on_event = await _install_on_event(orch, ev.SeenCache())
+        client = _client()
         payload = {"event": {"type": "app_home_opened", "tab": "messages", "user": "U_OWNER"}}
         with patch("kiro_crew.slack.events._publish_home_tab", new_callable=AsyncMock) as publish:
-            await on_event(_client(), _req("events_api", payload))
+            await on_event(client, _req("events_api", payload))
         publish.assert_not_called()
+        client.send_socket_mode_response.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_non_message_event_ignored(self):
         orch = _socket_orch()
         on_event = await _install_on_event(orch, ev.SeenCache())
+        client = _client()
         payload = {"event": {"type": "reaction_added"}}
         with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
-            await on_event(_client(), _req("events_api", payload))
+            await on_event(client, _req("events_api", payload))
         route.assert_not_called()
+        client.send_socket_mode_response.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_message_deleted_is_delegated(self):
@@ -868,16 +880,18 @@ class TestOnEventDispatch:
             "kiro_crew.slack.events._handle_message_deleted", new_callable=AsyncMock
         ) as deleted:
             await on_event(_client(), _req("events_api", {"event": event}))
-        deleted.assert_awaited_once()
+        deleted.assert_awaited_once_with(orch, event)
 
     @pytest.mark.asyncio
     async def test_unhandled_subtype_ignored(self):
         orch = _socket_orch()
         on_event = await _install_on_event(orch, ev.SeenCache())
+        client = _client()
         event = {"type": "message", "subtype": "channel_join"}
         with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
-            await on_event(_client(), _req("events_api", {"event": event}))
+            await on_event(client, _req("events_api", {"event": event}))
         route.assert_not_called()
+        client.send_socket_mode_response.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_envelope_team_id_overrides_event_team(self):
@@ -935,15 +949,23 @@ class TestOnEventDispatch:
         route.assert_not_called()
         assert _mock_sel.log_api_access.call_args.kwargs["error"] == "untrusted_bot"
 
+    @pytest.mark.parametrize(
+        "bot_id",
+        [
+            # A bot_id in slack.trusted_bot_ids is routed with from_trusted_bot=True.
+            pytest.param("B_TRUSTED", id="test_trusted_bot_routed_with_flag"),
+            # The self-id guard does not block a legitimate peer bot.
+            pytest.param("B_PEER", id="test_peer_bot_still_trusted_when_self_id_known"),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_trusted_bot_routed_with_flag(self):
-        """A bot_id in slack.trusted_bot_ids is routed with from_trusted_bot=True."""
+    async def test_listed_bot_routed_with_trusted_flag(self, bot_id):
         orch = _socket_orch()
-        orch._cfg.slack.trusted_bot_ids = {"B_TRUSTED"}
+        orch._cfg.slack.trusted_bot_ids = {bot_id}
         on_event = await _install_on_event(orch, ev.SeenCache())
         event = {
             "type": "message",
-            "bot_id": "B_TRUSTED",
+            "bot_id": bot_id,
             "channel": "C1",
             "text": "hi",
             "team": "T1",
@@ -954,26 +976,41 @@ class TestOnEventDispatch:
         route.assert_awaited_once()
         assert route.await_args.kwargs["from_trusted_bot"] is True
 
+    @pytest.mark.parametrize(
+        ("bot_id", "self_id", "error"),
+        [
+            # Fail-closed pin: no verified self identity (auth.test failed) trusts nobody.
+            pytest.param(
+                "B_TRUSTED",
+                "",
+                "trusted_bot_requires_verified_self_id",
+                id="test_allowlisted_peer_denied_when_self_id_unknown",
+            ),
+            # Self-reply loop guard: the gateway's own bot id is denied even if allowlisted.
+            pytest.param(
+                "B_SELF",
+                "B_SELF",
+                "own_bot_id_never_trusted",
+                id="test_own_bot_id_never_trusted_even_when_listed",
+            ),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_allowlisted_peer_denied_when_self_id_unknown(self, _mock_sel):
-        """Fail-closed pin: no verified self identity (auth.test failed) trusts nobody."""
+    async def test_listed_bot_denied_without_a_distinct_verified_self_id(
+        self, _mock_sel, bot_id, self_id, error
+    ):
         orch = _socket_orch()
-        orch._cfg.slack.trusted_bot_ids = {"B_TRUSTED"}
+        orch._cfg.slack.trusted_bot_ids = {bot_id}
         on_event = await _install_on_event(orch, ev.SeenCache())
-        event = {
-            "type": "message",
-            "bot_id": "B_TRUSTED",
-            "channel": "C1",
-            "text": "hi",
-            "team": "T1",
-        }
-        with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value=""):
+        event = {"type": "message", "bot_id": bot_id, "channel": "C1", "text": "hi", "team": "T1"}
+        with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value=self_id):
             with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
                 await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_not_called()
         kw = _mock_sel.log_api_access.call_args.kwargs
         assert kw["outcome"] == "denied"
-        assert kw["error"] == "trusted_bot_requires_verified_self_id"
+        assert kw["error"] == error
+        assert kw["caller"] == bot_id
 
     @pytest.mark.asyncio
     async def test_trusted_bot_message_subtype_routed(self):
@@ -1017,45 +1054,12 @@ class TestOnEventDispatch:
         assert kw["outcome"] == "denied"
 
     @pytest.mark.asyncio
-    async def test_own_bot_id_never_trusted_even_when_listed(self, _mock_sel):
-        """Self-reply loop guard: the gateway's own bot id is denied even if allowlisted."""
-        orch = _socket_orch()
-        orch._cfg.slack.trusted_bot_ids = {"B_SELF"}
-        on_event = await _install_on_event(orch, ev.SeenCache())
-        event = {"type": "message", "bot_id": "B_SELF", "channel": "C1", "text": "hi", "team": "T1"}
-        with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value="B_SELF"):
-            with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
-                await on_event(_client(), _req("events_api", {"event": event}))
-        route.assert_not_called()
-        kw = _mock_sel.log_api_access.call_args.kwargs
-        assert kw["outcome"] == "denied"
-        assert kw["error"] == "own_bot_id_never_trusted"
-
-    @pytest.mark.asyncio
-    async def test_peer_bot_still_trusted_when_self_id_known(self):
-        """The self-id guard does not block a legitimate peer bot."""
-        orch = _socket_orch()
-        orch._cfg.slack.trusted_bot_ids = {"B_PEER"}
-        on_event = await _install_on_event(orch, ev.SeenCache())
-        event = {
-            "type": "message",
-            "bot_id": "B_PEER",
-            "channel": "C1",
-            "text": "hi",
-            "team": "T1",
-        }
-        with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value="B_SELF"):
-            with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
-                await on_event(_client(), _req("events_api", {"event": event}))
-        route.assert_awaited_once()
-        assert route.await_args.kwargs["from_trusted_bot"] is True
-
-    @pytest.mark.asyncio
     async def test_trusted_bot_other_subtype_still_dropped(self):
         """Trust does not exempt non-bot_message subtypes from the subtype gate."""
         orch = _socket_orch()
         orch._cfg.slack.trusted_bot_ids = {"B_TRUSTED"}
         on_event = await _install_on_event(orch, ev.SeenCache())
+        client = _client()
         event = {
             "type": "message",
             "bot_id": "B_TRUSTED",
@@ -1066,8 +1070,9 @@ class TestOnEventDispatch:
         }
         with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value="B_SELF"):
             with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
-                await on_event(_client(), _req("events_api", {"event": event}))
+                await on_event(client, _req("events_api", {"event": event}))
         route.assert_not_called()
+        client.send_socket_mode_response.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_human_message_routed_without_trusted_flag(self):
@@ -1091,8 +1096,12 @@ class TestHandleSlash:
     @pytest.mark.asyncio
     async def test_foreign_command_ignored(self, _mock_sel):
         orch = _make_orch()
-        await ev._handle_slash(orch, {"command": "/other", "user_id": "U_OWNER"})
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True) as allowed:
+            await ev._handle_slash(orch, {"command": "/other", "user_id": "U_OWNER"})
         _mock_sel.log_api_access.assert_not_called()
+        # Not a manifest alias of ours either, so not even the owner hint is spawned.
+        allowed.assert_not_called()
+        assert orch._handler_tasks == set()
 
     @pytest.mark.asyncio
     async def test_unauthorized_caller_denied(self, _mock_sel):
@@ -1217,6 +1226,10 @@ class TestHandleSlash:
                 await ev._handle_slash(orch, payload)
                 await _drain(orch)
         session.post.assert_awaited_once()
+        assert session.post.await_args.args == ("https://hooks.example.invalid/x",)
+        body = session.post.await_args.kwargs["json"]
+        assert body["response_type"] == "ephemeral"
+        assert "*Available commands:*" in body["text"]
 
 
 # ---------------------------------------------------------------------------
@@ -1511,21 +1524,20 @@ class TestExtractSharedText:
         }
         assert ev._extract_shared_text(event) == "wrapped"
 
-    def test_generic_placeholder_fallback_is_dropped(self):
-        event = {
-            "attachments": [
-                {
-                    "is_share": True,
-                    "text": "",
-                    "fallback": "This message contains interactive elements.",
-                }
-            ]
-        }
-        assert ev._extract_shared_text(event) == ""
-
-    def test_real_fallback_is_used(self):
-        event = {"attachments": [{"is_share": True, "text": "", "fallback": "real fallback"}]}
-        assert ev._extract_shared_text(event) == "real fallback"
+    @pytest.mark.parametrize(
+        ("fallback", "expected"),
+        [
+            pytest.param(
+                "This message contains interactive elements.",
+                "",
+                id="test_generic_placeholder_fallback_is_dropped",
+            ),
+            pytest.param("real fallback", "real fallback", id="test_real_fallback_is_used"),
+        ],
+    )
+    def test_share_fallback(self, fallback, expected):
+        event = {"attachments": [{"is_share": True, "text": "", "fallback": fallback}]}
+        assert ev._extract_shared_text(event) == expected
 
     def test_event_level_blocks_used_when_attachments_yield_nothing(self):
         event = {
@@ -1539,8 +1551,12 @@ class TestExtractSharedText:
 
 
 class TestSafeLog:
-    def test_strips_newlines_and_tabs(self):
-        assert ev._safe_log("a\r\nb\tc") == "a  b c"
-
-    def test_empty_passthrough(self):
-        assert ev._safe_log("") == ""
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param("a\r\nb\tc", "a  b c", id="test_strips_newlines_and_tabs"),
+            pytest.param("", "", id="test_empty_passthrough"),
+        ],
+    )
+    def test_safe_log(self, raw, expected):
+        assert ev._safe_log(raw) == expected

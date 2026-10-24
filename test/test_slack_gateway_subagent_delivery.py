@@ -79,11 +79,21 @@ class TestSubagentSlackInjection:
             "kiro_crew.slack.gateway.stream_and_collect",
             new_callable=AsyncMock,
             side_effect=asyncio.TimeoutError,
-        ):
+        ) as mock_stream:
             await on_done(info)
 
-        # Should have notified injection failed
-        orch.subagent_mgr.notify_injection_failed.assert_called()
+        assert mock_stream.await_count == 2
+        assert orch.sessions.reset.await_args_list == [
+            ((info.parent_session_key,),),
+            ((info.parent_session_key,),),
+        ]
+        orch.subagent_mgr.notify_injection_failed.assert_called_once()
+        failed_info = orch.subagent_mgr.notify_injection_failed.call_args.args[0]
+        reason = orch.subagent_mgr.notify_injection_failed.call_args.kwargs["reason"]
+        assert failed_info is info
+        assert "attempt 1 timed out" in reason
+        assert "attempt 2 timed out" in reason
+        orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_cron_injection_timeout(self):
@@ -111,7 +121,12 @@ class TestSubagentSlackInjection:
         ):
             await on_done(info)
 
-        orch.subagent_mgr.notify_injection_failed.assert_called()
+        from kiro_crew.subagent_parts.run_limits import INJECTION_TIMEOUT
+
+        orch.subagent_mgr.notify_injection_failed.assert_called_once_with(
+            info, reason=f"injection timed out after {int(INJECTION_TIMEOUT)}s"
+        )
+        orch.sessions.reset.assert_any_await("cron:job1")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -173,10 +188,15 @@ class TestInjectWithRetry:
             "kiro_crew.slack.gateway.stream_and_collect",
             new_callable=AsyncMock,
             side_effect=AcpProcessDied("dead"),
-        ):
+        ) as mock_stream:
             await on_done(info)
 
-        orch.subagent_mgr.notify_injection_failed.assert_called()
+        mock_stream.assert_awaited_once()
+        orch.sessions.reset.assert_awaited_once_with(info.parent_session_key)
+        orch.subagent_mgr.notify_injection_failed.assert_called_once_with(
+            info, reason="ACP process died"
+        )
+        orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_prompt_busy_exhausted(self):
@@ -202,10 +222,15 @@ class TestInjectWithRetry:
             "kiro_crew.slack.gateway.stream_and_collect",
             new_callable=AsyncMock,
             side_effect=PromptBusyExhaustedError("exhausted"),
-        ):
+        ) as mock_stream:
             await on_done(info)
 
-        orch.subagent_mgr.notify_injection_failed.assert_called()
+        mock_stream.assert_awaited_once()
+        orch.sessions.reset.assert_awaited_once_with(info.parent_session_key)
+        orch.subagent_mgr.notify_injection_failed.assert_called_once_with(
+            info, reason="provider dead after prompt-busy retries"
+        )
+        orch.slack.post_message.assert_not_awaited()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -277,15 +302,12 @@ class TestSlackSubagentCompletionPersistence:
         ):
             await on_done(info)
 
-        # conv_log.append should have been called (via save_conversation_turn)
         assert orch.conv_log.append.call_count == 2
         user_call = orch.conv_log.append.call_args_list[0]
         assistant_call = orch.conv_log.append.call_args_list[1]
-        # First call: user role (the subagent completion event)
         assert user_call[0][0] == info.parent_session_key
         assert user_call[0][1] == "user"
         assert "[Subagent completion event]" in user_call[0][2]
-        # Second call: assistant role (the LLM response)
         assert assistant_call[0][0] == info.parent_session_key
         assert assistant_call[0][1] == "assistant"
         assert assistant_call[0][2] == "synthesized response"
@@ -317,8 +339,22 @@ class TestSlackSubagentCompletionPersistence:
         assert "AKIAIOSFODNN7EXAMPLE" not in persisted_response
 
     @pytest.mark.asyncio
-    async def test_slack_subagent_skips_persistence_for_temporary_thread(self):
-        """Temporary (restricted) threads should not be persisted."""
+    @pytest.mark.parametrize(
+        "temporary, incognito",
+        [
+            # Temporary (restricted) threads.
+            pytest.param(
+                True, False, id="test_slack_subagent_skips_persistence_for_temporary_thread"
+            ),
+            pytest.param(
+                False, True, id="test_slack_subagent_skips_persistence_for_incognito_thread"
+            ),
+        ],
+    )
+    async def test_slack_subagent_skips_persistence_for_restricted_thread(
+        self, temporary, incognito
+    ):
+        """Temporary and incognito threads are delivered but never persisted."""
         orch, mock_sm = self._setup()
         on_done = mock_sm.call_args[1]["on_done"]
         info = self._make_info()
@@ -328,32 +364,14 @@ class TestSlackSubagentCompletionPersistence:
                 "kiro_crew.slack.gateway.stream_and_collect",
                 new_callable=AsyncMock,
                 return_value="response",
-            ),
-            patch("kiro_crew.slack.gateway.is_thread_temporary", return_value=True),
-            patch("kiro_crew.slack.gateway.is_thread_incognito", return_value=False),
+            ) as mock_stream,
+            patch("kiro_crew.slack.gateway.is_thread_temporary", return_value=temporary),
+            patch("kiro_crew.slack.gateway.is_thread_incognito", return_value=incognito),
         ):
             await on_done(info)
 
-        orch.conv_log.append.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_slack_subagent_skips_persistence_for_incognito_thread(self):
-        """Incognito threads should not be persisted."""
-        orch, mock_sm = self._setup()
-        on_done = mock_sm.call_args[1]["on_done"]
-        info = self._make_info()
-
-        with (
-            patch(
-                "kiro_crew.slack.gateway.stream_and_collect",
-                new_callable=AsyncMock,
-                return_value="response",
-            ),
-            patch("kiro_crew.slack.gateway.is_thread_temporary", return_value=False),
-            patch("kiro_crew.slack.gateway.is_thread_incognito", return_value=True),
-        ):
-            await on_done(info)
-
+        mock_stream.assert_awaited_once()
+        assert orch.slack.post_message.await_args.args[:2] == ("D_U1", "response")
         orch.conv_log.append.assert_not_called()
 
     @pytest.mark.asyncio
@@ -373,11 +391,10 @@ class TestSlackSubagentCompletionPersistence:
             patch("kiro_crew.slack.gateway.is_thread_temporary", return_value=False),
             patch("kiro_crew.slack.gateway.is_thread_incognito", return_value=False),
         ):
-            # Should not raise
             await on_done(info)
 
-        # Slack posting should still have happened
-        orch.slack.post_message.assert_called()
+        orch.conv_log.append.assert_called_once()
+        assert orch.slack.post_message.await_args.args[:2] == ("D_U1", "response")
 
     @pytest.mark.asyncio
     async def test_slack_subagent_no_persistence_without_conv_log(self):
@@ -392,11 +409,9 @@ class TestSlackSubagentCompletionPersistence:
             new_callable=AsyncMock,
             return_value="response",
         ):
-            # Should not raise
             await on_done(info)
 
-        # Slack posting should still work
-        orch.slack.post_message.assert_called()
+        assert orch.slack.post_message.await_args.args[:2] == ("D_U1", "response")
 
     @pytest.mark.asyncio
     async def test_slack_subagent_persists_even_when_slack_post_fails(self):
@@ -417,12 +432,9 @@ class TestSlackSubagentCompletionPersistence:
             patch("kiro_crew.slack.gateway.is_thread_temporary", return_value=False),
             patch("kiro_crew.slack.gateway.is_thread_incognito", return_value=False),
         ):
-            # Must not raise despite the Slack failure.
             await on_done(info)
 
-        # Slack post was attempted and failed...
-        orch.slack.post_message.assert_called()
-        # ...yet the turn was still persisted because injection succeeded.
+        orch.slack.post_message.assert_awaited()
         assert orch.conv_log.append.call_count == 2
         assert orch.conv_log.append.call_args_list[0][0][1] == "user"
         assert orch.conv_log.append.call_args_list[1][0][1] == "assistant"
@@ -659,8 +671,11 @@ class TestSubagentChannelTransportDelivery:
         ):
             await on_done(info)
 
+        orch.dashboard_state.get_channel_transport.assert_called()
         orch.slack.post_message.assert_not_awaited()
-        orch.dashboard_state.notify.assert_called()
+        orch.slack.open_dm.assert_not_awaited()
+        orch.dashboard_state.notify.assert_called_once()
+        assert orch.dashboard_state.notify.call_args.args[0] == "subagent"
 
     @pytest.mark.asyncio
     async def test_transport_send_failure_never_raises(self):
@@ -679,9 +694,11 @@ class TestSubagentChannelTransportDelivery:
             ),
             self._permit_governance(),
         ):
-            await on_done(info)  # must not raise
+            await on_done(info)
 
-        orch.dashboard_state.notify.assert_called()
+        transport.send_message.assert_awaited_once()
+        orch.dashboard_state.notify.assert_called_once()
+        assert orch.dashboard_state.notify.call_args.args[0] == "subagent"
 
     @pytest.mark.asyncio
     async def test_target_snapshotted_before_injection_survives_session_reset(self):
@@ -783,13 +800,16 @@ class TestSubagentChannelTransportDelivery:
                 "kiro_crew.slack.gateway.stream_and_collect",
                 new_callable=AsyncMock,
                 return_value="synthesized reply",
-            ),
+            ) as mock_stream,
             self._permit_governance(),
         ):
             await on_done(info)
 
+        mock_stream.assert_awaited_once()
         transport.send_message.assert_not_awaited()
-        orch.dashboard_state.notify.assert_called()
+        orch.slack.post_message.assert_not_awaited()
+        orch.dashboard_state.notify.assert_called_once()
+        assert orch.dashboard_state.notify.call_args.args[0] == "subagent"
 
     @pytest.mark.asyncio
     async def test_mirror_link_delivers_into_forum_topic(self):
@@ -890,8 +910,10 @@ class TestSubagentChannelTransportDelivery:
         ):
             await on_done(info)
 
+        transport.resolve_configured_target.assert_awaited_once_with("user:user@example.com")
         transport.send_message.assert_not_awaited()
-        orch.dashboard_state.notify.assert_called()
+        orch.dashboard_state.notify.assert_called_once()
+        assert orch.dashboard_state.notify.call_args.args[0] == "subagent"
 
     @pytest.mark.asyncio
     async def test_governance_denial_blocks_the_send(self):
@@ -910,12 +932,15 @@ class TestSubagentChannelTransportDelivery:
             patch(
                 "kiro_crew.platform.governance_profiles.vet_and_audit",
                 return_value=SimpleNamespace(permitted=False),
-            ),
+            ) as mock_vet,
         ):
             await on_done(info)
 
+        mock_vet.assert_called()
         transport.send_message.assert_not_awaited()
-        orch.dashboard_state.notify.assert_called()
+        orch.slack.post_message.assert_not_awaited()
+        orch.dashboard_state.notify.assert_called_once()
+        assert orch.dashboard_state.notify.call_args.args[0] == "subagent"
 
     @pytest.mark.asyncio
     async def test_long_reply_is_chunked_to_the_transport_limit(self):

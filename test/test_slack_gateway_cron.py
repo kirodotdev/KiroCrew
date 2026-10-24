@@ -71,6 +71,7 @@ class TestInitCron:
             mock_cs.return_value = mock_cs_inst
             mock_cs.create = AsyncMock(return_value=mock_cs_inst)
             await orch._init_cron()
+        assert orch.cron_svc is mock_cs_inst
         mock_cs_inst.start.assert_awaited_once()
         mock_cs_inst.start_reaper.assert_called_once()
 
@@ -785,17 +786,27 @@ class TestInitCron:
 class TestVolatilePatterns:
     """Regex constants used in dedup."""
 
-    def test_volatile_re_matches_iso_timestamp(self):
-        assert _VOLATILE_RE.search("2026-05-14T10:30:00Z")
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("2026-05-14T10:30:00Z", id="test_volatile_re_matches_iso_timestamp"),
+            pytest.param(
+                "550e8400-e29b-41d4-a716-446655440000", id="test_volatile_re_matches_uuid"
+            ),
+        ],
+    )
+    def test_volatile_re_matches(self, text: str):
+        assert _VOLATILE_RE.search(text)
 
-    def test_volatile_re_matches_uuid(self):
-        assert _VOLATILE_RE.search("550e8400-e29b-41d4-a716-446655440000")
-
-    def test_epoch_re_matches_10_digit(self):
-        assert _EPOCH_RE.search("1715700000")
-
-    def test_epoch_re_matches_13_digit(self):
-        assert _EPOCH_RE.search("1715700000000")
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("1715700000", id="test_epoch_re_matches_10_digit"),
+            pytest.param("1715700000000", id="test_epoch_re_matches_13_digit"),
+        ],
+    )
+    def test_epoch_re_matches(self, text: str):
+        assert _EPOCH_RE.search(text)
 
     def test_constants_values(self):
         assert _MAX_INJECT_ATTEMPTS == 2
@@ -1258,7 +1269,6 @@ class TestCronAckedItems:
                     result = await callback(job)
 
         assert result == "acked result"
-        # Verify acked_items were passed to build_message
         call_args = orch.ctx_builder.build_message.call_args[0][0]
         assert "item1" in call_args
         assert "item2" in call_args

@@ -326,27 +326,22 @@ class TestWarnIfKiroCliOutdated:
         assert "1.25 is outdated" in out
 
     @pytest.mark.asyncio
-    async def test_current_version_is_quiet(self, capsys):
+    @pytest.mark.parametrize(
+        "output",
+        [
+            pytest.param(b"kiro-cli 1.26.0\n", id="test_current_version_is_quiet"),
+            pytest.param(b"some-other-binary\n", id="test_unparseable_output_is_silent"),
+        ],
+    )
+    async def test_probe_output_without_a_warning(self, capsys, output: bytes):
         async def _communicate() -> tuple[bytes, bytes]:
-            return (b"kiro-cli 1.26.0\n", b"")
+            return (output, b"")
 
         orch = _make_orchestrator()
-        with patch(
-            "asyncio.create_subprocess_exec", AsyncMock(return_value=_probe_proc(_communicate))
-        ):
+        spawn = AsyncMock(return_value=_probe_proc(_communicate))
+        with patch("asyncio.create_subprocess_exec", spawn):
             await orch._warn_if_kiro_cli_outdated()
-        assert "outdated" not in capsys.readouterr().out
-
-    @pytest.mark.asyncio
-    async def test_unparseable_output_is_silent(self, capsys):
-        async def _communicate() -> tuple[bytes, bytes]:
-            return (b"some-other-binary\n", b"")
-
-        orch = _make_orchestrator()
-        with patch(
-            "asyncio.create_subprocess_exec", AsyncMock(return_value=_probe_proc(_communicate))
-        ):
-            await orch._warn_if_kiro_cli_outdated()
+        spawn.assert_awaited_once()
         assert "outdated" not in capsys.readouterr().out
 
 
@@ -362,25 +357,33 @@ class TestDeliverResultRouting:
     async def test_default_deliver_lookup_failure_falls_through(self):
         orch = _make_orchestrator()
         orch.slack = None
-        orch.dashboard_state = None
-        with patch.object(gw.KiroCrewConfig, "load", side_effect=RuntimeError("no config")):
-            await orch._deliver_result("Title", "task", "result", "")  # must not raise
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        with patch.object(gw.KiroCrewConfig, "load", side_effect=RuntimeError("no config")) as load:
+            await orch._deliver_result("Title", "task", "result", "")
+            # A Slack-less, dashboard-less host takes the same arm and delivers nowhere.
+            orch.dashboard_state = None
+            await orch._deliver_result("Title", "task", "result", "")
+        assert load.call_count == 2
+        # The failed lookup keeps the tagless default arm: a bell, no new slot.
+        ds.notify.assert_called_once_with("heartbeat", "Title", "task\n\nresult")
+        ds.get_or_create_slot.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_dashboard_slot_arm_without_dashboard_state(self):
+    @pytest.mark.parametrize(
+        "deliver",
+        [
+            pytest.param("dashboard:s1", id="test_dashboard_slot_arm_without_dashboard_state"),
+            pytest.param("dashboard", id="test_new_slot_arm_without_dashboard_state"),
+        ],
+    )
+    async def test_dashboard_arm_without_dashboard_state(self, deliver: str):
         orch = _make_orchestrator()
         orch.dashboard_state = None
         orch.slack = _mock_slack()
-        await orch._deliver_result("Title", "task", "result", "dashboard:s1")
-        # The dashboard arm returns early; nothing leaks to Slack.
-        orch.slack.post_message.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_new_slot_arm_without_dashboard_state(self):
-        orch = _make_orchestrator()
-        orch.dashboard_state = None
-        orch.slack = _mock_slack()
-        await orch._deliver_result("Title", "task", "result", "dashboard")
+        await orch._deliver_result("Title", "task", "result", deliver)
+        # The dashboard arm returns early; the default Slack-DM arm never runs.
+        orch.slack.open_dm.assert_not_awaited()
         orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -402,7 +405,8 @@ class TestDeliverResultRouting:
         orch.dashboard_state = None
         orch.slack = _mock_slack()
         orch.slack.open_dm = AsyncMock(side_effect=RuntimeError("slack down"))
-        await orch._deliver_result("Title", "task", "result", "slack")  # must not raise
+        await orch._deliver_result("Title", "task", "result", "slack")
+        orch.slack.open_dm.assert_awaited_once_with("U_OWNER")
         orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -445,8 +449,9 @@ class TestDeliverResultRouting:
         orch.slack = _mock_slack(dm=None)
         with _slack_default_deliver():
             await orch._deliver_result("Title", "task", "result", "")
+        orch.slack.open_dm.assert_awaited_once_with("U_OWNER")
         orch.slack.post_message.assert_not_awaited()
-        ds.notify.assert_called_once()
+        ds.notify.assert_called_once_with("heartbeat", "Title", "task\n\nresult")
 
     @pytest.mark.asyncio
     async def test_default_arm_notifies_after_post_failure(self):
@@ -458,7 +463,9 @@ class TestDeliverResultRouting:
         with _slack_default_deliver():
             await orch._deliver_result("Title", "task", "result", "")
         # The Slack failure is swallowed; the bell still fires.
-        ds.notify.assert_called_once()
+        orch.slack.post_message.assert_awaited_once()
+        assert orch.slack.post_message.await_args.args[0] == "D1"
+        ds.notify.assert_called_once_with("heartbeat", "Title", "task\n\nresult")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -521,9 +528,10 @@ class TestShutdownExtras:
             "kiro_crew.dashboard.chat.save_all_slots_to_history",
             side_effect=RuntimeError("history lock"),
         ):
-            await orch._shutdown()  # must not raise
+            await orch._shutdown()
         # Teardown continued past the failed save.
-        ds.file_indexes.stop_all.assert_called_once()
+        ds.file_indexes.stop_all.assert_called_once_with()
+        orch._stop_mcp_broker.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_a_pending_eager_spawn_ends_inside_the_shutdown(self):
@@ -913,10 +921,17 @@ class TestInitMcpDiscovery:
                 orch._init_mcp_discovery()
         assert "builder-mcp, playwright-mcp" in caplog.text
 
-    def test_listing_failure_is_swallowed(self):
+    def test_listing_failure_is_swallowed(self, caplog):
         orch = _make_orchestrator()
-        with patch("kiro_crew.mcp_discovery.list_servers", side_effect=RuntimeError("boom")):
-            orch._init_mcp_discovery()  # must not raise
+        with caplog.at_level("DEBUG", logger="kiro_crew.slack.gateway"):
+            with patch(
+                "kiro_crew.mcp_discovery.list_servers", side_effect=RuntimeError("boom")
+            ) as listing:
+                orch._init_mcp_discovery()
+        listing.assert_called_once_with()
+        messages = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.slack.gateway"]
+        assert "MCP server listing failed" in messages
+        assert not any(m.startswith("Configured MCP servers") for m in messages)
 
 
 class TestSubagentCoalescer:
@@ -1529,9 +1544,9 @@ class TestNotifyNudgeExpired:
     def test_no_dashboard_state_is_a_no_op(self):
         orch = _make_orchestrator()
         orch.dashboard_state = None
-        orch._notify_nudge_expired(
-            NudgeLoop(id="l", slot_key="chat-3", message="m")
-        )  # must not raise
+        assert (
+            orch._notify_nudge_expired(NudgeLoop(id="l", slot_key="chat-3", message="m")) is False
+        )
 
 
 class TestPersistSlotTitle:
@@ -1587,7 +1602,12 @@ class TestRememberOptions:
         with patch.object(gw, "remember_slack_options") as remember:
             orch._remember_options("cron:j1", "C1", "", ["A"], [{}], "Options")
             orch._remember_options("cron:j1", "C1", "111.1", [], [{}], "Options")
-        remember.assert_not_called()
+            remember.assert_not_called()
+            # The same call with both a ts and choices does record, so the
+            # absence above is the guard and not a missed patch.
+            orch._remember_options("cron:j1", "C1", "111.1", ["A"], [{}], "Options")
+        remember.assert_called_once()
+        assert remember.call_args.args[1] == "cron:j1"
 
 
 class TestDeliverCronResponse:

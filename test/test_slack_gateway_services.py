@@ -112,14 +112,16 @@ class TestNotifMeta:
         assert "slack_link" in result
         assert "C123" in result["slack_link"]
 
-    def test_cron_key_returns_none(self):
-        assert GatewayOrchestrator._notif_meta("cron:j1") is None
-
-    def test_subagent_key_returns_none(self):
-        assert GatewayOrchestrator._notif_meta("subagent:a1") is None
-
-    def test_hook_key_returns_none(self):
-        assert GatewayOrchestrator._notif_meta("hook:h1") is None
+    @pytest.mark.parametrize(
+        "key",
+        [
+            pytest.param("cron:j1", id="test_cron_key_returns_none"),
+            pytest.param("subagent:a1", id="test_subagent_key_returns_none"),
+            pytest.param("hook:h1", id="test_hook_key_returns_none"),
+        ],
+    )
+    def test_background_key_returns_none(self, key: str):
+        assert GatewayOrchestrator._notif_meta(key) is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -219,15 +221,17 @@ class TestNotifyNudgeExpired:
             assert state.notify.call_args.kwargs["meta"] is None, key
 
     def test_no_dashboard_state_is_a_noop(self):
-        # Must not raise when the dashboard isn't wired up (Slack-only host).
-        GatewayOrchestrator._notify_nudge_expired(self._orch(None), self._loop())
+        # A Slack-only host has no dashboard to notify, so nothing was delivered.
+        assert GatewayOrchestrator._notify_nudge_expired(self._orch(None), self._loop()) is False
 
     def test_notify_failure_never_propagates(self):
         """Runs inside the observer loop — an exception here would also skip
         the WS broadcast that follows it, so it must be swallowed."""
         state = MagicMock()
         state.notify.side_effect = RuntimeError("bus down")
-        GatewayOrchestrator._notify_nudge_expired(self._orch(state), self._loop())
+        delivered = GatewayOrchestrator._notify_nudge_expired(self._orch(state), self._loop())
+        state.notify.assert_called_once()
+        assert delivered is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -411,13 +415,11 @@ class TestDeliverResultTruncation:
         slot.queue_depth = 0
         ds.resolve_slot = MagicMock(return_value=slot)
         orch.dashboard_state = ds
-        # Create a result larger than MAX_PROMPT_BYTES
         large_result = "x" * 200000
         with patch("kiro_crew.slack.gateway.sel") as mock_sel:
             mock_sel.return_value.log_api_access = MagicMock()
             await orch._deliver_result("T", "s", large_result, "prompt:dashboard:s1")
         slot.enqueue_or_run_prompt.assert_called_once()
-        # Verify the prompt was truncated
         call_args = slot.enqueue_or_run_prompt.call_args[0]
         assert len(call_args[0].encode("utf-8")) <= 131072 + 100  # MAX_PROMPT_BYTES + overhead
 

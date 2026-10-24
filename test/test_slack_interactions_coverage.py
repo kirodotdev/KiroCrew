@@ -16,9 +16,23 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from slack_interactions_coverage_helpers import _mock_aiohttp_fixture  # noqa: F401
+from slack_interactions_coverage_helpers import _restore_module_globals  # noqa: F401
+from slack_interactions_coverage_helpers import ix_logs_fixture  # noqa: F401
+from slack_interactions_coverage_helpers import orch_fixture  # noqa: F401
+from slack_interactions_coverage_helpers import sel_log_fixture  # noqa: F401
+from slack_interactions_coverage_helpers import (
+    _action_payload,
+    _ix_messages,
+    _make_orch,
+    _payload,
+    _read_config,
+    _sel_ops,
+    _set_owner,
+)
 
 from kiro_crew.config.loader import ConfigReadError, config_path
 from kiro_crew.slack import handler as sh
@@ -31,137 +45,22 @@ from kiro_crew.slack.allowlist import (
 )
 
 # ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _mock_aiohttp():
-    """Stub ``aiohttp.ClientSession`` so ``response_url`` posts never hit the network.
-
-    Handlers post to Slack's ``response_url`` via ``async with
-    aiohttp.ClientSession()``; without this the tests would attempt a real
-    outbound connection.
-    """
-    sess = AsyncMock()
-    sess.__aenter__ = AsyncMock(return_value=sess)
-    sess.__aexit__ = AsyncMock(return_value=None)
-    resp = MagicMock()
-    resp.status = 200
-    sess.post = AsyncMock(return_value=resp)
-    with patch("aiohttp.ClientSession", return_value=sess):
-        yield sess
-
-
-@pytest.fixture(autouse=True)
-def _restore_module_globals():
-    """Snapshot/restore the process-global state these handlers mutate.
-
-    ``VIEW_REGISTRY``, ``_resume_locks`` and ``handler._vc`` all outlive a
-    single test, so without this a test that registers a handler or flips a
-    voice setting would leak into whatever runs next (order dependence).
-    """
-    saved_registry = dict(ix.VIEW_REGISTRY)
-    saved_locks = dict(ix._resume_locks)
-    saved_vc = {
-        f: getattr(sh._vc, f)
-        for f in (
-            "global_enabled",
-            "auto_speak",
-            "default_voice",
-            "default_engine",
-            "default_rate",
-            "default_pitch",
-            "aws_profile",
-            "region",
-        )
-    }
-    saved_allowed = sh._allowed_users
-    saved_tracking = sh._tracking_channels
-    yield
-    ix.VIEW_REGISTRY.clear()
-    ix.VIEW_REGISTRY.update(saved_registry)
-    ix._resume_locks.clear()
-    ix._resume_locks.update(saved_locks)
-    for field, value in saved_vc.items():
-        setattr(sh._vc, field, value)
-    sh.set_allowed_users(saved_allowed)
-    sh.set_tracking_channels(saved_tracking)
-
-
-def _make_orch() -> MagicMock:
-    """A minimal orchestrator double with async Slack ops."""
-    orch = MagicMock()
-    orch.slack = MagicMock()
-    orch.slack.post_message = AsyncMock(return_value="ts1")
-    orch.slack.post_blocks = AsyncMock(return_value="ts1")
-    orch.slack.post_ephemeral = AsyncMock()
-    orch.slack.update_message = AsyncMock()
-    orch.slack.delete_message = AsyncMock()
-    orch.slack.open_dm = AsyncMock(return_value="D1")
-    orch.slack.views_update = AsyncMock()
-    orch.slack.set_thread_status = AsyncMock()
-    orch.slack.is_dm = AsyncMock(return_value=True)
-    orch._allowed_users = set()
-    orch._tracking_channels = set()
-    orch.dashboard_state = None
-    return orch
-
-
-@pytest.fixture
-def orch(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-    """Bind an orchestrator double and allow the caller by default."""
-    o = _make_orch()
-    monkeypatch.setattr(ix, "_orch", o)
-    monkeypatch.setattr(ix, "is_allowed_user", lambda uid: True)
-    _set_owner(monkeypatch, True)
-    monkeypatch.setattr(ix, "channel_inbound_permitted", AsyncMock(return_value=True))
-    return o
-
-
-def _set_owner(monkeypatch: pytest.MonkeyPatch, value: bool) -> None:
-    """Patch BOTH ``is_owner`` bindings.
-
-    ``interactions`` imported ``is_owner`` at module scope, but several
-    handlers re-import it from ``handler`` at call time, so a single patch
-    only covers half the call sites.
-    """
-    monkeypatch.setattr(ix, "is_owner", lambda uid: value)
-    monkeypatch.setattr(sh, "is_owner", lambda uid: value)
-
-
-def _payload(**over: Any) -> dict:
-    base: dict[str, Any] = {
-        "user": {"id": "U1"},
-        "channel": {"id": "C1"},
-        "message": {"ts": "m1", "blocks": []},
-        "response_url": "",
-    }
-    base.update(over)
-    return base
-
-
-def _action_payload(action_id: str, value: str = "", **over: Any) -> dict:
-    p = _payload(**over)
-    p["actions"] = [{"action_id": action_id, "value": value}]
-    return p
-
-
-def _read_config() -> dict:
-    raw = config_path().read_text(encoding="utf-8")
-    parsed: dict = json.loads(raw)
-    return parsed
-
-
-# ---------------------------------------------------------------------------
 # View submission / closed registry
 # ---------------------------------------------------------------------------
 
 
 class TestViewRegistry:
     @pytest.mark.asyncio
-    async def test_submission_missing_view_key_is_ignored(self) -> None:
+    async def test_submission_missing_view_key_is_ignored(
+        self, monkeypatch: pytest.MonkeyPatch, ix_logs: pytest.LogCaptureFixture
+    ) -> None:
+        # An empty callback_id must not match an (unset) empty forward callback.
+        monkeypatch.setattr(ix, "_get_forward_callback", lambda: "")
+        fwd = AsyncMock()
+        monkeypatch.setattr(ix, "_handle_shortcut_submission", fwd)
         await ix.handle_view_submission({})
+        fwd.assert_not_awaited()
+        assert "No view handler registered for callback_id=" in _ix_messages(ix_logs)
 
     @pytest.mark.asyncio
     async def test_submission_falls_back_to_forward_handler(
@@ -172,8 +71,9 @@ class TestViewRegistry:
         called = AsyncMock()
         monkeypatch.setattr(ix, "_handle_shortcut_submission", called)
         ix.VIEW_REGISTRY.pop("fwd_live", None)
-        await ix.handle_view_submission({"view": {"callback_id": "fwd_live"}})
-        called.assert_awaited_once()
+        payload = {"view": {"callback_id": "fwd_live"}}
+        await ix.handle_view_submission(payload)
+        called.assert_awaited_once_with(payload)
 
     @pytest.mark.asyncio
     async def test_closed_uses_closed_suffix_handler(self) -> None:
@@ -187,16 +87,27 @@ class TestViewRegistry:
         assert len(seen) == 1
 
     @pytest.mark.asyncio
-    async def test_closed_without_handler_is_ignored(self) -> None:
+    async def test_closed_without_handler_is_ignored(
+        self, ix_logs: pytest.LogCaptureFixture
+    ) -> None:
+        # The submission handler under the bare id must NOT receive a close.
+        submit = AsyncMock()
+        ix.register_view_handler("unregistered", submit)
         await ix.handle_view_closed({"view": {"callback_id": "unregistered"}})
+        submit.assert_not_awaited()
+        assert "No view_closed handler for callback_id=unregistered (ignored)" in _ix_messages(
+            ix_logs
+        )
 
     @pytest.mark.asyncio
-    async def test_closed_swallows_handler_exception(self) -> None:
-        async def boom(payload: dict) -> None:
-            raise RuntimeError("nope")
-
+    async def test_closed_swallows_handler_exception(
+        self, ix_logs: pytest.LogCaptureFixture
+    ) -> None:
+        boom = AsyncMock(side_effect=RuntimeError("nope"))
         ix.register_view_handler("cb_y_closed", boom)
         await ix.handle_view_closed({"view": {"callback_id": "cb_y"}})
+        boom.assert_awaited_once()
+        assert "View closed handler failed for callback_id=cb_y" in _ix_messages(ix_logs)
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +183,10 @@ class TestAckButton:
         payload = _payload(response_url="https://hooks.slack.com/x")
         await ix.ack_button(payload, "C1", "m1")
         _mock_aiohttp.post.assert_awaited_once()
+        assert _mock_aiohttp.post.await_args.args[0] == "https://hooks.slack.com/x"
+        body = _mock_aiohttp.post.await_args.kwargs["json"]
+        assert body["replace_original"] is True
+        assert body["text"] == "✅ Acknowledged"
         orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -283,6 +198,8 @@ class TestAckButton:
         _mock_aiohttp.post = AsyncMock(return_value=bad)
         await ix.ack_button(_payload(response_url="https://hooks.slack.com/x"), "C1", "m1")
         orch.slack.update_message.assert_awaited_once()
+        assert orch.slack.update_message.await_args.args == ("C1", "m1")
+        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Acknowledged"
 
     @pytest.mark.asyncio
     async def test_falls_back_when_response_url_raises(
@@ -290,7 +207,9 @@ class TestAckButton:
     ) -> None:
         _mock_aiohttp.post = AsyncMock(side_effect=RuntimeError("boom"))
         await ix.ack_button(_payload(response_url="https://hooks.slack.com/x"), "C1", "m1")
+        _mock_aiohttp.post.assert_awaited_once()
         orch.slack.update_message.assert_awaited_once()
+        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Acknowledged"
 
     @pytest.mark.asyncio
     async def test_strips_action_blocks_and_appends_ack_context(self, orch: MagicMock) -> None:
@@ -321,9 +240,13 @@ class TestAckButton:
         assert len(blocks[0]["text"]["text"]) == 2990
 
     @pytest.mark.asyncio
-    async def test_chat_update_failure_is_swallowed(self, orch: MagicMock) -> None:
+    async def test_chat_update_failure_is_swallowed(
+        self, orch: MagicMock, ix_logs: pytest.LogCaptureFixture
+    ) -> None:
         orch.slack.update_message = AsyncMock(side_effect=RuntimeError("api down"))
         await ix.ack_button(_payload(), "C1", "m1")
+        orch.slack.update_message.assert_awaited_once()
+        assert "chat.update fallback failed" in _ix_messages(ix_logs)
 
 
 # ---------------------------------------------------------------------------
@@ -332,34 +255,55 @@ class TestAckButton:
 
 
 class TestDispatchPayloadParsing:
+    @pytest.mark.parametrize(
+        "payload_type,handler_name",
+        [
+            pytest.param(
+                "view_submission", "handle_view_submission", id="test_view_submission_routed"
+            ),
+            pytest.param("view_closed", "handle_view_closed", id="test_view_closed_routed"),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_view_submission_routed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_view_payload_routed(
+        self, monkeypatch: pytest.MonkeyPatch, payload_type: str, handler_name: str
+    ) -> None:
         spy = AsyncMock()
-        monkeypatch.setattr(ix, "handle_view_submission", spy)
-        await ix.dispatch({"type": "view_submission", "view": {}})
-        spy.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_view_closed_routed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        spy = AsyncMock()
-        monkeypatch.setattr(ix, "handle_view_closed", spy)
-        await ix.dispatch({"type": "view_closed", "view": {}})
-        spy.assert_awaited_once()
+        monkeypatch.setattr(ix, handler_name, spy)
+        payload = {"type": payload_type, "view": {}}
+        await ix.dispatch(payload)
+        spy.assert_awaited_once_with(payload)
 
     @pytest.mark.asyncio
     async def test_message_action_routed_to_shortcut(self, monkeypatch: pytest.MonkeyPatch) -> None:
         spy = AsyncMock()
         monkeypatch.setattr(ix, "_handle_message_shortcut", spy)
-        await ix.dispatch({"type": "message_action", "callback_id": "cb"})
-        spy.assert_awaited_once()
+        payload = {"type": "message_action", "callback_id": "cb"}
+        await ix.dispatch(payload)
+        spy.assert_awaited_once_with(payload)
 
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param({}, id="test_empty_payload_returns_without_error"),
+            pytest.param(
+                {"type": "block_actions", "actions": []},
+                id="test_missing_actions_list_returns_early",
+            ),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_empty_payload_returns_without_error(self) -> None:
-        await ix.dispatch({})
-
-    @pytest.mark.asyncio
-    async def test_missing_actions_list_returns_early(self) -> None:
-        await ix.dispatch({"type": "block_actions", "actions": []})
+    async def test_payload_without_actions_returns_before_auth(
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch, payload: dict
+    ) -> None:
+        gate = MagicMock(return_value=True)
+        monkeypatch.setattr(ix, "is_allowed_user", gate)
+        fallback = AsyncMock()
+        monkeypatch.setattr(ix, "_handle_tool_approval", fallback)
+        await ix.dispatch(payload)
+        gate.assert_not_called()
+        fallback.assert_not_awaited()
+        orch.slack.post_ephemeral.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_unknown_action_id_falls_through_to_tool_approval(
@@ -376,10 +320,13 @@ class TestDispatchPayloadParsing:
     async def test_unknown_action_without_channel_does_nothing(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        gate = MagicMock(return_value=True)
+        monkeypatch.setattr(ix, "is_allowed_user", gate)
         spy = AsyncMock()
         monkeypatch.setattr(ix, "_handle_tool_approval", spy)
         payload = _action_payload("mystery", channel={}, message={})
         await ix.dispatch(payload)
+        gate.assert_called_once_with("U1")
         spy.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -398,7 +345,7 @@ class TestDispatchPayloadParsing:
 class TestDispatchAuthorization:
     @pytest.mark.asyncio
     async def test_unauthorized_user_rejected_with_ephemeral(
-        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch, sel_log: MagicMock
     ) -> None:
         monkeypatch.setattr(ix, "is_allowed_user", lambda uid: False)
         spy = AsyncMock()
@@ -407,34 +354,49 @@ class TestDispatchAuthorization:
         spy.assert_not_awaited()
         orch.slack.post_ephemeral.assert_awaited_once()
         assert "not authorized" in orch.slack.post_ephemeral.await_args.args[2]
+        assert orch.slack.post_ephemeral.await_args.args[:2] == ("C1", "U1")
+        assert _sel_ops(sel_log) == [("slack.interactive", "denied")]
 
     @pytest.mark.asyncio
     async def test_unauthorized_ephemeral_failure_is_swallowed(
-        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+        self,
+        orch: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        ix_logs: pytest.LogCaptureFixture,
+        sel_log: MagicMock,
     ) -> None:
         monkeypatch.setattr(ix, "is_allowed_user", lambda uid: False)
+        spy = AsyncMock()
+        monkeypatch.setattr(ix, "_handle_tool_approval", spy)
         orch.slack.post_ephemeral = AsyncMock(side_effect=RuntimeError("api down"))
         await ix.dispatch(_action_payload("anything"))
+        orch.slack.post_ephemeral.assert_awaited_once()
+        assert "Failed to send ephemeral rejection" in _ix_messages(ix_logs)
+        spy.assert_not_awaited()
+        assert _sel_ops(sel_log) == [("slack.interactive", "denied")]
 
     @pytest.mark.asyncio
     async def test_allowlist_button_requires_owner(
-        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch, sel_log: MagicMock
     ) -> None:
         _set_owner(monkeypatch, False)
         spy = AsyncMock()
         monkeypatch.setattr(ix, "_handle_allowlist", spy)
         await ix.dispatch(_action_payload(ACTION_ALLOWLIST_APPROVE, "U9:Nine"))
         spy.assert_not_awaited()
+        assert _sel_ops(sel_log) == [("slack.allowlist.button", "denied")]
+        assert orch._allowed_users == set()
 
     @pytest.mark.asyncio
     async def test_track_channel_button_requires_owner(
-        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch, sel_log: MagicMock
     ) -> None:
         _set_owner(monkeypatch, False)
         spy = AsyncMock()
         monkeypatch.setattr(ix, "_handle_track_channel", spy)
         await ix.dispatch(_action_payload(ACTION_TRACK_DENY, "C9:name"))
         spy.assert_not_awaited()
+        assert _sel_ops(sel_log) == [("slack.track_channel.button", "denied")]
 
 
 class TestDispatchRouting:
@@ -446,43 +408,67 @@ class TestDispatchRouting:
     ) -> None:
         from kiro_crew.slack.format import OPTIONS_ACTION_PREFIX
 
+        gate = MagicMock(return_value=True)
+        monkeypatch.setattr(ix, "is_allowed_user", gate)
         spy = AsyncMock()
         monkeypatch.setattr(ix, "_handle_options", spy)
+        fallback = AsyncMock()
+        monkeypatch.setattr(ix, "_handle_tool_approval", fallback)
         await ix.dispatch(_action_payload(f"{OPTIONS_ACTION_PREFIX}_done_0"))
+        gate.assert_called_once_with("U1")
         spy.assert_not_awaited()
+        fallback.assert_not_awaited()
+        # Spent markers post nothing, so they skip the governance gate too.
+        ix.channel_inbound_permitted.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_options_blocked_by_channels_governance(
-        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch, ix_logs: pytest.LogCaptureFixture
     ) -> None:
         from kiro_crew.slack.format import OPTIONS_SUBMIT_ACTION
 
-        monkeypatch.setattr(ix, "channel_inbound_permitted", AsyncMock(return_value=False))
+        gov = AsyncMock(return_value=False)
+        monkeypatch.setattr(ix, "channel_inbound_permitted", gov)
         spy = AsyncMock()
         monkeypatch.setattr(ix, "_handle_options_submit", spy)
         await ix.dispatch(_action_payload(OPTIONS_SUBMIT_ACTION))
         spy.assert_not_awaited()
+        gov.assert_awaited_once_with("slack")
+        assert "slack OPTIONS choice dropped: denied by channels governance policy" in _ix_messages(
+            ix_logs
+        )
+        orch.slack.update_message.assert_not_awaited()
+        orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_review_action_blocked_by_channels_governance(
-        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch, ix_logs: pytest.LogCaptureFixture
     ) -> None:
-        monkeypatch.setattr(ix, "channel_inbound_permitted", AsyncMock(return_value=False))
+        gov = AsyncMock(return_value=False)
+        monkeypatch.setattr(ix, "channel_inbound_permitted", gov)
         spy = AsyncMock()
         monkeypatch.setattr(ix, "_handle_review_approve", spy)
         await ix.dispatch(_action_payload("mc_review_approve", "C1|t1|k"))
         spy.assert_not_awaited()
+        gov.assert_awaited_once_with("slack")
+        assert "slack review action dropped: denied by channels governance policy" in _ix_messages(
+            ix_logs
+        )
+        orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_review_cancel_is_exempt_from_governance(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Cancel posts nothing, so a channels-deny must not strand the draft."""
-        monkeypatch.setattr(ix, "channel_inbound_permitted", AsyncMock(return_value=False))
+        gov = AsyncMock(return_value=False)
+        monkeypatch.setattr(ix, "channel_inbound_permitted", gov)
         spy = AsyncMock()
         monkeypatch.setattr(ix, "_handle_review_cancel", spy)
-        await ix.dispatch(_action_payload("mc_review_cancel", "C1|t1|k"))
-        spy.assert_awaited_once()
+        payload = _action_payload("mc_review_cancel", "C1|t1|k")
+        await ix.dispatch(payload)
+        spy.assert_awaited_once_with(payload, payload["actions"][0])
+        gov.assert_not_awaited()
 
     @pytest.mark.parametrize(
         "action_id,handler_name",
@@ -519,8 +505,10 @@ class TestDispatchRouting:
     ) -> None:
         spy = AsyncMock()
         monkeypatch.setattr(ix, handler_name, spy)
-        await ix.dispatch(_action_payload(action_id, "v"))
+        payload = _action_payload(action_id, "v")
+        await ix.dispatch(payload)
         spy.assert_awaited_once()
+        assert spy.await_args.args[0] is payload
 
     @pytest.mark.asyncio
     async def test_dashboard_copy_posts_link_ephemerally(
@@ -538,12 +526,16 @@ class TestDispatchRouting:
 
     @pytest.mark.asyncio
     async def test_dashboard_copy_without_url_posts_nothing(
-        self, orch: MagicMock, _mock_aiohttp: AsyncMock
+        self, orch: MagicMock, _mock_aiohttp: AsyncMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # The copy branch must return, not fall through to the tool-approval fallback.
+        fallback = AsyncMock()
+        monkeypatch.setattr(ix, "_handle_tool_approval", fallback)
         await ix.dispatch(
             _action_payload("mc_dashboard_copy", "", response_url="https://hooks.slack.com/y")
         )
         _mock_aiohttp.post.assert_not_awaited()
+        fallback.assert_not_awaited()
 
 
 class TestDispatchTransportToolApproval:
@@ -624,12 +616,15 @@ class TestDispatchTransportToolApproval:
 
     @pytest.mark.asyncio
     async def test_update_message_failure_is_swallowed(
-        self, orch: MagicMock, _decider: MagicMock
+        self, orch: MagicMock, _decider: MagicMock, ix_logs: pytest.LogCaptureFixture
     ) -> None:
         from kiro_crew.slack.renderer import TOOL_APPROVE_ACTION_PREFIX
 
         orch.slack.update_message = AsyncMock(side_effect=RuntimeError("api down"))
         await ix.dispatch(_action_payload(f"{TOOL_APPROVE_ACTION_PREFIX}rid7", "sess1:rid7"))
+        _decider.resolve_global.assert_called_once_with("sess1:rid7", True, nonce="")
+        orch.slack.update_message.assert_awaited_once()
+        assert "Failed to update transport approval message" in _ix_messages(ix_logs)
 
 
 # ---------------------------------------------------------------------------
@@ -646,14 +641,22 @@ class TestChannelsModal:
         assert orch.slack.views_update.await_args.kwargs["view_id"] == "V1"
 
     @pytest.mark.asyncio
-    async def test_refresh_swallows_views_update_failure(self, orch: MagicMock) -> None:
+    async def test_refresh_swallows_views_update_failure(
+        self, orch: MagicMock, ix_logs: pytest.LogCaptureFixture
+    ) -> None:
         orch.slack.views_update = AsyncMock(side_effect=RuntimeError("api down"))
         await ix._refresh_channels_modal("V1")
+        orch.slack.views_update.assert_awaited_once()
+        assert orch.slack.views_update.await_args.kwargs["view_id"] == "V1"
+        assert "Failed to refresh channels modal" in _ix_messages(ix_logs)
 
     @pytest.mark.asyncio
     async def test_refresh_without_orch_is_a_noop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        build = MagicMock()
+        monkeypatch.setattr("kiro_crew.slack.blocks.channels_modal", build)
         monkeypatch.setattr(ix, "_orch", None)
         await ix._refresh_channels_modal("V1")
+        build.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_activation_change_persists(self, orch: MagicMock) -> None:
@@ -679,17 +682,18 @@ class TestChannelsModal:
         )
         assert not config_path().exists()
 
+    @pytest.mark.parametrize(
+        "selected,expected",
+        [
+            pytest.param("reviewer", "reviewer", id="test_agent_change_persists"),
+            pytest.param("__default__", "", id="test_agent_sentinel_clears_override"),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_agent_change_persists(self, orch: MagicMock) -> None:
-        action = {"action_id": "mc_ch_agent_C7", "selected_option": {"value": "reviewer"}}
+    async def test_agent_change(self, orch: MagicMock, selected: str, expected: str) -> None:
+        action = {"action_id": "mc_ch_agent_C7", "selected_option": {"value": selected}}
         await ix._handle_ch_agent(_payload(), action)
-        assert _read_config()["slack"]["channels"]["C7"]["agent"] == "reviewer"
-
-    @pytest.mark.asyncio
-    async def test_agent_sentinel_clears_override(self, orch: MagicMock) -> None:
-        action = {"action_id": "mc_ch_agent_C7", "selected_option": {"value": "__default__"}}
-        await ix._handle_ch_agent(_payload(), action)
-        assert _read_config()["slack"]["channels"]["C7"]["agent"] == ""
+        assert _read_config()["slack"]["channels"]["C7"]["agent"] == expected
 
     @pytest.mark.asyncio
     async def test_agent_change_requires_owner(
@@ -880,15 +884,22 @@ class TestAckHandlers:
         orch.cron_svc.ack_job_async = AsyncMock()
         await ix._handle_cron_ack(_payload(), {}, "C1", "m1")
         orch.cron_svc.ack_job_async.assert_not_awaited()
+        # Without a job id the button is not acked either.
+        orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_cron_ack_survives_busy_store(self, orch: MagicMock) -> None:
+    async def test_cron_ack_survives_busy_store(
+        self, orch: MagicMock, ix_logs: pytest.LogCaptureFixture
+    ) -> None:
         from kiro_crew.cron import CronStoreBusy
 
         orch.cron_svc.ack_job_async = AsyncMock(side_effect=CronStoreBusy("busy"))
         orch.dashboard_state = None
         # Ack is best-effort bookkeeping — a contended store must not raise.
         await ix._handle_cron_ack(_payload(), {"value": "job1"}, "C1", "m1")
+        orch.cron_svc.ack_job_async.assert_awaited_once_with("job1", "")
+        assert "cron ack skipped: CronStoreBusy (job job1)" in _ix_messages(ix_logs)
+        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Acknowledged"
 
     @pytest.mark.asyncio
     async def test_cron_ack_marks_matching_notification(self, orch: MagicMock) -> None:
@@ -923,6 +934,7 @@ class TestAckHandlers:
         await ix._handle_subagent_ack(_payload(), {}, "C1", "m1")
         # The visual ack happens before the early return.
         orch.slack.update_message.assert_awaited_once()
+        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Acknowledged"
 
 
 # ---------------------------------------------------------------------------
@@ -990,20 +1002,31 @@ class TestAllowlistButtons:
     async def test_unknown_action_id_produces_no_label(self, orch: MagicMock) -> None:
         await ix._handle_allowlist(_payload(), {"value": "U9:Nine"}, "mc_unknown", "C1", "m1", "U1")
         orch.slack.update_message.assert_not_awaited()
+        assert orch._allowed_users == set()
+        orch.slack.open_dm.assert_not_awaited()
+        assert not config_path().exists()
 
+    @pytest.mark.parametrize(
+        "action_id,verb",
+        [
+            pytest.param(
+                ACTION_ALLOWLIST_APPROVE, "approve", id="test_approve_without_orch_returns"
+            ),
+            pytest.param(ACTION_ALLOWLIST_DENY, "deny", id="test_deny_without_orch_returns"),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_approve_without_orch_returns(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_without_orch_returns(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        ix_logs: pytest.LogCaptureFixture,
+        action_id: str,
+        verb: str,
+    ) -> None:
         monkeypatch.setattr(ix, "_orch", None)
-        await ix._handle_allowlist(
-            _payload(), {"value": "U9:Nine"}, ACTION_ALLOWLIST_APPROVE, "C1", "m1", "U1"
-        )
-
-    @pytest.mark.asyncio
-    async def test_deny_without_orch_returns(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(ix, "_orch", None)
-        await ix._handle_allowlist(
-            _payload(), {"value": "U9:Nine"}, ACTION_ALLOWLIST_DENY, "C1", "m1", "U1"
-        )
+        await ix._handle_allowlist(_payload(), {"value": "U9:Nine"}, action_id, "C1", "m1", "U1")
+        assert f"Allowlist {verb}: orchestrator not initialized" in _ix_messages(ix_logs)
+        assert not config_path().exists()
 
 
 class TestTrackChannelButtons:
@@ -1036,6 +1059,8 @@ class TestTrackChannelButtons:
             _payload(), {"value": "C9:general"}, "mc_unknown", "C1", "m1", "U1"
         )
         orch.slack.update_message.assert_not_awaited()
+        assert orch._tracking_channels == set()
+        assert not config_path().exists()
 
     @pytest.mark.asyncio
     async def test_update_failure_is_swallowed(self, orch: MagicMock) -> None:
@@ -1045,19 +1070,27 @@ class TestTrackChannelButtons:
         )
         assert orch._tracking_channels == {"C9"}
 
+    @pytest.mark.parametrize(
+        "action_id,verb",
+        [
+            pytest.param(ACTION_TRACK_APPROVE, "approve", id="test_approve_without_orch_returns"),
+            pytest.param(ACTION_TRACK_DENY, "deny", id="test_deny_without_orch_returns"),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_approve_without_orch_returns(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_without_orch_returns(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        ix_logs: pytest.LogCaptureFixture,
+        action_id: str,
+        verb: str,
+    ) -> None:
         monkeypatch.setattr(ix, "_orch", None)
         await ix._handle_track_channel(
-            _payload(), {"value": "C9:general"}, ACTION_TRACK_APPROVE, "C1", "m1", "U1"
+            _payload(), {"value": "C9:general"}, action_id, "C1", "m1", "U1"
         )
-
-    @pytest.mark.asyncio
-    async def test_deny_without_orch_returns(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(ix, "_orch", None)
-        await ix._handle_track_channel(
-            _payload(), {"value": "C9:general"}, ACTION_TRACK_DENY, "C1", "m1", "U1"
-        )
+        assert f"Track channel {verb}: orchestrator not initialized" in _ix_messages(ix_logs)
+        assert not config_path().exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1093,18 +1126,25 @@ class TestAgentSelect:
     async def test_reset_rejected_by_setter_aborts(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(sh, "_set_default_agent", MagicMock(side_effect=ValueError("bad name")))
+        setter = MagicMock(side_effect=ValueError("bad name"))
+        monkeypatch.setattr(sh, "_set_default_agent", setter)
         action = {"action_id": "mc_agent_select", "selected_option": {"value": "default"}}
         await ix._handle_agent_select(_payload(), action, "C1", "m1", "U1")
+        setter.assert_called_once_with("")
         orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_unresolvable_agent_aborts(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(sh, "_resolve_agent_name", lambda n, project_dir=None: None)
+        resolver = MagicMock(return_value=None)
+        monkeypatch.setattr(sh, "_resolve_agent_name", resolver)
+        setter = MagicMock()
+        monkeypatch.setattr(sh, "_set_default_agent", setter)
         action = {"action_id": "mc_agent_select", "selected_option": {"value": "ghost"}}
         await ix._handle_agent_select(_payload(), action, "C1", "m1", "U1")
+        resolver.assert_called_once_with("ghost")
+        setter.assert_not_called()
         orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1112,26 +1152,45 @@ class TestAgentSelect:
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(sh, "_resolve_agent_name", lambda n, project_dir=None: "reviewer")
-        monkeypatch.setattr(sh, "_set_default_agent", MagicMock(side_effect=ValueError("locked")))
+        setter = MagicMock(side_effect=ValueError("locked"))
+        monkeypatch.setattr(sh, "_set_default_agent", setter)
         action = {"action_id": "mc_agent_select", "selected_option": {"value": "rev"}}
         await ix._handle_agent_select(_payload(), action, "C1", "m1", "U1")
+        setter.assert_called_once_with("reviewer")
         orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_empty_selection_is_a_noop(self, orch: MagicMock) -> None:
+    async def test_empty_selection_is_a_noop(
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        setter = MagicMock()
+        monkeypatch.setattr(sh, "_set_default_agent", setter)
         await ix._handle_agent_select(
             _payload(), {"action_id": "mc_agent_select"}, "C1", "m1", "U1"
         )
+        setter.assert_not_called()
         orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_non_owner_rejected(
-        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch, _mock_aiohttp: AsyncMock
     ) -> None:
         _set_owner(monkeypatch, False)
+        # The handler re-imports ``is_owner`` from ``handler`` at call time.
+        owner_gate = MagicMock(return_value=False)
+        monkeypatch.setattr(sh, "is_owner", owner_gate)
+        resolver = MagicMock(return_value="reviewer")
+        monkeypatch.setattr(sh, "_resolve_agent_name", resolver)
+        setter = MagicMock()
+        monkeypatch.setattr(sh, "_set_default_agent", setter)
         action = {"action_id": "mc_agent_select", "selected_option": {"value": "rev"}}
-        await ix._handle_agent_select(_payload(), action, "C1", "m1", "U1")
+        payload = _payload(response_url="https://hooks.slack.com/z")
+        await ix._handle_agent_select(payload, action, "C1", "m1", "U1")
+        owner_gate.assert_called_once_with("U1")
+        resolver.assert_not_called()
+        setter.assert_not_called()
         orch.slack.update_message.assert_not_awaited()
+        _mock_aiohttp.post.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_response_url_path_skips_chat_update(
@@ -1142,6 +1201,7 @@ class TestAgentSelect:
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_agent_select(payload, action, "C1", "m1", "U1")
         _mock_aiohttp.post.assert_awaited_once()
+        assert _mock_aiohttp.post.await_args.kwargs["json"]["text"] == "🔄 Reset to default agent."
         orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1153,7 +1213,10 @@ class TestAgentSelect:
         action = {"action_id": "mc_agent_select", "selected_option": {"value": "off"}}
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_agent_select(payload, action, "C1", "m1", "U1")
+        _mock_aiohttp.post.assert_awaited_once()
         orch.slack.update_message.assert_awaited_once()
+        assert orch.slack.update_message.await_args.args == ("C1", "m1")
+        assert orch.slack.update_message.await_args.kwargs["text"] == "🔄 Reset to default agent."
 
 
 class TestUsersSelect:
@@ -1275,6 +1338,9 @@ class TestStopCancel:
     ) -> None:
         _mock_aiohttp.post = AsyncMock(side_effect=RuntimeError("boom"))
         await ix._handle_stop_cancel(_payload(response_url="https://hooks.slack.com/z"), "C1", "m1")
+        assert _mock_aiohttp.post.await_args.kwargs["json"] == {"delete_original": True}
+        # A failed response_url delete does not fall back to the API delete.
+        orch.slack.delete_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_without_response_url_deletes_via_api(self, orch: MagicMock) -> None:
@@ -1285,6 +1351,7 @@ class TestStopCancel:
     async def test_api_delete_failure_is_swallowed(self, orch: MagicMock) -> None:
         orch.slack.delete_message = AsyncMock(side_effect=RuntimeError("api down"))
         await ix._handle_stop_cancel(_payload(), "C1", "m1")
+        orch.slack.delete_message.assert_awaited_once_with("C1", "m1")
 
 
 class TestListRemoveButtons:
@@ -1319,6 +1386,8 @@ class TestListRemoveButtons:
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_allowlist_remove(payload, {"value": "U9"}, "C1", "m1", "U1")
         _mock_aiohttp.post.assert_awaited_once()
+        assert _mock_aiohttp.post.await_args.kwargs["json"]["text"] == "Allowlist updated"
+        assert orch._allowed_users == set()
         orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1330,6 +1399,8 @@ class TestListRemoveButtons:
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_allowlist_remove(payload, {"value": "U9"}, "C1", "m1", "U1")
         orch.slack.update_message.assert_awaited_once()
+        assert orch.slack.update_message.await_args.kwargs["text"] == "Allowlist updated"
+        assert orch._allowed_users == set()
 
     @pytest.mark.asyncio
     async def test_channel_remove_updates_message(self, orch: MagicMock) -> None:
@@ -1362,6 +1433,8 @@ class TestListRemoveButtons:
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_channel_remove(payload, {"value": "C9"}, "C1", "m1", "U1")
         _mock_aiohttp.post.assert_awaited_once()
+        assert _mock_aiohttp.post.await_args.kwargs["json"]["text"] == "Tracked channels updated"
+        assert orch._tracking_channels == set()
         orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1384,17 +1457,27 @@ class TestSessionNew:
 
     @pytest.mark.asyncio
     async def test_non_owner_rejected(
-        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+        self,
+        orch: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        _mock_aiohttp: AsyncMock,
+        ix_logs: pytest.LogCaptureFixture,
+        sel_log: MagicMock,
     ) -> None:
         _set_owner(monkeypatch, False)
-        await ix._handle_session_new(_payload(), {}, "C1", "m1", "U1")
+        payload = _payload(response_url="https://hooks.slack.com/z")
+        await ix._handle_session_new(payload, {}, "C1", "m1", "U1")
         orch.slack.post_message.assert_not_awaited()
+        _mock_aiohttp.post.assert_not_awaited()
+        assert "session_new rejected: non-owner U1" in _ix_messages(ix_logs)
+        assert _sel_ops(sel_log) == []
 
     @pytest.mark.asyncio
     async def test_post_failure_skips_ack(self, orch: MagicMock, _mock_aiohttp: AsyncMock) -> None:
         orch.slack.post_message = AsyncMock(side_effect=RuntimeError("api down"))
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_session_new(payload, {}, "C1", "m1", "U1")
+        orch.slack.post_message.assert_awaited_once()
         _mock_aiohttp.post.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1404,12 +1487,19 @@ class TestSessionNew:
         _mock_aiohttp.post = AsyncMock(side_effect=RuntimeError("boom"))
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_session_new(payload, {}, "C1", "m1", "U1")
+        assert "New session started" in orch.slack.post_message.await_args.args[1]
+        _mock_aiohttp.post.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_without_orch_returns(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _set_owner(monkeypatch, True)
+    async def test_without_orch_returns(
+        self, monkeypatch: pytest.MonkeyPatch, sel_log: MagicMock
+    ) -> None:
+        owner_gate = MagicMock(return_value=True)
+        monkeypatch.setattr(ix, "is_owner", owner_gate)
         monkeypatch.setattr(ix, "_orch", None)
         await ix._handle_session_new(_payload(), {}, "C1", "m1", "U1")
+        owner_gate.assert_called_once_with("U1")
+        assert _sel_ops(sel_log) == []
 
 
 # ---------------------------------------------------------------------------
@@ -1453,27 +1543,38 @@ class TestResumeChoice:
     @pytest.mark.asyncio
     async def test_unknown_mode_returns_without_linking(self, resume_orch: MagicMock) -> None:
         await ix._handle_resume_choice(_payload(), _choice(), "C1", "m1", "U1", mode="carrier")
+        # Reached the mode switch: the governance gate ran, then nothing was posted.
+        ix.channel_inbound_permitted.assert_awaited_once_with("slack")
         resume_orch.sessions.set_slack_link.assert_not_called()
+        resume_orch.slack.post_message.assert_not_awaited()
+        resume_orch.slack.open_dm.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_non_owner_rejected(
-        self, resume_orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+        self, resume_orch: MagicMock, monkeypatch: pytest.MonkeyPatch, sel_log: MagicMock
     ) -> None:
         _set_owner(monkeypatch, False)
         await ix._handle_resume_choice(_payload(), _choice(), "C1", "m1", "U1", mode="thread")
         resume_orch.sessions.set_slack_link.assert_not_called()
+        assert _sel_ops(sel_log) == [("slack.session_resume_choice", "denied")]
+        resume_orch.sessions.get_slack_link.assert_not_called()
+        resume_orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_malformed_json_value_is_rejected(self, resume_orch: MagicMock) -> None:
         action = {"action_id": "mc_resume_thread_x", "value": "not json{"}
         await ix._handle_resume_choice(_payload(), action, "C1", "m1", "U1", mode="thread")
         resume_orch.sessions.set_slack_link.assert_not_called()
+        resume_orch.sessions.get_slack_link.assert_not_called()
+        resume_orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_missing_session_key_is_rejected(self, resume_orch: MagicMock) -> None:
         action = {"action_id": "mc_resume_thread_x", "value": json.dumps({"title": "t"})}
         await ix._handle_resume_choice(_payload(), action, "C1", "m1", "U1", mode="thread")
         resume_orch.sessions.set_slack_link.assert_not_called()
+        resume_orch.sessions.get_slack_link.assert_not_called()
+        resume_orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_already_linked_session_reports_link(
@@ -1490,32 +1591,52 @@ class TestResumeChoice:
     async def test_governance_deny_blocks_transcript_publication(
         self, resume_orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(ix, "channel_inbound_permitted", AsyncMock(return_value=False))
+        gov = AsyncMock(return_value=False)
+        monkeypatch.setattr(ix, "channel_inbound_permitted", gov)
         await ix._handle_resume_choice(_payload(), _choice(), "C1", "m1", "U1", mode="thread")
         resume_orch.sessions.set_slack_link.assert_not_called()
+        gov.assert_awaited_once_with("slack")
+        resume_orch.slack.post_message.assert_not_awaited()
+        resume_orch.slack.open_dm.assert_not_awaited()
 
+    @pytest.mark.parametrize(
+        "raises",
+        [
+            pytest.param(True, id="test_thread_post_failure_aborts"),
+            pytest.param(False, id="test_thread_post_returning_no_ts_aborts"),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_thread_post_failure_aborts(self, resume_orch: MagicMock) -> None:
-        resume_orch.slack.post_message = AsyncMock(side_effect=RuntimeError("api down"))
+    async def test_thread_post_failure(self, resume_orch: MagicMock, raises: bool) -> None:
+        post = (
+            AsyncMock(side_effect=RuntimeError("api down"))
+            if raises
+            else AsyncMock(return_value="")
+        )
+        resume_orch.slack.post_message = post
         await ix._handle_resume_choice(_payload(), _choice(), "C1", "m1", "U1", mode="thread")
+        post.assert_awaited_once()
+        assert post.await_args.args[0] == "C1"
         resume_orch.sessions.set_slack_link.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "raises",
+        [
+            pytest.param(True, id="test_dm_open_failure_aborts"),
+            pytest.param(False, id="test_dm_without_channel_aborts"),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_thread_post_returning_no_ts_aborts(self, resume_orch: MagicMock) -> None:
-        resume_orch.slack.post_message = AsyncMock(return_value="")
-        await ix._handle_resume_choice(_payload(), _choice(), "C1", "m1", "U1", mode="thread")
-        resume_orch.sessions.set_slack_link.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_dm_open_failure_aborts(self, resume_orch: MagicMock) -> None:
-        resume_orch.slack.open_dm = AsyncMock(side_effect=RuntimeError("cannot dm"))
+    async def test_dm_unavailable(self, resume_orch: MagicMock, raises: bool) -> None:
+        open_dm = (
+            AsyncMock(side_effect=RuntimeError("cannot dm"))
+            if raises
+            else AsyncMock(return_value="")
+        )
+        resume_orch.slack.open_dm = open_dm
         await ix._handle_resume_choice(_payload(), _choice(), "C1", "m1", "U1", mode="dm")
-        resume_orch.sessions.set_slack_link.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_dm_without_channel_aborts(self, resume_orch: MagicMock) -> None:
-        resume_orch.slack.open_dm = AsyncMock(return_value="")
-        await ix._handle_resume_choice(_payload(), _choice(), "C1", "m1", "U1", mode="dm")
+        open_dm.assert_awaited_once_with("U1")
+        resume_orch.slack.post_message.assert_not_awaited()
         resume_orch.sessions.set_slack_link.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1580,6 +1701,7 @@ class TestResumeChoice:
         _set_owner(monkeypatch, True)
         await ix._handle_resume_choice(_payload(), _choice(), "C1", "m1", "U1", mode="dm")
         o.slack.open_dm.assert_not_awaited()
+        o.slack.post_message.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1655,6 +1777,9 @@ class TestStopConfirm:
         stop_orch.sessions.stop_turn = AsyncMock(side_effect=stop_turn)
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_stop_confirm(payload, "C1", "m1", "U1")
+        _mock_aiohttp.post.assert_awaited_once()
+        # The thread notice still lands after the ephemeral update failed.
+        stop_orch.slack.post_message.assert_awaited_once_with("C1", "⏹ Execution stopped.", "m1")
 
     @pytest.mark.asyncio
     async def test_idle_outcome_dismisses_ephemeral(
@@ -1681,7 +1806,9 @@ class TestStopConfirm:
         task.done = MagicMock(return_value=True)
         stop_orch._session_tasks = {"m1": task}
         await ix._handle_stop_confirm(_payload(), "C1", "m1", "U1")
+        stop_orch.sessions.stop_turn.assert_awaited_once()
         task.cancel.assert_not_called()
+        assert stop_orch._session_tasks == {}
 
     @pytest.mark.asyncio
     async def test_no_session_reports_nothing_running(
@@ -1703,13 +1830,16 @@ class TestStopConfirm:
 
     @pytest.mark.asyncio
     async def test_unauthorized_user_only_acks(
-        self, stop_orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+        self, stop_orch: MagicMock, monkeypatch: pytest.MonkeyPatch, sel_log: MagicMock
     ) -> None:
         monkeypatch.setattr(ix, "is_allowed_user", lambda uid: False)
         await ix._handle_stop_confirm(_payload(), "C1", "m1", "U1")
         stop_orch.sessions.stop_turn.assert_not_awaited()
         # The button is still visually acked so it cannot be re-clicked forever.
         stop_orch.slack.update_message.assert_awaited_once()
+        assert stop_orch.slack.update_message.await_args.kwargs["text"] == "✅ Acknowledged"
+        assert _sel_ops(sel_log) == [("slack.stop_confirm", "denied")]
+        stop_orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_without_sessions_only_acks(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1719,6 +1849,8 @@ class TestStopConfirm:
         monkeypatch.setattr(ix, "is_allowed_user", lambda uid: True)
         await ix._handle_stop_confirm(_payload(), "C1", "m1", "U1")
         o.slack.update_message.assert_awaited_once()
+        assert o.slack.update_message.await_args.kwargs["text"] == "✅ Acknowledged"
+        o.slack.post_message.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1750,14 +1882,19 @@ class TestSessionResume:
     async def test_empty_value_is_rejected(self, resume_orch: MagicMock) -> None:
         await ix._handle_session_resume(_payload(), {"value": "{}"}, "C1", "m1", "U1")
         resume_orch.slack.post_blocks.assert_not_awaited()
+        resume_orch.sessions.get_slack_link.assert_not_called()
+        resume_orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_non_owner_rejected(
-        self, resume_orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+        self, resume_orch: MagicMock, monkeypatch: pytest.MonkeyPatch, sel_log: MagicMock
     ) -> None:
         _set_owner(monkeypatch, False)
         await ix._handle_session_resume(_payload(), {"value": "s1"}, "C1", "m1", "U1")
         resume_orch.slack.post_blocks.assert_not_awaited()
+        assert _sel_ops(sel_log) == [("slack.session_resume", "denied")]
+        resume_orch.sessions.get_slack_link.assert_not_called()
+        resume_orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_already_linked_reports_existing_conversation(
@@ -1772,11 +1909,15 @@ class TestSessionResume:
     async def test_already_linked_prefers_response_url(
         self, resume_orch: MagicMock, _mock_aiohttp: AsyncMock
     ) -> None:
-        resume_orch.sessions.get_slack_link = MagicMock(return_value=("111.222", "C4"))
+        ts, channel = "111.222", "C4"
+        resume_orch.sessions.get_slack_link = MagicMock(return_value=(ts, channel))
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_session_resume(payload, {"value": "s1"}, "C1", "m1", "U1")
         _mock_aiohttp.post.assert_awaited_once()
+        permalink = f"archives/{channel}/p{ts.replace('.', '')}"
+        assert permalink in _mock_aiohttp.post.await_args.kwargs["json"]["text"]
         resume_orch.slack.post_message.assert_not_awaited()
+        resume_orch.slack.post_blocks.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_home_tab_click_falls_back_to_dm(self, resume_orch: MagicMock) -> None:
@@ -1786,10 +1927,19 @@ class TestSessionResume:
         assert resume_orch.slack.post_blocks.await_args.args[0] == "D1"
 
     @pytest.mark.asyncio
-    async def test_open_dm_failure_leaves_nowhere_to_post(self, resume_orch: MagicMock) -> None:
+    async def test_open_dm_failure_leaves_nowhere_to_post(
+        self, resume_orch: MagicMock, ix_logs: pytest.LogCaptureFixture
+    ) -> None:
         resume_orch.slack.open_dm = AsyncMock(side_effect=RuntimeError("cannot dm"))
         await ix._handle_session_resume(_payload(channel={}), {"value": "s1"}, "", "", "U1")
+        resume_orch.slack.open_dm.assert_awaited_once_with("U1")
         resume_orch.slack.post_blocks.assert_not_awaited()
+        messages = _ix_messages(ix_logs)
+        assert "session_resume: open_dm failed for user U1" in messages
+        assert (
+            "session_resume: no response_url and no channel — cannot post choice for user U1"
+            in messages
+        )
 
     @pytest.mark.asyncio
     async def test_response_url_carries_the_choice_blocks(
@@ -1802,9 +1952,14 @@ class TestSessionResume:
         resume_orch.slack.post_blocks.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_post_blocks_failure_is_swallowed(self, resume_orch: MagicMock) -> None:
+    async def test_post_blocks_failure_is_swallowed(
+        self, resume_orch: MagicMock, ix_logs: pytest.LogCaptureFixture
+    ) -> None:
         resume_orch.slack.post_blocks = AsyncMock(side_effect=RuntimeError("api down"))
         await ix._handle_session_resume(_payload(), {"value": "s1"}, "C1", "m1", "U1")
+        resume_orch.slack.post_blocks.assert_awaited_once()
+        assert resume_orch.slack.post_blocks.await_args.args[0] == "C1"
+        assert "session_resume: post_blocks to C1 failed" in _ix_messages(ix_logs)
 
     @pytest.mark.asyncio
     async def test_without_sessions_returns(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1814,3 +1969,5 @@ class TestSessionResume:
         _set_owner(monkeypatch, True)
         await ix._handle_session_resume(_payload(), {"value": "s1"}, "C1", "m1", "U1")
         o.slack.post_blocks.assert_not_awaited()
+        o.slack.post_message.assert_not_awaited()
+        o.slack.open_dm.assert_not_awaited()

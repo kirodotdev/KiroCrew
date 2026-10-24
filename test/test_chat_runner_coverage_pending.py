@@ -50,12 +50,19 @@ class TestConsumePendingReset:
                 pass
 
     @pytest.mark.asyncio
-    async def test_no_pending_key_is_a_noop(self, tmp_path):
+    @pytest.mark.parametrize(
+        "teardown",
+        [
+            pytest.param("reset", id="test_no_pending_key_is_a_noop"),
+            pytest.param("discard_conversation", id="test_no_pending_discard_is_a_noop"),
+        ],
+    )
+    async def test_nothing_pending_tears_nothing_down(self, tmp_path, teardown):
         state, slot = _state(tmp_path), _slot()
 
         await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
 
-        state.sessions.reset.assert_not_awaited()
+        getattr(state.sessions, teardown).assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_successful_reset_clears_the_flag(self, tmp_path):
@@ -241,14 +248,6 @@ class TestConsumePendingReset:
         await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
 
         assert slot._pending_reset_history_key == "old-key"
-
-    @pytest.mark.asyncio
-    async def test_no_pending_discard_is_a_noop(self, tmp_path):
-        state, slot = _state(tmp_path), _slot()
-
-        await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
-
-        state.sessions.discard_conversation.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_discard_passes_replay_through_and_clears_the_flag(self, tmp_path):
@@ -637,7 +636,10 @@ class TestConsumePendingDiscardWaitsForSubagents:
 
         await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
 
-        state.sessions.discard_conversation.assert_awaited_once()
+        state.sessions.discard_conversation.assert_awaited_once_with(
+            "dashboard:chat-cov-1", replay=False, skip_if_busy=True
+        )
+        assert slot._pending_discard_conversation_key is None
 
 
 # ── eager spawn / resume prefetch ─────────────────────────────────────────
@@ -737,6 +739,7 @@ class TestPrefetchTtl:
         with patch.object(chat_runner.asyncio, "sleep", new=AsyncMock()):
             await chat_runner._prefetch_ttl(state, slot, "dashboard:chat-cov-1")
 
+        state.get_slot.assert_called_once_with(slot.key)
         state.sessions.remove_if_unclaimed.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -749,6 +752,7 @@ class TestPrefetchTtl:
         with patch.object(chat_runner.asyncio, "sleep", new=AsyncMock()):
             await chat_runner._prefetch_ttl(state, slot, "dashboard:chat-cov-1")
 
+        state.get_slot.assert_called_once_with(slot.key)
         state.sessions.remove_if_unclaimed.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -776,13 +780,22 @@ class TestPrefetchTtl:
                 await chat_runner._prefetch_ttl(state, slot, "dashboard:chat-cov-1")
 
     @pytest.mark.asyncio
-    async def test_unexpected_failure_is_logged_not_raised(self, tmp_path):
+    async def test_unexpected_failure_is_logged_not_raised(self, tmp_path, caplog):
         state, slot = _state(tmp_path), _slot()
         state.get_slot = MagicMock(side_effect=RuntimeError("map gone"))
 
-        # flake-ok: pre-existing worker-wide patch of the stdlib asyncio.sleep through chat_runner's asyncio, moved verbatim; tracked for a de-flake pass
-        with patch.object(chat_runner.asyncio, "sleep", new=AsyncMock()):
+        with (
+            # flake-ok: pre-existing worker-wide patch of the stdlib asyncio.sleep through chat_runner's asyncio, moved verbatim; tracked for a de-flake pass
+            patch.object(chat_runner.asyncio, "sleep", new=AsyncMock()),
+            caplog.at_level("WARNING", logger=chat_runner.logger.name),
+        ):
             await chat_runner._prefetch_ttl(state, slot, "dashboard:chat-cov-1")
+
+        state.get_slot.assert_called_once_with(slot.key)
+        state.sessions.remove_if_unclaimed.assert_not_awaited()
+        assert [r.getMessage() for r in caplog.records if r.name == chat_runner.logger.name] == [
+            f"Prefetch TTL failed for slot {slot.key}"
+        ]
 
     @pytest.mark.asyncio
     async def test_scheduling_cancels_the_previous_timer(self, tmp_path):

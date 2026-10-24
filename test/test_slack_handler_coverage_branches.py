@@ -604,11 +604,31 @@ async def _msg(slack, sessions, text, *, user="U1", **kw):
 
 class TestHandleMessageKeywordDispatch:
     @pytest.mark.asyncio
-    async def test_linked_thread_intercept_short_circuits(self, sessions, owner, monkeypatch):
+    @pytest.mark.parametrize(
+        ("gate", "verdict", "text"),
+        [
+            pytest.param(
+                "maybe_route_linked_thread",
+                True,
+                "anything at all",
+                id="test_linked_thread_intercept_short_circuits",
+            ),
+            pytest.param(
+                "channel_inbound_permitted",
+                False,
+                "status",
+                id="test_governance_denial_drops_the_message",
+            ),
+        ],
+    )
+    async def test_gate_drops_the_message(self, sessions, owner, monkeypatch, gate, verdict, text):
         slack = FlakySlack()
-        monkeypatch.setattr(h, "maybe_route_linked_thread", AsyncMock(return_value=True))
-        await _msg(slack, sessions, "anything at all")
+        gate_mock = AsyncMock(return_value=verdict)
+        monkeypatch.setattr(h, gate, gate_mock)
+        await _msg(slack, sessions, text)
+        gate_mock.assert_awaited_once()
         assert slack.actions == []
+        sessions.get_or_create.assert_not_called()
 
     # NOTE: the bare ``status`` keyword (handler.py:2642) is NOT covered here.
     # ``handle_message`` re-imports ``current_context`` locally further down its
@@ -639,11 +659,26 @@ class TestHandleMessageKeywordDispatch:
         h._handle_sessions_command.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_compact_keyword_dispatches_for_the_owner(self, sessions, owner, monkeypatch):
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("!compact", id="test_compact_keyword_dispatches_for_the_owner"),
+            pytest.param(
+                "<@UBOT|kirocrew> !compact",
+                id="test_mention_prefix_is_stripped_before_command_matching",
+            ),
+        ],
+    )
+    async def test_compact_keyword_dispatch(self, sessions, owner, monkeypatch, text):
         slack = FlakySlack()
         monkeypatch.setattr(h, "_handle_compact_command", AsyncMock())
-        await _msg(slack, sessions, "!compact")
+        await _msg(slack, sessions, text)
         h._handle_compact_command.assert_awaited_once()
+        args = h._handle_compact_command.await_args.args
+        assert args[0] is slack and args[1] is sessions
+        assert args[2] == "C1"
+        assert args[4] == "m1"
+        assert args[5] == h.canonical_key("m1")
 
     @pytest.mark.asyncio
     async def test_compact_keyword_denied_for_a_stranger(self, sessions, owner, monkeypatch):
@@ -654,36 +689,27 @@ class TestHandleMessageKeywordDispatch:
         h._handle_compact_command.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_allowed_user_command_denied_for_a_stranger(self, sessions, owner, monkeypatch):
-        slack = FlakySlack()
-        monkeypatch.setattr(h, "_handle_slash_command", AsyncMock(return_value=""))
-        await _msg(slack, sessions, "!dashboard", user="U999")
-        assert "Not authorized." in _texts(slack)
-        h._handle_slash_command.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_owner_only_command_denied_for_a_stranger(self, sessions, owner, monkeypatch):
-        slack = FlakySlack()
-        monkeypatch.setattr(h, "_handle_slash_command", AsyncMock(return_value=""))
-        await _msg(slack, sessions, "!agent kirocrew", user="U999")
-        assert "Owner-only command." in _texts(slack)
-        h._handle_slash_command.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_mention_prefix_is_stripped_before_command_matching(
-        self, sessions, owner, monkeypatch
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param(
+                "!dashboard", "Not authorized.", id="test_allowed_user_command_denied_for_a_stranger"
+            ),
+            pytest.param(
+                "!agent kirocrew",
+                "Owner-only command.",
+                id="test_owner_only_command_denied_for_a_stranger",
+            ),
+        ],
+    )
+    async def test_command_denied_for_a_stranger(
+        self, sessions, owner, monkeypatch, text, expected
     ):
         slack = FlakySlack()
-        monkeypatch.setattr(h, "_handle_compact_command", AsyncMock())
-        await _msg(slack, sessions, "<@UBOT|kirocrew> !compact")
-        h._handle_compact_command.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_governance_denial_drops_the_message(self, sessions, owner, monkeypatch):
-        slack = FlakySlack()
-        monkeypatch.setattr(h, "channel_inbound_permitted", AsyncMock(return_value=False))
-        await _msg(slack, sessions, "status")
-        assert slack.actions == []
+        monkeypatch.setattr(h, "_handle_slash_command", AsyncMock(return_value=""))
+        await _msg(slack, sessions, text, user="U999")
+        assert expected in _texts(slack)
+        h._handle_slash_command.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_hook_auto_reply_answers_without_touching_acp(self, sessions, owner):
@@ -703,23 +729,37 @@ class TestHandleMessageKeywordDispatch:
 class TestSafeUpdates:
     @pytest.mark.asyncio
     async def test_safe_update_truncates_and_swallows_failure(self):
+        sent: list[str] = []
+
         class _Boom(MockSlackClient):
             async def update_message(self, channel, ts, text):
+                sent.append(text)
                 raise RuntimeError("message_not_found")
 
         await h._safe_update(_Boom(), "C1", "1.0", "x" * (h.SLACK_MSG_LIMIT + 50))
+        assert len(sent) == 1
+        assert sent[0].startswith("x" * h.SLACK_MSG_LIMIT)
+        assert not sent[0][h.SLACK_MSG_LIMIT :].startswith("x")
 
     @pytest.mark.asyncio
     async def test_safe_final_update_swallows_both_edit_and_followup_failures(self):
-        slack = FlakySlack("post_message")
+        calls: list[str] = []
 
         class _BoomUpdate(FlakySlack):
             async def update_message(self, channel, ts, text):
+                calls.append("update")
                 raise RuntimeError("message_not_found")
+
+            async def post_message(self, channel, text, thread_ts=None):
+                calls.append("post")
+                return await super().post_message(channel, text, thread_ts)
 
         boom = _BoomUpdate("post_message")
         await h._safe_final_update(boom, "C1", "1.0", "y" * (h.SLACK_MSG_LIMIT * 2), "t1")
-        assert isinstance(slack, FlakySlack)
+        # The failed edit does not stop the overflow parts from being attempted.
+        assert calls[0] == "update"
+        assert "post" in calls[1:]
+        assert boom.actions == []
 
 
 # ──────────────────────────────────────────────────────────────────────
