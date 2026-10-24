@@ -148,9 +148,10 @@ const THUMB_FRAME = 'bg-muted forced-colors:border'
  * over at the same line — its row top on the fold (`pinHandoffY`) — and the card
  * then folds down the bubble's remaining height (`liveH`), so the swap is still a
  * box replaced by an identical box. The
- * box also carries the bubble's `user-bubble` theme hook, so a theme that tints
- * the bubble (kiro-light) tints the card identically and the swap stays
- * invisible there too. Keep
+ * box also carries the bubble's `message-bubble` and `user-bubble` theme hooks, so
+ * a theme that tints the bubble (kiro-light, or a theme pack's
+ * `.message-bubble.user-bubble` rule) tints the card identically and the swap
+ * stays invisible there too. Keep
  * these values in sync with `UserMessage`'s `bubble` and with `MD_COMPONENTS.p`
  * in MarkdownRenderer.
  *
@@ -738,7 +739,12 @@ export default function PinnedPrompt({
           // more rows than the room allows) is cut at the box's edge instead of
           // painting on past it over the composer. The fold and the morph set the
           // same value inline for their duration and clear it back to this.
-          className="user-bubble flex items-stretch gap-2 overflow-hidden rounded-xl bg-card text-card-fg ring-1 ring-inset forced-colors:border ring-border shadow-sm px-4 py-2 text-sm"
+          //
+          // 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md.
+          // It is the only bubble class a theme pack's overrides.css may target, so
+          // without it a pack rule on `.message-bubble.user-bubble` tints the bubble
+          // and leaves this stand-in on `bg-card` (#23789).
+          className="message-bubble user-bubble flex items-stretch gap-2 overflow-hidden rounded-xl bg-card text-card-fg ring-1 ring-inset forced-colors:border ring-border shadow-sm px-4 py-2 text-sm"
           style={maxH != null ? { maxHeight: maxH } : undefined}
         >
           <button

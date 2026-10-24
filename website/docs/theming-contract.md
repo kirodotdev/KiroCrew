@@ -327,7 +327,7 @@ rule aimed at anything else never reaches the document.
 | `topbar` | the header shell (`shell/topbar/shellHeader.tsx`) |
 | `sidebar` | the conversation-list cards: the chat session list (`ChatSidebar.tsx`) and the Crew Members roster (`members/MembersPageRoster.tsx`), both via `LIST_SHELL_CLS` in `components/listShell.ts` |
 | `chat-container` | the chat scroll region (`pages/chat/TranscriptScrollShell.tsx`) |
-| `message-bubble` | a user or assistant turn (`chat/UserMessage.tsx`, `chat/AssistantMessage.tsx`) |
+| `message-bubble` | a user or assistant turn (`chat/UserMessage.tsx`, `chat/AssistantMessage.tsx`), and the pinned card that stands in for a user turn (`chat/PinnedPrompt.tsx`) |
 | `input-area` | the composer (`ChatInput.tsx`) |
 | `code-block` | a rendered fenced block (`CodeBlock.tsx`) |
 
