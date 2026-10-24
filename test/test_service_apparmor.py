@@ -535,6 +535,10 @@ class TestAppArmorNeverFailsTheInstall:
 
         monkeypatch.setattr(controller, "current_platform", lambda: Platform.SYSTEMD)
         monkeypatch.setattr(controller.linux, "install", lambda: outcome)
+        # The install also reports the service account's real linger state with
+        # its own warning sign; stub that warning out so the assertions here see
+        # the AppArmor outcome alone, whatever the host running the suite has set.
+        monkeypatch.setattr(controller.linux, "linger_warning_for_service_account", lambda: None)
         return controller
 
     def test_install_still_succeeds_when_the_profile_fails(self, monkeypatch, capsys):
