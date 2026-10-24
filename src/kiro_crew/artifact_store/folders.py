@@ -60,7 +60,7 @@ class ArtifactFolderStore:
     path strings. Membership lives on the artifact record (``Artifact.folder_id``),
     not here. Thread-safe via a coarse lock.
 
-    A folder record is ``{id, name, order, parent_id, icon}``:
+    A folder record is ``{id, name, order, parent_id, icon, color}``:
 
     * ``id`` — opaque 12-char hex (rename-safe handle).
     * ``name`` — display name (<= 100 chars).
@@ -213,8 +213,8 @@ class ArtifactFolderStore:
             return [dict(f) for f in self._ordered()]
 
     def _ordered(self) -> _List[dict[str, Any]]:
-        # Stable pre-order-ish ordering: siblings by (order, name); the frontend
-        # does its own tree flatten, so this is a convenience for CLI/MCP output.
+        # Shallowest first: every folder at one depth comes before any deeper one,
+        # and folders at the same depth sort by (order, name) whatever their parent.
         return sorted(
             self._folders,
             key=lambda f: (self._depth(f["id"]), int(f.get("order", 0)), str(f.get("name", ""))),

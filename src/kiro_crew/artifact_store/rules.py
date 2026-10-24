@@ -43,7 +43,7 @@ ALLOWED_KINDS = frozenset(
         "svg",  # standalone svg
         "json",  # structured data
         "text",  # plain text
-        "image",  # generated image (source_path points to PNG/JPEG)
+        "image",  # raster image; create_image stores its bytes in an asset.<ext> sidecar
         "webapp",  # a deployed web application; rendered as an infra control card
         # A dynamic dashboard's LAYOUT package -- bound_to / model / view / theme
         # as JSON, never values. Validated on every write by
