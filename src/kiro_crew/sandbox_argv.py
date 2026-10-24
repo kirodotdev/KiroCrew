@@ -13,6 +13,7 @@ import functools
 import logging
 import os
 import re
+import socket
 import stat
 import subprocess
 import sys
@@ -171,6 +172,48 @@ def _ssh_supports_accept_new() -> bool:
             return (int(m.group(1)), int(m.group(2))) >= (7, 6)
     except Exception:
         pass
+    return False
+
+
+def _runtime_dir_is_durable() -> bool:
+    """Whether ``/run/user/$UID`` is kept coherent across session churn.
+
+    The launcher stages the bind sources that mask ``.env`` and the other crew-home
+    leaves on ``/run/user/$UID`` first (see ``sandbox_plan.namespace_payload``). That
+    runtime directory belongs to the login session; a PER-USER systemd manager keeps it
+    coherent while the user is logged in, and logind removes and remakes it on a host
+    WITHOUT one as sessions come and go. A bind source pinned inside it when that
+    happens leaves the host leaf a bind of a now-empty inode -- a 0-byte ``.env``.
+
+    "A live manager" is the one that is LISTENING on its socket: its private control
+    socket (``/run/user/$UID/systemd/private``, which ``systemctl --user`` dials) or the
+    session bus (``/run/user/$UID/bus``). The test is a NON-BLOCKING ``connect()``, not a
+    stat of the socket FILE: a manager that died leaves the file behind, and only a
+    connect tells that apart from a live listener -- a stat would keep the volatile root
+    where the bug lives. ``connect_ex`` returning 0 (connected) or ``EAGAIN`` (listener
+    with a full backlog) proves someone is listening; anything else -- refused, no file,
+    non-POSIX -- reads as not durable and takes the ``/dev/shm`` order, the safe default
+    (being wrong there only trades ``/run/user/$UID``'s login-scoped auto-reclaim for
+    ``/dev/shm``, which the janitor reclaims too). The socket is closed at once, before
+    any D-Bus handshake, which the manager treats as an ordinary client hang-up. This is
+    the same liveness test ``sandbox_cgroup._user_bus_reachable`` applies for the scope
+    ceiling; it is not called directly because that module is a lower carve layer than
+    this one and a dependency edge up to it is forbidden.
+    """
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        return False
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{getuid()}"
+    for socket_name in (os.path.join("systemd", "private"), "bus"):
+        path = os.path.join(runtime_dir, socket_name)
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                probe.setblocking(False)
+                err = probe.connect_ex(path)
+        except OSError as exc:
+            err = exc.errno or errno.EIO
+        if err in (0, errno.EAGAIN, errno.EINPROGRESS):
+            return True
     return False
 
 
@@ -391,6 +434,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         uid=uid,
         gid=gid,
         ssh_accept_new=_ssh_supports_accept_new() if namespace else False,
+        runtime_dir_durable=_runtime_dir_is_durable() if namespace else False,
     )
 
 
