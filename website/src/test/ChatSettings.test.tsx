@@ -155,25 +155,6 @@ describe('loadChatConfig', () => {
     expect(loadChatConfig().sidebarClickOpensTab).toBe(false)
   })
 
-  it('keeps copy-on-select off until the user opts in', () => {
-    // OFF is the contract: it overwrites the clipboard on every drag, so a
-    // client with no stored config (or one stored before the key existed)
-    // must never inherit it.
-    expect(loadChatConfig().copyOnSelect).toBe(false)
-    localStorage.setItem('mc-chat-config', JSON.stringify({ showTimestamps: false }))
-    expect(loadChatConfig().copyOnSelect).toBe(false)
-  })
-
-  it('respects stored copyOnSelect=true', () => {
-    localStorage.setItem('mc-chat-config', JSON.stringify({ copyOnSelect: true }))
-    expect(loadChatConfig().copyOnSelect).toBe(true)
-  })
-
-  it('repairs a non-boolean copyOnSelect value to the disabled default', () => {
-    localStorage.setItem('mc-chat-config', JSON.stringify({ copyOnSelect: 'yes' }))
-    expect(loadChatConfig().copyOnSelect).toBe(false)
-  })
-
   it('defaults messageFontSize to the pre-setting text-sm size', () => {
     expect(loadChatConfig().messageFontSize).toBe(DEFAULT_MESSAGE_FONT_SIZE)
   })

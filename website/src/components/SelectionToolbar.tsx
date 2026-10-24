@@ -869,12 +869,16 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       if (toolbarRef.current && toolbarRef.current.contains(e.target as Node)) return
       triggeredByMouseRef.current = true
       lastMouseRef.current = { x: e.clientX, y: e.clientY }
+      // Only a primary-button release can copy. A right-click on macOS selects
+      // the word under the pointer before the context menu opens, and that
+      // must not replace the clipboard.
+      const primary = e.button === 0
       // Small delay to let selection finalize. Only a selection the check took
       // is copied: a collapsed click, a whitespace-only drag, one outside the
       // container, or one under a typed draft returns without it. So is one
       // this press left untouched (see `selectionAtPress`).
       defer(() => {
-        if (checkSelection() && copyOnSelectRef.current && selectionChangedSincePress()) autoCopyRef.current()
+        if (checkSelection() && primary && copyOnSelectRef.current && selectionChangedSincePress()) autoCopyRef.current()
       }, 50)
     }
 

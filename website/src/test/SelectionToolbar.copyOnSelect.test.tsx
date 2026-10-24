@@ -63,9 +63,9 @@ function Harness({ copyOnSelect }: { copyOnSelect?: boolean }) {
 }
 
 /** Release the mouse and let the 50ms "selection settles" check run. */
-async function mouseUp() {
+async function mouseUp(button = 0) {
   await act(async () => {
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: 40, clientY: 20 }))
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button, clientX: 40, clientY: 20 }))
     await vi.advanceTimersByTimeAsync(60)
   })
 }
@@ -149,6 +149,17 @@ describe('SelectionToolbar copy on select', () => {
     expect(screen.getByText(/^Copy failed/)).toBeInTheDocument()
     expect(showsCheckmark()).toBe(false)
     expect(screen.getByRole('button', { name: 'Quote' })).toBeInTheDocument()
+  })
+
+  it('does not copy on a right-click that selects a word (macOS context menu)', async () => {
+    render(<Harness copyOnSelect />)
+    // A Mac browser selects the word under the pointer before `contextmenu`,
+    // then the button-2 release reaches the document.
+    selectWord(screen.getByTestId('container'), 'beta')
+    await mouseUp(2)
+
+    expect(copyToClipboardMock).not.toHaveBeenCalled()
+    expect(showsCheckmark()).toBe(false)
   })
 
   it('leaves a keyboard (Shift+Arrow) selection alone', async () => {

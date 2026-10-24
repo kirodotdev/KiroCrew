@@ -106,6 +106,7 @@ import { ApiError } from '../api/apiError'
 import { markModelsAuthRequired, markModelsDegraded } from '../providers/modelListHealth'
 import { resolveDefaultMemoryMode } from '../api/queryClient'
 import { MAX_MESSAGE_FONT_SIZE } from '../pages/chat/ChatSettings'
+import { DURABLE_PREF_KEYS } from '../lib/uiPrefs'
 
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -416,7 +417,6 @@ describe('ChatPanel — Messages', () => {
   it.each([
     ['Show Timestamps', 'showTimestamps', false],
     ['Double-click to edit your messages', 'doubleClickToEdit', true],
-    ['Copy on select', 'copyOnSelect', true],
     ['Pin the latest turn', 'pinLastPrompt', false],
     ['Simplified Tool Call Names', 'simplifiedToolNames', false],
     ['Tool calls start expanded', 'toolCallsStartExpanded', true],
@@ -425,6 +425,21 @@ describe('ChatPanel — Messages', () => {
     wrap()
     fireEvent.click(await screen.findByRole('switch', { name: label }))
     await waitFor(() => expect(storedChat()[key]).toBe(expected))
+  })
+
+  it('stores Copy on select under its own device-only key, not the synced chat config', async () => {
+    wrap()
+    const sw = await screen.findByRole('switch', { name: 'Copy on select' })
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(sw)
+    await waitFor(() => expect(localStorage.getItem('mc-chat-copy-on-select')).toBe('1'))
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    expect(JSON.parse(localStorage.getItem('mc-chat-config') || '{}')).not.toHaveProperty('copyOnSelect')
+    // Not backed up to the host, so another browser of the same owner never
+    // inherits a clipboard-overwriting setting.
+    expect(DURABLE_PREF_KEYS).not.toContain('mc-chat-copy-on-select')
+    fireEvent.click(sw)
+    await waitFor(() => expect(localStorage.getItem('mc-chat-copy-on-select')).toBe('0'))
   })
 
   it('inverts the stored collapse flag behind Show Thinking Inline', async () => {
