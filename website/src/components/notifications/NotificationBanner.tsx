@@ -91,6 +91,7 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
   const isMobile = useIsMobile()
   const reduced = !!useReducedMotion()
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  const notificationItems = useAppSelector(s => s.notifications.items)
 
   const [pending, setPending] = useState<Notification[]>([])
   const [expanded, setExpanded] = useState(false)
@@ -158,6 +159,13 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
     setPending(next)
     if (next.length <= 1) setExpanded(false)
   }, [measureExit])
+
+  useEffect(() => {
+    const held = new Set(notificationItems.filter(n => n.key).map(n => n.ts))
+    removeNotes(
+      pendingRef.current.filter(n => n.key && !held.has(n.ts)).map(n => n.ts),
+    )
+  }, [notificationItems, removeNotes])
 
   const fireAutoHide = useCallback(() => {
     timer.current = null

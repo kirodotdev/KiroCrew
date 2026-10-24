@@ -185,6 +185,10 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "<default>",
         _BOUNDED_BY_DEFAULT,
     ),
+    "messaging_api/agent_push.py::api_notification_agent_dismiss": (
+        "<default>",
+        _BOUNDED_BY_DEFAULT,
+    ),
     "handlers/notifications_push.py::api_push_notification": (
         "<default>",
         _BOUNDED_BY_DEFAULT,

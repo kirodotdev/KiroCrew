@@ -8,6 +8,7 @@ from collections.abc import Callable
 from concurrent.futures import Executor
 from typing import Any
 
+from kiro_crew.notifications.bus import PRIORITIES
 from kiro_crew.notifications.settings import PROTECTED_CHANNELS
 
 
@@ -38,6 +39,41 @@ def session_is_muted(state: Any, session_key: str) -> bool:
     return False
 
 
+def _priority_rank(note: dict[str, Any]) -> int:
+    """0 for the most urgent priority; an unknown priority ranks as the default."""
+    priority = note.get("priority")
+    return PRIORITIES.index(priority if priority in PRIORITIES else "default")
+
+
+def _notes_held_under(state: Any, source: Any, key: Any) -> list[dict[str, Any]]:
+    """The stored notes *source* published under *key*; none for a note without a key."""
+    if not key:
+        return []
+    return [
+        held
+        for held in state._notification_log
+        if held.get("key") == key and held.get("source") == source
+    ]
+
+
+def _remove_keyed_notes(state: Any, source: Any, key: Any) -> list[dict[str, Any]]:
+    """Remove and return the stored notes *source* published under *key*.
+
+    A key names a note within its source, so two sources never collide. A note
+    without a key is never matched.
+    """
+    if not key:
+        return []
+    kept: list[dict[str, Any]] = []
+    removed: list[dict[str, Any]] = []
+    for held in state._notification_log:
+        same_key = held.get("key") == key and held.get("source") == source
+        (removed if same_key else kept).append(held)
+    if removed:
+        state._notification_log[:] = kept
+    return removed
+
+
 class NotificationCoordinator:
     """Coordinate notification state while the DashboardState facade owns it."""
 
@@ -50,7 +86,7 @@ class NotificationCoordinator:
         redact_value: Callable[[Any], Any],
         sweep_expired: Callable[[list[dict[str, Any]]], int],
         persist_one: Callable[[dict[str, Any]], bool],
-        rewrite_all: Callable[[list[dict[str, Any]]], None],
+        rewrite_all: Callable[[list[dict[str, Any]]], bool],
         executor_provider: Callable[[], Executor],
         max_persisted: int,
     ) -> None:
@@ -63,6 +99,17 @@ class NotificationCoordinator:
         self._rewrite_all = rewrite_all
         self._executor_provider = executor_provider
         self._max_persisted = max_persisted
+        self._full_rewrite_lock: asyncio.Lock | None = None
+        self._full_rewrite_loop: asyncio.AbstractEventLoop | None = None
+        self._keyed_write_in_flight = False
+
+    def _rewrite_lock(self) -> asyncio.Lock:
+        """Return this state's lock, bound lazily to the running loop."""
+        loop = asyncio.get_running_loop()
+        if self._full_rewrite_lock is None or self._full_rewrite_loop is not loop:
+            self._full_rewrite_lock = asyncio.Lock()
+            self._full_rewrite_loop = loop
+        return self._full_rewrite_lock
 
     def notify(
         self,
@@ -115,24 +162,118 @@ class NotificationCoordinator:
             note["silenced"] = True
             note["priority"] = "passive"
         self._sweep_expired(state._notification_log)
-        state._notification_log.append(note)
-        if len(state._notification_log) > self._max_persisted:
-            del state._notification_log[: len(state._notification_log) - self._max_persisted]
-        if note.get("priority") != "passive":
-            state._unread_count += 1
-        state._broadcast(note)
+        # A keyed note always takes the locked write-then-commit path below, even
+        # when nothing holds its key yet: its publisher may replace or dismiss it
+        # next, and that change must queue behind this one rather than race it.
+        if not note.get("key"):
+            self._hold(state, note)
+            state._broadcast(note)
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._persist_one(note)
+                state.last_notification_persist = None
+            else:
+                # An append mutates memory and enters the FIFO in one synchronous
+                # step; locked snapshots do the same, so later appends remain later.
+                state.last_notification_persist = loop.run_in_executor(
+                    self._executor_provider(), self._persist_one, dict(note)
+                )
+            return
 
-        # One FIFO executor owns append and rewrite jobs.  Snapshot the row
-        # because acknowledgement may mutate the in-memory object afterward.
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            self._persist_one(note)
+            rows, held_snapshot = self._replacement_rows(state, note)
+            if self._rewrite_all(rows):
+                self._commit_replacement(state, note, held_snapshot)
+                state._broadcast(note)
             state.last_notification_persist = None
-        else:
-            state.last_notification_persist = loop.run_in_executor(
-                self._executor_provider(), self._persist_one, dict(note)
-            )
+            return
+
+        async def _replace_once_written() -> bool:
+            async with self._rewrite_lock():
+                self._keyed_write_in_flight = True
+                try:
+                    rows, held_snapshot = self._replacement_rows(state, note)
+                    if not await loop.run_in_executor(
+                        self._executor_provider(), self._rewrite_all, rows
+                    ):
+                        return False
+                    self._commit_replacement(state, note, held_snapshot)
+                    state._broadcast(note)
+                    return True
+                finally:
+                    try:
+                        self._trim_held_notes(state)
+                    finally:
+                        self._keyed_write_in_flight = False
+
+        operation = asyncio.create_task(_replace_once_written())
+        # The loop holds tasks weakly; once a caller cancels the shield, this set
+        # is what keeps the write-then-commit alive until it finishes.
+        state._background_tasks.add(operation)
+        operation.add_done_callback(state._background_tasks.discard)
+        state.last_notification_persist = asyncio.shield(operation)
+
+    @staticmethod
+    def _set_quiet(note: dict[str, Any], replaced: list[dict[str, Any]]) -> None:
+        note.pop("quiet", None)
+        if replaced and _priority_rank(note) >= min(_priority_rank(old) for old in replaced):
+            note["quiet"] = True
+
+    def _replacement_rows(
+        self, state: Any, note: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        source = note.get("source")
+        key = note.get("key")
+        replaced = _notes_held_under(state, source, key)
+        self._set_quiet(note, replaced)
+        held_snapshot = [
+            held
+            for held in state._notification_log
+            if not (held.get("key") == key and held.get("source") == source)
+        ]
+        rows = [dict(held) for held in held_snapshot]
+        rows.append(dict(note))
+        if len(rows) > self._max_persisted:
+            del rows[: len(rows) - self._max_persisted]
+        return rows, held_snapshot
+
+    def _commit_replacement(
+        self, state: Any, note: dict[str, Any], held_snapshot: list[dict[str, Any]]
+    ) -> None:
+        removed = _remove_keyed_notes(state, note.get("source"), note.get("key"))
+        for old in removed:
+            if old.get("priority") != "passive":
+                state._unread_count = max(0, state._unread_count - 1)
+
+        insert_at = 0
+        for index, held in enumerate(state._notification_log):
+            if any(held is snapshot_row for snapshot_row in held_snapshot):
+                insert_at = index + 1
+        state._notification_log.insert(insert_at, note)
+        if note.get("priority") != "passive":
+            state._unread_count += 1
+
+        self._trim_held_notes(state)
+
+    def _trim_held_notes(self, state: Any) -> None:
+        overflow = len(state._notification_log) - self._max_persisted
+        if overflow <= 0:
+            return
+        evicted = state._notification_log[:overflow]
+        del state._notification_log[:overflow]
+        for old in evicted:
+            if old.get("priority") != "passive":
+                state._unread_count = max(0, state._unread_count - 1)
+
+    def _hold(self, state: Any, note: dict[str, Any]) -> None:
+        state._notification_log.append(note)
+        if not self._keyed_write_in_flight and len(state._notification_log) > self._max_persisted:
+            del state._notification_log[: len(state._notification_log) - self._max_persisted]
+        if note.get("priority") != "passive":
+            state._unread_count += 1
 
     @staticmethod
     def register_sse(state: Any) -> asyncio.Queue[dict[str, Any]]:
@@ -147,12 +288,56 @@ class NotificationCoordinator:
         except ValueError:
             pass
 
-    async def rewrite(self, state: Any) -> None:
+    async def rewrite(self, state: Any) -> bool:
         """Durably rewrite a snapshot after all earlier FIFO append jobs."""
-        snapshot = [dict(note) for note in state._notification_log]
-        await asyncio.get_running_loop().run_in_executor(
-            self._executor_provider(), self._rewrite_all, snapshot
-        )
+        async with self._rewrite_lock():
+            snapshot = [dict(note) for note in state._notification_log]
+            return await asyncio.get_running_loop().run_in_executor(
+                self._executor_provider(), self._rewrite_all, snapshot
+            )
+
+    async def dismiss(self, state: Any, *, source: str, key: str) -> tuple[bool, bool]:
+        """Persist, then remove the note *source* published under *key*.
+
+        Returns ``(removed, persisted)``. A failed rewrite leaves committed
+        memory and open views unchanged, so the dismissal remains retryable.
+        """
+
+        async def _dismiss_once_written() -> tuple[bool, bool]:
+            async with self._rewrite_lock():
+                matched = _notes_held_under(state, source, key)
+                if not matched:
+                    return False, True
+                matched_timestamps = [note.get("ts") for note in matched]
+                self._keyed_write_in_flight = True
+                try:
+                    rows = [
+                        dict(note)
+                        for note in state._notification_log
+                        if not (note.get("key") == key and note.get("source") == source)
+                    ]
+                    if not await asyncio.get_running_loop().run_in_executor(
+                        self._executor_provider(), self._rewrite_all, rows
+                    ):
+                        return True, False
+                    removed = _remove_keyed_notes(state, source, key)
+                    for note in removed:
+                        if note.get("priority") != "passive":
+                            state._unread_count = max(0, state._unread_count - 1)
+                    self._trim_held_notes(state)
+                    for timestamp in matched_timestamps:
+                        state.broadcast_ws("notification_dismiss", {"ts": timestamp})
+                    return True, True
+                finally:
+                    try:
+                        self._trim_held_notes(state)
+                    finally:
+                        self._keyed_write_in_flight = False
+
+        operation = asyncio.create_task(_dismiss_once_written())
+        state._background_tasks.add(operation)
+        operation.add_done_callback(state._background_tasks.discard)
+        return await asyncio.shield(operation)
 
     @staticmethod
     async def delete(state: Any, ts: str) -> bool:

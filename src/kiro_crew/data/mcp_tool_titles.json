@@ -37,6 +37,7 @@
     "suggest_followup": "Suggest follow-ups",
     "send_message": "Send message",
     "send_notification": "Send notification",
+    "dismiss_notification": "Dismiss notification",
     "delete_message": "Delete message",
     "update_message": "Edit message",
     "read_slack_profile": "Read Slack profile",

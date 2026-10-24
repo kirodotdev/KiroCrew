@@ -1055,6 +1055,7 @@ class DashboardState:
     unregister_sse = _dashboard_services.unregister_sse
     _rewrite_notifications_async = _dashboard_services._rewrite_notifications_async
     delete_notification = _dashboard_services.delete_notification
+    dismiss_notification = _dashboard_services.dismiss_notification
     ack_notification = _dashboard_services.ack_notification
     unack_notification = _dashboard_services.unack_notification
     resolve_skill_review_notifications = _dashboard_services.resolve_skill_review_notifications

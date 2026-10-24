@@ -122,6 +122,7 @@ const WS_GLOBAL_EVENT_TO_SCOPE: Record<string, string> = {
   notification: 'notification',
   notification_ack: 'notification',
   notification_unack: 'notification',
+  notification_dismiss: 'notification',
   notifications_clear: 'notification',
   notification_channel_settings: 'notification',
   sessions_restarting: 'sessions',

@@ -77,6 +77,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # change it, so a zero-click fetch never carries what redaction removes.
         # Nothing it returns is redacted text, so it is a gate, not an egress sink.
         "dashboard/handlers/link_meta.py",
+        # Gate-side: the agent notification push and dismiss routes run the note
+        # redactor on a caller's `key` only to REFUSE it (`400 key_would_be_redacted`)
+        # when redaction would change it, so a stored key is exactly what was sent.
+        # Nothing they return is redacted by this module, so it is a gate, not an
+        # egress sink.
+        "dashboard/messaging_api/agent_push.py",
         # Validator only: a dashboard package's model field NAME is run through the
         # redactor and the package is REFUSED when the output differs, because a
         # field name is served in the package's `fields` list and written into the

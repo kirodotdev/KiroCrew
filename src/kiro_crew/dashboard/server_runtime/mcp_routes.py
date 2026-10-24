@@ -396,6 +396,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     # here (not the dashboard-only block) so headless --slack-only mode
     # serves it too; it is on _STRICT_INTERNAL_API_PATHS like send-message.
     app.router.add_post("/api/notifications/agent", handlers.api_notification_agent_push)
+    # dismiss_notification MCP tool; the strict-internal "/api/notifications/agent"
+    # prefix covers it.
+    app.router.add_post("/api/notifications/agent/dismiss", handlers.api_notification_agent_dismiss)
     # Session control. Registered here so the headless --slack-only server
     # serves the same MCP surface as the dashboard; all three are on
     # _STRICT_INTERNAL_API_PATHS, which test_session_control_routes_are_strict

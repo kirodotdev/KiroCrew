@@ -16,6 +16,7 @@ import NotificationBanner, { computeExitDelta, exitTarget } from '../components/
 import { dispatchLiveNotification } from '../hooks/notificationEvent'
 import { BANNER_AUTO_HIDE_MS, BANNER_ENABLED_KEY, MEMBER_MESSAGE_CHANNEL, saveBannerEnabled, shouldBannerNote, targetsCurrentView } from '../hooks/notificationBanner'
 import { _resetViewedThreadForTests, setViewedThreadSlot } from '../lib/viewedThread'
+import { addNotification, dismissNotificationByTs } from '../store/notificationsSlice'
 import type { RootState } from '../store'
 import { setActiveId } from '../store/instancesSlice'
 import { LocalOverlayRoot } from '../components/overlayRoot'
@@ -159,6 +160,36 @@ describe('NotificationBanner: arrival', () => {
     const region = screen.getByTestId('notification-banner-region')
     expect(region.getAttribute('role')).toBe('alert')
     expect(cards()[0].getAttribute('data-priority')).toBe('critical')
+  })
+})
+
+describe('NotificationBanner: publisher withdrawal', () => {
+  it('retires withdrawn keyed cards without retiring an unrelated unkeyed card', () => {
+    const replaced = mkN({ key: 'poller:ci', priority: 'critical', title: 'Poller down' })
+    const replacementView = renderBanner({ items: [replaced] })
+    arrive(replaced)
+    expect(cards()).toHaveLength(1)
+    act(() => {
+      replacementView.store.dispatch(addNotification(mkN({
+        key: 'poller:ci', priority: 'critical', quiet: true, title: 'Poller recovered',
+      })))
+    })
+    expect(cards()).toHaveLength(0)
+    replacementView.unmount()
+
+    const dismissed = mkN({ key: 'poller:build', priority: 'critical', title: 'Build down' })
+    const dismissalView = renderBanner({ items: [dismissed] })
+    arrive(dismissed)
+    act(() => { dismissalView.store.dispatch(dismissNotificationByTs(dismissed.ts)) })
+    expect(cards()).toHaveLength(0)
+    dismissalView.unmount()
+
+    const unkeyed = mkN({ priority: 'critical', title: 'Approval needed' })
+    const unrelatedView = renderBanner({ items: [unkeyed] })
+    arrive(unkeyed)
+    act(() => { unrelatedView.store.dispatch(dismissNotificationByTs('unrelated-ts')) })
+    expect(cards()).toHaveLength(1)
+    expect(screen.getByText('Approval needed')).toBeTruthy()
   })
 })
 

@@ -652,14 +652,22 @@ def unregister_sse(self: DashboardState, q: asyncio.Queue[dict[str, Any]]) -> No
     _notifications_for(self).unregister_sse(self, q)
 
 
-async def _rewrite_notifications_async(self: DashboardState) -> None:
-    """Rewrite notification storage after earlier FIFO append jobs."""
-    await _notifications_for(self).rewrite(self)
+async def _rewrite_notifications_async(self: DashboardState) -> bool:
+    """Rewrite notification storage after earlier FIFO append jobs.
+
+    Returns whether the file was written.
+    """
+    return await _notifications_for(self).rewrite(self)
 
 
 async def delete_notification(self: DashboardState, ts: str) -> bool:
     """Remove a single notification by timestamp and persist to disk."""
     return await _notifications_for(self).delete(self, ts)
+
+
+async def dismiss_notification(self: DashboardState, *, source: str, key: str) -> tuple[bool, bool]:
+    """Remove the note *source* published under *key*; ``(removed, persisted)``."""
+    return await _notifications_for(self).dismiss(self, source=source, key=key)
 
 
 async def ack_notification(self: DashboardState, ts: str) -> bool:

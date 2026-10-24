@@ -183,6 +183,7 @@ SEND_NOTIFICATION_SCHEMA = ToolSchema(
         # is the cheap first gate (must start with '/', not '//').
         FieldSpec("url", str, max_len=500, pattern=re.compile(r"^/(?!/)\S*$")),
         FieldSpec("group_key", str, max_len=MAX_SHORT_STRING),
+        FieldSpec("key", str, max_len=MAX_SHORT_STRING),
         # Inline actions (Phase 4 contract). Item cap mirrors the bus's
         # _MAX_ACTIONS (4); per-item shape ({id,label,url?}, length caps,
         # internal-path url) is validated by NotificationPayload at the
@@ -190,6 +191,11 @@ SEND_NOTIFICATION_SCHEMA = ToolSchema(
         # malformed MCP call is rejected before the HTTP hop.
         FieldSpec("actions", list, item_type=dict, max_items=4),
     ],
+)
+
+DISMISS_NOTIFICATION_SCHEMA = ToolSchema(
+    tool_name="dismiss_notification",
+    fields=[FieldSpec("key", str, required=True, max_len=MAX_SHORT_STRING)],
 )
 
 READ_SLACK_PROFILE_SCHEMA = ToolSchema(

@@ -99,6 +99,7 @@ from kiro_crew.validation_parts.core_turn_schemas import (
 )
 from kiro_crew.validation_parts.field_engine import ToolSchema
 from kiro_crew.validation_parts.messaging_session_schemas import (
+    DISMISS_NOTIFICATION_SCHEMA,
     GET_CHAT_SESSION_SCHEMA,
     KNOWLEDGE_ADD_DOCUMENT_SCHEMA,
     KNOWLEDGE_DEDUP_SCHEMA,
@@ -154,6 +155,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "task_run": TASK_RUN_SCHEMA,
     "send_message": SEND_MESSAGE_SCHEMA,
     "send_notification": SEND_NOTIFICATION_SCHEMA,
+    "dismiss_notification": DISMISS_NOTIFICATION_SCHEMA,
     "read_slack_profile": READ_SLACK_PROFILE_SCHEMA,
     "wait": WAIT_SCHEMA,
     "register_hook": REGISTER_HOOK_SCHEMA,

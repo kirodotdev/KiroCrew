@@ -1606,7 +1606,7 @@ the facade reaches moved code. New work goes to the owner of its responsibility:
 | `channel_delivery.py` | the channel legs: a channel owner's DM (`_deliver_channel_dm`), a configured target (`_send_to_channel_target`), the session's conversation (`_deliver_to_channel`) |
 | `spawn.py`, `run_control.py`, `run_views.py` | spawn admission and continue; the run controls and their session fence; the status and list views |
 | `notifications.py` | the notification feed and the per-channel notification settings |
-| `agent_push.py` | `POST /api/notifications/agent`, an agent session's `send_notification` push |
+| `agent_push.py` | `POST /api/notifications/agent`, an agent session's `send_notification` push, and `POST /api/notifications/agent/dismiss`, its `dismiss_notification` |
 | `*_settings.py`, one per channel | that channel's settings API |
 | `channel_config_writes.py` | the channel-config transaction every channel saver commits through: `_LockedSectionWrite`, and `_write_env_or_roll_back`, the one `.env` write, rollback and environment sync (its off-loop drain, `_write_env_off_loop`, stays in `handlers/messaging.py`); plus `_mask_secret`, `_clean_id_list` and `_threshold_pct_rejection` |
 | `slack_workspace.py` | the Slack pin, reaction, profile and manifest routes |

@@ -316,6 +316,19 @@ def schemas() -> list[dict[str, Any]]:
                             "the feed. Use for repeated signals of the same kind."
                         ),
                     },
+                    "key": {
+                        "type": "string",
+                        "description": (
+                            "Names what the note tracks: its kind, then the id "
+                            "of that thing (e.g. 'cr:12345', 'pr:owner/repo#42'), "
+                            "so watchers of different things never pick the same "
+                            "key. Publishing again under the same key replaces "
+                            "that note instead of adding one, quietly unless the "
+                            "priority rises; dismiss_notification removes it. "
+                            "Keys are shared by all your sessions and crons, so "
+                            "a later run can update or dismiss it."
+                        ),
+                    },
                     "actions": {
                         "type": "array",
                         "maxItems": 4,
@@ -338,6 +351,26 @@ def schemas() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["title"],
+            },
+        },
+        {
+            "name": "dismiss_notification",
+            "description": (
+                "Remove the notification published with send_notification under "
+                "a key from the notification center, in every open window. Use "
+                "when the condition it reported is over (a failure that "
+                "recovered, a wait that ended). Any of your sessions or crons "
+                "can dismiss a key another one set."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "The key the note was published with.",
+                    },
+                },
+                "required": ["key"],
             },
         },
         {
@@ -734,7 +767,7 @@ def send_notification(name: str, args: dict[str, Any]) -> str:
     if _gov_note:
         return f"Error: {_gov_note}"
     payload = {"title": args["title"]}
-    for key in ("body", "priority", "url", "group_key", "actions"):
+    for key in ("body", "priority", "url", "group_key", "key", "actions"):
         if args.get(key):
             payload[key] = args[key]
     resp = mcp_core._post("/api/notifications/agent", payload)
@@ -750,6 +783,32 @@ def send_notification(name: str, args: dict[str, Any]) -> str:
         f"(channel={note.get('channel', 'system.agent')}, "
         f"priority={note.get('priority', 'default')})."
     )
+
+
+def dismiss_notification(name: str, args: dict[str, Any]) -> str:
+    caller_session, _strict_err = mcp_core.require_strict_session_key(
+        "Error: cannot verify caller identity for dismiss_notification "
+        "(no gateway-injected session key or HMAC-verified pid). "
+        "Refusing to remove a notification without a trusted governance identity."
+    )
+    if not caller_session:
+        return _strict_err
+    # The same boundaries as send_notification: a channel agent may not reach the
+    # notification center, and a configured messaging denial holds fail-closed.
+    _chan_deny = mcp_core._deny_channel_agent_messaging(caller_session, "dismiss_notification")
+    if _chan_deny:
+        return _chan_deny
+    _gov_note = mcp_core._vet_messaging_governance(
+        caller_session, tool_name="dismiss_notification", fail_closed=True
+    )
+    if _gov_note:
+        return f"Error: {_gov_note}"
+    resp = mcp_core._post("/api/notifications/agent/dismiss", {"key": args["key"]})
+    if not resp.get("ok"):
+        return f"Error: {resp}"
+    if not resp.get("dismissed"):
+        return f"No notification holds the key {args['key']!r}; nothing to dismiss."
+    return f"Notification {args['key']!r} dismissed from the notification center."
 
 
 def delete_message(name: str, args: dict[str, Any]) -> str:
@@ -1227,6 +1286,7 @@ def file_send(name: str, args: dict[str, Any]) -> str:
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "send_message": send_message,
     "send_notification": send_notification,
+    "dismiss_notification": dismiss_notification,
     "delete_message": delete_message,
     "update_message": update_message,
     "read_slack_profile": read_slack_profile,

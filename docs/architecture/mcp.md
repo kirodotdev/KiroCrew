@@ -2327,7 +2327,8 @@ answers `tools/list` from):
 - **Subagents:** `spawn_status`, `spawn_continue`, `spawn_steer`,
   `spawn_release`, `spawn_sub_agents`, `wait`
 - **Messaging and notification:** `send_message`, `send_notification`,
-  `delete_message`, `update_message`, `file_send`, `read_slack_profile`.
+  `dismiss_notification`, `delete_message`, `update_message`, `file_send`,
+  `read_slack_profile`.
   `send_message` is the agent's only proactive egress to a NEW destination —
   `update_message` rewrites a Slack message the bot itself already posted, on the
   same gate ladder (strict identity, channel-agent containment,

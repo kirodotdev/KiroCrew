@@ -172,7 +172,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, slots_data: 'list[dict]', *, include_check_status: 'bool' = "
         "False, dashboard_user: 'bool' = False) -> 'list[dict]'",
     ),
-    "_rewrite_notifications_async": ("function", True, False, "(self) -> 'None'"),
+    "_rewrite_notifications_async": ("function", True, False, "(self) -> 'bool'"),
     "_running_loop": ("staticmethod", False, False, "() -> 'asyncio.AbstractEventLoop | None'"),
     "_schedule_trailing_flush": ("function", False, False, "(self, delay: 'float') -> 'None'"),
     "_send_slot_patch": ("function", False, False, "(self, data: 'dict[str, Any]') -> 'None'"),
@@ -317,6 +317,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, msg_type: 'str', data: 'WsPayload') -> 'int'",
     ),
     "disable_yolo": ("function", False, False, "(self) -> 'None'"),
+    "dismiss_notification": (
+        "function",
+        True,
+        False,
+        "(self, *, source: 'str', key: 'str') -> 'tuple[bool, bool]'",
+    ),
     "effective_max_background_turns": ("function", False, False, "(self) -> 'int'"),
     "enable_yolo": ("function", False, False, "(self, *, from_config: 'bool' = False) -> 'None'"),
     "end_slot_construction": ("function", False, False, "(self, key: 'str') -> 'None'"),

@@ -605,6 +605,12 @@ export interface Notification {
   // RFC Phase 4: inline actions, stacking, dashboard-internal deep link
   group_key?: string; url?: string
   actions?: { id: string; label: string; url?: string }[]
+  /** Names the note within its source: a later note with the same source and
+   *  key replaces it, and `notification_dismiss` removes it. */
+  key?: string
+  /** Server-stamped on a replacement no more urgent than the note it replaced:
+   *  it lands in the bell, but no sound, banner or OS notification announces it. */
+  quiet?: boolean
   /** The crewmate that published the note, stamped by the gateway from the
    *  publishing session. Persisted rows are untrusted: read it through
    *  `noteMember`, which checks the shape. */
