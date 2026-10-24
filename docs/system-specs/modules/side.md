@@ -238,7 +238,11 @@ The read and the frames travel separately, so either can be ahead:
   receipt, its user frame, or a receipt that hands the text back settles it.
 - The queue keeps the sidecar's order, with an entry the tab saw pushed to the front
   ahead of it and other entries the tab saw pushed at the end; an entry the tab saw
-  leave stays out, even one it never had a card for. Restored entries are redacted,
+  leave stays out, even one it never had a card for. An entry another tab edited
+  while this tab's read was in flight shows the edited text, even one this tab never
+  had a card for (`SideState.editedBeforeRestore`, kept only while
+  `slotSideReading` marks the read in flight: a read issued later is answered after
+  the edit, so it carries the text itself). Restored entries are redacted,
   so, like another tab's cards, they drain but cannot be edited or cancelled here.
 - A close in this tab marks the slot settled (`slotSideRestored`), so a read still
   in flight cannot bring the closed conversation back.
