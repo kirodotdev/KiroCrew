@@ -1037,6 +1037,13 @@ _HELD_MESSAGE = (
     " once the cron store is reloaded or the gateway restarts. Delete it if it must not run"
     " again."
 )
+# A scheduled cancel whose terminal record this process still holds for a later store
+# write: a reload re-applies it, so only a restart before that write can run it again.
+_HELD_FOR_RETRY_MESSAGE = (
+    "The run was cancelled, but its pause could not be saved. It is held off the schedule"
+    " until a later cron store write saves the pause, so this one-shot may run again only"
+    " if the gateway restarts first. Delete it if it must not run again."
+)
 _UNREAD_NOTE = (
     "; the pause could not be saved (the cron store could not be read),"
     " so this one-shot may run again"
@@ -1081,6 +1088,14 @@ def _held(reason: str) -> tuple[str, str, tuple[str, bool, bool]]:
     return note, _HELD_MESSAGE, ("at", False, False)
 
 
+def _held_for_retry(reason: str) -> tuple[str, str, tuple[str, bool, bool]]:
+    note = (
+        f"; the pause could not be saved ({reason}),"
+        " so this one-shot may run again after a restart"
+    )
+    return note, _HELD_FOR_RETRY_MESSAGE, ("at", False, False)
+
+
 _BUSY = "CronStoreBusy: cron store busy"
 _REMOVED = ("; the job was removed from the cron store meanwhile", None, None)
 
@@ -1092,11 +1107,11 @@ _REMOVED = ("; the job was removed from the cron store meanwhile", None, None)
 _CANCEL_REPORTS: dict[str | None, tuple[str, str | None, tuple[str, bool, bool] | None]] = {
     None: ("", None, ("at", False, True)),
     "malformed": (_UNREAD_NOTE, _HELD_MESSAGE, None),
-    "unreadable": (_UNREAD_NOTE, _HELD_MESSAGE, ("at", False, False)),
+    "unreadable": _held_for_retry("the cron store could not be read"),
     "removed": _REMOVED,
     "newer_run": _on_schedule(_NEWER_RUN),
     "recurring": _recurring(_NOT_ONE_SHOT),
-    "write_error": _held(_ENOSPC),
+    "write_error": _held_for_retry(_ENOSPC),
     "manual_run": _paused(_NEWER_RUN, "at"),
     "newer_run_here": _on_schedule(_NEWER_RUN),
     "recurring_here": _recurring(_NOT_ONE_SHOT),
@@ -1107,9 +1122,11 @@ _CANCEL_REPORTS: dict[str | None, tuple[str, str | None, tuple[str, bool, bool] 
     # A busy store raises before the merge runs, so ``cancel`` applies its rules.
     "recurring_here_then_busy": _recurring(_BUSY),
     "removed_here_then_busy": _REMOVED,
-    "resumed_here_then_busy": _held(_BUSY),
+    "resumed_here_then_busy": _on_schedule(_BUSY),
     "newer_run_here_then_busy": _on_schedule(_BUSY),
-    "reloaded_then_busy": _held(_BUSY),
+    # The settlement is held before the merge, so the tick in the gap keeps the
+    # job off the schedule through its reload and its save lands the park.
+    "reloaded_then_busy": _paused(_BUSY, "at"),
     # A failed park answers success only when the saved store shows the job cannot
     # run again: a pause or a removal this process could not save is not proof.
     "pause_unsaved_then_write_error": (_held(_ENOSPC)[0], _HELD_MESSAGE, ("at", False, True)),
@@ -1130,6 +1147,14 @@ _THEN_WRITE_ERROR = (
     "paused_then_write_error",
     "recurring_then_write_error",
     "recurring_here_then_write_error",
+)
+# Once each injected fault clears, stop() persists the scheduled terminal record.
+_TERMINAL_SETTLEMENT_FLUSHED = (
+    "unreadable",
+    "write_error",
+    "pause_unsaved_then_write_error",
+    "reloaded_then_busy",
+    "removed_unsaved_then_busy",
 )
 # Ends where this process changes the job, or reloads the store, in the gap, and
 # the cancel's merge then meets a busy store.
@@ -1224,9 +1249,9 @@ class TestCancelledOneShotIsParked:
 
     @pytest.mark.asyncio
     async def test_a_busy_store_reports_the_pause_not_saved(self, tmp_path) -> None:
-        """A busy store: one save at the store's standard lock wait, with no retry.
-        ``user_paused`` stays off, the caller and the history say the pause was not
-        saved, the hold keeps the next tick off, and no later tick writes the park."""
+        """A busy store: one save at the standard lock wait and no cancel retry.
+        ``user_paused`` stays off, the caller and history report the failed write,
+        and the held-record owner persists the park on a later healthy tick."""
         runs: list[str] = []
         started = asyncio.Event()
         release = asyncio.Event()
@@ -1263,13 +1288,14 @@ class TestCancelledOneShotIsParked:
                 await svc._on_timer()  # the store is still busy: the hold keeps the job off
                 _assert_not_redispatched(svc, job.id)
                 busy_calls[0] = 0
-                await svc._on_timer()  # this tick reaches the store, and writes no park
+                await svc._on_timer()  # this tick reaches the store and persists the hold
                 _assert_not_redispatched(svc, job.id)
+                assert self._on_disk(tmp_path, job.id) == (False, True)
         finally:
             release.set()
             await svc.stop()
         assert runs == [job.id], f"cancelled one-shot ran {len(runs)} times"
-        assert self._on_disk(tmp_path, job.id) == (True, False), "a later write parked the job"
+        assert self._on_disk(tmp_path, job.id) == (False, True)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1407,7 +1433,7 @@ class TestCancelledOneShotIsParked:
                     )
                 else:
                     CronService(base_dir=tmp_path).add_job("unrelated", "msg", every_secs=3600)
-                    svc._tick_scan_locked()  # the tick's reload drops the in-memory hold
+                    svc._tick_scan_locked()  # the reload re-applies the held settlement
                 with patch.object(svc, "_file_lock", side_effect=CronStoreBusy("cron store busy")):
                     return real_merge(*args, **kwargs)
             elif change == "pause_unsaved_then_write_error":
@@ -1450,6 +1476,9 @@ class TestCancelledOneShotIsParked:
                         await finished(svc.cancel(job.id), "svc.cancel")
                     assert str(raised.value) == message
             live = svc.get_job(job.id)
+            live_state = (
+                None if live is None else (live.schedule.kind, live.enabled, live.user_paused)
+            )
             history, _total = await svc._history.get_job_history(job.id)
         finally:
             faults.close()
@@ -1464,10 +1493,14 @@ class TestCancelledOneShotIsParked:
         elif change in ("removed", "removed_here_then_busy"):
             assert CronService(base_dir=tmp_path).get_job(job.id) is None
         else:
-            paused_meanwhile = change in _PAUSED_MEANWHILE
-            assert self._on_disk(tmp_path, job.id)[1] is paused_meanwhile, "the park is on disk"
-        live_state = None if live is None else (live.schedule.kind, live.enabled, live.user_paused)
+            paused_on_disk = change in _PAUSED_MEANWHILE or change in _TERMINAL_SETTLEMENT_FLUSHED
+            assert self._on_disk(tmp_path, job.id)[1] is paused_on_disk, "the park is on disk"
         assert live_state == live_after, f"{change}: the report does not match the live job"
+        if change in _TERMINAL_SETTLEMENT_FLUSHED and live is not None:
+            # stop() saved the held park: the listed job carries it, so a later save
+            # of the list writes the park again instead of the spelling it replaced.
+            listed = next(j for j in svc._jobs if j.id == job.id)
+            assert (listed.enabled, listed.user_paused) == (False, True)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("enabled", [True, False])
