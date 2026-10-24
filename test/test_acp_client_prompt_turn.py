@@ -23,12 +23,24 @@ class TestStopReasonPopulated:
     """Tests for stop_reason extraction from prompt response."""
 
     @pytest.mark.asyncio
-    async def test_stop_reason_populated_on_complete(self):
-        """Prompt response with stopReason='cancelled' populates event.stop_reason."""
+    @pytest.mark.parametrize(
+        ("result", "expected"),
+        [
+            pytest.param(
+                {"stopReason": "cancelled"}, "cancelled", id="stop_reason_populated_on_complete"
+            ),
+            pytest.param(
+                {"stopReason": "end_turn"}, "end_turn", id="stop_reason_populated_end_turn"
+            ),
+            # A prompt response without the stopReason key yields an empty one.
+            pytest.param({"status": "ok"}, "", id="stop_reason_empty_when_absent"),
+        ],
+    )
+    async def test_stop_reason_from_the_prompt_response(self, result, expected):
         from kiro_crew.acp.types import EVENT_COMPLETE, JsonRpcMessage
 
         client = AcpClient()
-        complete_msg = JsonRpcMessage(id=1, result={"stopReason": "cancelled"})
+        complete_msg = JsonRpcMessage(id=1, result=result)
 
         async def fake_prompt_loop(req_id, timeout):
             yield "complete", complete_msg
@@ -43,53 +55,7 @@ class TestStopReasonPopulated:
 
         assert len(events) == 1
         assert events[0].kind == EVENT_COMPLETE
-        assert events[0].stop_reason == "cancelled"
-
-    @pytest.mark.asyncio
-    async def test_stop_reason_populated_end_turn(self):
-        """Prompt response with stopReason='end_turn' populates event.stop_reason."""
-        from kiro_crew.acp.types import EVENT_COMPLETE, JsonRpcMessage
-
-        client = AcpClient()
-        complete_msg = JsonRpcMessage(id=1, result={"stopReason": "end_turn"})
-
-        async def fake_prompt_loop(req_id, timeout):
-            yield "complete", complete_msg
-
-        client.ensure_ready = AsyncMock()
-        client._send_prompt = AsyncMock(return_value=1)
-        client._prompt_loop = fake_prompt_loop
-
-        events = []
-        async for ev in client.stream_events("test"):
-            events.append(ev)
-
-        assert len(events) == 1
-        assert events[0].kind == EVENT_COMPLETE
-        assert events[0].stop_reason == "end_turn"
-
-    @pytest.mark.asyncio
-    async def test_stop_reason_empty_when_absent(self):
-        """Prompt response without stopReason key yields empty stop_reason."""
-        from kiro_crew.acp.types import EVENT_COMPLETE, JsonRpcMessage
-
-        client = AcpClient()
-        complete_msg = JsonRpcMessage(id=1, result={"status": "ok"})
-
-        async def fake_prompt_loop(req_id, timeout):
-            yield "complete", complete_msg
-
-        client.ensure_ready = AsyncMock()
-        client._send_prompt = AsyncMock(return_value=1)
-        client._prompt_loop = fake_prompt_loop
-
-        events = []
-        async for ev in client.stream_events("test"):
-            events.append(ev)
-
-        assert len(events) == 1
-        assert events[0].kind == EVENT_COMPLETE
-        assert events[0].stop_reason == ""
+        assert events[0].stop_reason == expected
 
 
 class TestWaitTurnDone:
@@ -154,7 +120,6 @@ class TestHasActiveTurn:
         assert client.has_active_turn() is False
         client._turn_done.clear()  # reset
 
-        # Confirm happy state restored
         assert client.has_active_turn() is True
 
 

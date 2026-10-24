@@ -119,11 +119,14 @@ async def test_confirmed_snapshot_older_than_the_ttl_is_reprobed():
     client._probe_advertised_models = AsyncMock(  # type: ignore[method-assign]
         return_value=(_rows("auto", "claude-opus-5"), time.monotonic())
     )
-    client._send_request = _record([])  # type: ignore[method-assign]
+    sent: list = []
+    client._send_request = _record(sent)  # type: ignore[method-assign]
 
     await client.set_model("claude-opus-5")
 
     client._probe_advertised_models.assert_awaited_once()
+    # The fresh answer admits the pick the stale confirmed list would refuse.
+    assert [m for m, _ in sent] == ["session/set_model"]
 
 
 @pytest.mark.asyncio

@@ -1228,12 +1228,16 @@ class TestPostCaptureModelResolution:
     async def test_a_failed_reseed_does_not_kill_the_session(self, tmp_path, monkeypatch):
         # Model fidelity is worth a warning, not a dead session: the adapter still
         # has its own settings sources and tool calls still reach the host gate.
+        attempts = []
+
         def _boom():
+            attempts.append(True)
             raise OSError("read-only filesystem")
 
         client = _client(tmp_path)
         monkeypatch.setattr(client, "_write_claude_local_settings", _boom)
         await client._reseed_after_capture()  # must not raise
+        assert attempts == [True]
 
     def test_session_init_reseeds_right_after_every_model_capture(self):
         """The step is only worth anything if session init still calls it.

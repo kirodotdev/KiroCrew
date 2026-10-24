@@ -146,6 +146,14 @@ def test_unenforced_harness_does_not_refuse() -> None:
         "this core does not seed its settings",
         verdict=gate.Verdict.INDETERMINATE,
     )
+    # Positive control: the same verdict on an enforced harness is refused, so the
+    # start above is the scoping's doing.
+    with pytest.raises(gate.ToolGateUnroutable):
+        gate.enforce_runtime_routing(
+            ACP_BACKEND_CODEX,
+            "this core does not seed its settings",
+            verdict=gate.Verdict.INDETERMINATE,
+        )
 
 
 # ── Refusal: there is no opt-out ─────────────────────────────────────────────
@@ -704,6 +712,9 @@ def test_sandbox_off_is_allowed_for_an_unenforced_harness(
     monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: None)
     monkeypatch.setattr(sandbox, "_inside_kirocrew_sandbox", lambda: False)
     gate.enforce_sandbox_floor(ACP_BACKEND_KIRO, "off")
+    # Positive control: the same host refuses an enforced adapter at "off".
+    with pytest.raises(gate.ToolGateUnroutable):
+        gate.enforce_sandbox_floor(ACP_BACKEND_CODEX, "off")
 
 
 def test_governed_floor_keeps_an_enforced_adapter_startable(
@@ -726,6 +737,8 @@ def test_governed_floor_keeps_an_enforced_adapter_startable(
     monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: "standard")
     monkeypatch.setattr(sandbox, "_inside_kirocrew_sandbox", lambda: False)
     monkeypatch.setattr(sandbox, "detect_backend", lambda **_: "namespace")
+    # The floor lifts "off" to a tier that carries the mask; that is what admits it.
+    assert sandbox.credential_mask_applies("off") is True
     gate.enforce_sandbox_floor(ACP_BACKEND_CODEX, "off")
 
 
@@ -939,6 +952,9 @@ def test_kiro_cli_is_unaffected_on_windows(monkeypatch: pytest.MonkeyPatch, mode
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
     _pin_no_sandbox_backend(monkeypatch)
     gate.enforce_sandbox_floor(ACP_BACKEND_KIRO, mode)
+    # Positive control: the same simulated host refuses an enforced harness.
+    with pytest.raises(gate.ToolGateUnroutable):
+        gate.enforce_sandbox_floor(ACP_BACKEND_OPENCODE, mode)
 
 
 def test_windows_still_passes_when_the_mask_applies(
@@ -955,6 +971,7 @@ def test_windows_still_passes_when_the_mask_applies(
     monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: "standard")
     monkeypatch.setattr(sandbox, "_inside_kirocrew_sandbox", lambda: False)
     monkeypatch.setattr(sandbox, "detect_backend", lambda **_: "namespace")
+    assert sandbox.credential_mask_applies("off") is True
     gate.enforce_sandbox_floor(ACP_BACKEND_OPENCODE, "off")
 
 

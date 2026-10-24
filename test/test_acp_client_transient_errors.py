@@ -13,18 +13,28 @@ class TestIsTransientRawError:
     """_is_transient_raw_error classifies retryability from the RAW JSON-RPC
     error so the verdict is independent of the formatted message."""
 
-    def test_internal_server_error_is_transient(self):
-        from kiro_crew.acp.client import _is_transient_raw_error
-
-        err = {
-            "code": -32603,
-            "message": "Internal error",
-            "data": (
+    @pytest.mark.parametrize(
+        "data",
+        [
+            pytest.param(
                 "Encountered an error in the response stream: ... "
                 "CodewhispererChatResponseStream(ServiceError(ServiceError "
-                "{ source: InternalServerError(...) please try again ...)))"
+                "{ source: InternalServerError(...) please try again ...)))",
+                id="internal_server_error_is_transient",
             ),
-        }
+            # kiro-cli's pre-stream generation failure wrapper: no request_id, no
+            # error class, none of the 5xx/throttle tokens. Retryable — this shape
+            # was surfaced to the user with no retry during a model-capacity blip.
+            pytest.param(
+                "Kiro failed to generate a response",
+                id="kiro_generic_generation_failure_is_transient",
+            ),
+        ],
+    )
+    def test_internal_error_is_transient(self, data):
+        from kiro_crew.acp.client import _is_transient_raw_error
+
+        err = {"code": -32603, "message": "Internal error", "data": data}
         assert _is_transient_raw_error(err) is True
 
     def test_status_50x_and_hint_are_transient(self):
@@ -156,42 +166,33 @@ class TestIsTransientRawError:
         assert _is_transient_raw_error({"data": "ServiceUnavailableException"}) is True
         assert _is_transient_raw_error({"data": "HTTP 503"}) is True
 
-    def test_kiro_generic_generation_failure_is_transient(self):
-        from kiro_crew.acp.client import _is_transient_raw_error
-
-        # kiro-cli's pre-stream generation failure wrapper: no request_id, no
-        # error class, none of the 5xx/throttle tokens. Retryable — this exact
-        # shape was surfaced to the user with no retry during a model-capacity
-        # blip.
-        err = {
-            "code": -32603,
-            "message": "Internal error",
-            "data": "Kiro failed to generate a response",
-        }
-        assert _is_transient_raw_error(err) is True
-
-    def test_generation_failure_scoped_to_data_and_loses_to_auth(self):
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            pytest.param(
+                "Kiro failed to generate a response",
+                id="generation_failure_scoped_to_data_and_loses_to_auth",
+            ),
+            pytest.param(
+                "The service failed to process the request",
+                id="process_failure_scoped_to_data_and_loses_to_auth",
+            ),
+        ],
+    )
+    def test_wrapper_phrase_scoped_to_data_and_loses_to_auth(self, phrase):
         from kiro_crew.acp.client import _is_transient_raw_error
 
         # Phrase only in `message` (data carries a deterministic failure):
         # scoped match must not fire — stays terminal.
         assert (
             _is_transient_raw_error(
-                {
-                    "message": "Kiro failed to generate a response",
-                    "data": "ValidationException: unsupported field",
-                }
+                {"message": phrase, "data": "ValidationException: unsupported field"}
             )
             is False
         )
-        # Auth is checked first and stays terminal even when the generation-
-        # failure phrase co-occurs in data.
-        assert (
-            _is_transient_raw_error(
-                {"data": "AccessDeniedException: Kiro failed to generate a response"}
-            )
-            is False
-        )
+        # Auth is checked first and stays terminal even when the phrase
+        # co-occurs in data.
+        assert _is_transient_raw_error({"data": f"AccessDeniedException: {phrase}"}) is False
 
     def test_kiro_process_failure_is_transient(self):
         from kiro_crew.acp.client import _is_transient_raw_error, classify_provider_error
@@ -208,27 +209,6 @@ class TestIsTransientRawError:
         verdict = classify_provider_error(data, data=data)
         assert verdict.retryable is True
         assert verdict.matched == "failed to process the request"
-
-    def test_process_failure_scoped_to_data_and_loses_to_auth(self):
-        from kiro_crew.acp.client import _is_transient_raw_error
-
-        # Phrase only in `message`: the scoped match must not fire.
-        assert (
-            _is_transient_raw_error(
-                {
-                    "message": "The service failed to process the request",
-                    "data": "ValidationException: unsupported field",
-                }
-            )
-            is False
-        )
-        # Auth is checked first and stays terminal even when the phrase co-occurs.
-        assert (
-            _is_transient_raw_error(
-                {"data": "AccessDeniedException: The service failed to process the request"}
-            )
-            is False
-        )
 
     def test_prose_spelled_dispatch_failure_is_transient(self):
         from kiro_crew.acp.client import _is_transient_raw_error

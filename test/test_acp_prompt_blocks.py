@@ -1162,15 +1162,17 @@ class TestPathsAdjacentToUrls:
     then deleted at end of turn.
     """
 
-    def test_url_then_newline_then_path(self, tmp_path):
+    @pytest.mark.parametrize(
+        "gap",
+        [
+            pytest.param("\n", id="url_then_newline_then_path"),
+            # Same defect on one line -- a newline-only fix does not cover this.
+            pytest.param(" ", id="url_then_space_then_path"),
+        ],
+    )
+    def test_url_then_path(self, tmp_path, gap):
         p = _png(tmp_path)
-        blocks = build_prompt_blocks(f"see https://example.com/docs\n{p}")
-        assert [b["type"] for b in blocks] == ["text", "image"]
-
-    def test_url_then_space_then_path(self, tmp_path):
-        """Same defect on one line -- the newline-only fix does not cover this."""
-        p = _png(tmp_path)
-        blocks = build_prompt_blocks(f"see https://example.com/docs {p}")
+        blocks = build_prompt_blocks(f"see https://example.com/docs{gap}{p}")
         assert [b["type"] for b in blocks] == ["text", "image"]
 
     def test_url_ending_in_an_image_suffix_is_not_a_path(self):
@@ -1267,10 +1269,20 @@ class TestImageDownscale:
         blocks = build_prompt_blocks(f"see {p}", max_image_edge=0)
         assert base64.b64decode(blocks[1]["data"]) == original
 
-    def test_oversized_jpeg_keeps_jpeg_mime(self, tmp_path):
-        p = _sized_image(tmp_path, 3000, 1000, fmt="JPEG")
+    @pytest.mark.parametrize(
+        ("fmt", "height", "mime"),
+        [
+            pytest.param("JPEG", 1000, "image/jpeg", id="oversized_jpeg_keeps_jpeg_mime"),
+            # GIF re-encodes to a PNG first frame: the vision model reads frame 0
+            # only, and palette rescaling is lossy, so a lossless still is faithful.
+            pytest.param("GIF", 100, "image/png", id="oversized_gif_becomes_png_still"),
+            pytest.param("WEBP", 1000, "image/webp", id="oversized_webp_keeps_webp_mime"),
+        ],
+    )
+    def test_oversized_image_mime(self, tmp_path, fmt, height, mime):
+        p = _sized_image(tmp_path, 3000, height, fmt=fmt)
         blocks = build_prompt_blocks(f"see {p}")
-        assert blocks[1]["mimeType"] == "image/jpeg"
+        assert blocks[1]["mimeType"] == mime
         assert max(_decoded_size(blocks[1])) <= MAX_IMAGE_EDGE_PX
 
     def test_phone_photo_mpo_keeps_jpeg_both_ways(self, tmp_path):
@@ -1302,25 +1314,11 @@ class TestImageDownscale:
             assert im.format == "JPEG"
             assert im.size == (2000, 667)
 
-    def test_oversized_gif_becomes_png_still(self, tmp_path):
-        """GIF re-encodes to a PNG first frame: the vision model reads frame 0
-        only, and palette rescaling is lossy, so a lossless still is faithful."""
-        p = _sized_image(tmp_path, 3000, 100, fmt="GIF")
-        blocks = build_prompt_blocks(f"see {p}")
-        assert blocks[1]["mimeType"] == "image/png"
-        assert max(_decoded_size(blocks[1])) <= MAX_IMAGE_EDGE_PX
-
     def test_oversized_bmp_is_capped(self, tmp_path):
         # A thin BMP stays under the 10 MB byte gate yet over the edge cap, so
         # the downscale (not the byte gate) is what fires.
         p = _sized_image(tmp_path, 2400, 80, fmt="BMP")
         blocks = build_prompt_blocks(f"see {p}")
-        assert max(_decoded_size(blocks[1])) <= MAX_IMAGE_EDGE_PX
-
-    def test_oversized_webp_keeps_webp_mime(self, tmp_path):
-        p = _sized_image(tmp_path, 3000, 1000, fmt="WEBP")
-        blocks = build_prompt_blocks(f"see {p}")
-        assert blocks[1]["mimeType"] == "image/webp"
         assert max(_decoded_size(blocks[1])) <= MAX_IMAGE_EDGE_PX
 
     def test_undecodable_oversized_image_is_not_inlined(self, tmp_path, monkeypatch):

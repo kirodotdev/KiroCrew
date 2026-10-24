@@ -173,25 +173,32 @@ class TestModelEntitlementPreflight:
         client._probe_advertised_models = _no_probe_evidence
         return client
 
-    def test_unadvertised_model_is_unusable(self):
-        client = self._client(["claude-sonnet-4.6"], "claude-opus-4.8")
-        assert client._model_is_unusable("claude-opus-4.8") is True
-
-    def test_advertised_model_is_usable(self):
-        client = self._client(["claude-sonnet-4.6", "claude-opus-4.8"], "claude-opus-4.8")
-        assert client._model_is_unusable("claude-opus-4.8") is False
-
-    def test_unknown_entitlement_allows_the_send(self):
-        """Empty advertised set means "unknowable", never "nothing is allowed".
-
-        A backend that omits ``models`` must not have every model withheld.
-        """
-        client = self._client([], "claude-opus-4.8")
-        assert client._model_is_unusable("claude-opus-4.8") is False
-
-    def test_match_is_case_and_space_insensitive(self):
-        client = self._client(["Claude-Opus-4.8"], "claude-opus-4.8")
-        assert client._model_is_unusable("  claude-opus-4.8 ") is False
+    @pytest.mark.parametrize(
+        ("advertised", "asked", "unusable"),
+        [
+            pytest.param(
+                ["claude-sonnet-4.6"], "claude-opus-4.8", True, id="unadvertised_model_is_unusable"
+            ),
+            pytest.param(
+                ["claude-sonnet-4.6", "claude-opus-4.8"],
+                "claude-opus-4.8",
+                False,
+                id="advertised_model_is_usable",
+            ),
+            # Empty advertised set means "unknowable", never "nothing is allowed":
+            # a backend that omits ``models`` must not have every model withheld.
+            pytest.param([], "claude-opus-4.8", False, id="unknown_entitlement_allows_the_send"),
+            pytest.param(
+                ["Claude-Opus-4.8"],
+                "  claude-opus-4.8 ",
+                False,
+                id="match_is_case_and_space_insensitive",
+            ),
+        ],
+    )
+    def test_model_is_unusable(self, advertised, asked, unusable):
+        client = self._client(advertised, "claude-opus-4.8")
+        assert client._model_is_unusable(asked) is unusable
 
     @pytest.mark.asyncio
     async def test_startup_withholds_unusable_model(self):

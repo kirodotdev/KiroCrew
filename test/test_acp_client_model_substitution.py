@@ -25,49 +25,72 @@ class TestSubstitutionAdvisory:
     must treat the advisory as a warning and keep the session, NOT raise.
     """
 
-    def test_advisory_detected(self):
-        err = {
-            "code": -32603,
-            "message": "Internal error",
-            "data": {
-                "details": (
-                    'Model "opus" is restricted by your organization\'s '
-                    "settings. Using global.anthropic.claude-sonnet-4-6[1m] "
-                    "instead."
-                )
-            },
-        }
-        assert _is_model_substitution_advisory(err) is True
-
-    def test_advisory_detected_data_is_plain_string(self):
-        err = {
-            "code": -32603,
-            "message": "Internal error",
-            "data": 'Model "x" is restricted ... Using y instead.',
-        }
-        assert _is_model_substitution_advisory(err) is True
-
-    def test_real_internal_error_still_raises(self):
-        # A genuine -32603 with no substitution wording must NOT be swallowed.
-        err = {"code": -32603, "message": "Internal error", "data": "request_id: abc-123"}
-        assert _is_model_substitution_advisory(err) is False
-
-    def test_throttle_not_treated_as_advisory(self):
-        err = {
-            "code": -32603,
-            "message": "ThrottlingException: rate exceeded",
-            "data": "rate limit",
-        }
-        assert _is_model_substitution_advisory(err) is False
-
-    def test_wrong_code_not_advisory(self):
-        # Right wording, wrong code -> still raise (only -32603 qualifies).
-        err = {
-            "code": -32602,
-            "message": "Invalid params",
-            "data": {"details": 'Model "x" is restricted ... Using y instead'},
-        }
-        assert _is_model_substitution_advisory(err) is False
+    @pytest.mark.parametrize(
+        ("err", "expected"),
+        [
+            pytest.param(
+                {
+                    "code": -32603,
+                    "message": "Internal error",
+                    "data": {
+                        "details": (
+                            'Model "opus" is restricted by your organization\'s '
+                            "settings. Using global.anthropic.claude-sonnet-4-6[1m] "
+                            "instead."
+                        )
+                    },
+                },
+                True,
+                id="advisory_detected",
+            ),
+            pytest.param(
+                {
+                    "code": -32603,
+                    "message": "Internal error",
+                    "data": 'Model "x" is restricted ... Using y instead.',
+                },
+                True,
+                id="advisory_detected_data_is_plain_string",
+            ),
+            # A genuine -32603 with no substitution wording must NOT be swallowed.
+            pytest.param(
+                {"code": -32603, "message": "Internal error", "data": "request_id: abc-123"},
+                False,
+                id="real_internal_error_still_raises",
+            ),
+            pytest.param(
+                {
+                    "code": -32603,
+                    "message": "ThrottlingException: rate exceeded",
+                    "data": "rate limit",
+                },
+                False,
+                id="throttle_not_treated_as_advisory",
+            ),
+            # Right wording, wrong code -> still raise (only -32603 qualifies).
+            pytest.param(
+                {
+                    "code": -32602,
+                    "message": "Invalid params",
+                    "data": {"details": 'Model "x" is restricted ... Using y instead'},
+                },
+                False,
+                id="wrong_code_not_advisory",
+            ),
+            # "is restricted" without the "Using X instead" half must not match.
+            pytest.param(
+                {
+                    "code": -32603,
+                    "message": "Internal error",
+                    "data": {"details": 'Model "opus" is restricted by your settings.'},
+                },
+                False,
+                id="partial_wording_not_advisory",
+            ),
+        ],
+    )
+    def test_advisory_classification(self, err, expected):
+        assert _is_model_substitution_advisory(err) is expected
 
     def test_non_dict_not_advisory(self):
         assert _is_model_substitution_advisory("plain string") is False
@@ -78,15 +101,6 @@ class TestSubstitutionAdvisory:
             _is_model_substitution_advisory({"code": -32603, "message": "Internal error"}) is False
         )
         assert _is_model_substitution_advisory({"code": -32603, "data": ""}) is False
-
-    def test_partial_wording_not_advisory(self):
-        # "is restricted" without the "Using X instead" half must not match.
-        err = {
-            "code": -32603,
-            "message": "Internal error",
-            "data": {"details": 'Model "opus" is restricted by your settings.'},
-        }
-        assert _is_model_substitution_advisory(err) is False
 
     @pytest.mark.asyncio
     async def test_wait_for_response_returns_result_on_advisory(self, tmp_path):
@@ -182,32 +196,46 @@ class TestSubstituteModelExtractor:
     """_substitute_model_from_advisory pulls the gateway-served model id out of
     the -32603 advisory so the session/new caller can adopt it."""
 
-    def test_extracts_versioned_substitute(self):
-        err = {
-            "code": -32603,
-            "data": {
-                "details": (
-                    'Model "opus" is restricted by your organization\'s '
-                    "settings. Using global.anthropic.claude-sonnet-4-6[1m] instead."
-                )
-            },
-        }
-        assert _substitute_model_from_advisory(err) == "global.anthropic.claude-sonnet-4-6[1m]"
-
-    def test_extracts_with_trailing_period_and_quotes(self):
-        err = {
-            "code": -32603,
-            "data": {"details": "Model X is restricted. Using claude-opus-4-6[1m] instead."},
-        }
-        assert _substitute_model_from_advisory(err) == "claude-opus-4-6[1m]"
-
-    def test_returns_none_for_real_internal_error(self):
-        err = {"code": -32603, "data": "request_id: abc-123"}
-        assert _substitute_model_from_advisory(err) is None
-
-    def test_returns_none_for_wrong_code(self):
-        err = {"code": -32602, "data": {"details": "is restricted ... Using y instead"}}
-        assert _substitute_model_from_advisory(err) is None
+    @pytest.mark.parametrize(
+        ("err", "expected"),
+        [
+            pytest.param(
+                {
+                    "code": -32603,
+                    "data": {
+                        "details": (
+                            'Model "opus" is restricted by your organization\'s '
+                            "settings. Using global.anthropic.claude-sonnet-4-6[1m] instead."
+                        )
+                    },
+                },
+                "global.anthropic.claude-sonnet-4-6[1m]",
+                id="extracts_versioned_substitute",
+            ),
+            pytest.param(
+                {
+                    "code": -32603,
+                    "data": {
+                        "details": "Model X is restricted. Using claude-opus-4-6[1m] instead."
+                    },
+                },
+                "claude-opus-4-6[1m]",
+                id="extracts_with_trailing_period_and_quotes",
+            ),
+            pytest.param(
+                {"code": -32603, "data": "request_id: abc-123"},
+                None,
+                id="returns_none_for_real_internal_error",
+            ),
+            pytest.param(
+                {"code": -32602, "data": {"details": "is restricted ... Using y instead"}},
+                None,
+                id="returns_none_for_wrong_code",
+            ),
+        ],
+    )
+    def test_substitute_extraction(self, err, expected):
+        assert _substitute_model_from_advisory(err) == expected
 
     def test_returns_none_for_non_dict(self):
         assert _substitute_model_from_advisory(None) is None
@@ -385,12 +413,29 @@ class TestSubstitutionFollow:
         assert sent.count("session/new") == 1
 
     @pytest.mark.asyncio
-    async def test_no_infinite_retry_when_substitute_unparseable(self, tmp_path):
-        # Advisory fired but substitute could not be parsed (None) -> we do NOT
-        # retry; caller gets an empty resp and raises a clear error upstream.
+    @pytest.mark.parametrize(
+        ("model", "substitute"),
+        [
+            # Advisory fired but substitute could not be parsed (None) -> we do NOT
+            # retry; caller gets an empty resp and raises a clear error upstream.
+            pytest.param(
+                "global.anthropic.claude-opus-4-8[1m]",
+                None,
+                id="no_infinite_retry_when_substitute_unparseable",
+            ),
+            # Defensive: if the gateway "substitutes" to the model we already asked
+            # for, don't loop -- treat as terminal (no retry).
+            pytest.param(
+                "global.anthropic.claude-sonnet-4-6[1m]",
+                "global.anthropic.claude-sonnet-4-6[1m]",
+                id="no_retry_when_substitute_same_as_current",
+            ),
+        ],
+    )
+    async def test_terminal_advisory_is_not_retried(self, tmp_path, model, substitute):
         client = AcpClient(work_dir=tmp_path)
         client._acp_backend = ACP_BACKEND_CLAUDE
-        client._model = "global.anthropic.claude-opus-4-8[1m]"
+        client._model = model
         client._write_claude_local_settings = MagicMock()  # type: ignore[assignment]
 
         sent = []
@@ -400,35 +445,7 @@ class TestSubstitutionFollow:
             return len(sent)
 
         async def _wait(req_id, timeout=0.0, *, method="", expected_mcp=None):
-            client._last_substitution_model = None  # unparseable
-            return {}
-
-        client._send_request = _send  # type: ignore[assignment]
-        client._wait_for_response = _wait  # type: ignore[assignment]
-
-        resp = await client._new_session_following_substitution()
-
-        assert resp.get("sessionId") is None
-        client._write_claude_local_settings.assert_not_called()
-        assert sent.count("session/new") == 1  # no retry
-
-    @pytest.mark.asyncio
-    async def test_no_retry_when_substitute_same_as_current(self, tmp_path):
-        # Defensive: if the gateway "substitutes" to the model we already asked
-        # for, don't loop -- treat as terminal (no retry).
-        client = AcpClient(work_dir=tmp_path)
-        client._acp_backend = ACP_BACKEND_CLAUDE
-        client._model = "global.anthropic.claude-sonnet-4-6[1m]"
-        client._write_claude_local_settings = MagicMock()  # type: ignore[assignment]
-
-        sent = []
-
-        async def _send(method, params):
-            sent.append(method)
-            return len(sent)
-
-        async def _wait(req_id, timeout=0.0, *, method="", expected_mcp=None):
-            client._last_substitution_model = "global.anthropic.claude-sonnet-4-6[1m]"
+            client._last_substitution_model = substitute
             return {}
 
         client._send_request = _send  # type: ignore[assignment]

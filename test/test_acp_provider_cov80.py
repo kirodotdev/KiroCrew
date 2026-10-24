@@ -126,15 +126,17 @@ class TestSteer:
 
 
 class TestSessionId:
-    def test_session_id_comes_from_the_client(self) -> None:
+    @pytest.mark.parametrize(
+        "session_id",
+        [
+            pytest.param("sess-uuid-1", id="session_id_comes_from_the_client"),
+            pytest.param("", id="absent_session_id_is_empty"),
+        ],
+    )
+    def test_session_id(self, session_id) -> None:
         provider = _provider()
-        provider._client._session_id = "sess-uuid-1"
-        assert provider.session_id == "sess-uuid-1"
-
-    def test_absent_session_id_is_empty(self) -> None:
-        provider = _provider()
-        provider._client._session_id = ""
-        assert provider.session_id == ""
+        provider._client._session_id = session_id
+        assert provider.session_id == session_id
 
     def test_clientless_provider_has_no_session_id(self) -> None:
         provider = _provider()
@@ -159,8 +161,12 @@ class TestCleanupSession:
     async def test_missing_files_are_not_an_error(self, monkeypatch, tmp_path: Path) -> None:
         sessions = tmp_path / "cli"
         sessions.mkdir()
+        other = sessions / "other-session.json"
+        other.write_text("{}", encoding="utf-8")
         monkeypatch.setattr(acp_mod, "kiro_sessions_dir", lambda: sessions)
         await _provider().cleanup_session("never-existed")
+        # Only the named session's files are ever touched.
+        assert sorted(p.name for p in sessions.iterdir()) == ["other-session.json"]
 
     @pytest.mark.asyncio
     async def test_blank_session_id_is_a_noop(self, monkeypatch) -> None:

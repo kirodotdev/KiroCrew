@@ -98,31 +98,30 @@ class TestServedModel:
         provider._client = self._session_shape(self._real_handle())
         assert provider.served_model == ""
 
-    def test_raw_client_uses_resolved_id_never_requested_model(self):
-        # The raw AcpClient carries the REQUESTED `_model` (defaults to the
-        # "auto" sentinel) and the BACKEND-RESOLVED `_resolved_model_id`.
-        # Only the latter is served evidence.
+    @pytest.mark.parametrize(
+        ("resolved_id", "expected"),
+        [
+            # The raw AcpClient carries the REQUESTED `_model` (defaults to the
+            # "auto" sentinel) and the BACKEND-RESOLVED `_resolved_model_id`.
+            # Only the latter is served evidence.
+            pytest.param(
+                "gpt-5.6-sol", "gpt-5.6-sol", id="raw_client_uses_resolved_id_never_requested_model"
+            ),
+            # A requested-but-unresolved "auto" must read as unknown ("") — a
+            # canary probing "auto" could land on a DIFFERENT model than the
+            # failing session and fabricate discard evidence.
+            pytest.param(None, "", id="auto_sentinel_is_filtered_to_unknown"),
+        ],
+    )
+    def test_raw_client_served_model(self, resolved_id, expected):
         provider = _build_provider(ACP_BACKEND_CLAUDE)
 
         class _RawShape:
             _model = "auto"
-            _resolved_model_id = "gpt-5.6-sol"
+            _resolved_model_id = resolved_id
 
         provider._client = _RawShape()
-        assert provider.served_model == "gpt-5.6-sol"
-
-    def test_auto_sentinel_is_filtered_to_unknown(self):
-        # A requested-but-unresolved "auto" must read as unknown ("") — a
-        # canary probing "auto" could land on a DIFFERENT model than the
-        # failing session and fabricate discard evidence.
-        provider = _build_provider(ACP_BACKEND_CLAUDE)
-
-        class _RawShape:
-            _model = "auto"
-            _resolved_model_id = None
-
-        provider._client = _RawShape()
-        assert provider.served_model == ""
+        assert provider.served_model == expected
 
     def test_unresolvable_model_is_empty_not_error(self):
         # No readable model → "" (callers treat as inconclusive, never wildcard).
@@ -692,7 +691,10 @@ class TestEffortControl:
         provider = self._effort_provider(backend="", model="claude-opus-4.7")
         provider._effort_per_model = {"claude-opus-4.7": "max"}
         await provider._apply_initial_effort()
+        # A level does resolve, so the missing push is the backend gate's doing.
+        assert provider._resolve_effort() == "max"
         provider._client.set_config_option.assert_not_awaited()
+        provider._client.send_command.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_claude_apply_initial_effort_swallows_adapter_error(self):
@@ -701,6 +703,7 @@ class TestEffortControl:
         provider._client.set_config_option = AsyncMock(side_effect=RuntimeError("bad"))
         # Must not raise — a rejected effort cannot break session start.
         await provider._apply_initial_effort()
+        provider._client.set_config_option.assert_awaited_once_with("effort", "max")
 
     @pytest.mark.asyncio
     async def test_claude_initial_effort_skips_when_option_unsupported(self):
@@ -711,6 +714,7 @@ class TestEffortControl:
         provider._effort_per_model = {"claude-opus-4.7": "max"}
         provider._client.supports_config_option = MagicMock(return_value=False)
         await provider._apply_initial_effort()
+        provider._client.supports_config_option.assert_called_once_with("effort")
         provider._client.set_config_option.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -741,8 +745,10 @@ class TestEffortControl:
                 "'data': {'details': 'Unknown config option: effort'}}"
             )
         )
-        # Must not raise.
+        # Must not raise, and must not walk down the ladder: an unknown option
+        # is not a value rejection.
         await provider._set_effort_config_option("max")
+        provider._client.set_config_option.assert_awaited_once_with("effort", "max")
 
     @pytest.mark.asyncio
     async def test_kiro_clear_effort_no_default_returns_false_for_reset(self):
@@ -974,17 +980,17 @@ class TestStartKiroRuntimeResume:
         assert runtime.create_session.await_args.kwargs["start_priority"] is want
 
     @pytest.mark.asyncio
-    async def test_resume_skipped_when_transcript_missing(self):
+    @pytest.mark.parametrize(
+        ("resume_sid", "file_exists"),
+        [
+            # A stale sid with no transcript on disk must NOT replay — fresh start.
+            pytest.param("stale-sid", False, id="resume_skipped_when_transcript_missing"),
+            pytest.param("", True, id="no_resume_when_sid_empty"),
+        ],
+    )
+    async def test_fresh_start_without_a_resumable_session(self, resume_sid, file_exists):
         provider = self._kiro_provider()
-        _handle, runtime = await self._run_start(provider, "stale-sid", file_exists=False)
-        # A stale sid with no transcript on disk must NOT replay — fresh start.
-        runtime.load_session.assert_not_awaited()
-        runtime.create_session.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_no_resume_when_sid_empty(self):
-        provider = self._kiro_provider()
-        _handle, runtime = await self._run_start(provider, "", file_exists=True)
+        _handle, runtime = await self._run_start(provider, resume_sid, file_exists=file_exists)
         runtime.load_session.assert_not_awaited()
         runtime.create_session.assert_awaited_once()
 
@@ -1014,6 +1020,7 @@ class TestStartKiroRuntimeResume:
         provider = self._kiro_provider(model="auto")
         handle, _runtime = await self._run_start(provider, "", file_exists=True)
         handle.set_model.assert_not_awaited()
+        assert provider._client._handle is handle
 
     @pytest.mark.asyncio
     async def test_create_session_failure_kills_orphaned_runtime(self):
@@ -1172,6 +1179,7 @@ class TestStartKiroRuntimeResume:
         provider = self._kiro_provider(model="auto")
         _handle, runtime = await self._run_start(provider, "", file_exists=True)
         runtime.kill.assert_not_called()
+        assert provider._client._runtime is runtime
 
 
 class _CapturingRecorder:
@@ -1669,11 +1677,6 @@ class TestStartKiroRuntimeModelEntitlement:
         return handle
 
     @pytest.mark.asyncio
-    async def test_unusable_configured_model_is_never_sent(self):
-        handle = await self._run("claude-opus-4.8", ["claude-sonnet-4.6"])
-        handle.set_model.assert_not_awaited()
-
-    @pytest.mark.asyncio
     async def test_a_withheld_configured_model_is_recorded_as_refused(self):
         # The pin never ran, so a caller that bills or labels a turn by it (the
         # cron acquire step) reads it from the handle's model_pin_refused.
@@ -1688,11 +1691,6 @@ class TestStartKiroRuntimeModelEntitlement:
         assert handle.model_pin_refused == ""
 
     @pytest.mark.asyncio
-    async def test_usable_configured_model_is_applied(self):
-        handle = await self._run("claude-opus-4.8", ["claude-sonnet-4.6", "claude-opus-4.8"])
-        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
-
-    @pytest.mark.asyncio
     async def test_unknown_entitlement_still_applies(self):
         """No advertised list means unknowable, so behaviour is unchanged."""
         handle = await self._run("claude-opus-4.8", [])
@@ -1702,6 +1700,8 @@ class TestStartKiroRuntimeModelEntitlement:
     async def test_auto_sentinel_never_reaches_the_check(self):
         handle = await self._run("auto", ["claude-sonnet-4.6"])
         handle.set_model.assert_not_awaited()
+        handle.refresh_available_models.assert_not_awaited()
+        assert handle.model_pin_refused == ""
 
     @pytest.mark.asyncio
     async def test_pin_absent_from_startup_snapshot_is_applied_when_the_probe_reveals_it(self):
@@ -1740,7 +1740,9 @@ class TestStartKiroRuntimeModelEntitlement:
         # A failed probe is no evidence: keep the snapshot verdict (withhold),
         # fail open exactly as today.
         handle = await self._run("claude-opus-4.8", ["claude-sonnet-4.6"], probe_raises=True)
+        handle.refresh_available_models.assert_awaited_once()
         handle.set_model.assert_not_awaited()
+        assert handle.model_pin_refused == "claude-opus-4.8"
 
     @pytest.mark.asyncio
     async def test_qualifier_only_miss_resolves_via_the_fold_without_probing(self):

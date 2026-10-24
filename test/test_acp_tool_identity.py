@@ -53,21 +53,23 @@ class TestKiroMcpServerName:
         update = {"_meta": {"kiro": {"mcpServerName": "kirocrew-core"}}}
         assert _kiro_mcp_server_name(update) == "kirocrew-core"
 
-    def test_absent_meta_yields_empty(self) -> None:
-        assert _kiro_mcp_server_name({"toolCallId": "tc1"}) == ""
-
-    def test_absent_key_yields_empty(self) -> None:
-        """A built-in/shell tool emits ``_meta.kiro`` without an mcpServerName."""
-        assert _kiro_mcp_server_name({"_meta": {"kiro": {"toolName": "execute_bash"}}}) == ""
-
-    def test_malformed_meta_not_dict_yields_empty(self) -> None:
-        assert _kiro_mcp_server_name({"_meta": "nope"}) == ""
-
-    def test_malformed_kiro_not_dict_yields_empty(self) -> None:
-        assert _kiro_mcp_server_name({"_meta": {"kiro": "nope"}}) == ""
-
-    def test_non_string_name_yields_empty(self) -> None:
-        assert _kiro_mcp_server_name({"_meta": {"kiro": {"mcpServerName": 123}}}) == ""
+    @pytest.mark.parametrize(
+        "update",
+        [
+            pytest.param({"toolCallId": "tc1"}, id="absent_meta_yields_empty"),
+            # A built-in/shell tool emits ``_meta.kiro`` without an mcpServerName.
+            pytest.param(
+                {"_meta": {"kiro": {"toolName": "execute_bash"}}}, id="absent_key_yields_empty"
+            ),
+            pytest.param({"_meta": "nope"}, id="malformed_meta_not_dict_yields_empty"),
+            pytest.param({"_meta": {"kiro": "nope"}}, id="malformed_kiro_not_dict_yields_empty"),
+            pytest.param(
+                {"_meta": {"kiro": {"mcpServerName": 123}}}, id="non_string_name_yields_empty"
+            ),
+        ],
+    )
+    def test_no_trusted_name_yields_empty(self, update) -> None:
+        assert _kiro_mcp_server_name(update) == ""
 
 
 class TestBuildToolCallEventIdentity:

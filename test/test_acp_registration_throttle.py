@@ -48,14 +48,26 @@ def test_returns_first_matching_line_from_a_multi_line_tail():
     assert registration_throttle_line(tail) == _THROTTLE_LINE
 
 
-def test_429_without_registration_context_does_not_match():
-    """A model-turn throttle has its own classifier; this one must not fire."""
-    assert registration_throttle_line("HTTP 429 Too Many Requests from Bedrock") is None
-
-
-def test_registration_failure_without_throttle_marker_does_not_match():
-    """An auth-rejected or malformed registration is terminal, never a throttle."""
-    line = "Dynamic registration failed: Registration failed: HTTP 401 Unauthorized"
+@pytest.mark.parametrize(
+    "line",
+    [
+        # A model-turn throttle has its own classifier; this one must not fire.
+        pytest.param(
+            "HTTP 429 Too Many Requests from Bedrock",
+            id="429_without_registration_context_does_not_match",
+        ),
+        # An auth-rejected or malformed registration is terminal, never a throttle.
+        pytest.param(
+            "Dynamic registration failed: Registration failed: HTTP 401 Unauthorized",
+            id="registration_failure_without_throttle_marker_does_not_match",
+        ),
+        # A digit landing in an exit code or byte count must not upgrade a crash.
+        pytest.param(
+            "Dynamic registration failed: code 429", id="bare_429_digits_are_not_a_marker"
+        ),
+    ],
+)
+def test_not_a_registration_throttle(line):
     assert registration_throttle_line(line) is None
 
 
@@ -64,11 +76,6 @@ def test_conjunction_is_per_line_not_per_tail():
     must not combine into a verdict neither line supports."""
     tail = "Dynamic registration failed: bad response\nupstream said too many requests"
     assert registration_throttle_line(tail) is None
-
-
-def test_bare_429_digits_are_not_a_marker():
-    """A digit landing in an exit code or byte count must not upgrade a crash."""
-    assert registration_throttle_line("Dynamic registration failed: code 429") is None
 
 
 def test_requested_too_many_times_wording_matches():

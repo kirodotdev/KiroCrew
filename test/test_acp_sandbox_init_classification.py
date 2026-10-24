@@ -227,8 +227,10 @@ async def test_corroboration_is_not_attempted_without_a_launcher_line():
     question it cannot answer.
     """
     with patch("kiro_crew.acp.client.corroborate_launcher_refusal") as corroborate:
-        await sandbox_init_failure("\n".join(HARNESS_SANDBOX_STDERR), crew_wrap=True)
+        exc = await sandbox_init_failure("\n".join(HARNESS_SANDBOX_STDERR), crew_wrap=True)
     corroborate.assert_not_called()
+    # With no corroboration there is no host verdict, so no disable switch.
+    assert "config set agent.sandbox off" not in str(exc)
 
 
 @pytest.mark.asyncio
@@ -818,12 +820,15 @@ async def test_a_finished_or_absent_drain_costs_nothing():
     """The settle is a no-op where there is nothing to wait for."""
     runtime = _runtime([])
     runtime._stderr_task = None
-    await runtime.settle_stderr()
+    assert await runtime.settle_stderr() is None
 
     await runtime._drain_stderr()
     done = asyncio.get_event_loop().create_future()
     done.set_result(None)
-    await runtime.settle_stderr()
+    runtime._stderr_task = done
+    assert await runtime.settle_stderr() is None
+    assert runtime._stderr_task is done
+    assert runtime.saw_sandbox_init_failure() is False
 
 
 @pytest.mark.asyncio
@@ -850,6 +855,9 @@ async def test_a_wedged_drain_cannot_hold_the_failure_path():
             "the stderr settle is unbounded, so a wedged drain holds a failure "
             "path open instead of letting it report"
         ) from None
+    else:
+        # The settle returned on its own bound, so the drain is still running.
+        assert not runtime._stderr_task.done()
     finally:
         runtime._stderr_task.cancel()
 

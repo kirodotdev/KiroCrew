@@ -164,28 +164,23 @@ class TestAdvisoryHelpers:
         err = {"code": -32603, "data": {"details": "Model 'x' is restricted by policy."}}
         assert _substitute_model_from_advisory(err) is None
 
-    def test_substitute_strips_surrounding_quotes(self):
-        err = {
-            "code": -32603,
-            "data": {
-                "details": (
-                    'Model "a" is restricted by your organization\'s settings. '
-                    "Using 'global.anthropic.sonnet' instead."
-                )
-            },
-        }
-        assert _substitute_model_from_advisory(err) == "global.anthropic.sonnet"
-
-    def test_substitute_strips_trailing_punctuation(self):
-        err = {
-            "code": -32603,
-            "data": {
-                "details": (
-                    "Model a is restricted by your organization's settings. "
-                    "Using global.anthropic.sonnet, instead."
-                )
-            },
-        }
+    @pytest.mark.parametrize(
+        "details",
+        [
+            pytest.param(
+                'Model "a" is restricted by your organization\'s settings. '
+                "Using 'global.anthropic.sonnet' instead.",
+                id="substitute_strips_surrounding_quotes",
+            ),
+            pytest.param(
+                "Model a is restricted by your organization's settings. "
+                "Using global.anthropic.sonnet, instead.",
+                id="substitute_strips_trailing_punctuation",
+            ),
+        ],
+    )
+    def test_substitute_is_bare(self, details):
+        err = {"code": -32603, "data": {"details": details}}
         assert _substitute_model_from_advisory(err) == "global.anthropic.sonnet"
 
 

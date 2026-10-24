@@ -54,20 +54,29 @@ class TestExtractToolCallUpdate:
         assert event.tool_call_id == "tc-1"
         assert "hello world" in event.tool_output
 
-    def test_raw_output_stdout_path(self):
+    @pytest.mark.parametrize(
+        ("tool_call_id", "json_item", "expected"),
+        [
+            pytest.param(
+                "tc-2", {"stdout": "ls output here"}, "ls output here", id="raw_output_stdout_path"
+            ),
+            pytest.param("tc-3", {"key": "value"}, "key", id="raw_output_json_fallback"),
+        ],
+    )
+    def test_raw_output_json_item(self, tool_call_id, json_item, expected):
         client = self._client()
         msg = self._make_msg(
             {
                 "sessionUpdate": "tool_call_update",
-                "toolCallId": "tc-2",
+                "toolCallId": tool_call_id,
                 "rawOutput": {
-                    "items": [{"Json": {"stdout": "ls output here"}}],
+                    "items": [{"Json": json_item}],
                 },
             }
         )
         event = client._extract_tool_call_update(msg)
         assert event is not None
-        assert "ls output here" in event.tool_output
+        assert expected in event.tool_output
 
     def test_flat_raw_output_is_not_read_as_no_output(self):
         """A captured KAS completion whose only carrier is a flat ``rawOutput``.
@@ -224,21 +233,6 @@ class TestExtractToolCallUpdate:
         assert event.tool_output == "measured-only-when-on"
         assert event.tool_output_bytes == -1, "the parser measured with the ledger off"
         assert event.tool_output_digest == "", "the parser digested with the ledger off"
-
-    def test_raw_output_json_fallback(self):
-        client = self._client()
-        msg = self._make_msg(
-            {
-                "sessionUpdate": "tool_call_update",
-                "toolCallId": "tc-3",
-                "rawOutput": {
-                    "items": [{"Json": {"key": "value"}}],
-                },
-            }
-        )
-        event = client._extract_tool_call_update(msg)
-        assert event is not None
-        assert "key" in event.tool_output
 
     def test_raw_output_text_path(self):
         # fs_read / shell-style tools land their output in items[].Text —
@@ -742,9 +736,17 @@ class TestExtractToolCallRefinement:
         msg = JsonRpcMessage(params={"update": {"sessionUpdate": "other"}})
         assert client._extract_tool_call_refinement(msg) is None
 
-    def test_ignores_missing_tool_call_id(self):
+    @pytest.mark.parametrize(
+        "tool_call_id",
+        [
+            pytest.param("", id="ignores_missing_tool_call_id"),
+            # Empty update with just tool_call_id should not emit a refinement.
+            pytest.param("tc-6", id="no_refinement_fields_returns_none"),
+        ],
+    )
+    def test_no_refinement(self, tool_call_id):
         client = self._client()
-        msg = self._make_msg({"sessionUpdate": "tool_call_update", "toolCallId": ""})
+        msg = self._make_msg({"sessionUpdate": "tool_call_update", "toolCallId": tool_call_id})
         assert client._extract_tool_call_refinement(msg) is None
 
     def test_pure_output_update_returns_none(self):
@@ -938,17 +940,6 @@ class TestExtractToolCallRefinement:
         assert event is not None
         assert "AKIAIOSFODNN7EXAMPLE" not in event.tool_input
 
-    def test_no_refinement_fields_returns_none(self):
-        # Empty update with just tool_call_id should not emit a refinement.
-        client = self._client()
-        msg = self._make_msg(
-            {
-                "sessionUpdate": "tool_call_update",
-                "toolCallId": "tc-6",
-            }
-        )
-        assert client._extract_tool_call_refinement(msg) is None
-
     def test_kind_only_emits_refinement(self):
         # Even a lone `kind` update is worth surfacing — avoids losing the
         # Bash/Edit distinction if the upstream renders it without a title.
@@ -1094,23 +1085,23 @@ class TestAcpClientIsShellSignal:
         assert ev is not None
         assert ev.is_shell is False
 
-    def test_permission_event_inherits_is_shell_from_tool_call(self, tmp_path):
+    @pytest.mark.parametrize(
+        ("kind", "expected"),
+        [
+            pytest.param("execute", True, id="permission_event_inherits_is_shell_from_tool_call"),
+            pytest.param("edit", False, id="permission_event_non_shell_stays_false"),
+        ],
+    )
+    def test_permission_event_is_shell_from_the_tool_call(self, tmp_path, kind, expected):
         from kiro_crew.acp.client import AcpClient
 
         client = AcpClient(work_dir=tmp_path)
-        # 1. tool_call notification arrives first (kind="execute")
-        client._extract_tool_event(self._tool_call_msg("execute"))
-        # 2. permission request for the SAME toolCallId carries no kind
+        # 1. tool_call notification arrives first and carries the kind
+        client._extract_tool_event(self._tool_call_msg(kind))
+        # 2. permission request for the SAME toolCallId carries no kind, so the
+        # verdict comes from the toolCallId cache
         perm = client._build_permission_event(self._permission_msg())
-        assert perm.is_shell is True  # inherited via the toolCallId cache
-
-    def test_permission_event_non_shell_stays_false(self, tmp_path):
-        from kiro_crew.acp.client import AcpClient
-
-        client = AcpClient(work_dir=tmp_path)
-        client._extract_tool_event(self._tool_call_msg("edit"))
-        perm = client._build_permission_event(self._permission_msg())
-        assert perm.is_shell is False
+        assert perm.is_shell is expected
 
     def test_permission_event_inherits_trusted_tool_identity(self, tmp_path):
         # The client caches the trusted _meta.kiro identity (mcpServerName +
@@ -1281,30 +1272,24 @@ class TestAcpClientIsShellSignal:
         # Mirrors the chat_runner call site.
         assert _validate_tool_name(perm.title, is_shell=perm.is_shell) == perm.title
 
-    def test_refinement_kindless_does_not_clobber_cached_shell(self, tmp_path):
-        """A refinement update that omits `kind` must NOT overwrite the
-        is_shell=True cached by the initial tool_call notification (kind is
-        optional on updates). This pins the no-clobber invariant."""
+    @pytest.mark.parametrize(
+        ("initial_kind", "refinement_kind"),
+        [
+            # A refinement update that omits `kind` must NOT overwrite the
+            # is_shell=True cached by the initial tool_call notification (kind is
+            # optional on updates). This pins the no-clobber invariant.
+            pytest.param("execute", None, id="refinement_kindless_does_not_clobber_cached_shell"),
+            # A refinement that DOES carry a kind refreshes the cached signal: the
+            # edit tool_call cached False, and kind="execute" must flip it to True.
+            pytest.param("edit", "execute", id="refinement_with_kind_refreshes_shell_signal"),
+        ],
+    )
+    def test_refinement_leaves_a_shell_verdict(self, tmp_path, initial_kind, refinement_kind):
         from kiro_crew.acp.client import AcpClient
 
         client = AcpClient(work_dir=tmp_path)
-        # 1. initial tool_call carries kind="execute" → caches True
-        client._extract_tool_event(self._tool_call_msg("execute"))
-        # 2. refinement arrives WITHOUT a kind — must preserve the cached True
-        ev = client._extract_tool_call_refinement(self._refinement_msg(None))
-        assert ev is not None
-        assert ev.is_shell is True
-        assert client._tool_call_is_shell.get("tc-1") is True
-
-    def test_refinement_with_kind_refreshes_shell_signal(self, tmp_path):
-        """A refinement that DOES carry a kind refreshes the cached signal."""
-        from kiro_crew.acp.client import AcpClient
-
-        client = AcpClient(work_dir=tmp_path)
-        # initial tool_call had no shell kind (edit) → cached False
-        client._extract_tool_event(self._tool_call_msg("edit"))
-        # refinement now reports kind="execute" → must flip cache to True
-        ev = client._extract_tool_call_refinement(self._refinement_msg("execute"))
+        client._extract_tool_event(self._tool_call_msg(initial_kind))
+        ev = client._extract_tool_call_refinement(self._refinement_msg(refinement_kind))
         assert ev is not None
         assert ev.is_shell is True
         assert client._tool_call_is_shell.get("tc-1") is True
