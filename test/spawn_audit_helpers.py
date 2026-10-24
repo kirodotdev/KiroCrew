@@ -437,6 +437,13 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "acp/kas_bundle.py::_run_tool",
         "browser_cli/launcher.py::_run_cli",
         "browser_cli/view.py::_spawn",
+        # ``chromium_compat.py::_run_tool`` runs ``nm -D <chrome>`` and ``ldconfig -p``
+        # once at gateway start to decide whether the playwright-cli config needs an
+        # older cached Chromium. The tool comes from ``trusted_system_bin`` (fixed
+        # system dirs, never PATH), the flags are fixed, and the one free element is
+        # a ``chrome`` path under the gateway's own Playwright cache. No agent input
+        # reaches the argv; it only reads symbol tables, like the system probes above.
+        "browser_cli/chromium_compat.py::_run_tool",
         # The offline run of an authored dashboard page (``dashboard_verify``). The argv
         # is fixed: a system Python and a browser path, each from a fixed list of system
         # locations and each past the strict provider-executable check (root-owned, not a

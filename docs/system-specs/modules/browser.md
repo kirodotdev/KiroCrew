@@ -615,13 +615,43 @@ config error.
 becomes a default an operator must discover in order to override, and the engine
 is the only one the install flow already decided.
 
+**One exception: a Chromium build that cannot start on this host.** Chromium
+builds from about revision 1234 on hard-require (`U`) the libcups function
+`ippValidateAttributes`, which older distributions such as Amazon Linux 2 do not
+export, so the linker refuses to start them (exit 127, `undefined symbol:
+ippValidateAttributes`). `browser_cli/chromium_compat.py` reads dynamic symbol
+tables with `nm -D` (resolved through `trusted_system_bin`, never run against
+`PATH`). When all four of these hold, the config also carries
+`launchOptions.executablePath` pointing at the newest complete cached
+`chromium-<rev>` build (one carrying Playwright's `INSTALLATION_COMPLETE` marker)
+that references the symbol weakly (`w`) or not at all:
+
+| Condition | Why it is required |
+|---|---|
+| the host is Linux | the symbol is a Linux libcups one |
+| the build the CLI would launch (its `browsers.json` `chromium` revision, else the newest cached) has it as `U` | otherwise the default build starts and nothing changes |
+| the system `libcups.so.2` the dynamic linker resolves (`ldconfig -p`, never `LD_LIBRARY_PATH`) does not export it | a current libcups runs the new build, so a stale older build in the cache never downgrades it |
+| a complete cached build can start without it | with none, a pin changes nothing; a warning names the fix instead. An interrupted extraction is never a candidate, however new, because pinning it would fail every launch |
+
+Any probe that cannot run (no trusted `nm`, an unreadable table, no libcups)
+counts as no evidence and leaves the config unchanged. The answer is re-evaluated
+each time the gateway starts (the only caller is `cli_env_overrides()` on the
+startup path), so the pin goes away at the first restart after cups-libs is
+upgraded, and a host whose cache was empty at boot gets it at the next restart.
+`executablePath` applies to whichever engine a command selects, so on a pinned
+host a command that overrides the engine with `--browser` would launch the pinned
+Chromium binary. Nothing Kiro Crew ships passes that flag.
+
 **The browser sandbox is deliberately untouched.** Chromium's sandbox is a
 security boundary, so no generated default removes it. A host that cannot run it —
 a container lacking the kernel permissions, where the failure is
 `No usable sandbox!` — needs an operator decision rather than a default that
 quietly drops the boundary for every host. That is what the escape hatch is for:
-when `PLAYWRIGHT_MCP_CONFIG` is **already set** in the environment, Kiro Crew adds
-nothing and the operator's file wins entirely. Naming a config is how an operator
+when `PLAYWRIGHT_MCP_CONFIG` is **already set** in the environment to any other
+path, Kiro Crew adds nothing and the operator's file wins entirely. A value equal
+to Kiro Crew's own `launch_config_path()` is not an operator choice: an in-place
+restart (`reexec_python_module()`) inherits the variable the previous gateway set,
+so that value still gets the file rewritten and the probe re-run. Naming a config is how an operator
 selects a different engine, pins an `executablePath`, or accepts the sandbox
 trade-off on a host that requires it.
 
