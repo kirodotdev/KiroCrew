@@ -1,10 +1,10 @@
-"""Crew as the KAS engine's store for remote MCP sign-ins (opt-in).
+"""Crew as the KAS engine's store for remote MCP sign-ins (on by default).
 
-When ``agent.kas_persist_mcp_sign_in`` is on, the KAS handshake declares
-``_meta.kiro.secretStorage`` and the engine keeps an MCP server's OAuth state
-through three connection-level requests that name no session:
+When ``agent.kas_persist_mcp_sign_in`` is on (the default), the KAS handshake
+declares ``_meta.kiro.secretStorage`` and the engine keeps an MCP server's OAuth
+state through three connection-level requests that name no session:
 ``_kiro/secret/get {key}`` -> ``{value}``, ``_kiro/secret/store {key, value}``
-and ``_kiro/secret/delete {key}``. Off (the default), nothing is declared, the
+and ``_kiro/secret/delete {key}``. Off, nothing is declared, the
 engine holds every grant in its own memory, and a stray request is answered
 -32601 by the reader loop like any other unclaimed method.
 
@@ -93,8 +93,9 @@ class SecretStorageRefused(Exception):
 def persistence_enabled() -> bool:
     """``agent.kas_persist_mcp_sign_in`` as configured. Blocking; call off the loop.
 
-    Any failure to read config is OFF: the feature is opt-in, so a broken config
-    keeps today's in-memory behaviour rather than starting to store tokens.
+    Any failure to read config is OFF: an unreadable config cannot say whether
+    the user turned storage off, so the engine keeps grants in memory rather
+    than storing tokens against a choice it could not read.
     """
     try:
         from kiro_crew.config.loader import KiroCrewConfig

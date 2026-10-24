@@ -553,6 +553,36 @@ def _coerced_section(data: dict, key: str, degraded: set[str]) -> dict:
     return {}
 
 
+def _fail_closed_kas_mcp_sign_in_config(
+    data: dict, *, config_source_unreadable: bool = False
+) -> None:
+    """Keep unreadable or malformed MCP persistence settings distinct from absence.
+
+    Normalize before schema validation can drop an invalid value and restore
+    the enabled default, following the project-skills off-switch below.
+    """
+    if config_source_unreadable:
+        agent = data.get("agent")
+        if not isinstance(agent, dict):
+            agent = {}
+            data["agent"] = agent
+        agent["kas_persist_mcp_sign_in"] = False
+        return
+
+    if "agent" not in data:
+        return
+
+    agent = data["agent"]
+    if not isinstance(agent, dict):
+        data["agent"] = {"kas_persist_mcp_sign_in": False}
+        return
+
+    if "kas_persist_mcp_sign_in" in agent and not isinstance(
+        agent["kas_persist_mcp_sign_in"], bool
+    ):
+        agent["kas_persist_mcp_sign_in"] = False
+
+
 def _fail_closed_project_skills_config(
     data: dict, *, config_source_unreadable: bool = False
 ) -> None:

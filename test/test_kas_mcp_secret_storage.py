@@ -262,16 +262,95 @@ async def test_a_vault_failure_is_a_value_free_refusal(tmp_path, monkeypatch, ca
 # ── the opt-in key and the handshake ──────────────────────────────────────────
 
 
-def test_the_key_is_off_by_default_and_read_from_config(tmp_path, monkeypatch):
+def test_the_key_is_on_by_default_and_read_from_config(tmp_path, monkeypatch):
     from kiro_crew.config import loader as L
     from kiro_crew.config.loader import KiroCrewConfig
 
     monkeypatch.setattr(L, "config_dir", lambda: tmp_path)
-    assert KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is False
-    assert kss.persistence_enabled() is False
-    (tmp_path / "config.json").write_text(json.dumps({"agent": {"kas_persist_mcp_sign_in": True}}))
     assert KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is True
     assert kss.persistence_enabled() is True
+    (tmp_path / "config.json").write_text(json.dumps({"agent": {"kas_persist_mcp_sign_in": False}}))
+    assert KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is False
+    assert kss.persistence_enabled() is False
+
+
+@pytest.mark.parametrize("source", ["config.json", "config.local.json"])
+@pytest.mark.parametrize("other_source_present", [False, True])
+@pytest.mark.parametrize("failure", ["invalid_json", "not_an_object", "read_error"])
+@pytest.mark.parametrize("consumer", ["config", "persistence_enabled"])
+def test_unreadable_config_disables_persistence(
+    tmp_path, monkeypatch, source, other_source_present, failure, consumer
+):
+    from kiro_crew.config import loader as L
+
+    monkeypatch.setattr(L, "config_dir", lambda: tmp_path)
+    if other_source_present:
+        other = "config.local.json" if source == "config.json" else "config.json"
+        (tmp_path / other).write_text(
+            json.dumps({"agent": {"kas_persist_mcp_sign_in": True}}), encoding="utf-8"
+        )
+    path = tmp_path / source
+    # A truncated document can hide the operator's explicit opt-out.
+    path.write_text(
+        "[]" if failure == "not_an_object" else '{"agent":{"kas_persist_mcp_sign_in":false}',
+        encoding="utf-8",
+    )
+    if failure == "read_error":
+        read_config_text = L.read_config_text
+
+        def unreadable(candidate):
+            if candidate == path:
+                raise OSError("config source is unreadable")
+            return read_config_text(candidate)
+
+        monkeypatch.setattr(L, "read_config_text", unreadable)
+
+    # Repeat to cover the validated-data cache when the other source loaded.
+    for _ in range(2):
+        if consumer == "config":
+            assert L.KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is False
+        else:
+            assert kss.persistence_enabled() is False
+
+
+@pytest.mark.parametrize("source", ["config.json", "config.local.json"])
+@pytest.mark.parametrize("consumer", ["config", "persistence_enabled"])
+@pytest.mark.parametrize(
+    ("agent", "expected"),
+    [
+        *[
+            pytest.param({"kas_persist_mcp_sign_in": value}, False, id=f"non_bool_{label}")
+            for label, value in [
+                ("false_string", "false"),
+                ("true_string", "true"),
+                ("zero", 0),
+                ("one", 1),
+                ("null", None),
+                ("list", []),
+                ("object", {}),
+            ]
+        ],
+        pytest.param("invalid", False, id="non_object_string"),
+        pytest.param([], False, id="non_object_list"),
+        pytest.param(None, False, id="non_object_null"),
+        pytest.param({}, True, id="absent_key"),
+        pytest.param({"kas_persist_mcp_sign_in": False}, False, id="real_false"),
+        pytest.param({"kas_persist_mcp_sign_in": True}, True, id="real_true"),
+    ],
+)
+def test_readable_config_persistence_switch(
+    tmp_path, monkeypatch, source, consumer, agent, expected
+):
+    from kiro_crew.config import loader as L
+
+    monkeypatch.setattr(L, "config_dir", lambda: tmp_path)
+    (tmp_path / source).write_text(json.dumps({"agent": agent}), encoding="utf-8")
+    # Exercise each consumer first, then repeat through the validated-data cache.
+    for _ in range(2):
+        if consumer == "config":
+            assert L.KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is expected
+        else:
+            assert kss.persistence_enabled() is expected
 
 
 def test_the_shipped_declaration_never_carries_secret_storage():

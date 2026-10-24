@@ -1636,7 +1636,7 @@ runs three stages in `config/loader_pipeline.py`, each callable on its own:
 | Stage | Does | Never does |
 |---|---|---|
 | `read_config_document() -> ConfigDocument` | Draws the load-order ticket, takes one fingerprint stat pass of both files, and serves the cache entry that fingerprint names or reads, merges, repairs, validates, clamps and caches the document (a security clamp that fires records a SEL event). Reports superseded defaults, and on a disk read decides which ones are adoptable and whether the legacy `skills.lazy_load` rewrite is due. | Raise for a missing, unreadable or malformed file, or write a config file. |
-| `build_config(doc, config_cls=KiroCrewConfig) -> KiroCrewConfig` | Reads `doc` and the process-wide sticky set of degraded-section observations, and extends that set. Extracts and degrades every section, runs the section builders, assembles the config and captures unknown sections and keys from the base view. Applies the fail-closed overrides for what it finds degraded itself or the sticky set records: Temporary memory mode for a degraded dashboard section or file, and publish denial for a malformed narrowing. An unloaded document (neither file read) gives the field defaults plus the seeded default crew, with the project-skills off-switch an unreadable file leaves. | Any filesystem I/O, a read-stage repair (the agent off-switch coercion, validation, the security clamp), or the write-back. |
+| `build_config(doc, config_cls=KiroCrewConfig) -> KiroCrewConfig` | Reads `doc` and the process-wide sticky set of degraded-section observations, and extends that set. Extracts and degrades every section, runs the section builders, assembles the config and captures unknown sections and keys from the base view. Applies the fail-closed overrides for what it finds degraded itself or the sticky set records: Temporary memory mode for a degraded dashboard section or file, and publish denial for a malformed narrowing. An unloaded document (neither file read) gives the field defaults plus the seeded default crew, with the `skills.project_skills_enabled` and `agent.kas_persist_mcp_sign_in` off-switches an unreadable file leaves. | Any filesystem I/O, a read-stage repair (the agent off-switch coercion, validation, the security clamp), or the write-back. |
 | `persist_write_back(cfg, doc)` | Returns at once for an unloaded document. Otherwise decides the pending migrations, seeds the default crew and `default_agent` into `cfg`, writes the delta under the lock, moves `cfg` to each confirmed adoption, records the `connections_ui` marker, and drops the cache when an adoption did not land. | Write after a load that degraded a section, or raise. |
 
 A `ConfigDocument` carries what the read tells the later stages: the ticket, the
@@ -1644,10 +1644,13 @@ path, `data`, whether a file `loaded`, the content digest, `base_unreadable`, th
 overlay's `base_shadow`, the `overlay` as read, the `adoptable` defaults and the
 `legacy_lazy_stamp`; the one other input of the build is the process-wide sticky
 degraded set. `data` is the read stage's output, not raw file content: the
-overlay is merged, the read-stage repairs are applied (a quoted `"false"` on an
-agent off-switch reads as `false`; an unreadable source leaves
-`skills.project_skills_enabled` off), and the document is validated and clamped.
-When nothing loaded it is `{}` or carries only that project-skills marker. A cache
+overlay is merged and the read-stage repairs are applied before validation and
+clamping. A present non-boolean `agent.kas_persist_mcp_sign_in` value, including
+strings, numbers, null and containers, reads as `false`, as does a non-object
+`agent` section. An absent key keeps the `true` default and real booleans are
+honoured. An unreadable source leaves both `skills.project_skills_enabled` and
+`agent.kas_persist_mcp_sign_in` off. When nothing loaded, `data` is `{}` or
+carries those two off-switches. A cache
 hit carries no adoption and no stamp, because a load that did not read the base
 must not decide one. A document is single-use: building normalizes `data` in
 place. Tests build one in memory, holding what the read stage would produce, and

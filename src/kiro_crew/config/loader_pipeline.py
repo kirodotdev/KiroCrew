@@ -284,8 +284,8 @@ class ConfigDocument:
     #: The ``config.json`` path this read resolved.
     path: Path
     #: The repaired, validated, overlay-merged document. When neither file loaded it
-    #: is ``{}``, or carries only the project-skills off-switch an unreadable file
-    #: leaves behind.
+    #: is ``{}``, or carries the project-skills and MCP sign-in off-switches an
+    #: unreadable file leaves behind.
     data: dict
     #: False when neither file loaded: the build starts from the field defaults.
     loaded: bool
@@ -487,6 +487,9 @@ def read_config_document() -> ConfigDocument:
     # before either the defaults return or schema normalization can
     # turn it into the enabled-by-default missing-field case.
     _fail_closed_project_skills_config(data, config_source_unreadable=config_source_unreadable)
+    _resolution._fail_closed_kas_mcp_sign_in_config(
+        data, config_source_unreadable=config_source_unreadable
+    )
 
     # Neither file loaded: hand back an unloaded document, which build_config turns
     # into field defaults and the write-back skips. Not cached — there's no file to
@@ -668,8 +671,9 @@ def build_config(
     parse do run again, idempotently).
     An unloaded document (neither file read) yields the field defaults plus the
     seeded default crew, with the fail-closed overrides a degraded or unreadable read
-    leaves: the project-skills off-switch ``data`` carries, and Temporary memory mode
-    once the dashboard section or the whole file was observed degraded. The
+    leaves: the project-skills and MCP sign-in off-switches ``data`` carries, and
+    Temporary memory mode once the dashboard section or the whole file was observed
+    degraded. The
     write-back migration is :func:`persist_write_back`'s, so a loaded document missing
     its default agent or ``default_agent`` comes back that way.
 
@@ -705,6 +709,12 @@ def build_config(
             or "dashboard" in _OBSERVED_DEGRADED_SECTIONS
         ):
             cfg.dashboard.default_memory_mode = "temporary"
+        cfg.agent.kas_persist_mcp_sign_in = (
+            _sections.SectionReader(AgentConfig, data.get("agent", {})).get(
+                "kas_persist_mcp_sign_in"
+            )
+            is True
+        )
         cfg.skills.project_skills_enabled = (
             _sections.SectionReader(SkillsConfig, data.get("skills", {})).get(
                 "project_skills_enabled"

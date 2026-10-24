@@ -44,6 +44,7 @@ _READ_STAGE_DEPARTURES = {
     ("agent", "session_control"): False,
     ("agent", "member_dispatch"): False,
     ("agent", "crew_panel"): False,
+    ("agent", "kas_persist_mcp_sign_in"): False,
     # A present but malformed harness choice is an unusable explicit choice, not
     # an absent key: it takes the Kiro CLI floor, never the KAS product default.
     ("agent", "acp_backend"): "",
