@@ -626,7 +626,20 @@ def _load(self: AutoNudgeService) -> None:
                 )
                 inflight = None
                 self._store_dirty = True
-            if isinstance(inflight, int) and inflight > loop.cycle_count:
+            if (
+                isinstance(inflight, int)
+                and inflight > loop.cycle_count
+                and raw.get("inflight_undelivered") is True
+            ):
+                # The writer knew this turn never went out: nothing is owed, so the
+                # claim is released here and the loop keeps its stored state.
+                logger.info(
+                    "AutoNudge: loop %s restored an undelivered claim on cycle %d; releasing it",
+                    redact_store_value(raw.get("id")),
+                    inflight,
+                )
+                self._store_dirty = True
+            elif isinstance(inflight, int) and inflight > loop.cycle_count:
                 # The claim reaches disk BEFORE the turn it claims, so an unresolved one
                 # cannot say whether the reader already received that turn.
                 logger.warning(
@@ -636,9 +649,6 @@ def _load(self: AutoNudgeService) -> None:
                     inflight,
                 )
                 self._store.unreconciled_claim[loop.id] = inflight
-                if raw.get("inflight_undelivered") is True:
-                    # The writer knew this turn never went out, so the charge is not owed.
-                    self._store.undelivered_claim.add(loop.id)
                 loop.active = False
                 # A reason the UI can render: without it a routine restart mid-fire
                 # surfaced as an unexplained pause with only a log line behind it.
