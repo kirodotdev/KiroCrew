@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useState } from 'react'
+import { Fragment, useId, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { ChevronDown, ChevronRight, Cloud, GitBranch, RefreshCw } from 'lucide-react'
@@ -6,12 +6,12 @@ import { api, type RemoteGitResult } from '../../api/client'
 import AskAgentButton from '../../components/AskAgentButton'
 import ErrorNotice from '../../components/ErrorNotice'
 import { relativeTime, statusColor } from '../../components/GitPanel'
-import StatusNotice from '../../components/StatusNotice'
-import { slotEnvironmentQueryKey, useSlotEnvironmentPlacement } from '../../components/sessionEnvironmentHooks'
 import { Btn, IconButton, PanelSectionHeader } from '../../components/ui'
 import { fmtList } from '../../i18n/format'
 import { PierrePatch } from '../../pierre'
-import { errorCode, isCloudSandbox, remoteKey } from './RemoteFilesPanel'
+import { useAppDispatch } from '../../store'
+import { stageToMainComposer } from '../../store/chatSlice'
+import { errorCode, remoteKey } from './RemoteFilesPanel'
 
 /** `from` is a rename or copy's source path; `path` is where it is now. */
 interface StatusRow { code: string; path: string; from?: string }
@@ -58,6 +58,9 @@ export function parsePorcelain(output: string, truncated = false): Porcelain {
     if (nul) {
       // NUL porcelain emits the destination first and the source in its own record.
       const from = moved ? records[++i] : undefined
+      // A move whose source record was cut off at the cap has no side to diff
+      // against; shown alone it would read as an added file.
+      if (moved && !from) continue
       rows.push(from ? { code, path: record.slice(3), from } : { code, path: record.slice(3) })
       continue
     }
@@ -94,13 +97,6 @@ function commitWhen(when: string | undefined): string {
 }
 
 export default function RemoteGitPanel(props: { slot: string; name: string }) {
-  const { t } = useTranslation()
-  const { remote, error } = useSlotEnvironmentPlacement(props.slot)
-  if (error) return <div className="p-3"><ErrorNotice message={t('sessionEnvironments.loadError')} askAgent /></div>
-  if (remote?.provider === 'kiro_cloud') {
-    return <div className="p-3"><StatusNotice tone="info" message={t('sessionEnvironments.remoteFiles.cloudSandbox')} /></div>
-  }
-  if (remote === undefined) return <div className="p-3" aria-busy="true">{t('sessionEnvironments.remoteFiles.loading')}</div>
   return <RemoteGitView key={props.slot} {...props} />
 }
 
@@ -111,8 +107,12 @@ export default function RemoteGitPanel(props: { slot: string; name: string }) {
  *  open file belongs to the session it was opened in. */
 function RemoteGitView({ slot, name }: { slot: string; name: string }) {
   const { t } = useTranslation()
+  const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
-  const [selected, setSelected] = useState<string | null>(null)
+  // The open row, by status code and path: git can list one path twice (an
+  // untracked copy of a file staged for deletion), and only the clicked row opens.
+  const [openRow, setOpenRow] = useState<{ code: string; path: string } | null>(null)
+  const selected = openRow?.path ?? null
   // Only one row is open at a time, so one id names the open diff region.
   const diffId = `${useId()}-diff`
   const status = useQuery({
@@ -121,14 +121,6 @@ function RemoteGitView({ slot, name }: { slot: string; name: string }) {
     retry: false,
     staleTime: 10_000,
   })
-  // A cloud refusal means the placement this panel mounted on is stale: re-read
-  // it once per refusal, so the wrapper swaps to the neutral notice (the Files
-  // panel's rule).
-  const cloudSandbox = status.isError && isCloudSandbox(status.error)
-  const refusedAt = cloudSandbox ? status.errorUpdatedAt : 0
-  useEffect(() => {
-    if (refusedAt) void queryClient.invalidateQueries({ queryKey: slotEnvironmentQueryKey(slot) })
-  }, [queryClient, slot, refusedAt])
   const log = useQuery({
     queryKey: [...remoteKey(slot), 'git', 'log'],
     queryFn: () => api.chatSlotEnvironmentGit(slot, 'git_log'),
@@ -138,29 +130,39 @@ function RemoteGitView({ slot, name }: { slot: string; name: string }) {
   })
   // A rename's diff reads its HEAD side at the old path; a copy shows as the
   // new file it is.
-  const selectedFrom = selected && status.data?.git
-    ? parsePorcelain(status.data.output ?? '', !!status.data.truncated).rows
-      .find((row) => row.path === selected && row.code.includes('R'))?.from
-    : undefined
+  const listed = status.data?.git ? parsePorcelain(status.data.output ?? '', !!status.data.truncated).rows : []
+  // The open row is the exact one clicked while the status still lists it, else
+  // the path's first row (a refresh can change its code, not what it names).
+  const exactIndex = openRow ? listed.findIndex((row) => row.path === openRow.path && row.code === openRow.code) : -1
+  const openIndex = exactIndex >= 0 || !openRow ? exactIndex : listed.findIndex((row) => row.path === openRow.path)
+  const selectedFrom = openIndex >= 0 && listed[openIndex].code.includes('R') ? listed[openIndex].from : undefined
   const diff = useQuery({
     queryKey: [...remoteKey(slot), 'git', 'diff', selected, selectedFrom ?? null],
     queryFn: () => selectedFrom
       ? api.chatSlotEnvironmentGit(slot, 'git_diff', selected ?? '.', selectedFrom)
       : api.chatSlotEnvironmentGit(slot, 'git_diff', selected ?? '.'),
     retry: false,
+    // Re-read on reopen and on return to the tab, as status does: the app's
+    // default never goes stale, which would keep a patch the agent has since
+    // committed under a changes list that no longer shows it.
+    staleTime: 0,
     enabled: !!selected && !!status.data?.git,
   })
   const refresh = () => { void queryClient.invalidateQueries({ queryKey: [...remoteKey(slot), 'git'] }) }
-  /** A request to the agent, staged as a composer draft; the label says so. */
+  /** A request to the agent, staged as a draft in THIS chat's composer: this
+   *  chat is the one bound to the workspace the request is about, so a fresh
+   *  chat's agent could not reach it. The label says so. */
+  const stage = (text: string) => { dispatch(stageToMainComposer({ slot, text })) }
   const askAgent = (prompt: string, label: string) => (
-    <AskAgentButton prompt={prompt} label={label} title={t('sessionEnvironments.remoteGit.askDraftTitle')} tone="accent" />
+    <AskAgentButton prompt={prompt} label={label} title={t('sessionEnvironments.remoteGit.askDraftTitle')} tone="accent" onStage={stage} />
   )
   /** A failed read leads with what could not be read; git's own text, or the
    *  transport failure, follows as the detail. A coded stop is already a
-   *  product sentence and stands alone. */
+   *  product sentence and stands alone. Its hand-off stages in THIS chat,
+   *  the one whose agent can reach the workspace. */
   const failure = (error: unknown, data: RemoteGitResult | undefined, lead: string, inline: boolean) => {
     if (errorCode(error) === 'workspace_stopped') {
-      return <ErrorNotice variant={inline ? 'inline' : 'block'} message={t('sessionEnvironments.remoteFiles.stopped')} askAgent />
+      return <ErrorNotice variant={inline ? 'inline' : 'block'} message={t('sessionEnvironments.remoteFiles.stopped')} askAgent onStage={stage} />
     }
     const gitText = data?.error_text
     const detail = gitText || (data?.code === 'git_failed' ? '' : t('sessionEnvironments.remoteFiles.error'))
@@ -172,6 +174,7 @@ function RemoteGitView({ slot, name }: { slot: string; name: string }) {
         messagePlacement="below"
         messageClassName={gitText ? 'font-mono' : ''}
         askAgent
+        onStage={stage}
       />
     )
   }
@@ -185,14 +188,6 @@ function RemoteGitView({ slot, name }: { slot: string; name: string }) {
       </IconButton>
     </div>
   )
-  if (cloudSandbox) {
-    return (
-      <div className="h-full flex flex-col">
-        {header}
-        <div className="p-3"><ErrorNotice message={t('sessionEnvironments.remoteFiles.cloudSandbox')} askAgent /></div>
-      </div>
-    )
-  }
   if (status.isError || (status.data && !isNotRepository(status.data) && (status.data.code === 'git_failed' || status.data.error_text))) {
     return <div className="h-full flex flex-col">{header}<div className="p-3">{failure(status.error, status.data, t('sessionEnvironments.remoteGit.statusFailed'), false)}</div></div>
   }
@@ -213,7 +208,7 @@ function RemoteGitView({ slot, name }: { slot: string; name: string }) {
   const { branch, ahead, behind, rows } = parsePorcelain(status.data.output ?? '', !!status.data.truncated)
   // Every status row claims a change; a selection the latest status no longer
   // lists (it was refreshed clean) does not.
-  const selectedListed = rows.some((row) => row.path === selected)
+  const selectedListed = openIndex >= 0
   const syncLabel = fmtList([
     ahead != null ? t('sessionEnvironments.remoteGit.notPushed', { count: ahead }) : '',
     behind != null ? t('sessionEnvironments.remoteGit.notPulled', { count: behind }) : '',
@@ -298,16 +293,16 @@ function RemoteGitView({ slot, name }: { slot: string; name: string }) {
             <div className="py-2 text-[12.5px] text-muted">{t('sessionEnvironments.remoteGit.clean')}</div>
           ) : (
             <div className="mt-1 flex flex-col">
-              {rows.map((row) => {
+              {rows.map((row, index) => {
                 const letter = statusLetter(row.code)
-                const open = selected === row.path
+                const open = index === openIndex
                 return (
-                  <Fragment key={row.path}>
+                  <Fragment key={`${row.code}\0${row.path}`}>
                     <Btn
                       type="button"
                       aria-expanded={open}
                       aria-controls={open ? diffId : undefined}
-                      onClick={() => setSelected(open ? null : row.path)}
+                      onClick={() => setOpenRow(open ? null : { code: row.code, path: row.path })}
                       className={`group justify-start gap-2 h-7 rounded-md border-none bg-transparent text-[12.5px] font-normal hover:bg-bg-hover ${open ? 'bg-bg-hover' : ''}`}
                     >
                       <span title={statusTitle(letter)} className={`font-mono font-semibold w-[14px] text-center shrink-0 ${statusColor(letter)}`}>

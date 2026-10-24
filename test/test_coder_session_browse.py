@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -379,8 +380,35 @@ async def test_nul_status_record_with_multiline_credential_is_withheld(browse_ta
     result = await session_browse.browse_session(SESSION, "git_status", ".")
 
     assert result["output"] == (
-        "## main\0[REDACTED: credential]\n[REDACTED: credential]\0?? keep.txt\0"
+        "## main\0?? [REDACTED: credential]\n[REDACTED: credential]\0?? keep.txt\0"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("output", "shown"),
+    [
+        (
+            "R  Authorization: Bearer\nopaque-example\0old.txt\0?? keep.txt\0",
+            "R  [REDACTED: credential]\n[REDACTED: credential]\0old.txt\0?? keep.txt\0",
+        ),
+        (
+            "C  new.txt\0Authorization: Bearer\nopaque-example\0?? keep.txt\0",
+            "C  new.txt\0[REDACTED: credential]\n[REDACTED: credential]\0?? keep.txt\0",
+        ),
+    ],
+)
+async def test_a_masked_status_name_keeps_its_code_and_the_rows_after_it(
+    browse_target, output, shown
+):
+    """Only the name is masked: a status code stays, so the panel does not read
+    a masked record as a move and swallow the next row as its source."""
+    _config, _record, _runner, guest = browse_target
+    guest.return_value = json.dumps({"git": True, "output": output}).encode()
+
+    result = await session_browse.browse_session(SESSION, "git_status", ".")
+
+    assert result["output"] == shown
 
 
 @pytest.mark.asyncio
@@ -515,6 +543,190 @@ def test_only_a_matching_footer_after_a_pem_begin_closes_it(footer):
     output = session_browse._git_diff_from_bodies(reply, "f")["output"]
     assert output.endswith(("+" + REDACTED_CREDENTIAL_TAG + "\n") * 3)
     assert "opaque" not in output
+
+
+@pytest.mark.parametrize(
+    "opener",
+    [
+        "key: " + _PEM_BEGIN_RSA,
+        '  "private_key": "' + _PEM_BEGIN_RSA,
+        "ssh_key=" + _PEM_BEGIN_RSA,
+    ],
+)
+def test_a_field_prefixed_unclosed_pem_is_withheld(opener):
+    """An opener after a field prefix, with no footer, is still withheld through
+    EOF: the shared redactor masks the header line but not a 32-column body."""
+    import base64
+    import secrets
+
+    from kiro_crew.security import REDACTED_CREDENTIAL_TAG
+
+    blob = base64.b64encode(secrets.token_bytes(600)).decode()
+    key_lines = ["  " + blob[i : i + 32] for i in range(0, len(blob), 32)]
+    body = "config:\n" + opener + "\n" + "\n".join(key_lines) + "\n"
+    reply = {"git": True, "old": None, "new": body}
+    output = session_browse._git_diff_from_bodies(reply, "f")["output"]
+    assert "+config:\n" in output
+    assert output.endswith(("+" + REDACTED_CREDENTIAL_TAG + "\n") * (len(key_lines) + 1))
+    assert not any(line.strip() in output for line in key_lines)
+
+
+def test_a_field_prefixed_footer_closes_its_pem():
+    """A closed block is left to the shared redactor: nothing after it is withheld."""
+    body = "a: " + _PEM_BEGIN_RSA + "\n  opaque\nb: " + _PEM_END_RSA + "\nafter\n"
+    assert session_browse._withhold_unclosed_pem(body) == body
+    reply = {"git": True, "old": None, "new": body}
+    assert "+after\n" in session_browse._git_diff_from_bodies(reply, "f")["output"]
+
+
+def test_reordered_repeated_lines_get_their_hunks_fast():
+    """100 distinct lines x 200, reversed: difflib's matcher would compare 4M
+    pairs per pass (measured: over a minute). Git's own diff answers at once."""
+    import time
+
+    body = "".join(f"line-{i:03d} value\n" for i in range(100)) * 200
+    reply = {
+        "git": True,
+        "old": body,
+        "new": "".join(reversed(body.splitlines(keepends=True))),
+        "old_mode": "100644",
+        "new_mode": "100755",
+    }
+    started = time.monotonic()
+    result = session_browse._git_diff_from_bodies(reply, "big.txt")
+    elapsed = time.monotonic() - started
+    assert elapsed < 2  # flake-ok: two-second budget; a difflib diff took over a minute
+    assert not result.get("truncated")
+    assert result["output"].startswith(
+        "diff --git a/big.txt b/big.txt\nold mode 100644\nnew mode 100755\n"
+        "--- a/big.txt\n+++ b/big.txt\n@@ "
+    )
+    assert "\n-line-000 value\n" in result["output"]
+    assert "\n+line-099 value\n" in result["output"]
+
+
+def test_unique_lines_with_swapped_neighbours_get_their_hunks_fast():
+    """Every match is one line long, which made difflib rescan a shrinking range
+    per match (10,000 lines took about ten seconds)."""
+    import time
+
+    old = [f"{i}\n" for i in range(10000)]
+    new = list(old)
+    for i in range(0, len(new) - 1, 2):
+        new[i], new[i + 1] = new[i + 1], new[i]
+    started = time.monotonic()
+    result = session_browse._git_diff_from_bodies(
+        {"git": True, "old": "".join(old), "new": "".join(new)}, "moved.txt"
+    )
+    elapsed = time.monotonic() - started
+    assert elapsed < 2  # flake-ok: two-second budget; a difflib diff took about ten
+    assert not result.get("truncated")
+    assert result["output"].startswith("diff --git a/moved.txt b/moved.txt\n--- a/moved.txt\n")
+    assert result["output"].endswith("\n 9999\n+9998\n")
+
+
+def _canned_git_diff(patch, calls):
+    def fake(old, new, *, git, env):
+        calls.append((old, new, tuple(git), env.get("GIT_ATTR_NOSYSTEM")))
+        return patch
+
+    return fake
+
+
+def test_the_panel_takes_its_hunks_from_the_shared_git_diff_of_masked_bodies(monkeypatch):
+    calls = []
+    patch = "diff --git a/x b/y\n--- a/x\n+++ b/y\n@@ -1 +1 @@ ctx\n-old\n+new\n"
+    monkeypatch.setattr(session_browse, "no_index_diff", _canned_git_diff(patch, calls))
+    reply = {"git": True, "old": "Authorization: Bearer opaque-example\n", "new": "two\n"}
+
+    result = session_browse._git_diff_from_bodies(reply, "f.txt")
+
+    assert calls == [("[REDACTED: credential]\n", "two\n", session_browse._NO_INDEX_GIT, "1")]
+    assert result["output"] == (
+        "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@ ctx\n-old\n+new\n"
+    )
+
+
+def test_the_panel_diff_uses_the_file_panels_git_argv():
+    """One git argv for the one ``git diff --no-index`` both panels run."""
+    import ast
+    from pathlib import Path
+
+    editor = Path(session_browse.__file__).parents[1] / "dashboard" / "file_api" / "editor.py"
+    lists = [
+        ast.literal_eval(node.value)
+        for node in ast.walk(ast.parse(editor.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "_git" for t in node.targets)
+    ]
+    assert lists == [list(session_browse._NO_INDEX_GIT)]
+
+
+@pytest.mark.parametrize(
+    ("patch", "extended", "output"),
+    [
+        ("Binary files a/x and b/y differ\n", False, "Binary files a/f and b/f differ\n"),
+        ("", True, "old mode 100644\nnew mode 100755\n"),
+        ("", False, None),
+    ],
+)
+def test_a_patch_without_hunks_shows_binary_or_the_header_alone(
+    monkeypatch, patch, extended, output
+):
+    monkeypatch.setattr(session_browse, "no_index_diff", _canned_git_diff(patch, []))
+    reply = {"git": True, "old": "a\n", "new": "a\n"}
+    if extended:
+        reply.update(old_mode="100644", new_mode="100755")
+
+    result = session_browse._git_diff_from_bodies(reply, "f")
+
+    assert result["output"] == ("" if output is None else "diff --git a/f b/f\n" + output)
+
+
+def test_a_git_diff_past_its_timeout_gets_the_cut_off_reply(monkeypatch):
+    def slow(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("git", 10)
+
+    monkeypatch.setattr(session_browse, "no_index_diff", slow)
+    reply = {"git": True, "old": "a\n", "new": "b\n", "old_mode": "100644", "new_mode": "100755"}
+
+    result = session_browse._git_diff_from_bodies(reply, "f")
+
+    assert result == {
+        "git": True,
+        "truncated": True,
+        "output": "diff --git a/f b/f\nold mode 100644\nnew mode 100755\n",
+    }
+
+
+@pytest.mark.parametrize(
+    "error", [subprocess.CalledProcessError(128, "git"), FileNotFoundError("git")]
+)
+def test_a_failed_git_diff_serves_no_patch(monkeypatch, error):
+    def failing(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(session_browse, "no_index_diff", failing)
+
+    result = session_browse._git_diff_from_bodies({"git": True, "old": "a\n", "new": "b\n"}, "f")
+
+    assert result == {
+        "git": False,
+        "code": "git_failed",
+        "error_text": "the gateway could not build the diff",
+    }
+
+
+def test_a_large_file_with_scattered_edits_still_gets_its_hunks():
+    old = [f"row {i} some ordinary source text\n" for i in range(20000)]
+    new = list(old)
+    for i in range(0, 20000, 997):
+        new[i] = f"row {i} edited\n"
+    result = session_browse._git_diff_from_bodies(
+        {"git": True, "old": "".join(old), "new": "".join(new)}, "src.txt"
+    )
+    assert not result.get("truncated")
+    assert "+row 997 edited\n" in result["output"]
 
 
 @pytest.mark.parametrize("renamed", [False, True])
