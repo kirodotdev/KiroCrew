@@ -613,7 +613,12 @@ config error.
 
 **The generated config names the engine and nothing else.** Every added key
 becomes a default an operator must discover in order to override, and the engine
-is the only one the install flow already decided.
+is the only one the install flow already decided. In particular it never names
+the imported-cookies file: that file is bind-masked out of every agent sandbox,
+and the daemon an AGENT's command starts runs inside that sandbox, so a
+`contextOptions.storageState` there would fail every browse with ENOENT. There is
+no second, gateway-side config either; the cookies reach a daemon over its control
+socket as data (see [Imported cookies](#imported-cookies)).
 
 **The browser sandbox is deliberately untouched.** Chromium's sandbox is a
 security boundary, so no generated default removes it. A host that cannot run it —
@@ -624,6 +629,94 @@ when `PLAYWRIGHT_MCP_CONFIG` is **already set** in the environment, Kiro Crew ad
 nothing and the operator's file wins entirely. Naming a config is how an operator
 selects a different engine, pins an `executablePath`, or accepts the sandbox
 trade-off on a host that requires it.
+
+### Imported cookies
+
+A remote gateway runs on a different machine from the browser the operator is
+logged into, so the agent's own `playwright-cli` sessions start with no session
+cookies. `browser_cli/cookies.py` closes that: the owner exports the cookies
+where they are logged in and imports them, and the gateway normalises and stores
+them as a Playwright `storageState` in a `storage-state.json` file inside the
+data home's `browser-cookie-import` directory. This replaces the hand-written
+`PLAYWRIGHT_MCP_CONFIG` that was previously the only path (issues #6546, #12319,
+#11382).
+
+**The agent can never read the values, yet its sessions carry them.** Three
+invariants, and the pieces that hold them:
+
+1. The agent's browser daemon **always runs inside the agent's sandbox**, started
+   by the agent's own command exactly as before this feature. The gateway never
+   starts a daemon for an agent session: a gateway-privileged daemon driven by
+   the agent (`upload <masked path>`, `state-save`) would be a sandbox escape.
+2. **No config the agent or its daemon reads names the hidden file.** The launch
+   config (`launch.desired_config()`) stays engine-only and there is no second,
+   gateway-side config.
+3. **Cookies reach a daemon only through its control socket, as data.**
+
+| Piece | What it does |
+|---|---|
+| `sandbox._CREW_HIDDEN_LEAVES` + `security._CREW_SECRET_LEAVES` | `browser-cookie-import/` is pre-created before every spawn and bind-masked in every sandbox mode and fenced at the tool gate, so neither a spawned shell's `open()` nor a file tool reaches the cookie values. Pinned by `test_sandbox_governance_mask.py` and `test_browser_cookies.py`. |
+| `cookies._cookie_set_args` / `_inject_into_session` | The gateway connects to the session's control socket (`pw/<8hex>/s/cli/*.sock`) itself and sends one `cookie-set` request per stored cookie in the daemon's own wire format: newline-delimited JSON, `{"id", "method": "run", "params": {"args", "cwd"}}`, where `args` is the object the CLI client builds from its argv (`{"_": ["cookie-set", name, value], "domain", "path", "sameSite", "expires"?, "httpOnly"?, "secure"?}`, verified against the bundled CLI's `parseCliCommand`). The daemon answers `{"id", "result": {"isError", "text"}}` or `{"id", "error"}` and does `context.addCookies`; it opens no file. No process is spawned, so a cookie value is never on any argv. One connection per session carries every cookie, bounded by `_CLI_TIMEOUT_S` for the whole exchange, and it stops at the first failure. |
+| `cookies.inject_into_live_sessions()` | The import handler's injection point: every live `kc-*` session at once, enumerated by SHAPE (`<root>/<8hex>/s/cli/*.sock`, where the roots are the data home's `pw` and, when the gateway's `PWTEST_SOCKETS_DIR` names an absolute foreign root, that operator root, resolved exactly as the agent launch resolves it). Every socket is its own target: a session holding several named browsers (`-s=<name>`) reports each as `kc-<8hex>/<socket stem>`, so an older browser is neither skipped nor hidden. Every cookie is sent even when the browser refuses one (a refusal is counted, not a stop), so one rejected cookie cannot keep the rest out of the session. Returns `{loaded, failed: {name: reason}}` plus a one-line `note` whenever nothing was reached. Reasons are **value-free by construction** (`_exchange` returns a fixed string, a refusal count or an exception class name; a reply nested too deep to parse is a `malformed reply`, never a raise): the daemon's reply to `cookie-set` echoes the cookie, so reply text never reaches a result or a log line. |
+| `cookies.SessionWatcher` | The second injection point, for sessions that appear AFTER an import. One per gateway, a daemon thread entirely off the event loop, started by `_register_browser_cookie_watcher`'s startup hook, which both the dashboard and the headless API server register (or by the import handler), only once a state file exists and only where the platform has `AF_UNIX`, and stopped on cleanup. Every `WATCH_INTERVAL_S` (2 s) it lists the control sockets and, for any it has not injected into yet (key: path + inode + ctime, so a restarted daemon's new socket counts as new), injects the current cookies and records the key. It only does work while the state file exists; a changed mtime/size (a re-import) drops the record so every live session is injected again, and `reset()` (the clear) drops it too. Bounded: `WATCH_MAX_SESSIONS_PER_TICK` (4) sessions per tick, `WATCH_MAX_ATTEMPTS` (3) tries per socket, the per-call timeout above; never raises out of a tick; debug-level logs only. |
+| `cookies.clear_live_sessions()` | The DELETE companion: one `cookie-clear` request over the control socket of each session the import reaches (the same `_live_sockets()` enumeration, no process spawned) so a clear does not leave an open browser signed in, reported as `{cleared, failed}`, and the watcher's record reset so a later import reaches every session. |
+| `messaging._get_cookie_lock()` | One `asyncio.Lock` held across the WHOLE import transaction (save + inject) and the whole clear transaction (delete + `cookie-clear` + reset), so an overlapping POST and DELETE cannot interleave at the `to_thread` boundary and leave a cleared state active in the live sessions. Pinned by `test_import_and_clear_are_serialised_by_one_lock`. |
+
+Nothing cookie-related runs at agent spawn: `acp/runtime.py` and `acp/client.py`
+carry no cookie code and no filesystem I/O for it.
+
+Residuals, stated plainly: (i) the very first navigation of a brand-new session
+can run before the watcher's next tick reaches it (at most `WATCH_INTERVAL_S`
+late; the next navigation has the cookies); (ii) the control socket is the
+agent's own, so anything that can connect to it (the agent's sandbox, same-UID
+processes) can already drive that browser, `cookie-list` included: the imported
+values are as readable there as the cookies of any site the agent logs into
+itself. No other local account sees them, because no argv carries them;
+(iii) **accepted exposure, no audience scope:** delivery reaches every agent
+browser the gateway can enumerate, and a browser is not tied to one audience
+(processes are pooled across sessions, `launch.browser_session_env`), so
+browsers that serve allow-listed non-owner members (Slack/Discord) and
+restricted (incognito/temporary) sessions receive the imported cookies too and
+can browse as the owner on those sites. Clear cookies stops further use; it
+does not undo a page already read. A per-audience scope needs a session to
+process to browser mapping the launch path does not have. A maintainer
+accepted this exposure:
+[`2026-10-23-imported-browser-cookies-have-no-audience-scope.md`](../../decisions/2026-10-23-imported-browser-cookies-have-no-audience-scope.md).
+
+`parse_cookie_import(text)` accepts three shapes and normalises each to the
+Playwright cookie shape (`name`, `value`, `domain`, `path`, `expires` — a float
+or `-1` for a session cookie — `httpOnly`, `secure`, `sameSite` in `{Strict, Lax,
+None}`, defaulting to `Lax`):
+
+| Import shape | Source |
+|---|---|
+| `{"cookies": [...], "origins": [...]}` | a Playwright `storageState` (a `state-save` round-trip) |
+| a bare JSON array of cookie objects | Cookie-Editor / EditThisCookie / "Get cookies.txt" (`expirationDate`, wider `sameSite` vocabulary) |
+| Netscape `cookies.txt` | tab-separated, `#` comments, the `#HttpOnly_` domain prefix |
+
+`secure` and `httpOnly` accept a real boolean, an absent value (`false`), or the
+strings `"true"`/`"false"`/`"1"`/`"0"` case-insensitively (Cookie-Editor sometimes
+exports them as strings); anything else is a `CookieImportError`, because
+`bool("false")` is `True` and silently flipping an httpOnly cookie is exactly the
+quiet corruption an import must refuse. Already-expired cookies are dropped; an
+input over 2 MiB, over 5000 cookies, or a cookie missing its `name`/`domain` is
+rejected with a `CookieImportError` carrying a user-readable message.
+`save_storage_state` writes the file atomically and owner-only (`0o600` on POSIX,
+an owner-only DACL on Windows via `atomic_write(restrict_to_owner=True)`, since a
+raw `mode` is a no-op there). `storage_state_summary` reports the cookie count,
+the distinct domains (leading dot stripped, sorted), the earliest positive expiry,
+and the file mtime as `imported_at` — and **never a cookie value**; nothing here
+returns or logs one.
+
+The API contract (all three owner-only, refused in a restricted
+incognito/temporary session, and SEL-audited on import and clear with the cookie
+count and domains only):
+
+| Route | Response |
+|---|---|
+| `GET /api/browser/cookies` | `{present, summary\|null}`; 403 non-owner or restricted session (`code: restricted_session`, the same body the mutations return) |
+| `POST /api/browser/cookies` `{content}` | `{ok, summary, hot_load: {loaded, failed, deliverable, note?}}` — `hot_load` is the live socket injection's outcome, and `deliverable` is false where new agent sessions cannot be reached (an operator-fixed session name, a CLI without the lifecycle hooks, no `AF_UNIX`), in which case the dialog stays open and says no agent browser will be signed in; 400 malformed, 413 over 2 MiB, 403 non-owner, 501 `unsupported_platform` (nothing stored) on a host without `AF_UNIX`, where no browser could ever receive the cookies |
+| `DELETE /api/browser/cookies` | `{ok, present: false, live: {cleared, failed, note?}}`; 403 non-owner |
 
 ### Snapshot retention
 
@@ -1080,6 +1173,7 @@ this path exists to fix.
 | Agent reach into a `panel-` session | **Accepted residual.** A `panel-` browser can hold logins the human typed into it, and an agent drives the same CLI through its shell. What separates the populations is structural but not an enforcement boundary: an agent process runs under its own generated `PWTEST_DAEMON_SESSION_DIR`/`PWTEST_SOCKETS_DIR` namespace (see [Generated session reachability](#generated-session-reachability)), so a bare `playwright-cli -s=panel-… goto` from an agent shell resolves no session and its `list` does not show one; reaching the human's browser takes a command that also names the CLI's default registry and the gateway's socket root, both readable by a same-user process. The control on that command is the ordinary shell approval ladder, exactly as for every other `playwright-cli` invocation; the reserved prefix and the `web-browse` skill's rule are the conventions on top. An enforced isolation would be a per-population credential on the daemon socket, which the CLI does not offer |
 | Reveal | One JSON line to the `show` dashboard's own singleton socket under the gateway-owned socket root both children run with, only when the installed bundle carries that layout, after a successful launch; fails closed when there is no listener. `show -s=<name>` (no port) is never run, since with a stale socket it launches a Chromium app window on the host |
 | Saved state files | Owner-only permissions; they hold live session credentials |
+| Imported cookies (`GET`/`POST`/`DELETE /api/browser/cookies`) | Owner-only (cookie/token), the same guard as the view routes, and additionally refused in a restricted (incognito/temporary) session so an ephemeral session cannot persist a logged-in browser state. The stored `storageState` is owner-only; the summary and the SEL audit carry cookie counts and domains only, never a value; import and clear are both audited. Cookie-authed, deliberately NOT on any internal-path list — an agent never imports cookies. The stored file is bind-masked from every agent sandbox; the agent's daemon stays inside its sandbox (the gateway never starts one for it, so no gateway-privileged daemon is ever under agent control), and the cookies cross to it only as `cookie-set` data the gateway writes to its control socket, never on an argv. Accepted residual: anything that can already drive the agent's browser over that socket can read its cookies back |
 | Launch config | Write-protected from the agent on both the file-edit and shell gates, and readable. Deliberately anchored rather than bare-token: the filename is not itself the grant, since the agent can name its own `PLAYWRIGHT_MCP_CONFIG` — so what the entry removes is the durable form (rewriting the config the product installed), and a `cd`-relative write is the accepted residual, exactly as for `.data-home-ready` |
 | Page content | Treated as untrusted input. A URL, instruction, or form target read off a page never decides the next navigation |
 | Attach mode | Operates the operator's real logged-in browser, so it is the strongest form of the capability and remains behind shell approval |

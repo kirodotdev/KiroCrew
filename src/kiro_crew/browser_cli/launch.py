@@ -61,7 +61,7 @@ from kiro_crew.browser_cli.install import (
     SeamSupport,
     cli_lifecycle_env_support,
 )
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import config_dir, peek_data_home
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +203,60 @@ def _warn_lifecycle_loss(support: SeamSupport, detail: str) -> None:
     logger.warning("%s", message)
 
 
+def _lifecycle_paths(env: Mapping[str, str], *, warn: bool = False) -> tuple[Path, Path] | None:
+    """Validate lifecycle paths without creating directories or changing permissions.
+
+    Read-only callers stay silent; the launcher opts into its existing warnings.
+    ``peek_data_home`` is essential: ``config_dir`` can create the data home.
+    """
+    session_name = env.get(SESSION_ENV, "").strip()
+    if not _session_leaf(session_name):
+        return None
+    support, detail = cli_lifecycle_env_support()
+    if support is not SeamSupport.SUPPORTED:
+        if warn:
+            _warn_lifecycle_loss(support, detail)
+        return None
+    configured_sockets = env.get(SOCKETS_ENV, "").strip()
+    configured_daemons = env.get(DAEMON_DIR_ENV, "").strip()
+    if (
+        configured_sockets
+        and not Path(configured_sockets).is_absolute()
+        or configured_daemons
+        and not Path(configured_daemons).is_absolute()
+    ):
+        if warn:
+            logger.warning("Playwright lifecycle root overrides must be absolute paths")
+        return None
+    sockets_base = _operator_base(configured_sockets)
+    daemons_base = _operator_base(configured_daemons)
+    if sockets_base is None or daemons_base is None:
+        # The launcher (warn=True) keeps resolving through ``config_dir`` as it
+        # always has; a read-only caller peeks so it never creates the home.
+        home = config_dir() if warn else peek_data_home()
+        root = home / _LIFECYCLE_DIR
+        sockets_base = sockets_base if sockets_base is not None else root
+        daemons_base = daemons_base if daemons_base is not None else root
+    sockets_path = socket_dir(session_name, sockets_base)
+    daemons_path = daemon_dir(session_name, daemons_base)
+    # Upstream builds `<root>/cli/<16-char-workspace>-<11-char-session>.sock`.
+    # Check the complete shortest non-trimmed form; if even that cannot fit,
+    # makeSocketPath raises and browsing fails before cleanup can help.
+    worst_case = sockets_path / "cli" / "0000000000000000-kc-00000000.sock"
+    if (
+        not platform_compat.IS_WINDOWS
+        and len(os.fsencode(str(worst_case))) > _UNIX_SOCKET_PATH_MAX_BYTES
+    ):
+        if warn:
+            logger.warning(
+                "Playwright socket directory is too long for AF_UNIX (%d bytes): %s",
+                len(os.fsencode(str(worst_case))),
+                sockets_path,
+            )
+        return None
+    return sockets_path, daemons_path
+
+
 def browser_socket_env(env: Mapping[str, str]) -> dict[str, str]:
     """Environment additions keeping daemon sockets reachable and discoverable.
 
@@ -224,40 +278,11 @@ def browser_socket_env(env: Mapping[str, str]) -> dict[str, str]:
     current TMPDIR/default-registry behavior remains. This helper performs
     filesystem I/O and event-loop callers MUST offload it.
     """
-    session_name = env.get(SESSION_ENV, "").strip()
-    if not _session_leaf(session_name):
+    paths = _lifecycle_paths(env, warn=True)
+    if paths is None:
         return {}
-    support, detail = cli_lifecycle_env_support()
-    if support is not SeamSupport.SUPPORTED:
-        _warn_lifecycle_loss(support, detail)
-        return {}
-    configured_sockets = env.get(SOCKETS_ENV, "").strip()
-    configured_daemons = env.get(DAEMON_DIR_ENV, "").strip()
-    if (
-        configured_sockets
-        and not Path(configured_sockets).is_absolute()
-        or configured_daemons
-        and not Path(configured_daemons).is_absolute()
-    ):
-        logger.warning("Playwright lifecycle root overrides must be absolute paths")
-        return {}
-    sockets_path = socket_dir(session_name, _operator_base(configured_sockets))
-    daemons_path = daemon_dir(session_name, _operator_base(configured_daemons))
+    sockets_path, daemons_path = paths
     additions: dict[str, str] = {}
-    # Upstream builds `<root>/cli/<16-char-workspace>-<11-char-session>.sock`.
-    # Check the complete shortest non-trimmed form; if even that cannot fit,
-    # makeSocketPath raises and browsing fails before cleanup can help.
-    worst_case = sockets_path / "cli" / "0000000000000000-kc-00000000.sock"
-    if (
-        not platform_compat.IS_WINDOWS
-        and len(os.fsencode(str(worst_case))) > _UNIX_SOCKET_PATH_MAX_BYTES
-    ):
-        logger.warning(
-            "Playwright socket directory is too long for AF_UNIX (%d bytes): %s",
-            len(os.fsencode(str(worst_case))),
-            sockets_path,
-        )
-        return {}
     for key, path in ((SOCKETS_ENV, sockets_path), (DAEMON_DIR_ENV, daemons_path)):
         try:
             platform_compat.make_owner_only_dir(path)
@@ -368,11 +393,21 @@ def launch_config_path() -> Path:
 
 
 def desired_config() -> dict[str, object]:
-    """The config Kiro Crew generates.
+    """The config Kiro Crew generates for the AGENT's ``playwright-cli``.
 
     Deliberately minimal: it names the engine and nothing else. Every key added
     here becomes a default an operator has to discover in order to override, and
     the engine is the only one the product's own install flow already decided.
+
+    It never names the imported-cookies file. That file
+    (:func:`kiro_crew.browser_cli.cookies.storage_state_path`) is bind-masked out
+    of every agent sandbox, and the daemon an AGENT's command starts runs inside
+    that sandbox: a ``contextOptions.storageState`` pointing at a path the daemon
+    cannot open fails every browse with ENOENT. There is no second, gateway-side
+    config either -- a daemon the gateway started for the agent would be a
+    sandbox escape. The cookies reach the agent's daemon over its control
+    socket instead, as ``cookie-set`` data from the gateway
+    (:mod:`kiro_crew.browser_cli.cookies`).
     """
     return {"browser": {"browserName": LAUNCH_ENGINE}}
 

@@ -37,6 +37,7 @@ from kiro_crew.apps.hooks_integration import (  # noqa: F401
 from kiro_crew.apps.manager import cleanup_migrated_builtin, register_builtin_apps
 from kiro_crew.autonudge import get_instance as _autonudge_get  # noqa: F401
 from kiro_crew.autonudge_authz import authorize_and_add_nudge  # noqa: F401
+from kiro_crew.browser_cli import cookies as browser_cli_cookies  # noqa: F401
 from kiro_crew.browser_cli import launch as browser_cli_launch
 from kiro_crew.browser_cli import launcher as browser_cli_launcher  # noqa: F401
 from kiro_crew.browser_cli import snapshots as browser_cli_snapshots
@@ -228,6 +229,7 @@ from kiro_crew.dashboard.server_runtime.app_platform import (  # noqa: F401
 )
 from kiro_crew.dashboard.server_runtime.browser_lifecycle import (  # noqa: F401
     _prune_browser_snapshots_loop,
+    _register_browser_cookie_watcher,
     _register_browser_install_cleanup,
     _register_browser_view_cleanup,
 )
@@ -1134,6 +1136,7 @@ async def start_dashboard(
         # Install cleanup stays first, before browser relay/session shutdown.
         _register_browser_install_cleanup(app, state)
         _register_browser_view_cleanup(app, state)
+        _register_browser_cookie_watcher(app, state)
         _register_connections_warm_lifecycle(app, state)
         _register_workflow_lifecycle(app, state)
         _register_crewmate_prune_gate(app, state)

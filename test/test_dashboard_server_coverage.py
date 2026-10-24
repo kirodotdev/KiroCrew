@@ -700,6 +700,48 @@ class TestBrowserSessionsLifecycle:
         assert calls == ["reclaim"]
         assert state._background_tasks == set()  # the done callback discards it
 
+    @pytest.mark.asyncio
+    async def test_the_cookie_watcher_start_waits_on_nothing_before_the_bind(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The startup hook runs before the port binds, so it must not await the
+        cookie watcher's start: the start runs in a background task, which cannot
+        have run yet when the hook returns. Cleanup stops the watcher."""
+        calls: list[str] = []
+
+        async def _to_thread(func: Any, *args: Any) -> Any:
+            return func(*args)
+
+        monkeypatch.setattr(
+            srv.browser_cli_cookies, "start_session_watcher", lambda: calls.append("start")
+        )
+        monkeypatch.setattr(
+            srv.browser_cli_cookies, "stop_session_watcher", lambda: calls.append("stop")
+        )
+        monkeypatch.setattr(asyncio, "to_thread", _to_thread)
+        app = web.Application()
+        state = _state()
+        srv._register_browser_cookie_watcher(app, state)
+        [startup] = [h for h in app.on_startup if h.__name__ == "_cookie_watcher_startup"]
+        [shutdown] = [h for h in app.on_cleanup if h.__name__ == "_cookie_watcher_shutdown"]
+
+        await startup(app)
+
+        assert calls == []
+        await asyncio.gather(*state._background_tasks)
+        assert calls == ["start"]
+        await shutdown(app)
+        assert calls == ["start", "stop"]
+
+    @pytest.mark.parametrize("entrypoint", ["start_dashboard", "start_api_server"])
+    def test_both_entrypoints_register_the_cookie_watcher(self, entrypoint: str) -> None:
+        """A gateway restarted headless (``--slack-only``) after an import must keep
+        injecting the stored cookies into new browsers, so the API-only server
+        registers the watcher exactly as the dashboard does."""
+        source = inspect.getsource(getattr(srv, entrypoint))
+        assert "_register_browser_cookie_watcher(app, state)" in source
+
     def test_the_gateway_passes_its_state_to_the_registration(self) -> None:
         source = inspect.getsource(srv.start_dashboard)
         assert "_register_browser_view_cleanup(app, state)" in source

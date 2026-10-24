@@ -49,6 +49,7 @@ if TYPE_CHECKING:
         _note_listener_sidecar,
         _precompute_telemetry,
         _reconcile_listener_publication,
+        _register_browser_cookie_watcher,
         _register_browser_install_cleanup,
         _register_config_watch,
         _register_connections_warm_lifecycle,
@@ -342,6 +343,9 @@ async def start_api_server(
     _register_prevent_sleep_shutdown(app, state)
     _register_listener_guard_shutdown(app, state)
     _register_browser_install_cleanup(app, state)
+    # Same cookie watcher as start_dashboard: cookies imported before a headless
+    # restart must still reach the browsers this gateway's agents open.
+    _register_browser_cookie_watcher(app, state)
     _register_connections_warm_lifecycle(app, state)
     _register_workflow_lifecycle(app, state)
 

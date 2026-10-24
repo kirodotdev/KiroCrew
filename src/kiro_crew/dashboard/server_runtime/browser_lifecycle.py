@@ -1,7 +1,8 @@
 """The browser CLI's lifecycle around the gateway.
 
-The loop that keeps the snapshot directory bounded, and the cleanup hooks that stop a
-browser install and the CLI dashboard process when the gateway shuts down.
+The loop that keeps the snapshot directory bounded, the imported-cookies watcher, and
+the cleanup hooks that stop a browser install and the CLI dashboard process when the
+gateway shuts down.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.server import (
         DashboardState,
+        browser_cli_cookies,
         browser_cli_launcher,
         browser_cli_snapshots,
         browser_cli_view,
@@ -141,3 +143,41 @@ def _register_browser_view_cleanup(app: web.Application, state: DashboardState) 
 
     app.on_startup.append(_browser_sessions_startup)
     app.on_cleanup.append(_browser_view_shutdown)
+
+
+def _register_browser_cookie_watcher(app: web.Application, state: DashboardState) -> None:
+    """Start the imported-cookies watcher after startup and stop it on cleanup.
+
+    The ``SessionWatcher`` (``browser_cli.cookies``) is the gateway-side thread
+    that injects imported cookies into agent browser daemons that appear after
+    the import, over their control sockets. One per gateway, a daemon thread
+    entirely off the event loop; the app only starts and stops it. Starting it
+    is a no-op until a state file exists (the first import starts it), so a
+    gateway that never imports cookies runs no thread.
+
+    Both entrypoints register it, the dashboard and the headless API server: a
+    gateway restarted headless after an import must keep reaching new browsers
+    without a second import. The start runs in a background task, so nothing
+    before the port bind waits on a thread hop. Registered BEFORE
+    ``runner.setup()`` freezes the app's signal lists.
+    """
+
+    async def _cookie_watcher_startup(app_: web.Application) -> None:
+        async def _start() -> None:
+            try:
+                await asyncio.to_thread(browser_cli_cookies.start_session_watcher)
+            except Exception:  # noqa: BLE001 - startup must not raise
+                logger.debug("browser cookie watcher failed to start", exc_info=True)
+
+        task = asyncio.create_task(_start())
+        state._background_tasks.add(task)
+        task.add_done_callback(state._background_tasks.discard)
+
+    async def _cookie_watcher_shutdown(app_: web.Application) -> None:
+        try:
+            await asyncio.to_thread(browser_cli_cookies.stop_session_watcher)
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            logger.debug("browser cookie watcher stop failed during shutdown", exc_info=True)
+
+    app.on_startup.append(_cookie_watcher_startup)
+    app.on_cleanup.append(_cookie_watcher_shutdown)

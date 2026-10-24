@@ -379,7 +379,15 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   so no sandboxed writer can plant the spec kiro-cli reads there. At the
     #:   data-home root beside writable siblings, so leaf-only is the only hold.
     #:   Three more entries per tier.
-    EXPECTED: dict[str, int] = {"standard": 290, "cc": 297, "strict": 298}
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``browser-cookie-import`` -- the imported browser cookies
+    #:   (``browser_cli/cookies.py``), masked and pre-created. A directory so that
+    #:   the gateway's ``atomic_write`` of the state renames INSIDE the masked name,
+    #:   never over it; at the data-home root beside writable siblings, so
+    #:   leaf-only is the only hold available for the directory itself.
+    EXPECTED: dict[str, int] = {"standard": 293, "cc": 300, "strict": 301}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

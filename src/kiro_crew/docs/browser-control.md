@@ -103,6 +103,28 @@ itself (`--with-deps`), and retries without that step when the host refuses it.
 Treat an attached browser as borrowed. The agent should not navigate a tab away
 from what you were doing, and closing it would take your own windows with it.
 
+## Import cookies
+
+The Live view has an **Import cookies** button. You export the cookies from the
+browser where you are already logged in — a Playwright storageState file, a
+Cookie-Editor / "Get cookies.txt" export, or a Netscape `cookies.txt` — and paste
+or upload them. The gateway stores them and applies them to the agent's own
+browser sessions, so a fresh session starts already logged in. This is how a
+logged-in session reaches a gateway running on a different machine from your
+laptop.
+
+The cookie values are saved only on the computer running Kiro Crew and are
+never shown back to you in the dashboard, and
+the agent never reads the stored file — the gateway hands the cookies to the
+agent's browser over that browser's own control socket, one `cookie-set` request
+per cookie, so the browser receives them as data and opens no file. A session that
+is already open receives them at import time (best effort; the panel reports any
+session that could not be reached). A session the agent opens later receives them
+within about two seconds of its browser starting, so the very first page load of
+a brand-new session can arrive before its cookies do; the next one has them.
+Clear them at any time from the same control: the stored file is removed and
+every open session's cookies are cleared too.
+
 ## Related docs
 
 - [Dashboard](dashboard.md): the side panel and where its tabs live

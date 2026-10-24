@@ -409,6 +409,28 @@ def test_the_session_name_does_not_travel_as_extra_env() -> None:
         assert "browser_session_env" in source
 
 
+def test_lifecycle_paths_are_read_only_and_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    home = tmp_path / "uncreated-home"
+    monkeypatch.setattr(mod, "peek_data_home", lambda: home)
+    monkeypatch.setattr(mod, "_UNIX_SOCKET_PATH_MAX_BYTES", 10_000)
+    monkeypatch.setattr(mod, "cli_lifecycle_env_support", lambda: (mod.SeamSupport.SUPPORTED, ""))
+    env = {mod.SESSION_ENV: "kc-a1b2c3d4"}
+    assert mod._lifecycle_paths(env) == (
+        home / "pw" / "a1b2c3d4" / "s",
+        home / "pw" / "a1b2c3d4" / "d",
+    )
+    assert not home.exists()
+    assert mod._lifecycle_paths({**env, mod.SOCKETS_ENV: "relative"}) is None
+    assert mod._lifecycle_paths({mod.SESSION_ENV: "operator"}) is None
+    monkeypatch.setattr(mod, "_UNIX_SOCKET_PATH_MAX_BYTES", 1)
+    monkeypatch.setattr(mod.platform_compat, "IS_WINDOWS", False)
+    assert mod._lifecycle_paths(env) is None
+    assert _lifecycle_warnings(caplog) == []
+    assert not home.exists()
+
+
 def test_browser_socket_env_prepares_stable_owner_only_dirs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -471,6 +493,7 @@ def test_browser_socket_env_ignores_an_inherited_root(
     """
     home = tmp_path / "home"
     monkeypatch.setattr(mod, "config_dir", lambda: home)
+    monkeypatch.setattr(mod, "peek_data_home", lambda: home)
     monkeypatch.setattr(mod.platform_compat, "make_owner_only_dir", lambda _path: None)
     monkeypatch.setattr(mod.platform_compat, "restrict_dir_to_owner", lambda _path: None)
     monkeypatch.setattr(mod, "_UNIX_SOCKET_PATH_MAX_BYTES", 10_000)
@@ -499,6 +522,7 @@ def test_nesting_cannot_deepen_however_long_the_chain(
     """
     home = tmp_path / "home"
     monkeypatch.setattr(mod, "config_dir", lambda: home)
+    monkeypatch.setattr(mod, "peek_data_home", lambda: home)
     monkeypatch.setattr(mod.platform_compat, "make_owner_only_dir", lambda _path: None)
     monkeypatch.setattr(mod.platform_compat, "restrict_dir_to_owner", lambda _path: None)
     monkeypatch.setattr(mod, "_UNIX_SOCKET_PATH_MAX_BYTES", 10_000)
@@ -520,6 +544,7 @@ def test_a_foreign_configured_root_is_still_honoured(
     home = tmp_path / "home"
     elsewhere = tmp_path / "operator-chosen"
     monkeypatch.setattr(mod, "config_dir", lambda: home)
+    monkeypatch.setattr(mod, "peek_data_home", lambda: home)
     monkeypatch.setattr(mod.platform_compat, "make_owner_only_dir", lambda _path: None)
     monkeypatch.setattr(mod.platform_compat, "restrict_dir_to_owner", lambda _path: None)
     monkeypatch.setattr(mod, "_UNIX_SOCKET_PATH_MAX_BYTES", 10_000)
@@ -546,6 +571,7 @@ def test_browser_socket_env_ignores_an_inherited_root_from_another_home(
     parent_home = tmp_path / "parent-home"
     child_home = tmp_path / "pod-home"
     monkeypatch.setattr(mod, "config_dir", lambda: child_home)
+    monkeypatch.setattr(mod, "peek_data_home", lambda: child_home)
     monkeypatch.setattr(mod.platform_compat, "make_owner_only_dir", lambda _path: None)
     monkeypatch.setattr(mod.platform_compat, "restrict_dir_to_owner", lambda _path: None)
     monkeypatch.setattr(mod, "_UNIX_SOCKET_PATH_MAX_BYTES", 10_000)

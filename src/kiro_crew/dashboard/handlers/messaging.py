@@ -33,6 +33,7 @@ from kiro_crew.browser.command_bus import (  # noqa: F401
     QueueFullError,
     get_command_bus,
 )
+from kiro_crew.browser_cli import cookies as browser_cli_cookies  # noqa: F401
 from kiro_crew.browser_cli import install as browser_cli_install  # noqa: F401
 from kiro_crew.browser_cli import install_job as browser_install_job  # noqa: F401
 from kiro_crew.browser_cli import launcher as browser_cli_launcher  # noqa: F401
@@ -73,6 +74,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     subagent_event_slot,
 )
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
+    _is_restricted_session,
     _pip_install_channel_available,
     guard_owner_surface_routes,
     internal_memory_scope,
@@ -113,11 +115,16 @@ from kiro_crew.dashboard.messaging_api.browser_routes import (  # noqa: F401
     _browser_install_status,
     _browser_view_payload,
     _deny_non_owner_browser_request,
+    _get_cookie_lock,
+    _restricted_cookie_denial,
     _start_browser_install_job,
     _terminate_install_scope,
     api_browser_command,
     api_browser_command_drain,
     api_browser_command_result,
+    api_browser_cookies_clear,
+    api_browser_cookies_get,
+    api_browser_cookies_import,
     api_browser_engine_install,
     api_browser_install_get,
     api_browser_install_start,
@@ -432,6 +439,15 @@ class _CredentialTupleChanged(Exception):
 #: at all -- distinct from a present ``null`` or other non-object value, which
 #: a rollback has to put back rather than delete.
 _ABSENT: Any = object()
+
+#: One cookie transaction at a time. Import is persist-then-inject and clear is
+#: delete-then-clear-live; an overlapping POST and DELETE interleaving at the
+#: ``to_thread`` boundary could leave a state the owner just cleared active in
+#: the live sessions (or the reverse). Held across the WHOLE transaction of
+#: both handlers. Created lazily so importing this module does not need a
+#: running loop (same shape as ``ui_prefs._get_lock``). Read and set by
+#: ``messaging_api.browser_routes._get_cookie_lock``.
+_cookie_lock: asyncio.Lock | None = None
 
 
 def _sel():

@@ -422,6 +422,11 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "file-delivery-consent-pending",
     "appearance-library",
     "quarantined-clones",
+    # The imported browser cookies (``browser_cli/cookies.py``), created on the
+    # owner's first import. Left to lazy creation, a sandbox spawned before then
+    # finds it absent and the live session cookies written later appear unmasked
+    # INSIDE that running sandbox. Only the gateway reads it; empty means "none".
+    "browser-cookie-import",
     # First created by the first member-born session's vouch, so a sandbox spawned
     # before then would otherwise see the directory appear unmasked.
     "vouched-executions",

@@ -237,11 +237,16 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # sandboxed process.
     _MD_NOTEBOOK_STAGING_LEAF,
     # Browser session material. The extension token reaches the CLI through the
-    # environment, never by ``open()``, so masking the file costs nothing; the other
-    # four are retired leaves with no reader left in the tree. The LIVE browser paths
-    # (``browser-state``, ``playwright-snapshots``, ``pw``, ``playwright-cli-config.json``)
-    # are deliberately absent from the sensitive list and stay fully visible.
+    # environment, never by ``open()``, so masking the file costs nothing; the
+    # imported-cookies directory (``browser-cookie-import``) holds live
+    # session cookies and is read ONLY by the gateway, which hands them to the
+    # agent's daemon over its control socket (``browser_cli/cookies.py``), so the
+    # agent's own shell never needs to read it; the other four are retired leaves
+    # with no reader left in the tree. The LIVE browser paths (``browser-state``,
+    # ``playwright-snapshots``, ``pw``, ``playwright-cli-config.json``) are
+    # deliberately absent from the sensitive list and stay fully visible.
     "browser-cookies.txt",
+    "browser-cookie-import",
     "playwright-storage-state.json",
     "playwright-extension-token",
     "browser-mode-enabled",
