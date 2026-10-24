@@ -18,7 +18,7 @@ import type { useBoardColumnMutations, useBoardColumns, useBoardFolderCollapse, 
 import type { useBulkModelSwitch } from './bulkModelSwitch'
 import type { useConductorLane } from './conductor'
 import type { useFolderChatCreate, useSessionCreate } from './create'
-import type { useFolderDropOps, useNativeSessionDrag, useSidebarDragHandlers, useSidebarMoveUndo } from './dnd/useSidebarDrag'
+import type { FolderUndoAnchorGone, useFolderDropOps, useNativeSessionDrag, useSidebarDragHandlers, useSidebarMoveUndo } from './dnd/useSidebarDrag'
 import type { useSessionFilterState, useSessionStatusFilters } from './filters'
 import type { useFolderFilterReveal, useFolderFilterRows, useFolderMutations, useFolderSort, useFolderTree, useFolderVisibility, useRootFolderLanes } from './folders'
 import type { useHistoryPane } from './history'
@@ -166,6 +166,8 @@ export interface SidebarScope {
   /** An offline refusal: neutral status text, never the failure surface. */
   folderOfflineNotice: string
   setFolderOfflineNotice: SetState<string>
+  folderUndoAnchorGone: FolderUndoAnchorGone
+  setFolderUndoAnchorGone: SetState<FolderUndoAnchorGone>
   newChatError: string
   setNewChatError: SetState<string>
   remoteCrewErrorId: string

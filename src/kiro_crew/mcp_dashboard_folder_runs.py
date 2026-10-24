@@ -13,7 +13,6 @@ from typing import Any
 from urllib.parse import quote
 
 from kiro_crew.config.sections import FOLDER_SORT_DEFAULT
-from kiro_crew.dashboard.folder_ownership import _folder_owner_app, _subtree_holds_foreign_folder
 from kiro_crew.mcp_dashboard_caller_scope import (
     _own_chat_slot,
     _refuse_tree_shaping_if_unverifiable,
@@ -21,12 +20,9 @@ from kiro_crew.mcp_dashboard_caller_scope import (
 )
 from kiro_crew.mcp_dashboard_folder_tree import (
     _chat_folder_created,
-    _chat_folder_order,
     _chat_folder_paths,
     _chat_folder_render_order,
-    _chat_folder_siblings,
     _chat_folder_sort_mode,
-    _free_slot_order,
     _sidebar_group_order,
 )
 from kiro_crew.mcp_dashboard_references import (
@@ -205,7 +201,7 @@ def _run_chat_folder_create(args: dict[str, Any], ctx: ToolContext) -> str:
 
 
 def _run_chat_folder_move(args: dict[str, Any], ctx: ToolContext) -> str:
-    caller_key, caller_app, gate = _refuse_tree_shaping_if_unverifiable(ctx, "moving a folder")
+    caller_key, _caller_app, gate = _refuse_tree_shaping_if_unverifiable(ctx, "moving a folder")
     if gate:
         return gate
     before_ref = str(args.get("before") or "").strip()
@@ -256,187 +252,45 @@ def _run_chat_folder_move(args: dict[str, Any], ctx: ToolContext) -> str:
                 "parent."
             )
 
-    # Placing a folder is ONE write whenever the store already has a free
-    # integer slot at that position — before the first sibling, after the last,
-    # or in a gap. Only when the two neighbours are adjacent integers, which is
-    # what a sidebar drag leaves behind, do the siblings have to be renumbered;
-    # that renumber is contiguous 0..n-1, the same shape a drag writes, so the
-    # two paths leave one convention rather than two.
+    # One PATCH carries the whole move: the reparent (only when the parent
+    # changes) and the anchor. The gateway picks the rank under the folder
+    # store lock, so the position is decided against the tree as it is at
+    # the write, and it enforces every ownership rule there: an app may move
+    # only its own folder, into one of its own, and not one whose subtree
+    # holds the person's. If assigning the rank requires a section re-spread,
+    # every sibling whose rank would change must also belong to the app.
     #
-    # The distinction is worth the branch because several writes cannot be made
-    # atomic from here: the endpoint takes one row at a time. The one-write case
-    # therefore cannot land half-applied at all, and the renumber is reserved
-    # for the positions that genuinely need it.
-    order_writes: list[tuple[str, int]] = []
-    if anchor_id:
-        siblings = [
-            f for f in _chat_folder_siblings(chat_folders, dest_id) if str(f.get("id")) != fld_id
-        ]
-        slot = next((i for i, f in enumerate(siblings) if str(f.get("id")) == anchor_id), -1)
-        if slot < 0:
-            return "Error: the anchor folder is no longer where it was — re-read the tree."
-        moving = next(f for f in chat_folders if str(f.get("id")) == fld_id)
-        index = slot if before_ref else slot + 1
-        free = _free_slot_order(siblings, index)
-        if free is not None:
-            # Skip a write that would store the value the row already carries.
-            order_writes = [] if _chat_folder_order(moving) == free else [(fld_id, free)]
-        else:
-            placed = siblings[:index] + [moving] + siblings[index:]
-            order_writes = [
-                (str(f.get("id")), i) for i, f in enumerate(placed) if _chat_folder_order(f) != i
-            ]
-        # The moved folder itself must be owned -- the ONE ownership clause the
-        # write paths cannot re-derive, so it stays in the tool. Positioning is
-        # RELATIVE: renumbering the app's OWN siblings around a folder changes
-        # where that folder renders WITHOUT writing to it (when its own order is
-        # unchanged, `own_pos` is None and no PATCH names it). A caller could
-        # then reposition a folder it does not own by writing only rows it does,
-        # and every write the reorder endpoint sees would be legitimately owned,
-        # leaving nothing for it to refuse. The sibling-row and subtree clauses
-        # of the old predicate genuinely moved to the write paths (the reorder
-        # endpoint re-authorizes each row AND its subtree under the lock); only
-        # this moved-folder clause has no write to hang off, so it is checked
-        # here, before any write, exactly as the base did. A plain reparent is
-        # not gated here because it always writes to the moved folder, so the
-        # PATCH endpoint's own ownership check refuses it.
-        if caller_app:
-            moving_owner = _folder_owner_app(
-                next((f for f in chat_folders if str(f.get("id")) == fld_id), {})
-            )
-            if moving_owner != caller_app:
-                return (
-                    "Error: this app does not own the folder it is positioning, "
-                    "so the position is refused. An app may reorder only its own "
-                    "folders; ask the person to set the order of theirs."
-                )
-            # And its SUBTREE, but ONLY when no write names the moved folder.
-            # Positioning takes the descendants with it, so an app repositioning
-            # a folder it owns whose subtree holds the person's relocates theirs.
-            # When a write DOES name the moved folder (a free-slot order PATCH, or
-            # a reparent), the endpoint's own subtree guard fires on that write --
-            # so the tool must not pre-empt it there. The uncovered case is the
-            # relative renumber: the moved folder's own order is unchanged, so no
-            # write names it, and neither write path sees a row to refuse. That is
-            # the one the tool must catch, exactly as the base's moved-folder
-            # subtree clause did.
-            moved_is_written = any(sid == fld_id for sid, _pos in order_writes)
-            if not moved_is_written and _subtree_holds_foreign_folder(
-                chat_folders, root_id=fld_id, request_app=caller_app
-            ):
-                return (
-                    "Error: this folder contains folders this app does not own, "
-                    "and positioning it moves everything inside it, so the "
-                    "position is refused. Ask the person to set the order."
-                )
-
-    # The moved folder's own position rides along with the reparent: one write
-    # for the row this call is about, so the common case stays a single request.
-    #
-    # ``parent_id`` is omitted when the parent is NOT changing. The endpoint
-    # treats its presence as a reparent and applies the reparent-only rule that
-    # a subtree holding a folder the caller does not own cannot be moved — so
-    # sending the current parent back would make an app's pure reposition fail
-    # on a guard about a move that is not happening.
+    # ``parent_id`` is omitted when the parent is NOT changing: sending the
+    # current parent again is a no-op for position.
     move_body: dict[str, Any] = {}
     if current_parent != dest_id:
         move_body["parent_id"] = dest_id
-    own_pos = next((pos for fid, pos in order_writes if fid == fld_id), None)
-    # A renumber writes several sibling rows, and those cannot be made atomic
-    # one PATCH at a time: a refusal partway would leave the person's sidebar
-    # in an order nobody chose. So the moved folder's own position folds into
-    # the reparent PATCH ONLY when it is the single row to write (a free slot
-    # existed); when siblings must be renumbered too, the whole set -- moved
-    # folder included -- goes through the atomic reorder endpoint below, and
-    # the reparent PATCH carries parent_id alone.
-    sibling_writes = [(sid, pos) for sid, pos in order_writes if sid != fld_id]
-    if own_pos is not None and not sibling_writes:
-        move_body["order"] = own_pos
-    # A renumber goes through the atomic reorder endpoint, which refuses the
-    # whole batch if any named row (or its subtree) is not the app's and leaves
-    # the stored order untouched -- so a same-parent reposition needs no
-    # tool-layer pre-check: the endpoint's atomic refusal is complete and no
-    # write can strand.
-    #
-    # The one case that IS exposed is a cross-parent move whose renumber also
-    # needs the reorder: the reparent PATCH commits first (parent_id below),
-    # THEN the reorder can reject, leaving the folder reparented but
-    # unpositioned. For that case only, preflight the endpoint's own per-row
-    # predicate over the whole batch before the reparent commits, so a batch
-    # that would be refused writes nothing at all. This adds no refusal a
-    # legitimate call would not already hit at the endpoint; it only moves the
-    # already-certain refusal ahead of the reparent. Reproduces the reorder
-    # endpoint's check (`chat_folders.api_chat_folder_reorder._apply`): row
-    # owned by the app AND its subtree holds no foreign folder.
-    if caller_app and sibling_writes and "parent_id" in move_body:
-        for sid, _pos in order_writes:
-            row = next((f for f in chat_folders if str(f.get("id")) == sid), {})
-            if _folder_owner_app(row) != caller_app:
-                return (
-                    "Error: this move would renumber a folder this app does not "
-                    "own, so it is refused before anything is moved. An app may "
-                    "reorder only its own folders; ask the person to set the "
-                    "order of theirs."
-                )
-            if _subtree_holds_foreign_folder(chat_folders, root_id=sid, request_app=caller_app):
-                return (
-                    "Error: this move would reposition a folder whose subtree "
-                    "holds folders this app does not own, so it is refused "
-                    "before anything is moved. Ask the person to reorder theirs."
-                )
+    if anchor_id:
+        move_body["before" if before_ref else "after"] = anchor_id
+        # The anchor is checked against the siblings as they are at the write,
+        # which a deleted parent changes: its children are promoted to the
+        # root and are still siblings there. Naming the container this call
+        # read keeps that from landing as a root reorder nobody asked for.
+        # A parent missing from the snapshot is either gone or hidden from a
+        # crew member's filtered view. The gateway checks against the full
+        # store, so no single value matches in both cases, and the
+        # precondition is left out for that folder.
+        known_ids = {str(f.get("id")) for f in chat_folders}
+        if not current_parent or current_parent in known_ids:
+            move_body["expected_parent"] = current_parent
     if move_body:
         try:
             d = ctx.client.patch(f"/api/chat/folders/{fld_id}", move_body, session_key=caller_key)
         except DashboardError as refused:
-            # The endpoint owns the cycle guard (a folder cannot move into its
-            # own descendant) — surface its verdict rather than re-deriving it.
+            # The endpoint owns the cycle, ownership and anchor checks --
+            # surface its verdict rather than re-deriving it.
             return f"Error: {refused.error}"
     else:
-        # Nothing to write for this row: it is already in the destination and
-        # already holds the position asked for.
+        # Nothing to write: already in the destination, and no position asked.
         d = next((f for f in chat_folders if str(f.get("id")) == fld_id), {})
     moved: list[dict] = [f for f in chat_folders if str(f.get("id")) != fld_id]
     moved.append({**d, "id": fld_id})
     dest_path = _chat_folder_paths(moved).get(fld_id) or "(top level)"
-    if sibling_writes:
-        # The renumber, in ONE atomic request. The endpoint applies the whole
-        # list under the folder-store lock, all-or-none, re-validating this
-        # app's ownership of EVERY row inside that lock the way a single PATCH
-        # does -- so ownership lives with the lock-holder rather than a
-        # tool-layer pre-check here, and a refusal leaves the stored order
-        # untouched instead of half-applied. The moved folder's own order
-        # joins the batch here (it is not folded into the reparent PATCH
-        # above), so its position relative to the renumbered siblings lands
-        # in the same transaction.
-        reorder_body = [{"id": sid, "order": pos} for sid, pos in order_writes]
-        try:
-            ctx.client.post(
-                "/api/chat/folders/reorder",
-                # Every row in the batch lives in the destination container by
-                # this point (the reparent PATCH above has landed), and the
-                # batch was computed from a snapshot -- so the claim lets the
-                # endpoint refuse the renumber if a concurrent reparent moved a
-                # sibling between that read and this write, instead of landing
-                # an index computed for a container the row has left.
-                {"orders": reorder_body, "expected_parent": dest_id},
-                session_key=caller_key,
-            )
-        except DashboardError as refused:
-            # The reparent (if any) landed and is not in doubt; the ordering
-            # did not -- and, being atomic, left the stored order untouched
-            # rather than partway. Say which half held so the caller can
-            # re-run to finish, matching the success wording's move/reposition
-            # split.
-            landed = (
-                f"Repositioned folder (id={fld_id})"
-                if current_parent == dest_id
-                else f"Moved folder (id={fld_id}) to `{dest_path}`"
-            )
-            return redact(
-                f"{landed}, but ordering was refused: {refused.error}. "
-                "The stored order is unchanged. Re-run the same call to finish "
-                "positioning it."
-            )
     if anchor_id:
         side = "before" if before_ref else "after"
         anchor_path = _chat_folder_paths(chat_folders).get(anchor_id) or anchor_id

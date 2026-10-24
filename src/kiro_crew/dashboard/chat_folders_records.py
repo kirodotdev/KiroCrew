@@ -25,6 +25,7 @@ from kiro_crew.dashboard.chat_folders_paths import (
 )
 from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_ids
 from kiro_crew.dashboard.folder_ownership import _folder_owner_app, _is_descendant
+from kiro_crew.dashboard.folder_rank import assign_append_rank
 from kiro_crew.dashboard.slot_ownership import slot_not_found
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import (
@@ -707,6 +708,11 @@ async def create_folder_record(
         folder["order"] = len(folders)  # recount under the lock
         if claim_parent_for_person and parent is not None:
             parent.pop(CREATED_BY_SESSION, None)
+        # A new folder lands at the end of its section. In a ranked section it
+        # takes a rank after the last sibling, so the section stays ranked and
+        # the next move there writes one row; otherwise it stays unranked, and
+        # unranked rows sort last by ``order`` -- the end all the same.
+        assign_append_rank(folder, folders, clear_unranked=True)
         folders.append(folder)
         return True, ""
 

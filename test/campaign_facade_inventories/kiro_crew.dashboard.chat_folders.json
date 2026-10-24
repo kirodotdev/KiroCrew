@@ -17,7 +17,6 @@
   "allow_create",
   "api_chat_folder_create",
   "api_chat_folder_delete",
-  "api_chat_folder_reorder",
   "api_chat_folder_update",
   "api_chat_folders",
   "api_chat_pinned_order",
