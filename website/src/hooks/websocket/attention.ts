@@ -7,8 +7,10 @@
 import { store } from '../../store'
 import { isChatPath } from '../notificationBanner'
 import { bindSlotReadSender, emitSlotRead, flushSlotRead } from '../../lib/slotReadRelay'
+import { bindComposeIntentSender } from '../../lib/composeIntent'
 import { getViewedThreadSlot } from '../../lib/viewedThread'
 import { getMountedMemberThreadSlot, subscribeMountedMemberThread } from '../../lib/mountedMemberThread'
+import { isMemberThreadSlot } from '../unreadOnAttention'
 import type { SocketConnection } from './connection'
 import { appPathname } from '@/lib/basePath'
 
@@ -96,6 +98,15 @@ export function emitSlotFocused(slot: string | null): void {
   sendSlotFocusedImpl(slot)
 }
 
+/* Compose intent (lib/composeIntent.ts): the user focused or typed in the
+   composer of the slot this socket last announced. Re-sending that same
+   slot_focused frame re-arms the server's resume prefetch for a chat the idle
+   sweep reclaimed while its window kept focus (the server keeps a prefetch
+   still pending and no-ops on a live session). Throttled per slot so typing
+   sends at most one frame per COMPOSE_INTENT_THROTTLE_MS. Crewmate threads
+   are left alone: their warm-up has its own design. */
+export const COMPOSE_INTENT_THROTTLE_MS = 10_000
+
 export interface FocusRelayDeps {
   socket: SocketConnection
   /** The buffered sidebar-recency bumps, flushed before a reveal's read relay. */
@@ -113,10 +124,26 @@ export function attachFocusRelay({ socket, flushSlotActivity, onActiveSlotChange
   // deep links, history), tab visibility, and split-view pane focus via
   // emitSlotFocused — so the HTTP and WS notions of "focused" cannot
   // drift. Best-effort: dropped silently while the socket is not OPEN.
+  // The slot the server last heard as focused, from any source: the compose
+  // intent only repeats it, so it can never move focus or cancel another
+  // slot's prefetch.
+  // Seeded like lastFocusSent below: the connect catch-up announces this slot.
+  let lastAnnounced: string | null = focusedSlotForCurrentSurface()
   const sendFocus = (slot: string | null, hidden = false) => {
+    lastAnnounced = hidden ? null : slot
     socket.sendIfOpen(hidden ? { type: 'slot_focused', slot: null, hidden: true } : { type: 'slot_focused', slot })
   }
   sendSlotFocusedImpl = slot => sendFocus(slot)
+  const composeSentAt = new Map<string, number>()
+  bindComposeIntentSender(slot => {
+    if (document.hidden || slot !== lastAnnounced) return
+    if (isMemberThreadSlot(slot, store.getState().dashboard.slots)) return
+    const now = Date.now()
+    const last = composeSentAt.get(slot)
+    if (last !== undefined && now - last < COMPOSE_INTENT_THROTTLE_MS) return
+    composeSentAt.set(slot, now)
+    sendFocus(slot)
+  })
   // Read-relay sender rides the same socket with the same best-effort
   // contract; slotReadRelay owns the per-slot throttle and the watermark.
   bindSlotReadSender((slot: string, readTs?: string) => {
@@ -182,5 +209,6 @@ export function attachFocusRelay({ socket, flushSlotActivity, onActiveSlotChange
     unsubFocus()
     unsubMemberThread()
     sendSlotFocusedImpl = () => {}
+    bindComposeIntentSender(null)
   }
 }

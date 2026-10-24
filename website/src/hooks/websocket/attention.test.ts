@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { clearMountedMemberThreadSlot, setMountedMemberThreadSlot } from '../../lib/mountedMemberThread'
 import { store } from '../../store'
 import { setActiveSlot } from '../../store/chatSlice'
-import { attachFocusRelay, emitSlotFocused, focusedSlotForCurrentSurface } from './attention'
+import { emitComposeIntent } from '../../lib/composeIntent'
+import { attachFocusRelay, COMPOSE_INTENT_THROTTLE_MS, emitSlotFocused, focusedSlotForCurrentSurface } from './attention'
 import type { SocketConnection } from './connection'
 
 describe('warm task brief focus signal', () => {
@@ -98,5 +99,73 @@ describe('warm task brief focus signal', () => {
     ])
     detach()
     store.dispatch(setActiveSlot(null))
+  })
+})
+
+describe('compose intent re-arms the resume prefetch', () => {
+  let hidden: ReturnType<typeof vi.spyOn>
+  let sendIfOpen: ReturnType<typeof vi.fn>
+  let detach: () => void
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    clearMountedMemberThreadSlot()
+    hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    sendIfOpen = vi.fn()
+    detach = attachFocusRelay({
+      socket: { sendIfOpen, reconnectingRef: { current: false } } as unknown as SocketConnection,
+      flushSlotActivity: vi.fn(),
+      onActiveSlotChange: vi.fn(),
+    })
+  })
+
+  afterEach(() => {
+    detach()
+    store.dispatch(setActiveSlot(null))
+    clearMountedMemberThreadSlot()
+    hidden.mockRestore()
+    vi.useRealTimers()
+  })
+
+  const focusFrames = (slot: string) =>
+    sendIfOpen.mock.calls.filter(([f]) => f.type === 'slot_focused' && f.slot === slot).length
+
+  it('re-sends slot_focused for the focused chat when the user composes', () => {
+    act(() => { store.dispatch(setActiveSlot('chat-a')) })
+    expect(focusFrames('chat-a')).toBe(1)
+    act(() => emitComposeIntent('chat-a'))
+    expect(focusFrames('chat-a')).toBe(2)
+  })
+
+  it('sends at most one compose frame per slot per throttle window', () => {
+    act(() => { store.dispatch(setActiveSlot('chat-a')) })
+    act(() => emitComposeIntent('chat-a'))
+    act(() => emitComposeIntent('chat-a'))
+    vi.advanceTimersByTime(COMPOSE_INTENT_THROTTLE_MS - 1)
+    act(() => emitComposeIntent('chat-a'))
+    expect(focusFrames('chat-a')).toBe(2)
+    vi.advanceTimersByTime(1)
+    act(() => emitComposeIntent('chat-a'))
+    expect(focusFrames('chat-a')).toBe(3)
+  })
+
+  it('never moves focus: a slot other than the announced one sends nothing', () => {
+    act(() => { store.dispatch(setActiveSlot('chat-a')) })
+    const before = sendIfOpen.mock.calls.length
+    act(() => emitComposeIntent('chat-b'))
+    expect(sendIfOpen).toHaveBeenCalledTimes(before)
+  })
+
+  it('leaves crewmate threads and hidden windows alone', () => {
+    act(() => setMountedMemberThreadSlot('member-ops'))
+    const before = sendIfOpen.mock.calls.length
+    act(() => emitComposeIntent('member-ops'))
+    expect(sendIfOpen).toHaveBeenCalledTimes(before)
+    act(() => clearMountedMemberThreadSlot())
+    act(() => { store.dispatch(setActiveSlot('chat-a')) })
+    hidden.mockReturnValue(true)
+    const hiddenBefore = sendIfOpen.mock.calls.length
+    act(() => emitComposeIntent('chat-a'))
+    expect(sendIfOpen).toHaveBeenCalledTimes(hiddenBefore)
   })
 })

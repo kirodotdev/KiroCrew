@@ -818,7 +818,8 @@ def _handle_slot_focused(
     multi-second transcript replay with the user reading that history in the
     UI. ``prev_task`` is the prefetch THIS socket's previous focus armed;
     it is cancelled on every focus change so rapid tab flipping settles into
-    at most one pending prefetch per connection — only the task this path
+    at most one pending prefetch per connection (a repeat frame for the slot
+    whose prefetch is still pending keeps it) — only the task this path
     created is touched, never one armed by the slot-create/project-set
     intent signals. ``slot_key`` of ``None``/empty means blur (tab hidden,
     no focused slot): cancel and do nothing else.
@@ -830,11 +831,21 @@ def _handle_slot_focused(
 
     if not owner:
         return prev_task
+    slot = state.get_slot(slot_key) if isinstance(slot_key, str) and slot_key else None
+    if (
+        slot is not None
+        and prev_task is not None
+        and not prev_task.done()
+        and getattr(slot, "_eager_spawn_task", None) is prev_task
+    ):
+        # The same slot announced again (window focus, tab return, the
+        # composer's compose intent) while its prefetch is still pending:
+        # keep that load rather than restart it from the debounce.
+        return prev_task
     if prev_task is not None and not prev_task.done():
         prev_task.cancel()
     if not isinstance(slot_key, str) or not slot_key:
         return None  # blur
-    slot = state.get_slot(slot_key)
     if slot is None or slot.running:
         return None
     sessions = getattr(state, "sessions", None)

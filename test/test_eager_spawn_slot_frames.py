@@ -86,17 +86,54 @@ class TestSlotFocusedFrame:
     async def test_focus_change_cancels_previous_prefetch(self):
         from kiro_crew.dashboard.ws import _handle_slot_focused
 
-        slot = _ChatSlot("t1")
-        state = self._state(slot)
+        slots = {"t1": _ChatSlot("t1"), "t2": _ChatSlot("t2")}
+        state = self._state(slots["t1"])
+        state.get_slot = MagicMock(side_effect=slots.get)
         _prime(True)
         first = _handle_slot_focused(state, "t1", None, owner=True)
-        second = _handle_slot_focused(state, "t1", first, owner=True)
+        second = _handle_slot_focused(state, "t2", first, owner=True)
         assert first is not None and second is not None
         with pytest.raises(asyncio.CancelledError):
             await first
         second.cancel()
         with pytest.raises(asyncio.CancelledError):
             await second
+
+    @pytest.mark.asyncio
+    async def test_same_slot_reannounce_keeps_pending_prefetch(self):
+        """A repeat frame (compose intent, window focus) must not restart the load."""
+        from kiro_crew.dashboard.ws import _handle_slot_focused
+
+        slot = _ChatSlot("t1")
+        state = self._state(slot)
+        _prime(True)
+        first = _handle_slot_focused(state, "t1", None, owner=True)
+        again = _handle_slot_focused(state, "t1", first, owner=True)
+        assert again is first
+        assert slot._eager_spawn_task is first
+        assert not first.cancelled()
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+    @pytest.mark.asyncio
+    async def test_same_slot_reannounce_after_prefetch_done_rearms(self):
+        """Reaped while focused: the earlier prefetch finished, a repeat frame re-arms."""
+        from kiro_crew.dashboard.ws import _handle_slot_focused
+
+        slot = _ChatSlot("t1")
+        state = self._state(slot)
+        _prime(True)
+        first = _handle_slot_focused(state, "t1", None, owner=True)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        again = _handle_slot_focused(state, "t1", first, owner=True)
+        assert again is not None and again is not first
+        assert slot._eager_spawn_task is again
+        again.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await again
 
     @pytest.mark.asyncio
     async def test_blur_cancels_and_schedules_nothing(self):

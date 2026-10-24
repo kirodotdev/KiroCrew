@@ -14,6 +14,7 @@ import { useBranding } from '../hooks/useBranding'
 import { useAppStore, useAppDispatch } from '../store'
 import { switchSlot } from '../store/chatSlice'
 import { useSlotId } from '../providers/SlotContext'
+import { emitComposeIntent } from '../lib/composeIntent'
 import { ToolDetails } from '../pages/chat/ToolDetails'
 import { safeSetItem } from '../utils/safeStorage'
 import { offlineProps } from '../utils/offline'
@@ -1316,6 +1317,10 @@ function ChatInput({
           layout={inlineToolbarWhileFits && !reduceMotion && manualHeight === null ? 'position' : false}
           transition={shapeAnimating ? COMPOSER_ROW_SPRING : { duration: 0 }}
           className={`relative ${showDictation || voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? 'flex-1 min-h-0 flex flex-col' : inlineToolbar ? `flex-1 min-w-0 -ml-2.5 ${ONE_ROW_TEXT_PAD}` : ''}`}
+          // Composing in either editor (textarea or rich text) re-arms a
+          // reclaimed session's resume prefetch; the sender throttles.
+          onFocusCapture={() => emitComposeIntent(slotId)}
+          onKeyDownCapture={() => emitComposeIntent(slotId)}
         >
         {/* The one-row fit probe: the textarea's type and horizontal padding,
             no vertical padding, wrapping as the textarea wraps, measured at the
