@@ -82,6 +82,7 @@ from kiro_crew.computer_use.types import (
     PolicyStateError,
 )
 from kiro_crew.config.loader import computer_use_state_path, read_config_text
+from kiro_crew.edition_locks import LOCKED_BY_POLICY, local_enable_locked
 from kiro_crew.executors import subprocess_executor
 
 logger = logging.getLogger(__name__)
@@ -392,6 +393,7 @@ def _snapshot() -> dict[str, Any]:
 
     return {
         "enabled": enable_state.is_enabled(state),
+        "locked_by_policy": local_enable_locked("computer_use"),
         "supported": supported,
         "platform": platform_id,
         "reason": reason,
@@ -620,6 +622,11 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "enabled must be a boolean", "code": "invalid_field_type"},
                 status=400,
+            )
+        if body["enabled"] and local_enable_locked("computer_use"):
+            _audit(request, operation=OP_CONFIG_SAVE, outcome="denied", resources="enabled=locked")
+            return web.json_response(
+                {"error": LOCKED_BY_POLICY, "code": "locked_by_policy"}, status=409
             )
         state_patch[STATE_KEY_ENABLED] = body["enabled"]
     for key in _APP_LIST_KEYS:

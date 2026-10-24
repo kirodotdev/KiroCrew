@@ -392,6 +392,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.config.resolution": "DEGRADED_WHOLE_CONFIG",
     "kiro_crew.connections.warm": "scavenge_warm_mint_artifacts shutdown_warm_mint",
     "kiro_crew.crew_log": "crew_log_emit",
+    "kiro_crew.edition_locks": "local_enable_locked",
     "kiro_crew.dashboard": "display_verdicts",
     "kiro_crew.dashboard.chat": "_run_chat",
     "kiro_crew.dashboard.handlers": "wf_handlers work_ledger",
@@ -456,7 +457,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 92
+    assert len(expected) == 93
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

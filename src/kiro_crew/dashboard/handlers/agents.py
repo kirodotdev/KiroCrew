@@ -459,6 +459,8 @@ def _supply_live_enum(entry: dict) -> None:
 
 async def api_config_schema(request: web.Request) -> web.Response:
     """GET /api/config/schema — return config schema entries."""
+    from kiro_crew.edition_locks import LOCKED_BY_POLICY, config_path_locked
+
     entries = SCHEMA_REGISTRY
 
     # Filter by tags (comma-separated, intersection)
@@ -480,6 +482,9 @@ async def api_config_schema(request: web.Request) -> web.Response:
         if entry.sensitive or dataclasses.is_dataclass(d.get("defaultValue")):
             d["defaultValue"] = None
         _supply_live_enum(d)
+        # An enterprise build ignores this local value (RFC D3, kiro_crew.edition_locks).
+        if config_path_locked(entry.path):
+            d["lockedByPolicy"] = LOCKED_BY_POLICY
         result.append(d)
 
     return web.json_response({"entries": result})

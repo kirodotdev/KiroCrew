@@ -498,6 +498,12 @@ Mechanics:
 - `is_enabled()` is strict identity against `True`: a hand-edited
   `"enabled": "false"` (a truthy string) or `"enabled": 1` does not enable
   desktop control.
+- An enterprise build ignores the opt-in: `is_enabled()` answers `False`, the
+  config GET carries `locked_by_policy: true`, and a PUT with `enabled: true`
+  answers 409 `locked_by_policy`
+  ([rfc-crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md)
+  D3, `kiro_crew.edition_locks`). This is an edition lock, not a governance scope;
+  computer use stays ungoverned, and an `oss` build is unchanged.
 - The only writer is the dashboard PUT handler, which does not route through the
   agent tool gate.
 - `allowed_apps` is an optional narrowing (empty = everything not denied);

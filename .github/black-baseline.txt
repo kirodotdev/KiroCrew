@@ -119,7 +119,6 @@ src/kiro_crew/apps/builtins/workflows/server.py
 src/kiro_crew/apps/cron_sdk.py
 src/kiro_crew/apps/dependencies.py
 src/kiro_crew/apps/dependency_ledger.py
-src/kiro_crew/apps/dev_mode.py
 src/kiro_crew/apps/manifest.py
 src/kiro_crew/apps/module_loader.py
 src/kiro_crew/apps/permissions.py
@@ -226,7 +225,6 @@ src/kiro_crew/metrics/http_metrics.py
 src/kiro_crew/metrics/recorder.py
 src/kiro_crew/notifications/resource_pressure.py
 src/kiro_crew/perf_sampler.py
-src/kiro_crew/platform/update_layout.py
 src/kiro_crew/pod/launchd.py
 src/kiro_crew/publish_governance.py
 src/kiro_crew/publish_sync.py

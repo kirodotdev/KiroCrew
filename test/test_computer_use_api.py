@@ -796,7 +796,7 @@ class TestErrorCodes:
     def test_the_ratchet_can_actually_fail(self) -> None:
         """Self-check: a scan matching nothing would pass the assertion above vacuously."""
         coded = [f for f in self._findings() if f.bucket == "compliant"]
-        assert len(coded) == 20, f"scanner reached {len(coded)} coded sites, expected 20"
+        assert len(coded) == 21, f"scanner reached {len(coded)} coded sites, expected 21"
         assert all(f.code_value for f in coded)
 
     # -- PUT /api/computer-use/config --

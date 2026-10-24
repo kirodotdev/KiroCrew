@@ -32,6 +32,7 @@ import`` note there.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import importlib.util
 import logging
 import os
@@ -1056,7 +1057,28 @@ def otlp_egress_active(cfg: "TelemetryConfig") -> bool:
     resolve = getattr(provider, "otlp_destinations", None)
     if resolve is None:
         return False
-    return bool(_filter_metric_destinations(resolve(cfg)))
+    locked_cfg = _edition_locked_view(cfg)
+    if locked_cfg is None:
+        return False
+    return bool(_filter_metric_destinations(resolve(locked_cfg)))
+
+
+def _edition_locked_view(cfg: "TelemetryConfig") -> "Optional[TelemetryConfig]":
+    """*cfg* as a provider may read it in this build, or ``None`` for no egress at all.
+
+    An enterprise build blanks ``otlp_endpoint`` (:mod:`kiro_crew.edition_locks`,
+    RFC D3): no governance key names an OTLP host yet, so no remote rule allowed the
+    local value. Done here, before any provider sees it, so an edition's own
+    provider cannot read the local endpoint either; destinations it declares itself
+    stay. A config this cannot copy answers ``None`` rather than pass the value on.
+    """
+    from kiro_crew.edition_locks import local_enable_locked
+
+    if not getattr(cfg, "otlp_endpoint", "") or not local_enable_locked("telemetry.otlp_hosts"):
+        return cfg
+    if not dataclasses.is_dataclass(cfg) or isinstance(cfg, type):
+        return None
+    return dataclasses.replace(cfg, otlp_endpoint="")
 
 
 #: A process that does not install a platform context names where its telemetry
@@ -1128,7 +1150,15 @@ def _otlp_destinations(cfg: "TelemetryConfig") -> "tuple[OtlpDestination, ...]":
     Lenient by design, unlike :func:`otlp_egress_active`: on this path an
     unresolvable provider must not export, so it contributes nothing and
     collection continues local-only.
+
+    An enterprise build hands every provider a blank ``otlp_endpoint``
+    (:mod:`kiro_crew.edition_locks`, RFC D3): the local value names no host a
+    remote rule allowed. Destinations the edition's own provider declares stay.
     """
+    locked_cfg = _edition_locked_view(cfg)
+    if locked_cfg is None:
+        return ()
+    cfg = locked_cfg
     try:
         supplied = safe_context_call(
             lambda: _telemetry_provider().otlp_destinations(cfg),  # type: ignore[attr-defined]

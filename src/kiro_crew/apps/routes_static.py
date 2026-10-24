@@ -505,6 +505,10 @@ async def handle_app_dev_mode(request: web.Request) -> web.Response:
     # the dev sentinel) — offload it so the gateway event loop never stalls.
     result = await asyncio.to_thread(set_dev_mode, name, enabled)
     if "error" in result:
+        if result.get("code") == "locked_by_policy":
+            return web.json_response(
+                {"error": result["error"], "code": "locked_by_policy"}, status=409
+            )
         return web.json_response(result, status=404 if "not installed" in result["error"] else 400)
     sel().log_api_access(
         caller=request.get("user", "dashboard"),
