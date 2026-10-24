@@ -209,17 +209,18 @@ def _tool_kind_cache_for_wire(self: AcpSessionHandle) -> dict[str, str] | None:
     return None
 
 
-def _identity_unreadable_cache_for_wire(self: AcpSessionHandle) -> dict[str, bool] | None:
-    """The ``identity_unreadable_cache`` the wire parsers may write, or ``None``.
+def _identity_unreadable_cache_for_wire(self: AcpSessionHandle) -> dict[str, bool]:
+    """The readability-verdict cache every shared-runtime harness records.
 
-    Handed only for members of ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL``
-    (KAS), the same membership and per-frame shape as the kind cache and the
-    overflow record: the unreadable mark exists for the KAS identity channel
-    (the one whose halves are bounded at retention) and earns a refusal
-    (``_refuse_unreadable_mcp_identity``) that is a KAS refusal mode. Every
-    other harness is handed ``None``, so its frames are never marked and the
-    refusal never fires on a first-class path (H13).
+    Locator attestation accepts only an explicit False written by the same
+    origin-scoped tool-call frame. Recording the verdict for every harness
+    keeps that proof independent of KAS-only permission classification.
     """
+    return self._tool_call_identity_unreadable
+
+
+def _identity_unreadable_cache_for_permission(self: AcpSessionHandle) -> dict[str, bool] | None:
+    """Return the KAS-only permission-refusal view of the shared cache."""
     backend = getattr(self._runtime, "acp_backend", None)
     if backend in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL:
         return self._tool_call_identity_unreadable

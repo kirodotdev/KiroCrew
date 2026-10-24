@@ -286,17 +286,11 @@ def _build_tool_call_event(
     if tool_call_id and harness_tool_name_cache is not None:
         harness_tool_name_cache[_ck] = harness_tool_name(update)
     # A frame that PRESENTED an identity half the bound refused is recorded as
-    # such (a bool, never the half), so the permission request that follows is
-    # refused rather than judged under the empty name the caches above hold.
-    # Sparse: a row exists only for a frame that presented an unreadable half,
-    # and a tool_call frame OVERWRITES the verdict under its id the way the
-    # identity caches beside it are overwritten, so a mark never outlives the
-    # frame that earned it. Keyed like its siblings, evicted/released with them.
+    # a bool, never the half. An explicit False proves that this frame's identity
+    # was readable. Absence proves nothing and therefore cannot mint a locator
+    # attestation. KAS permission handling still reads only truthy marks.
     if tool_call_id and identity_unreadable_cache is not None:
-        if identity.identity_unreadable:
-            identity_unreadable_cache[_ck] = True
-        else:
-            identity_unreadable_cache.pop(_ck, None)
+        identity_unreadable_cache[_ck] = identity.identity_unreadable
     # Cache the content block's path for the permission event (see
     # build_permission_event). Written only when a diff block NAMED a path, so
     # a later frame without one cannot clobber a real target with "". The path
@@ -552,7 +546,9 @@ def parse_session_update(
     ``None`` -- every harness outside ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL``,
     through ``AcpSessionHandle._tool_call_cache_overflow_for_wire`` -- retains as
     it always did; the bound is the KAS projection's, not a change to the
-    first-class harness's construction (H13).
+    first-class harness's construction (H13). ``identity_unreadable_cache`` is
+    separate: every shared-runtime harness records an explicit readability verdict
+    so locator admission never infers readable identity from cache availability.
     """
     if not isinstance(update, dict):
         return []

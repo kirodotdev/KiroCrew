@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         _arm_prevent_sleep_poll,
         _arm_secondary_listener_guard,
         _dispatch_healthy_boot_marker,
+        _dispatch_locator_attestation_preload,
         _export_bound_port,
         _install_api_middlewares,
         _kick_config_watch,
@@ -455,6 +456,7 @@ async def start_api_server(
     if schedule_memory_preparation is not None:
         state.memory_startup_task = schedule_memory_preparation()
     state.ready = True
+    _dispatch_locator_attestation_preload(state)
     record_boot_to_ready((time.time() - state.start_time) * 1000.0, server="api")
     # Tells the NEXT boot that this instance got the whole startup battery
     # away, so a stall from here on does not implicate the battery.

@@ -207,6 +207,9 @@ class AcpSessionHandle:
     _emit_tool_interrupted_sel = _sh_updates._emit_tool_interrupted_sel
     _tool_kind_cache_for_wire = _sh_updates._tool_kind_cache_for_wire
     _identity_unreadable_cache_for_wire = _sh_updates._identity_unreadable_cache_for_wire
+    _identity_unreadable_cache_for_permission = (
+        _sh_updates._identity_unreadable_cache_for_permission
+    )
     _tool_call_cache_overflow_for_wire = _sh_updates._tool_call_cache_overflow_for_wire
     _handle_update = _sh_updates._handle_update
     _structured_status_event = _sh_updates._structured_status_event
@@ -537,13 +540,11 @@ class AcpSessionHandle:
         # toolCallId -> the tool's own name its tool_call frame stated, for the
         # permission event's harness_tool_id (see _dispatch.harness_tool_name).
         self._tool_call_harness_tool_name: dict[str, str] = {}
-        # Per scoped toolCallId, True when the tool_call frame PRESENTED an MCP
-        # identity half the name bound refused (``mcp_identity_unreadable``):
-        # the call names a tool Crew cannot retain, and its permission request
-        # is refused (``_refuse_unreadable_mcp_identity``) rather than judged
-        # under the empty name the identity caches hold. Sparse (written only
-        # when True), a sibling of the caches above under the same admission,
-        # cleared, evicted and released with them.
+        # Per scoped toolCallId, whether the tool_call frame PRESENTED an MCP
+        # identity half the name bound refused. Every shared-runtime ACP harness
+        # records True or False. Locator admission requires the readable verdict
+        # to exist, while KAS permission handling still refuses only a True verdict.
+        # Cleared, evicted and released with the sibling identity caches.
         self._tool_call_identity_unreadable: dict[str, bool] = {}
         # Parent-scoped cache keys populated by tagged native-child tool calls.
         # Cleared per turn beside the sibling per-call caches below.

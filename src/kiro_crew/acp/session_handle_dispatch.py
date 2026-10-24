@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
+    attest_session_update,
     classify_notification,
     error_is_refusal_terminal,
     parse_session_update,
@@ -854,6 +855,22 @@ async def _dispatch_events(
             elif action == "server_request_unknown":
                 await self._runtime.send_error(msg.id, JSONRPC_METHOD_NOT_FOUND, "Method not found")
             elif action == "update":
+                params = msg.params or {}
+                update = params.get("update") or {}
+                if isinstance(update, dict):
+                    frame_sid = str(params.get("sessionId") or "")
+                    await attest_session_update(
+                        update,
+                        raw_params_cache=self._tool_call_raw_params,
+                        mcp_server_name_cache=self._tool_call_mcp_server,
+                        tool_name_cache=self._tool_call_tool_name,
+                        cache_scope=(
+                            frame_sid
+                            if frame_sid and frame_sid != self._session_id
+                            else self._session_id
+                        ),
+                        identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
+                    )
                 for ev in self._handle_update(msg):
                     # Before the yield, so the observation is recorded even for a
                     # consumer that stops pulling: the call already ran, and this
@@ -1066,6 +1083,14 @@ async def _dispatch_events(
                     # test_dispatch_subagent_activity_* tests. The
                     # security caches are the shared, parser-derived
                     # part; the coarse crew-monitor display is not.
+                    await attest_session_update(
+                        upd,
+                        raw_params_cache=self._tool_call_raw_params,
+                        mcp_server_name_cache=self._tool_call_mcp_server,
+                        tool_name_cache=self._tool_call_tool_name,
+                        cache_scope=ssid,
+                        identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
+                    )
                     parse_session_update(
                         upd,
                         tool_input_cache=self._tool_call_inputs,

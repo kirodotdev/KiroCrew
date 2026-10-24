@@ -10,6 +10,7 @@ records, and the ``todo_list`` task snapshot.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from typing import Any
@@ -23,6 +24,7 @@ from kiro_crew.acp._dispatch_parts.surfaced_text import (
 )
 from kiro_crew.acp._dispatch_parts.tool_call_identity import _kiro_tool_name
 from kiro_crew.acp._dispatch_parts.tool_call_provenance import scoped_tool_cache_key
+from kiro_crew.acp.locator_attestation import attest_tool_result, sharepoint_attestation_policy
 from kiro_crew.acp.types import (
     EVENT_TOOL_RESULT,
     KIRO_TOOL_TODO_LIST,
@@ -30,6 +32,7 @@ from kiro_crew.acp.types import (
     TODO_ID_MAX,
     TODO_TASKS_MAX,
     TODO_TEXT_MAX,
+    UPDATE_TOOL_CALL_UPDATE,
     AcpEvent,
 )
 from kiro_crew.metrics.tool_calls import record_tool_call_finished
@@ -304,7 +307,10 @@ def _measure_tool_output(redacted: str) -> tuple[str, int]:
     return hashlib.sha256(raw).hexdigest(), len(raw)
 
 
-def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> AcpEvent | None:
+def _build_tool_result_event(
+    update: dict[str, Any],
+    cache_scope: str = "",
+) -> AcpEvent | None:
     """Build an ``EVENT_TOOL_RESULT`` from output or a terminal tool status.
 
     Three output shapes: ``content[].content.text`` blocks (stream mid-turn),
@@ -470,6 +476,61 @@ def _todo_payload(raw_output: Any) -> dict[str, Any] | None:
         if isinstance(cand, dict) and isinstance(cand.get("tasks"), list):
             return cand
     return None
+
+
+async def attest_session_update(
+    update: dict[str, Any],
+    *,
+    raw_params_cache: dict[str, dict] | None = None,
+    mcp_server_name_cache: dict[str, str] | None = None,
+    tool_name_cache: dict[str, str] | None = None,
+    cache_scope: str = "",
+    identity_unreadable_cache: dict[str, bool] | None = None,
+) -> None:
+    """Prove provenance cheaply, then persist off the gateway event loop."""
+    if (
+        update.get("sessionUpdate") != UPDATE_TOOL_CALL_UPDATE
+        or update.get("status") != "completed"
+    ):
+        return
+    tool_use_id = update.get("toolCallId")
+    if not isinstance(tool_use_id, str) or not tool_use_id:
+        return
+    cache_key = scoped_tool_cache_key(cache_scope, tool_use_id)
+    if (
+        raw_params_cache is None
+        or mcp_server_name_cache is None
+        or tool_name_cache is None
+        or identity_unreadable_cache is None
+        or cache_key not in raw_params_cache
+        or cache_key not in mcp_server_name_cache
+        or cache_key not in tool_name_cache
+        or cache_key not in identity_unreadable_cache
+        or identity_unreadable_cache[cache_key] is not False
+    ):
+        return
+    raw_input = raw_params_cache[cache_key]
+    server = mcp_server_name_cache[cache_key]
+    tool = tool_name_cache[cache_key]
+    if (
+        not isinstance(raw_input, dict)
+        or not raw_input
+        or not isinstance(server, str)
+        or not server
+        or not isinstance(tool, str)
+        or not tool
+    ):
+        return
+    fields, hosts = sharepoint_attestation_policy(server, tool)
+    if not fields or not hosts:
+        return
+    await asyncio.to_thread(
+        attest_tool_result,
+        update=update,
+        raw_input=raw_input,
+        declared_fields=fields,
+        trusted_hosts=hosts,
+    )
 
 
 def parse_todo_snapshot(
