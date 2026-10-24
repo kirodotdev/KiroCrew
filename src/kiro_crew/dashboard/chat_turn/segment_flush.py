@@ -36,7 +36,7 @@ from kiro_crew.dashboard.chat_utils import (
     with_bounded_redaction_records,
 )
 from kiro_crew.dashboard.recovery_replays import replays_of
-from kiro_crew.dashboard.state import chat_message_note
+from kiro_crew.dashboard.state import chat_message_note, row_mid
 from kiro_crew.messaging.empty_turn_copy import EMPTY_TURN_NOTICE, EMPTY_TURN_NOTICE_AFTER_WORK
 
 # Read when the module loads (the placeholder pattern), so imported plainly.
@@ -64,7 +64,6 @@ if TYPE_CHECKING:
         redact_exfiltration_urls_with_records,
         register_images_off_loop,
         register_widgets_off_loop,
-        row_mid,
         sel,
         sel_is_warm,
         telemetry_channel_of,
@@ -958,7 +957,7 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
         # the runner's — the turn still ends cleanly and recovery stays
         # off (re-arming it would turn a quiet end into a notice card),
         # so this is reported once and nowhere else. Late text was dropped
-        # at arrival (see _run_chat's text-chunk branch), so this count is the
+        # at arrival (see _on_text_chunk in stream_chunks), so this count is the
         # only trace it leaves. Counts only, by contract: no text, no tool
         # names.
         logger.warning(
@@ -1079,8 +1078,8 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
     elif not turn._terminal_directive_applied and should_continue_after_compaction(
         # A turn that ended on an applied terminal directive is answered by
         # that directive, whatever compaction happened before it: the empty
-        # segment that _run_chat's late-text drop leaves is the quiet end, not
-        # an abandoned request, so no continuation — same guard as the
+        # segment that the late-text drop in _on_text_chunk (stream_chunks) leaves is
+        # the quiet end, not an abandoned request, so no continuation — same guard as the
         # empty-response arm below.
         # The context window filled mid-turn, the backend summarized, and the
         # turn then ended without finishing the request — the "hangs after

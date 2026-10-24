@@ -1282,7 +1282,8 @@ class TestPromptExpansionStaysOffTheEventLoop:
         ]
         offloaded = [
             node
-            for node in ast.walk(tree)
+            for module_tree in trees
+            for node in ast.walk(module_tree)
             if isinstance(node, ast.Call)
             and ast.unparse(node.func) == "asyncio.to_thread"
             and node.args

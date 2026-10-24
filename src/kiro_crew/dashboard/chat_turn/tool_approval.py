@@ -7,7 +7,7 @@ import json
 import time
 from typing import TYPE_CHECKING, Any, Literal
 
-from kiro_crew.dashboard.chat_utils import _broadcast_auto_tool
+from kiro_crew.dashboard.chat_utils import _broadcast_auto_tool, open_construct_at_end
 from kiro_crew.dashboard.state import DENY_CAUSE_POLICY
 from kiro_crew.deny_guidance import (
     DENY_CLASS_AWS_CREDENTIAL,
@@ -42,7 +42,6 @@ if TYPE_CHECKING:
         _name_grant_refusal_off_loop,
         _validate_tool_name,
         logger,
-        open_construct_at_end,
         read_effective_agent,
         redact_credentials,
         redact_exfiltration_urls,
@@ -336,7 +335,7 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
         _wt_pending_coding.discard(_wt_key)
     # Permission is part of the tool group, not a break in it —
     # leaving in_tool_group True ensures the post-tool text fallback
-    # (in _run_chat's EVENT_TEXT_CHUNK arm) still fires once the tool resolves
+    # (in _on_text_chunk, chat_turn/stream_chunks.py) still fires once the tool resolves
     # and the LLM continues with text. Resetting it here was the
     # cause of pills staying in "running" state until the next tool
     # call or message end.

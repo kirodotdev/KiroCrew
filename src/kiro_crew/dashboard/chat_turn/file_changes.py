@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from kiro_crew.dashboard.state import row_mid
 from kiro_crew.hooks import safe_read_file_bytes_nolink
 from kiro_crew.security import redact
 from kiro_crew.wakatime.heartbeats import line_changes_from_file_changes
@@ -21,7 +22,6 @@ if TYPE_CHECKING:
         _MAX_TURN_FULL_CONTENT_CHARS,
         _ChatSlot,
         logger,
-        row_mid,
         safe_read_file,
         validate_file_path,
     )

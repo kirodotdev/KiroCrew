@@ -747,19 +747,19 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Dashboard live stream",
-        "dashboard/chat_runner.py",
+        "dashboard/chat_turn/stream_chunks.py",
         "Per-chunk StreamRedactor on the chat_chunk WebSocket stream — withholds a "
         "trailing credential-class run so a secret split across chunks cannot cross "
         "the wire.",
     ),
     (
         "Dashboard thinking stream",
-        "dashboard/chat_runner.py",
+        "dashboard/chat_turn/stream_chunks.py",
         "Separate StreamRedactor for the ephemeral chat_thinking stream.",
     ),
     (
         "Dashboard final message",
-        "dashboard/chat_runner.py",
+        "dashboard/chat_turn/segment_flush.py",
         "Full-text redaction pass over the assembled assistant turn before it is " "finalized.",
     ),
     (

@@ -81,6 +81,7 @@ _OWNER_MODULES = frozenset(
         "slash_commands",
         "steer_queue",
         "stop_recovery",
+        "stream_chunks",
         "tool_approval",
         "tool_results",
         "tool_rows",
@@ -411,8 +412,9 @@ def test_the_chat_facade_reexports_the_runner_objects() -> None:
 #: file, and the stall test below proves the reach for each. ``_run_chat``'s row is the
 #: exit guard's ``guarded`` (``_hands_off_queue_on_exit``), the coroutine every turn task
 #: runs; ``_arm_pending_reset_retry`` and ``_arm_synthesis_recheck`` define the coroutines
-#: they start, ``_launch_synthesis`` starts the pending synthesis, and
-#: ``_finish_queue_cycle`` starts it and the title and summary passes.
+#: they start, ``_launch_synthesis`` starts the pending synthesis,
+#: ``_finish_queue_cycle`` starts it and the title and summary passes, and
+#: ``_prewarm_startup_query`` starts a first message's early embed and memory reads.
 _RUNNER_HOME = "dashboard/chat_runner.py"
 _TASK_ENTRY_HOMES: dict[str, str] = {
     "_run_chat": _RUNNER_HOME,
@@ -424,6 +426,8 @@ _TASK_ENTRY_HOMES: dict[str, str] = {
     "_arm_synthesis_recheck": "dashboard/chat_turn/queue_cycle.py",
     "_launch_synthesis": "dashboard/chat_turn/queue_cycle.py",
     "_finish_queue_cycle": "dashboard/chat_turn/queue_cycle.py",
+    "_embed_startup_query_off_loop": "dashboard/chat_turn/prompt_assembly.py",
+    "_prefetch_session_memory_off_loop": "dashboard/chat_turn/prompt_assembly.py",
 }
 
 
@@ -470,6 +474,7 @@ _AWAIT_FREE_PHASES = (
     "_on_compaction_status",
     "_on_clear_status",
     "_on_steer_consumed",
+    "_on_thinking_chunk",
     "_turn_context_usage",
     "_on_app_agent_not_loaded",
     "_on_session_closing",
@@ -1286,6 +1291,7 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/segment_flush.py",
         "dashboard/chat_turn/session_events.py",
         "dashboard/chat_turn/slash_commands.py",
+        "dashboard/chat_turn/stream_chunks.py",
         "dashboard/chat_turn/tool_approval.py",
         "dashboard/chat_turn/tool_results.py",
         "dashboard/chat_turn/tool_rows.py",
@@ -1297,7 +1303,7 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/turn_stats.py",
     ),
     r"StreamRedactor": (
-        _RUNNER_HOME,
+        "dashboard/chat_turn/stream_chunks.py",
         "dashboard/chat_turn/turn_entry.py",
         "dashboard/chat_turn/turn_locals.py",
     ),
@@ -1368,8 +1374,8 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/queue_drain.py",
     ),
     r"create_task\(": (
-        _RUNNER_HOME,
         "dashboard/chat_turn/eager_spawn.py",
+        "dashboard/chat_turn/prompt_assembly.py",
         "dashboard/chat_turn/queue_cycle.py",
         "dashboard/chat_turn/queue_drain.py",
         "dashboard/chat_turn/segment_flush.py",
@@ -1396,7 +1402,6 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/slash_commands.py",
     ),
     r"capabilities_of\(": (
-        _RUNNER_HOME,
         "dashboard/chat_turn/model_fallback.py",
         "dashboard/chat_turn/slash_commands.py",
         "dashboard/chat_turn/tool_rows.py",
@@ -1427,7 +1432,6 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
         "dashboard/chat_turn/turn_failures.py",
     ),
     r"\bmemory_store=": (
-        _RUNNER_HOME,
         "dashboard/chat_turn/prompt_assembly.py",
         "dashboard/chat_turn/turn_admission.py",
     ),

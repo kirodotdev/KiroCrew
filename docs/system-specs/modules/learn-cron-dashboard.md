@@ -2126,24 +2126,24 @@ is started with lives in the owner of its responsibility, beside the function th
 starts it: `_start_next_queued_turn` in `queue_drain`, `_run_pending_synthesis`,
 `_launch_synthesis`, the synthesis re-check and `_finish_queue_cycle` in
 `queue_cycle`, `_eager_spawn` and `_prefetch_ttl` in `eager_spawn`, the pending-reset
-retry in `session_reset`. `stall_attribution` reads a frame in the runner or in an
+retry in `session_reset`, and the early embed and memory reads of a first message
+(`_embed_startup_query_off_loop`, `_prefetch_session_memory_off_loop`) in
+`prompt_assembly`. `stall_attribution` reads a frame in the runner or in an
 owner as a dashboard chat turn, so a stalled task still names the dashboard chat
 surface. The modules of
-`dashboard/chat_turn/` hold these responsibilities, one each; the rows that name
-`chat_runner.py` are families that stay in the runner because of the anchor the row
-names:
+`dashboard/chat_turn/` hold these responsibilities, one each:
 
 | Owner | Responsibility |
 |---|---|
 | `turn_context` | memory-mode fold into the execution context, pending context drain and detach, folder steering gate, the unavailable-agent message, the DM member binding check, the session memory assignment and the skills context restored after a compaction (`_restore_skills_context_after_compaction`) |
-| `prompt_assembly` | cold-start replay history, egress scrub of the dashboard prefix, checklist resync, prompt and skill mentions (`_resolve_prompt_mention`, `_expand_prompt_mention`, `_expand_dollar_skills`) and the prompt chip, and the prompt the turn sends (`_turn_build_prompt`): a slash command's own prompt, the context build (the raw message kept for Slack, the theme persona gate, the ContextBuilder's `build_message` and the first-turn history it assembles) or the bare message, and the settle of what the turn owed its prompts once it ends (`_turn_settle_debts`): the replay, the re-injection flag, the skill bodies and the first-turn history debt |
+| `prompt_assembly` | cold-start replay history, egress scrub of the dashboard prefix, checklist resync, prompt and skill mentions (`_resolve_prompt_mention`, `_expand_prompt_mention` and its off-loop form `_expand_prompt_mention_off_loop`, `_expand_dollar_skills`) and the prompt chip, the early embed and memory reads of a cold start's first message (`_prewarm_startup_query`), and the prompt the turn sends (`_turn_build_prompt`): a slash command's own prompt, the context build (the raw message kept for Slack, the theme persona gate, the ContextBuilder's `build_message` and the first-turn history it assembles) or the bare message, and the settle of what the turn owed its prompts once it ends (`_turn_settle_debts`): the replay, the re-injection flag, the skill bodies and the first-turn history debt |
 | `model_fallback` | session model default and settle, served-model sync, fallback chain, swap and restore probe, refusal fallback hop, the canonical-model backfill and the pinned-model verdict, and the model-access fallback arm of the turn's `except AcpError` chain (`_on_acp_model_access`) |
 | `tool_approval` | PreToolUse block reasons, spec-hook notices, credential hints, trust and auto-approve policy, name-grant refusals, and the permission arm's own answers (`_on_permission_request`): the hooks, the trust reads, the grants and auto-approve |
 | `permission_prompt` | a permission request put to the user (`_on_permission_prompt`): the batch-rejection cascade's auto-reject, the approval card, the wait and what the answer does |
 | `mcp_session` | session MCP report, the session-init OAuth drain and the MCP OAuth banner lifecycle (`_emit_mcp_oauth_request`, its supersede and completion) and the scrub of the ACP strings it shows, and the stream's MCP arms (`_on_mcp_oauth_request`, `_on_mcp_server_initialized`, `_on_mcp_server_init_failure`) |
 | `session_events` | what the session reports about itself mid-turn: a compaction's progress (`_on_compaction_status`), a native clear (`_on_clear_status`), an agent switch (`_on_agent_switched`) and its todo list (`_on_todo_update`) |
 | `file_changes` | pre-write snapshots, `str_replace` reconstruction, the per-turn snapshot budget, line changes, the end-of-turn file-change flush |
-| `turn_stats` | the per-turn stats footer, its first-token clock and the context meter payload, the turn outcome, the turn metric and the recovery-outcome counter, the stream's terminal (`_on_complete`: the usage row, the turn metric's emit, the stop reason) and the turn's context usage and landed verdict after it (`_turn_context_usage`: `record_success`, `_turn_landed`) |
+| `turn_stats` | the per-turn stats footer, its first-token clock, the first-token latency metric (`_emit_ttft_metric`) and the context meter payload, the turn outcome, the turn metric and the recovery-outcome counter, the stream's terminal (`_on_complete`: the usage row, the turn metric's emit, the stop reason) and the turn's context usage and landed verdict after it (`_turn_context_usage`: `record_success`, `_turn_landed`), and the usage row of a turn that ends without `EVENT_COMPLETE` (`_persist_abnormal_turn_usage`) |
 | `recipient` | the recipient principal ladder, admission refusal audit, channel target and the cross-surface fence, and the deliveries themselves: the linked-Slack leg and the cross-surface reply and user-message legs |
 | `steer_queue` | steer settlement and requeue, queue entry actors, the drain's admission sweep, and the stream's steer arm (`_on_steer_consumed`) |
 | `stop_recovery` | recovering a turn whose stream ended badly: the stop reasons it retries on its own (`_turn_stop_recovery`), with their runtime-death attribution; and the end of a turn that reached the post-loop chain (`_turn_persist_and_settle`): its stats footer, file changes, marker retire and save, the landed turn's reset of every retry budget, and consolidation |
@@ -2151,11 +2151,12 @@ names:
 | `acp_recovery` | the post-token transient re-prompt and the thinking-binding discard-and-replay gate (`_binding_rebuild_allowed`); the except arms that recover the turn: a dead process (`_on_process_died`) and the `except AcpError` ladder's arms for a retryable ACP error on a fresh session, a lost or rebound session, an unsupported image, and a transient error before the first token (retried or spent) and after it (the `_on_acp_*` arms); a new arm that retries, resets or replays the turn goes here (a model fallback hop in `model_fallback`), one that ends it in `turn_failures` |
 | `turn_marker` | the in-flight turn marker's write, retire and clear |
 | `directives` | not-applied directive wording and the unclaimed-directive backstop |
+| `stream_chunks` | the stream's text and thinking arms, which hold the live-stream and thinking-stream sinks `security_posture` names: a chunk of the reply's text (`_on_text_chunk`): the segment cut after a tool group, with the tool rows it marks done and the crew log's next model-call step, the drop of text after an applied terminal directive, the per-delta redaction and the segment's raw copy, the turn-emit flag and the consumption report, and the `chat_chunk` frame the live-stream redactor releases; and a chunk of thinking (`_on_thinking_chunk`) and the `chat_thinking` frame the thinking-stream redactor releases |
 | `tool_rows` | what a turn's tool rows persist and broadcast: row meta, the WS payload, the refinement rewrite, the tool-call identity key and the rows-only save, and the stream's tool-call and tool-update arms (`_on_tool_call`, `_on_tool_call_update`) |
 | `tool_results` | what a tool's result does to the turn (`_on_tool_result`): its row, its file changes, the session directive it carries (decode, apply, strip), the MCP-app render it claims and the follow-ups it arms |
 | `deny_chokepoints` | answering a permission request with a rejection: redacted deny rows, the security-event audit before the wire (`_reject_attributed`), the bounded in-band steer of the reason |
 | `turn_spec_hooks` | the session agent spec's hooks and the agent notices: the turn's dispatch of every hook event (`_fire`), the welcome row, the run-nowhere and withheld-hooks notices, and the Stop hook with the continuations it and a tool refusal queue, and the reply's linked-Slack mirror and channel-neutral leg (`_turn_stop_hook`) |
-| `crew_log_attribution` | what a session's crew log records about it: the predecessor store, the served model, lineage, the seeded tree, the inherited parent, the workspace and the memory/app/channel class, and the close of a turn's crew log and its streak's activity once it ends (`_turn_close_crew_log`) |
+| `crew_log_attribution` | what a session's crew log records about it: the predecessor store, the served model, lineage, the seeded tree, the inherited parent, the workspace and the memory/app/channel class, and the close of a turn's crew log and its streak's activity once it ends (`_turn_close_crew_log`), and every new crew-log record helper (the turn's `latch_crew_log_previous` call is in `turn_admission`, the eager spawn's in `eager_spawn`, and the model-call step a text chunk after a tool group opens in `stream_chunks`) |
 | `native_cards` | kiro-cli native sub-agent Activity cards (`_native_subagent_sync`) and the native AskUserQuestion card (`_post_native_question_card`), and the stream's native sub-agent arms (`_on_subagent_list`, `_on_subagent_activity`) |
 | `account_identity` | the turn's reaction to the signed-in kiro-cli account changing: retiring the sessions an identity change invalidates (`_retire_sessions_on_identity_change`) and the signed-out latch |
 | `decisions_hooks` | the decisions hooks (`decisions.md`): the stale-decision drop, the strip hand-off, the tool-card risk annotation, and the Jev model routing family (`_route_model_for_turn` and its gates) |
@@ -2169,14 +2170,12 @@ names:
 | `app_agent_binding` | an app agent's binding to a slot: whether it applies, whether the turn's backend may run the app's own agent (`_app_agent_host_allowed`, `_app_agent_turn_backend`) and whether a session runs the app's launch copy (`_runs_app_agent_launch`), its start directories, the session it retires and its recovery, and the turn's answer when the slot's app agent is not loaded (`_on_app_agent_not_loaded`) |
 | `queue_drain` | starting the slot's next queued turn (`_start_next_queued_turn`): the parked-for-memory drain, the queued-delivery settlement and the drained sub-agent notices |
 | `queue_cycle` | the end of a turn and of a queue cycle: `_end_turn_tail`, `_finish_queue_cycle`, the pending synthesis and its re-check, the hand-off, the `chat_done` send, and the turn's exit record (`_TurnExit`, `_TurnOutcome`), which the turn fills in once it ends (`_turn_record_outcome`, with the session-switch lock's hand-back) |
-| `turn_entry` | a turn's entry state: the Stop signal it reads live (`_stop_pressed`), the session's Stop count and the directive provenance a channel steer can narrow, and the opening phase (`_turn_open`): the turn's identity, provenance, consume veto, allowances and clocks, with the responsive turn's `begin_turn`, and its counterpart once the turn ends (`_turn_release_handles`): the live handles, the batch latch and the file changes the turn held on its slot |
+| `turn_entry` | a turn's entry state: the Stop signal it reads live (`_stop_pressed`), the session's Stop count, the directive provenance a channel steer can narrow and the start priority of its cold start (`_turn_start_priority`), and the opening phase (`_turn_open`): the turn's identity, provenance, consume veto, allowances and clocks, with the responsive turn's `begin_turn`, and its counterpart once the turn ends (`_turn_release_handles`): the live handles, the batch latch and the file changes the turn held on its slot |
 | `turn_admission` | whether a turn may run on the session it is bound to: the current binding and its requirement, the owner check and the dispatch lock's release, and the admission phase (`_turn_admit`): the admission wait, the dispatch lock, the bindings and the session claim, with the turn's `get_or_create` allocation and its `latch_crew_log_previous` call |
 | `turn_dispatch_gates` | a turn's prompt and the gates it passes before its stream starts: the skill-mention expansion and the replay settle (`_turn_dispatch_prep`), and the gates from the session's first turn up to the stream's start, the session's `begin_turn` among them (`_turn_dispatch_gates`) |
-| `turn_reply_seams` | what a turn writes as its reply: the partial reply a dying turn persists (`_persist_partial_reply`), the abnormal end's usage row, the text and thinking stream flushes, the steer's segment cut and the error rows the stream watchdogs post |
+| `turn_reply_seams` | what a turn writes as its reply: the partial reply a dying turn persists (`_persist_partial_reply`), the abnormal end's usage row, the text and thinking stream flushes, the steer's segment cut, the error rows the stream watchdogs post, and the whole reply read back from the turn's own rows for the mirror and the cross-surface leg (`_turn_full_reply_text`, `_turn_reply_segments`) |
 | `turn_ledgers` | what a turn records about itself: its consumption reports, the recovery it queues (`_queue_recovery`) and the completion it owes, the terminal directive and the coding-activity cadence |
 | `turn_locals` | the per-turn state `_ChatTurn` that `_run_chat`, the owner functions it calls with the turn and its phases share, and `_Flow`, the exit a phase hands back to `_run_chat` |
-| `chat_runner.py` | the off-loop prompt expansion `_expand_prompt_mention_off_loop`: `test_prompts.py` reads its `asyncio.to_thread` call in the runner |
-| `chat_runner.py` | the text arm's per-step crew-log calls: a text chunk after a tool group closes the group's open tool calls and the model-call step and opens the next step. The turn-end closers are in `_turn_close_crew_log` (`crew_log_attribution`), the turn's `latch_crew_log_previous` call is in `turn_admission` and the eager spawn's in `eager_spawn`; a new crew-log record helper goes in `crew_log_attribution` |
 
 `chat_turn.compose` composes the package's modules (`chat_turn.owner_modules()`):
 it binds on `chat_runner` every name an owner binds that the runner lacks, so
@@ -2237,16 +2236,17 @@ that hold it (`_GUARDED_CONSTRUCT_HOMES`) and each task entry to the file that
 defines it (`_TASK_ENTRY_HOMES`, read by `stall_attribution`); a construct moves only
 together with its row and with the guard that reads it. A test that reads the turn's
 code as text reads every `chat_turn/` module and then `chat_runner.py` as one text, so
-a construct it pins may live in either. In `chat_runner.py` stay the live-stream,
-thinking-stream and final-message sinks `security_posture` names, the transcript-derivation plumbing, the
-abnormal-end usage-row persist, `_CONTEXT_FRAME_CONTRACT`, and every `_run_chat` arm a test
+a construct it pins may live in either. In `chat_runner.py` stay the tool-call id scrub
+at the stream loop's top, `_CONTEXT_FRAME_CONTRACT`, and every `_run_chat` arm a test
 reads from `_run_chat`'s own source. The runtime-death attribution and the L1 retry-budget
 resets run in the phases that recover (`acp_recovery`, `turn_failures`, `stop_recovery`), and
 the memory-store seam's `build_message` calls and the theme persona gate in
-`_turn_build_prompt` (`prompt_assembly`). The final-message sink
-names `chat_runner.py`: the pass on an interrupted reply (`_persist_partial_reply`, in
-`turn_reply_seams`) and `_flush_segment` both run on the runner's globals; `turn_stats`
-holds the EVENT_COMPLETE usage-row persist and the turn-metric emit. The deny chokepoints live in
+`_turn_build_prompt` (`prompt_assembly`). The live-stream and thinking-stream sinks
+`security_posture` names are in `stream_chunks` (`_on_text_chunk`, `_on_thinking_chunk`) and
+the final-message sink in `segment_flush` (`_flush_segment`; the pass on an interrupted
+reply, `_persist_partial_reply`, is in `turn_reply_seams`); `turn_stats` holds both usage-row
+persists, EVENT_COMPLETE's and the abnormal end's (`_persist_abnormal_turn_usage`), and the
+turn-metric emit. The deny chokepoints live in
 `deny_chokepoints`, the rows-only tool save in `tool_rows`, the decisions hooks and
 the Jev routing family in `decisions_hooks`, the cross-surface legs in `recipient` (the
 reply's linked-Slack mirror and channel-neutral leg run from `_turn_stop_hook`),
@@ -2254,26 +2254,25 @@ the account-identity gate in `account_identity`, the turn's `get_or_create`
 allocation and crew-log latch in `turn_admission`, the session's `begin_turn` in
 `turn_dispatch_gates` and the responsive turn's in `turn_entry`, the approve sites in
 `tool_approval` and `permission_prompt`, and the redactor calls of the
-helpers that moved in their owners, each
+helpers the other owners hold, each
 registered in `security_posture.NON_EGRESS_REDACTION_MODULES`: they reach the
 surfaces they reached from the runner.
 
 **Where new code goes**: a step of the turn's prologue goes in its phase:
 `_turn_open`, `_turn_slash_gate`, `_turn_admit`, `_turn_dispatch_prep`, `_turn_build_prompt` or
 `_turn_dispatch_gates`, each a coroutine `_run_chat` awaits with the turn; a step of
-an event the stream loop answers in a phase (every arm but the text and thinking chunks)
-goes in that event's `_on_<event>` phase, which takes the event too, and a step after the
+an event the stream loop answers goes in that event's `_on_<event>` phase, which takes
+the event too (every arm of the loop's dispatch has one), and a step after the
 loop goes in its phase, `_turn_stop_recovery` through `_turn_stop_hook`. A step of an
 except arm goes in that arm's phase (`_on_<exception>`, or `_on_acp_<case>` for an arm of
 the `except AcpError` chain), which takes the exception too, and a step of the `finally` goes in its
 phase, `_turn_record_outcome` through `_turn_release_session`. A phase
 reads the turn's values at its entry, copies each value it stores back onto the turn
 (`_run_chat` reloads what it reads after the call), and returns a `_Flow` member
-when `_run_chat` must return, break or continue after it. A step inside the text or
-thinking arm, the except dispatch, or the finally's git-touch clears, marker clear and tail hand-off
-stays in `_run_chat`, or beside the guarded construct in
-`chat_runner.py`. New work for a family the table
-names `chat_runner.py` for goes in `chat_runner.py`, beside it. Anything else goes
+when `_run_chat` must return, break or continue after it. A step the stream loop runs for
+every event before its dispatch, the except dispatch, or the finally's git-touch clears,
+marker clear and tail hand-off stays in `_run_chat`, or beside the guarded construct in
+`chat_runner.py`. Anything else goes
 in the owner whose responsibility it is, as a function that takes what it reads and
 returns what it changes, called from the runner. An argument the runner binds inside
 its `try` is passed only from a point every path to the call has bound it. Every

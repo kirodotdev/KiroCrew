@@ -1,7 +1,7 @@
 """Pass 4 (``?token=`` values) is deferred per streamed delta to the whole-segment run.
 
-``_run_chat`` redacts each ``agent_message_chunk`` on its own and appends the
-result to the segment it later stores. A delta cut inside a companion approval
+``stream_chunks._on_text_chunk`` redacts each ``agent_message_chunk`` on its own and appends the
+result to the segment the turn later stores. A delta cut inside a companion approval
 link shows pass 4 a ``token=`` with no prefix in front of it, so the value was
 redacted before ``_redact_segment`` -- the only pass that sees the whole link --
 could grant the exemption. These tests stream the same link through the REAL

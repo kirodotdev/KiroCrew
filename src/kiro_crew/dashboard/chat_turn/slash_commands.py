@@ -43,7 +43,6 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         RepeatLoopTracker,
         _ChatSlot,
-        _expand_prompt_mention_off_loop,
         _list_aim_prompts,
         _run_chat,
         capabilities_of,
@@ -54,6 +53,7 @@ if TYPE_CHECKING:
         select_provider_backend,
     )
     from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
+    from kiro_crew.dashboard.chat_turn.prompt_assembly import _expand_prompt_mention_off_loop
     from kiro_crew.dashboard.chat_turn.queue_cycle import _send_chat_done
     from kiro_crew.dashboard.chat_turn.recovery import (
         _COMPACT_FAIL_REASON_MAX_CHARS,

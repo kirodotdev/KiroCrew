@@ -5,17 +5,24 @@ The prompt phase ``_turn_build_prompt`` runs the steps in order and makes the
 ContextBuilder call; each step reads what it is handed and returns what it adds. The
 context-composition record is written in ``_turn_dispatch_gates``, once the gates pass.
 When the turn ends, ``_turn_settle_debts`` settles what it owed its prompts: the replay,
-the re-injection flag, the skill bodies and the first-turn history debt.
+the re-injection flag, the skill bodies and the first-turn history debt. Ahead of a cold
+start's session-start build, ``_prewarm_startup_query`` starts the first message's embedding
+and memory reads on the recall pool.
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_discovery import served_provider_label
-from kiro_crew.context import prepare_store_vectors
+from kiro_crew.context import (
+    discard_memory_prefetch,
+    prepare_store_vectors,
+    reserve_memory_prefetch,
+)
 from kiro_crew.dashboard.chat_folders import _resolve_folder_steering_dirs, slot_steering_principal
 from kiro_crew.dashboard.chat_tag_grants import refresh_cache as refresh_tag_grants_cache
 from kiro_crew.dashboard.chat_tags import resolve_board_tags
@@ -28,6 +35,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.handlers import _prompt_read_within_root
 from kiro_crew.dashboard.state import TURN_OPENING_INJECT_KINDS
+from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.messaging.dispatch import (
     consume_reinjection,
@@ -38,6 +46,7 @@ from kiro_crew.messaging.dispatch import (
 if TYPE_CHECKING:
     from kiro_crew.context import ContextBuilder
     from kiro_crew.dashboard.chat_runner import (
+        _STARTUP_QUERY_PREWARM_SECS,
         MAX_PROMPT_BYTES,
         STOP_REASON_CANCELLED,
         STOP_REASON_END_TURN,
@@ -46,11 +55,11 @@ if TYPE_CHECKING:
         _find_prompt,
         _get_skills,
         _maybe_inject_persona,
-        _prewarm_startup_query,
         context_omissions,
+        embed_startup_query,
         is_sensitive_path,
         logger,
-        run_in_embed_pool,
+        prefetch_session_memory,
         sel,
         session_skill_globs,
         validate_file_path,
@@ -66,6 +75,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_context import (
         _detach_appended_context,
         _folder_steering_turn,
+        _startup_query_prewarm_applies,
         drain_pending_context,
     )
     from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
@@ -1116,3 +1126,119 @@ async def _turn_settle_debts(turn: _ChatTurn) -> None:
             logger.debug("settling first-turn history debt failed", exc_info=True)
         # A conductor context-cap trim's seed rode in that history.
         _spend_context_cap_seed(session_key)
+
+
+async def _expand_prompt_mention_off_loop(
+    message: str,
+    state: DashboardState,
+    slot: _ChatSlot,
+    *,
+    project: str | None = None,
+) -> tuple[str, str]:
+    """:func:`_expand_prompt_mention` with the filesystem half on a worker thread.
+
+    The resolve-and-read half walks the prompt roots and reads the matched file;
+    the project's ``.kiro/prompts`` is not the gateway's own directory, may be
+    network-backed, and its local half is uncacheable, so on the loop one
+    ``@mention`` on slow storage stalls every other request and the heartbeat
+    with it. Only that half is offloaded — the chip append is a loop-owned
+    mutation (see :func:`_surface_prompt_chip`) and runs here, after the
+    ``await``, which is also what keeps it ordered ahead of whatever the caller
+    appends next.
+    """
+    expanded, status, chip = await asyncio.to_thread(
+        _resolve_prompt_mention, message, _slot_prompt_project(slot, project)
+    )
+    _surface_prompt_chip(state, slot, chip)
+    return expanded, status
+
+
+async def _prewarm_startup_query(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    text: str,
+    *,
+    memory_store: str | None,
+    execution_context: Any,
+    prefetch_memory: bool = False,
+) -> None:
+    """Start embedding a turn's first message ahead of its session-start build.
+
+    Runs beside whatever the turn does next (``session/new`` on a cold start). The
+    build then reads the cached vector, or joins the running embed and waits for it
+    up to ``memory.startup_recall_timeout_secs``, ranking by keyword past it.
+
+    With *prefetch_memory* (a cold start on the send path), the build's memory
+    reads start too, after the embed so they join it. The build takes their result
+    only when every input still matches (``store_admission``'s early memory reads).
+    """
+    builder = state.context_builder
+    if not _startup_query_prewarm_applies(builder, slot, text, execution_context):
+        return
+    workspace = slot.workspace or None
+    task = asyncio.create_task(
+        _embed_startup_query_off_loop(builder, text, workspace=workspace, memory_store=memory_store)
+    )
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+    # One loop step: the task submits its embed to the recall pool before the caller
+    # submits the build, so the build usually finds that embed in flight and joins it
+    # within its own deadline. A pool too busy to start it first leaves the build to
+    # embed for itself, as it does without this.
+    await asyncio.sleep(0)
+    if not prefetch_memory:
+        return
+    # Reserved on the loop, before the thread exists: a build that comes first
+    # finds it not started and reads for itself rather than waiting on it.
+    reserve_memory_prefetch(workspace, memory_store, text)
+    task = asyncio.create_task(
+        _prefetch_session_memory_off_loop(
+            builder, text, workspace=workspace, memory_store=memory_store
+        )
+    )
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+    await asyncio.sleep(0)
+
+
+async def _prefetch_session_memory_off_loop(
+    builder: Any, text: str, *, workspace: str | None, memory_store: str | None
+) -> None:
+    """Run ``prefetch_session_memory`` on the recall pool. A failure only costs the head start."""
+    from kiro_crew.embeddings import PRIORITY_INTERACTIVE, EmbeddingWork, embedding_work
+
+    # Same deadline as the early embed it joins, so the reads wait for that vector
+    # rather than rank by keyword while the session is still starting.
+    token = embedding_work.set(
+        EmbeddingWork(time.monotonic() + _STARTUP_QUERY_PREWARM_SECS, priority=PRIORITY_INTERACTIVE)
+    )
+    try:
+        await run_in_embed_pool(
+            prefetch_session_memory, builder, text, workspace=workspace, memory_store=memory_store
+        )
+    except Exception:  # noqa: BLE001 - the build reads for itself when this does not
+        discard_memory_prefetch(workspace, memory_store, text)
+        logger.debug("Session memory was not read early", exc_info=True)
+    finally:
+        embedding_work.reset(token)
+
+
+async def _embed_startup_query_off_loop(
+    builder: Any, text: str, *, workspace: str | None, memory_store: str | None
+) -> None:
+    """Run ``embed_startup_query`` on the recall pool. A failure only costs the head start."""
+    from kiro_crew.embeddings import PRIORITY_INTERACTIVE, EmbeddingWork, embedding_work
+
+    # A deadline of its own also routes the job to the recall pool, so the embed
+    # never holds a worker a prompt build needs.
+    token = embedding_work.set(
+        EmbeddingWork(time.monotonic() + _STARTUP_QUERY_PREWARM_SECS, priority=PRIORITY_INTERACTIVE)
+    )
+    try:
+        await run_in_embed_pool(
+            embed_startup_query, builder, text, workspace=workspace, memory_store=memory_store
+        )
+    except Exception:  # noqa: BLE001 - the build embeds for itself when this does not
+        logger.debug("First-message embedding was not started early", exc_info=True)
+    finally:
+        embedding_work.reset(token)

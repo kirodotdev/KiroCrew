@@ -373,8 +373,8 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
             # the whole EVENT_TOOL_RESULT -- the event that writes both
             # ``meta["output"]`` and ``meta["done"]`` for the pill. The Output
             # tab is lost outright; ``done`` survives only if assistant text
-            # follows the tool group, because chat_runner's EVENT_TEXT_CHUNK
-            # handler then sweeps unmarked tool rows done. Serialise it instead,
+            # follows the tool group, because _on_text_chunk (dashboard/chat_turn/stream_chunks.py)
+            # then sweeps unmarked tool rows done. Serialise it instead,
             # which is already the policy one level in: an unrecognised ``Json``
             # envelope is dumped rather than dropped (above), and
             # ``parse_todo_snapshot`` likewise accepts a bare-dict ``rawOutput``.
