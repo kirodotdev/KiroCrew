@@ -3683,6 +3683,43 @@ All outbox downloads include:
   host provides it, so Windows cannot translate embedded LF bytes to CRLF and
   corrupt archives or media between validation and the restricted write.
 
+#### Dashboard File Download (`GET /api/file-download`, `file_api/transfer.py`)
+
+The file viewer's and file tree's Download serve a host file as `attachment`
+with `X-Content-Type-Options: nosniff`. Every request passes the owner-only gate,
+`validate_tool_args`, dashboard path validation, the sensitive-path filter and
+the `O_NOFOLLOW` open, at any size: a `.env` or credential path is refused
+whatever the file weighs and whatever the query says.
+
+- **Up to `_DOWNLOAD_SCAN_MAX_BYTES` (50 MB, the upload cap):** the file is read
+  whole from the open descriptor and scanned (`redact()` on UTF-8 text,
+  `binary_content_is_flagged` on other bytes, `wide_content_is_flagged` on both).
+  A hit refuses 400 `content_redacted` unless the owner's `owner_dashboard`
+  file-delivery grant releases it, with the refusal or consent audited. A file
+  that grows past the threshold between the fstat and the read is refused 409
+  `file_changed`.
+- **Over the threshold: delivered UNSCANNED, by the maintainer's decision.** The
+  scan needs the whole file in memory, so a multi-GB file would exhaust the
+  gateway; and the route is owner-only, so the reader is the person whose
+  machine holds the file. Without `confirm_unscanned=1` the route answers 409
+  `large_file_unscanned` with `size` and `limit` and sends nothing; the dashboard
+  shows a "Too large to scan" dialog naming the file and its size, and only
+  **Download anyway** retries with the flag. With the flag the file streams in
+  `_STREAM_CHUNK_BYTES` chunks with `Content-Length` set to its fstat size.
+  Each chunk is read on the bounded transfer pool, never the shared default
+  executor, within `_DOWNLOAD_CHUNK_STALL_SECS`. A read that stalls (a hung
+  mount) or a pool that refuses it is audited and drops the connection at once;
+  the file's close then runs on a thread of its own, because the abandoned read
+  still holds the file's buffer lock and a close on the pool would wait on it.
+  SEL records the delivery with `error="unscanned_large_file"`, so the audit
+  shows it was not scanned.
+- **Small or large is decided by the fstat of the one descriptor every byte is
+  read from**, so a different file cannot be swapped in between the size check
+  and the send. A file that grows while it streams is cut at the fstat size; one
+  that shrinks drops the connection, so the client sees a failed download.
+- The flag changes nothing for a file at or under the threshold: it is scanned
+  exactly as without it.
+
 #### Slack Delivery Audience — Strict Caller-Identity Classification (`file_send`)
 
 `file_send` may additionally upload the file to Slack. The Slack **audience**

@@ -5137,7 +5137,9 @@ always states the limit, a failed config read is reported through an inline
 `ErrorNotice` saying uploads still work and the server checks each file, and
 the page then shows no "Max N MB per file" figure (otherwise it interpolates
 `knowledge_upload_max_mb`). It is separate from `files._MAX_UPLOAD_BYTES` (50 MB), which still bounds
-the in-memory read paths (file-raw, file-download, office and sheet preview).
+the in-memory read paths (file-raw, office and sheet preview). `GET /api/file-download` has no size
+cap: a file up to that size is read whole and scanned, a larger one streams unscanned once the owner
+confirms; see [security.md](security.md) § Dashboard File Download.
 Every stored name receives a UUID prefix, and the handler attributes accepted and
 rejected requests through SEL. Binary formats with reliable signatures are
 validated by content before publication under their destination path.

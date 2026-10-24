@@ -4378,6 +4378,11 @@
         "tool_search_label": "Tool search",
         "tool_search_description": "Load deferred MCP tool specs on demand."
       }
+    },
+    "unscannedDownload": {
+      "title": "Too large to scan",
+      "body": "{{name}} is {{size}}. Files over {{limit}} are not checked for secrets before download.",
+      "download_anyway": "Download anyway"
     }
   },
   "hooks": {

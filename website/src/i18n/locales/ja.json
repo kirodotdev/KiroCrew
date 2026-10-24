@@ -10016,6 +10016,11 @@
         "tool_search_label": "ツール検索",
         "tool_search_description": "保留中の MCP ツール仕様を必要に応じて読み込みます。"
       }
+    },
+    "unscannedDownload": {
+      "title": "大きすぎてスキャンできません",
+      "body": "{{name}} のサイズは {{size}} です。{{limit}} を超えるファイルは、ダウンロード前に機密情報のチェックが行われません。",
+      "download_anyway": "それでもダウンロード"
     }
   },
   "hooks": {
