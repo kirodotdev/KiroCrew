@@ -1960,7 +1960,11 @@ describe('RemoteCrewPanel enabled after the gateway started', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     expect(await screen.findByText('dev-box-1')).toBeInTheDocument()
-    expect(screen.getByText(/Enabled, but not active yet/)).toBeInTheDocument()
+    const banner = screen.getByText(/not active yet/).closest('[role="status"]') as HTMLElement
+    // #22104: say where to run the command and what works after; no "tunnel manager".
+    expect(banner.textContent).toBe(
+      'Remote crew management is on, but not active yet. Run kirocrew restart in a terminal on the computer this dashboard runs on, not on a remote crew. Then you can connect to your remote crews.',
+    )
     expect(screen.queryByText(/Disabled in config/)).not.toBeInTheDocument()
 
     await userEvent.setup().click(screen.getByRole('button', { name: /^Connect$/i }))
@@ -1968,7 +1972,7 @@ describe('RemoteCrewPanel enabled after the gateway started', () => {
     const alert = await screen.findByText('Connect to m1 failed: the gateway needs a restart first. See the note below.')
     expect(alert.textContent).not.toContain('instances manager not running')
     // The banner stays where it was and is the one place the restart command appears.
-    expect(screen.getAllByText(/Enabled, but not active yet/)).toHaveLength(1)
+    expect(screen.getAllByText(/not active yet/)).toHaveLength(1)
     expect(screen.getAllByText('kirocrew restart')).toHaveLength(1)
   })
 })
