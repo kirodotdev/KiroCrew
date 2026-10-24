@@ -19,13 +19,32 @@ dispatcher takes a single new row, each of those is examined once:
 
 ``cancelled`` and the other terminal states are never touched: a cancel that
 landed before the crash stays a cancel, whatever the artifacts say.
+
+An unleased ``retry_wait`` row is claimable and normally its dispatcher's, so
+it is examined for ONE thing: a deliberate stop its artifacts prove, which
+settles it ``cancelled``. Such a row is a run whose own terminal write was
+lost -- a Stop whose cancel was dropped -- and left alone it stays in its
+parent's pending count, so the attached-children guard never clears. Every
+other verdict leaves the row as it is: ``retry_wait -> done`` is closed on
+purpose, a run that began and recorded no ending is the dispatcher's to
+re-run, and a ``failed`` ending is not written either, because a row parked by
+a wait wake or a park can be one the dispatcher was meant to retry, and
+neither of those writes a claim the pass could place the failure against.
+
+That pass asks the probe about the row's CURRENT attempt only, the one its
+latest ``claimed`` event began, named by that claim's generation (``attempt``,
+:class:`ArtifactProbe`). A claim reads no artifact, so a row whose ending was
+lost can be claimed and run again over the folder its earlier attempt ended
+in; that earlier ending says nothing about the attempt now parked, and
+settling the row on it would end live work. An ending that does not name the
+attempt it belongs to settles nothing, and neither does a row with no claim.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Callable, Iterable
+from typing import Any, Iterable, Protocol
 
 from .model import (
     ADMITTED,
@@ -36,6 +55,7 @@ from .model import (
     QUEUED,
     RECOVERING,
     RECOVERY_MAX_ATTEMPTS,
+    RETRY_WAIT,
     SIDE_EFFECT_UNKNOWN,
     UNKNOWN_SIDE_EFFECT,
     TaskRecord,
@@ -46,9 +66,24 @@ from .store import TaskStore, TaskStoreUnavailable
 
 logger = logging.getLogger(__name__)
 
-#: ``artifact_probe(record) -> "done" | "failed" | "cancelled" | "started" | None``.
-#: None means the artifacts say nothing about how the run ended.
-ArtifactProbe = Callable[[TaskRecord], "str | None"]
+
+class ArtifactProbe(Protocol):
+    """``probe(record) -> "done" | "failed" | "cancelled" | "started" | None``.
+
+    None means the artifacts say nothing about how the run ended. The
+    ``retry_wait`` pass also passes ``attempt``, the generation of the row's
+    latest claim: the probe answers for an ending recorded by THAT attempt
+    only, and None for an earlier attempt's ending or one that names no
+    attempt. A probe that does not take ``attempt`` raises there, which the
+    pass records and settles nothing on.
+    """
+
+    def __call__(self, rec: TaskRecord, /, attempt: int | None = None) -> str | None: ...
+
+
+#: The event ``TaskStore.claim`` appends; its ``generation`` names the attempt
+#: the claim began.
+_CLAIMED_EVENT = "claimed"
 
 #: A probe verdict that is not a task state: the run's own artifacts show it
 #: began and record no ending. It decides one thing, that an ``admitted`` row
@@ -58,10 +93,16 @@ STARTED = "started"
 #: Kinds the running gateway can re-dispatch from a stored row today.
 DEFAULT_RECOVERY_ADAPTERS: frozenset[str] = frozenset({KIND_SUBAGENT})
 
+#: Rows per read of the ``retry_wait`` pass. The pass reads every page before it
+#: writes, so a row it settles cannot shift a later page past a row unread.
+_PARKED_PAGE = 500
+
 
 @dataclass
 class ReconcileReport:
     examined: int = 0
+    #: unleased ``retry_wait`` rows read for an ending (not in ``examined``).
+    parked_examined: int = 0
     settled_done: int = 0
     settled_failed: int = 0
     settled_cancelled: int = 0
@@ -86,7 +127,7 @@ class ReconcileReport:
         )
 
 
-def _no_probe(_: TaskRecord) -> str | None:
+def _no_probe(_: TaskRecord, /, attempt: int | None = None) -> str | None:
     return None
 
 
@@ -100,7 +141,10 @@ def reconcile_on_boot(
     """Settle the rows an earlier incarnation left active. Idempotent.
 
     Only rows NOT leased by this incarnation are examined, so calling it again
-    after the dispatcher has started leaves the live rows alone.
+    after the dispatcher has started leaves the live rows alone. An unleased
+    ``retry_wait`` row is cancelled only on a stop *artifact_probe* proves for
+    its current attempt, which a live run has not recorded; with no
+    *artifact_probe* those rows are not read at all.
     """
     probe = artifact_probe or _no_probe
     known = frozenset(adapters)
@@ -112,11 +156,21 @@ def reconcile_on_boot(
             _settle_one(store, rec, probe, known, ts, report)
         except TaskStoreUnavailable as exc:
             report.errors.append(f"{rec.id}: {exc}")
-    if report.examined:
+    if artifact_probe is not None:
+        parked = _unleased_parked_rows(store, report)
+        for rec, attempt in _with_latest_attempts(store, parked, report):
+            report.parked_examined += 1
+            try:
+                _settle_parked(store, rec, artifact_probe, attempt, report)
+            except TaskStoreUnavailable as exc:
+                report.errors.append(f"{rec.id}: {exc}")
+    if report.examined or report.parked_examined:
         logger.info(
-            "taskq reconcile: examined=%d done=%d failed=%d cancelled=%d requeued=%d "
-            "recovering=%d unknown_side_effect=%d awaiting_adapter=%d errors=%d",
+            "taskq reconcile: examined=%d parked_examined=%d done=%d failed=%d "
+            "cancelled=%d requeued=%d recovering=%d unknown_side_effect=%d "
+            "awaiting_adapter=%d errors=%d",
             report.examined,
+            report.parked_examined,
             report.settled_done,
             report.settled_failed,
             report.settled_cancelled,
@@ -129,6 +183,92 @@ def reconcile_on_boot(
     return report
 
 
+def _verdict(
+    rec: TaskRecord, probe: ArtifactProbe, report: ReconcileReport, **kw: Any
+) -> str | None:
+    """The probe's verdict on *rec* (called with *kw*); ``None`` when the probe raised."""
+    try:
+        return probe(rec, **kw)
+    except Exception as exc:  # noqa: BLE001 - a probe that cannot answer says nothing
+        # The probe is the caller's callable and ``None`` is already its "the
+        # artifacts say nothing" answer, so an exception is that answer for THIS
+        # row: settling it by class is safe (``unknown`` never re-runs), while
+        # unwinding would abandon every row behind it with no later sweep.
+        report.errors.append(f"{rec.id}: artifact probe failed: {exc}")
+        return None
+
+
+def _unleased_parked_rows(store: TaskStore, report: ReconcileReport) -> list[TaskRecord]:
+    """Every ``retry_wait`` row with no lease, read in full before any write."""
+    rows: list[TaskRecord] = []
+    offset = 0
+    while True:
+        try:
+            page = store.list_rows(state=RETRY_WAIT, limit=_PARKED_PAGE, offset=offset)
+        except TaskStoreUnavailable as exc:
+            report.errors.append(f"retry_wait scan: {exc}")
+            break
+        rows.extend(r for r in page if r.lease_owner is None)
+        if len(page) < _PARKED_PAGE:
+            break
+        offset += len(page)
+    return rows
+
+
+def _with_latest_attempts(
+    store: TaskStore, rows: list[TaskRecord], report: ReconcileReport
+) -> list[tuple[TaskRecord, int]]:
+    """Each row with the attempt its latest ``claimed`` event began (its generation).
+
+    Read a page of rows per query. A row with no such claim, or one that names
+    no generation, is left out: without the attempt an ending cannot be matched
+    to it. A page whose claims cannot be read is left out too, and named in
+    ``report.errors``.
+    """
+    out: list[tuple[TaskRecord, int]] = []
+    for start in range(0, len(rows), _PARKED_PAGE):
+        page = rows[start : start + _PARKED_PAGE]
+        try:
+            claims = store.latest_events([r.id for r in page], [_CLAIMED_EVENT])
+        except TaskStoreUnavailable as exc:
+            report.errors.extend(f"{r.id}: claim history unreadable: {exc}" for r in page)
+            continue
+        for rec in page:
+            claim = claims.get((rec.id, _CLAIMED_EVENT))
+            attempt = claim.data.get("generation") if claim is not None else None
+            if type(attempt) is int and attempt > 0:
+                out.append((rec, attempt))
+    return out
+
+
+def _settle_parked(
+    store: TaskStore,
+    rec: TaskRecord,
+    probe: ArtifactProbe,
+    attempt: int,
+    report: ReconcileReport,
+) -> None:
+    """Cancel an unleased ``retry_wait`` row whose current attempt's artifacts prove a stop.
+
+    ``cancelled`` is the one ending written, fenced on the state and generation
+    this pass read. ``done`` has no edge from ``retry_wait``, ``failed`` is left
+    to the dispatcher (see the module docstring), and ``started`` or no verdict
+    leaves the row claimable for it.
+    """
+    verdict = _verdict(rec, probe, report, attempt=attempt)
+    if verdict == CANCELLED:
+        if (
+            store.cancel(
+                rec.id,
+                reason="reconciled: tombstone",
+                only_from=frozenset({RETRY_WAIT}),
+                generation=rec.generation,
+            )
+            is not None
+        ):
+            report.settled_cancelled += 1
+
+
 def _settle_one(
     store: TaskStore,
     rec: TaskRecord,
@@ -137,15 +277,7 @@ def _settle_one(
     now: float,
     report: ReconcileReport,
 ) -> None:
-    try:
-        verdict = probe(rec)
-    except Exception as exc:  # noqa: BLE001 - a probe that cannot answer says nothing
-        # The probe is the caller's callable and ``None`` is already its "the
-        # artifacts say nothing" answer, so an exception is that answer for THIS
-        # row: settling it by class is safe (``unknown`` never re-runs), while
-        # unwinding would abandon every row behind it with no later sweep.
-        report.errors.append(f"{rec.id}: artifact probe failed: {exc}")
-        verdict = None
+    verdict = _verdict(rec, probe, report)
     if verdict == DONE:
         if store.transition(rec.id, DONE, detail={"reconciled": "artifact"}):
             report.settled_done += 1

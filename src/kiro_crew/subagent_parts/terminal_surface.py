@@ -424,6 +424,8 @@ def _write_tombstone(info: SubagentInfo, cause: str, *, leaked_process: bool = F
             # recoverable from nothing but the log.
             detail=(_redact(info.error)[:MAX_ERROR_DETAIL_LEN] if info.error else ""),
             **({"leaked_process": True} if leaked_process else {}),
+            # The attempt this ending belongs to, for the boot reconcile.
+            **({"taskq_attempt": info._taskq_attempt} if info._taskq_attempt else {}),
         )
     except Exception:
         logger.debug("Failed to write tombstone for %s", info.id, exc_info=True)

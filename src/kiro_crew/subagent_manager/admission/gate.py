@@ -1447,6 +1447,7 @@ class _GateMixin(ManagerComponent):
         info._raw_task = task  # unredacted prompt for kiro-cli execution
         info._memory_mode_ready = not bool(conversation_key)
         info._taskq_generation = taskq_generation
+        info._taskq_attempt = taskq_generation
         self._manager._agents[agent_id] = info
         self._manager._forget_pending_start(agent_id)
         self._record_crew_log_dispatch(info, from_queue=_from_queue, asked=_crew_log_asked)

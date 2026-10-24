@@ -707,6 +707,39 @@ async def test_a_queued_row_the_drain_started_is_not_cancelled_under_the_spawn(
 
 
 @pytest.mark.asyncio
+async def test_a_registered_run_carries_its_claims_attempt_into_its_tombstone(quiet) -> None:
+    """The attempt identity the boot reconcile matches travels the claim
+    path: the registered run holds the generation its claim began, a wait wake
+    moves the run's fence generation but not that attempt, the run's tombstone
+    records it, a delivery rewrite keeps it, and the parked row's latest
+    ``claimed`` event names the same attempt -- so the boot pass cancels the row
+    on that stop."""
+    from kiro_crew.subagent_persistence import mark_delivered, read_tombstone
+    from kiro_crew.taskq.reconcile import reconcile_on_boot
+
+    mgr = await _manager()
+    store = mgr._taskq
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        a = mgr.spawn("a", parent_session_key="dash:1")
+    await _settle(store)
+    info = mgr._agents[a.id]
+    claim = [e for e in store.events(a.id) if e.kind == "claimed"][-1].data["generation"]
+    assert info._taskq_attempt == claim == info._taskq_generation
+    info._taskq_generation = claim + 1  # what a wait wake publishes on resume
+    info.user_stopped = True
+    info.done = True
+    mgr._write_tombstone(info, "user_stop")
+    assert (read_tombstone(a.id) or {}).get("taskq_attempt") == claim
+    mark_delivered(a.id)
+    assert (read_tombstone(a.id) or {}).get("taskq_attempt") == claim
+    # The stop's cancel is lost and the start given back: the stranded shape.
+    assert store.transition(a.id, model.RETRY_WAIT, generation=claim, next_run_at=None)
+    report = reconcile_on_boot(store, artifact_probe=mgr._admission.taskq_artifact_probe)
+    assert report.settled_cancelled == 1 and report.errors == []
+    assert store.state_of(a.id) == model.CANCELLED
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("parked_in", [model.QUEUED, model.RETRY_WAIT])
 async def test_a_stop_whose_generation_moved_under_an_unstarted_row_still_cancels(
     quiet, monkeypatch: pytest.MonkeyPatch, parked_in: str
