@@ -72,6 +72,21 @@ describe('filterCrewmateChat', () => {
     expect(notices).toHaveLength(4)
   })
 
+  it('hides an adapter provider notice of every severity', () => {
+    // The adapter talking about the crewmate's own session is runtime
+    // machinery under the 2026-10-09 decision: the transcript keeps the row
+    // and the Sessions page draws it, the crewmate's chat does not. `error`
+    // renders through ErrorCard elsewhere, so it is pinned here too.
+    const notices: ChatMessage[] = ['info', 'warning', 'error', 'unknown'].map((severity, i) => ({
+      role: 'notice', cls: 'msg msg-info', ts: at(`2026-09-22T06:00:1${i}Z`),
+      content: `Adapter ${severity}`,
+      meta: { kind: 'provider_notice', severity },
+    }))
+    for (const m of notices) expect(isCrewmateChatRow(m)).toBe(false)
+    const reply = said(at('2026-09-22T06:00:20Z'), 'Done.')
+    expect(filterCrewmateChat([...notices, reply])).toEqual([reply])
+  })
+
   it('an all-machinery transcript filters to nothing (so the empty hint can show)', () => {
     const rows: ChatMessage[] = [
       { role: 'nudge', content: '[auto-nudge cycle 1]', cls: '', ts: at('2026-09-22T04:00:00Z') },

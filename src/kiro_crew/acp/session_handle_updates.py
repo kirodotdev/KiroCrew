@@ -253,6 +253,10 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
     if not isinstance(update, dict):
         return []
 
+    if update.get("sessionUpdate") == "notice":
+        notice = self._session_notices.accept(msg, self._session_id)
+        return [notice] if notice is not None else []
+
     # A frame the runtime routed here for a backend-internal subagent
     # carries the CHILD's sessionId. Its tool_call/refinement updates are
     # parsed with the SAME shared parser and the SAME per-toolCallId

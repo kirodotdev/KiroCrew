@@ -39,6 +39,7 @@ kept choices for the card as well as the body — rather than
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -69,11 +70,26 @@ TOOL_CALL = "tool_call"
 TOOL_RESULT = "tool_result"  # a tool call reached a terminal outcome (see tool_status)
 PROMPT_CHOICE = "prompt_choice"
 COMPACTION = "compaction"
+NOTICE = "notice"
 DONE = "done"
+
+#: Channel prefix per provider notice severity -- the same vocabulary the gateway's
+#: own channel notices use. An unrecognised severity renders as info.
+NOTICE_SEVERITY_PREFIX = {"info": "ℹ️", "warning": "⚠️", "error": "⛔"}
 STEER_CONSUMED = "steer_consumed"  # kiro-cli folded a mid-turn steer at a boundary
 
 OUTPUT_KINDS = frozenset(
-    {TEXT_CHUNK, THINKING, TOOL_CALL, TOOL_RESULT, PROMPT_CHOICE, COMPACTION, DONE, STEER_CONSUMED}
+    {
+        TEXT_CHUNK,
+        THINKING,
+        TOOL_CALL,
+        TOOL_RESULT,
+        PROMPT_CHOICE,
+        COMPACTION,
+        NOTICE,
+        DONE,
+        STEER_CONSUMED,
+    }
 )
 
 
@@ -117,6 +133,7 @@ class OutputEvent:
     # the sentence to post in place of a bare placeholder when the turn closed
     # with no assistant text, ``""`` when it produced text or was cancelled.
     notice: str = ""
+    notice_severity: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -133,6 +150,7 @@ class OutputEvent:
             "context_usage_pct": self.context_usage_pct,
             "stop_reason": self.stop_reason,
             "notice": self.notice,
+            "notice_severity": self.notice_severity,
         }
 
 
@@ -1026,6 +1044,11 @@ class Renderer(ABC):
         """
         return None
 
+    async def on_notice(self, text: str) -> None:
+        logging.getLogger(__name__).warning(
+            "Renderer has no notice sink: %s", getattr(self, "channel_type", "unknown")
+        )
+
     async def dispatch(self, event: OutputEvent) -> None:
         """Route ``event`` to the matching ``on_*`` handler."""
         if event.kind == TEXT_CHUNK:
@@ -1049,6 +1072,29 @@ class Renderer(ABC):
             )
         elif event.kind == COMPACTION:
             await self.on_compaction(event.context_usage_pct)
+        elif event.kind == NOTICE:
+            try:
+                prefix = NOTICE_SEVERITY_PREFIX.get(
+                    event.notice_severity, NOTICE_SEVERITY_PREFIX["info"]
+                )
+                # Provider text is untrusted: redact against the display form,
+                # then defang broadcast mentions (`<!channel>`, `@everyone`) for
+                # this target, BEFORE chunking so no chunk carries a live one.
+                text = self.redact_for_target(f"{prefix} {event.text}")
+                text = _choice_display_safe(text, self.capabilities)
+                chunks = (
+                    chunk_for_transport(text, self.capabilities, redactor=self.redact_for_target)
+                    if self.capabilities is not None
+                    else [text]
+                )
+                for chunk in chunks:
+                    await self.on_notice(chunk)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Provider notice delivery failed on %s; continuing the answer",
+                    getattr(self, "channel_type", "unknown"),
+                    exc_info=True,
+                )
         elif event.kind == DONE:
             self.empty_turn_notice = event.notice or ""
             await self.on_done(event.stop_reason)
@@ -1087,9 +1133,8 @@ class SilentRenderer(Renderer):
     def __init__(self, capabilities: Any = None, channel_type: str = "") -> None:
         # Typed loosely and defaulted, unlike the base: this is a SUBSTITUTE built
         # from whatever renderer the channel supplied, and it must not fail to
-        # substitute because that object lacks `capabilities`. Nothing here reads
-        # the value -- every handler is a no-op -- so it is only carried so the
-        # object still satisfies the base contract for anyone who inspects it.
+        # substitute because that object lacks `capabilities`. An absent value
+        # leaves dispatch chunking unbounded; every handler is still a no-op.
         super().__init__(capabilities)
         self.channel_type = channel_type
 
@@ -1124,6 +1169,9 @@ class SilentRenderer(Renderer):
         tool_purpose: str = "",
         tool_input: str = "",
     ) -> None:
+        return None
+
+    async def on_notice(self, text: str) -> None:
         return None
 
     async def on_compaction(self, context_usage_pct: float) -> None:

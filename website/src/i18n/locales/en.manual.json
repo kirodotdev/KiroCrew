@@ -5664,6 +5664,8 @@
         "yolo_elsewhere": "YOLO covers every session on {{name}}. Change it on the crew's own dashboard.",
         "mode_unknown": "Couldn't read the approval mode on {{name}}. Trying again…",
         "update_in_remote_crew": "Update {{name}} in Remote Crew"
+      },
+      "noticeCard": {
       }
     },
     "chatPage": {

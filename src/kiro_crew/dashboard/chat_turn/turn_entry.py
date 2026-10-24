@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections import deque
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
@@ -433,6 +434,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # The runs _wsred holds across a tool call or approval prompt, one per cut
     # crossed before its next output (see _cut_segment / _settle_held).
     turn._held_runs = []
+    # Provider notices that arrived while assistant text was open: drawn after
+    # that segment is finalized, so a notice never cuts the reply's raw copy.
+    turn._provider_notices = deque(maxlen=128)
     # Set once the end-of-turn flush has saved ``assistant_text`` as the reply.
     turn._reply_flushed = False
     # The reply rows this turn appended, snapshotted before _flush_file_changes

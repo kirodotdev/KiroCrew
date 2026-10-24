@@ -666,7 +666,38 @@ not add a suspension point before the destination authorization check.
 
 ### `OutputEvent`
 
-Channel-neutral output event with a `kind` plus per-kind payload fields (`text`, `tool_call_id`, `title`, `tool_kind`, `tool_name`, `tool_purpose`, `tool_status`, `options`, `request_id`, `context_usage_pct`, `stop_reason`, `notice`); `to_dict()` serializes them. `title` is DISPLAY copy — what a person should read for the call (the backend's own description when it sent one, else the client-derived `List files in src` / `Git status` from `kiro_crew.tool_call_title`, else the raw command) — and is never a tool's identity; `tool_name` is the trusted programmatic identity from `_meta.kiro` (empty when the backend sent none) and is what any behaviour keyed on *which tool ran* reads. `Renderer.dispatch` exposes the current call's identity as `current_tool_name` before `on_tool_call` fires, and the Slack wait-stream rollover keys on it through `slack/format.is_wait_identity` (`wait`, `kirocrew-core___wait`, `mcp__kirocrew-core__wait`; not `wait_for_ci`) with the title equality kept only as the fallback for a transport that sends no identity. `notice` rides `DONE` alone: it is the driver's **empty-turn verdict** (see "The empty-turn verdict" under Layer 2), the sentence a renderer posts where its bare placeholder would otherwise go when the turn closed with no assistant text, and `""` for a turn that produced text or was cancelled. `Renderer.dispatch` exposes it as `empty_turn_notice` before `on_done` fires, the same way it exposes `current_tool_name`. Kinds: `TEXT_CHUNK`, `THINKING`, `TOOL_CALL`, `TOOL_RESULT`, `PROMPT_CHOICE`, `COMPACTION`, `DONE` — the full set is `OUTPUT_KINDS` (a `frozenset`). `tool_status` rides `TOOL_RESULT` alone: it is the call's terminal outcome as the ACP layer reported it (`acp.types.TERMINAL_TOOL_STATUSES` — `completed` is success, anything else did not succeed), `""` on every other kind, and lets a renderer finalize a per-call card honestly instead of marking every call complete. `prompt_choice` is a **first-class** event, not generic "permission text": each renderer maps it to its native interactive widget.
+Ordinary provider notices have their own `NOTICE` output event with `text` and
+`notice_severity`. The driver keeps them out of the accumulated answer and the
+empty-turn answer verdict. The renderer sends a separate message through each
+channel's existing send API, prefixed with the gateway's own notice glyphs
+(`NOTICE_SEVERITY_PREFIX`: ℹ️ info, ⚠️ warning, ⛔ error; unknown severities as
+info). The text is display-redacted and then mention-defanged for the target
+(`<!channel>`, `@everyone`) before credential-graded `chunk_for_transport` splitting, so
+no chunk carries a live broadcast mention or exposes a credential across
+adjacent messages.
+Absent transport capabilities keep delivery unbounded.
+`Renderer.on_notice(text)` takes only the prepared text. Notice delivery is advisory: a failed send is logged
+and the answer continues. Muted conversations' `SilentRenderer` drops notices.
+WeCom uses only its independent proactive destination; an unavailable push does
+not consume the single-use response URL reserved for answer delivery.
+The dashboard stores a `notice` row with `meta.kind=provider_notice` and severity,
+using the existing identity-carrying append/broadcast path. Reload preserves that
+metadata.
+A crewmate's chat hides every `role: notice` row through
+`crewmateBubbles.isCrewmateChatRow`, regardless of kind or severity, under the
+2026-10-09 decision that a crewmate chat draws messages only; the transcript
+keeps them and the Sessions page draws them.
+The shared `notice` renderer entry sends info, warning and unknown severities to
+NoticeCard (unknown as info) and an `error` notice to the transcript's ErrorCard,
+the same row a `role: 'error'` message takes -- an error surfaced in this
+conversation, under `errors-use-error-notice`. A notice received during assistant
+text waits until that segment is finalized at an existing tool or turn boundary.
+It does not cut the raw copy, redaction witness, withheld word, or mirrored reply.
+A notice received before answer text is displayed immediately. The pending queue
+is bounded to 128 notices; overflow is logged. CLI notices use
+stderr, leaving assistant stdout intact.
+
+Channel-neutral output event with a `kind` plus per-kind payload fields (`text`, `tool_call_id`, `title`, `tool_kind`, `tool_name`, `tool_purpose`, `tool_status`, `options`, `request_id`, `context_usage_pct`, `stop_reason`, `notice`, `notice_severity`); `to_dict()` serializes them. `title` is DISPLAY copy — what a person should read for the call (the backend's own description when it sent one, else the client-derived `List files in src` / `Git status` from `kiro_crew.tool_call_title`, else the raw command) — and is never a tool's identity; `tool_name` is the trusted programmatic identity from `_meta.kiro` (empty when the backend sent none) and is what any behaviour keyed on *which tool ran* reads. `Renderer.dispatch` exposes the current call's identity as `current_tool_name` before `on_tool_call` fires, and the Slack wait-stream rollover keys on it through `slack/format.is_wait_identity` (`wait`, `kirocrew-core___wait`, `mcp__kirocrew-core__wait`; not `wait_for_ci`) with the title equality kept only as the fallback for a transport that sends no identity. `notice` rides `DONE` alone: it is the driver's **empty-turn verdict** (see "The empty-turn verdict" under Layer 2), the sentence a renderer posts where its bare placeholder would otherwise go when the turn closed with no assistant text, and `""` for a turn that produced text or was cancelled. `Renderer.dispatch` exposes it as `empty_turn_notice` before `on_done` fires, the same way it exposes `current_tool_name`. Kinds: `TEXT_CHUNK`, `THINKING`, `TOOL_CALL`, `TOOL_RESULT`, `PROMPT_CHOICE`, `COMPACTION`, `NOTICE`, `DONE`, `STEER_CONSUMED` — the full set is `OUTPUT_KINDS` (a `frozenset`). `tool_status` rides `TOOL_RESULT` alone: it is the call's terminal outcome as the ACP layer reported it (`acp.types.TERMINAL_TOOL_STATUSES` — `completed` is success, anything else did not succeed), `""` on every other kind, and lets a renderer finalize a per-call card honestly instead of marking every call complete. `prompt_choice` is a **first-class** event, not generic "permission text": each renderer maps it to its native interactive widget.
 
 ### `Renderer` ABC
 

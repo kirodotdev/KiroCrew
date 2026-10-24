@@ -187,6 +187,8 @@ with no row here.
      - pre-session registry query (whether the dashboard may skip a session reset)
    * - ``ACP_BACKENDS_STRUCTURED_REFUSAL``
      - driver-internal (whether the metadata refusal parser is consulted)
+   * - ``ACP_BACKENDS_SESSION_NOTICES``
+     - driver-internal (whether ``initialize`` advertises ``session.notices``)
    * - ``ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR``
      - driver-internal (whether an adapter-authored text chunk that ends a turn
        is the turn's provider failure rather than an answer)
@@ -889,6 +891,7 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_KIRO_FAMILY,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_LOCAL_CLEAR,
+    ACP_BACKENDS_SESSION_NOTICES,
     ACP_BACKENDS_NATIVE_TODOS,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEER_CONCURRENT_PROMPT,

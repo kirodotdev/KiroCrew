@@ -107,6 +107,7 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # continuation and leaves the request unanswered.
         synthesized=e.synthesized,
         control_notice=e.control_notice,
+        notice_severity=e.notice_severity,
         # The fork point a later rewind cuts the native conversation at.
         message_id=e.message_id,
         runtime_global=e.runtime_global,

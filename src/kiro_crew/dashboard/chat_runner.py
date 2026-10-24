@@ -200,6 +200,7 @@ from kiro_crew.dashboard.chat_turn.recovery import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_turn.segment_flush import (
     _accumulate_segment_raw,
+    _flush_provider_notices,
     _flush_segment,
     _redact_delta,
     _turn_settle_answer,
@@ -400,6 +401,7 @@ from kiro_crew.name_grant import (  # noqa: F401
 )
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
+    EVENT_NOTICE,
     EVENT_PERMISSION_REQUEST,
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
@@ -1324,7 +1326,13 @@ async def _run_chat(
                     event.kind,
                 )
 
-            if event.kind == EVENT_TEXT_CHUNK:
+            if event.kind == EVENT_NOTICE:
+                if len(turn._provider_notices) == turn._provider_notices.maxlen:
+                    logger.warning("Dashboard provider notice queue full; dropping oldest notice")
+                turn._provider_notices.append(event)
+                if not turn.assistant_text:
+                    _flush_provider_notices(turn)
+            elif event.kind == EVENT_TEXT_CHUNK:
                 # If we just exited a tool group, finalize the streaming
                 # message so post-tool text starts a fresh message. The wire
                 # redactor is NOT flushed: what it still holds from before the

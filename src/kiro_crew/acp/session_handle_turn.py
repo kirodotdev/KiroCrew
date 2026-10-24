@@ -437,6 +437,8 @@ async def _run_turn(
         except asyncio.QueueEmpty:
             break
         if stale is not None:
+            if self._session_notices.accept(stale, self._session_id, stage=True) is not None:
+                continue
             # A between-turns MCP status snapshot still tells this session
             # which servers need a sign-in: a server that connected while
             # no turn was reading leaves the set here, so the turn-start

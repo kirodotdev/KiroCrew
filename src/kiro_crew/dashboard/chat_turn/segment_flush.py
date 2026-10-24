@@ -38,6 +38,7 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.recovery_replays import replays_of
 from kiro_crew.dashboard.state import chat_message_note
 from kiro_crew.messaging.empty_turn_copy import EMPTY_TURN_NOTICE, EMPTY_TURN_NOTICE_AFTER_WORK
+from kiro_crew.platform import redact_via_context
 
 # Read when the module loads (the placeholder pattern), so imported plainly.
 from kiro_crew.security import EXFILTRATION_REDACTION_TAG_PREFIX, redact, redact_and_truncate
@@ -56,6 +57,7 @@ if TYPE_CHECKING:
         DashboardState,
         ReplayFamily,
         _ChatSlot,
+        append_and_surface,
         crew_log_emit,
         effective_session_key,
         logger,
@@ -820,6 +822,34 @@ def _flush_segment(
     return last_msg
 
 
+def _flush_provider_notices(turn: _ChatTurn) -> None:
+    """Draw the provider notices held while assistant text was open.
+
+    Each becomes a ``notice`` row with ``meta.kind = "provider_notice"`` and its
+    severity, through the identity-carrying append/broadcast path, so reload
+    keeps the metadata. Called once a reply segment is finalized, so a notice
+    never cuts the segment's raw copy, redaction witness or withheld word.
+    """
+    notices = turn._provider_notices
+    while notices:
+        event = notices.popleft()
+        append_and_surface(
+            turn.state,
+            turn.slot,
+            "notice",
+            redact_via_context(event.title + (f"\n{event.text}" if event.text else "")),
+            "msg msg-info",
+            meta={"kind": "provider_notice", "severity": event.notice_severity},
+        )
+
+
+def _flush_reply_segment(turn: _ChatTurn, *args: Any, **kwargs: Any) -> Any:
+    """``_flush_segment`` for a reply segment, then the notices it held back."""
+    row = _flush_segment(*args, **kwargs)
+    _flush_provider_notices(turn)
+    return row
+
+
 def _schedule_widget_registration(
     state: DashboardState,
     slot: _ChatSlot,
@@ -949,7 +979,7 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
     # until something flushes it, so a skipped notice was emitted nowhere.)
     if turn.assistant_text and not _branch_answer_text:
         _flush_text_stream(turn)
-        _flush_segment(state, slot, turn.assistant_text, broadcast=False)
+        _flush_reply_segment(turn, state, slot, turn.assistant_text, broadcast=False)
         turn._reply_flushed = True
 
     if turn._terminal_directive_applied and _activity_after_terminal:
@@ -971,7 +1001,7 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
 
     if _branch_answer_text:
         _flush_text_stream(turn)
-        _flush_segment(state, slot, turn.assistant_text, broadcast=False)
+        _flush_reply_segment(turn, state, slot, turn.assistant_text, broadcast=False)
         turn._reply_flushed = True
         if _stop_reason == STOP_REASON_REFUSAL:
             # The Kiro service's content filter STREAMS its canned

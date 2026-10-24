@@ -627,6 +627,7 @@ def _reattempt_failed_mcp_servers(self: AcpSessionHandle) -> None:
 
 def _apply_init_notification(self: AcpSessionHandle, msg: JsonRpcMessage, action: str) -> None:
     """Initialization side effects shared by the drain and readiness barrier."""
+    self._session_notices.accept(msg, self._session_id, stage=True)
     self._note_mcp_sign_in_status(msg, offer=False)
     params = msg.params if isinstance(msg.params, dict) else {}
     if action == "update":

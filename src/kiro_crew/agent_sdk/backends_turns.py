@@ -604,3 +604,11 @@ ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # opencode, goose, pi and deepseek are not members: none of them was read writing a
 # provider failure as message text.
 ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR = frozenset({ACP_BACKEND_CODEX})
+
+# Backends whose handshake advertises ``clientCapabilities.session.notices``,
+# which moves the adapter's provider notices out of the transcript into
+# ``notice`` session updates. Only adapters that emit them: codex-acp 2.0.0 and
+# claude-agent-acp 0.84.0 (a live Claude hook message arrived as a ``notice``).
+# kiro and kas are not members: neither emits ``notice`` updates, and their
+# handshakes stay byte-identical until one does.
+ACP_BACKENDS_SESSION_NOTICES = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})

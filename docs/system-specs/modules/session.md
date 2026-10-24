@@ -1172,17 +1172,12 @@ against sweep completeness, and are torn down at `close_all`.
   selectors mirror. The Mate chat draws nothing for it: tool rows are
   machinery there
   (`crewmateBubbles.MACHINERY_ROLES`), so the quiet turn leaves that surface
-  exactly as it was. The Mate chat drops a `notice` row by an ALLOWLIST of
-  machinery `meta.kind`s (`crewmateBubbles.CREWMATE_HIDDEN_NOTICE_KINDS`), never
-  by role: the ladder's own cards — the continue and give-up rungs and the
-  post-compaction resume — carry `meta.kind = "empty_turn"`
-  (`chat_utils.EMPTY_TURN_NOTICE_KIND`), and the automation arm/revision/stop
-  refusal carries `meta.kind = "arm_refusal"`
-  (`session_directive_apply.ARM_REFUSAL_NOTICE_KIND`); both are the runtime
-  talking about its own machinery, so a person reading a mate has nothing to
-  do with them. Every notice OUTSIDE that allowlist still draws, because it
-  names something the person may have to act on (a dropped queued message, a
-  model-fallback hint). The refusal still reaches the crewmate: it is also
+  exactly as it was. `crewmateBubbles.isCrewmateChatRow` hides EVERY
+  `role: notice` row, regardless of `meta.kind` or severity, under the
+  [messages-only decision](../../decisions/2026-10-09-crewmate-chat-draws-messages-only.md).
+  This includes empty-turn recovery, automation arm/refusal, provider,
+  dropped-message and model-fallback notices. The transcript keeps these
+  rows and the Sessions page draws them. The refusal still reaches the crewmate: it is also
   queued into the mate's NEXT turn with `chat_utils.AUTOMATION_NOTICE_KIND`,
   so it drains as an `inject` row (never a `user` row shown as the person's own
   bubble) the turn carries, and the mate can stop and re-arm the loop

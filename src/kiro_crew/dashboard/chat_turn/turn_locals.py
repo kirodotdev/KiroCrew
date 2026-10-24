@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from asyncio import Task
     from asyncio.locks import Lock
+    from collections import deque
     from collections.abc import Awaitable, Callable
     from typing import Any
 
@@ -163,6 +164,7 @@ class _ChatTurn:
     _person_steered_turn: "bool"
     _produced_visible_output: "bool"
     _provider_has_history: "bool"
+    _provider_notices: "deque[Any]"
     _recovering_compaction: "bool"
     _recovering_infra: "bool"
     _recovering_promise: "bool"

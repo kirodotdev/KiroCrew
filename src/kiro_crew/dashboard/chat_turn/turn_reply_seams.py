@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
     from kiro_crew.dashboard.chat_turn.segment_flush import (
         _cleared_segment_text,
-        _flush_segment,
+        _flush_reply_segment,
         _give_back_run,
         _hold_segment_tail,
         _open_segment_with,
@@ -388,9 +388,9 @@ def _cut_segment(turn, *, broadcast: bool = True) -> None:
     if kept is None:
         if not _wsred.discarding:
             _flush_text_stream(turn)
-        _flush_segment(state, slot, turn.assistant_text, broadcast=broadcast)
+        _flush_reply_segment(turn, state, slot, turn.assistant_text, broadcast=broadcast)
     else:
-        row = _flush_segment(state, slot, kept, broadcast=broadcast)
+        row = _flush_reply_segment(turn, state, slot, kept, broadcast=broadcast)
         turn._held_runs.append((row, own, row.get("variant_idx"), turn._crew_log_step))
     turn.assistant_text = _cleared_segment_text(slot)
 
@@ -476,7 +476,8 @@ def _steer_segment_cut(turn, *, interrupted: bool = True) -> None:
         # interrupted from one the model finished. It needs no coordination
         # with the echo that proves consumption, which is why this fact is
         # recordable where a steer entry of its own is not.
-        _flush_segment(
+        _flush_reply_segment(
+            turn,
             state,
             slot,
             turn.assistant_text,

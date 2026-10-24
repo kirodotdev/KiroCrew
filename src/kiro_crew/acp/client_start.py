@@ -77,7 +77,6 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     ACP_BACKENDS_RESUME_WITHOUT_LOAD,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
-    ACP_CLIENT_CAPABILITIES,
     KIRO_CLI_CLIENT_APPLICATION,
     METHOD_INITIALIZE,
     METHOD_SESSION_FORK,
@@ -85,6 +84,7 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_NEW,
     METHOD_SESSION_RESUME,
     METHOD_SET_MODE,
+    acp_client_capabilities,
 )
 from kiro_crew.agent import (
     DerivedSpecSnapshot,
@@ -714,7 +714,7 @@ def _initialize_params(self: AcpClient) -> dict[str, Any]:
     return {
         "protocolVersion": protocol_version,
         "clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION},
-        "clientCapabilities": ACP_CLIENT_CAPABILITIES,
+        "clientCapabilities": acp_client_capabilities(self.backend),
     }
 
 

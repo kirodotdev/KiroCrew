@@ -5,8 +5,9 @@ process-per-session) and ``AcpRuntime``/``AcpSessionHandle`` (shared runtime,
 single-reader demux) must send identically. Keeping these here prevents the
 two parallel implementations from drifting.
 
-These are pure, stateless functions: they take primitives and return dicts, so
-each class keeps its own I/O model (``_turn_lock`` reader vs per-session queue)
+Frame-shaping functions are pure; ``SessionNoticeState`` is bounded and owned by
+each session. Each class keeps its own I/O model (``_turn_lock`` reader vs
+per-session queue)
 while sharing the data-shaping logic: session/new params, set_mode/set_model
 request shapes, per-turn metadata/credit capture, and notification classification.
 """
@@ -697,6 +698,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     import posixpath  # noqa: F401
     import re  # noqa: F401
     import unicodedata  # noqa: F401
+    from collections import deque  # noqa: F401
     from collections.abc import (  # noqa: F401
         Iterable,
         Iterator,
@@ -709,6 +711,8 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         NamedTuple,
         cast,
     )
+
+    from kiro_crew.acp.types import EVENT_NOTICE  # noqa: F401
 
 
 def _token_count(value: Any) -> int | float | None:

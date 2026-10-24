@@ -143,7 +143,10 @@ async def _dispatch_events(
 
     _buffered: list[JsonRpcMessage] = []
     _last_yield = time.monotonic()
+
     try:
+        for notice in self._session_notices.take_pending(self._session_id):
+            yield notice
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             if remaining <= 0:

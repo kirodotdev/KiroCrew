@@ -808,6 +808,8 @@ async def _dispatch_events(
     self._steering_turn_req = None if extract_agent_from_result else req_id
 
     async for action, msg in self._prompt_loop(req_id, timeout):
+        for notice in self._session_notices.take_pending(self._session_id or ""):
+            yield notice
         if action != "update":
             logger.debug(
                 "ACP event: method=%s id=%s action=%s",
@@ -928,6 +930,9 @@ async def _dispatch_events(
             # Answered before the turn's own terminal: kept for the settle.
             self._steer_turn.answers[msg.id] = (msg, False)
         elif action == "update":
+            session_notice = self._session_notices.accept(msg, self._session_id or "")
+            if session_notice is not None:
+                yield session_notice
             self._track_usage_update(msg)
             self._note_background_launch(msg)
             # pi's consumed notification for a steer is the gate extension's own

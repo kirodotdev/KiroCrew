@@ -60,12 +60,14 @@ export default memo(function NoticeCard({
   content,
   tone: toneOverride,
   icon: iconOverride,
+  severity: providerSeverity,
 }: {
   content: string
   tone?: NoticeTone
   /** A caller whose notice names a cause the tone alone does not show (a Stop
    *  the user pressed) may name the glyph; the tone and its colour are kept. */
   icon?: LucideIcon
+  severity?: unknown
 }) {
   // Language-generation subscription: this memo() boundary renders i18nT()
   // strings, so a language switch must invalidate it.
@@ -73,8 +75,15 @@ export default memo(function NoticeCard({
   const parsed = parseNotice(content)
   // A caller that already localized `content` (transientNotice.ts) has no emoji
   // to parse a tone from, so it names the severity directly.
-  const tone = toneOverride ?? parsed.tone
-  const text = parsed.text
+  //
+  // A provider notice names its severity (`severity`) and its text is verbatim.
+  // The renderer registry sends provider errors to ErrorCard, so only info,
+  // warning and unknown severities arrive here; unknown renders as info.
+  const structured = typeof providerSeverity === 'string'
+  const tone: NoticeTone = structured
+    ? providerSeverity === 'warning' ? 'warn' : 'info'
+    : toneOverride ?? parsed.tone
+  const text = structured ? content : parsed.text
   const Icon = iconOverride ?? (tone === 'blocked' ? Ban : tone === 'warn' ? TriangleAlert : Info)
   const severity = srSeverity(tone)
   return (
