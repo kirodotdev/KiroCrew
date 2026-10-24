@@ -59,7 +59,7 @@ from .denied_rules_tables import (  # noqa: F401
     BUILTIN_DENY_PATTERNS,
 )
 from .diagnostics import RefusalDiagnostic, annotate_refusal, refusal_diagnostic
-from .shell_normalizer import _SHELL_ACTIVE_CHARS
+from .shell_normalizer import _SHELL_ACTIVE_CHARS, _SHELL_TITLE_PREFIX
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -486,10 +486,6 @@ def _exception_eligible(view: str) -> bool:
     behaviour changes.
     """
     return not _SHELL_ACTIVE_CHARS.intersection(view)
-
-
-#: kiro-cli's display prefix on a shell call's title, lowercased like the views.
-_SHELL_TITLE_PREFIX = "running: "
 
 
 def _exception_applies(view: str, exceptions: list[str]) -> bool:

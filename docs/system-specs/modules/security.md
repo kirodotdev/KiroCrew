@@ -1999,13 +1999,79 @@ grammar admits no quotes, so a quote can only sit in the target group;
 refusing the whole token for it had mislabelled the shape), while fragment
 tokens (open quote state) still poison the split protectively. Quoted operator characters are data and none of this fires. A segment
 whose CUMULATIVE quote/escape state is still open at its end continues into the
-next line — bash line continuation (`\<newline>` vanishes) and quoted newlines
-splice words across the newline segment boundary, so `origin ma\` + newline +
+next line — bash line continuation (`\<newline>` vanishes) splices words across
+the newline segment boundary, so `origin ma\` + newline +
 `in` pushes `main` while no scanned token spells it — and lands on the ungated
-sentinel (the `ma$in` posture); a mid-segment open whose quote closes before
+sentinel (the `ma$in` posture). A literal newline INSIDE quotes is word data
+and does not end the segment. Of the two layers that read such a command, only
+one is the deny authority: the per-line reading judges every push line exactly
+as a single-line command, dropping its ungated sentinel only where the
+whole-text walk enters the line inside a quote that closes before the push and
+ends its word (the tail of a quoted multi-line word; a fragment glued to the
+closing quote keeps the word going) and judging the code after that close in full,
+and only when that word is inert data: its owner is `git commit`, the one owner
+the reported failure names, it is a `'…'` or `"…"` word (a `$'…'` or `$"…"`
+word is decoded or translated by bash, so it is never data), a double-quoted
+word holds no `$`, backtick or `\` (so no expansion such as `$1` can hand bash
+an option), and the rest
+of the command passes one closed allowlist: with its
+other quoted words masked (an empty one, or one opening with `-`, stays an option
+bash dequotes and fails the check, as does an inert word that opens with `-` or
+is glued to other text), only word characters, spaces, tabs, newlines and
+`. / : = @ % + , - ; &` remain (plus `$PATH`, the one expansion admitted, and
+only inside a push prefix),
+and every segment is `cd <dir>` or a `git` verb (`add`, `commit`, `push`) whose
+every flag is on that verb's lowercase allowlist (`commit -m`/`-q`, `push -u`/`-q`,
+no `add` flag, no `git -c` setting), where only `-m` takes
+a value (so no `--author`/`--date` can swallow a `-m`), a commit carrying its
+message (so no `git config`,
+`--edit`, `-c` or bare `--amend` opens an editor on the text; option scanning
+stops at `--`, so a pathspec after it, even one named `--no-edit`, is not read as
+a flag and cannot satisfy that message rule; a `--` that is the value of `-m`
+ends nothing, so an `-e` after it is still checked). The deny tiers also judge
+kiro-cli's `Running: <command>` title, so this proof reads through ONE exact
+leading `running: ` (`_SHELL_TITLE_PREFIX`, the constant `_exception_applies`
+uses) and the title gets the verdict of the command it displays; a second
+prefix, one without its space, or one later in the text stays a command word.
+A `git push` alone may carry
+`PATH=<value>` assignments, bare or after a plain `env` with no option, whose
+value is plain text or `$PATH`: `PATH` can change which `git`
+runs but not the argv the per-line reading judges, while a `GIT_*` value can remap
+the refspec and `BASH_ENV`/`ENV` can make a shell that git starts source the message
+file, so no other variable is listed. Adding a verb, owner or
+flag to `_INERT_FLAGS` widens an
+allow on the push gate, so it needs a matching row in `_INERT_ORACLE_ROWS`, which
+the real-bash oracle (`test_no_command_real_bash_runs_as_a_protected_push_is_allowed`)
+requires to run a protected push that stays denied;
+`test_every_inert_allowlist_entry_has_a_real_bash_oracle_row` fails on an entry
+without one (a variable needs a bare row and an `env` row; the oracle's `env` is a
+shell function that exports the assignments and runs the stub `git`). The list holds
+only the flags issue #12631's refused commands use, each with its row. When a line
+of a refused multi-line command starts inside a quote and the command with each
+`git` command after an unquoted separator (with any `env` or assignment prefix)
+moved onto its own line clears the floor, read over every nested shell payload as
+the floor reads it, the
+reason says the push can go on its own line in place of the substitution reason,
+which that command does not have. A pipe, redirect
+(`exec > f` included), expansion, glob, brace, comment, function or alias
+definition, or `source`d helper therefore keeps the sentinel, as does a word
+`trap` decodes or expands,
+so a quote the walk gets wrong cannot hide a protected, bare or unverifiable
+push. The construct list only narrows ALLOWS, by limiting where a quoted newline
+is kept: a heredoc, a command, parameter or process substitution, a backtick, a
+real `#` comment, or any backslash-newline outside a plain single quote (where
+bash reads every character literally) keeps the split at every newline, because
+the walk models none of their bodies and bash deletes a backslash-newline before
+it reads quotes or openers; no denial depends on it. A merged segment that
+does not parse as a push (quoted text that merely mentions one) is read line by
+line instead; a mid-segment open whose quote closes before
 segment end stays on the disableable fallback, because in-segment joining can
 only fuse whitespace into a word (never a valid refname) and the pieces stay
-visible to the superset scan. The invariant
+visible to the superset scan. Any change to `_iter_shell_chars` or
+`_split_push_command_segments` must keep
+`test_every_per_line_deny_survives_the_whole_text_reading` green: it is the
+required gate that the whole-text reading keeps every deny a line earns alone,
+with the construct list on and off. The invariant
 has two different strengths, stated honestly: the OPTION-ARITY axis fails
 protective by construction (an unrecognised option lands in the fallback), while
 the SHELL-SYNTAX axis rests on the metacharacter inventory being complete — a
