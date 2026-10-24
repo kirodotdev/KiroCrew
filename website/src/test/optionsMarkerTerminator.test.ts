@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   findLastOptionMarker,
   findOptionMarkers,
+  matchActionMarkers,
   stripOptionMarkers,
   labelsHaveUnmatchedOpener,
 } from '../app-sdk/protocol/optionMarker'
@@ -194,6 +195,47 @@ describe('what the check gives up', () => {
   })
 })
 
+describe('a same-line chain whose SIBLING does not balance', () => {
+  /**
+   * REGRESSION introduced by `SIBLING_CHAIN`: measured on 59baad44ab these shapes deleted
+   * nothing, because the tail required end-of-line and the leading marker could not match.
+   *
+   * The lookahead admits a sibling through the LOOSE tempered body while acceptance re-checks
+   * each marker's OWN balance, so the first marker was stripped and the second left as prose —
+   * the deleted span came back as a chip nobody wrote, which is the one failure direction this
+   * grammar refuses everywhere else. All-or-nothing is therefore decided per LINE, across BOTH
+   * kinds, since a chain may mix them and each pattern sees only its own matches.
+   */
+  const CHAINS: [string, string][] = [
+    ['content pair', '[OPTIONS: A] [OPTIONS: B then arr[0]'],
+    ['content then action', '[OPTIONS: A] [OPTION-ACTIONS: close=B then arr[0]'],
+    ['action then content', '[OPTION-ACTIONS: close=A] [OPTIONS: B then arr[0]'],
+    ['three, last malformed', '[OPTIONS: A] [OPTIONS: B] [OPTIONS: C then arr[0]'],
+  ]
+
+  it('offers nothing and deletes no prose', () => {
+    for (const [name, raw] of CHAINS) {
+      expect(findOptionMarkers(raw), name).toEqual([])
+      expect(matchActionMarkers(raw), name).toEqual([])
+      expect(parseOptions(raw).text, name).toBe(raw)
+      expect(stripOptionMarkers(raw), name).toBe(raw)
+    }
+  })
+
+  it('NEGATIVE CONTROL: a BALANCED chain still parses, the last marker winning', () => {
+    // Differs from the first row only by the `]` closing `arr[0`, so over-rejection fails here.
+    const ok = '[OPTIONS: A] [OPTIONS: B then arr[0]]'
+    expect(parseOptions(ok).options).toEqual(['B then arr[0]'])
+    expect(parseOptions(ok).text).toBe('')
+  })
+
+  it('NEGATIVE CONTROL: a broken chain does not poison a marker on ANOTHER line', () => {
+    const two = '[OPTIONS: A] [OPTIONS: B then arr[0]\n[OPTIONS: C]'
+    expect(parseOptions(two).options).toEqual(['C'])
+    expect(parseOptions(two).text).toBe('[OPTIONS: A] [OPTIONS: B then arr[0]')
+  })
+})
+
 describe('cost', () => {
   it('stays linear on many failing openers', () => {
     // The adversarial shape: an unterminated marker of bare openers, so the pattern
@@ -208,5 +250,17 @@ describe('cost', () => {
     const started = Date.now()
     expect(labelsHaveUnmatchedOpener('a['.repeat(200_000))).toBe(true)
     expect(Date.now() - started).toBeLessThan(1000)
+  })
+
+  it.each([
+    ['content markers', '[OPTIONS: A] '],
+    ['action markers', '[OPTION-ACTIONS: close=A] '],
+  ])('refuses an over-cap same-line chain WHOLE, and cheaply — %s', (_name, unit) => {
+    // `parseOptions` cannot witness this: its probes are guarded, so it skips the strip entirely.
+    // k=12000 because the unbounded strip costs 1510ms there — k=4000 is only 168ms, too near 150.
+    const src = unit.repeat(12_000).trimEnd()
+    const started = Date.now()
+    expect(stripOptionMarkers(src)).toBe(src)
+    expect(Date.now() - started).toBeLessThan(150)
   })
 })
