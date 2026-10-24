@@ -893,19 +893,28 @@ def _run_stdio_dispatch_loop(
             ):
                 # The agent's spec grants this server tool by tool and opted in
                 # to having those refs honoured; a tool it did not name is not
-                # this agent's, listed or not.
+                # this agent's, listed or not. An EMPTY include is a server the
+                # spec withholds whole (``managedToolPolicy.excludeServers``).
+                _whole = not _included
                 sel().log_tool_invocation(
                     session_key=_policy_session,
                     source="mcp",
                     tool_name=tool_name,
                     tool_kind=server_name,
                     outcome="rejected_not_included",
-                    error="managedToolPolicy.honourToolRefs",
+                    error=(
+                        "managedToolPolicy.excludeServers"
+                        if _whole
+                        else "managedToolPolicy.honourToolRefs"
+                    ),
                 )
                 respond(
                     req_id,
                     _tool_response(
                         f"Error: tool '{tool_name}' is not available for this agent: its "
+                        f"spec withholds every {server_name} tool"
+                        if _whole
+                        else f"Error: tool '{tool_name}' is not available for this agent: its "
                         f"spec grants {server_name} only through @{server_name}/<tool> refs "
                         f"and does not name this one"
                     ),

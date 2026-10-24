@@ -394,6 +394,115 @@ def _apply_agent_mcp_policy(
     return agent_data
 
 
+def _enforce_declared_mcp_tools(
+    agent_data: dict[str, Any], manifest: AppManifest
+) -> dict[str, Any]:
+    """Make ``permissions.mcpTools`` actually scope an app agent's managed tools.
+
+    The manifest field was validated at install and shown on the details page, but
+    nothing narrowed what the app's own agent (and its cron sessions, which run on
+    this same materialized spec) could call: the gateway mounts its managed servers
+    into every agent regardless, so an app declaring a short ``mcpTools`` still had
+    the full ``kirocrew-core`` / ``kirocrew-cron`` / ``kirocrew-dashboard`` surface.
+
+    This turns the declaration into enforcement through the mechanism that already
+    gates managed tools per agent: every managed tool the app did NOT declare is
+    added to this agent's ``managedToolPolicy.exclude``, which the managed servers
+    read per session (``GET /api/session-tool-policy``) and use to hide and refuse
+    those tools. The exclusion is UNIONED with any exclude the app's own agent spec
+    authored, so an app that already hand-excludes a managed tool keeps it.
+
+    A no-op when the app declares no ``mcpTools`` (empty = unrestricted, matching
+    :func:`~kiro_crew.apps.permissions.check_tool_permission`), and it never touches
+    the app's own server tools or the agent's base built-ins -- only host-managed
+    tool names are candidates. ``exclude`` and ``excludeServers`` are the only keys
+    written; a present ``include`` or ``honourToolRefs`` in the agent's policy is
+    preserved. A malformed authored ``managedToolPolicy``, ``exclude`` or
+    ``excludeServers`` is returned untouched so the session gate keeps refusing it
+    as ``policy_unreadable``.
+
+    A managed server whose tool declaration could not be read is written to
+    ``excludeServers``, which withholds that server's tools WHOLE: its names are
+    unknown, so the name-based ``exclude`` cannot cover it, and leaving it out
+    would leave every tool on it reachable.
+    """
+    from kiro_crew.apps.permissions import managed_tool_exclusion
+
+    excluded, withheld_servers = managed_tool_exclusion(manifest)
+    if not excluded and not withheld_servers:
+        return agent_data
+
+    if "managedToolPolicy" in agent_data and not isinstance(agent_data["managedToolPolicy"], dict):
+        # A malformed authored policy (an explicit null included) is left exactly
+        # as written: the per-session gate refuses every managed tool with
+        # ``policy_unreadable`` for it, which is stricter than any exclusion derived
+        # here. Rewriting it into a valid policy would turn that fail-closed
+        # refusal into a narrower allow.
+        return agent_data
+    policy = dict(agent_data.get("managedToolPolicy", {}))
+    for key in ("exclude", "excludeServers"):
+        if key in policy and (
+            not isinstance(policy[key], list) or not all(isinstance(t, str) for t in policy[key])
+        ):
+            return agent_data
+    if excluded:
+        policy["exclude"] = sorted(set(policy.get("exclude", [])) | set(excluded))
+    if withheld_servers:
+        policy["excludeServers"] = sorted(
+            set(policy.get("excludeServers", [])) | set(withheld_servers)
+        )
+
+    merged = dict(agent_data)
+    merged["managedToolPolicy"] = policy
+    return merged
+
+
+#: Most tool names one ``app_mcp_tools_restricted`` event lists by name; the rest
+#: are counted, so the event stays bounded however large the managed surface grows.
+_AUDIT_TOOL_NAMES_MAX = 20
+
+
+def _audit_declared_mcp_tools(
+    app_name: str, agent_name: str, manifest: AppManifest, written: dict[str, Any]
+) -> None:
+    """Record, in SEL, the managed-tool restriction an app agent was materialized with.
+
+    Turning ``permissions.mcpTools`` into ``managedToolPolicy`` is a permission
+    decision, so it gets one bounded audit event per written agent: the app, the
+    agent, how many managed tools and which whole servers its spec withholds, and
+    the first :data:`_AUDIT_TOOL_NAMES_MAX` tool names. Silent for an app that
+    declares no ``mcpTools`` (nothing is derived) and for a policy the derivation
+    left untouched because it was malformed. Never fails the write it follows.
+    """
+    if not manifest.permissions.mcpTools:
+        return
+    policy = written.get("managedToolPolicy")
+    if not isinstance(policy, dict):
+        return
+    tools = policy.get("exclude", [])
+    servers = policy.get("excludeServers", [])
+    if not isinstance(tools, list) or not isinstance(servers, list):
+        return
+    if not tools and not servers:
+        return
+    shown = ", ".join(str(t) for t in tools[:_AUDIT_TOOL_NAMES_MAX])
+    more = len(tools) - _AUDIT_TOOL_NAMES_MAX
+    try:
+        sel().log_api_access(
+            caller="system",
+            operation="app_mcp_tools_restricted",
+            outcome="ok",
+            source="app_agent_materialization",
+            resources=(
+                f"app {app_name} agent {agent_name}: {len(tools)} managed tool(s) "
+                f"excluded [{shown}{f', +{more} more' if more > 0 else ''}]; "
+                f"server(s) withheld whole: [{', '.join(str(s) for s in servers)}]"
+            ),
+        )
+    except Exception:  # noqa: BLE001 — audit must not break materialization
+        logger.debug("SEL audit unavailable for mcpTools restriction", exc_info=True)
+
+
 def _own_mcp_servers(app_name: str) -> dict[str, Any]:
     """The app's OWN registered MCP servers, keyed as ``<app>:<server>``.
 
@@ -878,6 +987,12 @@ def _register_agents(
                 # merge the reference dangles and the tool silently never mounts.
                 _materialize_managed_refs(agent_data)
                 merged = _apply_agent_mcp_policy(agent_data, agent_name, policy)
+                # Enforce permissions.mcpTools: withhold every host-managed tool the
+                # app did not declare via managedToolPolicy.exclude. BEFORE
+                # _preserve_user_agent_edits, which treats managedToolPolicy as
+                # framework-owned and refreshes it from `merged` — so the enforced
+                # value is the one carried across the refresh.
+                merged = _enforce_declared_mcp_tools(merged, manifest)
                 merged = _apply_agent_prompt(merged, agent_name, policy, app_name, app_root)
                 merged = _preserve_user_agent_edits(link_name, prior_on_disk, merged)
                 # LAST governance pass, on the map that is about to be written. By this
@@ -930,6 +1045,7 @@ def _register_agents(
                     if _agent._declined_foreign_spec_write(link_path):
                         continue
                     atomic_write(link_path, json.dumps(merged, indent=2) + "\n")
+                _audit_declared_mcp_tools(app_name, agent_name, manifest, merged)
                 registered.append(_namespace(app_name, agent_name))
                 # The DECLARED name only — kiro-cli enumerates agents by their
                 # `name` field, so the namespaced filename stem is not a name it

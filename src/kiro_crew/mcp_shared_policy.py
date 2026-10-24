@@ -170,7 +170,9 @@ class ToolPolicy(NamedTuple):
     run for this session. A server with no entry is not narrowed. The gateway
     derives it from an agent spec that opts in with
     ``managedToolPolicy.honourToolRefs`` and grants the server only through
-    ``@<server>/<tool>`` refs; every other spec answers no entry at all.
+    ``@<server>/<tool>`` refs, and answers an EMPTY entry for each server the spec
+    names in ``managedToolPolicy.excludeServers`` (that server lists and runs
+    nothing); every other spec answers no entry at all.
     """
 
     excluded: frozenset[str]

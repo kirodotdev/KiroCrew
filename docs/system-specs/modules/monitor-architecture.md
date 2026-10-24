@@ -1198,7 +1198,7 @@ lifecycle stages, in different shapes:
 
 | Site | Lifecycle stage | Shape | Reachable from code |
 |---|---|---|---|
-| `mcp_shared._resolve_tool_policy` | per call, cached per session | `ToolPolicy(excluded, unresolved, detail, included)` from `managedToolPolicy.exclude` and the gateway's `include` (per-server tool sets, present only for a spec that opts in with `managedToolPolicy.honourToolRefs`) | yes |
+| `mcp_shared._resolve_tool_policy` | per call, cached per session | `ToolPolicy(excluded, unresolved, detail, included)` from `managedToolPolicy.exclude` and the gateway's `include` (per-server tool sets, present only for a spec that opts in with `managedToolPolicy.honourToolRefs`, or empty for a server the spec names in `managedToolPolicy.excludeServers`) | yes |
 | the same function's unresolved returns | before the exclude list is parsed | empty set plus the reason it could not be read; `tools/call` refuses, `tools/list` still lists | nothing to migrate; the refusal is audited per call |
 | `acp/kas_agents.to_client_custom_agent` | startup projection, before the session exists | `excludedTools` list relayed to the agent host | yes |
 | `acp/session_mcp.session_mcp_disabled_tools` | session projection: Claude `permissions.deny`, codex `rawInput.server`/`tool` | `(server, tool)` pairs, unioned from the agent spec AND the dashboard-written global `mcp.json` | yes |

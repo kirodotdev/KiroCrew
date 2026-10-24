@@ -426,6 +426,241 @@ class TestNeutralizeEntryShape:
         assert missing == [], f"entries without command: {missing}"
 
 
+class TestDeclaredMcpToolsAreEnforced:
+    """``permissions.mcpTools`` scopes an app agent's managed tools.
+
+    The gateway mounts its managed servers into every agent, so a narrow
+    ``mcpTools`` scoped nothing until the framework turned the declaration into a
+    ``managedToolPolicy.exclude`` of every undeclared managed tool. These pin the
+    materialization wiring: the exclusion lands, is unioned with an app-authored
+    one, leaves the app's own tools alone, and is inert when nothing is declared.
+    """
+
+    @staticmethod
+    def _manifest(tools, name="app"):
+        from kiro_crew.apps.manifest import AppManifest, Permissions
+
+        return AppManifest(
+            name=name,
+            version="1.0.0",
+            displayName="A",
+            description="A",
+            permissions=Permissions(mcpTools=list(tools)),
+        )
+
+    def test_undeclared_managed_tools_are_excluded(self):
+        from kiro_crew.apps import bridges
+
+        out = bridges._enforce_declared_mcp_tools(
+            {"name": "app--a", "tools": []}, self._manifest(["cron_add"])
+        )
+        excl = out["managedToolPolicy"]["exclude"]
+        assert "spawn_run" in excl, "an undeclared managed tool must be withheld"
+        assert "cron_add" not in excl, "a declared managed tool must stay reachable"
+
+    def test_empty_declaration_is_a_no_op(self):
+        from kiro_crew.apps import bridges
+
+        agent = {"name": "app--a", "tools": ["@app:x"]}
+        out = bridges._enforce_declared_mcp_tools(agent, self._manifest([]))
+        assert out is agent, "an unrestricted app must not get a policy at all"
+        assert "managedToolPolicy" not in out
+
+    def test_an_app_authored_exclude_is_preserved(self):
+        """A union, not a replacement: an app that already hand-excludes a managed
+        tool keeps it alongside the derived exclusions."""
+        from kiro_crew.apps import bridges
+
+        agent = {"name": "app--a", "managedToolPolicy": {"exclude": ["task_run"]}}
+        out = bridges._enforce_declared_mcp_tools(agent, self._manifest(["cron_add"]))
+        excl = out["managedToolPolicy"]["exclude"]
+        assert "task_run" in excl, "the app's own exclusion must survive"
+        assert "spawn_run" in excl, "the derived exclusion must be added too"
+
+    def test_a_present_include_key_is_preserved(self):
+        from kiro_crew.apps import bridges
+
+        agent = {"name": "app--a", "managedToolPolicy": {"include": {"srv": ["t"]}}}
+        out = bridges._enforce_declared_mcp_tools(agent, self._manifest(["cron_add"]))
+        assert out["managedToolPolicy"]["include"] == {"srv": ["t"]}
+        assert "spawn_run" in out["managedToolPolicy"]["exclude"]
+
+    def test_skill_search_is_never_derived_into_the_exclusion(self):
+        """App agents reach their own mapped skills through ``skill_search``, so an
+        app that declares only its own server tools must keep it."""
+        from kiro_crew.apps import bridges
+
+        out = bridges._enforce_declared_mcp_tools(
+            {"name": "app--a"}, self._manifest(["@app/own_tool"])
+        )
+        excl = out["managedToolPolicy"]["exclude"]
+        assert "spawn_run" in excl
+        assert "skill_search" not in excl, "the framework's skill path must stay reachable"
+
+    @pytest.mark.parametrize(
+        "policy",
+        [
+            "not-an-object",
+            None,
+            ["exclude"],
+            {"exclude": "cron_add"},
+            {"exclude": None},
+            {"exclude": ["task_run", 7]},
+        ],
+    )
+    def test_a_malformed_authored_policy_is_left_for_the_gate_to_refuse(self, policy):
+        """A malformed policy fails closed at the session gate (``policy_unreadable``,
+        every managed tool refused). Rewriting it into a valid exclude would turn that
+        refusal into an allow of the declared tools, so it is returned untouched."""
+        from kiro_crew.apps import bridges
+
+        agent = {"name": "app--a", "managedToolPolicy": policy}
+        out = bridges._enforce_declared_mcp_tools(agent, self._manifest(["cron_add"]))
+        assert out is agent
+        assert out["managedToolPolicy"] == policy
+
+    def test_the_materialized_file_carries_the_exclusion(self, app_env, tmp_path, monkeypatch):
+        """End to end through ``_register_agents``: an app declaring one managed
+        tool gets a materialized agent whose ``managedToolPolicy.exclude`` holds
+        every OTHER managed tool, and never its own declared one."""
+        from kiro_crew.apps import bridges
+        from kiro_crew.apps.manifest import AppManifest
+
+        src = _make_app_source(
+            tmp_path,
+            name="scoped-app",
+            permissions={"cron": True, "mcpTools": ["cron_add"]},
+        )
+        manifest = AppManifest.from_dict(json.loads((src / APP_MANIFEST_FILENAME).read_text()))
+
+        bridges._register_agents("scoped-app", manifest, src)
+
+        written = json.loads((app_env["kiro_agents"] / "scoped-app--my-agent.json").read_text())
+        excl = written["managedToolPolicy"]["exclude"]
+        assert "cron_add" not in excl, "the declared tool stays reachable"
+        assert "spawn_run" in excl and "cron_remove" in excl, "undeclared ones are withheld"
+
+    def test_an_unreadable_server_is_withheld_whole(self, monkeypatch):
+        """A managed server whose tool declaration reads ``None`` has no names to
+        exclude, so it goes to ``excludeServers`` rather than being left out."""
+        import kiro_crew.mcp_discovery_managed as managed
+        from kiro_crew.apps import bridges
+
+        real = managed.managed_tool_names_for_policy
+        monkeypatch.setattr(
+            managed,
+            "managed_tool_names_for_policy",
+            lambda name: None if name == "kirocrew-cron" else real(name),
+        )
+        out = bridges._enforce_declared_mcp_tools({"name": "app--a"}, self._manifest(["spawn_run"]))
+        policy = out["managedToolPolicy"]
+        assert policy["excludeServers"] == ["kirocrew-cron"]
+        assert "cron_remove" not in policy["exclude"], "its names were never read"
+
+    def test_a_readable_universe_writes_no_server_withhold(self):
+        from kiro_crew.apps import bridges
+
+        out = bridges._enforce_declared_mcp_tools({"name": "app--a"}, self._manifest(["cron_add"]))
+        assert "excludeServers" not in out["managedToolPolicy"]
+
+    @pytest.mark.parametrize("value", ["kirocrew-cron", None, ["kirocrew-cron", 3]])
+    def test_a_malformed_authored_exclude_servers_is_left_for_the_gate(self, monkeypatch, value):
+        import kiro_crew.mcp_discovery_managed as managed
+        from kiro_crew.apps import bridges
+
+        monkeypatch.setattr(managed, "managed_tool_names_for_policy", lambda name: None)
+        agent = {"name": "app--a", "managedToolPolicy": {"excludeServers": value}}
+        out = bridges._enforce_declared_mcp_tools(agent, self._manifest(["cron_add"]))
+        assert out is agent
+
+    def test_an_unreadable_server_stays_blocked_end_to_end(self, app_env, tmp_path, monkeypatch):
+        """Materialize with one managed server's declaration unreadable, then ask
+        the gateway's policy read what the session gets: an undeclared tool on that
+        server must be refused, not left callable until a later refresh."""
+        import kiro_crew.mcp_discovery_managed as managed
+        import kiro_crew.mcp_shared as mcp_shared
+        from kiro_crew.apps import bridges
+        from kiro_crew.apps.manifest import AppManifest
+        from kiro_crew.dashboard.handlers import sessions as sessions_mod
+
+        real = managed.managed_tool_names_for_policy
+        monkeypatch.setattr(
+            managed,
+            "managed_tool_names_for_policy",
+            lambda name: None if name == "kirocrew-cron" else real(name),
+        )
+        src = _make_app_source(
+            tmp_path,
+            name="scoped-app",
+            permissions={"mcpTools": ["spawn_run"]},
+        )
+        manifest = AppManifest.from_dict(json.loads((src / APP_MANIFEST_FILENAME).read_text()))
+        bridges._register_agents("scoped-app", manifest, src)
+
+        agents_dir = app_env["kiro_agents"]
+        written = json.loads((agents_dir / "scoped-app--my-agent.json").read_text())
+        answer = sessions_mod._read_managed_tool_policy_uncached(agents_dir, written["name"])
+        assert answer is not None
+        policy = mcp_shared.ToolPolicy(
+            frozenset(answer.get("exclude", [])),
+            "",
+            included={s: frozenset(t) for s, t in answer.get("include", {}).items()},
+        )
+
+        def refused(server: str, tool: str) -> bool:
+            included = policy.include_for(server)
+            return tool in policy.excluded or (included is not None and tool not in included)
+
+        assert refused("kirocrew-cron", "cron_remove"), "an undeclared tool must stay blocked"
+        assert refused("kirocrew-cron", "cron_add")
+        assert not refused("kirocrew-core", "spawn_run"), "the declared tool stays reachable"
+
+    def test_the_restriction_is_recorded_in_sel(self, app_env, tmp_path, monkeypatch):
+        """Deriving the restriction is a permission decision, so materialization
+        records one bounded SEL event naming the app, agent and what is withheld."""
+        from unittest.mock import MagicMock
+
+        import kiro_crew.mcp_discovery_managed as managed
+        from kiro_crew.apps import bridges
+
+        real = managed.managed_tool_names_for_policy
+        monkeypatch.setattr(
+            managed,
+            "managed_tool_names_for_policy",
+            lambda name: None if name == "kirocrew-cron" else real(name),
+        )
+        recorder = MagicMock()
+        monkeypatch.setattr(bridges, "sel", lambda: recorder)
+        src = _make_app_source(tmp_path, name="scoped-app", permissions={"mcpTools": ["spawn_run"]})
+        manifest = AppManifest.from_dict(json.loads((src / APP_MANIFEST_FILENAME).read_text()))
+        bridges._register_agents("scoped-app", manifest, src)
+
+        events = [
+            c.kwargs
+            for c in recorder.log_api_access.call_args_list
+            if c.kwargs.get("operation") == "app_mcp_tools_restricted"
+        ]
+        assert len(events) == 1
+        text = events[0]["resources"]
+        assert "app scoped-app agent my-agent" in text
+        assert "withheld whole: [kirocrew-cron]" in text
+        assert "more]" in text, "the tool list is bounded"
+        assert len(text) < 1000
+
+    def test_an_unrestricted_app_records_nothing(self, app_env, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from kiro_crew.apps import bridges
+
+        recorder = MagicMock()
+        monkeypatch.setattr(bridges, "sel", lambda: recorder)
+        src = _make_app_source(tmp_path, name="open-app", permissions={"mcpTools": []})
+        manifest = AppManifest.from_dict(json.loads((src / APP_MANIFEST_FILENAME).read_text()))
+        bridges._register_agents("open-app", manifest, src)
+        ops = [c.kwargs.get("operation") for c in recorder.log_api_access.call_args_list]
+        assert "app_mcp_tools_restricted" not in ops
+
+
 class TestAppPromptPathIsContained:
     """An app's prompt path is app-controlled and read verbatim as the SYSTEM
     prompt — so it must resolve inside the app's own directories.

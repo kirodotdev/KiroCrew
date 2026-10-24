@@ -54,6 +54,7 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.apps.bridges_agents import (  # noqa: F401
+        _AUDIT_TOOL_NAMES_MAX,
         _FRAMEWORK_OWNED_AGENT_KEYS,
         _RENDERED_AGENTS_DIRNAME,
         _TEMPLATE_PLACEHOLDER_RE,
@@ -61,8 +62,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _agent_mcp_policy,
         _apply_agent_mcp_policy,
         _apply_agent_prompt,
+        _audit_declared_mcp_tools,
         _ceiling_filtered_allowed,
         _deregister_agents,
+        _enforce_declared_mcp_tools,
         _global_mcp_specs,
         _is_within,
         _managed_mcp_spec,

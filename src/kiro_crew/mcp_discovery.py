@@ -774,6 +774,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _managed_tools_in_process,
         _resolved_managed_invocation,
         managed_server_is_session_bound,
+        managed_tool_names_for_policy,
     )
     from kiro_crew.mcp_discovery_probe import (  # noqa: F401
         _MAX_BANNER_LINES,

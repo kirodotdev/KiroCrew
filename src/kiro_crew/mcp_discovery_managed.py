@@ -202,6 +202,45 @@ def _managed_tools_in_process(name: str) -> list[str] | None:
     return [n for t in tools if isinstance(t, dict) and (n := t.get("name"))]
 
 
+def managed_tool_names_for_policy(name: str) -> list[str] | None:
+    """Every tool *name* a managed server can EVER expose, ignoring feature gates.
+
+    Like :func:`_managed_tools_in_process`, but for building a managed-tool
+    DENY policy (``managedToolPolicy.exclude``) rather than for discovery's
+    "what is live right now" listing. The difference matters for a server that
+    HIDES its tools behind a runtime enable: ``mcp_computer._list_tools()``
+    returns ``[]`` while computer use is off, so the discovery read reports no
+    computer tool -- but a deny-list built from that would omit every
+    ``computer_*`` name, and the moment the operator turns computer use on
+    (which does not re-materialize app agent specs) an app that never declared
+    those tools could call them. A policy universe has to name a gated tool
+    WHILE it is gated, so the exclusion is already in place when the gate opens.
+
+    So this prefers a module's unconditional ``_tool_definitions()`` and only falls
+    back to the gated ``_list_tools()`` / ``_list_tool_names()`` path for a module
+    that does not expose one. Returns ``None`` on the same terms as
+    :func:`_managed_tools_in_process` (unmanaged name, or an unreadable module);
+    the caller logs that server and leaves it out of the universe.
+    """
+    module_name = _MANAGED_SERVER_TOOL_MODULES.get(name)
+    if module_name is None:
+        return None
+    try:
+        module = importlib.import_module(module_name)
+        definitions = getattr(module, "_tool_definitions", None)
+        if callable(definitions):
+            tools = definitions()
+            if isinstance(tools, list):
+                return [n for t in tools if isinstance(t, dict) and (n := t.get("name"))]
+            return None
+    except Exception:
+        logger.debug("unconditional tool read failed for %s", name, exc_info=True)
+        return None
+    # No unconditional accessor: this module's _list_tools() is not feature-gated
+    # (only kirocrew-computer is), so its live listing IS its full declaration.
+    return _managed_tools_in_process(name)
+
+
 # Cached resolved (command, args) — avoids subprocess.run on every list_servers() call.
 _resolved_managed_invocation: dict[str, tuple[str, list[str]]] = {}
 
