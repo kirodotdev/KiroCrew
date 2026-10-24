@@ -5371,6 +5371,7 @@
         "backup_start_no_drive": "Ce compte n'a pas encore de disque. Créez-en un, puis démarrez la sauvegarde.",
         "backup_nightly": "Sauvegarder chaque nuit",
         "backup_nightly_hint": "Effectue un instantané de la mémoire et de l'espace de travail une fois par jour.",
+        "backup_nightly_blocked_other_account": "Les instantanés nocturnes ne s’exécutent que pour le compte par défaut, donc rien n’est sauvegardé pour ce compte.",
         "backup_nightly_sessions": "Sauvegarder les sessions chaque nuit",
         "backup_nightly_sessions_hint": "Envoie l’archive des sessions vers le lecteur de ce compte une fois par jour. Elle contient vos conversations telles quelles, sans rien retirer.",
         "backup_nightly_sessions_destination": "Ce lecteur est un stockage S3 dans ce compte AWS, et {{button}} envoie l’archive au même endroit.",

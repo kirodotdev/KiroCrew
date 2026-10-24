@@ -5371,6 +5371,7 @@
         "backup_start_no_drive": "Questo account non ha ancora un disco. Creane uno, poi avvia il backup.",
         "backup_nightly": "Esegui il backup ogni notte",
         "backup_nightly_hint": "Esegue una volta al giorno uno snapshot di memoria e area di lavoro.",
+        "backup_nightly_blocked_other_account": "Gli snapshot notturni vengono eseguiti solo per l’account predefinito, quindi per questo account non viene eseguito alcun backup.",
         "backup_nightly_sessions": "Salva le sessioni ogni notte",
         "backup_nightly_sessions_hint": "Carica l’archivio delle sessioni sul drive di questo account una volta al giorno. Contiene le tue conversazioni così come sono, senza rimuovere nulla.",
         "backup_nightly_sessions_destination": "Quel drive è uno spazio S3 in questo account AWS, e {{button}} invia l’archivio nello stesso posto.",

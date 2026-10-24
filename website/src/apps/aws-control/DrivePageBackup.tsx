@@ -71,6 +71,32 @@ const BACKUP_NEXT_KEYS = {
   redaction: 'apps.awsControl.console.backup_nightly_sessions_blocked_next_redaction',
 } as const
 
+/* The snapshot kind's blocked line. Its own key rather than the sessions one:
+   the two switches sit on the same page, so the sentence names the kind it is
+   under instead of leaving the reader to guess which toggle a shared line answers.
+   The snapshot kind has exactly one condition -- no host-capability or redaction
+   gate applies to it -- so there is one key and no generic fallback: a code this
+   build does not recognise renders no notice rather than a dead catalogue string
+   no backend ever produces. */
+const SNAPSHOT_BLOCKED_KEYS = {
+  otherAccount: 'apps.awsControl.console.backup_nightly_blocked_other_account',
+} as const
+
+function nightlyBlockedText(code: string): string | null {
+  switch (code) {
+    case 'other_account': return i18nT(SNAPSHOT_BLOCKED_KEYS.otherAccount)
+    default: return null
+  }
+}
+
+/* The snapshot kind's manual run is per-account and per-kind, so starting the
+   backup yourself is a real next step wherever the schedule withholds it -- the
+   one condition it has is a grant recorded on an account the schedule does not
+   visit, and the button runs for the account in view. */
+function nightlyBlockedNextText(): string {
+  return i18nT(BACKUP_NEXT_KEYS.generic)
+}
+
 function nightlySessionsBlockedText(code: string): string {
   switch (code) {
     case 'host_unsupported': return i18nT(BACKUP_BLOCKED_KEYS.host)
@@ -574,6 +600,19 @@ export function BackupSection({ account }: { account: string }) {
               />
             </div>
           )}
+          {/* Granted, and not running. The snapshot mirror of the sessions notice
+              below: shown only with the grant ON, because with it off nothing is
+              being withheld. The switch stays interactive and keeps reading back
+              as the owner set it, while this says the schedule is not reaching the
+              account in view -- the part they cannot otherwise see until the host
+              is gone. */}
+          {data.nightly === true && data.nightlyBlocked ? (
+            <div className="px-3 pb-2 text-[12px] text-warn" data-testid="backup-nightly-blocked">
+              {[nightlyBlockedText(data.nightlyBlocked), nightlyBlockedNextText()]
+                .filter(Boolean)
+                .join(' ')}
+            </div>
+          ) : null}
           {/* The transcript grant, and deliberately a SECOND switch rather than a
               wider meaning for the one above. The switch above was answered about
               memory; conversations are the most sensitive payload here, so the
