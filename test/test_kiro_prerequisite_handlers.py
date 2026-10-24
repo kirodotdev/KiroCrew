@@ -687,6 +687,9 @@ class TestKiroPrerequisiteHandlers:
             # reach the owner and leave this caller's client reading undefined.
             assert body["login_command"] == KIRO_CLI_LOGIN_COMMAND
             assert body["sso_login_command"] == KIRO_CLI_SSO_LOGIN_COMMAND
+            # The switch-account steps are owner-only, so the redacted branch
+            # serves no sign-out command at all.
+            assert "logout_command" not in body
             assert body["bundled_cli"] is False
             # Redacted-but-present for the same reason as the sandbox keys: whether
             # the probe timed out describes how slow the HOST is. Asserted here

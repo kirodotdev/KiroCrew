@@ -25,11 +25,13 @@ from kiro_crew.kiro_cli import (
 )
 from kiro_crew.kiro_prerequisite import (
     KIRO_CLI_LOGIN_COMMAND,
+    KIRO_CLI_LOGOUT_COMMAND,
     KIRO_CLI_SSO_LOGIN_COMMAND,
     KiroPrerequisiteService,
     ProcessResult,
     find_kiro_cli_candidates,
     login_commands_for,
+    logout_command_for,
 )
 
 
@@ -702,6 +704,65 @@ class TestKiroPrerequisiteHelpers:
 
         assert bundled is False
         assert login == KIRO_CLI_LOGIN_COMMAND
+
+    def test_logout_command_shares_the_login_prefix_on_a_bundled_install(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The switch-account hint pairs logout with login, so on a bundled copy
+        (not on the user's PATH) logout must carry the same quoted path, or the
+        first of the two commands fails with command-not-found."""
+        bundled_dir = tmp_path / "Kiro Res" / "kiro-cli"
+        binary = bundled_dir / BUNDLED_KIRO_CLI_ENTRY
+        _make_executable(binary)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        env = {"KIROCREW_BUNDLED_KIRO_DIR": str(bundled_dir)}
+
+        login, _sso, _bundled = login_commands_for(str(binary), env)
+        logout = logout_command_for(str(binary), env)
+
+        assert logout == f"{shlex.quote(str(binary))} logout"
+        assert login.removesuffix(" login") == logout.removesuffix(" logout")
+
+    def test_windows_bundled_logout_command_names_powershell(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        bundled_dir = tmp_path / "Kiro Crew" / "kiro-cli"
+        binary = bundled_dir / BUNDLED_KIRO_CLI_WINDOWS_ENTRY
+        _make_executable(binary)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+
+        logout = logout_command_for(str(binary), {"KIROCREW_BUNDLED_KIRO_DIR": str(bundled_dir)})
+
+        quoted = str(binary).replace("'", "''")
+        head = 'powershell.exe -NoProfile -Command "Set-Item Env:KIRO_NO_AUTO_UPDATE 1; '
+        assert logout == f"{head}& '{quoted}' logout\""
+
+    def test_off_path_override_logout_serves_its_absolute_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        binary = tmp_path / "opt" / "kiro build" / "kiro-cli"
+        _make_executable(binary)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+
+        logout = logout_command_for(
+            str(binary), {"KIROCREW_KIRO_BIN": str(binary), "PATH": "/nonexistent"}
+        )
+
+        assert logout == f"{shlex.quote(str(binary))} logout"
+
+    def test_system_resolution_keeps_the_bare_logout_command(self, tmp_path: Path) -> None:
+        bundled_dir = tmp_path / "resources" / "kiro-cli"
+        bundled_dir.mkdir(parents=True)
+
+        logout = logout_command_for(
+            "/usr/local/bin/kiro-cli", {"KIROCREW_BUNDLED_KIRO_DIR": str(bundled_dir)}
+        )
+
+        assert logout == KIRO_CLI_LOGOUT_COMMAND == "kiro-cli logout"
 
     def test_windows_candidates_include_standard_user_tool_directory(
         self,

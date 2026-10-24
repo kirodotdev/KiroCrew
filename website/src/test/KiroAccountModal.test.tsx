@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import KiroAccountModal, { type KiroAccountUsage } from '../components/KiroAccountModal'
@@ -34,12 +34,14 @@ vi.mock('../api/client', async importOriginal => {
       ...mod.api,
       sessionsUsageRefresh: vi.fn(),
       kiroUsage: vi.fn(async () => KIRO_USAGE_EMPTY),
+      kirocrewConfig: vi.fn(async () => ({ agent: { acp_backend: 'kiro' } })),
     },
   }
 })
 
 const refreshMock = vi.mocked(api.sessionsUsageRefresh)
 const kiroUsageMock = vi.mocked(api.kiroUsage)
+const kirocrewConfigMock = vi.mocked(api.kirocrewConfig)
 
 const BASE_USAGE: KiroCreditUsage = {
   used: 10,
@@ -216,6 +218,144 @@ describe('KiroAccountModal', () => {
       expect(onClose).toHaveBeenCalled()
     }, 15_000)
   })
+
+  it('tells a signed-in user how to switch account with the gateway-served commands', async () => {
+    const { queryClient } = renderWithProviders(
+      <KiroAccountModal open onClose={vi.fn()} usage={BASE_USAGE} />,
+    )
+    // A bundled copy: the served commands are an absolute path, never the bare name.
+    act(() => {
+      queryClient.setQueryData(['kiro-prerequisite'], {
+        setup_allowed: true,
+        login_command: "'/Apps/Kiro Crew/kiro-cli' login",
+        sso_login_command: "'/Apps/Kiro Crew/kiro-cli' login --use-device-flow --license pro",
+        logout_command: "'/Apps/Kiro Crew/kiro-cli' logout",
+      })
+    })
+
+    const steps = await screen.findByRole('region', { name: 'Switch Kiro account' })
+    // The title is visible text, not only an accessible name.
+    expect(within(steps).getByRole('heading', { name: 'Switch Kiro account' })).toBeVisible()
+    const codes = within(steps).getAllByText(/kiro-cli/, { selector: 'code' })
+    expect(codes.map(c => c.textContent)).toEqual([
+      "'/Apps/Kiro Crew/kiro-cli' logout",
+      "'/Apps/Kiro Crew/kiro-cli' login",
+      "'/Apps/Kiro Crew/kiro-cli' login --use-device-flow --license pro",
+    ])
+    // Both sign-in tiers carry the setup gate's labels: a personal-to-SSO
+    // switch needs the second one.
+    expect(within(steps).getByText(/^Personal account/)).toBeInTheDocument()
+    expect(within(steps).getByText(/^Organization SSO/)).toBeInTheDocument()
+    expect(within(steps).getByText(/Your chats stay/)).toBeInTheDocument()
+  })
+
+  it('leaves the switch steps out when the gateway serves no logout command', async () => {
+    const { queryClient } = renderWithProviders(
+      <KiroAccountModal open onClose={vi.fn()} usage={BASE_USAGE} />,
+    )
+    act(() => {
+      queryClient.setQueryData(['kiro-prerequisite'], {
+        setup_allowed: true,
+        login_command: 'kiro-cli login',
+        sso_login_command: 'kiro-cli login --use-device-flow --license pro',
+      })
+    })
+
+    expect(await screen.findByText('owner@example.com')).toBeInTheDocument()
+    // Wait for the harness read, so the absence below is this guard's doing
+    // and not the still-pending Kiro-harness check.
+    await waitFor(() => expect(queryClient.getQueryData(['kirocrewConfig'])).toBeDefined())
+    expect(screen.queryByRole('region', { name: 'Switch Kiro account' })).not.toBeInTheDocument()
+  })
+
+  it.each<KiroAccountUsage>(['api-key', 'signin-required', 'none', null])(
+    'omits the switch-account steps when there is no signed-in reading (%s)',
+    async usage => {
+      const { queryClient } = renderWithProviders(
+        <KiroAccountModal open onClose={vi.fn()} usage={usage} />,
+      )
+      act(() => {
+        queryClient.setQueryData(['kiro-prerequisite'], {
+          setup_allowed: true,
+          login_command: 'kiro-cli login',
+          sso_login_command: 'kiro-cli login --use-device-flow --license pro',
+          logout_command: 'kiro-cli logout',
+        })
+      })
+
+      expect(await screen.findByRole('link', { name: /Manage account/ })).toBeInTheDocument()
+      expect(screen.queryByRole('region', { name: 'Switch Kiro account' })).not.toBeInTheDocument()
+    },
+  )
+
+  it('says why the switch steps are missing when the harness setting cannot be read', async () => {
+    kirocrewConfigMock.mockRejectedValueOnce(new Error('boom'))
+    const onClose = vi.fn()
+    const { queryClient } = renderWithProviders(
+      <KiroAccountModal open onClose={onClose} usage={BASE_USAGE} />,
+    )
+    act(() => {
+      queryClient.setQueryData(['kiro-prerequisite'], {
+        setup_allowed: true,
+        login_command: 'kiro-cli login',
+        sso_login_command: 'kiro-cli login --use-device-flow --license pro',
+        logout_command: 'kiro-cli logout',
+      })
+    })
+
+    expect(await screen.findByText(
+      'Could not load settings, so the steps to switch accounts can’t be shown.',
+    )).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Switch Kiro account' })).not.toBeInTheDocument()
+    // The account reading itself still renders beside the notice.
+    expect(screen.getByText('owner@example.com')).toBeInTheDocument()
+    const dialog = screen.getByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: /Ask the agent/i }))
+    expect(onClose).toHaveBeenCalled()
+  })
+
+  it('omits the switch-account steps for a non-owner, who gets only the bare stand-in commands', async () => {
+    const { queryClient } = renderWithProviders(
+      <KiroAccountModal open onClose={vi.fn()} usage={BASE_USAGE} />,
+    )
+    // The redacted non-owner payload: bare names kept for shape stability, but
+    // this caller cannot run kiro-cli on the gateway host.
+    act(() => {
+      queryClient.setQueryData(['kiro-prerequisite'], {
+        setup_allowed: false,
+        login_command: 'kiro-cli login',
+        sso_login_command: 'kiro-cli login --use-device-flow --license pro',
+        logout_command: 'kiro-cli logout',
+      })
+    })
+
+    expect(await screen.findByText('owner@example.com')).toBeInTheDocument()
+    // Wait for the harness read, so the absence below is this guard's doing
+    // and not the still-pending Kiro-harness check.
+    await waitFor(() => expect(queryClient.getQueryData(['kirocrewConfig'])).toBeDefined())
+    expect(screen.queryByRole('region', { name: 'Switch Kiro account' })).not.toBeInTheDocument()
+  })
+
+  it.each(['claude', 'kas'])(
+    'omits the switch-account steps on the %s harness, where chats do not run on the kiro-cli account',
+    async backend => {
+      kirocrewConfigMock.mockResolvedValueOnce({ agent: { acp_backend: backend } } as never)
+      const { queryClient } = renderWithProviders(
+        <KiroAccountModal open onClose={vi.fn()} usage={BASE_USAGE} />,
+      )
+      act(() => {
+        queryClient.setQueryData(['kiro-prerequisite'], {
+          setup_allowed: true,
+          login_command: 'kiro-cli login',
+          sso_login_command: 'kiro-cli login --use-device-flow --license pro',
+          logout_command: 'kiro-cli logout',
+        })
+      })
+
+      await waitFor(() => expect(queryClient.getQueryData(['kirocrewConfig'])).toBeDefined())
+      expect(screen.queryByRole('region', { name: 'Switch Kiro account' })).not.toBeInTheDocument()
+    },
+  )
 
   it('caps the bar and remaining credits when usage exceeds the plan', async () => {
     renderWithProviders(

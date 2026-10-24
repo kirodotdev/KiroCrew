@@ -9,9 +9,13 @@ import { providerLabelFromWire } from './kasProviderLabel'
 import { forecastCreditRunOut } from '../api/creditForecast'
 import { providerUsageQuery } from '../api/providerUsageQuery'
 import { getAdapter } from '../providers/registry'
+import { isKiroBackend, type AcpBackendConfig } from '../api/acpBackend'
+import { failedWithNoData } from '../api/queryState'
+import { usePrerequisiteStatus } from '../hooks/useGatewayPlatform'
 import { fmtCurrency, fmtDateFields, fmtNumber, fmtPercent, fmtTime } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { CopyCommand } from './agentHarness/CopyCommand'
 import Clickable from './Clickable'
 import ErrorNotice from './ErrorNotice'
 import Modal from './Modal'
@@ -703,6 +707,82 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
   )
 }
 
+/**
+ * How to move Kiro Crew to another Kiro account: sign out, then sign in, in a
+ * terminal. Shown only beside a reading, which is the kiro-cli sign-in these
+ * commands act on; Kiro Crew never signs in or out on the user's behalf (see
+ * kiro_prerequisite.py), and the identity sweep in chat_runner.py retires the
+ * children started under the previous account at the next turn.
+ *
+ * The commands come from the gateway's prerequisite status, rendered verbatim
+ * in `code` and never from the catalog: on the desktop app's bundled kiro-cli
+ * they are an absolute path, because the bare name is not on the user's PATH.
+ * With no served `logout_command` (an older gateway, or the gate has not
+ * fetched) the steps are left out rather than guessed. A non-owner's redacted
+ * status (`setup_allowed: false`) carries only bare stand-ins for shape
+ * stability, and that caller cannot run kiro-cli on the gateway host, so the
+ * steps are left out for them too.
+ */
+function SwitchAccountSteps({ onClose }: { onClose: () => void }) {
+  const status = usePrerequisiteStatus()
+  // The "next message uses the new account" promise holds only where chats run
+  // on kiro-cli: the identity sweep recycles kiro-backed children only. Another
+  // harness can still hold a reading, so the harness is checked POSITIVELY, the
+  // same way the credit pill does (`kiroUsageReadout.tsx`).
+  const kirocrewCfgQuery = useQuery<AcpBackendConfig>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+  })
+  if (status?.setup_allowed !== true) return null
+  // A failed config read cannot prove the harness, so the steps stay hidden,
+  // but the user is told why instead of the block silently going missing.
+  if (failedWithNoData(kirocrewCfgQuery)) {
+    return (
+      <ErrorNotice
+        message={i18nT('components.kiroAccountModal.switch_account_config_unreadable')}
+        askAgent
+        onHandoff={onClose}
+      />
+    )
+  }
+  if (!isKiroBackend(kirocrewCfgQuery.data)) return null
+  const logout = status.logout_command
+  const login = status.login_command
+  const ssoLogin = status.sso_login_command
+  if (!logout || !login || !ssoLogin) return null
+  // Sign-in is two choices, exactly as on the setup gate (`SignInCommands`):
+  // a personal plan and an organization's SSO plan sign in differently, and a
+  // switch between the two is the case #4184 is about. The labels are the
+  // gate's own keys so the two surfaces name the tiers the same way.
+  // Each command stays on one line and scrolls inside its box: a wrap can
+  // fall inside a flag (`--use-device-` / `flow`) and make a long bundled
+  // path look like broken text.
+  return (
+    <section
+      className="flex flex-col gap-2 text-[12px] leading-relaxed text-muted"
+      aria-labelledby="kiro-switch-account-title"
+    >
+      <h3 id="kiro-switch-account-title" className="text-[13px] font-medium text-text">
+        {i18nT('components.kiroAccountModal.switch_account_label')}
+      </h3>
+      <p>{i18nT('components.kiroAccountModal.switch_account_steps')}</p>
+      {/* Before the commands: "logout" reads as risky until the reader knows the chats stay. */}
+      <p>{i18nT('components.kiroAccountModal.switch_account_effect')}</p>
+      <CopyCommand>
+        <code className="whitespace-nowrap">{logout}</code>
+      </CopyCommand>
+      <p className="font-medium text-text">{i18nT('components.kiroPrerequisiteGate.sign_in_personal_label')}</p>
+      <CopyCommand>
+        <code className="whitespace-nowrap">{login}</code>
+      </CopyCommand>
+      <p className="font-medium text-text">{i18nT('components.kiroPrerequisiteGate.sign_in_sso_label')}</p>
+      <CopyCommand>
+        <code className="whitespace-nowrap">{ssoLogin}</code>
+      </CopyCommand>
+    </section>
+  )
+}
+
 export default function KiroAccountModal({ open, onClose, usage }: KiroAccountModalProps) {
   return (
     <Modal
@@ -722,6 +802,7 @@ export default function KiroAccountModal({ open, onClose, usage }: KiroAccountMo
         >
           {i18nT('app.manage_account')} <ExternalLink className="lucide-inline" />
         </a>
+        {isUsageReading(usage) && <SwitchAccountSteps onClose={onClose} />}
       </div>
     </Modal>
   )

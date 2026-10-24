@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import shlex
 import sqlite3
 import stat
 import sys
@@ -1258,7 +1259,7 @@ class TestAcpSubcommandSupportNarrowsReadiness:
 
     @pytest.mark.asyncio
     async def test_update_cli_refuses_the_bundled_copy_without_spawning(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The desktop app's bundled kiro-cli is never self-updated in place.
 
@@ -1268,6 +1269,9 @@ class TestAcpSubcommandSupportNarrowsReadiness:
         bundled_dir = tmp_path / "resources" / "kiro-cli"
         executable = bundled_dir / BUNDLED_KIRO_CLI_ENTRY
         _make_executable(executable)
+        # The served commands follow the HOST flag, not ``platform_name``: pin
+        # POSIX so the shlex-quoted form below holds on a Windows runner too.
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
         spawned: list[list[str]] = []
 
         async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
@@ -1295,6 +1299,9 @@ class TestAcpSubcommandSupportNarrowsReadiness:
         # sign-in command, since the copy is not on the user's shell PATH, and
         # the status says so, which is what lets the gate explain the path.
         assert str(executable) in before["login_command"].replace("'", "")
+        # Sign-out is served the same way: the switch-account hint pairs it
+        # with sign-in, and the bare name would not resolve here either.
+        assert before["logout_command"] == f"{shlex.quote(str(executable))} logout"
         assert before["bundled_cli"] is True
 
         result = await service.update_cli("owner")

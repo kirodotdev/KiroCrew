@@ -37,6 +37,7 @@ from kiro_crew.kiro_prerequisite_status import (
     _platform_label,
     _sanitize_detail,
     login_commands_for,
+    logout_command_for,
 )
 from kiro_crew.security import redact
 
@@ -373,6 +374,7 @@ async def _probe(self: KiroPrerequisiteService, *, force: bool = False) -> Prere
                     initial_setup_complete=self._initial_setup_complete,
                     login_command=login_cmd,
                     sso_login_command=sso_cmd,
+                    logout_command=logout_command_for(first_candidate, self._environ),
                     bundled_cli=bundled,
                     sandbox_unavailable=True,
                     sandbox_failure_kind=kind,
@@ -437,6 +439,7 @@ async def _probe(self: KiroPrerequisiteService, *, force: bool = False) -> Prere
                     initial_setup_complete=self._initial_setup_complete,
                     login_command=login_cmd,
                     sso_login_command=sso_cmd,
+                    logout_command=logout_command_for(first_candidate, self._environ),
                     bundled_cli=bundled,
                     probe_timed_out=True,
                 )
@@ -505,6 +508,7 @@ async def _probe(self: KiroPrerequisiteService, *, force: bool = False) -> Prere
             initial_setup_complete=self._initial_setup_complete,
             login_command=login_cmd,
             sso_login_command=sso_cmd,
+            logout_command=logout_command_for(self._viable_binary, self._environ),
             bundled_cli=bundled,
             rejected_agent_specs=rejected,
             agent_spec_rejection_detail=rejection_detail,

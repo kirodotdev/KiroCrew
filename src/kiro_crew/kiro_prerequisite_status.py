@@ -44,6 +44,11 @@ KIRO_CLI_LOGIN_COMMAND = f"kiro-cli{_LOGIN_TAIL}"
 # visual peer of organization SSO, so a user on an SSO plan can sign in to the
 # wrong tier and only discover it when models are missing.
 KIRO_CLI_SSO_LOGIN_COMMAND = f"kiro-cli{_SSO_LOGIN_TAIL}"
+# Signing out is the first half of switching to another Kiro account (the Kiro
+# Account modal shows it beside ``login_command``). Served for the same reason:
+# on a bundled or off-PATH install the bare name fails with command-not-found.
+_LOGOUT_TAIL = " logout"
+KIRO_CLI_LOGOUT_COMMAND = f"kiro-cli{_LOGOUT_TAIL}"
 
 
 def login_commands_for(
@@ -65,6 +70,33 @@ def login_commands_for(
     PATH by construction there.
     """
     bundled = is_bundled_kiro_cli(binary, environ)
+    wrap = _command_wrapper(binary, environ, bundled=bundled)
+    if wrap is not None:
+        prefix, suffix = wrap
+        return f"{prefix}{_LOGIN_TAIL}{suffix}", f"{prefix}{_SSO_LOGIN_TAIL}{suffix}", bundled
+    return KIRO_CLI_LOGIN_COMMAND, KIRO_CLI_SSO_LOGIN_COMMAND, False
+
+
+def logout_command_for(binary: str, environ: Mapping[str, str]) -> str:
+    """The sign-out command for the RESOLVED binary, composed like ``login_commands_for``."""
+    wrap = _command_wrapper(binary, environ, bundled=is_bundled_kiro_cli(binary, environ))
+    if wrap is None:
+        return KIRO_CLI_LOGOUT_COMMAND
+    prefix, suffix = wrap
+    return f"{prefix}{_LOGOUT_TAIL}{suffix}"
+
+
+def _command_wrapper(
+    binary: str,
+    environ: Mapping[str, str],
+    *,
+    bundled: bool,
+) -> tuple[str, str] | None:
+    """The ``(prefix, suffix)`` around a kiro-cli argument tail, or None for the bare name.
+
+    None means the binary is what the user's shell runs as ``kiro-cli``, so the
+    bare constants are right. See :func:`login_commands_for` for when it is not.
+    """
     if bundled or _is_off_path_override(binary, environ):
         if platform_compat.IS_WINDOWS:
             # A quoted executable path alone is data in PowerShell; its call
@@ -86,8 +118,8 @@ def login_commands_for(
         else:
             prefix = shlex.quote(binary)
             suffix = ""
-        return f"{prefix}{_LOGIN_TAIL}{suffix}", f"{prefix}{_SSO_LOGIN_TAIL}{suffix}", bundled
-    return KIRO_CLI_LOGIN_COMMAND, KIRO_CLI_SSO_LOGIN_COMMAND, False
+        return prefix, suffix
+    return None
 
 
 def config_set_hints_for_launcher(launcher: str, platform_name: str) -> dict[str, Any]:
@@ -240,6 +272,8 @@ class PrerequisiteStatus:
     # tier is an explicit choice rather than whichever option the sign-in page
     # happens to make prominent.
     sso_login_command: str = KIRO_CLI_SSO_LOGIN_COMMAND
+    # What the user runs to sign out before signing in as another account.
+    logout_command: str = KIRO_CLI_LOGOUT_COMMAND
     # True when the resolved binary is the desktop app's own bundled copy. The
     # gate uses it to explain why ``login_command`` is an absolute path into the
     # app's resources rather than the bare name the user's shell would resolve

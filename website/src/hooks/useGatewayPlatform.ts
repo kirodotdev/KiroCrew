@@ -124,11 +124,12 @@ function parseConfigSetHintsV1(raw: unknown): ConfigSetHintsV1 | undefined {
 }
 
 /**
- * The cached prerequisite status, read without fetching. Every reader in this module
- * goes through here so each registers the same options on the shared query; see
- * `useGatewayPlatform` for why the `queryFn` stays a real fetch.
+ * The cached prerequisite status, read without fetching. Every reader goes through
+ * here so each registers the same options on the shared query; see
+ * `useGatewayPlatform` for why the `queryFn` stays a real fetch. `undefined` until
+ * the gate has fetched, and always in a provider-less tree.
  */
-function usePrerequisiteStatus(): KiroPrerequisiteStatus | undefined {
+export function usePrerequisiteStatus(): KiroPrerequisiteStatus | undefined {
   const provided = useContext(QueryClientContext)
   const { data } = useQuery<KiroPrerequisiteStatus>(
     {
