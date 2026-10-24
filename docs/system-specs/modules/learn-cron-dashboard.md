@@ -4039,7 +4039,22 @@ the loop ended (the popover words its Paused line by that reason). A pause of
 a RUNNING loop still records `manual`, and `active=True` still clears any
 bound.
 
-Fresh Research Lab starts/resumes remove prior-run tombstone and marker evidence before publishing RUNNING. Tombstone removal precedes the potentially unbounded off-thread marker cleanup, so the watchdog can never observe a half-prepared new run. Direct `_launch_loop` callers preserve the same cleanup order before any service/state availability early-return.
+The watchdog treats AutoNudge's two failure stand-downs, `consecutive_failures`
+and `session_start_failures`, like the stop tombstone: it settles the campaign
+instead of re-arming the inactive loop, because re-arming flips the loop
+inactive->active and `AutoNudgeService.update` zeroes both failure streaks on
+that flip, so the stand-down would never hold. The campaign settles FAILED
+("The research worker kept failing and stood down. Resume to try again.") and
+the spent loop is removed through the same settlement path. A verified latest
+finding still wins (COMPLETE); a stand-down outranks the tombstone and the
+`worker_done.json` marker, so a marker from an earlier turn cannot make it read
+as a deliberate STOPPED finish. The other inactive reasons stay with the
+re-arm: `approval_stalled`, `structural_terminal` and `model_refused` reset no
+streak, each re-fires on the next cycle that meets the same condition, and
+their remedy is a person (an approval, a corrected context), not a failed
+worker.
+
+Fresh Research Lab starts/resumes remove prior-run tombstone, failure stand-down and marker evidence before publishing RUNNING. Tombstone removal precedes the potentially unbounded off-thread marker cleanup, so the watchdog can never observe a half-prepared new run. Direct `_launch_loop` callers preserve the same cleanup order before any service/state availability early-return.
 
 The watchdog also establishes a run observation boundary before consuming a
 Research Lab stop tombstone. The first watchdog poll for a new `started_at`
