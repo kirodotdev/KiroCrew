@@ -67,13 +67,16 @@ def test_the_ratchet_can_actually_fail() -> None:
     """Self-check: a scan matching nothing would pass the assertion above vacuously.
 
     The count moves when a refusal enters or leaves this module's own body. Two
-    corpus-read refusals now answer through `chat_utils.history_corpus_unreadable`,
+    corpus-read refusals answer through ``chat_utils.history_corpus_unreadable``,
     which sets the code by construction, so the scanner does not see them here —
     a stronger guarantee than a per-site scan, but two fewer sites to count. There
     is no ``slot_not_persistent`` site: an incognito or temporary session forks
     and the child inherits its mode. The one memory-mode refusal in the module is
     ``fork_source_memory_mode_invalid``, for a parent whose persisted mode is
-    outside the allowlist. The two app-isolation refusals answer through
+    outside the allowlist; the promotion escape hatch adds its own two
+    (``slot_already_persistent`` and ``promote_requires_dashboard_user`` from
+    ``api_chat_slot_promote``). The two
+    app-isolation refusals answer through
     `slot_ownership.deny_app_slot_access`, the shared per-slot decision, which
     returns ``slot_not_found`` by construction, so the scan finds those two
     sites in that module rather than here. The no-such-slot 404 answers through
@@ -82,7 +85,7 @@ def test_the_ratchet_can_actually_fail() -> None:
     site, and so does the read-only remote-crew refusal (``relay_archive_read_only``).
     """
     coded = [f for f in _findings() if f.bucket == "compliant"]
-    assert len(coded) == 26, f"scanner reached {len(coded)} coded sites, expected 26"
+    assert len(coded) == 28, f"scanner reached {len(coded)} coded sites, expected 28"
     assert all(f.code_value for f in coded)
 
 

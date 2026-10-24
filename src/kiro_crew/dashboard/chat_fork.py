@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any, Callable
 
 from aiohttp import web
@@ -36,6 +37,7 @@ from kiro_crew.dashboard.relay_archive import is_relay_archive
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
 from kiro_crew.dashboard.state import (
     _MAX_SLOT_MESSAGES,
+    _TRANSIENT_ROLES,
     MAX_LIVE_SLOTS,
     VALID_MEMORY_MODES,
     DashboardState,
@@ -133,12 +135,16 @@ def _fork_execution_context(
     return execution.with_mode(memory_mode)
 
 
-def _bind_fork_execution(source, child_key: str, execution) -> None:
+def _bind_fork_execution(source, child_key: str, execution, promote: bool = False) -> None:
     from kiro_crew.execution_context import bind_session_execution
     from kiro_crew.memory_stores import UnknownMemoryStore
 
     if _fork_execution_context(*source) != execution:
         raise UnknownMemoryStore("The fork source's execution changed")
+    # Validated against the source's real execution above; a promotion then binds
+    # the child as persistent, so its metadata reads back as a regular session.
+    if promote:
+        execution = execution.promoted_to_persistent()
     bind_session_execution(child_key, execution)
 
 
@@ -365,7 +371,9 @@ def _inherit_pin(parent: "_ChatSlot") -> "Callable[[_ChatSlot], None]":
     return _stamp
 
 
-async def api_chat_slot_fork(request: web.Request) -> web.Response:
+async def api_chat_slot_fork(
+    request: web.Request, *, _promote_from_ephemeral: bool = False
+) -> web.Response:
     """POST /api/chat/slots/{slot}/fork — fork session into a new tab.
 
     With ``direction="head"`` (default) copies messages up to and including
@@ -375,7 +383,21 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
 
     Body: ``{ at_message_index?: number, at_message_id?: string, prompt?: string,
     mode?: string, direction?: "head"|"tail" }``
+
+    ``_promote_from_ephemeral`` is an internal-only, keyword-only escape
+    hatch -- never reachable from an HTTP body -- and is the ONE consent-gated
+    exception to the mode-inheritance rule below (an ordinary fork always
+    inherits the parent's ``memory_mode``; this forces the child to
+    ``persistent`` regardless of the parent's). It is set exclusively by
+    :func:`api_chat_slot_promote` (``POST .../promote``), which is itself a
+    dashboard-only, human-initiated action with no MCP or CLI surface (see
+    that function's docstring and
+    ``docs/system-specs/modules/history.md`` § "Promoting an ephemeral
+    session"). When set, the whole transcript is copied (any body field
+    narrowing the scope is ignored), and the new slot is titled as a
+    promotion rather than a fork.
     """
+    _operation = "chat.slot_promote" if _promote_from_ephemeral else "chat.slot_fork"
 
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
@@ -391,7 +413,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     if state.live_slot_count() >= MAX_LIVE_SLOTS:
         sel().log_api_access(
             caller=request_app or "dashboard",
-            operation="chat.slot_fork",
+            operation=_operation,
             outcome="denied",
             source="rate_limit",
             resources=f"slot={name},slot_count={state.live_slot_count()}",
@@ -408,17 +430,40 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     # App ownership check (App Kit §5.2): the shared decision, so a slot owned by
     # another app or an unscoped slot answers the same 404 as a missing one
     # (CWE-204); the true reason is recorded server-side.
-    denied = deny_app_slot_access(request_app, slot, name, "chat.slot_fork")
+    denied = deny_app_slot_access(request_app, slot, name, _operation)
     if denied is not None:
         return denied
 
-    source = await resolve_fork_source(slot, audit_caller=request_app or "dashboard")
+    source = await resolve_fork_source(
+        slot, audit_caller=request_app or "dashboard", audit_operation=_operation
+    )
     if isinstance(source, web.Response):
         return source
 
     # Restricted forks copy only the live conversation and inherit the parent's
     # mode before any row is copied. Neither branch persists restricted bodies,
     # and the request cannot loosen the inherited mode.
+    # An ordinary fork never LOOSENS the mode: the child inherits the parent's,
+    # and the request body carries no way to pick one. Promotion (below) is the
+    # one consent-gated exception.
+    if _promote_from_ephemeral and slot.memory_mode == "persistent":
+        # The dashboard only offers "Keep this chat" on an ephemeral slot; a
+        # persistent slot reaching here has nothing to promote.
+        sel().log_api_access(
+            caller=request_app or "dashboard",
+            operation=_operation,
+            outcome="denied",
+            source="dashboard",
+            resources=f"slot={name},memory_mode={slot.memory_mode}",
+            error="slot already persistent; nothing to promote",
+        )
+        return web.json_response(
+            {
+                "error": "this session is already persistent",
+                "code": "slot_already_persistent",
+            },
+            status=400,
+        )
     if request.body_exists:
         try:
             body = await request.json()
@@ -432,6 +477,11 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
                 status=400,
             )
     else:
+        body = {}
+    if _promote_from_ephemeral:
+        # Promotion always copies the WHOLE transcript with no prompt or mode
+        # override -- the confirmation dialog promises "everything is kept",
+        # so no body field may narrow that scope.
         body = {}
     at_index = body.get("at_message_index")
     at_message_id = body.get("at_message_id")
@@ -477,7 +527,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         # suggest the fork itself was rejected.
         sel().log_api_access(
             caller=request_app or "dashboard",
-            operation="chat.slot_fork",
+            operation=_operation,
             outcome="allowed",
             source="dashboard",
             resources=f"slot={name},direction=tail",
@@ -523,6 +573,8 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         # pin rides the child's birth save. Agent ``session_fork`` children
         # never get it: pinned marks a session as human-owned.
         stamp=_inherit_pin(source.slot),
+        audit_operation=_operation,
+        _promote_from_ephemeral=_promote_from_ephemeral,
     )
     if isinstance(result, web.Response):
         return result
@@ -544,13 +596,20 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
 
 
 def _shape_fork_child(
-    new_slot: "_ChatSlot", slot: "_ChatSlot", *, direction: str, jev_route_allowed: bool
+    new_slot: "_ChatSlot",
+    slot: "_ChatSlot",
+    *,
+    direction: str,
+    jev_route_allowed: bool,
+    promote: bool = False,
 ) -> None:
     """Copy onto the just-minted *new_slot* what it inherits from its parent *slot*.
 
     Synchronous and assignment-only. :func:`fork_slot` runs it in the
     push-suspended window that began at the mint, so the child's first
     ``slots`` frame already shows the folder, tags and fork title set here.
+    ``promote`` titles the child as a kept copy ("Keep this chat") instead
+    of a fork.
     """
     new_slot.forked_from = effective_session_key(slot)
     new_slot.reasoning_effort = slot.reasoning_effort
@@ -583,7 +642,17 @@ def _shape_fork_child(
     # Strip a leading marker from the parent so it never compounds on a
     # fork-of-a-fork.
     parent_title = parent_title.removeprefix(FORK_TITLE_MARKER)
-    fork_word = "Tail of" if direction == _FORK_DIRECTION_TAIL else "Fork of"
+    if promote:
+        # Keep the prefix short: the sidebar row truncates, and a long
+        # "Kept from private chat:" prefix fills the whole row before the
+        # parent title starts, so every promoted session reads identically
+        # there. "Kept:" leaves room for the title that actually distinguishes
+        # them. The keep dialog carries the "from a private chat" detail.
+        fork_word = "Kept:"
+    elif direction == _FORK_DIRECTION_TAIL:
+        fork_word = "Tail of"
+    else:
+        fork_word = "Fork of"
     new_slot.title = f"{FORK_TITLE_MARKER}{fork_word} {parent_title}"
     new_slot._titled = True
     # The fork name is derived, not typed: it stays inside the automatic title
@@ -617,6 +686,7 @@ async def fork_slot(
     stamp: "Callable[[_ChatSlot], None] | None" = None,
     recheck: "Callable[[], None] | None" = None,
     reveal_folder: bool = True,
+    _promote_from_ephemeral: bool = False,
 ) -> "ForkResult | web.Response":
     """Copy *source*'s transcript up to (or after) the fork point into a new slot.
 
@@ -1045,7 +1115,18 @@ async def fork_slot(
                 all_messages = _rotated_head + drop_persisted_tail_prefix(
                     _rotated_head, all_messages
                 )
-    visible = [m for m in all_messages if m.get("role") in ("user", "assistant")]
+    if _promote_from_ephemeral:
+        # Promotion copies the WHOLE conversation verbatim into the kept session,
+        # so it must preserve every persisted, renderable row -- including the
+        # system rows an ordinary fork drops (a Stop notice, a compaction card,
+        # an error row). Dropping them would silently lose transcript content the
+        # ephemeral original recorded, and the original is the copy being left
+        # behind. Only genuinely transient streaming rows (never persisted) are
+        # excluded. Promotion forces an empty body above, so there is no fork
+        # point to select among these rows.
+        visible = [m for m in all_messages if m.get("role") not in _TRANSIENT_ROLES]
+    else:
+        visible = [m for m in all_messages if m.get("role") in ("user", "assistant")]
     if not visible:
         return web.json_response(
             {"error": "no messages to fork", "code": "no_messages_to_fork"},
@@ -1194,7 +1275,12 @@ async def fork_slot(
             # registry. A later assignment would leave a window where the child of
             # an incognito parent is a persistent slot. The value is the one
             # validated above, so the constructor cannot raise on it.
-            memory_mode=inherited_memory_mode,
+            #
+            # Promotion is the ONE deliberate exception to inheriting the parent's
+            # mode: "Keep this chat" exists precisely to LOOSEN it, so the child is
+            # forced to "persistent" here rather than carrying the ephemeral
+            # parent's mode forward onto what is supposed to be the kept copy.
+            memory_mode="persistent" if _promote_from_ephemeral else inherited_memory_mode,
             app=request_app,
             origin=origin,
             count_user_session=count_user_session,
@@ -1202,8 +1288,13 @@ async def fork_slot(
         if inherited_execution is not None:
             try:
                 # Bind the frozen identity and strict mode while the child is empty.
+                # Promotion binds the child as persistent (the mode it is becoming),
+                # not the ephemeral parent's, so its metadata reads back correctly.
+                bind = _bind_fork_execution
+                if _promote_from_ephemeral:
+                    bind = partial(_bind_fork_execution, promote=True)
                 await drained_to_thread(
-                    _bind_fork_execution,
+                    bind,
                     (*source_memory_identity[:4], source_memory_identity[6]),
                     effective_session_key(new_slot),
                     inherited_execution,
@@ -1227,7 +1318,11 @@ async def fork_slot(
                 raise
         try:
             _shape_fork_child(
-                new_slot, slot, direction=direction, jev_route_allowed=jev_route_allowed
+                new_slot,
+                slot,
+                direction=direction,
+                jev_route_allowed=jev_route_allowed,
+                promote=_promote_from_ephemeral,
             )
             if stamp is not None:
                 stamp(new_slot)
@@ -1250,10 +1345,17 @@ async def fork_slot(
             if role != "user":
                 content, _ = redact_exfiltration_urls(content)
                 content, _ = redact_credentials(content)
-            cls = "msg msg-u" if role == "user" else "msg msg-a"
-            new_slot.append(
-                role, content, cls, ts=m.get("ts", ""), meta=m.get("meta"), broadcast=False
-            )
+            # A promotion copies system rows, whose stored ``cls`` must survive
+            # or they render as assistant text; an ordinary fork copies only
+            # user/assistant rows and derives ``cls`` from the role.
+            stored_cls = m.get("cls") if _promote_from_ephemeral else None
+            cls = stored_cls or ("msg msg-u" if role == "user" else "msg msg-a")
+            meta = m.get("meta")
+            if isinstance(meta, dict) and "noteSession" in meta:
+                # The child's save keeps a note row only when its stamp names the
+                # child, so a copied note is re-stamped to the session it now lives in.
+                meta = {**meta, "noteSession": effective_session_key(new_slot)}
+            new_slot.append(role, content, cls, ts=m.get("ts", ""), meta=meta, broadcast=False)
             # A fork copies the parent's messages into a new session. Origin is
             # a property of the message, not of the file, so a copied inbound
             # channel turn keeps the origin it actually had.
@@ -1368,6 +1470,7 @@ async def fork_slot(
             f"head_count={len(head_messages)},"
             f"prompt_len={len(prompt)},mode={new_slot.mode},"
             f"memory_mode={new_slot.memory_mode}"
+            + (f",promoted_from={slot.memory_mode}" if _promote_from_ephemeral else "")
         ),
     )
     if reveal_folder and new_slot.folder_id:
@@ -1391,5 +1494,46 @@ async def fork_slot(
             )
     _sync_dashboard_slots(state)
     state.push_slots_update()
-    _schedule_fork_title(state, new_slot)
+    # A kept chat is the same conversation, so it keeps the parent's title.
+    if not _promote_from_ephemeral:
+        _schedule_fork_title(state, new_slot)
     return ForkResult(slot=new_slot, messages=len(visible), direction=direction)
+
+
+async def api_chat_slot_promote(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/promote — keep an ephemeral session as a persistent one.
+
+    Promotion forks the slot's whole transcript into a new persistent slot and
+    leaves the ephemeral original as it was. The original's transcript is already
+    written to History (see the incognito and temporary transcript decision in
+    docs/decisions), so nothing is lost if the copy fails. What the new slot gains is memory,
+    summaries and search, which is why the dashboard asks for confirmation first.
+    Rewriting the original's ``memory_mode`` in place would make every earlier
+    turn retroactively eligible for those, which a dialog cannot describe up front.
+
+    The copy is an ordinary fork (:func:`api_chat_slot_fork` with
+    ``_promote_from_ephemeral``, which only this route sets), so it obeys the same
+    capacity guard and save handling. A slot that is already persistent answers
+    ``slot_already_persistent``.
+
+    Only the signed-in dashboard owner may promote. An app credential, an
+    unplaceable internal-secret caller or a non-owner dashboard user gets a 403.
+    This is a dashboard route only, with no MCP tool or CLI command.
+    """
+    if not is_owner_dashboard_request(request):
+        sel().log_api_access(
+            caller=request.get("app") or request.get("user") or "unidentified",
+            operation="chat.slot_promote",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={request.match_info.get('slot', '')}",
+            error="promotion requires the dashboard owner",
+        )
+        return web.json_response(
+            {
+                "error": "promoting a session requires the signed-in dashboard owner",
+                "code": "promote_requires_dashboard_user",
+            },
+            status=403,
+        )
+    return await api_chat_slot_fork(request, _promote_from_ephemeral=True)

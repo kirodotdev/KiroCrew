@@ -21,12 +21,22 @@ import { render, screen, fireEvent, act, waitFor, cleanup } from '@testing-libra
 import type { ComponentProps, ReactNode } from 'react'
 
 vi.mock('../pages/chat/ChatHeaderMenu', () => ({
-  ChatHeaderMenu: (p: { onReveal: () => void; onRename: () => void; onAutoTitle: () => void; triggerLabel: ReactNode }) => (
+  ChatHeaderMenu: (p: {
+    onReveal: () => void
+    onRename: () => void
+    onAutoTitle: () => void
+    triggerLabel: ReactNode
+    memoryMode?: string
+    onPromote?: () => void
+  }) => (
     <div data-testid="header-menu">
       <span data-testid="trigger-label">{p.triggerLabel}</span>
       <button type="button" onClick={p.onReveal}>reveal</button>
       <button type="button" onClick={p.onRename}>rename</button>
       <button type="button" onClick={p.onAutoTitle}>auto-title</button>
+      {(p.memoryMode === 'incognito' || p.memoryMode === 'temporary') && p.onPromote && (
+        <button type="button" onClick={p.onPromote}>Keep this chat</button>
+      )}
     </div>
   ),
 }))
@@ -205,6 +215,30 @@ describe('session menu actions', () => {
     fireEvent.click(screen.getByText('attempt'))
     expect((p.setEditingTitleSlot as ReturnType<typeof vi.fn>).mock.calls).toEqual([[null], ['slot-a']])
     expect(p.setActionError).toHaveBeenCalledWith(null)
+  })
+
+  it('offers promotion for an incognito session and calls the page handler', () => {
+    const onPromote = vi.fn()
+    const p = props({
+      currentSlot: { key: 'slot-a', memory_mode: 'incognito' } as ChatSlot,
+      onPromote,
+    })
+    render(<MobileTopBar {...p} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Keep this chat' }))
+
+    expect(onPromote).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not offer promotion for a persistent session', () => {
+    const onPromote = vi.fn()
+    const p = props({
+      currentSlot: { key: 'slot-a', memory_mode: 'persistent' } as ChatSlot,
+      onPromote,
+    })
+    render(<MobileTopBar {...p} />)
+
+    expect(screen.queryByRole('button', { name: 'Keep this chat' })).toBeNull()
   })
 })
 

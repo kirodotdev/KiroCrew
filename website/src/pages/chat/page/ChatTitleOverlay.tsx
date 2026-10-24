@@ -65,6 +65,8 @@ interface ChatTitleOverlayProps {
   mobileSessionsToggle: JSX.Element
   popOutTip: ReturnType<typeof useLabelTip>
   activityTip: ReturnType<typeof useLabelTip>
+  onPromote: () => void
+  promoting: boolean
 }
 
 /**
@@ -74,7 +76,7 @@ export default function ChatTitleOverlay({
   embedMode, popout, activeSlot, dispatch, filteredSlots, isMobile, titleInTopbar, activityOpen, setActionError, showActionError, onPinCollapsedHeight, pinCardRef, pinExpanded, pinFoldRef, pinned,
   scrollToPinnedPrompt, scrollTranscriptBy, setPinExpanded, activePoppedOut, focusActivePopout, openActivePopout, returnSelfToMain, splitFeatureEnabled, currentSlot, effectiveMode, title,
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarPinned, sidebarAutoHidden, sidebarPinned, sidePanelDock, splitAnchorForActive, toggleAct, openSidebar, sidebarOnScreen,
-  sidebarOpen, sidePanelWantsMount, mobileNewSessionItem, mobileSessionsToggle, popOutTip, activityTip,
+  sidebarOpen, sidePanelWantsMount, mobileNewSessionItem, mobileSessionsToggle, popOutTip, activityTip, onPromote, promoting,
 }: ChatTitleOverlayProps) {
   return (
     <>
@@ -134,6 +136,9 @@ export default function ChatTitleOverlay({
             onRename={activeSlot ? () => setEditingTitleSlot(activeSlot) : undefined}
             mode={effectiveMode}
             sidebarOnScreen={sidebarOnScreen}
+            memoryMode={currentSlot?.memory_mode}
+            onPromote={onPromote}
+            promoting={promoting}
             newSessionHere={embedMode !== 'chat' && isMobile ? mobileNewSessionItem : undefined}
           />
           </div>

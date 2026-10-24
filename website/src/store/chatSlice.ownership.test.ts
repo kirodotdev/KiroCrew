@@ -181,7 +181,7 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
   ['slotRefresh', slotRefresh, ['refreshSlot', 'warmSlotCache']],
   ['runState', runState, ['wireTurnIdentity']],
   ['windowWalk', windowWalk, ['WINDOW_WALK_MAX_PAGES']],
-  ['lifecycle', lifecycle, ['captureForkOrigin', 'clearHistorySessions', 'createSlot', 'deleteHistorySession', 'fetchHistory', 'forkMayOpen', 'forkSlot', 'listForkedSlot', 'resumeFromHistory']],
+  ['lifecycle', lifecycle, ['captureForkOrigin', 'clearHistorySessions', 'createSlot', 'deleteHistorySession', 'fetchHistory', 'forkMayOpen', 'forkSlot', 'listForkedSlot', 'promoteSlot', 'resumeFromHistory']],
   ['openCreatedSlot', openCreatedSlot, ['openCreatedSlot']],
 ]
 

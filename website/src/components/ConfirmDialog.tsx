@@ -117,7 +117,7 @@ export function useConfirm(): {
           Text renders as a paragraph; an element body may carry block content
           (a list of what is lost), which a <p> cannot contain. */}
       {opts.body == null ? null : typeof opts.body === 'string'
-        ? <p className="text-sm text-text m-0">{opts.body}</p>
+        ? <p className="text-sm text-text m-0 whitespace-pre-line">{opts.body}</p>
         : <div className="text-sm text-text">{opts.body}</div>}
     </Modal>
   ) : null

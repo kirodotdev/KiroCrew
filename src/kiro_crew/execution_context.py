@@ -338,6 +338,14 @@ class ExecutionContext:
     def with_mode(self, mode: str) -> ExecutionContext:
         return replace(self, memory_mode=stricter_memory_mode(self.memory_mode, mode))
 
+    def promoted_to_persistent(self) -> ExecutionContext:
+        """The one way to loosen a record's mode: "Keep this chat" on an ephemeral session.
+
+        ``with_mode`` only tightens. The sole caller is ``chat_fork._bind_fork_execution``,
+        for a promotion the dashboard owner confirmed.
+        """
+        return replace(self, memory_mode="persistent")
+
     def with_template(self, template_id: str, selection_name: str) -> ExecutionContext:
         """Run this record's store under an explicitly selected TEMPLATE.
 
