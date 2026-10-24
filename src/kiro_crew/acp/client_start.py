@@ -106,6 +106,7 @@ from kiro_crew.sandbox import (
     delegated_workspace_exposes_sealed_target,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.slack.team_ids import apply_slack_team_env
 
 if TYPE_CHECKING:
     from kiro_crew.acp.client import AcpClient
@@ -347,6 +348,10 @@ async def _spawn(self: AcpClient) -> None:
             env["KIROCREW_CHANNEL_ID"] = self._channel_id
         else:
             env.pop("KIROCREW_CHANNEL_ID", None)
+        # The workspace the channel lives in, beside the channel, so a hook can
+        # open slack://channel?team=<TEAM>&id=<CHANNEL>. Set when known, popped
+        # otherwise, exactly like the channel id (slack/team_ids.py).
+        apply_slack_team_env(env, self._channel_id)
         # Resolve SSH_AUTH_SOCK dynamically — the gateway's env may be stale
         # after an ssh-agent restart — and KRB5CCNAME to a FILE: ccache (the
         # kernel keyring, the default on some Linux distros, is invisible to
