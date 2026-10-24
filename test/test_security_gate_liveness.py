@@ -499,7 +499,12 @@ def _url_payload_command(n: int) -> str:
 #: target) the way it steps over a ``VAR=val`` assignment, using the shared
 #: ``shell_normalizer._push_token_redirection`` recognizer. A redirect before
 #: ``rm`` cannot hide the program word.
-_PACKAGE_LINE_BUDGET = 32_518
+#:
+#: Raised by 90, from 32,518, for the ``${...}`` span in ``_matching_close_paren``
+#: (#9181): ``_opens_expansion`` and ``_matching_close_brace`` let the substitution
+#: walk step over a parameter expansion, so the ``)`` in ``$(: ${v:-)}; ...)`` no
+#: longer truncates the body. Span logic only; no deny rule added or widened.
+_PACKAGE_LINE_BUDGET = 32_608
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

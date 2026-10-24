@@ -152,6 +152,71 @@ class TestSubstitutionCloserReadsCommandGrammar:
         assert f"printf {self.VERB}" in body, body
 
 
+class TestParameterExpansionHoldsItsOwnParens:
+    """A ``)`` inside ``${...}`` is the expansion's text, not a closer (issue #9181).
+
+    ``$(: ${v:-)}; ...)`` runs every command up to the LAST ``)`` in bash, but the
+    span walk closed it at the ``)`` inside the default word, so the commands
+    behind it were never scanned.  Every shape here was measured in bash.
+    """
+
+    VERB = "tok" + "en"
+    NAME = "kiro" + "crew"
+
+    @pytest.mark.parametrize(
+        ("command", "body"),
+        [
+            ("kill $(echo ${v:-)}; pgrep -f x)", "echo ${v:-)}; pgrep -f x"),
+            # Quoting runs through the span: a quoted ``}`` does not close it.
+            ('kill $(echo ${v:-"})"}; pgrep -f x)', 'echo ${v:-"})"}; pgrep -f x'),
+            ("kill $(echo ${v:-'})'}; pgrep -f x)", "echo ${v:-'})'}; pgrep -f x"),
+            # A nested ``{`` / ``${`` opens another level.
+            ("kill $(echo ${a:-${b:-)}}; pgrep -f x)", "echo ${a:-${b:-)}}; pgrep -f x"),
+            ("kill $(echo ${v:-{)}}; pgrep -f x)", "echo ${v:-{)}}; pgrep -f x"),
+            # A ``}`` inside a nested substitution belongs to that command.
+            ("kill $(echo ${v:-$(echo })}; pgrep -f x)", "echo ${v:-$(echo })}; pgrep -f x"),
+            ("kill $(echo ${v:-`echo }`)}; pgrep -f x)", "echo ${v:-`echo }`)}; pgrep -f x"),
+            # ``$${`` is the PID followed by a literal brace -- no expansion.
+            ("kill $(echo $${) tail", "echo $${"),
+            # An escaped ``\\$`` is data and pairs with nothing, so the next ``$`` opens.
+            ("kill $(echo \\$${v:-)}; pgrep -f x)", "echo \\$${v:-)}; pgrep -f x"),
+        ],
+    )
+    def test_the_body_runs_to_the_real_closer(self, command: str, body: str) -> None:
+        assert security._substitution_bodies(command) == [body]
+
+    def test_a_hidden_verb_behind_an_expansion_paren_is_refused(self) -> None:
+        """The verdict flips: the ``printf`` behind ``${v:-)}`` is scanned now."""
+        command = f"T=$(: ${{v:-)}}; printf {self.VERB}); {self.NAME} $T"
+        (body,) = security._substitution_bodies(command)
+        assert f"printf {self.VERB}" in body, body
+        assert security.is_denied(command) is not None
+
+    @pytest.mark.parametrize(
+        "inner",
+        ["$(echo })", "`echo }`", "$(echo ${w:-}})"],
+    )
+    def test_a_brace_in_a_nested_substitution_keeps_the_refusal(self, inner: str) -> None:
+        """A ``}`` inside a nested substitution cannot close the expansion early."""
+        command = f"T=$(: ${{v:-{inner})}}; printf {self.VERB}); {self.NAME} $T"
+        assert security.is_denied(command) is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo $(printf ${v:-)})",
+            "echo $(printf ${HOME}) done",
+            'echo $(printf "${v:-}}") done',
+        ],
+    )
+    def test_benign_expansions_stay_allowed(self, command: str) -> None:
+        assert security.is_denied(command) is None
+
+    @pytest.mark.parametrize("text", ["$(${", "$(${v:-)", "$(${v:-$(", "$(${v:-`"])
+    def test_an_unclosed_expansion_fails_closed(self, text: str) -> None:
+        assert security._substitution_bodies(text) == [text[2:]]
+
+
 class TestCaseArmingRequiresCommandPosition:
     """``case`` is a reserved word only in COMMAND POSITION, so the
     pattern-paren rule must not arm on the word as data. Every vector is

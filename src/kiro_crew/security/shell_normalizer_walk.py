@@ -824,8 +824,12 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
     never scanned at all -- ``is_denied`` allowed a command bash runs.
 
     Quoting is not the only way a ``)`` reaches this walk as an ordinary
-    character. Two COMMAND-GRAMMAR constructs put one there too, and each was
+    character. Three SHELL-GRAMMAR constructs put one there too, and each was
     measured allowing a payload this module still refuses:
+
+    * a ``${...}`` PARAMETER EXPANSION holds its own text, so the ``)`` in
+      ``$(: ${v:-)}; ...)`` is the default word and the body runs on to the
+      later ``)`` (:func:`_matching_close_brace`, issue #9181).
 
     * a ``#`` COMMENT runs to the end of its line, so the ``)`` in
       ``$(: # )`` is commented out and the substitution closes on a LATER line.
@@ -876,6 +880,17 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
                 state, ansi = 0, False
                 jumped = True
                 break
+            # A ``${...}`` parameter expansion holds its own text: the ``)`` in
+            # ``${v:-)}`` is the default WORD, not a closer.  Jump past the
+            # matching ``}``; an unclosed expansion fails closed.
+            if ch == "$" and _opens_expansion(text, off):
+                close, closed = _matching_close_brace(text, off + 2)
+                if not closed:
+                    return (len(text), False)
+                pos = close
+                state, ansi = 0, False
+                jumped = True
+                break
             if _word_at(text, off, "case") and _arms_case_context(text, off, cases > 0):
                 cases += 1
                 continue
@@ -890,6 +905,81 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
                 depth -= 1
                 if depth == 0:
                     return (off + len(step.text), True)
+        if not jumped:
+            break
+    return (len(text), False)
+
+
+def _opens_expansion(text: str, index: int) -> bool:
+    """True if the unquoted ``$`` at *index* opens a ``${...}`` parameter expansion.
+
+    Only an UNPAIRED ``$`` does: in a run of dollars the shell pairs them off
+    (``$$`` is the PID parameter), so ``$${`` is the PID followed by a literal
+    ``{``.  A ``$`` escaped by a backslash never reaches here, because the walk
+    reads an escape pair as inactive data -- but it still counts toward the run
+    in front of this one, so it is stepped over the same way.
+    """
+    if not text.startswith("{", index + 1):
+        return False
+    run = 0
+    k = index - 1
+    while k >= 0 and text[k] == "$":
+        run += 1
+        k -= 1
+    slashes = 0
+    while k - slashes >= 0 and text[k - slashes] == "\\":
+        slashes += 1
+    if run and slashes % 2 == 1:
+        run -= 1  # the first ``$`` of the run is escaped data, not a parameter
+    return run % 2 == 0
+
+
+def _matching_close_brace(text: str, start: int) -> "tuple[int, bool]":
+    """``(index just past the matching ``}``, proven)`` for a ``${`` ending before *start*.
+
+    The ``}`` that closes an expansion is one the shell reads as SYNTAX, so
+    quoting runs through the span (POSIX 2.6.2): ``${v:-"}"}`` and
+    ``${v:-'}'}`` close at their last brace.  A nested ``{`` opens another level
+    (``${v:-{}}`` prints ``{}`` in bash), which also covers a nested ``${``.
+
+    A brace inside a nested COMMAND SUBSTITUTION is that command's text, not
+    this expansion's: in ``${v:-$(echo })}`` the first ``}`` is an argument to
+    ``echo``.  Counting it closed the expansion early, the ``)`` after it then
+    closed the outer body, and the commands behind it were never scanned (found
+    in review).  So ``$(...)`` and backtick bodies are stepped over whole, through
+    the same closers the paren walk uses.
+
+    ``proven`` is False when no closer is found; callers fail closed on that.
+    """
+    depth = 1
+    pos = start
+    while pos <= len(text):
+        jumped = False
+        for step in _iter_shell_chars(text[pos:]):
+            if not step.active:
+                continue
+            off = pos + step.offset
+            ch = step.char
+            if ch == "$" and text.startswith("(", off + 1):
+                rel, proven = _matching_close_paren(text[off + 2 :], 0)
+                if not proven:
+                    return (len(text), False)
+                pos = off + 2 + rel
+                jumped = True
+                break
+            if ch == "`":
+                close, proven = _matching_close_backtick(text, off + 1)
+                if not proven:
+                    return (len(text), False)
+                pos = close
+                jumped = True
+                break
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return (off + 1, True)
         if not jumped:
             break
     return (len(text), False)
