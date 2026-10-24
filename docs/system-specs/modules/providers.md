@@ -513,9 +513,10 @@ not hold is ignored), so the gateway writes git's `rename from` and
 `rename to` lines and diffs the two bodies; it writes no `similarity index`,
 since it does not reproduce git's score. A copy (`C`) diffs
 as a new file. The guest also returns `old_mode` (the HEAD entry's) and
-`new_mode` (from `lstat`: `100755` when any execute bit is set, `100644`
-otherwise, `120000` for a symlink, `160000` for a gitlink), keeping the HEAD mode
-where `core.fileMode` or `core.symlinks` is false, as git does; an absent side's
+`new_mode` (from `lstat`: `100755` when the owner execute bit is set, `100644`
+otherwise, `120000` for a symlink, `160000` for a gitlink), taking the index
+entry's mode (HEAD's when the index lacks the path) where `core.fileMode` or
+`core.symlinks` is false, as git does; an absent side's
 mode is null. The gateway writes `old mode`/`new mode`, `new file mode` or
 `deleted file mode` after `diff --git`, so a mode-only change or a pure rename is
 a header-only patch, never an empty diff. A missing
@@ -532,7 +533,9 @@ directory before that diff runs, and every body read, the index listing and the
 submodule summary included, is streamed to `MAX_READ_BYTES + 1` bytes.
 The path's parent is confined; a symlink's body is its link text,
 even when it names a file outside the workdir. NUL in either body's first 8000
-bytes yields a binary notice without bodies. HEAD blobs are streamed with at most
+bytes yields a binary notice without bodies, and so do differing bodies that are
+not valid UTF-8, whose replacement characters could otherwise make them read as
+equal text. HEAD blobs are streamed with at most
 `MAX_READ_BYTES + 1` bytes retained; reaching that bound stops the read, and a
 timeout keeps the same 30-second cleanup as the other Git reads. Every Git read
 runs under coreutils `timeout`, as `run_command` does, so the stop reaches the
@@ -549,8 +552,10 @@ there are any, and otherwise empty output, which the panel shows as its cut-off
 notice with the link to ask the agent for the full diff. Regular worktree CRLF
 endings are converted to LF when `check-attr text eol` or `core.autocrlf` enables
 Git's text conversion: explicit `-text` wins, while `text=auto` and automatic
-conversion require a NUL-free body and, as git's `has_crlf_in_index` does, a HEAD
-blob without CRLF. Attribute/config reads use the same guarded
+conversion require a NUL-free body and, as git's `has_crlf_in_index` does, an
+index blob that is not text with CRLF (HEAD stays the old side; the index blob
+is read, bounded, only when a staged change makes it differ from HEAD's).
+Attribute/config reads use the same guarded
 Git prefix and never run filter drivers. Truncation is recorded before newline
 normalization, so reducing CRLF bytes cannot hide an incomplete read.
 Before whole-body redaction, the gateway withholds every line from an unmatched
@@ -562,8 +567,11 @@ unindented base64 lines, so an indented key with no `END` would otherwise show.
 Complete blocks still pass through the normal whole-body redactor.
 The gateway redacts each entire returned body and the path with
 `redact_via_context` BEFORE building a unified patch with three context lines and
-missing-final-newline markers. The hunks come from `unified_diff`,
-whose junk heuristic keeps such input fast.
+missing-final-newline markers. The hunks come from `unified_diff`. Its junk
+heuristic drops a very common line, but many distinct lines each repeated below
+that threshold and reordered make it quadratic per pass, so the gateway first
+counts the equal-line pairs the matcher would consider and, past 200,000 pairs,
+returns the same cut-off reply as an over-cap file (header only, `truncated`).
 Identical masked bodies with no mode change or
 rename yield an empty diff;
 raw bodies and guest patches never reach the dashboard. All of it is

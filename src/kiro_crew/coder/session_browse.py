@@ -11,6 +11,7 @@ import difflib
 import json
 import re
 import shlex
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,6 +29,11 @@ from kiro_crew.security import REDACTED_CREDENTIAL_TAG
 from kiro_crew.session_environment import SessionEnvironmentUnavailable
 
 _GIT_OPS = frozenset(("git_status", "git_log", "git_diff"))
+#: Line pairs ``SequenceMatcher`` may compare for one diff. Its work grows with the
+#: pairs of equal lines it must consider (lines its autojunk heuristic keeps), so
+#: a body of many repeated lines in a new order can take minutes; measured, a
+#: worst case at this budget finishes in under a second.
+_DIFF_PAIR_BUDGET = 200_000
 
 #: The guest caps a read at 256 KB of text; JSON escaping can roughly double it.
 _BROWSE_OUTPUT_MAX = 2 * 1024 * 1024
@@ -176,6 +182,21 @@ def _check_path(path: str) -> str:
     return path or "."
 
 
+def _diff_pairs(old_lines: list[str], new_lines: list[str]) -> int:
+    """Equal-line pairs ``SequenceMatcher`` would consider, autojunk excluded.
+
+    Mirrors difflib: with 200 or more new lines, a line found in more than 1%
+    of them (plus one) is junk and never matched, so it costs nothing.
+    """
+    new_counts = Counter(new_lines)
+    popular = len(new_lines) // 100 + 1 if len(new_lines) >= 200 else None
+    return sum(
+        count * new_counts[line]
+        for line, count in Counter(old_lines).items()
+        if line in new_counts and (popular is None or new_counts[line] <= popular)
+    )
+
+
 def _redact_git_line(line: str) -> str:
     clean = redact_via_context(line)
     if "\n" in clean or "\0" in clean:
@@ -240,20 +261,27 @@ def _git_extended_header(result: dict[str, Any], old_name: str, new_name: str) -
     return "".join(line + "\n" for line in lines)
 
 
+#: A PEM opener or footer anywhere in a line, so a field-prefixed one
+#: (``key: -----BEGIN ...-----``, ``"pem": "-----BEGIN ...``) counts too.
+_PEM_MARKER_RE = re.compile(r"-----(BEGIN|END) (.+?)-----")
+
+
 def _withhold_unclosed_pem(body: str) -> str:
     """Mask an unmatched PEM opener through EOF, preserving LF counts and final LF."""
     parts = body.split("\n")
     closed: set[str] = set()
     cut = len(parts)
-    # A backwards pass finds matching footers without rescanning each suffix.
+    # A backwards pass finds matching footers without rescanning each suffix;
+    # markers within a line are read right to left for the same reason.
     for i in range(len(parts) - 1, -1, -1):
-        marker = parts[i].strip()
-        if not marker.endswith("-----"):
+        if "-----" not in parts[i]:
             continue
-        if marker.startswith("-----END "):
-            closed.add(marker[9:-5])
-        elif marker.startswith("-----BEGIN ") and marker[11:-5] not in closed:
-            cut = i
+        for marker in reversed(list(_PEM_MARKER_RE.finditer(parts[i]))):
+            kind, label = marker.group(1), marker.group(2).strip()
+            if kind == "END":
+                closed.add(label)
+            elif label not in closed:
+                cut = i
     if cut == len(parts):
         return body
     # The empty split field after a final LF is not an extra source line.
@@ -305,6 +333,10 @@ def _git_diff_from_bodies(result: dict[str, Any], path: str) -> dict[str, Any]:
     old_lines, new_lines = lines(old), lines(new)
     extended = _git_extended_header(result, old_name, name)
     header = f"diff --git {a} {b}\n" + extended
+    if _diff_pairs(old_lines, new_lines) > _DIFF_PAIR_BUDGET:
+        # Many repeated lines that autojunk does not drop make the matcher
+        # quadratic per pass; show the cut-off notice instead of the hunks.
+        return {**view, "truncated": True, "output": header if extended else ""}
     patch = difflib.unified_diff(
         old_lines,
         new_lines,
