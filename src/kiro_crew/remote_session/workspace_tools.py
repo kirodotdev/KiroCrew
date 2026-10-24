@@ -22,7 +22,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 SERVER_NAME = "kirocrew-workspace"
 SERVER_VERSION = "1"
@@ -591,11 +591,145 @@ def browse(ws: Workspace, request: Any) -> Dict[str, Any]:
             }
         if op == "git_status":
             return _git_status(ws)
+        if op == "stats":
+            return _stats(ws)
     except ToolError as exc:
         return {"error": str(exc)}
     except OSError as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
-    return {"error": "op must be list, read or git_status"}
+    return {"error": "op must be list, read, git_status or stats"}
+
+
+def _meminfo() -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    try:
+        with open("/proc/meminfo", "rb") as handle:
+            sample = handle.read(MAX_READ_BYTES + 1)
+        # Omit an oversized sample rather than report a partially read metric.
+        if len(sample) > MAX_READ_BYTES:
+            return out
+        for line in sample.decode("ascii").splitlines():
+            key, _, rest = line.partition(":")
+            fields = rest.split()
+            if key in ("MemTotal", "MemAvailable") and fields and fields[0].isdigit():
+                out[key] = int(fields[0]) * 1024
+    except (OSError, UnicodeDecodeError):
+        pass
+    return out
+
+
+def _cgroup_number(path: str) -> Optional[int]:
+    """A cgroup file's single integer, or None (absent, ``max`` or unreadable)."""
+    try:
+        with open(path, "rb") as handle:
+            text = handle.read(64).decode("ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return int(text) if text.isdigit() else None
+
+
+def _cgroup_inactive_file(stat_path: str, key: str) -> int:
+    """Reclaimable file cache from a cgroup ``memory.stat``, or 0 when unreadable."""
+    try:
+        with open(stat_path, "rb") as handle:
+            sample = handle.read(MAX_READ_BYTES + 1)
+        if len(sample) > MAX_READ_BYTES:
+            return 0
+        for line in sample.decode("ascii").splitlines():
+            name, _, value = line.partition(" ")
+            if name == key and value.strip().isdigit():
+                return int(value.strip())
+    except (OSError, UnicodeDecodeError):
+        pass
+    return 0
+
+
+def _cgroup_memory() -> Optional[Tuple[int, int]]:
+    """``(limit, working set)`` in bytes when the guest runs under a cgroup memory limit.
+
+    A container workspace (Coder Docker or Kubernetes templates) sees the host
+    node in ``/proc/meminfo``; its real ceiling is the cgroup's. Usage counts
+    page cache, so reclaimable ``inactive_file`` is subtracted, the working set
+    docker and kubectl report. v2 first, then v1.
+    """
+    for limit_path, usage_path, stat_path, key in (
+        (
+            "/sys/fs/cgroup/memory.max",
+            "/sys/fs/cgroup/memory.current",
+            "/sys/fs/cgroup/memory.stat",
+            "inactive_file",
+        ),
+        (
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+            "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+            "/sys/fs/cgroup/memory/memory.stat",
+            "total_inactive_file",
+        ),
+    ):
+        limit, usage = _cgroup_number(limit_path), _cgroup_number(usage_path)
+        if limit is not None and usage is not None:
+            return limit, max(0, usage - _cgroup_inactive_file(stat_path, key))
+    return None
+
+
+def _cgroup_cpus() -> Optional[int]:
+    """CPUs the cgroup's v2 ``cpu.max`` quota allows, or None without a quota."""
+    try:
+        with open("/sys/fs/cgroup/cpu.max", "rb") as handle:
+            fields = handle.read(64).decode("ascii").split()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if len(fields) != 2 or not fields[0].isdigit() or not fields[1].isdigit():
+        return None
+    quota, period = int(fields[0]), int(fields[1])
+    return max(1, -(-quota // period)) if period else None
+
+
+def _stats(ws: Workspace) -> Dict[str, Any]:
+    """Read-only machine metrics for the dashboard's environment card.
+
+    Only numbers and the architecture: no environment, no process list, no
+    paths, and only what the card shows.
+    """
+    import platform
+    import shutil
+
+    cpus = os.cpu_count() or 0
+    quota_cpus = _cgroup_cpus()
+    # Inside a container, load average and uptime are the host node's, not the
+    # workspace's: shown beside the container's own core count they mislead, so
+    # a limited container reports neither.
+    contained = quota_cpus is not None and (cpus == 0 or quota_cpus < cpus)
+    if quota_cpus is not None and contained:
+        cpus = quota_cpus
+    result: Dict[str, Any] = {"arch": platform.machine(), "cpus": cpus}
+    mem = _meminfo()
+    if "MemTotal" in mem and "MemAvailable" in mem:
+        total, available = mem["MemTotal"], mem["MemAvailable"]
+        cgroup = _cgroup_memory()
+        if cgroup is not None and cgroup[0] < total:
+            # The container's ceiling, not the host node's.
+            contained = True
+            total = cgroup[0]
+            available = max(0, min(available, cgroup[0] - cgroup[1]))
+        result["memory"] = {"total_bytes": total, "available_bytes": available}
+    if not contained:
+        try:
+            result["load"] = [round(v, 2) for v in os.getloadavg()]
+        except (OSError, AttributeError):
+            pass
+    try:
+        disk = shutil.disk_usage(ws.root)
+        result["disk"] = {"total_bytes": disk.total, "free_bytes": disk.free}
+    except OSError:
+        pass
+    if not contained:
+        try:
+            with open("/proc/uptime", "r") as handle:
+                result["uptime_s"] = int(float(handle.read().split()[0]))
+        except (OSError, ValueError, IndexError):
+            pass
+    return result
 
 
 def _git_status(ws: Workspace) -> Dict[str, Any]:

@@ -408,7 +408,7 @@ class CoderSessionEnvironments:
                         "this session's workspace was deleted outside Kiro Crew"
                     )
                 if binding.template != profile.template:
-                    # Never created: record the template browse and the sweep verify.
+                    # Never created: record the template browse, health and the sweep verify.
                     binding = await asyncio.to_thread(
                         self.registry.replace, replace(binding, template=profile.template)
                     )
@@ -490,7 +490,13 @@ async def prepare_for_session(
     environments = CoderSessionEnvironments(section, home)
     # Keyed by the owner, so a subagent reuses its root's workspace; the start
     # stage stays on the starting session, which clears it when the start ends.
-    return await environments.prepare(owner_key, profile_id, progress_key=session_key)
+    prepared = await environments.prepare(owner_key, profile_id, progress_key=session_key)
+    from kiro_crew.coder.session_browse import session_health
+    from kiro_crew.session_environment import register_remote_health
+
+    # The [RESOURCES] refresh measures this session's workspace through Coder.
+    register_remote_health(session_key, session_health)
+    return prepared
 
 
 async def forget_subagent_environment(child_key: str) -> None:
@@ -498,7 +504,10 @@ async def forget_subagent_environment(child_key: str) -> None:
     if not child_key:
         return
     from kiro_crew.config.paths import data_home
+    from kiro_crew.session_environment import forget_remote_health
 
+    # In memory first: the child's health read must go even when the row cannot.
+    forget_remote_health(child_key)
     try:
         home = await asyncio.to_thread(data_home)
         choices = SessionEnvironmentChoices(home / "coder" / "session-choices.json")

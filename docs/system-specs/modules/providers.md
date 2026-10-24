@@ -213,7 +213,26 @@ session with history gets a new workspace (`PreparedRemoteSession.created`),
 `mark_workspace_recreated` makes the next `[PROJECT]` rail say once that it is
 empty. The per-message context names the guest directory instead of the
 gateway project (`remember_remote_workspace`), and
-`ResourceStatus.context_line(remote=True)` scopes `[RESOURCES]` to the gateway.
+`ResourceStatus.context_line(remote=True, workspace_memory=...)` judges each
+machine on its own reading in `[RESOURCES]`. A tight gateway, which runs the
+engine and its subagents, only flags sub-agent waves. The workspace's memory is
+the last `session_health` reading (`remember_remote_memory`), read from cache
+and refreshed in the background at most once a minute per session whatever the
+read found, and never while the `[RESOURCES]` line is switched off
+(`refresh_remote_memory_soon`) on the gateway loop `remember_remote_workspace`
+recorded, through the health read the session's provider registered
+(`register_remote_health`; Coder registers `session_health` when it prepares the
+session, and a session with none is never read; the read belongs to the session's
+placement, so a runtime's end, including a resume respawn that registers none,
+keeps it and only a session switched back to local or a finished subagent drops it;
+when the table is full a session with no live runtime is evicted first), so a turn never waits on the
+remote machine and a stopped one is
+never woken. A reading older than five minutes is ignored. A workspace is tight
+when its free memory is at or below the smaller of the gateway's pressure floor
+and a quarter of its own total, so a small idle workspace is not. A tight workspace
+gets the "targeted tests, serialize builds" advice, a healthy one reports its
+free memory, an unmeasured one says so, and the line is silent when both
+machines are clear.
 
 A subagent of a remote session inherits its environment:
 `inherit_environment_for_subagent` writes the child's choice with a `parent`
@@ -287,6 +306,22 @@ from a remote chat carries `remote_slot` and opens
 `coder ssh --disable-autostart <workspace>`, or closes the socket with a coded
 error (`terminal_wrong_machine`, or `terminal_placement_unavailable` while the
 chat's placement cannot be read) rather than opening a local shell.
+
+Once a remote session is fixed, its chip opens `EnvironmentHealthCard` on hover
+(or focus and click): workspace name, guest directory, state, CPU cores and
+architecture, load averages, memory and disk meters, and uptime. It reads
+`GET /api/chat/slots/{slot}/environment/health` (owner-only), which runs the
+browse mode's read-only `stats` op (no environment, process list or paths),
+polling every 15 seconds only while the card is open. A guest whose files
+predate `stats` answers with an unknown-op error, so `session_health` installs
+the current worker files once and asks again. Its header says it is a read-only
+status. An unavailable read leads with a plain "isn't responding" title over
+the guest's own reason, kept for the agent hand-off; an oversized or
+undecodable memory sample is omitted rather than published partially; in a
+container workspace the cgroup memory limit and CPU quota replace the host
+node's figures when they are lower, usage being the working set without
+reclaimable page cache, and the node's load average and uptime are left out; a
+stopped workspace reports `state: stopped` and is never started to be measured.
 
 ### Provider requirements
 

@@ -189,19 +189,23 @@ class TestProjectGroup:
         from kiro_crew import session_environment as se
 
         se.remember_remote_workspace("s-remote", "Coder MicroVM", "/workspace/crew-session")
+        se.remember_remote_memory("s-remote", 6 * 1024**3, 16 * 1024**3)
         # Force the resource line on so its gateway qualifier is exercised too.
         status = type(
             "S",
             (),
             {
-                # The builder asks for the remote wording for a remote session.
-                "context_line": lambda self, remote=False: (
-                    "[RESOURCES] The gateway machine is tight (remote-scoped)."
+                # The builder asks for the remote wording for a remote session,
+                # and hands it the cached reading of the workspace machine.
+                "context_line": lambda self, remote=False, workspace_memory=None: (
+                    f"[RESOURCES] The gateway machine is tight (remote-scoped, "
+                    f"workspace={workspace_memory})."
                     if remote
                     else "[RESOURCES] Host memory is tight (~3 GB free)."
                 ),
                 "posture": "tight",
                 "available_gb": 3.0,
+                "pressure_gb": 4.0,
             },
         )()
         monkeypatch.setattr("kiro_crew.resource_status.probe", lambda: status)
@@ -220,12 +224,39 @@ class TestProjectGroup:
         assert "remote environment (Coder MicroVM)" in msg
         assert "/workspace/crew-session" in msg
         assert "[PROJECT] Active project directory: /Users/me/repo" not in msg
-        assert "[RESOURCES] The gateway machine is tight (remote-scoped)." in msg
+        assert (
+            f"[RESOURCES] The gateway machine is tight (remote-scoped, "
+            f"workspace={(6 * 1024**3, 16 * 1024**3)})."
+        ) in msg
         assert "Host memory is tight" not in msg
         assert "remote environment" not in off
         # Forgotten (switched back to local): the plain line returns.
         local, _ = b.build_message("hi", True, "s-remote", project="/Users/me/repo")
         assert "[PROJECT] Active project directory: /Users/me/repo" in local
+
+    def test_resources_off_switch_starts_no_remote_read(self, tmp_path, monkeypatch):
+        from kiro_crew import session_environment as se
+
+        reads = []
+        monkeypatch.setattr(se, "refresh_remote_memory_soon", lambda key: reads.append(key))
+        status = type(
+            "S",
+            (),
+            {
+                "context_line": lambda self, remote=False, workspace_memory=None: "",
+                "posture": "ample",
+                "available_gb": 30.0,
+                # The documented [RESOURCES] off switch.
+                "pressure_gb": 0.0,
+            },
+        )()
+        monkeypatch.setattr("kiro_crew.resource_status.probe", lambda: status)
+        se.remember_remote_workspace("s-off", "Coder MicroVM", "/workspace/crew-session")
+        try:
+            _builder(tmp_path).build_message("hi", True, "s-off", project="/Users/me/repo")
+        finally:
+            se.forget_remote_workspace("s-off")
+        assert reads == []
 
 
 class TestEpisodicMemoryGate:

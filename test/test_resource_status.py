@@ -812,3 +812,74 @@ def test_a_remote_session_line_scopes_the_reading_to_the_gateway(free_gb):
 
 def test_a_clear_gateway_keeps_a_remote_session_silent():
     assert _gateway_status(20.0, rs.POSTURE_AMPLE).context_line(remote=True) == ""
+
+
+_GIB = 1024**3
+
+
+def _status(free_gb):
+    if free_gb <= 1.0:
+        posture = rs.POSTURE_CRITICAL
+    elif free_gb <= 4.0:
+        posture = rs.POSTURE_TIGHT
+    else:
+        posture = rs.POSTURE_AMPLE
+    return _gateway_status(free_gb, posture)
+
+
+def test_a_healthy_workspace_reading_is_reported_beside_a_tight_gateway():
+    line = _status(3.0).context_line(remote=True, workspace_memory=(12 * _GIB, 16 * _GIB))
+    assert "The gateway machine" in line and "~3.0 GB free" in line
+    assert "~12.0 of 16 GB free" in line
+    assert "not limited by the gateway" in line
+    assert "targeted tests" not in line and "does not measure" not in line
+
+
+def test_a_tight_workspace_raises_the_line_even_with_a_healthy_gateway():
+    line = _status(20.0).context_line(remote=True, workspace_memory=(2 * _GIB, 8 * _GIB))
+    assert line.startswith("[RESOURCES] Your remote workspace machine is tight")
+    assert "~2.0 of 8.0 GB free" in line and "targeted tests" in line
+    assert "gateway machine" not in line
+
+
+def test_a_small_workspace_total_keeps_its_decimal():
+    # A 512 MiB container must not read "of 0 GB".
+    line = _status(20.0).context_line(remote=True, workspace_memory=(int(0.1 * _GIB), _GIB // 2))
+    assert "~0.1 of 0.5 GB free" in line
+
+
+def test_a_tight_slice_beside_a_tight_workspace_names_the_gateway_machine():
+    import dataclasses
+
+    status = dataclasses.replace(_status(20.0), slice_tasks=32000, slice_tasks_limit=32768)
+    assert status.slice_tasks_tight
+    line = status.context_line(remote=True, workspace_memory=(2 * _GIB, 8 * _GIB))
+    # The cgroup reading is the gateway's, not the workspace's the line led with.
+    assert "workspace machine is tight" in line
+    assert "On the gateway machine, the agent slice is also near its task ceiling" in line
+    # Gateway tight too: the line still ends on the workspace sentence, so the
+    # slice sentence must still name its machine.
+    pressed = dataclasses.replace(_status(3.0), slice_tasks=32000, slice_tasks_limit=32768)
+    both = pressed.context_line(remote=True, workspace_memory=(2 * _GIB, 8 * _GIB))
+    assert both.endswith(pressed._tasks_clause(name_gateway=True))
+    assert "On the gateway machine, the agent slice is also near its task ceiling" in both
+
+
+def test_an_idle_small_workspace_gets_no_build_advice():
+    # 3 of 4 GB free is below the gateway's 4 GB floor but a quarter of nothing
+    # is used: the workspace is judged on its own size.
+    line = _status(20.0).context_line(remote=True, workspace_memory=(3 * _GIB, 4 * _GIB))
+    assert line == ""
+    tight = _status(20.0).context_line(remote=True, workspace_memory=(int(0.8 * _GIB), 4 * _GIB))
+    assert "workspace machine is tight" in tight and "targeted tests" in tight
+
+
+def test_both_tight_reports_each_machine_with_its_own_advice():
+    line = _status(3.0).context_line(remote=True, workspace_memory=(1 * _GIB, 8 * _GIB))
+    assert "The gateway machine" in line and "sub-agent waves small" in line
+    assert "workspace machine is tight" in line and "targeted tests" in line
+
+
+def test_both_healthy_stays_silent():
+    assert _status(20.0).context_line(remote=True, workspace_memory=(12 * _GIB, 16 * _GIB)) == ""
+    assert _status(20.0).context_line(remote=True) == ""

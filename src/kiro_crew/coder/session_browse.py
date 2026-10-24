@@ -1,6 +1,7 @@
 """Dashboard access to a remote session's workspace over ``coder ssh``: read-only
-``--browse``, a separate ``--write`` that refuses a stale ``expected``, and an
-interactive shell. None autostarts a stopped workspace; requests go on stdin.
+``--browse``, a separate ``--write`` that refuses a stale ``expected``, the
+browse mode's read-only ``stats`` (:func:`session_health`), and an interactive
+shell. None autostarts a stopped workspace; requests go on stdin.
 """
 
 from __future__ import annotations
@@ -204,6 +205,43 @@ async def write_session_file(
     if workdir is not None and workdir != target.workdir:
         raise WorkdirChanged(session_key)
     return await _ask(target, "write", request)
+
+
+async def session_health(session_key: str) -> dict[str, Any]:
+    """Workspace identity, state and machine metrics for the environment card.
+
+    Never starts compute: a stopped workspace reports ``state: stopped`` and no
+    metrics, rather than being woken to be measured.
+    """
+    target = await _resolve(session_key)
+    base: dict[str, Any] = {"workspace": target.shell.workspace, "workdir": target.workdir}
+    request = {"op": "stats", "path": "."}
+    try:
+        stats = await _ask(target, "browse", request)
+        if str(stats.get("error", "")).startswith("op must be"):
+            # Guest files from an earlier gateway build answer --browse but not
+            # ``stats``, as a JSON reply _ask cannot see: install the current
+            # files once and ask again, as _ask does for a missing mode.
+            await RemoteWorkerLaunch(target.binding_id, target.shell).install()
+            stats = await _ask(target, "browse", request)
+    except WorkspaceNotRunning:
+        return {**base, "state": "stopped"}
+    except (SessionEnvironmentUnavailable, RemoteWorkerError, asyncio.TimeoutError) as exc:
+        return {**base, "state": "unavailable", "error": str(exc)[:300]}
+    if "error" in stats:
+        return {**base, "state": "unavailable", "error": str(stats["error"])[:300]}
+    memory = stats.get("memory") if isinstance(stats, dict) else None
+    if isinstance(memory, dict):
+        # Feeds the [RESOURCES] line's workspace clause for this session.
+        from kiro_crew.session_environment import remember_remote_memory
+
+        try:
+            remember_remote_memory(
+                session_key, int(memory["available_bytes"]), int(memory["total_bytes"])
+            )
+        except (KeyError, TypeError, ValueError):
+            pass
+    return {**base, "state": "running", "stats": stats}
 
 
 _AHEAD_RE = re.compile(r"\[(?:[^\]]*\b)?ahead (\d+)")
