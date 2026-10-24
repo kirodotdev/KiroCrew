@@ -79,6 +79,7 @@ from kiro_crew.cron_history import CronHistoryStore, CronRunRecord  # noqa: F401
 from kiro_crew.cron_service.claims import (  # noqa: F401 -- re-exported
     RunClaims,
     _manual_run_refused,
+    _resolve_started,
     _RunClaim,
 )
 from kiro_crew.cron_service.execution import (  # noqa: F401 -- re-exported
@@ -804,7 +805,9 @@ class CronService:
     running_since = _run_registry.running_since
     set_refresh_callback = _run_registry.set_refresh_callback
     set_timeout_alert = _run_registry.set_timeout_alert
+    trigger_run = _run_registry.trigger_run
     run_job = _run_registry.run_job
+    _audit_owned_run_refusal = _run_registry._audit_owned_run_refusal
     _run_claimed_manual = _run_registry._run_claimed_manual
     # When the scheduler wakes: ``kiro_crew.cron_service.service.wake_timer``.
     _next_wake_secs = _wake_timer._next_wake_secs

@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew import cron_inflight
 from kiro_crew.cron_history import CronRunRecord
-from kiro_crew.cron_service.claims import _RunClaim
+from kiro_crew.cron_service.claims import _resolve_started, _RunClaim
 from kiro_crew.cron_service.execution import close_run, interruption_note, run_parks_one_shot
 from kiro_crew.cron_service.model import CronJob
 from kiro_crew.cron_service.store import CronStoreBusy
@@ -36,7 +36,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.cron")
 
 
-async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -> None:
+async def _run_job_isolated(
+    self: CronService,
+    job: CronJob,
+    claim: _RunClaim,
+    started: asyncio.Future[bool] | None = None,
+) -> None:
     """Execute a single job and merge results back to disk.
 
     ``claim`` is the claim the dispatcher took for this run -- the object it
@@ -49,6 +54,11 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
     be one this run does not own, the finally's flag read would miss,
     and the run would be filed as a failure beside the cancelled row
     ``cancel()`` writes.
+
+    ``started`` (manual runs only, see :meth:`trigger_run`) is resolved
+    ``True`` once that first step confirms the claim is still this run's.
+    From there on the finally below records the run, so the answer is
+    never a start with no history behind it.
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
@@ -60,6 +70,8 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
         # row already written. The flags cancel() and the reaper set live
         # on this claim and go with it.
         return
+    if started is not None:
+        _resolve_started(started, True)
     # This run's generation, drawn while it verifiably holds the claim;
     # the finally stamps it on the record it merges (see CronJob).
     claim.generation = self._runs.next_generation(job)
