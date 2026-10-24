@@ -14,6 +14,17 @@ import type { ClientTransport } from './transport'
  *  explain. Rationale in the CR description. */
 export const SLASH_COMMANDS_TIMEOUT_MS = 15_000
 
+/** One bulk title run as `GET /api/chat/slots/generate-titles` reports it. */
+export interface BulkTitleRun {
+  id: number
+  total: number
+  done: number
+  retitled: number
+  unchanged: number
+  failed: number
+  finished: boolean
+}
+
 /** A session's turn time limit as `/api/chat/slots/{slot}/turn-timeout` reports it. */
 export interface SlotTurnTimeout {
   secs: number | null
@@ -93,6 +104,10 @@ export function createChatSlotSettingsEndpoints({ post, j, jfetch: fetch }: Clie
      *  set has moved since the count. */
     chatSlotsFollowDefault: (digest: string) =>
       post('/api/chat/slots/follow-default', { digest }).then(j) as Promise<{ ok: boolean; changed: number }>,
+    chatSlotsGenerateTitles: ({ includeRenamed, dryRun }: { includeRenamed: boolean; dryRun: boolean }) =>
+      post('/api/chat/slots/generate-titles', { include_renamed: includeRenamed, dry_run: dryRun }).then(j) as Promise<{ ok: boolean; dry_run: boolean; run_id: number | null; queued: string[]; skipped_running: string[]; skipped_renamed: string[]; skipped_recent: string[]; skipped_empty: string[]; renamed: number }>,
+    chatSlotsGenerateTitlesStatus: () =>
+      fetch('/api/chat/slots/generate-titles').then(j) as Promise<{ ok: boolean; run: BulkTitleRun | null }>,
     chatSlotReasoningEffort: (slot: string, reasoning_effort: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/reasoning-effort', { reasoning_effort }).then(j) as Promise<{ ok?: boolean; reasoning_effort?: string; model?: string; deferred?: boolean }>,
     chatSlotWorkspace: (slot: string, workspace: string) =>
