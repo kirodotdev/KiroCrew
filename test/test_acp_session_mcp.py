@@ -897,6 +897,11 @@ class TestLocalSettingsSeed:
         monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {"claude_code": list(ids)})
 
     def test_seed_writes_the_model_allowlist(self, tmp_path, monkeypatch):
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         from kiro_crew import model_registry
 
         self._advertised(monkeypatch)
@@ -908,6 +913,47 @@ class TestLocalSettingsSeed:
         # id is dropped when its 1M sibling is present), so it can differ from the
         # raw advertised list — compare against seed_available_models, the deduped
         # source the seed actually uses.
+        assert data["availableModels"] == model_registry.seed_available_models("claude_code")
+
+    def test_warm_cache_with_no_other_source_writes_the_model_without_the_allowlist(
+        self, tmp_path, monkeypatch
+    ):
+        """An allowlist entry naming a specific id disables the family alias wildcard.
+
+        With no other settings source defining ``availableModels``, the seed omits
+        the allowlist, so ``haiku`` keeps resolving to its current model. The pinned
+        ``model`` is still written, because a model key does not narrow any alias.
+        """
+        from kiro_crew import model_registry
+
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: False,
+        )
+        monkeypatch.setattr(
+            model_registry,
+            "_ADVERTISED_MODELS",
+            {"claude_code": ["default", "opus", "haiku", "claude-haiku-4-5-20251001"]},
+        )
+        client = self._client(tmp_path, model="haiku", permission_mode="default")
+        data = json.loads(client._render_claude_settings_payload())
+        assert "availableModels" not in data
+        assert data["model"] == "haiku"
+
+    def test_warm_cache_with_another_source_writes_the_seeded_list(self, tmp_path, monkeypatch):
+        from kiro_crew import model_registry
+
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
+        monkeypatch.setattr(
+            model_registry,
+            "_ADVERTISED_MODELS",
+            {"claude_code": ["default", "opus", "haiku", "claude-haiku-4-5-20251001"]},
+        )
+        client = self._client(tmp_path, model="haiku", permission_mode="default")
+        data = json.loads(client._render_claude_settings_payload())
         assert data["availableModels"] == model_registry.seed_available_models("claude_code")
 
     def test_seed_omits_both_model_keys_on_a_cold_cache(self, tmp_path, monkeypatch):
@@ -933,10 +979,16 @@ class TestLocalSettingsSeed:
         # session/new, which is the whole reason the seed runs at spawn.
         assert data["permissions"]["defaultMode"] == "default"
 
-    def test_seed_never_writes_a_model_without_the_list_it_must_match(self, tmp_path, monkeypatch):
-        # The exact shape observed in the field: "model": "claude-opus-5" beside an
-        # allowlist that contains no Opus 5 entry, which resolves to 200K. The two
-        # keys are now written together or not at all.
+    def test_seeded_model_is_folded_onto_an_advertised_id(self, tmp_path, monkeypatch):
+        # Another settings source defines availableModels, so the list is written too and
+        # the folded model can be checked against it.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
+        # The exact shape observed in the field: "model": "claude-opus-5", a bare
+        # id the adapter never advertised, which resolves to 200K. A cold cache
+        # writes no model key at all.
         from kiro_crew import model_registry
 
         monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
@@ -967,6 +1019,11 @@ class TestLocalSettingsSeed:
         assert data["permissions"]["defaultMode"] == "default"
 
     def test_resolved_model_written_but_auto_omitted(self, tmp_path, monkeypatch):
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         self._advertised(monkeypatch, ["claude-sonnet-4-5"])
         auto = self._client(tmp_path)
         auto._write_claude_local_settings()
@@ -1142,6 +1199,11 @@ class TestLocalSettingsSeed:
         send byte-identical ``session/new`` params, take the same substitution
         advisory, and fail the session with "even after adopting substitute model".
         """
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         self._advertised(monkeypatch, ["claude-sonnet-4-5"])
         client = self._client(tmp_path)
         client._write_claude_local_settings()
@@ -1152,6 +1214,37 @@ class TestLocalSettingsSeed:
         client._write_claude_local_settings()
 
         assert json.loads(path.read_text())["model"] == "claude-sonnet-4-5"
+        assert client._claude_settings_authored is True
+        # And it is still Crew's to remove.
+        self._teardown(client)
+        assert not path.exists()
+
+    def test_a_reseed_names_a_changed_model_without_another_source(self, tmp_path, monkeypatch):
+        """The substitution retry re-seeds with the substitute, so the model key follows.
+
+        The retried ``session/new`` must differ from the first attempt, so the model key
+        cannot depend on another settings source defining a list. With none, the first
+        seed names no model and no allowlist; once the session's model changes to the
+        substitute, the re-seed writes that model and still no ``availableModels``.
+        """
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: False,
+        )
+        self._advertised(monkeypatch, ["claude-sonnet-4-5"])
+        client = self._client(tmp_path)
+        client._write_claude_local_settings()
+        path = tmp_path / ".claude" / "settings.local.json"
+        first = json.loads(path.read_text())
+        assert "model" not in first
+        assert "availableModels" not in first
+
+        client._model = "claude-sonnet-4-5"
+        client._write_claude_local_settings()
+
+        data = json.loads(path.read_text())
+        assert data["model"] == "claude-sonnet-4-5"
+        assert "availableModels" not in data
         assert client._claude_settings_authored is True
         # And it is still Crew's to remove.
         self._teardown(client)

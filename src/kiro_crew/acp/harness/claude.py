@@ -226,10 +226,11 @@ class ClaudeLaunch(ProcessAdapter):
         session._claude_adapter_disk_version = await asyncio.to_thread(
             _claude_adapter_installed_version, argv
         )
-        # Per-session settings seed (permissions.defaultMode + the availableModels
-        # allowlist that unlocks the 1M-token window). It MUST run on the PRIMARY
-        # spawn path — not only the rare model-substitution retry — or a claude
-        # session collapses to the 200K default.
+        # Per-session settings seed: permissions.defaultMode, the served ``model``
+        # once the advertised cache is warm, and the availableModels allowlist when
+        # another settings source defines one. It MUST run on the PRIMARY spawn
+        # path — not only the rare model-substitution retry — or the session
+        # starts without them.
         await session._seed_session_settings()
         # A Side Chat session carries deny rules for the host's sensitive paths in
         # its session options; they are built here, off the loop, because the

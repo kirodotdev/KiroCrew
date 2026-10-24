@@ -96,6 +96,11 @@ class TestSharedPermissionSurfaceEligibility:
         assert owner._claude_settings_authored is True
 
     def test_a_model_pinned_sibling_shares_a_modelless_seed(self, tmp_path, monkeypatch):
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path)
         owner._write_claude_local_settings()
@@ -117,6 +122,11 @@ class TestSharedPermissionSurfaceEligibility:
         assert projection.params["mcpServers"] != []
 
     def test_a_sibling_pinned_to_another_model_shares_the_seed(self, tmp_path, monkeypatch):
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, model=_SERVED[0])
         owner._write_claude_local_settings()
@@ -129,7 +139,33 @@ class TestSharedPermissionSurfaceEligibility:
         assert sibling._claude_settings_shared is True
         assert sibling._permission_surface_governed is True
 
+    def test_siblings_without_an_allowlist_share_across_different_models(
+        self, tmp_path, monkeypatch
+    ):
+        # No other settings source defines availableModels, so the seed names a model
+        # and no list. Each session still runs its own pinned model, and the model key
+        # alone does not narrow the alias, so the second session may share the seed.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: False,
+        )
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
+        owner = _client(tmp_path, model=_SERVED[0])
+        owner._write_claude_local_settings()
+        assert "availableModels" not in _seed(tmp_path)
+
+        sibling = _client(tmp_path, model=_SERVED[1])
+        assert json.loads(sibling._render_claude_settings_payload())["model"] == _SERVED[1]
+        sibling._write_claude_local_settings()
+
+        assert sibling._claude_settings_shared is True
+
     def test_a_sibling_offered_another_model_list_shares_the_seed(self, tmp_path, monkeypatch):
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, model=_SERVED[0])
         owner._write_claude_local_settings()
@@ -148,6 +184,11 @@ class TestSharedPermissionSurfaceEligibility:
     def test_an_auto_sibling_offered_another_model_list_shares_the_seed(
         self, tmp_path, monkeypatch
     ):
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path)
         owner._write_claude_local_settings()
@@ -165,6 +206,11 @@ class TestSharedPermissionSurfaceEligibility:
         assert _seed(tmp_path) == seeded
 
     def test_a_sibling_whose_model_the_seed_does_not_list_is_refused(self, tmp_path, monkeypatch):
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         # The adapter takes a pushed model only from the seed's availableModels, so
         # sharing would leave the sibling on the owner's model instead of its own.
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": _SERVED[:1]})
@@ -216,6 +262,11 @@ class TestSharedPermissionSurfaceEligibility:
         assert all("another open Crew session" not in line for line in lines)
 
     def test_an_auto_sibling_is_refused_a_pinned_seed(self, tmp_path, monkeypatch):
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         # An unpinned session pushes no model, so it would start on the owner's pin.
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         owner = _client(tmp_path, model=_SERVED[0])

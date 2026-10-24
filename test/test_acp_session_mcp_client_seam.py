@@ -512,6 +512,11 @@ class TestClientSeam:
         and with the substitute model inline, never with the first attempt's
         envelope.
         """
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         from kiro_crew import model_registry
 
         substitute = "global.anthropic.claude-sonnet-4-6[1m]"

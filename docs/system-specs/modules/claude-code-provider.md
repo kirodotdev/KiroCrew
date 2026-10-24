@@ -283,14 +283,27 @@ none.
 
 ### Session-scoped Claude settings
 
-`_write_claude_local_settings` writes `<work_dir>/.claude/settings.local.json`
-before the primary spawn (not only on the model-substitution retry) with
-`permissions.defaultMode` when requested and `permissions.deny` rules derived
-from the spec's `disabledTools`. Once the provider-advertised model cache is warm,
-it also writes `availableModels` and a pinned `model`; on a cold cache both model
-keys are omitted so a stale static allowlist cannot collapse a versioned `[1m]`
-id to the 200K window. The post-capture re-seed fills them after `session/new`
-records the backend's actual list.
+`_write_claude_local_settings` writes `<work_dir>/.claude/settings.local.json` before
+the primary spawn (not only on the model-substitution retry) with
+`permissions.defaultMode` when requested and `permissions.deny` rules derived from
+the spec's `disabledTools`. Once the provider-advertised model cache is warm it
+writes a pinned `model`, and it writes `availableModels` only when another settings
+source (user `settings.json`, project `.claude/settings.json`, or the managed
+`managed-settings.json` and its `managed-settings.d/*.json` drop-ins) already defines
+one; on a cold cache both keys are omitted. Claude Code's rule is that an allowlist
+entry naming a specific id disables that family's alias wildcard, so Crew's own list
+would cap `haiku` at Haiku 4.5 (issue #22995); a `model` key has no such effect. The
+post-capture re-seed fills them after `session/new` records the backend's actual
+list, under the same conditions. Managed policy that Claude Code reads from the OS
+rather than from a file (a macOS MDM profile, the Windows `HKLM`/`HKCU` policy keys)
+is not checked. Neither are server-managed settings, which the CLI caches as
+`remote-settings.json` in its config directory and applies under its own trust rules for
+that stored copy; the Windows managed-settings directory the CLI also reads under WSL
+when `wslInheritsWindowsSettings` is set; or a project `.claude/settings.json` that is
+itself a link, which Crew refuses to open. A list defined only there is
+missed: the seed then
+omits Crew's list as it does on a cold cache, so a versioned `[1m]` pick can resolve
+to the 200K window under that policy.
 
 With `agent.model` at `auto` the seed writes no `model` key, so the adapter takes the
 model from the user's own settings (`ANTHROPIC_MODEL`, then `settings.model`). After
@@ -365,17 +378,19 @@ Only the model half (`availableModels`, `model`) may differ from the payload thi
 client would have written (`_share_sibling_settings_seed`). It grants no permission,
 and each session's own model reaches the adapter live: `_apply_startup_model` pushes
 it over `session/set_config_option`, which claude-agent-acp accepts only for an
-`availableModels` entry. So the seed must list this session's `model`, or name none
-when this session pins none. A pinned session then runs its own pin, and an
-unpinned one starts on the adapter's default rather than the owner's pin. The seed's
-bytes are read only when they match the durable record, through the same bounded,
-no-follow, non-blocking read the ownership check uses (`_settings_path_bytes`), and
-the share validates exactly those bytes. A seed that differs in a permission key —
-another permission mode, another agent's deny rules — or that would keep this
-session off its own model is refused exactly as before. The hazard the live-holder
-rule exists for only arises when the permissions differ, so they are the boundary
-of the relaxation. Every refusal logs the same quiet informational message
-(`_log_declined_share`) naming what the session runs without.
+`availableModels` entry. So the seed must list this session's `model`, name none
+when this session pins none, or, when neither seed carries `availableModels`, leave
+the adapter on its own advertised list, where the push is accepted. A pinned session
+then runs its own pin, and an unpinned one starts on the adapter's default rather
+than the owner's pin. The seed's bytes are read only when they match the durable
+record, through the same bounded, no-follow, non-blocking read the ownership check
+uses (`_settings_path_bytes`), and the share validates exactly those bytes. A seed
+that differs in a permission key — another permission mode, another agent's deny
+rules — or that would keep this session off its own model is refused exactly as
+before. The hazard the live-holder rule exists for only arises when the permissions
+differ, so they are the boundary of the relaxation. Every refusal logs the same
+quiet informational message (`_log_declined_share`) naming what the session runs
+without.
 
 The sharer's stake is a live registration (`seed_provenance.share`, taken BEFORE
 the byte checks so the owner's teardown cannot validate-race it; withdrawn on the
@@ -483,14 +498,14 @@ puts it on the wire for `session/new` and `session/load`:
 
 The claude CLI then loads neither project tier: not the project's local file, and not
 a checked-in `.claude/settings.json`. No `permissions.allow` a repository carries can
-pre-approve a tool, so every call still reaches Crew's gate. Crew's deny rules and
-model allowlist ride the inline settings. That makes the permission surface governed
-(`_permission_surface_governed`), so the session gets the full `mcpServers` array:
-`send_message`, `cron_add`, `spawn_run` and the spec's servers. A cron job on such a
-project delivers its result. The cost is that project-scope config does not load on
-this path either: its `settings.json` env and plugins, and its `CLAUDE.md` memory
-files, which the SDK loads only with the `project` source. The runtime warning names
-the same list.
+pre-approve a tool, so every call still reaches Crew's gate. Crew's deny rules, and
+its model allowlist when the seed carries one, ride the inline settings. That makes
+the permission surface governed (`_permission_surface_governed`), so the session gets
+the full `mcpServers` array: `send_message`, `cron_add`, `spawn_run` and the spec's
+servers. A cron job on such a project delivers its result. The cost is that
+project-scope config does not load on this path either: its `settings.json` env and
+plugins, and its `CLAUDE.md` memory files, which the SDK loads only with the
+`project` source. The runtime warning names the same list.
 
 What the project tiers REFUSE is carried, not dropped. Leaving a tier out must drop its
 allows, never its restrictions, so `_project_settings_restrictions` reads the
@@ -524,8 +539,13 @@ either key the same way, and stops the harness.
 Two smaller residuals. The adapter's own `SettingsManager` still reads
 `availableModels` from every tier for its model picker, so a project file can shape
 the picker even though the CLI loads Crew's inline allowlist; this is cosmetic for
-permissions. An operator's `dontAsk` is kept (below): it refuses every call that is
-not pre-approved, so it runs nothing `default` would not.
+permissions. For the same reason a project file that defines `availableModels` still
+counts as another source when the seed decides whether to write Crew's own list: the
+adapter merges it, so Crew's list still has a list to counter, though the CLI does
+not load the project tier. That session then carries the family-alias cap, as any
+session does when another source defines a list. An operator's `dontAsk` is kept
+(below): it refuses every call that is not pre-approved, so it runs nothing `default`
+would not.
 
 What still loads is the `user` tier. A session whose file Crew authored loads
 `user`, `project` and `local`, so this path is narrower than the normal one. The user
