@@ -68,6 +68,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # only to REFUSE a file whose rules, crons or carried files hold a
         # credential-shaped string. It returns no redacted text.
         "crewmate_bundle.py",
+        # Selects which redaction the OTLP host audit rows go through in a
+        # process with no platform context (`_policy_redactor` returns the
+        # companion's), and calls none itself. The rows are written by the SEL,
+        # which is the sink.
+        "metrics/provider.py",
         # The redaction cards' owner-only route (allowed hosts). It applies no
         # redactor; the call-site scan matches its
         # handler names (`api_redaction_allow_host`, ...).
