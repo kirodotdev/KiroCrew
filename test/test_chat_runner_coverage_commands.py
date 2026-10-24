@@ -135,6 +135,19 @@ class TestRunChatLocalCommands:
         assert slot.messages[-1]["role"] == "done"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["/issue", "/issue details from the user"])
+    async def test_issue_is_refused_before_session_acquisition(self, tmp_path, command):
+        state, client = _runner_state(tmp_path)
+        slot = _slot("issue-command")
+
+        await _drive(state, slot, command)
+
+        state.sessions.get_or_create.assert_not_awaited()
+        client.stream.assert_not_called()
+        client.stream_command.assert_not_called()
+        assert any("not available in the dashboard" in m.get("content", "") for m in slot.messages)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "provider,acp_backend,refused",
         [

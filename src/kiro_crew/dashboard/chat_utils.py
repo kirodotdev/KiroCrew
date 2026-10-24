@@ -253,7 +253,12 @@ _KIRO_ONLY_BLOCKED_SLASH_COMMANDS = frozenset({"/todos"})
 # once — advertising a command that only yields a warning teaches a gesture
 # that does not work.
 _BLOCKED_SLASH_COMMANDS = (
-    frozenset({"/quit", "/exit", "/q", "/chat", "/paste", "/reply", "/editor", "/tangent"})
+    # These kiro-cli TUI commands have no dashboard transport. /issue is
+    # documented by the interactive CLI, but the ACP TuiCommand schema in the
+    # bundled harness rejects it before it can produce a result.
+    frozenset(
+        {"/quit", "/exit", "/q", "/chat", "/paste", "/reply", "/editor", "/issue", "/tangent"}
+    )
     | _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
 )
 

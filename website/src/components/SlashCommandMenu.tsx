@@ -97,7 +97,7 @@ function commandDescription(cmd: SlashCommand): string {
 // FRONTEND_COMMANDS below).
 const FALLBACK_COMMAND_NAMES = [
   '/agent', '/changelog', '/clear', '/code', '/compact', '/context',
-  '/experiment', '/help', '/hooks', '/issue', '/kb', '/logdump',
+  '/experiment', '/help', '/hooks', '/kb', '/logdump',
   '/mcp', '/model', '/prompts', '/side', '/tools', '/usage', '/workflow',
 ] as const
 

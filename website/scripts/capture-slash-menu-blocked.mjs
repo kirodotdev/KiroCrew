@@ -9,8 +9,9 @@
  *
  * Asserts, then shoots:
  *  1. typing "/" opens the menu with real commands and NO blocked entry
- *     (/tangent, /quit, /exit, /q, /chat, /paste, /reply, /editor)
- *  2. typing "/tan" (the issue's repro) matches nothing — no inert /tangent
+ *     (historical precedent: /tangent; also /quit, /exit, /q, /chat, /paste,
+ *     /reply, /editor, and the current /issue fix)
+ *  2. typing "/issue" (the issue's repro) matches nothing — no suggestion
  *
  * Usage: node scripts/capture-slash-menu-blocked.mjs [outDir] [prefix]
  */
@@ -37,7 +38,6 @@ const API_COMMANDS = [
   { name: '/goal', description: 'Set a standing goal the agent works toward across turns' },
   { name: '/help', description: 'Show available commands' },
   { name: '/hooks', description: 'View configured context hooks' },
-  { name: '/issue', description: 'Report an issue or bug' },
   { name: '/logdump', description: 'Dump session logs to a file' },
   { name: '/mcp', description: 'Show configured MCP servers' },
   { name: '/model', description: 'Show or switch the current model' },
@@ -48,7 +48,7 @@ const API_COMMANDS = [
   { name: '/usage', description: 'Show billing and usage information' },
 ]
 
-const BLOCKED = ['/tangent', '/quit', '/exit', '/q', '/chat', '/paste', '/reply', '/editor']
+const BLOCKED = ['/tangent', '/quit', '/exit', '/q', '/chat', '/paste', '/reply', '/editor', '/issue']
 
 async function main() {
   const { srv, base } = await serveDist()
@@ -94,26 +94,28 @@ async function main() {
   await page.screenshot({ path: `${OUT}/${PREFIX}-01-slash-menu-no-blocked.png` })
   console.log('wrote', `${OUT}/${PREFIX}-01-slash-menu-no-blocked.png`)
 
-  // ── Frame 2: the issue's repro "/tan" — nothing matches, menu closed ──
-  await composer.fill('/tan')
+  // ── Frame 2: the issue's repro "/issue" — nothing matches, menu closed ──
+  await composer.fill('/issue')
   await page.waitForTimeout(600)
+  // The menu may remain visible to announce that Enter now sends the message;
+  // it must not retain any option for the unsupported prefix.
   if (await menu.count() > 0 && await menu.first().isVisible()) {
     const leftover = (await menu.first().locator('[role="option"]').allInnerTexts()).join(',')
-    throw new Error(`menu still open for /tan with rows: ${leftover}`)
+    if (leftover) throw new Error(`menu still offers /issue rows: ${leftover}`)
   }
-  console.log('/tan matches nothing — no inert /tangent suggestion')
+  console.log('/issue matches nothing — no suggestion')
 
   // Crop around the composer so the empty state is legible.
   const box = await composer.boundingBox()
   await page.screenshot({
-    path: `${OUT}/${PREFIX}-02-tan-no-suggestion.png`,
+    path: `${OUT}/${PREFIX}-02-issue-no-suggestion.png`,
     clip: {
       x: Math.max(0, box.x - 30), y: Math.max(0, box.y - 220),
       width: Math.min(1400 - Math.max(0, box.x - 30), box.width + 60),
       height: Math.min(900 - Math.max(0, box.y - 220), box.height + 260),
     },
   })
-  console.log('wrote', `${OUT}/${PREFIX}-02-tan-no-suggestion.png`)
+  console.log('wrote', `${OUT}/${PREFIX}-02-issue-no-suggestion.png`)
 
   await browser.close()
   srv.close()

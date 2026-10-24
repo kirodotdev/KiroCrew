@@ -104,7 +104,7 @@ describe('SlashCommandMenu offline fallback (blocked commands hidden)', () => {
   // would advertise a gesture the dashboard rejects (/tangent regressed this
   // way once), so pin its absence on the API-failure path where the fallback
   // is what the user actually sees.
-  const BLOCKED = ['/tangent', '/quit', '/exit', '/q', '/chat', '/paste', '/reply', '/editor', '/todos']
+  const BLOCKED = ['/tangent', '/quit', '/exit', '/q', '/chat', '/paste', '/reply', '/editor', '/issue', '/todos']
 
   it('renders no blocked command when the API query fails', async () => {
     mockApi.slashCommands.mockRejectedValue(new Error('offline'))
@@ -117,10 +117,10 @@ describe('SlashCommandMenu offline fallback (blocked commands hidden)', () => {
     }
   })
 
-  it('filtering to /tan renders the announcing empty state, never an inert /tangent', async () => {
+  it('filtering to /issue renders the announcing empty state, never an inert /tangent', async () => {
     mockApi.slashCommands.mockRejectedValue(new Error('offline'))
-    render(<Harness input="/tan" />)
-    // Nothing in the fallback matches the /tan prefix. Once the query settles
+    render(<Harness input="/issue" />)
+    // Nothing in the fallback matches the /issue prefix. Once the query settles
     // (error counts as settled), the menu announces that Enter now sends —
     // naming the failed load, not a zero-match, and never an inert /tangent.
     expect(await screen.findByText(/Couldn't load commands — Enter sends the message/)).toBeInTheDocument()
