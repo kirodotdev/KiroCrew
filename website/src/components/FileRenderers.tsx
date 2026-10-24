@@ -6,8 +6,9 @@ import DOMPurify from 'dompurify'
 import { i18nT } from '../i18n/t'
 import { ExcalidrawBlock } from './ExcalidrawBlock'
 import ErrorNotice from './ErrorNotice'
+import FileDownloadLink from './FileDownloadLink'
 import { useCanOpenFile, useCopyAck } from './FilePathMenu'
-import { fileDownloadUrl, fileStreamUrl, fileOfficePreviewUrl, fileOfficeSlidesUrl, fileOfficeSlideUrl } from '../utils/fileReadUrl'
+import { fileStreamUrl, fileOfficePreviewUrl, fileOfficeSlidesUrl, fileOfficeSlideUrl } from '../utils/fileReadUrl'
 import { sendErrorToChat } from '../utils/errorReport'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { pathBasename } from '../utils/pathBasename'
@@ -405,7 +406,6 @@ function OfficeCard({ filePath, showBigDownload, hideHint, compact }: {
   // `BIN` fallback: the binary card is reached by a byte sniff, not by an
   // extension list, so `coredump` and `a.out` land here with nothing to show.
   const ext = extOf(filePath).replace('.', '').toUpperCase() || 'BIN'
-  const url = fileDownloadUrl(filePath)
   const sizeCls = showBigDownload ? 'px-3 py-1.5 text-sm' : 'px-2 py-1 text-xs'
   const iconSize = showBigDownload ? 16 : 14
   // The ONE gate for an Open-with-default-app surface, shared with the file
@@ -419,6 +419,19 @@ function OfficeCard({ filePath, showBigDownload, hideHint, compact }: {
   // so the primary button acknowledges that degrade with the same inline swap
   // instead of reading as a dead click.
   const { copyStatus, revealOrOpenWithAck, revealError, clearRevealError } = useCopyAck(filePath)
+  // A failed Download is reported here and shown beside the Open error, in a
+  // row of its own, so the Open / Download row keeps exactly two controls.
+  const [downloadError, setDownloadError] = useState<string | null>(null)
+  const downloadNotice = (
+    <ErrorNotice
+      variant="inline"
+      className="text-left whitespace-normal"
+      message={downloadError}
+      askAgent
+      onDismiss={() => setDownloadError(null)}
+      testId="office-card-download-error"
+    />
+  )
   const openLabel = copyStatus === 'copied'
     ? i18nT('components.filePathMenu.path_copied')
     : copyStatus === 'failed'
@@ -436,19 +449,20 @@ function OfficeCard({ filePath, showBigDownload, hideHint, compact }: {
           {openLabel}
         </button>
       )}
-      <a
-        href={url}
+      <FileDownloadLink
+        filePath={filePath}
         download={filename}
         className={`inline-flex items-center gap-2 rounded no-underline ${sizeCls} ${canOpen
           ? 'border border-border bg-bg-hover text-text hover:bg-bg-elevated'
           : 'bg-accent text-white hover:opacity-90'}`}
-        aria-label={i18nT('components.fileRenderers.download_file', { filename })}
+        ariaLabel={i18nT('components.fileRenderers.download_file', { filename })}
+        onError={setDownloadError}
       >
         <Download size={iconSize} aria-hidden="true" />
         {showBigDownload
           ? i18nT('components.fileRenderers.download')
           : i18nT('components.fileRenderers.office_download_original')}
-      </a>
+      </FileDownloadLink>
     </>
   )
   if (compact) {
@@ -465,6 +479,7 @@ function OfficeCard({ filePath, showBigDownload, hideHint, compact }: {
           onDismiss={clearRevealError}
           testId="office-card-open-error"
         />
+        {downloadNotice}
         <div className="flex items-center gap-2 flex-wrap justify-end">{actions}</div>
       </div>
     )
@@ -489,6 +504,7 @@ function OfficeCard({ filePath, showBigDownload, hideHint, compact }: {
         onDismiss={clearRevealError}
         testId="office-card-open-error"
       />
+      {downloadNotice}
       {showBigDownload && !hideHint && (
         <div className="text-xs text-muted">
           {/* The hint is the card's only instruction, so it must name the action
@@ -1136,15 +1152,15 @@ export const MediaPlayer = memo(function MediaPlayer({ filePath, kind }: { fileP
           <div className="text-xs text-muted">
             {i18nT('components.fileRenderers.media_preview_failed')}
           </div>
-          <a
-            href={fileDownloadUrl(filePath)}
+          <FileDownloadLink
+            filePath={filePath}
             download={filename}
             className="inline-flex items-center gap-2 px-3 py-1.5 rounded text-sm bg-accent text-white hover:opacity-90 no-underline"
-            aria-label={i18nT('components.fileRenderers.download_file', { filename })}
+            ariaLabel={i18nT('components.fileRenderers.download_file', { filename })}
           >
             <Download size={16} aria-hidden="true" />
             {i18nT('components.fileRenderers.download')}
-          </a>
+          </FileDownloadLink>
         </div>
       </div>
     )
@@ -1273,9 +1289,9 @@ export const SheetViewer = memo(function SheetViewer({ filePath }: { filePath: s
         <div className="text-center text-muted text-[12px] py-1.5 border-b border-border bg-chrome shrink-0">
           {i18nT('components.fileRenderers.sheet_formulas_note')}
           {' · '}
-          <a href={fileDownloadUrl(filePath)} download className="text-accent no-underline hover:underline">
+          <FileDownloadLink filePath={filePath} className="text-accent no-underline hover:underline">
             {i18nT('components.fileRenderers.download')}
-          </a>
+          </FileDownloadLink>
         </div>
       )}
       <div className="flex-1 overflow-auto">
@@ -1324,9 +1340,9 @@ export const SheetViewer = memo(function SheetViewer({ filePath }: { filePath: s
           {(sheet.truncated_rows || sheet.truncated_cols || payload.truncated_sheets) && (
             <>
               {' · '}
-              <a href={fileDownloadUrl(filePath)} download className="text-accent no-underline hover:underline">
+              <FileDownloadLink filePath={filePath} className="text-accent no-underline hover:underline">
                 {i18nT('components.fileRenderers.download')}
-              </a>
+              </FileDownloadLink>
             </>
           )}
         </div>

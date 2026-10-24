@@ -10016,6 +10016,11 @@
         "tool_search_label": "도구 검색",
         "tool_search_description": "지연된 MCP 도구 사양을 필요할 때 로드합니다."
       }
+    },
+    "unscannedDownload": {
+      "title": "너무 커서 검사할 수 없음",
+      "body": "{{name}}의 크기는 {{size}}입니다. {{limit}}을(를) 넘는 파일은 다운로드 전에 비밀 정보 검사를 하지 않습니다.",
+      "download_anyway": "그래도 다운로드"
     }
   },
   "hooks": {

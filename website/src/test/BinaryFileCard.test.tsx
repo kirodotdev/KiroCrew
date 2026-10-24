@@ -15,7 +15,7 @@
  * screenful of U+FFFD that also looked saveable back over the real bytes.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, renderHook, screen, waitFor, act } from '@testing-library/react'
+import { render, renderHook, screen, waitFor, act, fireEvent, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 
@@ -50,6 +50,25 @@ describe('BinaryFileCard', () => {
     // button renders, so the hint must not name one.
     expect(screen.queryByText(/open it in its app/i)).toBeNull()
     expect(screen.getByText(/download/i, { selector: 'div' })).toBeInTheDocument()
+  })
+
+  it('a failed Download shows its notice in its own row, outside the file actions', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'not found' }), { status: 404 })))
+    try {
+      renderWithQuery(<BinaryFileCard filePath="/home/user/data/index.sqlite" />)
+      const link = screen.getByRole('link', { name: /index\.sqlite/i })
+      fireEvent.click(link)
+      const notice = await screen.findByTestId('office-card-download-error')
+      expect(notice.textContent).toContain('Download failed')
+      // The link's own row holds the file actions and nothing else.
+      const actionRow = link.parentElement as HTMLElement
+      expect(actionRow.contains(notice)).toBe(false)
+      expect(within(actionRow).queryByRole('alert')).toBeNull()
+      expect(within(actionRow).getAllByRole('link').length + within(actionRow).queryAllByRole('button').length).toBeLessThanOrEqual(2)
+      expect(screen.queryByTestId('file-download-link-error')).toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('badges an extension-less binary BIN instead of an empty pill', () => {

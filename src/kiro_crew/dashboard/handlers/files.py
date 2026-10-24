@@ -213,6 +213,7 @@ from kiro_crew.dashboard.file_api.pinned_io import (  # noqa: F401
     _open_checked,
     _open_checked_file,
     _open_rb_nofollow,
+    _open_refusal,
     _OpenDenied,
     _OpenedFile,
     _OpenRefusal,
@@ -271,7 +272,9 @@ from kiro_crew.dashboard.file_api.sheet import (  # noqa: F401
     api_file_sheet,
 )
 from kiro_crew.dashboard.file_api.transfer import (  # noqa: F401
+    _download_read_chunk,
     _parse_range_header,
+    _stream_unscanned_download,
     api_file_download,
     api_file_stream,
     api_file_watch,
@@ -544,6 +547,16 @@ _UPLOAD_DIR: Path | None = None
 
 
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB per file
+#: Largest file ``/api/file-download`` reads whole and scans for credentials.
+#: A larger one is streamed UNSCANNED once the owner confirms (409
+#: ``large_file_unscanned`` until then): the scan holds the whole file in
+#: memory, and the route is owner-only. The maintainer's decision; see the
+#: security spec.
+_DOWNLOAD_SCAN_MAX_BYTES = _MAX_UPLOAD_BYTES
+#: How long one chunk read of an unscanned download may take before the
+#: response is dropped. A healthy disk answers a chunk in milliseconds; a hung
+#: network mount never does, and the read must not hold the response open.
+_DOWNLOAD_CHUNK_STALL_SECS = 60.0
 #: Video gets its own, larger ceiling: a 30-second retina screen recording is
 #: routinely 60-150 MB, so the 50 MB document cap would reject the dominant
 #: case and make the feature read as broken. Safe to raise only because video

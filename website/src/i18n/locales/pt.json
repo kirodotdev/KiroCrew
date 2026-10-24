@@ -10304,6 +10304,11 @@
         "tool_search_label": "Busca de ferramentas",
         "tool_search_description": "Carregar sob demanda especificações de ferramentas MCP adiadas."
       }
+    },
+    "unscannedDownload": {
+      "title": "Grande demais para verificar",
+      "body": "{{name}} tem {{size}}. Arquivos acima de {{limit}} não são verificados em busca de segredos antes do download.",
+      "download_anyway": "Baixar mesmo assim"
     }
   },
   "hooks": {

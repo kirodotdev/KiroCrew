@@ -10304,6 +10304,11 @@
         "tool_search_label": "Recherche d’outils",
         "tool_search_description": "Charger à la demande des spécifications d’outils MCP différées."
       }
+    },
+    "unscannedDownload": {
+      "title": "Trop volumineux pour être analysé",
+      "body": "{{name}} fait {{size}}. Les fichiers de plus de {{limit}} ne sont pas vérifiés à la recherche de secrets avant le téléchargement.",
+      "download_anyway": "Télécharger quand même"
     }
   },
   "hooks": {
