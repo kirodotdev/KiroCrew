@@ -2,6 +2,8 @@ import { useRef, useEffect } from 'react'
 import { Check, LoaderCircle } from 'lucide-react'
 
 import { JEV_ROUTE_MODEL } from '../lib/jevRoute'
+import { Checkbox } from './ui'
+import type { JevRangeEdit } from './useJevRange'
 import { isPricedMultiplier } from '../providers/modelList'
 import type { ModelInfo } from '../providers/types'
 import { fmtNumber } from '../i18n/format'
@@ -123,8 +125,10 @@ const TIER_BORDER: Record<ReturnType<typeof costTier>, string> = {
 }
 
 /** Shared model list used in dropdown portals across AgentsPage and ChatPage */
-export default function ModelDropdownList({ models, activeModel, onSelect, loading = false, failed = false }: {
+export default function ModelDropdownList({ models, activeModel, onSelect, loading = false, failed = false, jevRange = null }: {
   models: ModelItem[]; activeModel: string; onSelect: (name: string) => void
+  /** Draws a "Jev may use" check on each real model row (`useJevRange`). */
+  jevRange?: JevRangeEdit | null
   /** True while the list's SOURCE is still being fetched — a remote-bound
    *  session whose peer capability read is in flight or being re-polled. An
    *  empty list then renders as a loading row rather than "No matches": empty
@@ -145,55 +149,69 @@ export default function ModelDropdownList({ models, activeModel, onSelect, loadi
   }, [])
   return (
     <div className="overflow-y-auto flex flex-col gap-0.5">
+      {/* Hidden from screen readers: each tick already names itself. */}
+      {jevRange && <div aria-hidden className="px-2.5 pt-1 text-right text-[10px] text-muted">{i18nT('components.modelDropdownList.jev_may_use_label')}</div>}
       {models.map(m => {
         const active = activeModel === m.name
         const mult = m.rateMultiplier
         return (
-          <button key={m.name} ref={active ? activeRef : undefined} role="option" aria-selected={active} tabIndex={-1} className={`w-full text-left px-2.5 py-2 flex flex-col gap-0.5 rounded-md cursor-pointer transition-all border-none bg-transparent ${active ? 'bg-accent-subtle' : 'hover:bg-bg-hover'}`} onClick={() => onSelect(m.name)}>
-            <div className="flex items-center gap-2">
-              {/* `data-model-name` carries the ID, not the label: the harnesses and
-                  the keyboard-nav tests select rows by the value that is sent, and a
-                  translated label would make that selector locale-dependent. */}
-              <span data-model-name data-model-id={m.name} className={`text-[13px] font-mono font-semibold truncate ${active ? 'text-accent' : 'text-text'}`}>{rowLabel(m.name)}</span>
-              {active && <span className="text-accent text-[12px]"><Check className="lucide-inline" /></span>}
-              {/* Credit multiplier. Rendered only when the backend reported a
-                  usable one — a cold-start or pre-feature cached row has none,
-                  and an absent badge is the honest state (see
-                  ModelInfo.rateMultiplier).
-                  min-w + centred + tabular-nums: without a floor the pills size
-                  to their content, so "1.0×" is visibly narrower than "0.05×"
-                  and the column gets a ragged left edge instead of reading as a
-                  column.
-                  bg-bg-elevated, not transparent: on the active row the
-                  popover's accent-subtle wash would otherwise show through and
-                  muddy the border hue that carries the tier. */}
-              {isPricedMultiplier(mult) && (
-                <span className={`ml-auto shrink-0 min-w-[2.9rem] text-center px-1.5 py-[3px] rounded-full border bg-bg-elevated font-mono font-semibold tabular-nums text-[10.5px] leading-none text-text ${TIER_BORDER[costTier(mult)]}`}>
-                  <span aria-hidden="true">{formatMultiplier(mult)}</span>
-                  {/* The visible glyph alone reads as a bare "2.2 times" to a
-                      screen reader. The option's accessible name is built from
-                      its contents, so the explanation goes in the tree as
-                      sr-only text rather than a title= tooltip. Auto gets its
-                      own phrasing — "1.0× the credit cost of Auto" on the Auto
-                      row compares it to itself. */}
-                  <span className="sr-only">{i18nT(
-                    m.name === 'auto'
-                      ? 'components.modelDropdownList.credit_multiplier_baseline'
-                      : 'components.modelDropdownList.credit_multiplier',
-                    { value: formatMultiplier(mult) },
-                  )}</span>
-                </span>
-              )}
-            </div>
-            {/* Auto's label is a catalog key resolved HERE, not a literal carried
-                on the row: kiro's own Auto description is long enough to unbalance
-                the list, and translating it at fetch time would freeze the language
-                in the React Query cache. Static key, so it stays statically
-                resolvable for check-i18n-keys. */}
-            {m.name === 'auto'
-              ? <span className="text-[12px] text-muted leading-tight">{i18nT('components.modelDropdownList.auto_default')}</span>
-              : m.description && <span className="text-[12px] text-muted leading-tight">{m.description}</span>}
-          </button>
+          <div key={m.name} className="flex items-center">
+            <button ref={active ? activeRef : undefined} role="option" aria-selected={active} tabIndex={-1} className={`min-w-0 flex-1 text-left px-2.5 py-2 flex flex-col gap-0.5 rounded-md cursor-pointer transition-all border-none bg-transparent ${active ? 'bg-accent-subtle' : 'hover:bg-bg-hover'}`} onClick={() => onSelect(m.name)}>
+              <div className="flex items-center gap-2">
+                {/* `data-model-name` carries the ID, not the label: the harnesses and
+                    the keyboard-nav tests select rows by the value that is sent, and a
+                    translated label would make that selector locale-dependent. */}
+                <span data-model-name data-model-id={m.name} className={`text-[13px] font-mono font-semibold truncate ${active ? 'text-accent' : 'text-text'}`}>{rowLabel(m.name)}</span>
+                {active && <span className="text-accent text-[12px]"><Check className="lucide-inline" /></span>}
+                {/* Credit multiplier. Rendered only when the backend reported a
+                    usable one — a cold-start or pre-feature cached row has none,
+                    and an absent badge is the honest state (see
+                    ModelInfo.rateMultiplier).
+                    min-w + centred + tabular-nums: without a floor the pills size
+                    to their content, so "1.0×" is visibly narrower than "0.05×"
+                    and the column gets a ragged left edge instead of reading as a
+                    column.
+                    bg-bg-elevated, not transparent: on the active row the
+                    popover's accent-subtle wash would otherwise show through and
+                    muddy the border hue that carries the tier. */}
+                {isPricedMultiplier(mult) && (
+                  <span className={`ml-auto shrink-0 min-w-[2.9rem] text-center px-1.5 py-[3px] rounded-full border bg-bg-elevated font-mono font-semibold tabular-nums text-[10.5px] leading-none text-text ${TIER_BORDER[costTier(mult)]}`}>
+                    <span aria-hidden="true">{formatMultiplier(mult)}</span>
+                    {/* The visible glyph alone reads as a bare "2.2 times" to a
+                        screen reader. The option's accessible name is built from
+                        its contents, so the explanation goes in the tree as
+                        sr-only text rather than a title= tooltip. Auto gets its
+                        own phrasing — "1.0× the credit cost of Auto" on the Auto
+                        row compares it to itself. */}
+                    <span className="sr-only">{i18nT(
+                      m.name === 'auto'
+                        ? 'components.modelDropdownList.credit_multiplier_baseline'
+                        : 'components.modelDropdownList.credit_multiplier',
+                      { value: formatMultiplier(mult) },
+                    )}</span>
+                  </span>
+                )}
+              </div>
+              {/* Auto's label is a catalog key resolved HERE, not a literal carried
+                  on the row: kiro's own Auto description is long enough to unbalance
+                  the list, and translating it at fetch time would freeze the language
+                  in the React Query cache. Static key, so it stays statically
+                  resolvable for check-i18n-keys. */}
+              {m.name === 'auto'
+                ? <span className="text-[12px] text-muted leading-tight">{i18nT('components.modelDropdownList.auto_default')}</span>
+                : m.description && <span className="text-[12px] text-muted leading-tight">{m.description}</span>}
+            </button>
+            {jevRange && m.name !== 'auto' && m.name !== JEV_ROUTE_MODEL && (
+              <Checkbox
+                aria-label={i18nT('components.modelDropdownList.jev_may_use', { model: m.name })}
+                title={i18nT('components.modelDropdownList.jev_may_use', { model: m.name })}
+                checked={jevRange.allows(m.name)}
+                disabled={jevRange.locked(m.name)}
+                onChange={() => jevRange.toggle(m.name)}
+                className="mx-2.5 shrink-0"
+              />
+            )}
+          </div>
         )
       })}
       {models.length === 0 && !failed && (

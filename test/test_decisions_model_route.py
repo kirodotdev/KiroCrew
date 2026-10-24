@@ -367,6 +367,26 @@ class TestResolvingTheModel:
         own `normalizeModelKey` fallback so the picker and the map agree."""
         assert mr.resolve_model("simple", {"simple": "model-e.1"}, ["model-e-1"]) != ""
 
+    def test_a_cold_list_with_a_range_permits_only_ids_in_the_range(self):
+        pin = {"complex": "model-c"}
+        assert mr.resolve_model("complex", pin, [], allowed=["model-a"]) == ""
+        assert mr.resolve_model("complex", pin, [], allowed=["model-c"]) == "model-c"
+
+    def test_a_base_name_range_matches_a_pinned_effort_pair(self):
+        pin = {"complex": "m[high]"}
+        assert mr.resolve_model("complex", pin, ["m[low]", "m[high]"], allowed=["m"]) == "m[high]"
+        assert mr.resolve_model("complex", pin, ["m[low]", "m[high]"], allowed=["n"]) == ""
+
+    def test_a_window_id_in_the_range_does_not_match_its_base_model(self):
+        pin = {"complex": "claude-x"}
+        assert mr.resolve_model("complex", pin, ["claude-x"], allowed=["claude-x[1m]"]) == ""
+
+    @pytest.mark.parametrize("advertised", [[], ["model-c"]])
+    def test_an_empty_range_resolves_as_it_always_did(self, advertised):
+        assert mr.resolve_model("complex", {"complex": "model-c"}, advertised, allowed=()) == (
+            "model-c"
+        )
+
 
 # ---------------------------------------------------------------------------
 # routed_model: the answer, and every refusal
@@ -481,6 +501,31 @@ class TestRoutedModel:
         assert row["tier"] == "complex"
         assert row["point"] == mr.POINT
         assert row["turn_id"]
+
+    @pytest.mark.parametrize("advertised", [["model-a", "model-c"], []])
+    def test_a_pin_outside_the_range_keeps_the_model_and_records_it(
+        self, install_oracle, snapshot, log_home, advertised
+    ):
+        install_oracle(_Oracle("complex"))
+        assert _route(session_key="chat-1", advertised=advertised, allowed=["model-a"]) is None
+        errors = [row["error"] for row in log_home() if row["error"]]
+        assert errors == ["model-out-of-range"]
+
+    def test_a_base_name_range_routes_to_an_effort_pair_of_that_model(
+        self, install_oracle, snapshot, log_home
+    ):
+        install_oracle(_Oracle("complex"))
+        snapshot(_config(model_route={"simple": "", "medium": "", "complex": "m[high]"}))
+        advertised = ["m[low]", "m[high]", "n[high]"]
+        routed = _route(session_key="chat-1", advertised=advertised, allowed=["m"])
+        assert routed is not None and routed["model_chosen"] == "m[high]"
+        assert [row["error"] for row in log_home() if row["error"]] == []
+
+    def test_an_empty_range_routes_exactly_as_today(self, install_oracle, snapshot, log_home):
+        install_oracle(_Oracle("complex"))
+        routed = _route(session_key="chat-1", advertised=["model-c"], allowed=())
+        assert routed is not None and routed["model_chosen"] == "model-c"
+        assert [row["error"] for row in log_home() if row["error"]] == []
 
 
 class TestPriorTurns:

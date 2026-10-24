@@ -7744,7 +7744,9 @@
       "credit_multiplier_baseline": "{{value}}, आधार क्रेडिट लागत",
       "loading_models": "मॉडल लोड हो रहे हैं…",
       "no_matches": "कोई मेल नहीं",
-      "auto_jev": "स्वचालित (Jev)"
+      "auto_jev": "स्वचालित (Jev)",
+      "jev_may_use": "Jev {{model}} का उपयोग कर सकता है",
+      "jev_may_use_label": "Jev उपयोग कर सकता है"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "सेटिंग में प्रबंधित करें",
@@ -7756,7 +7758,13 @@
       "pin_model_unavailable": "<model/> अभी पेश नहीं किया जा रहा है",
       "set_default_for_agent": "<model/> को <agent/> एजेंट पर पिन करो (ग्लोबल डिफ़ॉल्ट की जगह लेता है)",
       "set_default_for_new_sessions": "नए सेशन के लिए ग्लोबल डिफ़ॉल्ट…",
-      "type_to_filter": "फ़िल्टर करने के लिए टाइप करें…"
+      "type_to_filter": "फ़िल्टर करने के लिए टाइप करें…",
+      "jev_lowest_effort": "Jev के लिए सबसे कम प्रयास",
+      "jev_highest_effort": "Jev के लिए सबसे अधिक प्रयास",
+      "jev_range_save_failed": "Jev की सीमा सहेजी नहीं जा सकी",
+      "jev_your_level": "तुम्हारा स्तर",
+      "jev_lowest_mine": "मेरा स्तर सबसे कम के रूप में इस्तेमाल करो",
+      "jev_highest_mine": "मेरा स्तर सबसे अधिक के रूप में इस्तेमाल करो"
     },
     "monacoCodeBlock": {
       "close_editor": "एडिटर बंद करें",
@@ -12146,6 +12154,7 @@
         "model_baseline_label": "रूटिंग के बिना मॉडल",
         "model_chosen_label": "उपयोग किया गया मॉडल",
         "model_default": "अंतर्निहित डिफ़ॉल्ट",
+        "model_effort": "प्रयास {{effort}} (तुम्हारा: {{baseline}})",
         "model_latency": "{{ms}} मि.से.",
         "model_not_applied": "लागू नहीं हुआ — {{model}} पर चला",
         "model_tier": "Jev: {{tier}}",

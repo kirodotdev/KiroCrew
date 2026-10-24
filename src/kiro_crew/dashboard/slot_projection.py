@@ -429,6 +429,7 @@ class SlotProjection:
             # otherwise be the same reading, and a stale client would show a
             # routed session as pinned.
             "jev_route": bool(getattr(slot, "jev_route", False)),
+            "jev_range": slot.jev_range,
             # The backend's own withhold verdict for `model`: true = the account
             # cannot run the pin (this session is on the backend default), false
             # = it can, null = not known yet. Carried so the frontend reads the

@@ -741,6 +741,8 @@ in [agent-host-contract.md](agent-host-contract.md).
 - Dashboard manual `/compact` while conversation-history replay is still pending (the replay lease is armed and the provider session holds nothing yet): it answers at once with `COMPACT_REPLAY_PENDING_NOTICE` ("Nothing to compact yet: the restored history is delivered with your next message."), awaits no compaction status, does not re-arm skills context, and leaves the replay lease armed for the next prompt.
 - `cancel()` → sends `session/cancel` notification
 - `supports_effort()` / `change_effort(level)` / `clear_effort()` → reasoning-effort control (see below)
+- `owner_effort(model=None)` → the owner's level for *model*, the live one when none is named, through the chain `_resolve_effort` runs (slot override > workspace default), so a Jev-routed turn names the level of the model the session ran on before routing switched it, and its restore puts back the live model's
+- `push_live_effort(level)` → sends a level to the running session down its effort channel and stores it nowhere (no slot override, no overlay), so a respawn drops it; False, sending nothing, when `change_effort`'s guards refuse (no effort on the model, no channel, no advertised option, a level the session's vocabulary hides). `set_model` uses it to carry the left model's level, and a Jev-routed turn to push the tier's effort and put the owner's back
 - `is_alive()` → `AcpClient.is_responsive()` (600s stale threshold)
 - `is_process_alive()` → OS-level process check
 

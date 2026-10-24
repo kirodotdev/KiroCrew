@@ -7992,7 +7992,9 @@
       "credit_multiplier_baseline": "{{value}}, базовая стоимость в кредитах",
       "loading_models": "Загрузка моделей…",
       "no_matches": "Совпадений нет",
-      "auto_jev": "Авто (Jev)"
+      "auto_jev": "Авто (Jev)",
+      "jev_may_use": "Jev может использовать {{model}}",
+      "jev_may_use_label": "Jev может использовать"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "Открыть настройки",
@@ -8004,7 +8006,13 @@
       "pin_model_unavailable": "<model/> сейчас не предлагается",
       "set_default_for_agent": "Закрепить <model/> за агентом <agent/> (вместо глобального значения по умолчанию)",
       "set_default_for_new_sessions": "Глобальное значение по умолчанию для новых сессий…",
-      "type_to_filter": "Введите для фильтрации…"
+      "type_to_filter": "Введите для фильтрации…",
+      "jev_lowest_effort": "Наименьшая глубина для Jev",
+      "jev_highest_effort": "Наибольшая глубина для Jev",
+      "jev_range_save_failed": "Не удалось сохранить диапазон Jev",
+      "jev_your_level": "Ваш уровень",
+      "jev_lowest_mine": "Использовать мой уровень как наименьший",
+      "jev_highest_mine": "Использовать мой уровень как наибольший"
     },
     "monacoCodeBlock": {
       "close_editor": "Закрыть редактор",
@@ -12512,6 +12520,7 @@
         "model_baseline_label": "Модель без маршрутизации",
         "model_chosen_label": "Использованная модель",
         "model_default": "Модель по умолчанию",
+        "model_effort": "глубина {{effort}} (ваша: {{baseline}})",
         "model_latency": "{{ms}} мс",
         "model_not_applied": "не применено — выполнено на {{model}}",
         "model_tier": "Jev: {{tier}}",

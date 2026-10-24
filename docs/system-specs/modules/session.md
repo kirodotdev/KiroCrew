@@ -144,6 +144,22 @@ history-cache owners are listed in
 sub-agent and MCP App state in [side](side.md), [subagent](subagent.md) and
 [mcp-apps](mcp-apps.md).
 
+A slot's Jev range, the models and effort span its `Auto (Jev)` routing may
+pick from, is `slot.jev_range`: `{"models": [ids], "effort_min": level | "",
+"effort_max": level | ""}`, where an empty list or `""` leaves that side
+unbounded. Every slot projection carries it. Only the dashboard owner sets it,
+with `POST /api/chat/slots/{slot}/jev-range` (`dashboard/chat_jev_range.py`),
+which replaces the whole range. The route answers 403 to anyone else. It
+answers 400 `jev_range_invalid`, naming the field or id, for a level outside
+`EFFORT_LEVELS`, a minimum above the maximum, or an id the session's warm
+provider does not advertise. A cold provider advertises nothing, so its ids are
+not checked. A repeated id is stored once, in first-seen order, and the body is
+bounded by the default request-body cap. A slot replaced while the request is
+read answers 404 and the new slot keeps its range. Like `jev_route`, the range
+lives in memory only and is never written to or read from the agent-writable
+transcript metadata line. A fork carries a copy, which routes only while the
+fork's own `jev_route` is on.
+
 ## Return-triggered warm task brief
 
 The owner-only `slot_focused` WebSocket frame also drives the warm task brief.

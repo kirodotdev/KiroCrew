@@ -320,7 +320,7 @@ class TestTheEffortControlIsReachableOnThisHarness:
             assert "self.supports_effort()" in body, method
             assert "model_supports_effort(" not in body, method
 
-        resolve = inspect.getsource(provider_module.AcpProvider._resolve_effort)
+        resolve = inspect.getsource(provider_module.AcpProvider.owner_effort)
         assert "levels=self._advertised_effort_levels()" in resolve
 
     def test_the_shared_resolver_keeps_its_registry_behaviour_untouched(self) -> None:
@@ -431,7 +431,7 @@ class TestTheFoldAndTheFilterAgree:
         """Order is the property, so it is pinned at the seam rather than inferred."""
         from kiro_crew.providers import acp as provider_module
 
-        body = inspect.getsource(provider_module.AcpProvider._resolve_effort)
+        body = inspect.getsource(provider_module.AcpProvider.owner_effort)
 
         assert "normalize=functools.partial(effort_config_option_value" in body
 

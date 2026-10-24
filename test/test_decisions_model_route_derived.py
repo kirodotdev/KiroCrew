@@ -146,6 +146,7 @@ def route(answers):
         advertised=ADVERTISED,
         retried: bool = False,
         session_key: str = "chat-derived",
+        **extra,
     ):
         answers(tier, cfg)
         routed = asyncio.run(
@@ -156,6 +157,7 @@ def route(answers):
                 advertised=list(advertised),
                 retried=retried,
                 rate_of=_kiro_lookup,
+                **extra,
             )
         )
         if routed is not None:
@@ -323,9 +325,88 @@ class TestRoutedWithTheSwitch:
         assert routed["model_chosen"] == mr.UNPINNED
         assert mr.build_outcome(routed)["derive"] == mr.DERIVE_UNPRICED
 
+    def test_a_range_of_only_unpriced_models_says_why_nothing_was_derived(
+        self, route, catalog_rates
+    ):
+        """The priced ids outside the range must not hide that nothing in it has a price."""
+        routed = route(
+            "complex",
+            _config(derive=True),
+            advertised=[*ADVERTISED, "fake-unpriced"],
+            allowed=["fake-unpriced"],
+        )
+        assert routed["model_chosen"] == mr.UNPINNED
+        assert mr.build_outcome(routed)["derive"] == mr.DERIVE_UNPRICED
+
     def test_a_priced_list_and_the_switch_off_carry_no_marker(self, route, catalog_rates):
         assert "derive" not in mr.build_outcome(route("complex", _config(derive=True)))
         assert "derive" not in mr.build_outcome(route("complex", _config(derive=False)))
+
+    def test_a_derived_simple_is_the_cheapest_in_range_model_below_the_sessions(
+        self, route, catalog_rates
+    ):
+        """Out of range, `fake-mini` is the cheapest and would win."""
+        routed = route(
+            "simple",
+            _config(derive=True),
+            current_model="fake-standard",
+            allowed=["fake-tiny", "fake-standard", "fake-frontier"],
+        )
+        assert routed["model_chosen"] == "fake-tiny"
+        assert routed["source"] == mr.SOURCE_DERIVED
+
+    def test_a_derived_complex_is_the_dearest_in_range_model_above_the_sessions(
+        self, route, catalog_rates
+    ):
+        """Out of range, `fake-frontier` is the dearest and would win."""
+        routed = route(
+            "complex",
+            _config(derive=True),
+            current_model="fake-tiny",
+            allowed=["fake-tiny", "fake-standard"],
+        )
+        assert routed["model_chosen"] == "fake-standard"
+        assert routed["source"] == mr.SOURCE_DERIVED
+
+    def test_a_derived_simple_is_an_effort_pair_of_a_base_name_range(self, answers):
+        """`n[high]` is cheapest overall, but only the `m` pairs are in range."""
+        rates = {"m[low]": 0.5, "m[high]": 2.2, "n[high]": 0.25}
+        answers("simple", _config(derive=True))
+        routed = asyncio.run(
+            mr.routed_model(
+                "do the thing",
+                session_key=KEY,
+                advertised=list(rates),
+                rate_of=rates.get,
+                allowed=["m"],
+            )
+        )
+        assert routed["model_chosen"] == "m[low]"
+        assert routed["source"] == mr.SOURCE_DERIVED
+
+    @pytest.mark.parametrize(
+        ("pin", "error"),
+        [("n[high]", mr.ERROR_OUT_OF_RANGE), ("m[mid]", mr.ERROR_UNKNOWN_MODEL)],
+        ids=["other-model", "unadvertised-pair-of-the-range"],
+    )
+    def test_a_refused_pin_is_recorded_by_the_range_not_the_advertised_list(
+        self, answers, monkeypatch, pin, error
+    ):
+        pinned = {**EMPTY_MAP, "complex": pin}
+        answers("complex", _config(derive=True, model_route=pinned))
+        errors = []
+        monkeypatch.setattr(mr, "record_error", lambda *a, **kw: errors.append(kw["error"]))
+        routed = asyncio.run(
+            mr.routed_model(
+                "do the thing",
+                session_key=KEY,
+                advertised=["m[low]", "m[high]", "n[high]"],
+                rate_of={"m[low]": 0.5, "m[high]": 2.2, "n[high]": 3.0}.get,
+                allowed=["m"],
+            )
+        )
+        assert routed is None
+        assert errors == [error]
 
     def test_the_record_says_derived(self, route, catalog_rates):
         routed = route("simple", _config(derive=True))
@@ -494,11 +575,11 @@ def no_role_pin(monkeypatch):
     monkeypatch.setattr(subagent_mod, "_subagent_default_model", lambda cfg=None: "")
 
 
-def _start(info, kind: str = "template", provider=None):
+def _start(info, kind: str = "template", provider=None, **extra):
     from kiro_crew.subagent import _route_unpinned_start
 
     parent = _Provider() if provider is None else provider
-    asyncio.run(_route_unpinned_start(info, kind, _Sessions(parent)))
+    asyncio.run(_route_unpinned_start(info, kind, _Sessions(parent), **extra))
     return info
 
 
@@ -671,6 +752,192 @@ class TestSpawnRouting:
             )
         )
         assert (chosen, tier) == ("", "simple")
+
+
+#: The effort half of a session's Jev range, tighter than the full ladder.
+EFFORT_RANGE = {"models": [], "effort_min": "medium", "effort_max": "xhigh"}
+NO_EFFORT_BOUNDS = {"models": [], "effort_min": "", "effort_max": ""}
+
+
+class TestTheSpawnEffort:
+    @pytest.mark.parametrize(
+        ("tier", "effort"), [("complex", "xhigh"), ("simple", "medium"), ("medium", "")]
+    )
+    def test_a_tier_maps_to_the_ranges_effort(self, tier, effort):
+        assert mr.tier_effort(tier, EFFORT_RANGE) == effort
+
+    @pytest.mark.parametrize("tier", ["simple", "complex"])
+    def test_a_range_with_no_effort_bounds_maps_to_no_effort(self, tier):
+        assert mr.tier_effort(tier, NO_EFFORT_BOUNDS) == ""
+
+    def test_a_start_in_complex_runs_at_the_ranges_highest_effort(
+        self, answers, catalog_rates, no_role_pin, parent_range
+    ):
+        answers("complex", _config(derive=True))
+        info = _start(_info(parent_session_key=parent_range(EFFORT_RANGE)))
+        assert (info.routed_tier, info.routed_effort) == ("complex", "xhigh")
+
+    def test_a_start_in_simple_runs_at_the_ranges_lowest_effort(
+        self, answers, catalog_rates, no_role_pin, parent_range
+    ):
+        answers("simple", _config(derive=True))
+        info = _start(_info(parent_session_key=parent_range(EFFORT_RANGE)))
+        assert (info.routed_tier, info.routed_effort) == ("simple", "medium")
+
+    def test_a_medium_start_keeps_its_inherited_effort(
+        self, answers, catalog_rates, no_role_pin, parent_range
+    ):
+        answers("medium", _config(derive=True))
+        info = _start(_info(parent_session_key=parent_range(EFFORT_RANGE)))
+        assert (info.routed_tier, info.routed_effort) == ("medium", "")
+
+    def test_a_range_with_no_effort_bounds_routes_no_effort(
+        self, answers, catalog_rates, no_role_pin, parent_range
+    ):
+        answers("complex", _config(derive=True))
+        info = _start(_info(parent_session_key=parent_range(NO_EFFORT_BOUNDS)))
+        assert (info.routed_tier, info.routed_effort) == ("complex", "")
+
+    def test_a_start_with_its_own_reasoning_effort_is_never_re_routed(
+        self, answers, catalog_rates, no_role_pin, parent_range
+    ):
+        answers("complex", _config(derive=True))
+        routed = _start(_info(parent_session_key=parent_range(EFFORT_RANGE)))
+        pinned = _start(
+            _info(reasoning_effort="low", parent_session_key=parent_range(EFFORT_RANGE))
+        )
+        assert routed.routed_effort == "xhigh"
+        assert (pinned.reasoning_effort, pinned.routed_effort) == ("low", "")
+
+    def test_a_subagent_effort_pin_is_never_re_routed(
+        self, answers, catalog_rates, no_role_pin, monkeypatch, parent_range
+    ):
+        import kiro_crew.subagent as subagent_mod
+
+        answers("complex", _config(derive=True))
+        routed = _start(_info(parent_session_key=parent_range(EFFORT_RANGE)))
+        monkeypatch.setattr(subagent_mod, "_subagent_default_effort", lambda cfg=None: "high")
+        pinned = _start(_info(parent_session_key=parent_range(EFFORT_RANGE)))
+        assert routed.routed_effort == "xhigh"
+        assert pinned.routed_effort == ""
+
+
+@pytest.fixture
+def parent_range(tmp_path, monkeypatch):
+    """Give the dashboard slot that owns ``chat-parent`` a Jev range; returns the setter.
+
+    The slot is on Auto (Jev) unless the setter is told ``on_auto=False``.
+    """
+    from test_decisions_strip_rides_message import _slot, _state
+
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.slack import handler
+
+    state = _state(tmp_path)
+    slot = _slot("chat-parent")
+    state._slots["chat-parent"] = slot
+    monkeypatch.setattr(handler, "_dashboard_state", None)
+    handler.set_dashboard_state(state)
+
+    def _set(jev_range: dict, *, on_auto: bool = True) -> str:
+        slot.jev_range = jev_range
+        slot.jev_route = on_auto
+        return effective_session_key(slot)
+
+    return _set
+
+
+class TestTheSpawnUsesItsParentsRange:
+    def test_an_unpinned_start_in_a_range_routes_to_its_dearest_in_range_id(
+        self, answers, catalog_rates, no_role_pin, parent_range
+    ):
+        key = parent_range(
+            {
+                "models": ["fake-mini", "fake-tiny", "fake-standard"],
+                "effort_min": "medium",
+                "effort_max": "xhigh",
+            }
+        )
+        answers("complex", _config(derive=True))
+        info = _start(_info(parent_session_key=key), provider=_Provider(served="fake-mini"))
+        assert info.routed_model == "fake-standard"
+        assert (info.routed_tier, info.routed_effort) == ("complex", "xhigh")
+
+    def test_a_base_name_range_routes_a_start_to_an_effort_pair_id(
+        self, answers, catalog_rates, no_role_pin, parent_range
+    ):
+        class _Pairs(_Provider):
+            def available_models(self):
+                return [{"modelId": name} for name in ("m[low]", "m[high]", "n[high]")]
+
+        key = parent_range({"models": ["m"], "effort_min": "", "effort_max": ""})
+        answers("complex", _config(derive=True, model_route={"complex": "m[high]"}))
+        info = _start(_info(parent_session_key=key), provider=_Pairs(served="m[low]"))
+        assert info.routed_model == "m[high]"
+
+    def test_a_range_naming_no_advertised_id_keeps_the_inherited_model_and_takes_its_effort(
+        self, answers, catalog_rates, no_role_pin, parent_range
+    ):
+        key = parent_range(
+            {"models": ["other-backend-model"], "effort_min": "medium", "effort_max": "xhigh"}
+        )
+        answers("complex", _config(derive=True))
+        info = _start(_info(parent_session_key=key))
+        assert (info.routed_model, info.routed_tier, info.routed_effort) == (
+            "",
+            "complex",
+            "xhigh",
+        )
+
+    def test_a_parent_not_on_auto_jev_bounds_neither_the_model_nor_the_effort(
+        self, answers, catalog_rates, no_role_pin, parent_range
+    ):
+        key = parent_range(
+            {
+                "models": ["fake-mini", "fake-standard"],
+                "effort_min": "medium",
+                "effort_max": "xhigh",
+            },
+            on_auto=False,
+        )
+        answers("complex", _config(derive=True))
+        info = _start(_info(parent_session_key=key))
+        assert (info.routed_model, info.routed_effort) == ("fake-frontier", "")
+
+    def test_a_non_owner_forks_range_routes_nothing(
+        self, answers, catalog_rates, no_role_pin, parent_range
+    ):
+        from kiro_crew.dashboard.chat_fork import _FORK_DIRECTION_HEAD, _shape_fork_child
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.state import _ChatSlot
+        from kiro_crew.slack.handler import get_dashboard_state
+
+        parent_range(
+            {
+                "models": ["fake-mini", "fake-standard"],
+                "effort_min": "medium",
+                "effort_max": "xhigh",
+            }
+        )
+        state = get_dashboard_state()
+        fork = state._slots["chat-fork"] = _ChatSlot("chat-fork")
+        _shape_fork_child(
+            fork,
+            state._slots["chat-parent"],
+            direction=_FORK_DIRECTION_HEAD,
+            jev_route_allowed=False,
+        )
+        answers("complex", _config(derive=True))
+        info = _start(_info(parent_session_key=effective_session_key(fork)))
+        assert (info.routed_model, info.routed_effort) == ("fake-frontier", "")
+
+    def test_a_parent_with_no_range_routes_as_before(
+        self, answers, catalog_rates, no_role_pin, parent_range
+    ):
+        key = parent_range(NO_EFFORT_BOUNDS)
+        answers("complex", _config(derive=True))
+        info = _start(_info(parent_session_key=key))
+        assert (info.routed_model, info.routed_effort) == ("fake-frontier", "")
 
 
 class TestTheSpawnBaseline:

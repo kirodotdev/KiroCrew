@@ -7620,7 +7620,9 @@
       "credit_multiplier_baseline": "{{value}}、クレジット消費量の基準",
       "loading_models": "モデルを読み込み中…",
       "no_matches": "一致するものがありません",
-      "auto_jev": "自動 (Jev)"
+      "auto_jev": "自動 (Jev)",
+      "jev_may_use": "Jev が {{model}} を使用可能",
+      "jev_may_use_label": "Jev が使用可能"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "設定で管理",
@@ -7632,7 +7634,13 @@
       "pin_model_unavailable": "<model/> は現在提供されていません",
       "set_default_for_agent": "<model/> をエージェント <agent/> に固定（グローバルデフォルトより優先）",
       "set_default_for_new_sessions": "新規セッションのグローバルデフォルト…",
-      "type_to_filter": "フィルターするには入力…"
+      "type_to_filter": "フィルターするには入力…",
+      "jev_lowest_effort": "Jev の最小エフォート",
+      "jev_highest_effort": "Jev の最大エフォート",
+      "jev_range_save_failed": "Jev の範囲を保存できませんでした",
+      "jev_your_level": "あなたの設定",
+      "jev_lowest_mine": "最小に自分の設定を使う",
+      "jev_highest_mine": "最大に自分の設定を使う"
     },
     "monacoCodeBlock": {
       "close_editor": "エディターを閉じる",
@@ -11963,6 +11971,7 @@
         "model_baseline_label": "振り分けなしのモデル",
         "model_chosen_label": "使用したモデル",
         "model_default": "組み込みの既定モデル",
+        "model_effort": "エフォート {{effort}}（あなたの設定: {{baseline}}）",
         "model_latency": "{{ms}} ミリ秒",
         "model_not_applied": "未適用 — {{model}} で実行",
         "model_tier": "Jev: {{tier}}",

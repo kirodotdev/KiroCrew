@@ -164,6 +164,14 @@ export interface ChatDonePayload extends TurnIdentityFields {
   needs_input?: boolean
 }
 
+/** What `POST /api/chat/slots/{slot}/jev-range` takes and every slot carries. An empty
+ *  `models` or `''` bound means no bound on that side. */
+export interface JevRange {
+  models: string[]
+  effort_min: string
+  effort_max: string
+}
+
 export interface ChatSlot extends TurnIdentityFields {
   /** Which namespace `agent` was chosen in: a configured member, a shared
    *  provider template, or "" when the choice was made by name alone or came
@@ -194,6 +202,8 @@ export interface ChatSlot extends TurnIdentityFields {
    *  slot stores `model: 'auto'`, and highlighting the Auto row would name a
    *  behaviour the session does not have. */
   jev_route?: boolean
+  /** The models and effort span Jev may route this session to; set by the owner only. */
+  jev_range?: JevRange
   /** The model id the live session actually resolved to; `''`/absent when not
    *  known. A slot with no pin — or one whose pin was withheld — runs on the
    *  backend's own choice, which the pin cannot name, so this is what lets a

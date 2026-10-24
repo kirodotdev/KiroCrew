@@ -5574,6 +5574,7 @@
         "model_baseline_label": "Model without routing",
         "model_chosen_label": "Model used",
         "model_default": "Built-in default",
+        "model_effort": "effort {{effort}} (yours: {{baseline}})",
         "model_latency": "{{ms}} ms",
         "model_not_applied": "not applied — ran on {{model}}",
         "model_tier": "Jev: {{tier}}",

@@ -7620,7 +7620,9 @@
       "credit_multiplier_baseline": "{{value}}, 기준 크레딧 비용",
       "loading_models": "모델 불러오는 중…",
       "no_matches": "일치 항목 없음",
-      "auto_jev": "자동 (Jev)"
+      "auto_jev": "자동 (Jev)",
+      "jev_may_use": "Jev가 {{model}} 사용 가능",
+      "jev_may_use_label": "Jev 사용 가능"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "설정에서 관리",
@@ -7632,7 +7634,13 @@
       "pin_model_unavailable": "<model/>은(는) 현재 제공되지 않습니다",
       "set_default_for_agent": "<model/>을(를) <agent/> 에이전트에 고정 (전역 기본값보다 우선)",
       "set_default_for_new_sessions": "새 세션의 전역 기본값…",
-      "type_to_filter": "입력하여 필터…"
+      "type_to_filter": "입력하여 필터…",
+      "jev_lowest_effort": "Jev의 최저 강도",
+      "jev_highest_effort": "Jev의 최고 강도",
+      "jev_range_save_failed": "Jev 범위를 저장하지 못했습니다",
+      "jev_your_level": "내 설정",
+      "jev_lowest_mine": "최저 강도에 내 설정 사용",
+      "jev_highest_mine": "최고 강도에 내 설정 사용"
     },
     "monacoCodeBlock": {
       "close_editor": "편집기 닫기",
@@ -11963,6 +11971,7 @@
         "model_baseline_label": "라우팅 없는 모델",
         "model_chosen_label": "사용한 모델",
         "model_default": "기본 제공 모델",
+        "model_effort": "강도 {{effort}} (내 설정: {{baseline}})",
         "model_latency": "{{ms}} 밀리초",
         "model_not_applied": "적용되지 않음 — {{model}}에서 실행",
         "model_tier": "Jev: {{tier}}",
