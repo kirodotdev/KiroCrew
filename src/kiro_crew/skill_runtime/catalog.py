@@ -165,10 +165,42 @@ def _canonical_glob(pattern: str, project_dir: str | Path | None = None) -> str:
     return _glob_with_prefix(pattern, _canonical_prefix(pattern, project_dir))
 
 
+def _spelled_canonically(pattern: str, project_dir: str | Path | None) -> bool:
+    """True when *pattern*'s literal prefix already resolves to itself (POSIX only).
+
+    :func:`_canonical_glob` then returns *pattern* whether the sensitive-path gate
+    admits the prefix or refuses it, so the gate's pooled check can be skipped
+    without changing the result. The ``realpath`` here is the one
+    ``validate_file_path`` runs on the same thread. Windows, and any UNC-shaped
+    prefix, always take the gate: ``realpath`` on a UNC prefix is the SMB probe the
+    gate screens first. A project-local prefix is never resolved, as in
+    :func:`_canonical_prefix`. Nothing is stored, so a prefix that later becomes
+    a link is caught on the next call.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    if os.name == "nt":
+        return False
+    parts, literal = _literal_split(pattern)
+    if literal == 0:
+        return False
+    prefix = str(Path(*parts[:literal]))
+    if sk.hooks_module.is_unc_shape(prefix):
+        return False
+    try:
+        if project_dir and sk._within_any(os.path.abspath(prefix), (os.path.abspath(project_dir),)):
+            return False
+        return _glob_with_prefix(pattern, os.path.realpath(os.path.expanduser(prefix))) == pattern
+    except (OSError, ValueError):
+        return False
+
+
 def _with_canonical_globs(globs: list[str], project_dir: str | Path | None = None) -> list[str]:
     """*globs* plus each one's canonical spelling, original order first, no duplicates."""
     out = list(globs)
     for glob in globs:
+        if _spelled_canonically(glob, project_dir):
+            continue
         canonical = _canonical_glob(glob, project_dir)
         if canonical not in out:
             out.append(canonical)
