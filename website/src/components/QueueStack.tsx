@@ -11,6 +11,7 @@ import { stripAppEnvelope } from '../pages/chat/groupDisplayItems'
 import { hasSubagentCompletionPrefix } from '../pages/chat/subagentCompletion'
 import { prependQuote, quoteBlock, quoteExcerpt, readMessageQuote, stripQuoteBlock } from '../chat-core/composer/messageQuote'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { splitKnowledgeEnvelope } from '../pages/chat/useKnowledgeFetch'
 /** System-injected sub-agent completion deliveries waiting for the busy slot.
  *  These are NOT user messages: they must not be editable/cancellable (either
  *  would silently lose a finished agent's result) and rendering each as a
@@ -48,13 +49,33 @@ export function isAppMessageQueued(m: ChatMessage): boolean {
 /** Display text for a queued entry: an app-message entry drops its machine
  *  envelope so the queue card wears the same skin the transcript row will —
  *  two skins for one message read as two different messages. */
-/** The entry's own words: the content with a carried quote's block taken off
- *  the head, exactly as the sent bubble strips it (`UserMessage`). This is
- *  what the editor opens on; `reglueQuote` puts the block back on commit. */
+/** A queued entry's text split into the parts the sender did not type and the
+ *  part they did. A send is queued with its WIRE text, which opens with the
+ *  quote block (when quoting) and then the `[KNOWLEDGE CONTEXT ...]` envelope
+ *  (when a knowledge block was picked) -- model-facing material the user never
+ *  typed, so neither belongs on the card or in the editor. `quote` is set only
+ *  when the content really starts with that quote's block, and `envelope` is
+ *  the knowledge envelope as sent (empty when there is none), kept verbatim so
+ *  an edit can put it back and the agent still receives the knowledge. */
+function splitQueuedContent(m: ChatMessage): {
+  quote: ReturnType<typeof readMessageQuote>
+  envelope: string
+  own: string
+} {
+  if (isAppMessageQueued(m)) return { quote: null, envelope: '', own: stripAppEnvelope(m.content) }
+  const carried = readMessageQuote(m.meta as Record<string, unknown> | undefined)
+  const quote = carried && m.content.startsWith(quoteBlock(carried)) ? carried : null
+  const afterQuote = quote ? stripQuoteBlock(m.content, quote) : m.content
+  const split = splitKnowledgeEnvelope(afterQuote)
+  return { quote, envelope: split?.head ?? '', own: split ? split.rest : afterQuote }
+}
+
+/** The entry's own words: the content with a carried quote's block and a
+ *  knowledge envelope taken off the head, exactly as the sent bubble shows it
+ *  (`UserMessage` strips the quote; the envelope is never in the bubble). This
+ *  is what the editor opens on; `reglueQuote` puts both back on commit. */
 function queuedOwnText(m: ChatMessage): string {
-  if (isAppMessageQueued(m)) return stripAppEnvelope(m.content)
-  const quote = readMessageQuote(m.meta as Record<string, unknown> | undefined)
-  return quote ? stripQuoteBlock(m.content, quote) : m.content
+  return splitQueuedContent(m).own
 }
 
 /** The card's one visible line. A quoting entry shows the user's own words,
@@ -68,13 +89,20 @@ export function queuedDisplayText(m: ChatMessage): string {
   return quote ? quoteExcerpt(quote.text) : own
 }
 
-/** The text an edit of a quoting entry commits: the editor shows and edits
- *  the user's own words (`queuedDisplayText`), and the quote block the entry
- *  carries goes back on the head unchanged, so the card survives the edit. */
+/** The text an edit of an entry commits: the editor shows and edits the
+ *  user's own words (`queuedDisplayText`), and what the entry carries ahead of
+ *  them goes back on the head unchanged -- the quote block, so the card
+ *  survives the edit, and the knowledge envelope, so the edited send still
+ *  carries the knowledge the agent was meant to get. An entry sent with no
+ *  typed words (a quote plus knowledge) has its wire trimmed right after the
+ *  close marker, so the blank line a fresh send puts between the envelope and
+ *  the words is put back here; without it the edit would glue the words onto
+ *  the marker line and the envelope would no longer be found. */
 function reglueQuote(m: ChatMessage, edited: string): string {
-  const quote = readMessageQuote(m.meta as Record<string, unknown> | undefined)
-  if (!quote || !m.content.startsWith(quoteBlock(quote))) return edited
-  return prependQuote(edited, quote)
+  const { quote, envelope } = splitQueuedContent(m)
+  const sep = envelope && edited && !envelope.endsWith('\n') ? '\n\n' : ''
+  const body = envelope + sep + edited
+  return quote ? prependQuote(body, quote) : body
 }
 
 /** Split a slot's message list into the three things a pane surface needs:

@@ -26,6 +26,7 @@ import {
   jsonResponder as json,
   makeChecker,
   prepareSplitChatPage,
+  queuedPaneFixtures,
   splitPaneFixtures,
 } from './lib/prepare-split-chat-page.mjs'
 import { mkdirSync } from 'node:fs'
@@ -38,25 +39,7 @@ mkdirSync(OUT, { recursive: true })
 const now = Date.now() / 1000
 const QUEUED = 'Summarize both reports.\n[attached_file 1] /home/user/.kiro/crew/uploads/Q3 roster report.pdf\n[attached_file 2] /home/user/.kiro/crew/uploads/Q4 plan.pdf'
 
-const slots = [
-  { key: 'pane-a', title: 'Design notes', running: false, last_message: 'Working through phase one…', messages: 2, agent: 'kirocrew', memory_mode: 'persistent', modified: Math.floor(now) },
-  { key: 'pane-b', title: 'Release checklist', running: true, last_message: 'Summarized the layout options.', messages: 3, agent: 'kirocrew', memory_mode: 'persistent', modified: Math.floor(now) - 60 },
-]
-const detailA = {
-  running: false, has_more: false, total: 2, queue: [],
-  messages: [
-    { role: 'user', ts: now - 300, content: 'Compare the two layout options.', cls: 'msg msg-user' },
-    { role: 'assistant', ts: now - 240, content: 'Option A keeps the sidebar fixed; option B collapses it under 900px.', cls: 'msg msg-assistant' },
-  ],
-}
-const detailB = {
-  running: true, has_more: false, total: 3, queue: [],
-  messages: [
-    { role: 'user', ts: now - 120, content: 'Run the deployment checklist for the new release.', cls: 'msg msg-user' },
-    { role: 'assistant', ts: now - 60, content: 'Starting phase one: build verification. This will take a few minutes.', cls: 'msg msg-assistant' },
-    { role: 'queued', ts: now - 10, content: QUEUED, cls: 'msg msg-queued', meta: { queueId: 'q-demo-1' } },
-  ],
-}
+const { slots, detailA, detailB } = queuedPaneFixtures(now, QUEUED)
 const splitLayouts = TWO_PANE_SPLIT_LAYOUTS
 const FIXTURES = splitPaneFixtures(slots)
 const { check, failed } = makeChecker()
