@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import subprocess
 
 import pytest
 
@@ -381,6 +383,185 @@ class TestTokenMint:
         msg = str(excinfo.value)
         assert "WHY-IT-FAILED" in msg
         assert "short-run-word" in msg
+
+
+@pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="runs the remote prelude in a POSIX sh")
+class TestTokenMintHomePointer:
+    """The prelude follows the default run dir's gateway-<port>.home to a non-default data home."""
+
+    PORT = 5477
+
+    def _home_with_marker(self, home, rel):
+        data_home = home / rel
+        launcher = data_home / "kirocrew"
+        launcher.parent.mkdir(parents=True, exist_ok=True)
+        launcher.write_text(f'#!/bin/sh\necho "{rel} $KIROCREW_HOME $*"\n')
+        launcher.chmod(0o755)
+        marker = data_home / "run" / f"gateway-{self.PORT}.bin"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"{launcher}\n")
+        return data_home
+
+    def _plant_marker(self, home, rel):
+        """Give the *rel* data home a marker naming a script that touches X."""
+        plant = home / "plant"
+        plant.write_text(f"#!/bin/sh\ntouch {home}/X\n")
+        plant.chmod(0o755)
+        marker = home / rel / "run" / f"gateway-{self.PORT}.bin"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"{plant}\n")
+        return home / rel
+
+    def _launcher(self, path, mode=0o755):
+        path.write_text('#!/bin/sh\necho "launcher $KIROCREW_HOME $*"\n')
+        path.chmod(mode)
+        return path
+
+    def _mint(self, home, *flags, shell="/bin/sh", **env):
+        from kiro_crew.instances.token_mint import build_remote_token_command
+
+        cmd = build_remote_token_command("", ttl="20h", port=self.PORT)
+        return subprocess.run(
+            [shell, *flags, "-c", cmd],
+            env={"HOME": str(home), "PATH": "/usr/bin:/bin", **env},
+            capture_output=True,
+            encoding="utf-8",
+            timeout=30,
+            cwd=home,
+        )
+
+    def _point(self, home, content):
+        from kiro_crew.config.paths import CONFIG_DIR_NAME
+
+        pointer = home / CONFIG_DIR_NAME / "run" / f"gateway-{self.PORT}.home"
+        pointer.parent.mkdir(parents=True, exist_ok=True)
+        pointer.write_text(content)
+
+    @pytest.mark.parametrize("suffix", ["", " "], ids=["plain", "trailing-space"])
+    def test_execs_the_pointers_launcher_with_kirocrew_home_set(self, tmp_path, suffix):
+        from kiro_crew.config.paths import CONFIG_DIR_NAME
+
+        self._home_with_marker(tmp_path, CONFIG_DIR_NAME)
+        wrapped = self._plant_marker(tmp_path, f".kiro/crew-wrapped{suffix}")
+        launcher = self._launcher(tmp_path / f"launcher{suffix}")
+        self._point(tmp_path, f"{wrapped}\n{launcher}\n")
+
+        out = self._mint(tmp_path).stdout
+
+        assert out == f"launcher {wrapped} token --ttl 20h --port 5477\n"
+        assert not (tmp_path / "X").exists()
+
+    def test_an_exported_kirocrew_home_wins_over_the_pointer(self, tmp_path):
+        wrapped = self._home_with_marker(tmp_path, ".kiro/crew-wrapped")
+        other = self._home_with_marker(tmp_path, "other")
+        self._point(tmp_path, f"{wrapped}\n{wrapped / 'kirocrew'}\n")
+
+        out = self._mint(tmp_path, KIROCREW_HOME=str(other)).stdout
+
+        assert out == f"other {other} token --ttl 20h --port 5477\n"
+
+    def test_execs_the_pointers_launcher_under_set_u_with_no_kirocrew_home(self, tmp_path):
+        from kiro_crew.config.paths import CONFIG_DIR_NAME
+
+        self._home_with_marker(tmp_path, CONFIG_DIR_NAME)
+        wrapped = self._plant_marker(tmp_path, ".kiro/crew-wrapped")
+        launcher = self._launcher(tmp_path / "launcher")
+        self._point(tmp_path, f"{wrapped}\n{launcher}\n")
+
+        proc = self._mint(tmp_path, "-u")
+
+        assert proc.stdout == f"launcher {wrapped} token --ttl 20h --port 5477\n"
+        assert proc.stderr == ""
+
+    def test_runs_the_default_home_marker_under_set_u_with_no_pointer(self, tmp_path):
+        from kiro_crew.config.paths import CONFIG_DIR_NAME
+
+        self._home_with_marker(tmp_path, CONFIG_DIR_NAME)
+
+        proc = self._mint(tmp_path, "-u")
+
+        assert proc.stdout == f"{CONFIG_DIR_NAME}  token --ttl 20h --port 5477\n"
+        assert proc.stderr == ""
+
+    @pytest.mark.skipif(
+        os.getuid() == 0 if hasattr(os, "getuid") else True, reason="root reads a mode-000 file"
+    )
+    @pytest.mark.parametrize("flags", [(), ("-u",)], ids=["plain", "set-u"])
+    @pytest.mark.parametrize(
+        "shell",
+        [
+            "/bin/sh",
+            pytest.param(
+                "/bin/zsh",
+                marks=pytest.mark.skipif(not os.path.exists("/bin/zsh"), reason="no zsh"),
+            ),
+        ],
+        ids=["sh", "zsh"],
+    )
+    def test_runs_the_default_home_marker_quietly_when_the_pointer_cannot_be_opened(
+        self, tmp_path, shell, flags
+    ):
+        from kiro_crew.config.paths import CONFIG_DIR_NAME
+
+        self._home_with_marker(tmp_path, CONFIG_DIR_NAME)
+        wrapped = self._plant_marker(tmp_path, ".kiro/crew-wrapped")
+        launcher = self._launcher(tmp_path / "launcher")
+        self._point(tmp_path, f"{wrapped}\n{launcher}\n")
+        pointer = tmp_path / CONFIG_DIR_NAME / "run" / f"gateway-{self.PORT}.home"
+        pointer.chmod(0o000)
+        try:
+            proc = self._mint(
+                tmp_path, *flags, shell=shell, **{"__kh": str(wrapped), "__kp": str(launcher)}
+            )
+        finally:
+            pointer.chmod(0o644)
+
+        assert proc.stdout == f"{CONFIG_DIR_NAME}  token --ttl 20h --port 5477\n"
+        assert proc.stderr == ""
+
+    @pytest.mark.parametrize(
+        ("pointer", "marked"),
+        [
+            (None, True),
+            ("{w}\n", True),
+            ("{w}\n\n", True),
+            ("{w}\n{exe}\n", False),
+            ("{w}\n{noexe}\n", True),
+            ("{w}\n$(touch {tmp}/X)\n", True),
+            ("$(touch {tmp}/X)\n{exe}\n", True),
+            ("; touch {tmp}/X\n{exe}\n", True),
+        ],
+        ids=[
+            "no-pointer",
+            "no-launcher-line",
+            "empty-launcher-line",
+            "home-without-marker",
+            "launcher-not-executable",
+            "launcher-command-substitution",
+            "home-command-substitution",
+            "home-command-separator",
+        ],
+    )
+    def test_runs_the_default_home_marker_unless_the_pointer_names_a_launcher_for_a_marked_home(
+        self, tmp_path, pointer, marked
+    ):
+        from kiro_crew.config.paths import CONFIG_DIR_NAME
+
+        self._home_with_marker(tmp_path, CONFIG_DIR_NAME)
+        wrapped = tmp_path / ".kiro" / "crew-wrapped"
+        (wrapped / "run").mkdir(parents=True)
+        if marked:
+            self._plant_marker(tmp_path, ".kiro/crew-wrapped")
+        exe = self._launcher(tmp_path / "launcher")
+        noexe = self._launcher(tmp_path / "noexe", mode=0o644)
+        if pointer is not None:
+            self._point(tmp_path, pointer.format(w=wrapped, exe=exe, noexe=noexe, tmp=tmp_path))
+
+        proc = self._mint(tmp_path)
+
+        assert proc.stdout == f"{CONFIG_DIR_NAME}  token --ttl 20h --port 5477\n"
+        assert proc.stderr == ""
+        assert not (tmp_path / "X").exists()
 
 
 class TestTokenMintGeneric:

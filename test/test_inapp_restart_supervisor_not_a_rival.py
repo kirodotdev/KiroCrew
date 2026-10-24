@@ -105,6 +105,8 @@ _OLD_GATEWAY = textwrap.dedent("""
 
 def _restart(layout: str, check: str, home: Path, tmp_path: Path) -> tuple[int, int, int, str]:
     """Run the old/new gateway pair; return (old pid, new pid, new's parent, verdict)."""
+    user_home = tmp_path / "user-home"
+    (user_home / ".kiro" / "crew" / "run").mkdir(parents=True)
     old = subprocess.Popen(
         [
             sys.executable,
@@ -116,7 +118,7 @@ def _restart(layout: str, check: str, home: Path, tmp_path: Path) -> tuple[int, 
             str(tmp_path / "gw.sock"),
             _NEW_GATEWAY,
         ],
-        env={**os.environ, "KIROCREW_HOME": str(home)},
+        env={**os.environ, "KIROCREW_HOME": str(home), "HOME": str(user_home)},
         # Both processes may create files (the record, marker temporaries); the
         # grandchild inherits this directory through the supervisor.
         cwd=tmp_path,
@@ -133,6 +135,7 @@ def _restart(layout: str, check: str, home: Path, tmp_path: Path) -> tuple[int, 
             os.killpg(old.pid, signal.SIGKILL)
             old.communicate(timeout=30)
     assert old.returncode == 0, err
+    assert not list((user_home / ".kiro" / "crew" / "run").glob("*.home"))
     new_pid, new_parent, token_matches, verdict = out.split()
     # Without a live, token-matching record naming the old pid, the run-marker
     # check reads the record as unproven and writes anyway, and the test would

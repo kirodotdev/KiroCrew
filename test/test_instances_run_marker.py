@@ -6,9 +6,11 @@ sidecar readers, and how clients discover a gateway on a non-default port.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -755,3 +757,279 @@ class TestRunMarkerDiscovery:
         assert not (d / "gateway-6777.bin").exists()
         assert (d / "sandbox-6776.bin").exists()
         assert (d / "gateway-abc.bin").exists()
+
+
+class TestDataHomePointer:
+    """``gateway-<port>.home`` in the default run dir names a non-default data home."""
+
+    @pytest.fixture
+    def run_marker(self, tmp_path, monkeypatch):
+        from kiro_crew.instances import run_marker
+
+        default_run = tmp_path / "default" / "run"
+        default_run.mkdir(parents=True)
+        monkeypatch.setattr(run_marker, "_DEFAULT_RUN_DIR", default_run)
+        monkeypatch.setattr(run_marker, "gateway_launcher_path", lambda: "/venv/bin/kirocrew")
+        monkeypatch.delenv("KIROCREW_POD", raising=False)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew-wrapped"))
+        monkeypatch.setattr(
+            run_marker, "_PUBLISHED_LISTENERS", {5476: {"127.0.0.1"}, 5477: {"127.0.0.1"}}
+        )
+        return run_marker
+
+    def test_writes_a_pointer_of_its_data_home_then_its_launcher(self, run_marker):
+        import stat
+
+        from kiro_crew.config.paths import config_dir
+
+        run_marker.write_marker(5477)
+
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        assert pointer.read_text(encoding="utf-8") == f"{config_dir()}\n/venv/bin/kirocrew\n"
+        if os.name == "posix":
+            assert stat.S_IMODE(pointer.stat().st_mode) == 0o600
+
+    def test_writes_an_empty_launcher_line_for_a_source_tree_launch(self, run_marker, monkeypatch):
+        from kiro_crew.config.paths import config_dir
+
+        monkeypatch.setattr(run_marker, "gateway_launcher_path", lambda: None)
+        run_marker.write_marker(5477)
+
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        assert pointer.read_text(encoding="utf-8") == f"{config_dir()}\n\n"
+
+    def test_the_default_home_prune_leaves_another_homes_pointer(self, run_marker, monkeypatch):
+        from kiro_crew import port_resolution
+        from kiro_crew.config.paths import config_dir
+
+        run_marker.write_marker(5477)
+        wrapped_home = config_dir()
+        default_run = run_marker._DEFAULT_RUN_DIR
+        (default_run / "gateway-5477.bin").write_text("", encoding="utf-8")  # stale, prunable
+        monkeypatch.setattr(port_resolution, "_gateway_owns_port", lambda port: False)
+        monkeypatch.setenv("KIROCREW_HOME", str(default_run.parent))
+
+        run_marker.write_marker(5476)
+
+        assert run_marker.marker_ports() == [5476]
+        assert (default_run / "gateway-5477.home").read_text(encoding="utf-8") == (
+            f"{wrapped_home}\n/venv/bin/kirocrew\n"
+        )
+
+    @pytest.mark.parametrize(
+        "cover",
+        [("127.0.0.1",), ("0.0.0.0",), ("127.0.0.1", "::1")],
+        ids=["127.0.0.1", "0.0.0.0", "dual-stack"],
+    )
+    def test_a_default_home_gateway_removes_a_pointer_left_for_its_own_port(
+        self, run_marker, monkeypatch, cover
+    ):
+        monkeypatch.setattr(run_marker, "_PUBLISHED_LISTENERS", {5476: set(cover)})
+        default_run = run_marker._DEFAULT_RUN_DIR
+        (default_run / "gateway-5476.home").write_text("/elsewhere\n", encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(default_run.parent))
+
+        run_marker.write_marker(5476)
+
+        assert not (default_run / "gateway-5476.home").exists()
+        assert run_marker.read_pid(5476) == os.getpid()
+
+    @pytest.mark.parametrize(
+        "listeners",
+        [("127.0.0.2",), ("::1",), ()],
+        ids=["127.0.0.2", "::1", "none"],
+    )
+    @pytest.mark.parametrize("default_home", [False, True], ids=["wrapped", "default"])
+    def test_a_gateway_without_127_0_0_1_cover_leaves_the_pointer_alone(
+        self, run_marker, monkeypatch, caplog, default_home, listeners
+    ):
+        published = {5477: set(listeners)} if listeners else {}
+        monkeypatch.setattr(run_marker, "_PUBLISHED_LISTENERS", published)
+        if default_home:
+            monkeypatch.setenv("KIROCREW_HOME", str(run_marker._DEFAULT_RUN_DIR.parent))
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        seeded = b"/elsewhere\n/other/bin/kirocrew\n"
+        pointer.write_bytes(seeded)
+
+        with caplog.at_level(logging.INFO):
+            run_marker.write_marker(5477)
+
+        assert pointer.read_bytes() == seeded
+        assert any(
+            r.levelno == logging.INFO and "no published listener covers 127.0.0.1" in r.getMessage()
+            for r in caplog.records
+        )
+        assert run_marker.read_pid(5477) == os.getpid()
+
+    def test_writes_no_pointer_when_the_pid_record_names_another_live_gateway(
+        self, run_marker, monkeypatch
+    ):
+        pid_file = run_marker.pid_path(5477)
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text("424242\n", encoding="utf-8")
+        run_marker._start_path_for(pid_file).write_text("live-token\n", encoding="utf-8")
+        monkeypatch.setattr(run_marker.platform_compat, "pid_exists", lambda pid: True)
+        monkeypatch.setattr(run_marker, "pid_start_token", lambda pid: "live-token")
+
+        run_marker.write_marker(5477)
+
+        assert run_marker.read_pid(5477) == 424242
+        assert not (run_marker._DEFAULT_RUN_DIR / "gateway-5477.home").exists()
+
+    def test_a_pod_writes_no_pointer_while_the_same_gateway_outside_one_does(
+        self, run_marker, monkeypatch
+    ):
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        monkeypatch.setenv("KIROCREW_POD", "1")
+        run_marker.write_marker(5477)
+        assert not pointer.exists()
+
+        monkeypatch.delenv("KIROCREW_POD")
+        run_marker.write_marker(5477)
+        assert pointer.exists()
+
+    def test_never_creates_the_default_run_dir_but_writes_once_it_exists(self, run_marker):
+        default_run = run_marker._DEFAULT_RUN_DIR
+        default_run.rmdir()
+
+        run_marker.write_marker(5477)
+        assert not default_run.exists()
+
+        default_run.mkdir()
+        run_marker.write_marker(5477)
+        assert (default_run / "gateway-5477.home").exists()
+
+    def test_warns_that_the_pointer_was_skipped_because_the_run_dir_is_not_a_dir(
+        self, run_marker, caplog
+    ):
+        run_marker._DEFAULT_RUN_DIR.rmdir()
+
+        with caplog.at_level(logging.INFO):
+            run_marker.write_marker(5477)
+
+        assert any(
+            r.levelno == logging.WARNING
+            and "5477" in r.getMessage()
+            and "is not a dir" in r.getMessage()
+            for r in caplog.records
+        )
+
+    @pytest.mark.parametrize(
+        "pod, dir_exists",
+        [(False, True), (True, False)],
+        ids=["pointer-written", "pod-without-dir"],
+    )
+    def test_logs_no_skip_line_when_the_pointer_is_written_or_in_a_pod(
+        self, run_marker, monkeypatch, caplog, pod, dir_exists
+    ):
+        if pod:
+            monkeypatch.setenv("KIROCREW_POD", "1")
+        if not dir_exists:
+            run_marker._DEFAULT_RUN_DIR.rmdir()
+
+        with caplog.at_level(logging.DEBUG):
+            run_marker.write_marker(5477)
+
+        assert not any("No pointer for port 5477" in r.getMessage() for r in caplog.records)
+
+    def test_a_failed_pointer_write_warns_naming_the_pointer_and_keeps_the_marker(
+        self, run_marker, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(run_marker, "pid_start_token", lambda pid: "own-token")
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        pointer.mkdir()
+
+        with caplog.at_level(logging.INFO):
+            run_marker.write_marker(5477)
+
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        prefix = "Could not write the run-marker or pointer for port 5477: "
+        assert any(m.startswith(prefix) and pointer.name in m for m in warnings)
+        assert run_marker.read_pid(5477) == os.getpid()
+        assert run_marker.marker_path(5477).read_text(encoding="utf-8") == "/venv/bin/kirocrew\n"
+        start = run_marker._start_path_for(run_marker.pid_path(5477))
+        assert start.read_text(encoding="utf-8") == "own-token\n"
+
+    @pytest.mark.parametrize(
+        "cover",
+        [("127.0.0.1",), ("0.0.0.0",), ("127.0.0.1", "::1")],
+        ids=["127.0.0.1", "0.0.0.0", "dual-stack"],
+    )
+    def test_clear_marker_removes_the_pointer_naming_this_home(
+        self, run_marker, monkeypatch, cover
+    ):
+        """The pointer is LF where atomic_write's default is CRLF."""
+        from kiro_crew.config.paths import config_dir
+
+        monkeypatch.setattr(run_marker, "_PUBLISHED_LISTENERS", {5477: set(cover)})
+
+        real = run_marker.atomic_write
+
+        def windows_atomic_write(path, content, *, newline=None, **kwargs):
+            if newline is None and isinstance(content, str):
+                return real(path, content.replace("\n", "\r\n"), newline="", **kwargs)
+            return real(path, content, newline=newline, **kwargs)
+
+        monkeypatch.setattr(run_marker, "atomic_write", windows_atomic_write)
+        run_marker.write_marker(5477)
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        assert pointer.read_bytes() == os.fsencode(config_dir()) + b"\n/venv/bin/kirocrew\n"
+
+        run_marker.clear_marker(5477)
+
+        assert not pointer.exists()
+
+    @pytest.mark.parametrize(
+        "this_home_plus_cr", [False, True], ids=["elsewhere", "this-home-plus-cr"]
+    )
+    def test_clear_marker_leaves_a_pointer_naming_another_home(self, run_marker, this_home_plus_cr):
+        from kiro_crew.config.paths import config_dir
+
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        home = os.fsencode(config_dir()) + b"\r" if this_home_plus_cr else b"/elsewhere"
+        pointer.write_bytes(home + b"\n/venv/bin/kirocrew\n")
+
+        run_marker.clear_marker(5477)
+
+        assert pointer.exists()
+
+    def test_clear_marker_leaves_its_own_homes_pointer_without_127_0_0_1_cover(
+        self, run_marker, monkeypatch
+    ):
+        from kiro_crew.config.paths import config_dir
+
+        monkeypatch.setattr(run_marker, "_PUBLISHED_LISTENERS", {5477: {"127.0.0.2"}})
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        own = os.fsencode(config_dir()) + b"\n/venv/bin/kirocrew\n"
+        pointer.write_bytes(own)
+
+        run_marker.clear_marker(5477)
+
+        assert pointer.read_bytes() == own
+        assert run_marker.published_listeners(5477) == frozenset()
+
+    @pytest.mark.parametrize("case", ["missing", "this-home", "other-home"])
+    def test_clear_marker_forgets_its_listeners_and_its_pointer_even_when_not_utf8(
+        self, run_marker, monkeypatch, case
+    ):
+        from kiro_crew.config.paths import config_dir
+
+        monkeypatch.setattr(run_marker, "_PUBLISHED_LISTENERS", {})
+        run_marker.note_published_listener(5477, "127.0.0.1")
+        pointer = run_marker._DEFAULT_RUN_DIR / "gateway-5477.home"
+        home = {"this-home": os.fsencode(config_dir()), "other-home": b"/elsewhere"}.get(case)
+        if home is not None:
+            pointer.write_bytes(home + b"\n\xff\n")
+
+        run_marker.clear_marker(5477)
+
+        assert run_marker.published_listeners(5477) == frozenset()
+        assert pointer.exists() == (case == "other-home")
+
+    def test_spec_states_the_shutdown_wait_an_orphan_pointer_outlasts(self):
+        from kiro_crew.slack.gateway_runtime.exit_path import _MARKER_WRITE_WAIT_SECS
+
+        spec = Path(__file__).resolve().parent.parent / "docs/system-specs/modules/instances.md"
+        text = " ".join(spec.read_text(encoding="utf-8").split())
+
+        assert f"stalls past shutdown's {_MARKER_WRITE_WAIT_SECS:g} s wait" in text

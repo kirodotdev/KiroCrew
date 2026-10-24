@@ -651,6 +651,7 @@ _SHARED_KIRO_PATHS: tuple[tuple[str, str, str], ...] = (
     ("kiro_crew.agent", "_CC_MCP_JSON", ".claude.json"),
     ("kiro_crew.agent", "_DEFAULT_KIRO_HOOKS_DIR", ".kiro/hooks"),
     ("kiro_crew.learn", "_DEFAULT_DIR", ".kiro/crew"),
+    ("kiro_crew.instances.run_marker", "_DEFAULT_RUN_DIR", ".kiro/crew/run"),
     ("kiro_crew.apps.bridges_mcp", "_LEGACY_SHARED_MCP_PATH", ".kiro/settings/mcp.json"),
     (
         "kiro_crew.dashboard.handlers.mcp_config_files",
