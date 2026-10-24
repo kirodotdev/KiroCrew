@@ -458,6 +458,50 @@ class TestNoSingleRowDecidesHowMuchTextIsScanned:
         assert activity == "A" * 200 + "\n" + "B" * 200
 
 
+class TestAnOverLongRequestIsDroppedNotCut:
+    """A request longer than one bounded scan is left out, never cut and never read."""
+
+    def test_a_huge_request_is_never_read_by_the_redactors(self, monkeypatch):
+        from kiro_crew import security
+
+        scanned: list[int] = []
+        real = security.redact_with_findings
+
+        def _spy(text):
+            scanned.append(len(text))
+            return real(text)
+
+        monkeypatch.setattr(security, "redact_with_findings", _spy)
+        request, _activity = ms.running_turn_excerpts(
+            _rows(("user", ("word " * 20 + "\n") * 10_000)), budget=200_000
+        )
+        assert request == "", "an over-long request is dropped, not cut"
+        assert all(
+            n <= ms.MAX_REQUEST_SCAN_CHARS for n in scanned
+        ), "one request row decided how much text the redactors read"
+
+    def test_a_label_far_from_its_token_cannot_be_cut_away(self):
+        """The Bearer pattern spans any whitespace; no cut may separate label and token."""
+        token = "8Fq2mKpRzXvN4tLwYbCdEeGhJk"
+        request, _activity = ms.running_turn_excerpts(
+            _rows(("user", "deploy\nAuthorization: Bearer" + "\n" * 6000 + token + "\nthanks")),
+            budget=2000,
+        )
+        assert token not in request
+        assert request == ""
+
+    @pytest.mark.parametrize(
+        "extra, kept", [(0, True), (1, False)], ids=["at-the-limit", "one-over"]
+    )
+    def test_the_limit_is_exact(self, extra, kept):
+        row = "w" * (ms.MAX_REQUEST_SCAN_CHARS - 5 + extra) + " tail"
+        request, _activity = ms.running_turn_excerpts(_rows(("user", row)), budget=200_000)
+        if kept:
+            assert request.endswith(" tail") and len(request) == ms.MAX_RUNNING_MESSAGE_CHARS
+        else:
+            assert request == ""
+
+
 class TestTheOutcomeRow:
     def test_the_row_carries_the_choice_and_the_arm_it_replaced(self, written_rows):
         row = ms.record_outcome(

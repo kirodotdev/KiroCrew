@@ -130,6 +130,10 @@ MAX_ACTIVITY_ROWS = 40
 #: characters, plus 8.
 SCAN_MARGIN_CHARS = 91
 
+#: Longest running request the redactors read. A longer one is left out of the
+#: excerpt entirely (see :func:`running_turn_excerpts`).
+MAX_REQUEST_SCAN_CHARS = MAX_RUNNING_MESSAGE_CHARS + 4096
+
 #: Rows the activity excerpt is built from. ``chunk`` is the live, unflushed text
 #: of the reply in progress, which is exactly the part a sender is reacting to.
 #:
@@ -297,6 +301,12 @@ def running_turn_excerpts(rows: Sequence[Mapping[str, Any]], budget: int) -> tup
     # The REQUEST is served first out of the shared budget, then whatever is left
     # pays for the activity: the request is the shorter half and the one the
     # activity only makes sense against.
+    #
+    # An over-long request is DROPPED, never cut: any cut can strand a value from
+    # the label its pattern anchors on, so failing closed is the only bound that
+    # cannot leak. The redactors then never read more than this per request.
+    if len(request) > MAX_REQUEST_SCAN_CHARS:
+        request = ""
     request_text = redacted(request, min(MAX_RUNNING_MESSAGE_CHARS, budget))
     activity_text = redacted("\n".join(pieces), max(0, budget - len(request_text)))
     return request_text, activity_text
