@@ -299,6 +299,10 @@ def cache_ceiling_bytes(max_mb: float) -> int:
 #: ``_download_entry`` keeps its ``(ok, error)`` shape.
 DENIED_MID_ENTRY = "download denied by the governance ceiling"
 
+#: The error for an entry whose poster or clip host the policy's ``hosts`` list
+#: does not permit. The pass goes on to the next entry, which may name another host.
+HOST_DENIED = "host not permitted by the governance ceiling"
+
 #: Failure reason for an entry whose media landed but whose receipt could not be
 #: written. The media stays on disk; without the receipt it reads as not cached,
 #: so the next pass re-fetches it and tries the receipt again.
@@ -602,10 +606,16 @@ class FeatureVideoCache:
         *folder* is held open for the whole entry, so the directory the poster
         landed in is the directory the clip lands in and the receipts are written
         to — no step between them re-resolves the folder's name.
+
+        Each request is first held to the policy's ``hosts`` list
+        (:func:`manifest_mod.host_denied`); a refused host fails this entry only.
         """
+        poster_url = current.asset_url(entry.poster)
+        if manifest_mod.host_denied(poster_url):
+            return False, HOST_DENIED
         poster_ok, poster_err = asset_downloader.download_to(
             folder.describe(entry.poster),
-            current.asset_url(entry.poster),
+            poster_url,
             sha256=entry.poster_sha256,
             # A bound, not a declared length: the manifest carries a poster sha but
             # no poster byte count, and max_bytes caps the transfer without
@@ -628,9 +638,12 @@ class FeatureVideoCache:
         # the poster's permit.
         if manifest_mod.download_denied():
             return False, DENIED_MID_ENTRY
+        clip_url = current.asset_url(entry.file)
+        if manifest_mod.host_denied(clip_url):
+            return False, HOST_DENIED
         clip_ok, clip_err = asset_downloader.download_to(
             folder.describe(entry.file),
-            current.asset_url(entry.file),
+            clip_url,
             sha256=entry.sha256,
             size=entry.bytes,
             resume=True,

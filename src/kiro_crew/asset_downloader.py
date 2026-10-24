@@ -189,9 +189,30 @@ _SAME_HOST_POLICY = (
     " redirects across hosts is honoured only when set through the environment override)"
 )
 _HTTPS_ONLY_POLICY = "the transfer stays on https"
+_CALLER_POLICY = "the caller's policy does not permit the redirect target"
 
 
-class _SameHostRedirectHandler(urllib.request.HTTPRedirectHandler):
+class _GuardedRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect handler that also asks the caller's own predicate about each hop.
+
+    ``redirect_allowed`` is ``None`` (no extra rule) unless :func:`build_opener`
+    was given one; a hop it refuses raises :class:`RedirectRefused`.
+    """
+
+    redirect_allowed: "Callable[[str], bool] | None" = None
+
+    def _check_caller_guard(self, req, newurl: str) -> None:  # noqa: ANN001
+        guard = self.redirect_allowed
+        if guard is not None and not guard(newurl):
+            logger.warning(
+                "refusing a redirect the caller's policy does not permit from %s to %s",
+                redact_url(req.full_url),
+                redact_url(newurl),
+            )
+            raise RedirectRefused(req.full_url, newurl, _CALLER_POLICY)
+
+
+class _SameHostRedirectHandler(_GuardedRedirect):
     """Refuse any redirect that leaves https or changes the host.
 
     The authorization to make a request is granted per HOST — a manifest's signed
@@ -229,10 +250,11 @@ class _SameHostRedirectHandler(urllib.request.HTTPRedirectHandler):
                 redact_url(newurl),
             )
             raise RedirectRefused(req.full_url, newurl, _SAME_HOST_POLICY)
+        self._check_caller_guard(req, newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+class _HttpsOnlyRedirectHandler(_GuardedRedirect):
     """Refuse a redirect that leaves https; allow one that changes the host.
 
     The relaxed policy, reachable only through ``allow_cross_host_redirects``,
@@ -262,11 +284,15 @@ class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
                 redact_url(newurl),
             )
             raise RedirectRefused(req.full_url, newurl, _HTTPS_ONLY_POLICY)
+        self._check_caller_guard(req, newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def build_opener(
-    context: "ssl.SSLContext | None" = None, *, allow_cross_host_redirects: bool = False
+    context: "ssl.SSLContext | None" = None,
+    *,
+    allow_cross_host_redirects: bool = False,
+    redirect_allowed: "Callable[[str], bool] | None" = None,
 ) -> urllib.request.OpenerDirector:
     """An opener that verifies TLS and pins redirects.
 
@@ -280,8 +306,17 @@ def build_opener(
     place of :class:`_SameHostRedirectHandler`. It is for a url the operator set
     in the process environment, or one written into the source as a constant,
     and nothing else — see the module docstring.
+
+    *redirect_allowed*, when given, is asked about every redirect target the
+    handler would otherwise follow; ``False`` refuses that hop. It only narrows.
     """
-    handler = _HttpsOnlyRedirectHandler if allow_cross_host_redirects else _SameHostRedirectHandler
+    handler_cls = (
+        _HttpsOnlyRedirectHandler if allow_cross_host_redirects else _SameHostRedirectHandler
+    )
+    handler: "type[_GuardedRedirect] | _GuardedRedirect" = handler_cls
+    if redirect_allowed is not None:
+        handler = handler_cls()
+        handler.redirect_allowed = redirect_allowed
     return urllib.request.build_opener(
         urllib.request.HTTPSHandler(context=context or make_ssl_context()), handler
     )

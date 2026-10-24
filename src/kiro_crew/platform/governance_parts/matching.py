@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 from typing import Callable, Dict, Tuple
 
 from kiro_crew.platform.guest_paths import GuestPath, guest_norm
@@ -268,3 +269,112 @@ def register_matcher(name: str, fn: Callable[[str, str], bool]) -> None:
     if existing is not None and existing is not fn:
         raise ValueError(f"matcher {name!r} is already registered")
     _MATCHERS[name] = fn
+
+
+def url_policy_hosts(url: object) -> Tuple[str, ...]:
+    """Every host a client could connect to for *url*, for a ``host``-matcher list item.
+
+    A policy that names hosts is only as strong as the host it is asked about, and
+    the HTTP clients in use read one URL differently: ``urllib`` percent-decodes the
+    authority, ``requests``/``urllib3`` and ``aiohttp``/``yarl`` treat a backslash
+    as the start of the path and IDNA-encode a non-ASCII name, and ``yarl`` reads
+    an ideographic full stop as a dot. Rather than chase spellings, each client's
+    own parser is asked (when installed), plus the standard library's plain and
+    percent-decoded readings. A caller permits the request only when EVERY reading
+    returned here is permitted.
+
+    Each reading is lower-cased and loses any IPv6 zone and terminal DNS root
+    dot, so entries are written without the dot. An IP literal is asked in canonical form only
+    (dotted IPv4, compressed IPv6), so an IP entry names a host in that form. A
+    reading that is not a plain ASCII name is not asked, because no client sends
+    it as written; the clients that encode it supply the ``xn--`` or decoded form
+    they do send. A URL with no plain reading at all is asked as ``""``, which
+    matches no entry: an allow list refuses it and a deny list does not. So, as
+    for ``network.egress``, an allow list is the hard bound, entries name ASCII
+    (``xn--``) hosts, and a deny list refuses the spellings it can name.
+    """
+    from urllib.parse import unquote, urlsplit
+
+    text = str(url or "").strip()
+    raw: list = []
+
+    def _add(read: "Callable[[], object]") -> None:
+        try:
+            host = read()
+        except Exception:
+            return
+        if isinstance(host, str) and host:
+            raw.append(host.strip("[]"))
+
+    _add(lambda: urlsplit(text).hostname)
+    # The host part only: decoding the userinfo too would cut the authority at an
+    # encoded ``@`` or ``/`` in a password and invent a host from it.
+    _add(lambda: urlsplit("//" + unquote(urlsplit(text).netloc.rpartition("@")[2])).hostname)
+    # What ``urllib``/``http.client`` connect to for a non-ASCII name: Python's own
+    # ``idna`` codec, which maps ``ß`` to ``ss`` where ``urllib3``/``yarl`` keep it.
+    for read in list(raw):  # the two standard-library readings so far
+        if not read.isascii():
+
+            def _python_idna(host: str = read) -> str:
+                return host.encode("idna").decode("ascii")
+
+            _add(_python_idna)
+    _add(lambda: urlsplit(text.replace("\\", "/")).hostname)
+    try:
+        from urllib3.util import parse_url
+    except ImportError:
+        pass
+    else:
+        _add(lambda: parse_url(text).host)
+    try:
+        import yarl
+    except ImportError:
+        pass
+    else:
+        _add(lambda: yarl.URL(text).raw_host)
+
+    hosts: list = []
+
+    def _keep(host: str) -> None:
+        if host not in hosts:
+            hosts.append(host)
+
+    for host in raw:
+        spelled = host.lower()
+        # An IPv6 zone (``fe80::1%eth0``) names an interface, not another host.
+        if ":" in spelled and "%" in spelled:
+            spelled = spelled.split("%", 1)[0]
+        bare = spelled.rstrip(".")
+        ip = _canonical_ip(bare)
+        if ip:
+            # An IP literal is asked in canonical form only, whatever spelling the
+            # resolver accepts (``167772165``, ``0x0a000005``, ``::ffff:10.0.0.5``).
+            _keep(ip)
+            continue
+        if not _PLAIN_HOST_RE.fullmatch(bare):
+            # Not a plain ASCII name: no client sends it as written. The clients
+            # that IDNA-encode or percent-decode it contribute their own reading.
+            continue
+        _keep(bare)
+    if not hosts:
+        # No reading is a host a client would send: ``""``, which an allow list
+        # refuses.
+        hosts.append("")
+    return tuple(hosts)
+
+
+def _canonical_ip(host: str) -> str:
+    """The canonical text of *host* when it is an IP literal in any form, else ``""``."""
+    import ipaddress
+
+    from kiro_crew.security import canonicalize_ip
+
+    try:
+        return str(ipaddress.ip_address(canonicalize_ip(host)))
+    except ValueError:
+        return ""
+
+
+#: A host as a client sends it: ASCII letters, digits, hyphens and dots, or an IP
+#: literal's hex digits and colons.
+_PLAIN_HOST_RE = re.compile(r"[a-z0-9._:-]+")
