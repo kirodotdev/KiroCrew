@@ -120,7 +120,7 @@ export function useComposerAttachments({ resetKey, granted, post, deniedNotice }
     setInFlight(prev => [...prev, { id: uploadId, names: list.map(f => f.name) }])
     void (async () => {
       try {
-        const res = await uploadComposerFiles(list, body => postRef.current(body, controller.signal))
+        const res = await uploadComposerFiles(list, body => postRef.current(body, controller.signal), controller.signal)
         if (gen !== generation.current) return
         if (res.error) throw new Error(res.error)
         const paths = res.paths.filter((p): p is string => typeof p === 'string' && p !== '')

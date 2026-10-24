@@ -9312,6 +9312,13 @@
       "search_in": "Search '{{query}}' in {{path}}",
       "search_web": "Search web for '{{query}}'",
       "view_image": "View image {{path}}"
+    },
+    "heicImage": {
+      "unreadable": "{{name}} could not be read as a HEIC photo. It may be damaged. Export it as a JPEG and attach that instead.",
+      "too_large": "{{name}} is over the {{max}} limit for converting a HEIC photo here. Export it as a JPEG and attach that instead.",
+      "too_many_pixels": "{{name}} is {{width}} × {{height}} pixels, over the {{max}}-megapixel limit for converting a HEIC photo here. Export a smaller JPEG and attach that instead.",
+      "convert_failed": "This browser could not convert {{name}} to JPEG. Reload the page and try again, or export it as a JPEG and attach that instead.",
+      "cannot_fit": "{{name}} could not be made smaller than {{max}} as a JPEG. Export a smaller JPEG and attach that instead."
     }
   },
   "store": {

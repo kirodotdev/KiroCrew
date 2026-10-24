@@ -19681,6 +19681,13 @@
       "search_in": "Rechercher '{{query}}' dans {{path}}",
       "search_web": "Rechercher « {{query}} » sur le Web",
       "view_image": "Voir l’image {{path}}"
+    },
+    "heicImage": {
+      "unreadable": "Impossible de lire {{name}} comme photo HEIC. Elle est peut-être endommagée. Exporte-la en JPEG et joins plutôt ce fichier.",
+      "too_large": "{{name}} dépasse la limite de {{max}} pour convertir une photo HEIC ici. Exporte-la en JPEG et joins plutôt ce fichier.",
+      "too_many_pixels": "{{name}} fait {{width}} × {{height}} pixels, au-delà de la limite de {{max}} mégapixels pour convertir une photo HEIC ici. Exporte un JPEG plus petit et joins plutôt ce fichier.",
+      "convert_failed": "Ce navigateur n'a pas pu convertir {{name}} en JPEG. Recharge la page et réessaie, ou exporte-la en JPEG et joins plutôt ce fichier.",
+      "cannot_fit": "Impossible de réduire {{name}} sous {{max}} en JPEG. Exporte un JPEG plus petit et joins plutôt ce fichier."
     }
   },
   "memoryV2": {

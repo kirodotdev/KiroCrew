@@ -302,6 +302,13 @@ export const CHUNK_BUDGETS = {
 
   // The SPA entry chunk: router, providers, and the eager page skeleton.
   main: 594 * KB, // measured 566 KB
+
+  // `heic-to/csp`: libheif and its HEVC decoder compiled to plain JavaScript,
+  // which is why one decoder is this large. `utils/heicImage.ts`
+  // imports it lazily, only when a HEIC/HEIF photo is attached in a browser with
+  // no native HEIC decoder, so it is never on the first load. The size is the
+  // vendor's decoder; no app code reaches this chunk. Re-measure on an upgrade.
+  'heic-to': 3231 * KB, // measured 3,150,907 B (heic-to 1.6.6)
 }
 
 const REPORT_PATH = path.resolve('dist', 'bundle-report.json')

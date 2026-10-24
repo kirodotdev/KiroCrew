@@ -110,6 +110,7 @@
     "graphology-communities-louvain": "2.0.2",
     "graphology-layout-forceatlas2": "0.10.1",
     "hast-util-to-html": "9.0.5",
+    "heic-to": "1.6.6",
     "highlight.js": "^11.11.1",
     "html-to-image": "1.11.13",
     "i18next": "^26.3.6",

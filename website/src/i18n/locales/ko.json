@@ -19095,6 +19095,13 @@
       "search_in": "{{path}}에서 ‘{{query}}’ 검색",
       "search_web": "웹에서 ‘{{query}}’ 검색",
       "view_image": "이미지 {{path}} 보기"
+    },
+    "heicImage": {
+      "unreadable": "{{name}}을(를) HEIC 사진으로 읽을 수 없습니다. 파일이 손상되었을 수 있습니다. JPEG로 내보낸 뒤 그 파일을 대신 첨부하세요.",
+      "too_large": "{{name}}이(가) 여기에서 HEIC 사진을 변환할 수 있는 한도인 {{max}}을(를) 넘습니다. JPEG로 내보낸 뒤 그 파일을 대신 첨부하세요.",
+      "too_many_pixels": "{{name}}은(는) {{width}} × {{height}}픽셀로, 여기에서 HEIC 사진을 변환할 수 있는 한도인 {{max}}메가픽셀을 넘습니다. 더 작은 JPEG를 내보내 대신 첨부하세요.",
+      "convert_failed": "이 브라우저에서 {{name}}을(를) JPEG로 변환하지 못했습니다. 페이지를 새로 고친 뒤 다시 시도하거나, JPEG로 내보낸 뒤 그 파일을 대신 첨부하세요.",
+      "cannot_fit": "{{name}}을(를) JPEG로 {{max}} 미만까지 줄이지 못했습니다. 더 작은 JPEG를 내보내 대신 첨부하세요."
     }
   },
   "memoryV2": {
