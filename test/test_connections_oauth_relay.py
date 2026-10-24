@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import struct
 from socket import SO_LINGER, SOL_SOCKET
 from unittest.mock import MagicMock
@@ -479,3 +480,65 @@ async def test_a_live_listener_that_rejects_the_code_stays_a_delivery_failure(mo
     assert status == 502
     assert body["code"] == "oauth_callback_rejected"
     assert audit.log_api_access.call_args.kwargs["outcome"] == "failed"
+
+
+def _relay_log_lines(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        r
+        for r in caplog.records
+        if r.name == connections.logger.name and "MCP OAuth relay" in r.getMessage()
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("listener_status", "level", "fragment"),
+    [
+        (200, logging.INFO, "code delivered to the local callback status=200"),
+        (400, logging.WARNING, "local callback rejected the return address status=400"),
+    ],
+)
+async def test_every_relay_outcome_leaves_a_gateway_log_line(
+    monkeypatch, caplog, listener_status, level, fragment
+):
+    """The audit log alone cannot tell an operator which side of the paste-back
+    failed, so each outcome must also reach the gateway log, without the code."""
+
+    async def callback(_request: web.Request) -> web.Response:
+        return web.Response(status=listener_status)
+
+    callback_app = web.Application()
+    callback_app.router.add_get("/", callback)
+    callback_server = TestServer(callback_app, host="127.0.0.1")
+    await callback_server.start_server()
+    monkeypatch.setattr(connections, "sel", lambda: MagicMock())
+    caplog.set_level(logging.INFO, logger=connections.logger.name)
+
+    try:
+        await _post_relay(int(callback_server.port or 0))
+    finally:
+        await callback_server.close()
+
+    lines = _relay_log_lines(caplog)
+    assert len(lines) == 1
+    assert lines[0].levelno == level
+    message = lines[0].getMessage()
+    assert message.startswith("MCP OAuth relay for notion: ")
+    assert fragment in message
+    assert "one-time" not in message
+
+
+@pytest.mark.asyncio
+async def test_a_spent_listener_leaves_a_gateway_log_line(monkeypatch, caplog):
+    async def refuse_connection(_host: str, _port: int):
+        raise ConnectionRefusedError("test callback listener is absent")
+
+    monkeypatch.setattr(connections, "sel", lambda: MagicMock())
+    monkeypatch.setattr(connections, "_open_loopback_connection", refuse_connection)
+    caplog.set_level(logging.INFO, logger=connections.logger.name)
+
+    await _post_relay(43123)
+
+    lines = _relay_log_lines(caplog)
+    assert [r.levelno for r in lines] == [logging.WARNING]
+    assert "no local callback listener" in lines[0].getMessage()

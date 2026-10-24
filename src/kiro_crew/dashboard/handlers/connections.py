@@ -190,6 +190,25 @@ def _approval_superseded(error: str, code: str) -> web.Response:
     return web.json_response({"error": error, "code": code}, status=409)
 
 
+def _log_relay_outcome(server: str, outcome: str, status: int | None = None) -> None:
+    """Write one gateway-log line per relay outcome.
+
+    The audit log alone leaves an operator unable to tell a refused paste from
+    a spent listener or a failed token exchange. ``server`` has already passed
+    the name check; the return address, code and state are never logged.
+    """
+    suffix = "" if status is None else f" status={status}"
+    if outcome == "delivered":
+        logger.info(
+            "MCP OAuth relay for %s: code delivered to the local callback%s; "
+            "the MCP client finishes the token exchange",
+            server,
+            suffix,
+        )
+    else:
+        logger.warning("MCP OAuth relay for %s: %s%s", server, outcome, suffix)
+
+
 async def api_mcp_oauth_relay(request: web.Request) -> web.Response:
     """POST /api/mcp/oauth/relay — deliver a failed browser redirect locally."""
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
@@ -226,6 +245,7 @@ async def api_mcp_oauth_relay(request: web.Request) -> web.Response:
         return _bad_request("invalid server", "invalid_server")
     callback = _validated_loopback_return_address(body.get("redirect_url"))
     if callback is None:
+        _log_relay_outcome(server, "refused the pasted return address")
         return _bad_request(
             "invalid loopback return address",
             "invalid_loopback_return_address",
@@ -240,6 +260,7 @@ async def api_mcp_oauth_relay(request: web.Request) -> web.Response:
         # fresh listener on the same port never saw the verifier. Answering with
         # the delivery-failure message below would blame the paste for an
         # approval that is simply spent.
+        _log_relay_outcome(server, "no local callback listener (approval spent)")
         sel().log_api_access(
             caller="dashboard",
             operation="mcp_oauth_callback_relay",
@@ -250,7 +271,8 @@ async def api_mcp_oauth_relay(request: web.Request) -> web.Response:
             "the approval this return address belongs to is no longer live",
             "approval_superseded",
         )
-    except (asyncio.TimeoutError, OSError, ValueError):
+    except (asyncio.TimeoutError, OSError, ValueError) as exc:
+        _log_relay_outcome(server, f"local callback unreachable ({type(exc).__name__})")
         sel().log_api_access(
             caller="dashboard",
             operation="mcp_oauth_callback_relay",
@@ -263,6 +285,7 @@ async def api_mcp_oauth_relay(request: web.Request) -> web.Response:
         )
 
     if callback_status >= 400:
+        _log_relay_outcome(server, "local callback rejected the return address", callback_status)
         sel().log_api_access(
             caller="dashboard",
             operation="mcp_oauth_callback_relay",
@@ -274,6 +297,7 @@ async def api_mcp_oauth_relay(request: web.Request) -> web.Response:
             "oauth_callback_rejected",
         )
 
+    _log_relay_outcome(server, "delivered", callback_status)
     sel().log_api_access(
         caller="dashboard",
         operation="mcp_oauth_callback_relay",
