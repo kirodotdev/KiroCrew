@@ -206,6 +206,11 @@ def test_every_reclaim_stage_admits_an_ordinary_local_alias(native_tree):
     # what makes the alias unused. Nothing about the authored source changes.
     del prepared
     gc.collect()
+    # The drop's end (lease release + reclaim) runs on the reaper thread, not
+    # inline on the dropping thread (see ``_end_projection``). Wait for it.
+    _reached = threading.Event()
+    projection._COLLECTED_ENDS.put(_reached.set)
+    assert _reached.wait(10), "the reaper never reached the dropped projection's end"
 
     assert projection._active_aliases() == set(), "a dropped projection still claims its aliases"
     assert not _alias_is_live(
@@ -1337,5 +1342,10 @@ def test_projection_finalizer_removes_its_lease_sidecar(native_tree):
 
     del prepared
     gc.collect()
+    # The drop's end (lease release + sidecar removal) runs on the reaper thread,
+    # not inline on the dropping thread (see ``_end_projection``). Wait for it.
+    _reached = threading.Event()
+    projection._COLLECTED_ENDS.put(_reached.set)
+    assert _reached.wait(10), "the reaper never reached the dropped projection's end"
 
     assert list(lease_dir.glob("*.json")) == []

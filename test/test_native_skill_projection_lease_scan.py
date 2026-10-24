@@ -647,8 +647,24 @@ def _released_backlog(agents, project, count):
     backlog = [(_alias_file(agents, p), _metadata_file(agents, p)) for p in held]
     del held
     gc.collect()
+    # Each drop's end -- the lease release AND the eager prune -- is handed to the
+    # reaper thread (never run inline on the dropping thread; see
+    # ``_end_projection``). Wait for the reaper to drain every queued end, so the
+    # backlog's leases are released before the drain under test runs.
+    _settle_reaper()
     assert all(alias.exists() and meta.exists() for alias, meta in backlog)
     return backlog
+
+
+def _settle_reaper():
+    """Block until the reaper has run every projection end queued so far.
+
+    A dropped projection's end runs on the reaper thread in queue order, so a
+    marker queued now has run once it fires -- and so have the ends ahead of it.
+    """
+    reached = threading.Event()
+    projection._COLLECTED_ENDS.put(reached.set)
+    assert reached.wait(10), "the reaper never drained the queued projection ends"
 
 
 def _recorded_batches(monkeypatch):
