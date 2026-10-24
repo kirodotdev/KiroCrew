@@ -99,6 +99,15 @@ class SideState:
     #: handler clears it after recording and broadcasting the terminal row.
     is_stopping: bool = False
 
+    @property
+    def turn_in_flight(self) -> bool:
+        """True while a submit would steer or queue rather than start a turn: a run
+        has begun and has not completed, or a stop is still settling it
+        (``is_stopping``). ``POST /side/turn`` gates on it, and ``GET .../side``
+        reports it as ``running``, so a restored panel offers steer and queue
+        exactly when a submit would get them."""
+        return bool(self.last_run_id) and (not self.is_complete or self.is_stopping)
+
     def append_user(
         self, content: str, ts: str = "", *, steer: bool = False, run_id: str = ""
     ) -> str:

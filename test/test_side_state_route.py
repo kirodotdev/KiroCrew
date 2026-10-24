@@ -340,3 +340,40 @@ async def test_only_the_owner_reads_a_side_conversation(tmp_path):
     assert missing_status == 404
     for body in (anonymous_body, stranger_body, app_own_body, app_foreign_body):
         assert "messages" not in body
+
+
+# (last_run_id, is_complete, is_stopping): whether a submit meets a running turn.
+_TURN_STATES = [
+    pytest.param("", True, False, False, id="no-run-yet"),
+    pytest.param("", False, False, False, id="no-run-id"),
+    pytest.param("run-1", False, False, True, id="running"),
+    pytest.param("run-1", True, False, False, id="finished"),
+    pytest.param("run-1", True, True, True, id="stop-still-settling"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("last_run_id", "is_complete", "is_stopping", "in_flight"), _TURN_STATES)
+async def test_the_read_reports_running_exactly_when_a_submit_would_queue(
+    tmp_path, monkeypatch, last_run_id, is_complete, is_stopping, in_flight
+):
+    """``running`` on the read is the gate a submit meets (``turn_in_flight``), so
+    a restored panel offers steer and queue exactly when a submit would get them."""
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side._run_side_turn", AsyncMock())
+    state = _make_state(tmp_path)
+    _capture_broadcasts(state)
+    parent = state.get_or_create_slot("parent")
+    parent._side = SideState(
+        open=True, last_run_id=last_run_id, is_complete=is_complete, is_stopping=is_stopping
+    )
+
+    assert parent._side.turn_in_flight is in_flight
+    async with TestClient(TestServer(_app(state))) as client:
+        read = await (await client.get("/api/chat/slots/parent/side")).json()
+        submit = await (
+            await client.post("/api/chat/slots/parent/side/turn", json={"question": "next"})
+        ).json()
+        await async_wait_until(lambda: not state._background_tasks)
+
+    assert read["running"] is in_flight
+    assert bool(submit.get("queued")) is in_flight
