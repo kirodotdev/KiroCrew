@@ -39,6 +39,7 @@ from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
     BackgroundLaunchRecord,
     InFlightIdSet,
+    NativeCompactionStates,
 )
 from kiro_crew.acp.client_permissions import _scrub_observed
 from kiro_crew.acp.client_start import CLIENT_NAME
@@ -95,6 +96,7 @@ class AcpClient:
     # Fields first set by a member an owner module defines, declared so the class names them.
     _claude_shipped_restrictions: frozenset[tuple[str, str]]
     _entitlement_probe_inflight: asyncio.Future[tuple[list[dict[str, str]], float]] | None
+    _native_compaction_states: NativeCompactionStates
     _member_dispatch_mounted: bool
     _session_mcp_excludes_local: bool
     _session_mcp_inline_settings: dict[str, Any] | None
@@ -655,6 +657,7 @@ class AcpClient:
         # settles it with a synthetic `completed` at turn end. Without that, a
         # consumer showing a compacting state would never leave it.
         self._claude_compaction_pending: bool = False
+        self._claude_native_compaction_id: str | None = None
         # The codex twin of the flag above. It guards TWO directions, and the
         # second is why it is read on the way in as well as at turn end. A loaded
         # session replays a past compaction as a ``tool_call`` that is already

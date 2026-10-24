@@ -467,6 +467,10 @@ ACP_BACKENDS_INLINE_COMPACTION = frozenset(
 # that title is never taken for a compaction.
 ACP_BACKENDS_UNMARKED_COMPACTION_PAIR = frozenset({ACP_BACKEND_CODEX})
 
+# Handshakes advertise native frames only for adapters captured live. Other
+# harnesses retain their verified legacy compaction channels.
+ACP_BACKENDS_NATIVE_COMPACTION = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
+
 
 # Backends implementing ``_kiro.dev/commands/execute`` — the kiro extension that
 # runs a slash command as an RPC. Non-members have no equivalent verb, so their

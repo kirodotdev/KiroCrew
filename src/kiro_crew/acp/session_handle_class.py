@@ -26,7 +26,7 @@ from kiro_crew.acp import session_handle_steering as _sh_steering
 from kiro_crew.acp import session_handle_turn as _sh_turn
 from kiro_crew.acp import session_handle_updates as _sh_updates
 from kiro_crew.acp import session_handle_watchdog as _sh_watchdog
-from kiro_crew.acp._dispatch import MAX_ACTIVE_TOOL_CALLS
+from kiro_crew.acp._dispatch import MAX_ACTIVE_TOOL_CALLS, NativeCompactionStates
 from kiro_crew.acp.liveness import (
     InFlightToolTracker,
     InteractiveClassification,
@@ -88,6 +88,7 @@ class AcpSessionHandle:
     # ``getattr`` defaults their readers pass.
     _compaction_terminal_seen: bool
     _kas_compact_turn: bool
+    _native_compaction_states: NativeCompactionStates
 
     # The session's stale/stall watchdog: ``kiro_crew.acp.session_handle_watchdog``.
     parked_for_secs = _sh_watchdog.parked_for_secs

@@ -286,7 +286,9 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
 
 #: Class-level annotations the split adds: fields first set by a member an owner defines,
 #: declared in the class so type checkers know them. An annotation creates no attribute.
-_DECLARED = frozenset({"_compaction_terminal_seen", "_kas_compact_turn"})
+_DECLARED = frozenset(
+    {"_compaction_terminal_seen", "_kas_compact_turn", "_native_compaction_states"}
+)
 
 #: The owner modules, lowest layer first.
 _OWNERS = (
@@ -339,7 +341,7 @@ _BASE_IMPORTS = frozenset("""
     METHOD_KAS_CHECKPOINT_REVERT METHOD_KAS_MCP_STATUS METHOD_KAS_SESSION_COMPACT
     METHOD_MCP_OAUTH_REQUEST METHOD_PROMPT METHOD_REQUEST_PERMISSION METHOD_SESSION_STEERING
     METHOD_SET_CONFIG_OPTION METHOD_SET_MODE METHOD_SET_MODEL MODEL_CONFIG_ID Mapping
-    McpSessionReport NAME_CAP OPTION_ALLOW_ALWAYS OPTION_ALLOW_ONCE OUTCOME_CANCELLED
+    McpSessionReport NAME_CAP NativeCompactionStates OPTION_ALLOW_ALWAYS OPTION_ALLOW_ONCE OUTCOME_CANCELLED
     OUTCOME_SELECTED PROGRESS_SOURCE_PROCESS_EVIDENCE Protocol REATTEMPT_MAX
     STATUS_EXTENSION_KEY STATUS_ORIGIN_LIVENESS_ORACLE STATUS_PHASE_WAITING
     STEERING_ANSWER_WAIT_SECS STEERING_INJECTED STEERING_STARTED_NEW_TURN

@@ -38,6 +38,7 @@ from kiro_crew.acp._dispatch import (
     MAX_ACTIVE_TOOL_CALLS,
     TOOL_CALL_CACHE_MAX_ENTRIES,
     TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS,
+    NativeCompactionStates,
     build_permission_event,
     classify_notification,
     error_is_refusal_terminal,
