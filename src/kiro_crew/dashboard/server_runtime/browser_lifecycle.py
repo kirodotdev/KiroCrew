@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.server import (
         DashboardState,
         browser_cli_launcher,
+        browser_cli_managed_launcher,
         browser_cli_snapshots,
         browser_cli_view,
         handlers,
@@ -90,7 +91,9 @@ def _register_browser_view_cleanup(app: web.Application, state: DashboardState) 
     :func:`browser_cli_launcher.reclaim_stranded` closes exactly those -- the
     owner tag in the name keeps a sibling gateway's browsers out of reach. It
     spawns the CLI, so it runs as a background task rather than gating the port
-    bind (the same reasoning as the instances revive below).
+    bind (the same reasoning as the instances revive below). The same task first
+    writes or refreshes the managed ``playwright-cli`` launcher
+    (:func:`kiro_crew.browser_cli.managed_launcher.ensure_managed_launcher`).
     """
 
     async def _browser_sessions_startup(app_: web.Application) -> None:
@@ -111,6 +114,13 @@ def _register_browser_view_cleanup(app: web.Application, state: DashboardState) 
         )
 
         async def _reclaim() -> None:
+            # The agent-facing launcher first: a host installed before it existed
+            # gets it here, without a reinstall. Content-compared, so a current
+            # host is not rewritten; it logs rather than raises on failure.
+            try:
+                await asyncio.to_thread(browser_cli_managed_launcher.ensure_managed_launcher)
+            except Exception:  # noqa: BLE001 - startup must not raise
+                logger.debug("browser launcher refresh failed during startup", exc_info=True)
             try:
                 await asyncio.to_thread(browser_cli_launcher.reclaim_stranded)
             except Exception:  # noqa: BLE001 - startup must not raise

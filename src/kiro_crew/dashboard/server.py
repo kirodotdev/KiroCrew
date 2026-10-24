@@ -39,6 +39,7 @@ from kiro_crew.autonudge import get_instance as _autonudge_get  # noqa: F401
 from kiro_crew.autonudge_authz import authorize_and_add_nudge  # noqa: F401
 from kiro_crew.browser_cli import launch as browser_cli_launch
 from kiro_crew.browser_cli import launcher as browser_cli_launcher  # noqa: F401
+from kiro_crew.browser_cli import managed_launcher as browser_cli_managed_launcher  # noqa: F401
 from kiro_crew.browser_cli import snapshots as browser_cli_snapshots
 from kiro_crew.browser_cli import token as browser_cli_token
 from kiro_crew.browser_cli import view as browser_cli_view  # noqa: F401

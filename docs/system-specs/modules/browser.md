@@ -167,7 +167,9 @@ once, at install, so registry auth applies at install time only.
    resolves the native executable behind any version-manager shim and atomically
    stages it inside the same leaf (`gateway-node` on POSIX, `node.exe` on
    Windows). Gateway-owned calls invoke that sealed Node with
-   `@playwright/cli`'s JavaScript entrypoint directly. Generated POSIX wrappers
+   `@playwright/cli`'s JavaScript entrypoint directly. On POSIX the installer then
+   writes the agent-facing [managed launcher](#the-managed-launcher-and-the-attach-time-limit)
+   into `managed-bin`. Generated POSIX wrappers
    and Windows `.cmd` launchers remain shell-facing identities only, so neither
    PATH-based interpreter selection nor command-processor reparsing reaches a
    gateway request.
@@ -244,7 +246,10 @@ reaches every owner that binds the name. An owner never imports the facade, and
 imports another owner only from a row above its own. The owners log as
 `kiro_crew.browser_cli.install`, and `SeamSupport` and `InstallScope` keep that
 module name. `browser_cli/install_job.py` is the dashboard's job record, a caller of
-the facade rather than an owner. `test/test_install_facade.py` pins the contract.
+the facade rather than an owner. `browser_cli/managed_launcher.py` (the
+[managed launcher](#the-managed-launcher-and-the-attach-time-limit)) is a caller too:
+`install` calls it, and it reads the managed leaf back through the facade.
+`test/test_install_facade.py` pins the contract.
 
 ### Install jobs
 
@@ -572,6 +577,47 @@ read, so a stored value holding the whole assignment repairs itself instead of
 reporting "stored" while the extension keeps prompting. Clearing ignores an
 already-absent file, but any other unlink failure propagates through the API so
 the settings panel cannot report success while the credential remains active.
+
+#### The managed launcher and the attach time limit
+
+Without a token, `attach --extension` waits for the approval with no limit and
+prints nothing while it waits; only cancelling Chrome's "is debugging this
+browser" bar ends the wait. An agent turn running that command therefore stays on
+"thinking" until the person happens to look at Chrome. The limit lives in the
+launcher every agent shell command reaches, `<data home>/playwright-cli/managed-bin/playwright-cli`,
+which leads the agent PATH ahead of npm's own `<prefix>/bin` shim
+(`env._managed_browser_cli_dirs`). `browser_cli/managed_launcher.py` owns both
+files it needs:
+
+| File | What it does |
+|---|---|
+| `managed-bin/playwright-cli` (`POSIX_LAUNCHER_TEMPLATE`) | An argv in which some argument contains the word `attach` runs `exec <gateway-node> kirocrew-attach-guard.js <playwright-cli.js> "$@"`. Every other argv runs exactly `exec <gateway-node> <playwright-cli.js> "$@"`: no extra process, the same output and exit status as before. The CLI's parser builds its verb from the words of argv, so it can name `attach` only when some argument contains that word: no spelling and no CLI version reaches an attach past the guard, and nothing in the launcher has to track the CLI's options. The cost falls on a non-attach command that merely mentions the word (`goto https://x/attachments`, `fill e1 attach`): it runs through the guard, with no limit and the same output and exit status, for one extra Node start (about 28 ms measured on Linux). |
+| `kirocrew-attach-guard.js` (`ATTACH_GUARD_JS`) | Re-reads argv with the CLI's own parser, option list (help.json's plus the ones `program.js` adds, read from that file) and channel names, loaded by absolute path beside the exported `package.json` of the playwright-core that serves the entrypoint (the package's `exports` map hides those files from a subpath `require`); the limit applies only when that parse names `attach` as the verb, and any other verb runs with no limit. Runs the same CLI with the same argv and inherited stdio, in the same process group, and forwards `SIGINT`/`SIGTERM`/`SIGHUP` to it. An attach that ends before the deadline keeps its output and exit status (and its signal). At `ATTACH_TIMEOUT_S` (120 s) the CLI gets `SIGTERM` first, which it forwards to the daemon still waiting for approval, so that daemon stops with it (SIGTERM must stay first: the waiting daemon has no socket `detach` could reach); `SIGKILL` follows after a grace period. Then `detach` runs on the session the CLI's attach selects (explicit `-s`/`--session` or `PLAYWRIGHT_CLI_SESSION`, else the attach target, a known `--cdp` channel, the `--extension` channel, else `default`), which stops a daemon that was already listening because the approval arrived late. When the CLI's parser cannot be loaded, the limit applies only when the first word of argv is `attach` (any earlier word could be an option's value), and nothing is detached: argv can select a session in spellings only that parser reads exactly, so the guard does not guess one (SIGTERM still stops the daemon waiting for approval). Whatever the stopped CLI exits with (0.1.22's own SIGTERM handling can leave it exiting 0), the guard exits 124 telling the person to accept Chrome's debugging prompt or retry. |
+
+The 120 s default is generous on purpose: the person has to notice Chrome, read
+the prompt and click it. It is not configurable. A token removes the wait, and the
+CLI already bounds a token handshake with its own deadline.
+
+**Three writers, one output.** The standalone `playwright-cli.sh` embeds both texts
+as quoted heredocs and fills the launcher's path tokens with `awk`; the dashboard
+installer (`install.install`, after staging Node) and every gateway start
+(`ensure_managed_launcher`, from the browser startup task) render them in Python.
+The gateway compares content first and writes only a missing or stale file, through
+a temporary file and `os.replace`, so a concurrent `exec` sees the old launcher or
+the new one; a launcher-directory symlink is refused, a symlink at the launcher's
+own name is replaced rather than written through, and a failed write is logged and
+never raised, so it cannot block install or startup. A host installed before the
+launcher existed gets it at its next gateway start, without a reinstall.
+`test_managed_launcher.py` pins the heredocs to the Python constants and the shell
+installer's output to the Python rendering byte for byte.
+
+**Not covered.** Windows keeps the `.cmd` launcher `playwright-cli.ps1` writes and
+npm's own shim, and a host whose only CLI is a system install has no managed leaf
+to write into; on both an unapproved attach still waits until Chrome's bar is
+cancelled. The guard's timer lives in the guard process: a cancel that signals the
+process group, or the guard alone with `SIGINT`/`SIGTERM`/`SIGHUP`, stops the CLI
+too, but a `SIGKILL` of the guard's pid alone leaves the CLI waiting unbounded, as
+it did before the launcher existed.
 
 ### Launch config
 
@@ -1205,8 +1251,9 @@ outside the user's home and sudo is never involved. The generated entry point is
 **wrapper script, not a symlink**, written to `<prefix>/managed-bin`: npm's own shim
 starts `#!/usr/bin/env node`, which would resolve against the caller's PATH. The
 installer asks the verified Node process for its native `process.execPath`,
-atomically copies that executable to `<prefix>/gateway-node`, and writes a wrapper
-that invokes this managed copy with
+atomically copies that executable to `<prefix>/gateway-node`, and writes the
+[managed launcher](#the-managed-launcher-and-the-attach-time-limit), which invokes
+this managed copy with
 `<prefix>/lib/node_modules/@playwright/cli/playwright-cli.js` directly. The
 managed bin directory leads the agent subprocess PATH and remains inside the same
 read-only sandbox leaf; no generated wrapper retains the source version-manager
