@@ -71,23 +71,26 @@ function wrapper({ children }: { children: ReactNode }) {
 beforeEach(() => { vi.clearAllMocks() })
 
 describe('row callbacks keep their identity across streamed frames', () => {
-  it('useRegenerate: handleRegenerate is stable and truncates against the newest rows', () => {
-    const dispatch = vi.fn()
+  it('useRegenerate: handleRegenerate is stable and reads the newest rows', () => {
     const base = {
-      dispatch: dispatch as never, activeSlot: 'slot-a', slotRunning: false, activeSlotRemoteBound: false,
+      activeSlot: 'slot-a', slotRunning: false, activeSlotRemoteBound: false,
       isStreaming: false, setRefusedPress: vi.fn(), showRefusedPress: vi.fn(),
     }
+    // A frame whose newest turn is a user row with no reply yet: nothing to regenerate.
+    const awaitingReply = [...first, msg('user', 't3', 'm3')]
     const ref = { current: first }
     const { result, rerender } = renderHook((p: { messages: ChatMessage[] }) => useRegenerate({ ...base, ...p, messagesRef: latest(ref, p.messages) }), {
       initialProps: { messages: first },
     })
     const before = result.current.handleRegenerate
+    rerender({ messages: awaitingReply })
+    expect(result.current.handleRegenerate).toBe(before)
+    // The first frame held a reply; the newest does not, so the press is a no-op.
+    act(() => { result.current.handleRegenerate() })
+    expect(calls.regenerateSlot).not.toHaveBeenCalled()
     rerender({ messages: next })
     expect(result.current.handleRegenerate).toBe(before)
     act(() => { result.current.handleRegenerate() })
-    // The newest turn is regenerated: truncate after the LAST user row (index 2),
-    // which only the second frame holds.
-    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat/truncateAfterIndex', payload: 3 }))
     expect(calls.regenerateSlot).toHaveBeenCalledWith('slot-a')
   })
 

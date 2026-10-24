@@ -583,10 +583,11 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # messages for the stats attach, which is a different question from which
     # turn this is. The two were already decoupled once, for the stats bug.
     #
-    # Regenerate and rewind keep their retry semantics for free. Both truncate
-    # the window before dispatching, so _turn_admit's hoisted expression returns the ordinal of
-    # the turn being re-run and the emitter's `attempt` increments -- no ordinal
-    # has to be threaded through either path.
+    # Rewind keeps its retry semantics for free: it truncates the window before
+    # dispatching, so _turn_admit's hoisted expression returns the ordinal of
+    # the turn being re-run and the emitter's `attempt` increments. Regenerate
+    # keeps the previous reply live until its turn ends, so the ordinal is
+    # computed without it (``rows_before_regenerate_target``) to the same effect.
     # `durable_row_count` is the SHARED counting rule every site that sets or
     # advances that base uses, so the ordinal cannot disagree with the base
     # about which rows are durable. It is resolved ONCE, in _turn_admit above its

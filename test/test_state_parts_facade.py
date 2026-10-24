@@ -549,6 +549,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_refusal_fallback_primary": ("value", "''"),
     "_refusal_fallback_session_key": ("value", "''"),
     "_refusal_pick_gen": ("value", "0"),
+    "_regenerate_target": ("value", "None"),
     "_responsive": ("value", "None"),
     "_resumed_count": ("value", "0"),
     "_revived_by": ("value", "''"),

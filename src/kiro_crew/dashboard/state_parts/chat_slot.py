@@ -259,6 +259,7 @@ class _ChatSlot:
         "_human_seen",
         "_origin",
         "_pending_variants",
+        "_regenerate_target",
         "_lock",
         "forked_from",
         "_fork_lock",
@@ -496,6 +497,8 @@ class _ChatSlot:
     _deferred_notes: list[dict[str, Any]]
     _dropped_note_ids: set[str]
     _pending_variants: list[dict]
+    # ``chat_turn.regenerate_swap.RegenerateTarget`` while a Regenerate turn runs.
+    _regenerate_target: Any
     _lock: asyncio.Lock
     _file_changes: list[dict[str, Any]]
     _git_repos: list[str]

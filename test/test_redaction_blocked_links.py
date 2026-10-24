@@ -1200,7 +1200,7 @@ class TestEveryRetentionPointIsBounded:
         assert "with_bounded_redaction_records(" in inspect.getsource(
             chat_persistence._attach_variants
         )
-        stash = inspect.getsource(chat_runner._flush_segment)
+        stash = inspect.getsource(chat_runner._adopt_pending_variants)
         assert "with_bounded_redaction_records({**v" in stash
 
 
