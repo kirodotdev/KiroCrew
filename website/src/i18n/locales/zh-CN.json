@@ -1508,6 +1508,9 @@
     "designCritique": {
       "askLayer": {
         "answer_failed_ask_again_below": "回答失败——在下方重新提问",
+        "ask_a_follow_up": "继续提问…",
+        "ask_again": "重新提问…",
+        "what_dont_you_understand_about_this": "这里哪里看不懂？",
         "ask": "提问",
         "ask_about_this": "就此提问",
         "close": "关闭",

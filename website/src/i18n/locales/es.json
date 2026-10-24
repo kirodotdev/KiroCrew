@@ -1602,6 +1602,9 @@
     "designCritique": {
       "askLayer": {
         "answer_failed_ask_again_below": "La respuesta falló — vuelve a preguntar abajo",
+        "ask_a_follow_up": "Haz otra pregunta…",
+        "ask_again": "Vuelve a preguntar…",
+        "what_dont_you_understand_about_this": "¿Qué no entiendes de esto?",
         "ask": "Preguntar",
         "ask_about_this": "Preguntar sobre esto",
         "close": "Cerrar",

@@ -86,7 +86,12 @@ export default function AskLayer(p: Props) {
         <input
           style={{ ...S.askInput, ...(p.pending ? { opacity: 0.6 } : {}) }} value={askDraft} autoFocus
           disabled={p.pending}
-          placeholder={activeAsk && activeAsk.turns.length ? 'Ask a follow-up…' : 'What don’t you understand about this?'}
+          placeholder={!activeAsk || !activeAsk.turns.length
+            ? i18nT('apps.designCritique.askLayer.what_dont_you_understand_about_this')
+            // Matches the failed turn's notice: this composer is its retry.
+            : activeAsk.turns[activeAsk.turns.length - 1].failed
+              ? i18nT('apps.designCritique.askLayer.ask_again')
+              : i18nT('apps.designCritique.askLayer.ask_a_follow_up')}
           onChange={(e) => p.setAskDraft(e.target.value)}
           {...ime.bindEnter({
             onEnter: () => {

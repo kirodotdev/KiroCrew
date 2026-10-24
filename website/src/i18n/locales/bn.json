@@ -1555,6 +1555,9 @@
     "designCritique": {
       "askLayer": {
         "answer_failed_ask_again_below": "উত্তর দেওয়া যায়নি — নিচে আবার জিজ্ঞেস করো",
+        "ask_a_follow_up": "আরেকটি প্রশ্ন করো…",
+        "ask_again": "আবার জিজ্ঞেস করো…",
+        "what_dont_you_understand_about_this": "এখানে কোনটা বুঝতে পারছ না?",
         "ask": "জিজ্ঞাসা",
         "ask_about_this": "এটি সম্পর্কে জিজ্ঞাসা করুন",
         "close": "বন্ধ করুন",

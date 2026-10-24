@@ -1596,6 +1596,9 @@
     "designCritique": {
       "askLayer": {
         "answer_failed_ask_again_below": "回答に失敗しました — 下でもう一度質問してください",
+        "ask_a_follow_up": "続けて質問する…",
+        "ask_again": "もう一度質問する…",
+        "what_dont_you_understand_about_this": "ここで分からないことは何ですか？",
         "ask": "質問する",
         "ask_about_this": "この件について質問する",
         "close": "閉じる",

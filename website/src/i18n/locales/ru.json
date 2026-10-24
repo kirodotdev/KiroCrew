@@ -1649,6 +1649,9 @@
     "designCritique": {
       "askLayer": {
         "answer_failed_ask_again_below": "Не удалось ответить — спроси ещё раз ниже",
+        "ask_a_follow_up": "Задай ещё вопрос…",
+        "ask_again": "Спроси ещё раз…",
+        "what_dont_you_understand_about_this": "Что здесь непонятно?",
         "ask": "Спросить",
         "ask_about_this": "Спросить об этом",
         "close": "Закрыть",

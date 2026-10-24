@@ -1692,6 +1692,9 @@
     "designCritique": {
       "askLayer": {
         "answer_failed_ask_again_below": "La réponse a échoué — repose ta question ci-dessous",
+        "ask_a_follow_up": "Pose une autre question…",
+        "ask_again": "Repose ta question…",
+        "what_dont_you_understand_about_this": "Qu’est-ce que tu ne comprends pas ici ?",
         "ask": "Demander",
         "ask_about_this": "Poser une question",
         "close": "Fermer",

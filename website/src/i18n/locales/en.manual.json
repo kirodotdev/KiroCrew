@@ -1390,7 +1390,10 @@
     },
     "designCritique": {
       "askLayer": {
-        "answer_failed_ask_again_below": "Answer failed — ask again below"
+        "answer_failed_ask_again_below": "Answer failed — ask again below",
+        "ask_a_follow_up": "Ask a follow-up…",
+        "ask_again": "Ask again…",
+        "what_dont_you_understand_about_this": "What don’t you understand about this?"
       },
       "constants": {
         "blocked_figma_app_missing_hint": "Open the file in Figma desktop and try again, or export the frames as PNGs and drop them here.",

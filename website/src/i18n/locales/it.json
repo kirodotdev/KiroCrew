@@ -1602,6 +1602,9 @@
     "designCritique": {
       "askLayer": {
         "answer_failed_ask_again_below": "Risposta non riuscita — chiedi di nuovo qui sotto",
+        "ask_a_follow_up": "Fai un’altra domanda…",
+        "ask_again": "Chiedi di nuovo…",
+        "what_dont_you_understand_about_this": "Cosa non ti è chiaro qui?",
         "ask": "Chiedi",
         "ask_about_this": "Fai una domanda",
         "close": "Chiudi",

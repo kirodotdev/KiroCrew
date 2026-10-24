@@ -137,6 +137,11 @@ export default function DesignCritiquePage() {
    */
   const [askPending, setAskPending] = useState(false)
   const threadRef = useRef<HTMLDivElement>(null)
+  /** The open thread, read when a turn fails after an await. The composer
+   *  draft is shared by every thread, so a failed question goes back into it
+   *  only while its own thread is still the one on screen. */
+  const openAskIdRef = useRef(openAskId)
+  openAskIdRef.current = openAskId
 
   const narrow = useNarrow(rootRef)
 
@@ -795,6 +800,9 @@ export default function DesignCritiquePage() {
       setAsks(prev => prev.map(a => a.id === askId
         ? { ...a, turns: a.turns.map(t => (t.t === stamp ? { ...t, a: msg, pending: false, failed: true } : t)) }
         : a))
+      // Hand the question back so a retry is one Enter, not a retype. Never
+      // over a draft the user has already started.
+      if (openAskIdRef.current === askId) setAskDraft(d => d || question)
     } finally {
       // Every exit path, including the early cancelled return above, or the next
       // follow-up would be refused for the rest of the session.

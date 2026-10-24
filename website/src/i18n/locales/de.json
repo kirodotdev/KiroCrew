@@ -1644,6 +1644,9 @@
     "designCritique": {
       "askLayer": {
         "answer_failed_ask_again_below": "Antwort fehlgeschlagen — frag unten noch mal",
+        "ask_a_follow_up": "Folgefrage stellen…",
+        "ask_again": "Noch mal fragen…",
+        "what_dont_you_understand_about_this": "Was verstehst du daran nicht?",
         "ask": "Fragen",
         "ask_about_this": "Dazu fragen",
         "close": "Schließen",

@@ -1596,6 +1596,9 @@
     "designCritique": {
       "askLayer": {
         "answer_failed_ask_again_below": "답변하지 못했습니다 — 아래에서 다시 질문하세요",
+        "ask_a_follow_up": "이어서 질문하기…",
+        "ask_again": "다시 질문하기…",
+        "what_dont_you_understand_about_this": "이 부분에서 무엇이 이해되지 않나요?",
         "ask": "질문하기",
         "ask_about_this": "이 부분에 대해 질문하기",
         "close": "닫기",

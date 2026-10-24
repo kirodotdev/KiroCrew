@@ -401,8 +401,29 @@ describe('Design Critique — annotations saved with a critique', () => {
 
     // The failure renders through ErrorNotice, not as red answer text.
     expect(screen.getByRole('alert')).toHaveTextContent('the critic is gone')
-    // The gate is released, so a second question is still possible.
-    expect(screen.getByPlaceholderText('Ask a follow-up…')).not.toBeDisabled()
+    // The gate is released, so a second question is still possible, and the
+    // composer says it is the retry and holds the question, so nothing is retyped.
+    const retry = screen.getByPlaceholderText('Ask again…')
+    expect(retry).not.toBeDisabled()
+    expect(retry).toHaveValue('Still there?')
+  })
+
+  it('does not drop a failed question into a thread the user has left', async () => {
+    let fail: (e: Error) => void = () => {}
+    mockApi.send.mockReturnValue(new Promise((_, reject) => { fail = reject }))
+    openAnnotated()
+    fireEvent.click(screen.getByTitle('Your question — click to see the answer'))
+    fireEvent.change(screen.getByPlaceholderText('Ask a follow-up…'), {
+      target: { value: 'Still there?' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }))
+    // Leave the thread while the question is in flight, then let it fail.
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    fail(new Error('the critic is gone'))
+    await tick()
+
+    fireEvent.click(screen.getByTitle('Your question — click to see the answer'))
+    expect(screen.getByPlaceholderText('Ask again…')).toHaveValue('')
   })
 
   it('removes an annotation and unmarks the text', () => {
