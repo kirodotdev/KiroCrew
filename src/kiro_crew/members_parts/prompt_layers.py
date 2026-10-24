@@ -87,7 +87,15 @@ def read_member_rules(slug: str, member: str) -> str:
 
     Blocking file IO: call via ``asyncio.to_thread`` from async code.
     """
-    path = member_rules_path(slug)
+    try:
+        path = member_rules_path(slug)
+    except member_records.RecordsNotMoved as exc:
+        # The rules may still sit in the old layout: reading the new one would turn
+        # them into "never set", which is exactly what this error exists to refuse.
+        raise MemberRulesUnreadable(
+            f"member rules for {slug!r} have not been moved to the records directory "
+            f"yet; the member will not run until the move finishes ({exc})"
+        ) from exc
     try:
         # Same read-side twin as read_dm_binding: write_member_rules replaces
         # this file atomically, and on Windows an AV/indexer handle on the
