@@ -513,9 +513,10 @@ not hold is ignored), so the gateway writes git's `rename from` and
 `rename to` lines and diffs the two bodies; it writes no `similarity index`,
 since it does not reproduce git's score. A copy (`C`) diffs
 as a new file. The guest also returns `old_mode` (the HEAD entry's) and
-`new_mode` (from `lstat`: `100755` when any execute bit is set, `100644`
-otherwise, `120000` for a symlink, `160000` for a gitlink), keeping the HEAD mode
-where `core.fileMode` or `core.symlinks` is false, as git does; an absent side's
+`new_mode` (from `lstat`: `100755` when the owner execute bit is set, `100644`
+otherwise, `120000` for a symlink, `160000` for a gitlink), taking the index
+entry's mode (HEAD's when the index lacks the path) where `core.fileMode` or
+`core.symlinks` is false, as git does; an absent side's
 mode is null. The gateway writes `old mode`/`new mode`, `new file mode` or
 `deleted file mode` after `diff --git`, so a mode-only change or a pure rename is
 a header-only patch, never an empty diff. A missing
@@ -549,8 +550,10 @@ there are any, and otherwise empty output, which the panel shows as its cut-off
 notice with the link to ask the agent for the full diff. Regular worktree CRLF
 endings are converted to LF when `check-attr text eol` or `core.autocrlf` enables
 Git's text conversion: explicit `-text` wins, while `text=auto` and automatic
-conversion require a NUL-free body and, as git's `has_crlf_in_index` does, a HEAD
-blob without CRLF. Attribute/config reads use the same guarded
+conversion require a NUL-free body and, as git's `has_crlf_in_index` does, an
+index blob that is not text with CRLF (HEAD stays the old side; the index blob
+is read, bounded, only when a staged change makes it differ from HEAD's).
+Attribute/config reads use the same guarded
 Git prefix and never run filter drivers. Truncation is recorded before newline
 normalization, so reducing CRLF bytes cannot hide an incomplete read.
 Before whole-body redaction, the gateway withholds every line from an unmatched

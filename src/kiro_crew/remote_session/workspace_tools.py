@@ -284,9 +284,14 @@ def _run_grouped(
     which is how an unwind or a stdout cutoff stops it. Without ``timeout`` only
     the leader is signalled. An expiry raises ``TimeoutExpired``. A stdout limit
     keeps only that prefix and stops the read when reached; this intentional
-    cutoff reports success. Stderr keeps a bounded tail.
+    cutoff reports success. Stderr keeps a bounded tail. On Windows the read
+    runs unwrapped: a ``timeout`` there may be System32's unrelated wait
+    command, and none can signal a Windows process tree, so the deadline is
+    this function's own.
     """
-    wrapped, wait_secs = _under_timeout(argv, timeout)
+    wrapped, wait_secs = (
+        (argv, timeout) if sys.platform == "win32" else _under_timeout(argv, timeout)
+    )
     timer = wrapped is not argv
     # timeout would report a missing program as exit 127; keep the error.
     if timer and shutil.which(argv[0], path=env.get("PATH", os.defpath)) is None:
@@ -339,6 +344,14 @@ def _run_grouped(
                     raise subprocess.TimeoutExpired(argv, timeout)
                 if index == 0 and len(prefix) == stdout_limit:
                     cutoff = True
+                    # Close our end first: git's next write then fails with a
+                    # broken pipe, which ends it and any child holding the pipe
+                    # on every platform. Windows has no group signal, and its
+                    # git.exe is a launcher, so stopping the leader alone would
+                    # leave the real git writing until the deadline.
+                    assert proc.stdout is not None
+                    with contextlib.suppress(OSError):
+                        proc.stdout.close()
                     _stop_read(proc)
             if errors:
                 raise errors[0]
@@ -378,13 +391,53 @@ def _stop_read(proc: Any) -> None:
 
 
 def _unwind(proc: Any) -> None:
-    """Stop and reap a still-running command; without ``timeout``, the leader only."""
-    _stop_read(proc)
+    """Stop and reap a still-running command; without ``timeout``, the leader only.
+
+    On Windows the whole tree is ended instead: there is no group signal, and
+    git.exe is a launcher, so stopping the leader would orphan the real git.
+    """
+    if sys.platform == "win32":
+        _stop_tree(proc)
+    else:
+        _stop_read(proc)
     try:
         proc.wait(timeout=2 * _KILL_GRACE_SECS)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait(timeout=10)
+
+
+def _windows_system_dir() -> str:
+    """The Windows system directory, from ``GetSystemDirectoryW``.
+
+    Not from ``%SystemRoot%``: the environment is the caller's to set, so a
+    planted ``taskkill.exe`` would run in its place (the rule
+    ``platform_compat_trust`` follows; this guest file ships without it).
+    """
+    try:
+        import ctypes
+
+        buf = ctypes.create_unicode_buffer(260)
+        written = ctypes.windll.kernel32.GetSystemDirectoryW(buf, len(buf))  # type: ignore[attr-defined]
+        if 0 < written < len(buf):
+            return str(buf.value)
+    except (AttributeError, ImportError, OSError):
+        pass
+    return "C:\\Windows\\System32"
+
+
+def _stop_tree(proc: Any) -> None:
+    """Windows: end ``proc`` and every process under it (``taskkill /T``)."""
+    taskkill = os.path.join(_windows_system_dir(), "taskkill.exe")
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(
+            [taskkill, "/T", "/F", "/PID", str(proc.pid)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2 * _KILL_GRACE_SECS,
+            check=False,
+        )
 
 
 class ToolError(Exception):
@@ -1073,11 +1126,51 @@ def _git_bool(run: Callable, key: str, default: bool) -> bool:
         return default
 
 
+def _git_index_entry(run: Callable, target: str, rel: str) -> Optional[Tuple[str, str]]:
+    """The mode and object id the index records for ``rel`` (stage 0), if any."""
+    for row in run(["ls-files", "--stage", "--full-name", "-z", "--", target]).split(b"\0"):
+        meta, _, name = row.partition(b"\t")
+        fields = meta.split(b" ")
+        if name == os.fsencode(rel) and len(fields) == 3 and fields[2] == b"0":
+            return fields[0].decode("ascii", "replace"), fields[1].decode("ascii", "replace")
+    return None
+
+
+def _git_index_mode(run: Callable, target: str, rel: str) -> Optional[str]:
+    """The mode the index records for the file at ``rel`` (stage 0), if any."""
+    entry = _git_index_entry(run, target, rel)
+    return entry[0] if entry else None
+
+
 def _worktree_mode(st_mode: int) -> str:
     """Git's mode for a worktree entry, from ``lstat`` alone."""
     if stat.S_ISLNK(st_mode):
         return "120000"
-    return "100755" if st_mode & 0o111 else "100644"
+    # Git records 100755 only for the owner's execute bit (ce_permissions).
+    return "100755" if st_mode & stat.S_IXUSR else "100644"
+
+
+# Control bytes git's gather_stats counts as non-printable: below 32 except
+# BS, TAB, ESC and FF (CR and LF are counted apart), and DEL.
+_GIT_NONPRINTABLE = tuple(bytes([c]) for c in (*range(32), 127) if c not in (8, 9, 10, 12, 13, 27))
+
+
+def _git_auto_text(body: bytes) -> bool:
+    """Whether git's automatic conversion would treat ``body`` as text.
+
+    Mirrors convert.c's ``convert_is_binary``: a lone CR, a NUL, or more than
+    one non-printable byte per 128 printable ones makes git leave the bytes as
+    they are, so their CRLFs must not be folded either. A trailing Ctrl-Z
+    (DOS end of file) is not counted as non-printable.
+    """
+    lone_cr = body.count(b"\r") - body.count(b"\r\n")
+    nonprintable = sum(body.count(c) for c in _GIT_NONPRINTABLE)
+    if body.endswith(b"\x1a"):
+        nonprintable -= 1
+    printable = len(body) - nonprintable - body.count(b"\r") - body.count(b"\n")
+    if body.endswith(b"\x1a"):
+        printable -= 1
+    return not lone_cr and b"\0" not in body and (printable >> 7) >= nonprintable
 
 
 def _git_bodies(
@@ -1196,12 +1289,17 @@ def _git_bodies(
                 raise ValueError("a regular file or symlink is required")
             new = handle.read(MAX_READ_BYTES + 1)
         new_mode = _worktree_mode(disk_mode)
-        # Git keeps the recorded mode where the filesystem cannot carry it.
-        if mode in ("100644", "100755") and new_mode != mode:
-            if not _git_bool(run, "core.filemode", True):
-                new_mode = mode
-        elif mode == "120000" and not _git_bool(run, "core.symlinks", True):
-            new_mode = mode
+        filemode = _git_bool(run, "core.filemode", True)
+        symlinks = _git_bool(run, "core.symlinks", True)
+        if not filemode or not symlinks:
+            # Where the filesystem cannot carry a mode, git takes the one the
+            # index records (ce_mode_from_stat), so a staged chmod still shows;
+            # a path the index does not hold keeps HEAD's.
+            recorded = _git_index_mode(run, target, rel) or mode
+            if recorded == "120000" and not symlinks:
+                new_mode = recorded
+            elif recorded in ("100644", "100755") and not filemode:
+                new_mode = recorded
     elif disk_mode and not stat.S_ISDIR(disk_mode):
         raise ValueError("a regular file or symlink is required")
     if old is None and new is None:
@@ -1227,12 +1325,21 @@ def _git_bodies(
         attrs = dict(zip(fields[1::3], fields[2::3]))
         text, eol = attrs.get(b"text"), attrs.get(b"eol")
         convert = text == b"set"
-        # Like git's has_crlf_in_index, automatic conversion leaves a file
-        # whose HEAD blob already holds CRLF unchanged; explicit text does not.
-        crlf_in_head = old is not None and b"\r\n" in old
+
+        def crlf_in_index() -> bool:
+            # git's has_crlf_in_index: automatic conversion leaves a file whose
+            # INDEX blob is text holding CRLF unchanged; explicit text does not.
+            # HEAD stays the old side. A staged renormalization makes the two
+            # differ, and only then is the index blob read.
+            staged = _git_index_entry(run, target, rel)
+            if staged is None or staged[0] == "160000":
+                return False
+            blob = old if staged[1] == sha else run(["cat-file", "blob", staged[1]])
+            return blob is not None and b"\r\n" in blob and _git_auto_text(blob)
+
         if text != b"unset":
             if text == b"auto":
-                convert = b"\0" not in new and not crlf_in_head
+                convert = _git_auto_text(new) and not crlf_in_index()
             elif eol in (b"lf", b"crlf"):
                 convert = True
             elif not convert:
@@ -1242,7 +1349,9 @@ def _git_bodies(
                     if exc.returncode != 1:
                         raise
                     autocrlf = b"false"
-                convert = autocrlf in (b"true", b"input") and b"\0" not in new and not crlf_in_head
+                convert = (
+                    autocrlf in (b"true", b"input") and _git_auto_text(new) and not crlf_in_index()
+                )
         if convert:
             new = new.replace(b"\r\n", b"\n")
     return {
