@@ -499,6 +499,16 @@ class TestHumanOverrideHandler:
             _workflow("ai-review-human-override.yml"), "Validate and record the decision"
         )
 
+    def test_the_step_parses_under_bash_3_2(self) -> None:
+        # macOS runs these step tests under /bin/bash 3.2, which has no
+        # `${x,,}` / `${x^^}` case expansion ("bad substitution"). Linux CI's
+        # bash 5 accepts it, so only this pin catches it before macOS does.
+        code = [
+            line for line in self._override_step().splitlines() if not line.lstrip().startswith("#")
+        ]
+        offending = [line for line in code if ",,}" in line or "^^}" in line]
+        assert offending == []
+
     @pytest.mark.parametrize(
         ("perm_mode", "want_rc", "want_notice", "want_error_annotation"),
         [
