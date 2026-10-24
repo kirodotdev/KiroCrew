@@ -7090,7 +7090,14 @@
       "tags_loading_hint": "Chargement des étiquettes…",
       "tags_error_hint": "Impossible de charger les étiquettes.",
       "tags_retry": "Réessayer",
-      "top_level": "Niveau supérieur"
+      "top_level": "Niveau supérieur",
+      "default_destination_crew": "Crew de destination par défaut",
+      "default_destination_crew_hint": "« Envoyer une copie à » affiche d’abord cette crew pour les sessions de ce dossier. Rien n’est envoyé tant que tu ne cliques pas.",
+      "default_destination_global": "Utiliser la valeur globale ({{crew}})",
+      "default_destination_global_unset": "Utiliser la valeur globale (aucune)",
+      "default_destination_not_registered": "{{id}} (non enregistrée)",
+      "default_destination_load_failed": "Impossible de charger les crews.",
+      "default_destination_retry": "Réessayer"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Suggestion de dossier",
@@ -8538,7 +8545,8 @@
       "sent": "Envoyé",
       "sent_transcript_only": "Envoyé (transcription seule)",
       "transcript_only_hint": "Cette crew n'a pas pu restaurer le contexte complet de la conversation ; cette copie reprend uniquement à partir de la transcription.",
-      "unknown_error": "Erreur inconnue"
+      "unknown_error": "Erreur inconnue",
+      "default_badge": "par défaut"
     },
     "sessionActionsMenu": {
       "bring_back_to_main": "Ramener dans la fenêtre principale",
@@ -17146,7 +17154,12 @@
         "up_to": "Jusqu'à",
         "update_setting_failed": "Échec de la mise à jour du paramètre : {{error}}",
         "use_an_absolute_path_no": ").\n            Utilisez un chemin absolu (pas de",
-        "enable_via_setting": "Alternativement, définissez <settingRef/>, puis exécutez <restartCmd/>."
+        "enable_via_setting": "Alternativement, définissez <settingRef/>, puis exécutez <restartCmd/>.",
+        "default_destination": "Crew de destination par défaut",
+        "default_destination_hint": "« Envoyer une copie à » affiche d’abord cette crew, marquée par défaut. Un dossier peut choisir la sienne.",
+        "default_destination_none": "Pas de valeur par défaut",
+        "default_destination_not_registered": "{{id}} (non enregistrée)",
+        "default_destination_save_failed": "Impossible d’enregistrer la crew de destination par défaut."
       },
       "notificationsPanel": {
         "desktop_alerts": "Alertes du bureau",

@@ -2437,7 +2437,14 @@
       "tags_loading_hint": "Loading tags…",
       "tags_error_hint": "Tags couldn't load.",
       "tags_retry": "Retry",
-      "top_level": "Top level"
+      "top_level": "Top level",
+      "default_destination_crew": "Default destination crew",
+      "default_destination_crew_hint": "“Send a copy to” lists this crew first for sessions in this folder. Nothing is sent until you click it.",
+      "default_destination_global": "Use the global default ({{crew}})",
+      "default_destination_global_unset": "Use the global default (none)",
+      "default_destination_not_registered": "{{id}} (not registered)",
+      "default_destination_load_failed": "Crews couldn't load.",
+      "default_destination_retry": "Retry"
     },
     "folderColorNames": {
       "amber": "Amber",
@@ -4375,6 +4382,9 @@
         "tool_search_label": "Tool search",
         "tool_search_description": "Load deferred MCP tool specs on demand."
       }
+    },
+    "sendToInstanceSubmenu": {
+      "default_badge": "default"
     }
   },
   "hooks": {
@@ -7914,7 +7924,12 @@
         "remove_failed": "Remove of {{id}} failed: {{error}}",
         "token_left": "· token {{time}} left",
         "unknown_error": "unknown error",
-        "update_setting_failed": "Failed to update setting: {{error}}"
+        "update_setting_failed": "Failed to update setting: {{error}}",
+        "default_destination": "Default destination crew",
+        "default_destination_hint": "“Send a copy to” lists this crew first, marked as the default. A folder can choose its own.",
+        "default_destination_none": "No default",
+        "default_destination_not_registered": "{{id}} (not registered)",
+        "default_destination_save_failed": "Couldn't save the default destination crew."
       },
       "remoteCrewPanel": {
         "auto_connect": "Auto-connect crews",

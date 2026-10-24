@@ -54,6 +54,7 @@ from kiro_crew.config.sections import (
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.handlers.core_config_models import _validate_role_model
 from kiro_crew.effort import EFFORT_LEVELS
+from kiro_crew.instances.crew_ref import MAX_CREW_REF_LEN
 from kiro_crew.validation import QUALIFIED_MODEL_PATTERN
 
 
@@ -391,6 +392,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # restart to take effect (the SSH manager + CSP relaxation init at startup),
     # so the Instances settings panel surfaces a "restart required" hint.
     "instances.enabled": {"type": "bool"},
+    # The crew *Send a copy to* lists first (Settings → Remote Crew → Default
+    # destination crew). It only orders the menu: nothing is sent until the
+    # person clicks. Capped like a folder's default_destination_crew.
+    "instances.default_destination": {"type": "str", "max_len": MAX_CREW_REF_LEN},
     # Skills: opt in to automatic skill generation (Settings → Skills). Both
     # default OFF/ON respectively in SkillsConfig; generated candidates still
     # require approval unless approval_required is turned off (scripts always

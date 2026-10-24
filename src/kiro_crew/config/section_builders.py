@@ -106,6 +106,7 @@ from kiro_crew.config.service_sections import (
 )
 from kiro_crew.instances.constants import DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS as _DEFAULT_MINT_TIMEOUT
+from kiro_crew.instances.crew_ref import clean_crew_ref
 
 # Runtime-budget policy and coercion live in the monitoring limits leaf module,
 # keeping the section builders free of duplicated bounds.
@@ -452,6 +453,7 @@ def _build_instances_config(
     return InstancesConfig(
         enabled=bool(section.get("enabled")),
         warm_set_cap=section.read("warm_set_cap", _safe_int),
+        default_destination=clean_crew_ref(section.get("default_destination")),
         tunnel_base_port=section.read("tunnel_base_port", _safe_int),
         ssh_compression=bool(section.get("ssh_compression")),
         connect_timeout_secs=(

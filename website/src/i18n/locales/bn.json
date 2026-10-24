@@ -6969,7 +6969,14 @@
       "tags_loading_hint": "ট্যাগ লোড হচ্ছে…",
       "tags_error_hint": "ট্যাগ লোড করা যায়নি।",
       "tags_retry": "আবার চেষ্টা করুন",
-      "top_level": "সর্বোচ্চ স্তর"
+      "top_level": "সর্বোচ্চ স্তর",
+      "default_destination_crew": "ডিফল্ট গন্তব্য crew",
+      "default_destination_crew_hint": "এই ফোল্ডারের সেশনগুলোর জন্য \"কপি পাঠান\"-এ এই crew প্রথমে দেখায়। ক্লিক না করা পর্যন্ত কিছু পাঠানো হয় না।",
+      "default_destination_global": "গ্লোবাল ডিফল্ট ব্যবহার করো ({{crew}})",
+      "default_destination_global_unset": "গ্লোবাল ডিফল্ট ব্যবহার করো (কোনোটিই নয়)",
+      "default_destination_not_registered": "{{id}} (নিবন্ধিত নয়)",
+      "default_destination_load_failed": "crew লোড করা যায়নি।",
+      "default_destination_retry": "আবার চেষ্টা করো"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "ফোল্ডার প্রস্তাব",
@@ -8403,7 +8410,8 @@
       "sent": "পাঠানো হয়েছে",
       "sent_transcript_only": "পাঠানো হয়েছে (শুধু ট্রান্সক্রিপ্ট)",
       "transcript_only_hint": "সেই ক্রু সম্পূর্ণ কথোপকথনের প্রসঙ্গ পুনরুদ্ধার করতে পারেনি, তাই এই অনুলিপি শুধু ট্রান্সক্রিপ্ট থেকে চলবে।",
-      "unknown_error": "অজানা ত্রুটি"
+      "unknown_error": "অজানা ত্রুটি",
+      "default_badge": "ডিফল্ট"
     },
     "sessionActionsMenu": {
       "bring_back_to_main": "মূল উইন্ডোতে ফিরিয়ে আনুন",
@@ -16875,7 +16883,12 @@
         "up_to": "সর্বোচ্চ",
         "update_setting_failed": "সেটিং আপডেট করা যায়নি: {{error}}",
         "use_an_absolute_path_no": ")।\n            একটি অ্যাবসোলিউট পাথ ব্যবহার করুন (কোনো",
-        "enable_via_setting": "বিকল্পভাবে, <settingRef/> সেট করুন, তারপর <restartCmd/> চালান।"
+        "enable_via_setting": "বিকল্পভাবে, <settingRef/> সেট করুন, তারপর <restartCmd/> চালান।",
+        "default_destination": "ডিফল্ট গন্তব্য crew",
+        "default_destination_hint": "\"কপি পাঠান\"-এ এই crew ডিফল্ট হিসেবে প্রথমে দেখায়। কোনো ফোল্ডার নিজের crew বেছে নিতে পারে।",
+        "default_destination_none": "কোনো ডিফল্ট নেই",
+        "default_destination_not_registered": "{{id}} (নিবন্ধিত নয়)",
+        "default_destination_save_failed": "ডিফল্ট গন্তব্য crew সংরক্ষণ করা যায়নি।"
       },
       "notificationsPanel": {
         "desktop_alerts": "ডেস্কটপ বিজ্ঞপ্তি",

@@ -1,18 +1,45 @@
 /** The sidebar's one folder create / settings modal. Its submit awaits the
  *  write and closes only on success, and an edit sends only the fields the
  *  person touched. */
+import type React from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '../../api/client'
 import FolderConfigModal from '../../components/FolderConfigModal'
 import { requestFolderReveal } from '../../store/chatSlice'
+import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { safeSetItem } from '../../utils/safeStorage'
 import { FLAT_VIEW_LS_KEY } from './persistence'
 import type { FolderModalTarget, SidebarScope } from './scope'
+
+/** The modal, fed the crew list *Send a copy to* already reads (same query key,
+ *  so no extra request). The gateway's own `instances_disabled` 403 (Instances
+ *  off) just leaves it empty, which hides the Default destination crew picker;
+ *  any other failure reaches the modal, so the field says the list did not load
+ *  instead of vanishing as if no crew were registered. */
+function FolderConfigModalWithCrews(props: React.ComponentProps<typeof FolderConfigModal>) {
+  const { data, error, refetch } = useQuery({
+    queryKey: ['instances'],
+    queryFn: () => api.listInstances(),
+    staleTime: 30_000,
+    retry: false,
+  })
+  return (
+    <FolderConfigModal
+      {...props}
+      destinationCrews={data?.instances ?? []}
+      globalDestinationCrew={data?.default_destination ?? ''}
+      destinationCrewsFailed={!!error && !isInstancesDisabledError(error)}
+      onRetryDestinationCrews={() => { void refetch() }}
+    />
+  )
+}
 
 /** The modal for the folder the sidebar targets. */
 export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalTarget): React.ReactNode {
   const { createFolderMutation, defaultAgent, dispatch, flatView, folders, installedAgents, refetchTags, setFlatView,
     setFolderModal, tagsData, tagsQueryFailed, updateFolderMutation } = shell
   return (
-        <FolderConfigModal
+        <FolderConfigModalWithCrews
           open={true}
           mode={folderModal.mode}
           parentId={folderModal.mode === 'create' ? folderModal.parentId : undefined}
@@ -36,6 +63,7 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
                 parentId: folderModal.parentId || undefined,
                 projectDir: draft.projectDir,
                 defaultAgent: draft.defaultAgent,
+                defaultDestinationCrew: draft.defaultDestinationCrew,
                 color: draft.color,
                 icon: draft.icon,
                 tags: draft.tags,
@@ -67,6 +95,8 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
               if (touched.has('name')) body.name = draft.name
               if (touched.has('projectDir')) body.project_dir = draft.projectDir
               if (touched.has('defaultAgent')) body.default_agent = draft.defaultAgent
+              // '' clears the override back to the global default destination.
+              if (touched.has('defaultDestinationCrew')) body.default_destination_crew = draft.defaultDestinationCrew
               // '' is a legitimate color instruction: it clears back to gray.
               if (touched.has('color')) body.color = draft.color
               // regenerate_icon and a manual icon are mutually exclusive on the
