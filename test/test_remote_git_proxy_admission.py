@@ -17,13 +17,13 @@ def test_status_paths_diff_from_a_nested_workdir(git_workdir):
     (root / "app").mkdir()
     tracked = root / "app" / "tracked.txt"
     outside = root / "outside.txt"
-    tracked.write_text("before\n")
-    outside.write_text("outside before\n")
+    tracked.write_text("before\n", newline="\n")
+    outside.write_text("outside before\n", newline="\n")
     git("add", ".")
     git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-m", "files")
-    tracked.write_text("after\n")
-    outside.write_text("outside after\n")
-    (root / "app" / "new.txt").write_text("new file\n")
+    tracked.write_text("after\n", newline="\n")
+    outside.write_text("outside after\n", newline="\n")
+    (root / "app" / "new.txt").write_text("new file\n", newline="\n")
     nested = workspace_tools.Workspace(str(root / "app"))
     status = workspace_tools.browse(nested, {"op": "git_status"})
     assert " M app/tracked.txt\0" in status["output"]

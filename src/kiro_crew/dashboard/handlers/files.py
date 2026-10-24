@@ -339,6 +339,10 @@ from kiro_crew.git_config_hooks import (  # noqa: F401
     ConfigHookScanError,
     config_hook_disable_args_sandboxed,
 )
+from kiro_crew.git_no_index_diff import (  # noqa: F401 - owner: editor
+    no_index_diff,
+    patch_hunks,
+)
 from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope  # noqa: F401
 from kiro_crew.github_runner import validate_provider_executable  # noqa: F401
 from kiro_crew.hooks import (  # noqa: F401

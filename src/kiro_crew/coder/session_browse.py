@@ -9,10 +9,10 @@ boxd machine); requests go on stdin.
 from __future__ import annotations
 
 import asyncio
-import difflib
 import json
 import re
 import shlex
+import subprocess
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,12 +25,25 @@ from kiro_crew.coder.remote_worker import (
     _scrubbed_env,
     run_collect,
 )
+from kiro_crew.git_no_index_diff import no_index_diff, patch_hunks
 from kiro_crew.platform import redact_via_context
+from kiro_crew.platform.update_governance import git_command_env
 from kiro_crew.security import REDACTED_CREDENTIAL_TAG
 from kiro_crew.session_environment import SessionEnvironmentUnavailable
 from kiro_crew.session_environments import browse as vm_browse
 
 _GIT_OPS = frozenset(("git_status", "git_log", "git_diff"))
+#: The argv prefix the dashboard file panel's diff uses, for the same
+#: ``git diff --no-index`` of two masked bodies.
+_NO_INDEX_GIT = (
+    "git",
+    "-c",
+    "diff.textconv=",
+    "-c",
+    "core.attributesFile=/dev/null",
+    "-c",
+    "core.fsmonitor=",
+)
 
 #: The guest caps a read at 256 KB of text; JSON escaping can roughly double it.
 _BROWSE_OUTPUT_MAX = 2 * 1024 * 1024
@@ -208,25 +221,39 @@ def _redact_git_text(text: str, *, nul_framed: bool) -> str:
     """Run the shared redactor without consuming Git's record framing.
 
     ``nul_framed`` text (``git status -z``) is redacted one NUL record at a
-    time, so a record whose name holds a newline is judged whole. Anything
+    time, after its status code, so a name holding a newline is judged whole. Anything
     else is newline-framed and redacted one line at a time: a credential
     prefix at the end of one line must not swallow the line after it. That
     cannot split a credential, because each ``git_log`` line is one whole
     commit (``%h\\t%an\\t%at\\t%s`` with a one-line subject).
     """
     records = []
+    source_next = False
     for record in text.split("\0"):
-        lines = record.split("\n")
         if not nul_framed:
-            records.append("\n".join(_redact_git_line(line) for line in lines))
+            records.append("\n".join(_redact_git_line(line) for line in record.split("\n")))
             continue
-        clean = redact_via_context(record).split("\n")
-        if len(clean) != len(lines):
-            # A multiline credential can consume line breaks. Withhold the
-            # record's bodies rather than expose fragments or move records.
-            clean = [REDACTED_CREDENTIAL_TAG if body else "" for body in lines]
-        records.append("\n".join(clean))
+        # A status record starts with its ``XY `` code, which is kept so the
+        # panel still reads the row; the record after a rename or copy is its
+        # source path and has no code.
+        keep = 0 if source_next or not _STATUS_PREFIX_RE.match(record) else 3
+        source_next = keep > 0 and any(c in "RC" for c in record[:2])
+        records.append(record[:keep] + _redact_status_name(record[keep:]))
     return "\0".join(records)
+
+
+#: ``git status --porcelain=v1`` record code (or the ``## `` branch line).
+_STATUS_PREFIX_RE = re.compile(r"[ MTADRCU?!#]{2} ")
+
+
+def _redact_status_name(name: str) -> str:
+    lines = name.split("\n")
+    clean = redact_via_context(name).split("\n")
+    if len(clean) != len(lines):
+        # A multiline credential can consume line breaks. Withhold the
+        # name's lines rather than expose fragments or move records.
+        clean = [REDACTED_CREDENTIAL_TAG if part else "" for part in lines]
+    return "\n".join(clean)
 
 
 _GIT_MODES = frozenset(("100644", "100755", "120000", "160000"))
@@ -261,20 +288,27 @@ def _git_extended_header(result: dict[str, Any], old_name: str, new_name: str) -
     return "".join(line + "\n" for line in lines)
 
 
+#: A PEM opener or footer anywhere in a line, so a field-prefixed one
+#: (``key: -----BEGIN ...-----``, ``"pem": "-----BEGIN ...``) counts too.
+_PEM_MARKER_RE = re.compile(r"-----(BEGIN|END) (.+?)-----")
+
+
 def _withhold_unclosed_pem(body: str) -> str:
     """Mask an unmatched PEM opener through EOF, preserving LF counts and final LF."""
     parts = body.split("\n")
     closed: set[str] = set()
     cut = len(parts)
-    # A backwards pass finds matching footers without rescanning each suffix.
+    # A backwards pass finds matching footers without rescanning each suffix;
+    # markers within a line are read right to left for the same reason.
     for i in range(len(parts) - 1, -1, -1):
-        marker = parts[i].strip()
-        if not marker.endswith("-----"):
+        if "-----" not in parts[i]:
             continue
-        if marker.startswith("-----END "):
-            closed.add(marker[9:-5])
-        elif marker.startswith("-----BEGIN ") and marker[11:-5] not in closed:
-            cut = i
+        for marker in reversed(list(_PEM_MARKER_RE.finditer(parts[i]))):
+            kind, label = marker.group(1), marker.group(2).strip()
+            if kind == "END":
+                closed.add(label)
+            elif label not in closed:
+                cut = i
     if cut == len(parts):
         return body
     # The empty split field after a final LF is not an extra source line.
@@ -318,26 +352,34 @@ def _git_diff_from_bodies(result: dict[str, Any], path: str) -> dict[str, Any]:
         redact_via_context(_withhold_unclosed_pem(result[key] or "")) for key in ("old", "new")
     )
 
-    # Split on LF only: CR, form feed and Unicode separators belong to a line.
-    def lines(body: str) -> list[str]:
-        parts = body.split("\n")
-        return [p + "\n" for p in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
-
-    old_lines, new_lines = lines(old), lines(new)
     extended = _git_extended_header(result, old_name, name)
     header = f"diff --git {a} {b}\n" + extended
-    patch = difflib.unified_diff(
-        old_lines,
-        new_lines,
-        fromfile=a if result["old"] is not None else "/dev/null",
-        tofile=b if result["new"] is not None else "/dev/null",
-        n=3,
-    )
-    output = "".join(
-        line if line.endswith("\n") else line + "\n\\ No newline at end of file\n" for line in patch
-    )
-    # A mode change or a rename is a difference even when the bodies match.
-    return {**view, "output": header + output if output or extended else ""}
+    try:
+        patch = no_index_diff(
+            old, new, git=_NO_INDEX_GIT, env={**git_command_env(), "GIT_ATTR_NOSYSTEM": "1"}
+        )
+    except subprocess.TimeoutExpired:
+        # Git did not finish within its timeout: show the cut-off notice.
+        return {**view, "truncated": True, "output": header if extended else ""}
+    except (OSError, subprocess.SubprocessError):
+        # Fail closed: no hunks at all beats a guessed patch.
+        return {
+            **view,
+            "git": False,
+            "code": "git_failed",
+            "error_text": "the gateway could not build the diff",
+        }
+    hunks = patch_hunks(patch)
+    if hunks is None:
+        if patch.strip():
+            # Git judged the masked text binary.
+            return {**view, "output": header + f"Binary files {a} and {b} differ\n"}
+        # A mode change or a rename is a difference even when the bodies match.
+        return {**view, "output": header if extended else ""}
+    fromfile = a if result["old"] is not None else "/dev/null"
+    tofile = b if result["new"] is not None else "/dev/null"
+    body = "".join(line + "\n" for line in hunks)
+    return {**view, "output": header + f"--- {fromfile}\n+++ {tofile}\n" + body}
 
 
 async def browse_session(
