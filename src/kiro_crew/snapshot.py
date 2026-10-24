@@ -208,6 +208,7 @@ if TYPE_CHECKING:
     from kiro_crew import snapshot_redact
 
 from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.staging import staging_dir
 
 try:
     from kiro_crew.config.loader import DASHBOARD_PORT as _DASHBOARD_PORT
@@ -1016,8 +1017,16 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
     mc = _mc_dir()
     mode = args.mode or ("merge" if (mc / "memory.db").is_file() else "replace")
 
-    with tempfile.TemporaryDirectory() as work_str:
+    with tempfile.TemporaryDirectory(dir=str(staging_dir())) as work_str:
         work = Path(work_str)
+        # Staged under the data home's ``staging`` leaf, not the system temp dir: the
+        # extracted bundle can be GBs and would otherwise sit in RAM on a tmpfs /tmp. The
+        # root is a sibling of the install on the same real disk, owner-only and VISIBLE
+        # (unmasked) -- a restore installs into the sandbox-visible data home, so the
+        # staging copy is no more exposed than the artifact it becomes; an in-sandbox
+        # ``kirocrew restore`` stages here on real disk exactly like the gateway. The
+        # context manager removes this subtree on success and failure, and a crash orphan
+        # is reclaimed by ``staging.sweep_staging``.
         # Same reasoning as the staging side: the extracted bundle sits here in the clear
         # before it is installed, so the directory is locked to the owner cross-platform
         # before any member is written into it.

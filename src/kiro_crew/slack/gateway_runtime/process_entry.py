@@ -503,6 +503,17 @@ async def run_gateway(
                     await asyncio.to_thread(work_root.sweep_work_root)
                 except Exception:
                     logging.getLogger(__name__).debug("work-root sweep failed", exc_info=True)
+                # The large-transfer staging root rides the SAME hourly wake, same
+                # posture: a snapshot/restore/import removes its own per-call subtree on
+                # success and failure, so this reclaims only a tree orphaned by a hard
+                # crash. Idle-keyed with a short grace (see kiro_crew.staging); its own
+                # try/except so one root's failure never skips another's sweep.
+                try:
+                    from kiro_crew import staging
+
+                    await asyncio.to_thread(staging.sweep_staging)
+                except Exception:
+                    logging.getLogger(__name__).debug("staging sweep failed", exc_info=True)
                 # The per-run work directories of subagent and stateless cron
                 # sessions ride the same wake. The ordinary end of a run reclaims
                 # its own (AcpProvider.shutdown); the boot sweep took what a dead

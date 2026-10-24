@@ -39,6 +39,7 @@ from kiro_crew.snapshot_components import (
     _facade,
     safe_tree_root,
 )
+from kiro_crew.staging import staging_dir
 
 
 def _fsize(p: Path) -> int:
@@ -224,7 +225,22 @@ def _build_snapshot(
         skipped.append({"reason": reason, "path": rel})
         facade._report_skip(reason, path)
 
-    with tempfile.TemporaryDirectory() as work:
+    # Stage under the data home's own ``staging`` leaf, not the system temp dir: this
+    # tree is the whole data home in the clear and can be GBs, so on a host whose /tmp is
+    # a tmpfs the default location would hold it in RAM until the build finishes. The
+    # staging root is a sibling of the destination on the same real disk, owner-only and
+    # VISIBLE (unmasked). For the CLI/dashboard snapshot the archive lands in the
+    # fully-visible ``snapshots`` leaf, so the staging copy is no more exposed than the
+    # artifact it becomes. The AWS nightly backup reaches this same builder (via
+    # ``run_snapshot_backup`` -> ``snapshot_main``) but publishes its archive under the
+    # masked ``aws-control-staging`` / off-host ``backup`` path; its INNER build staging
+    # here is unmasked for the same reason, and a sibling agent could already read the
+    # finished visible snapshot, so the in-the-clear build copy adds no exposure the
+    # product does not already carry. An in-sandbox ``kirocrew snapshot`` stages here on
+    # real disk exactly like the gateway. The context manager still removes the per-call
+    # subtree on success and failure; a crash orphan is reclaimed by
+    # ``staging.sweep_staging``.
+    with tempfile.TemporaryDirectory(dir=str(staging_dir())) as work:
         # Locked down as a DIRECTORY before anything is staged into it. This tree holds the
         # operator's whole data home in the clear while the archive is built, and Windows
         # inherits the parent DACL rather than honouring a mode, so the POSIX 0700 mkdtemp
