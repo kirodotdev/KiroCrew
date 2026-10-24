@@ -14,6 +14,12 @@ import pytest
 
 from kiro_crew.cli import main
 from kiro_crew.config.paths import data_home
+from kiro_crew.validation import (
+    _MODEL_NAME_RE,
+    MODEL_NAME_HINT,
+    TEMPLATE_NAME_HINT,
+    TEMPLATE_NAME_RE,
+)
 
 
 def _write_config(tmp_path: Path, data: dict) -> Path:
@@ -232,7 +238,7 @@ class TestAgentCreate:
             main()
 
         assert exc_info.value.code != 0
-        assert "invalid kiro agent name" in capsys.readouterr().err
+        assert f"invalid kiro agent name ({TEMPLATE_NAME_HINT})" in capsys.readouterr().err
 
     def test_create_rejects_credential_shaped_member_name(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -345,7 +351,7 @@ class TestAgentUpdate:
             main()
 
         assert exc_info.value.code != 0
-        assert "invalid kiro agent name" in capsys.readouterr().err
+        assert f"invalid kiro agent name ({TEMPLATE_NAME_HINT})" in capsys.readouterr().err
 
 
 def _run_agent_cli(cfg_path: Path, *argv: str) -> None:
@@ -802,7 +808,7 @@ class TestAgentModel:
 
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
-        assert "invalid model format" in err
+        assert f"invalid model format ({MODEL_NAME_HINT})" in err
         assert bad not in err
         assert cfg_path.read_text(encoding="utf-8") == before
 
@@ -816,7 +822,7 @@ class TestAgentModel:
             _run_agent_cli(cfg_path, "create", "--name", "oncall", "--model", "a b")
 
         assert exc_info.value.code == 1
-        assert "invalid model format" in capsys.readouterr().err
+        assert f"invalid model format ({MODEL_NAME_HINT})" in capsys.readouterr().err
         assert cfg_path.read_text(encoding="utf-8") == before
 
     def test_a_wrong_flavour_spelling_is_refused_with_the_served_id(
@@ -894,3 +900,32 @@ class TestAgentModel:
 
         saved = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert saved["agents"]["oncall"]["model"] == "fable-5-1m"
+
+
+class TestRefusalHintsMatchTheirGrammar:
+    """The hint a refusal prints describes what its pattern actually admits."""
+
+    @pytest.mark.parametrize("name", ["a", "a" * 63, "dr.eggbot", "my_agent-2"])
+    def test_template_hint_admits(self, name: str) -> None:
+        assert TEMPLATE_NAME_RE.fullmatch(name)
+
+    @pytest.mark.parametrize("name", ["", "a" * 64, "-agent", "agent.", "dr. eggbot"])
+    def test_template_hint_refuses(self, name: str) -> None:
+        assert not TEMPLATE_NAME_RE.fullmatch(name)
+
+    def test_template_hint_states_the_length_bound(self) -> None:
+        assert "1-63" in TEMPLATE_NAME_HINT
+
+    @pytest.mark.parametrize(
+        "model", ["auto", "test-model-1", "gpt-6-astra[high]", "ollama/qwen3:8b", "a/b/c"]
+    )
+    def test_model_hint_admits(self, model: str) -> None:
+        assert _MODEL_NAME_RE.match(model)
+
+    @pytest.mark.parametrize("model", ["-rf", "a b", "../model", "/abs", "a[x][y]"])
+    def test_model_hint_refuses(self, model: str) -> None:
+        assert not _MODEL_NAME_RE.match(model)
+
+    def test_model_hint_names_auto_and_the_qualified_form(self) -> None:
+        assert "'auto'" in MODEL_NAME_HINT
+        assert "provider/model" in MODEL_NAME_HINT

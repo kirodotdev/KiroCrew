@@ -25,6 +25,7 @@ import pytest
 from kiro_crew.cli_commands import _cron, _format_schedule
 from kiro_crew.config.loader import config_dir
 from kiro_crew.cron import CronSchedule
+from kiro_crew.validation import MODEL_NAME_HINT
 
 
 def test_at_schedule_uses_configured_timezone_when_job_timezone_is_unset(monkeypatch):
@@ -445,7 +446,7 @@ class TestRefusals:
                 "--timeout 3000 plus cleanup exceeds the 1800s wake budget",
             ),
             ({"every": 300, "channel": "not a channel"}, "invalid channel ID format"),
-            ({"every": 300, "model": "bad model!"}, "invalid model format"),
+            ({"every": 300, "model": "bad model!"}, f"invalid model format ({MODEL_NAME_HINT})"),
         ],
         ids=[
             "no schedule",

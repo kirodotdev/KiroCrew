@@ -43,6 +43,18 @@ from kiro_crew.terminal_safe import safe_terminal_line
 from kiro_crew.validation import _MODEL_NAME_RE, MAX_SHORT_STRING, TEMPLATE_NAME_RE
 
 
+def _kiro_agent_or_exit(name: str) -> None:
+    """Refuse a ``--kiro-agent`` value its pattern does not admit, naming the shape."""
+    if TEMPLATE_NAME_RE.fullmatch(name):
+        return
+    # Read here, not at module level: the facade mirrors every module-level import
+    # of its owners, and its import inventory is frozen.
+    from kiro_crew.validation import TEMPLATE_NAME_HINT
+
+    print(f"Error: invalid kiro agent name ({TEMPLATE_NAME_HINT})", file=sys.stderr)
+    sys.exit(1)
+
+
 def _memory_store_or_exit(raw: str) -> str:
     """Return *raw* when it may bind a crew to a memory store, else exit 1.
 
@@ -100,7 +112,11 @@ def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig) -> str:
     if not model:
         return ""
     if len(model) > MAX_SHORT_STRING or not _MODEL_NAME_RE.match(model):
-        print("Error: invalid model format", file=sys.stderr)
+        # Read here, not at module level: the facade mirrors every module-level
+        # import of its owners, and its import inventory is frozen.
+        from kiro_crew.validation import MODEL_NAME_HINT
+
+        print(f"Error: invalid model format ({MODEL_NAME_HINT})", file=sys.stderr)
         sys.exit(1)
     if is_claude_code(cfg.agent.provider):
         return model
@@ -176,9 +192,7 @@ def _handle_agent(args: argparse.Namespace) -> None:
             print(f"Error: agent '{keyed.taken}' already exists", file=sys.stderr)
             sys.exit(1)
         args.name, display_name = keyed.key, keyed.display_name
-        if not TEMPLATE_NAME_RE.fullmatch(args.kiro_agent):
-            print("Error: invalid kiro agent name", file=sys.stderr)
-            sys.exit(1)
+        _kiro_agent_or_exit(args.kiro_agent)
         memory_store = _memory_store_or_exit(args.memory_store)
         if memory_store not in ("", DEFAULT_MEMORY_STORE):
             print(
@@ -275,9 +289,7 @@ def _handle_agent(args: argparse.Namespace) -> None:
             print("Error: a member's memory cannot be rebound or shared", file=sys.stderr)
             sys.exit(1)
         if args.kiro_agent is not None:
-            if not TEMPLATE_NAME_RE.fullmatch(args.kiro_agent):
-                print("Error: invalid kiro agent name", file=sys.stderr)
-                sys.exit(1)
+            _kiro_agent_or_exit(args.kiro_agent)
             agent.kiro_agent = args.kiro_agent
         if args.workspace is not None:
             agent.workspace = args.workspace

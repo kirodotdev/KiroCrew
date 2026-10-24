@@ -297,7 +297,11 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
         _cron_add_fail(f"invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})")
     if model:
         if len(model) > MAX_SHORT_STRING or not _MODEL_NAME_RE.match(model):
-            _cron_add_fail("invalid model format")
+            # Read here, not at module level: the facade mirrors every module-level
+            # import of its owners, and its import inventory is frozen.
+            from kiro_crew.validation import MODEL_NAME_HINT
+
+            _cron_add_fail(f"invalid model format ({MODEL_NAME_HINT})")
         # Same normalisation as the dashboard and cron_add: the "auto" inherit
         # sentinel resolves to no pinned provider id and is stored as unset.
         if model_registry.to_provider_id(model, "claude_code") == "":

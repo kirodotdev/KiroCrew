@@ -222,6 +222,10 @@ _AGENT_NAME_RE: re.Pattern[str] = re.compile(
 )
 
 TEMPLATE_NAME_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,61}[A-Za-z0-9]|[A-Za-z0-9])\Z")
+#: The shape ``TEMPLATE_NAME_RE`` admits, in words, for a CLI refusal.
+TEMPLATE_NAME_HINT = (
+    "expected 1-63 letters, digits, '.', '_' or '-', starting and ending with a letter or digit"
+)
 
 #: The union of the two identifier grammars, as one pattern for ``FieldSpec``:
 #: a tool argument that names a registered agent SPEC (``spawn_run(agent=...)``,
@@ -267,6 +271,12 @@ _QUALIFIED_MODEL_MAX_CHARS = 256
 _MODEL_NAME_RE = re.compile(
     rf"(?:{_MODEL_SEGMENT}(?:\[[A-Za-z0-9._-]+\])?"
     rf"|(?=.{{1,{_QUALIFIED_MODEL_MAX_CHARS}}}\Z){QUALIFIED_MODEL_PATTERN})\Z"
+)
+#: The shape ``_MODEL_NAME_RE`` admits, in words, for a CLI refusal. The
+#: refusal names the shape and never echoes the rejected value.
+MODEL_NAME_HINT = (
+    "expected a model id of letters, digits, '.', '_' and '-' that starts with a "
+    "letter or digit (optionally with one [qualifier]), a provider/model id, or 'auto'"
 )
 
 # Content-bound theme-persona consent hash: sha256 rendered as EXACTLY 64
