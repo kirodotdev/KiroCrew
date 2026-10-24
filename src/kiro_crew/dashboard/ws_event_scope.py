@@ -250,6 +250,8 @@ _SLOT_SCOPED_EVENTS = frozenset({
     "subagent_stalled", "subagent_retrying", "subagent_recovering",
     "subagent_waiting", "subagent_resumed",
     "subagent_injection_failed",
+    # Dashboard Stop button: marks the slot's active subagents as orphaned.
+    "parent_stopped",
     # Slack-gateway driven, slot-scoped
     "autonudge_state", "batch_finished", "spawn_batch_started",
     # Workflows / misc

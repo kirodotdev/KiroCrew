@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
@@ -838,7 +839,18 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     force = request.query.get("force", "").lower() == "true"
-    return web.json_response(await stop_slot_turn(state, slot, force=force, cancel_key=cancel_key))
+    result = await stop_slot_turn(state, slot, force=force, cancel_key=cancel_key)
+
+    # Broadcast parent_stopped so the frontend can mark active subagent
+    # cards as orphaned (dimmed "parent stopped" label, Stop all still
+    # reachable).  The event names only the slot; the frontend marks
+    # whichever agents it currently tracks for that slot.
+    try:
+        state.broadcast_ws("parent_stopped", {"slot": name})
+    except Exception:
+        logging.getLogger(__name__).debug("parent_stopped broadcast failed for %s", name, exc_info=True)
+
+    return web.json_response(result)
 
 
 async def api_chat_slot_interrupt(request: web.Request) -> web.Response:

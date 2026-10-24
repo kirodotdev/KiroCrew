@@ -654,6 +654,22 @@ export const subagentReducers = {
   selectSubagent(state: ChatState, action: PayloadAction<string | null>) {
     state.selectedSubagentId = action.payload
   },
+  /** Mark every active subagent on a slot as parent-stopped.  The agent
+   *  processes are still running, but the parent turn that spawned them has
+   *  been stopped by the user.  The UI dims these cards and labels them
+   *  "parent stopped" while keeping Stop all reachable so the user can
+   *  kill the processes if desired. */
+  sseParentStopped(state: ChatState, action: PayloadAction<{ slot: string }>) {
+    const { slot } = action.payload
+    if (isUnsafeKey(slot)) return
+    const subs = slot !== state.activeSlot
+      ? state.slotActivity[safeKey(slot)]?.subagents
+      : state.subagents
+    if (!subs) return
+    for (const a of Object.values(subs)) {
+      if (isActiveSubagent(a)) a.parentStopped = true
+    }
+  },
   /** "Dismiss done": drop terminal cards for a slot (backend clear is the
    *  caller's job via per-id DELETE /api/spawn/{id}; this trims the local view). */
   clearTerminalSubagents(state: ChatState, action: PayloadAction<{ slot: string }>) {
