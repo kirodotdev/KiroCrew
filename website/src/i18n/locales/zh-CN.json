@@ -2830,8 +2830,14 @@
           "empty_board": "空板",
           "empty_title": "尚无依赖关系",
           "empty_blurb": "此仓库暂无可绘制的依赖边。可用 gh issue edit --add-blocked-by 设置原生依赖，或等 Issue Radar 下次同步时从交叉引用推断。",
+          "empty_blurb_gitlab": "此项目暂无可绘制的阻塞链接。在议题的关联项中将其标记为被另一议题阻塞（GitLab Premium 或 Ultimate），然后重试。",
           "empty_unavailable_title": "依赖数据不可用",
           "empty_unavailable_blurb": "依赖图加载失败。该仓库的 deps 后端路由可能尚未启用，可用后重试。",
+          "empty_unavailable_auth_gitlab": "你尚未在此主机登录 GitLab CLI (glab)。请运行下面的命令后重试。",
+          "empty_unavailable_cli_missing_gitlab": "此主机上未安装 GitLab CLI (glab)。请安装后使用 glab 登录，然后重试。",
+          "empty_unavailable_fetch_failed_gitlab": "GitLab 对大多数议题没有响应（故障或速率限制）。请稍候再重试。",
+          "empty_unavailable_issue_scope": "依赖关系图谱需要开放议题列表，但目前尚不可用。请打开“议题”标签页将其缓存，或查看下方的错误，然后重试。",
+          "refresh_failed_stale_graph": "正在显示上次加载的依赖图；最近一次刷新失败。",
           "retry": "重试"
         },
         "groupReviewsView": {

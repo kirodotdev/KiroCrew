@@ -132,11 +132,19 @@ def _normalize_deps(edges: Any, nodes: Any) -> tuple[list[dict], dict[str, dict]
                 continue
             if number <= 0 or not isinstance(val, dict):
                 continue
-            out_nodes[str(number)] = {
+            node: dict[str, Any] = {
                 "kind": str(val.get("kind") or "issue"),
                 "state": str(val.get("state") or "open"),
                 "title": str(val.get("title") or ""),
             }
+            # Set by the GitLab fetcher on a node whose own links were never read
+            # (admitted by another issue's link past the links cap, or its own
+            # call failed). Dropping it here would turn such a node back into a
+            # falsely-"ready" one on every cache round-trip, so it survives only
+            # as a literal True and is absent otherwise.
+            if val.get("blockers_unknown") is True:
+                node["blockers_unknown"] = True
+            out_nodes[str(number)] = node
     return out_edges, out_nodes
 
 

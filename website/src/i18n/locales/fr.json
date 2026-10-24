@@ -3054,8 +3054,14 @@
           "empty_board": "CARTE NON PEUPLÉE",
           "empty_title": "Aucune dépendance pour l’instant",
           "empty_blurb": "Ce dépôt n’a aucune arête de dépendance à tracer. Définissez une dépendance native avec gh issue edit --add-blocked-by, ou Issue Radar les déduira des références croisées à la prochaine synchronisation.",
+          "empty_blurb_gitlab": "Ce projet n’a aucun lien bloquant à tracer. Marque un ticket comme bloqué par un autre dans ses éléments liés (GitLab Premium ou Ultimate), puis réessaie.",
           "empty_unavailable_title": "Données de dépendances indisponibles",
-          "empty_unavailable_blurb": "Impossible de charger le graphe. La route deps n’est peut-être pas encore active pour ce dépôt. Réessayez ensuite.",
+          "empty_unavailable_blurb": "Impossible de charger le graphe. La route deps n’est peut-être pas encore active pour ce dépôt. Réessaie ensuite.",
+          "empty_unavailable_auth_gitlab": "Tu n'es pas connecté à la CLI GitLab (glab) sur cet hôte. Exécute la commande ci-dessous, puis réessaie.",
+          "empty_unavailable_cli_missing_gitlab": "La CLI GitLab (glab) n'est pas installée sur cet hôte. Installe-la, connecte-toi avec glab, puis réessaie.",
+          "empty_unavailable_fetch_failed_gitlab": "GitLab n'a pas répondu pour la plupart des tickets (panne ou limite de débit). Patiente un instant, puis réessaie.",
+          "empty_unavailable_issue_scope": "Le graphe de dépendances a besoin de la liste des tickets ouverts, qui n’est pas encore disponible. Ouvre l’onglet Tickets pour la mettre en cache, ou regarde l’erreur ci-dessous, puis réessaie.",
+          "refresh_failed_stale_graph": "Affichage du dernier graphe chargé ; la dernière actualisation a échoué.",
           "retry": "RÉESSAYER"
         },
         "groupReviewsView": {

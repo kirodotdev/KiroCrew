@@ -545,15 +545,17 @@ class RouteTest(unittest.IsolatedAsyncioTestCase):
 
     # non-github provider
 
-    async def test_non_github_provider_answers_200_empty(self):
-        # Even if a GitLab repo somehow had crew records on disk, the route must
-        # answer items:[] — crews are a GitHub-only feature.
+    async def test_gitlab_provider_folds_its_crew_records(self):
+        # A GitLab repo's crews live in the same provider-neutral store, so the
+        # route folds them exactly as it folds a GitHub repo's. Answering a
+        # designed-empty list here would hide a crew that is really running.
         crew = _crew(self.root)
         _step(self.root, crew["id"], 5109, "claimed", "claim", "claimed")
         resp = await self._get(provider="gitlab", host="gitlab.com")
         self.assertEqual(resp.status, 200)
         body = _payload(resp)
-        self.assertEqual(body["items"], [])
+        self.assertEqual([it["number"] for it in body["items"]], [5109])
+        self.assertEqual(body["items"][0]["phase"], "claimed")
         self.assertEqual(body["provider"], "gitlab")
 
     # populated

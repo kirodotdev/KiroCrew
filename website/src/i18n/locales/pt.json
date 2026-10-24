@@ -2964,8 +2964,14 @@
           "empty_board": "PLACA VAZIA",
           "empty_title": "Ainda sem dependências",
           "empty_blurb": "Este repositório não tem arestas de dependência para desenhar. Defina uma dependência nativa com gh issue edit --add-blocked-by, ou o Issue Radar as inferirá das referências cruzadas na próxima sincronização.",
+          "empty_blurb_gitlab": "Este projeto não tem links de bloqueio para desenhar. Marque uma issue como bloqueada por outra em seus itens vinculados (GitLab Premium ou Ultimate) e depois tente novamente.",
           "empty_unavailable_title": "Dados de dependências indisponíveis",
           "empty_unavailable_blurb": "Não foi possível carregar o grafo. A rota deps pode ainda não estar habilitada para este repositório. Tente novamente quando estiver.",
+          "empty_unavailable_auth_gitlab": "Você não está conectado à CLI do GitLab (glab) neste host. Execute o comando abaixo e tente novamente.",
+          "empty_unavailable_cli_missing_gitlab": "A CLI do GitLab (glab) não está instalada neste host. Instale-a, faça login com o glab e tente novamente.",
+          "empty_unavailable_fetch_failed_gitlab": "O GitLab não respondeu para a maioria das issues (uma interrupção ou limite de taxa). Aguarde um momento e tente novamente.",
+          "empty_unavailable_issue_scope": "O grafo de dependências precisa da lista de issues abertas, que ainda não está disponível. Abra a aba Issues para armazená-la em cache, ou verifique o erro abaixo, e tente novamente.",
+          "refresh_failed_stale_graph": "Mostrando o último gráfico carregado; a atualização mais recente falhou.",
           "retry": "TENTAR DE NOVO"
         },
         "groupReviewsView": {
