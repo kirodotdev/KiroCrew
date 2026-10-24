@@ -184,6 +184,8 @@ class _ChatTurn:
     _saw_terminal_event: "bool"
     _saw_text_chunk: "bool"
     _seen_tool_identity: "dict[str, tuple[str, str]]"
+    #: Built on the turn's first tool call (the provider is known by then).
+    _undelivered_watch: "Any"
     _session_stop_gen_at_entry: "int"
     _shell_tool_calls: "set[str]"
     _span_base_len: "int"

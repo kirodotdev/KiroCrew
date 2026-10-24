@@ -1,9 +1,13 @@
 """A subscriber on the crew-log bus: the ``work`` fold moved -> fire its conductor's loop.
 
-ONE TRIGGER, AND IT IS A WORKER'S OWN WORDS. A conductor is pulled forward when the
-``work`` fold advances on the crew-log bus -- a worker's ``work/recorded`` report landed
-and was folded -- and only when that report's status is one the conductor must act on
-(:data:`~kiro_crew.work_vocab.WORK_WAKE_STATUSES`: ``done``, ``blocked``, ``question``).
+TWO TRIGGERS, AND BOTH ARE A WORKER TRYING TO SPEAK. A conductor is pulled forward when
+the ``work`` fold advances on the crew-log bus -- a worker's ``work/recorded`` report
+landed and was folded -- and only when that report's status is one the conductor must
+act on (:data:`~kiro_crew.work_vocab.WORK_WAKE_STATUSES`: ``done``, ``blocked``,
+``question``). And it is pulled forward when a worker's ``work_report`` / ``work_brief``
+call never reached the ledger because the harness could not deliver it
+(:func:`wake_for_undelivered_report`, :mod:`kiro_crew.work_ledger_undelivered`): the
+worker meant to say something, and the conductor would otherwise hear nothing at all.
 Nothing else here wakes anybody.
 
 WHY NOT A TURN END OR A CLOSE. Both were triggers once, on the reading that a worker's
@@ -802,6 +806,35 @@ async def _fire(svc: Any, conductor_slot_key: str, item_id: str = "") -> str:
         )
         return ""
     return loop_id
+
+
+def wake_for_undelivered_report(conductor_slot_key: str, item_id: str) -> "Any | None":
+    """Pull *conductor_slot_key*'s work-ledger tick forward: *item_id*'s worker tried to
+    report and the harness never delivered the call. The scheduled future, or ``None``.
+
+    The second trigger the module docstring anticipates, and the same push as a
+    report's: the batch window, the per-item budget and every refusal of
+    :func:`_fire` apply unchanged, and the tick that runs reads the item's
+    ``report_undelivered`` flag off the ledger like any other fact. Without it a
+    conductor on an hours-long cadence would learn hours later that the report it is
+    waiting for never left the worker.
+
+    Callable from any thread: it schedules onto the service's loop and returns
+    without waiting. Never raises.
+    """
+    try:
+        from kiro_crew import autonudge
+
+        svc = autonudge.get_instance()
+        if svc is None or not conductor_slot_key:
+            return None
+        running = _service_loop(svc)
+        if running is None:
+            return None
+        return asyncio.run_coroutine_threadsafe(_fire(svc, conductor_slot_key, item_id), running)
+    except Exception:  # noqa: BLE001 - a push must never reach the worker's turn
+        logger.debug("conductor wake: could not schedule an undelivered-report push")
+        return None
 
 
 def _service_loop(svc: Any) -> "asyncio.AbstractEventLoop | None":

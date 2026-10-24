@@ -360,6 +360,28 @@ function ItemRow({
         </div>
       ) : null}
 
+      {/* A failed call, so it goes through the shared error surface rather than a
+          chip. The page holds no draft input, so the agent hand-off loses nothing.
+          No dismiss: the gateway clears it when a call gets through. */}
+      {item.report_undelivered && !item.terminal ? (
+        <div className="ml-[15px] mt-1">
+          <ErrorNotice
+            title={
+              item.report_undelivered.tool === 'work_brief'
+                ? i18nT('pages.crewBoard.brief_undelivered')
+                : i18nT('pages.crewBoard.report_undelivered')
+            }
+            message={i18nT('pages.crewBoard.undelivered_detail', { item: item.item_id })}
+            messagePlacement="below"
+            askAgent
+            askAgentLabel={i18nT('pages.crewBoard.ask_about_item', {
+              title: item.title || item.item_id,
+            })}
+            variant="inline"
+          />
+        </div>
+      ) : null}
+
       {item.orphaned ? (
         <div className="ml-[15px] mt-1 text-[12px]" style={{ color: C.warn }}>
           <AlertTriangle size={12} className="mr-1 inline align-[-2px]" />

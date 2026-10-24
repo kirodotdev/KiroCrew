@@ -272,6 +272,7 @@ async def _fire_slack_inner_nudge(
                     hooks=self.ctx_builder.hooks,
                     on_tool_approval=self._interactive_approval("autonudge", nudge_key=key),
                     on_complete=_capture_raw_completion,
+                    undelivered_watch_key=key,
                 ),
                 timeout=_NUDGE_TURN_TIMEOUT,
             )
@@ -311,6 +312,7 @@ async def _fire_slack_inner_nudge(
                     else None
                 ),
                 closing_gate=lambda: sessions.begin_turn(key),
+                undelivered_watch_key=key,
             )
             response = await asyncio.wait_for(
                 driver.run(full_msg),

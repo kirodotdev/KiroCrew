@@ -625,6 +625,18 @@ def stall_brief(*, item_id: str, status: str | None) -> str:
     return f"[work-ledger wake] item={item_id} reason=stall last_status={status or '(none yet)'}"
 
 
+def undelivered_wake_brief(*, item_id: str, tool: str) -> str:
+    """Text for a worker whose ``work_report`` / ``work_brief`` call never arrived.
+
+    Its own shape for the reason :func:`stall_brief` has one: it says neither "this
+    worker reported" nor "this worker went quiet" but "this worker tried, and the
+    harness did not deliver the call". *tool* is one of the two worker tool names,
+    never anything the worker wrote. Structural only, for the reason
+    :func:`wake_brief` gives.
+    """
+    return f"[work-ledger wake] item={item_id} reason=report_undelivered tool={tool}"
+
+
 #: Chars the briefs may contribute to a delivered wake. ``irq`` already bounds the
 #: list it joins (``irq._MAX_LIST`` entries, then a "(+n more)" tail) and every brief
 #: this module builds is one short line, so a body past this is a kernel or probe

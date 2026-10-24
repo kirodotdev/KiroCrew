@@ -419,6 +419,13 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
                 event.mcp_server_name or "",
                 event.tool_name or "",
             )
+        from kiro_crew import undelivered_call_watch
+
+        if turn._undelivered_watch is None:
+            turn._undelivered_watch = undelivered_call_watch.UndeliveredCallWatch(
+                session_key or "", turn.client
+            )
+        turn._undelivered_watch.on_call(event)
     # If this tool call belongs to a native sub-agent (mapped via
     # _kiro.dev/session/update), stream it onto that sub-agent's card.
     _nat_card = _native_tc_card.get(event.tool_call_id) if event.tool_call_id else None

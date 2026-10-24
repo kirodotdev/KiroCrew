@@ -118,6 +118,8 @@ async def api_work_brief(request: web.Request) -> web.Response:
             f"the item this session is bound to ({item_id}) is not readable",
         )
     _audit(key, "work_brief", "ok", resources=item_id)
+    # The call got through, so an earlier undelivered one stops being reported.
+    await asyncio.to_thread(work_ledger.clear_undelivered, key)
     return web.json_response({"brief": brief})
 
 
@@ -339,6 +341,7 @@ async def api_work_report(request: web.Request) -> web.Response:
                     cite_unit=acting_unit,
                 )
             _audit(caller, "work_report", "ok", resources=f"{item_id} status={item.status}")
+            await asyncio.to_thread(work_ledger.clear_undelivered, caller)
             return web.json_response(
                 {"ok": True, "item_id": item.item_id, "status": item.status, "round": item.round}
             )

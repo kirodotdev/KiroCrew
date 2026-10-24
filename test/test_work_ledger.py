@@ -1472,6 +1472,17 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # taken from the loop, not from a supplied key) and is read-only. This is
         # the single new store seam this PR adds.
         "probes/work_ledger.py",
+        # The undelivered-call watch. A dispatched worker whose ``work_report`` the
+        # harness never delivered (KAS answers a bare tool name with "not available"
+        # and never calls the server) has no route to the store at all: the call it
+        # meant to make is the one that failed. So the gateway, which sees that
+        # failure in the worker's own turn stream, records it. It resolves no
+        # supplied identity: the key is the one the turn consumer (dashboard turn,
+        # messaging driver) already authenticated for that turn, and the store
+        # writes only the derived undelivered-call record for an open item that
+        # key is bound to, never an item and never another session's. Reads nothing
+        # but the worker's own binding and item.
+        "undelivered_call_watch.py",
         # ``conductor_wake.py`` was listed here while it resolved a worker slot to its
         # conductor's binding for the close and turn-end triggers. Both triggers are
         # gone and the one that remains is a crew-log bus subscription whose event

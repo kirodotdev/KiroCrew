@@ -938,6 +938,7 @@ async def handle_message_transport(
             audit_session_key=session_key,
             audit_agent=_agent or "kirocrew",
             closing_gate=turn_ceiling.gate(session_key, lambda: sessions.begin_turn(session_key)),
+            undelivered_watch_key=session_key,
         )
         # The thread's owner as of the moment the turn starts producing output.
         # A dashboard link landing during the run moves the conversation to a

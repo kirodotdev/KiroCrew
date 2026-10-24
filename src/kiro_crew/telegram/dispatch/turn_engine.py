@@ -369,6 +369,7 @@ async def _run_turn(
             closing_gate=turn_ceiling.gate(
                 session_key, lambda: self.sessions.begin_turn(session_key)
             ),
+            undelivered_watch_key=session_key,
         )
         accumulated = await driver.run(full_message)
 

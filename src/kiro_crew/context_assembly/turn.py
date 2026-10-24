@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.context_assembly import inclusion as _inclusion
 from kiro_crew.context_assembly import markers as _markers
 from kiro_crew.context_assembly import sections as _sections
+from kiro_crew.context_assembly import tool_names as _tool_names
 
 if TYPE_CHECKING:
     from kiro_crew.context import ContextBuilder
@@ -89,6 +90,11 @@ def post_compaction_parts(
     )
     if _agent_prompt:
         parts.append(f"[AGENT SYSTEM PROMPT]\n{_agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n")
+    # The tool-name rule went with the session start too, and the contract just
+    # restored names the tools bare again. Minimal turns carried it as well.
+    _tool_names_part = _tool_names.tool_names_block(provider_type)
+    if _tool_names_part:
+        parts.append(_tool_names_part)
     # The reply-style block is session-start context too, and unlike
     # the skills index its loss is invisible: the model simply drifts
     # back to default-length prose. Re-read the CURRENT setting so a

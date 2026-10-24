@@ -521,9 +521,16 @@ class TurnDriver:
         audit_agent: str = "kirocrew",
         closing_gate: Callable[[], None] | None = None,
         monitor_completion: MonitorCompletionHook | None = None,
+        undelivered_watch_key: str = "",
     ) -> None:
         self.provider = provider
         self.renderer = renderer
+        # The session key the caller authenticated for this turn, used ONLY to say
+        # whose worker-tool call the harness failed to deliver
+        # (:class:`kiro_crew.undelivered_call_watch.UndeliveredCallWatch`), so a
+        # dispatched worker resumed on a channel is still heard when its report
+        # never arrives. Empty watches nothing.
+        self.undelivered_watch_key = undelivered_watch_key
         self.approval_mode = approval_mode
         self.decider = decider
         self.auto_approve_tool = auto_approve_tool
@@ -679,6 +686,12 @@ class TurnDriver:
         # anything — the grant still comes solely from directive_tool_for at
         # call time.
         seen_tool_identity: dict[str, tuple[str, str]] = {}
+        # A worker-tool call the harness never delivered, judged per turn.
+        undelivered_watch = None
+        if self.undelivered_watch_key:
+            from kiro_crew.undelivered_call_watch import UndeliveredCallWatch
+
+            undelivered_watch = UndeliveredCallWatch(self.undelivered_watch_key, self.provider)
         # Purpose text from each tool_call, keyed by its tool_call_id, so a
         # permission request can be paired with the purpose of the tool IT asks
         # about. A permission payload may carry the title but no purpose, and the
@@ -818,6 +831,8 @@ class TurnDriver:
                     pending_steer_events += 1
             elif kind == EVENT_TOOL_CALL:
                 productive = True
+                if undelivered_watch is not None:
+                    undelivered_watch.on_call(event)
                 # Native handle_message treats every EVENT_TOOL_CALL uniformly
                 # (complete previous task + start new), regardless of tool_final;
                 # emit a single tool_call event so the renderer matches it.
@@ -890,6 +905,8 @@ class TurnDriver:
                 if event.tool_call_id and getattr(event, "sub_session_id", ""):
                     native_tool_call_ids.add(event.tool_call_id)
             elif kind == EVENT_TOOL_RESULT:
+                if undelivered_watch is not None:
+                    await undelivered_watch.on_result(event)
                 # Session directive: a stateless session-bound tool returns a
                 # marker instead of resolving its own session identity; the
                 # caller-injected consumer applies it against the caller's own

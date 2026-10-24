@@ -644,6 +644,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # call time.
     _seen_tool_identity: dict[str, tuple[str, str]] = {}
     turn._seen_tool_identity = _seen_tool_identity
+    # A worker-tool call the harness never delivered (undelivered_call_watch):
+    # built lazily on the first tool call, once the turn's provider is known.
+    turn._undelivered_watch = None
     # tool_call_id -> the output we already produced for a CONSUMED directive
     # (applied confirmation, or the native-sub-agent not-applied note). A tool
     # call can surface more than one result frame; once the mapping above is

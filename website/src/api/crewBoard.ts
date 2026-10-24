@@ -71,6 +71,10 @@ export interface WorkBoardItem {
   stale: boolean
   /** The bar is one `accept_eval.py` can actually evaluate. */
   acceptance_concrete: boolean
+  /** The worker's last `work_report` / `work_brief` call never reached the
+   *  ledger (the harness could not deliver it) and nothing has landed since.
+   *  Derived from the worker's transport, not something it wrote. */
+  report_undelivered?: { tool: 'work_report' | 'work_brief'; at: string } | null
   /** A question with no NEWER answering decision. Lifts the row into the band. */
   outstanding: boolean
   terminal: boolean

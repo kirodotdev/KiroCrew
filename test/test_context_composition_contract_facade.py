@@ -304,7 +304,8 @@ FACADE_LOGGER = "kiro_crew.context"
 #: composition, so the set is spelled out rather than globbed.
 OWNER_MODULES = frozenset(
     """agent_spec budget delivery_records inclusion markers member member_gates
-    output_contract replay sections session_start store_admission turn turn_message""".split()
+    output_contract replay sections session_start store_admission tool_names turn
+    turn_message""".split()
 )
 
 

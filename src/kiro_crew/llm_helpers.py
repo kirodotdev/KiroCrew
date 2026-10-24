@@ -205,6 +205,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         EVENT_STEER_CONSUMED,
         EVENT_TEXT_CHUNK,
         EVENT_TOOL_CALL,
+        EVENT_TOOL_RESULT,
         AcpError,
         AcpPromptBusy,
         LLMEvent,

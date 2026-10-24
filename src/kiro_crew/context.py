@@ -75,6 +75,7 @@ from kiro_crew.context_assembly import replay as _replay
 from kiro_crew.context_assembly import sections as _sections  # noqa: F401 - loaded eagerly
 from kiro_crew.context_assembly import session_start as _session_start  # noqa: F401
 from kiro_crew.context_assembly import store_admission as _store_admission  # noqa: F401
+from kiro_crew.context_assembly import tool_names as _tool_names  # noqa: F401 - loaded eagerly
 from kiro_crew.context_assembly import turn as _turn  # noqa: F401 - loaded eagerly
 from kiro_crew.context_assembly import turn_message as _turn_message  # noqa: F401 - loaded eagerly
 from kiro_crew.context_assembly.agent_spec import (  # noqa: F401

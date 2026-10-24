@@ -6485,6 +6485,7 @@ importable from `kiro_crew.context`:
 | `store_admission.py` | which store answers each memory and lesson section, the first message's early embed (`embed_startup_query`), the early memory reads (`prefetch_session_memory`), the per-message lessons block, the shown-lesson record |
 | `turn.py` | follow-up turn additions (post-compaction re-injection, Slack thread context, per-turn rails, guidance) and the user's own turn text |
 | `output_contract.py` | the output contract a session starts with: the critical-rules block per runtime (`_critical_rules_for`) and the `[UI LANGUAGE]` steer (`ui_language_tag` stays on the facade) |
+| `tool_names.py` | the `[TOOL NAMES]` block: how a model spells an MCP tool call on a harness that resolves only qualified names (KAS), at session start, minimal start and after a compaction |
 | `session_start.py` | `ContextBuilder.build_session_context`: the session-start block's order, its section timings (`_mark`, `_emit_context_section_timings`) and the redaction of replayed thread history |
 | `turn_message.py` | `ContextBuilder.build_message`: what one turn sends and in which order, the trigger-matched skill-body delivery and its audit, the request boundary |
 | `agent_spec.py` | the agent prompt (`_resolve_agent_prompt`, `_load_agent_prompt`, `_read_prompt_file`), its templates and the per-session readings they resolve to (`_session_reading`), and the agent-spec reads (`_read_include_crew_context`, `_load_steering_resources`, `steering_target_admissible`) |

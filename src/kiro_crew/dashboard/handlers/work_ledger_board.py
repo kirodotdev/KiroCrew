@@ -363,6 +363,11 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
 
     state: DashboardState = request.app["state"]
     conductor_alive = _slot_open(state, key)
+    # The worker's transport, not the ledger: a report the harness never delivered.
+    # Read outside the board hold because it is not part of the ledger snapshot.
+    undelivered = await asyncio.to_thread(
+        lambda: {item.item_id: work_ledger.read_undelivered(key, item) for item in items}
+    )
 
     rows: list[dict[str, Any]] = []
     for item in items:
@@ -375,6 +380,7 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
             worker_looping=_slot_looping(item.worker_session_key or ""),
         )
         row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
+        row["report_undelivered"] = undelivered.get(item.item_id)
         row["events"] = _mask_events([event.to_dict() for event in event_tails[item.item_id]])
         rows.append(
             _project_item(

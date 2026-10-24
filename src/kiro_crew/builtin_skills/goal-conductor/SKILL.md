@@ -351,7 +351,11 @@ Each cycle:
    read too large for the tool-result limit
    comes back trimmed with `truncated: true` and says what it left out. An item is never `stale` on the strength of silence alone: its worker
    also has to be not running, and its last word has to have left the next move
-   with the worker, so a `done` item waiting on you is not flagged.
+   with the worker, so a `done` item waiting on you is not flagged. An item whose
+   `report_undelivered` is set had a worker that TRIED to report or read its brief
+   and the harness never delivered the call: check that worker's `session_status`
+   and its pull request, and tell the user what you find ("couldn't send its
+   report") instead of calling it stalled.
 2. **Act on three statuses, and only three:**
 
    | status | what it means | what you do |

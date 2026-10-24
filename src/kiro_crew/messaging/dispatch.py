@@ -1003,6 +1003,7 @@ class ChannelTurns:
                     audit_session_key=session_key,
                     audit_agent=agent or "kirocrew",
                     closing_gate=closing_gate,
+                    undelivered_watch_key=session_key,
                     **driver_extra,
                 )
                 if replaying and retry_guard is not None:

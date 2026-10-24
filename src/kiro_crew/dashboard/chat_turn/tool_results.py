@@ -207,6 +207,12 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
             result_digest=event.tool_output_digest,
             result_bytes=event.tool_output_bytes,
         )
+        # A dispatched worker's report the harness never delivered (KAS answers a
+        # name it cannot resolve without calling the server): record it beside the
+        # worker's item so its conductor and the board learn the report did not
+        # arrive, instead of reading the silence as a stall.
+        if turn._undelivered_watch is not None:
+            await turn._undelivered_watch.on_result(event)
         _digest_backed = [held for held in _not_written if held.get("pre_call_digest")]
         if _digest_backed:
             _same, _changed = await asyncio.to_thread(_settle_failed_write, _digest_backed)

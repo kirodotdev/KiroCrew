@@ -413,6 +413,29 @@ def test_conductor_writes_leave_the_fingerprint_alone_and_reports_move_it(monkey
     assert probe.person_wait_fingerprint(CONDUCTOR) != first
 
 
+def test_an_undelivered_report_moves_the_person_wait_fingerprint(monkeypatch):
+    """The undelivered record moves no report field, so without this the hold would
+    keep its wake from the conductor for as long as the worker stays bound. Each new
+    failure moves the fingerprint once; an unchanged one lets the patrol hold again."""
+    stamps = iter(f"2026-10-08T07:00:00.{n:06d}+00:00" for n in range(10))
+    monkeypatch.setattr(wl, "_undelivered_stamp", lambda: next(stamps))
+    worker = "chat-9-998"
+    item_id = _item("a")
+    wl.apply_conductor_action(CONDUCTOR, "bind", item_id=item_id, worker_session_key=worker)
+    wl.apply_worker_report(CONDUCTOR, item_id, status="blocked", summary="x", reason="approval")
+    held = probe.person_wait_fingerprint(CONDUCTOR)
+    assert held, "held before the failure"
+    assert wl.note_undelivered(worker, "work_report") is not None
+    failed = probe.person_wait_fingerprint(CONDUCTOR)
+    assert failed and failed != held, "a failure is news"
+    assert probe.person_wait_fingerprint(CONDUCTOR) == failed, "and can be held once seen"
+    assert wl.note_undelivered(worker, "work_report") is not None
+    again = probe.person_wait_fingerprint(CONDUCTOR)
+    assert again and again not in (held, failed), "a second failure is news again"
+    wl.clear_undelivered(worker)
+    assert probe.person_wait_fingerprint(CONDUCTOR) == held
+
+
 def test_an_item_whose_worker_is_gone_is_not_a_person_wait():
     item_id = _item("a")
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=item_id, worker_session_key="chat-9-999")
