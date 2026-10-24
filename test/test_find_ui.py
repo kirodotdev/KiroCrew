@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from kiro_crew import mcp_guide, ui_index
+from kiro_crew import guide_catalog, mcp_guide, ui_index
 from kiro_crew.validation import ValidationError
 
 #: The packaged docs directory, wherever the index under test lives.
@@ -27,7 +27,11 @@ def _fresh_cache(_floor_monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     ui_index._cache.update(key=None, index=None)
     # The committed tiers only, whatever dashboard build this checkout has:
     # the build-time auto tier is pinned in test_find_ui_auto.py.
-    _floor_monkeypatch.setattr(ui_index, "AUTO_INDEX_PATH", tmp_path / "no-auto-tier.json")
+    no_auto = tmp_path / "no-auto-tier.json"
+    _floor_monkeypatch.setattr(ui_index, "AUTO_INDEX_PATH", no_auto)
+    # guide_catalog reads the same build-time file under its own name (the
+    # ui.find routes and guidable auto plans), so pin it too.
+    _floor_monkeypatch.setattr(guide_catalog, "_UI_AUTO_INDEX_PATH", no_auto)
     # Test seam only (the tool itself never reads a path from anywhere): point
     # every golden at an index written by `gen:ui --out <file>`, so parallel
     # area batches each validate their own index without touching the
