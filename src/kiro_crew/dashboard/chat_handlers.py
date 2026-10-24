@@ -205,6 +205,7 @@ from kiro_crew.dashboard.chat_api.slot_create import (  # noqa: F401
     _created_slot_row,
     _default_template_stamp,
     _persist_app_agent_owner,
+    _retract_failed_newborn,
     api_chat_slot_create,
 )
 from kiro_crew.dashboard.chat_api.slot_detail import (  # noqa: F401

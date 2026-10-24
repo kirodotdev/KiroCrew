@@ -23,6 +23,8 @@ _BUSY_HELPERS: dict[str, frozenset[str]] = {
     "_switch_target_busy": frozenset({"running"}),
     # Member Fresh start: the slot's task or the session's turn.
     "_turn_busy": frozenset({"running"}),
+    # A failed create's newborn retraction: keeps a slot a turn has reserved.
+    "_retract_failed_newborn": frozenset({"running"}),
 }
 
 
@@ -137,9 +139,11 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("mate_thread_wakes.py", "_idle"),
                 ("chat_folders.py", "api_chat_slot_mode"),
                 ("chat_api/slot_guards.py", "_switch_target_busy"),
-                # The palette create's retraction of a newborn whose app-agent
-                # binding did not persist: it reads the RESERVATION, because a
-                # turn that started on the slot during the write keeps it.
+                # The create's retraction of a newborn it answers with a
+                # failure, through _retract_failed_newborn: it reads the
+                # RESERVATION, because a turn that started on the slot during
+                # the create's awaits keeps it.
+                ("chat_api/slot_create.py", "_retract_failed_newborn"),
                 ("chat_api/slot_create.py", "api_chat_slot_create"),
                 ("handlers/members_thread_turns.py", "_turn_busy"),
                 ("handlers/members_thread_turns.py", "_turn_ends_within"),
