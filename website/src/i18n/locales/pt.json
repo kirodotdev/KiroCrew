@@ -328,6 +328,11 @@
       "open_path": "Abrir {{path}}",
       "show_less": "Mostrar menos",
       "show_more": "Mostrar mais"
+    },
+    "newMessagesDivider": {
+      "new_messages_one": "{{count}} mensagem nova",
+      "new_messages_other": "{{count}} mensagens novas",
+      "new_messages_many": "{{count}} mensagens novas"
     }
   },
   "apps": {
@@ -12627,7 +12632,10 @@
       "comments_refused_overlay": "{{name}} não recebeu estes comentários — reabra o painel lateral e envie-os novamente. Eles continuam no documento.",
       "comments_sent_other": "{{count}} comentários enviados",
       "comments_sent_many": "{{count}} comentários enviados",
-      "your_crewmate": "Seu colega"
+      "your_crewmate": "Seu colega",
+      "jump_to_new_one": "{{count}} nova · Ir para o final",
+      "jump_to_new_other": "{{count}} novas · Ir para o final",
+      "jump_to_new_many": "{{count}} novas · Ir para o final"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",

@@ -73,6 +73,10 @@
     },
     "chatMessageList": {
       "open_path": "Open {{path}}"
+    },
+    "newMessagesDivider": {
+      "new_messages_one": "{{count}} new message",
+      "new_messages_other": "{{count}} new messages"
     }
   },
   "apps": {
@@ -6940,7 +6944,9 @@
       "toggle_sessions": "Toggle sessions",
       "tokens": "tokens",
       "type_to_filter": "Type to filter…",
-      "what_can_i_do_for_you": "What can I do for you?"
+      "what_can_i_do_for_you": "What can I do for you?",
+      "jump_to_new_one": "{{count}} new · Jump to latest",
+      "jump_to_new_other": "{{count}} new · Jump to latest"
     },
     "chatSidebar": {
       "add_column_after_this_one": "Add column after this one",

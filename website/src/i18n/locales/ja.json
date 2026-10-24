@@ -300,6 +300,9 @@
       "open_path": "{{path}} を開く",
       "show_less": "表示を減らす",
       "show_more": "もっと表示"
+    },
+    "newMessagesDivider": {
+      "new_messages_other": "新着メッセージ {{count}} 件"
     }
   },
   "apps": {
@@ -12251,7 +12254,8 @@
       "comments_refused": "{{name}}はこれらのコメントを受け取れませんでした—ドキュメントからもう一度送信してください。コメントはそこに残っています。",
       "comments_refused_overlay": "{{name}}はこれらのコメントを受け取れませんでした—サイドパネルを開き直して、もう一度送信してください。コメントはドキュメントに残っています。",
       "comments_sent_other": "{{count}}件のコメントを送信しました",
-      "your_crewmate": "クルーメート"
+      "your_crewmate": "クルーメート",
+      "jump_to_new_other": "新着 {{count}} 件 · 最新へ"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",

@@ -342,6 +342,12 @@
       "open_path": "Открыть {{path}}",
       "show_less": "Показать меньше",
       "show_more": "Показать больше"
+    },
+    "newMessagesDivider": {
+      "new_messages_one": "{{count}} новое сообщение",
+      "new_messages_few": "{{count}} новых сообщения",
+      "new_messages_many": "{{count}} новых сообщений",
+      "new_messages_other": "{{count}} новых сообщения"
     }
   },
   "apps": {
@@ -12815,7 +12821,11 @@
       "comments_sent_few": "{{count}} комментария отправлено",
       "comments_sent_many": "{{count}} комментариев отправлено",
       "comments_sent_other": "{{count}} комментария отправлено",
-      "your_crewmate": "Твой крюмейт"
+      "your_crewmate": "Твой крюмейт",
+      "jump_to_new_one": "{{count}} новое · К последним",
+      "jump_to_new_few": "{{count}} новых · К последним",
+      "jump_to_new_many": "{{count}} новых · К последним",
+      "jump_to_new_other": "{{count}} новых · К последним"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 пропущена — выбрана сейчас)",

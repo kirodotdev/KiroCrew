@@ -300,6 +300,9 @@
       "open_path": "打开 {{path}}",
       "show_less": "收起",
       "show_more": "展开更多"
+    },
+    "newMessagesDivider": {
+      "new_messages_other": "{{count}} 条新消息"
     }
   },
   "apps": {
@@ -12251,7 +12254,8 @@
       "comments_refused": "{{name}} 未收到这些评论——请从文档再次发送。评论仍在那里。",
       "comments_refused_overlay": "{{name}} 未收到这些评论——请重新打开侧边面板并再次发送。评论仍在文档中。",
       "comments_sent_other": "{{count}} 条评论已发送",
-      "your_crewmate": "你的队员"
+      "your_crewmate": "你的队员",
+      "jump_to_new_other": "{{count}} 条新 · 跳到最新"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "（跳过 1 个 — 当前已选中）",

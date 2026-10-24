@@ -314,6 +314,10 @@
       "open_path": "{{path}} öffnen",
       "show_less": "Weniger anzeigen",
       "show_more": "Mehr anzeigen"
+    },
+    "newMessagesDivider": {
+      "new_messages_one": "{{count}} neue Nachricht",
+      "new_messages_other": "{{count}} neue Nachrichten"
     }
   },
   "apps": {
@@ -12439,7 +12443,9 @@
       "comments_refused": "{{name}} hat diese Kommentare nicht erhalten — sende sie aus dem Dokument erneut. Die Kommentare sind noch dort.",
       "comments_refused_overlay": "{{name}} hat diese Kommentare nicht erhalten — öffne das Seitenpanel erneut und sende sie noch einmal. Die Kommentare sind noch im Dokument.",
       "comments_sent_other": "{{count}} Kommentare gesendet",
-      "your_crewmate": "Dein Crewmate"
+      "your_crewmate": "Dein Crewmate",
+      "jump_to_new_one": "{{count}} neue · Zum Ende",
+      "jump_to_new_other": "{{count}} neue · Zum Ende"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",
