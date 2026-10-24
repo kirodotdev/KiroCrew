@@ -376,6 +376,50 @@ def resolve_serving_port() -> int:
     return port
 
 
+def well_formed_port(value: str) -> bool:
+    """1-5 ASCII decimal digits naming a port in 1..65535 (the KAS projection's gate)."""
+    return 1 <= len(value) <= 5 and value.isascii() and value.isdecimal() and 0 < int(value) < 65536
+
+
+def drop_foreign_inherited_port(env: dict[str, str]) -> None:
+    """Remove an inherited ``KIROCREW_PORT`` that names a gateway other than this one.
+
+    A gateway started from a shell that already exports ``KIROCREW_PORT`` (an
+    agent shell of ANOTHER gateway carries one) keeps that value in its own
+    environment beside the ``KIROCREW_BOUND_PORT`` its listener exports
+    (``dashboard.server_runtime.listener._export_bound_port``). Every child it
+    spawns inherits both, and :func:`resolve_client_port_src` reads
+    ``KIROCREW_PORT`` first. The child then dials the OTHER gateway with THIS
+    gateway's credential and every tool call fails ``internal_auth_mismatch``.
+
+    Dropping the foreign value, rather than overwriting it with the bound port,
+    is deliberate: the listener keeps the two variables apart so the transient
+    bound port is never written under the operator-intent name (which
+    ``service_environment()`` would bake into a unit file), and nothing here is
+    persisted -- it shapes one child's environment at spawn time. With the
+    foreign value gone the child's chain falls to ``KIROCREW_BOUND_PORT``, the
+    gateway that spawned it.
+
+    A no-op when no well-formed bound port is in *env* (nothing to prove the
+    inherited value foreign) or when the inherited value already equals it (the
+    operator's own ``KIROCREW_PORT`` that this gateway bound). Mutates *env*.
+
+    Lives here, beside the chain it corrects, because three spawn paths need it
+    and two of them (the MCP gateway daemon and its pooled backends) must not
+    import the ACP launcher to get it.
+    """
+    bound = env.get("KIROCREW_BOUND_PORT", "")
+    if not well_formed_port(bound):
+        return
+    inherited = env.get("KIROCREW_PORT")
+    if inherited is None:
+        return
+    value = inherited.strip()
+    if value.isascii() and value.isdecimal() and int(value) == int(bound):
+        return
+    env.pop("KIROCREW_PORT", None)
+
+
 # Subcommands that launch a long-running Kiro Crew *server* process which
 # ``kirocrew stop`` may need to terminate. These mirror the entry-point
 # subcommands dispatched in ``cli.py`` (``gateway`` / ``dashboard``; ``start``

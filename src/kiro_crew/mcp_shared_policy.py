@@ -112,6 +112,24 @@ _FAILURE_MESSAGE_MAX = 200
 _NEGATIVE_CACHE_TTL: float = 60.0  # seconds
 
 
+# Inside the long window, one call per this interval is let through to dial the
+# gateway again (a half-open probe) instead of being answered from the cache.
+# Without it the window could only end by expiring: a gateway that came back
+# five seconds into an outage still had every never-resolved session refused for
+# the remaining fifty-five, and a delegation preflight retried inside that span
+# failed every time. The probe changes WHEN the gateway is asked, never what an
+# unread policy means: a probe that fails re-arms the window and refuses exactly
+# as the cache would have, and only an answered policy resolves a session. The
+# interval keeps the window's original job, debouncing the 5s urlopen storm
+# while the gateway is down, to at most one dial per interval per process.
+_NEGATIVE_CACHE_PROBE_INTERVAL: float = 10.0  # seconds
+
+
+# When the last half-open probe was let through. Paired with
+# ``_last_failure_time`` so the interval is counted from whichever happened last.
+_last_probe_time: float = 0.0
+
+
 # Short TTL for the benign startup-race cases (no session key resolvable,
 # or 404 "agent not resolved" because gateway hasn't registered the
 # session yet).  Long enough to debounce the warning storm during a
@@ -418,7 +436,7 @@ def _resolve_tool_policy(
     choice available without guessing which tools the operator meant to deny.
     """
     global _last_failure_time, _last_startup_race_time, _last_startup_race_key
-    global _failure_count, _last_failure_class
+    global _failure_count, _last_failure_class, _last_probe_time
     # Resolve BEFORE the cache is consulted when the gateway did not name the caller:
     # the entry has to be found under the session this call is for, and only
     # resolution knows which that is. A named caller needs no resolution at all — its
@@ -445,6 +463,21 @@ def _resolve_tool_policy(
         and (now - _last_startup_race_time) < _STARTUP_RACE_CACHE_TTL
         and session_key == _last_startup_race_key
     )
+    if (
+        _failure_cached
+        and not ignore_negative_cache
+        # Only a call that will DIAL may spend the probe: one with no session key,
+        # or one the startup-race window answers, returns before the read, and
+        # spending the slot on it would hold every sibling for another interval.
+        and session_key
+        and not _race_cached
+        and now - max(_last_failure_time, _last_probe_time) >= _NEGATIVE_CACHE_PROBE_INTERVAL
+    ):
+        # Half-open probe (see ``_NEGATIVE_CACHE_PROBE_INTERVAL``): this one call
+        # dials. Its outcome decides the window -- a failure re-arms it below, an
+        # answered policy clears it.
+        _last_probe_time = now
+        _failure_cached = False
     # Negative cache: avoid hammering gateway on persistent failures.
     # Silent during the cache window -- only the structured audit event is
     # emitted to keep gateway.log readable.  Two windows: a long one for
@@ -475,6 +508,12 @@ def _resolve_tool_policy(
         )
         return ToolPolicy(frozenset(), _reason, _last_failure_class if _failure_cached else "")
 
+    # Named before the read so the failure audit can say which port it dialled and
+    # which rung of the chain chose it: an ``env`` port is the one an inherited
+    # ``KIROCREW_PORT`` can point at another instance, and ``bound`` is the
+    # spawning gateway's own. Neither is a secret.
+    port: int | None = None
+    _source = ""
     try:
         port, _source = resolve_client_port_src(None)
         api_base = f"http://127.0.0.1:{port}"
@@ -585,6 +624,16 @@ def _resolve_tool_policy(
             with loopback_urlopen(req, timeout=5) as resp:
                 policy = json.loads(resp.read())
         except urllib.error.HTTPError as http_exc:
+            if 400 <= http_exc.code < 500:
+                # Any 4xx is the gateway ANSWERING, about this caller. The long
+                # window caches the opposite condition -- a gateway this process
+                # cannot reach -- for every session in it, so that condition is
+                # over: a sibling that never resolved must not stay refused from
+                # the cache because the probe that got through was answered with
+                # this caller's own 404, 403 or 409. A 5xx falls through to the
+                # failure path below and keeps the window armed.
+                _last_failure_time = 0.0
+                _last_probe_time = 0.0
             if http_exc.code == 404:
                 # PATH 2/3. 404 = "agent not resolved" (the gateway hasn't
                 # registered this session yet -- common during MCP startup
@@ -785,6 +834,13 @@ def _resolve_tool_policy(
             _excluded_tools_by_session.pop(_evicted)
             _included_tools_by_session.pop(_evicted, None)
         _excluded_tools_by_session[session_key] = resolved
+        # The gateway answered, so the condition the long window caches -- a
+        # gateway this process cannot reach -- is over for every session in it.
+        # Clearing it is what lets a sibling that never resolved stop being
+        # refused from the cache the moment one call (typically the half-open
+        # probe) gets through.
+        _last_failure_time = 0.0
+        _last_probe_time = 0.0
         if include:
             _included_tools_by_session[session_key] = include
             return ToolPolicy(
@@ -831,7 +887,11 @@ def _resolve_tool_policy(
             operation="tool_policy.resolution_failed",
             outcome="unresolved",
             source="mcp_shared",
-            resources=f"error_class={_last_failure_class}",
+            resources=(
+                f"error_class={_last_failure_class},"
+                f"port={port if port is not None else 'unresolved'},"
+                f"port_source={_source or 'unresolved'}"
+            ),
             error=_failure_cause(exc),
         )
         return ToolPolicy(frozenset(), "resolution_failed", _last_failure_class)
@@ -922,7 +982,8 @@ def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
 #   empty and the withheld deny stays withheld. The cost is bounded at both ends:
 #   a session that resolves its policy once is served from
 #   ``_excluded_tools_by_session`` and never reaches a failure path again, and for
-#   one that has not, the refusal lasts at most ``_NEGATIVE_CACHE_TTL``.
+#   one that has not, the refusal outlasts the gateway's recovery by at most
+#   ``_NEGATIVE_CACHE_PROBE_INTERVAL`` (the half-open probe that ends the window).
 #
 # The remaining reasons stay permissive because each covers a caller for whom no
 # operator exclusion is known to exist, or a class for which refusal is permanent

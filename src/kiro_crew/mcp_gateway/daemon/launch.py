@@ -462,6 +462,93 @@ def _launch_approved_from_snapshot(
     )
 
 
+def bind_control_plane_to_owner(env: dict[str, str], server_name: str = "") -> None:
+    """Point a pooled control-plane backend at the gateway that owns this daemon.
+
+    A control-plane backend (``kirocrew-core``, ``kirocrew-dashboard``, ...) reads
+    the session's tool policy and posts back to the gateway on the port
+    :func:`kiro_crew.port_resolution.resolve_client_port_src` resolves, using the
+    credential published for that port. The port therefore decides which
+    INSTANCE the backend authenticates against.
+
+    The daemon's own environment cannot be trusted to name that instance. The
+    gateway starts this daemon during boot, BEFORE its dashboard binds and
+    exports ``KIROCREW_BOUND_PORT`` (``service_boot`` runs ``_init_mcp_gateway``
+    ahead of ``_init_dashboard``), so the daemon never inherits the bound port.
+    It does inherit any ``KIROCREW_PORT`` the gateway's own shell carried, which
+    the client chain reads first. A gateway launched from another gateway's agent
+    shell then hands every pooled backend THAT gateway's port: the backend dials
+    it with this home's credential, and every call fails ``internal_auth_mismatch``
+    when the other gateway is up, or the policy read fails ``resolution_failed``
+    (``URLError``) when it is not.
+
+    Neither port variable in that environment is evidence. ``KIROCREW_PORT`` may
+    be the other gateway's, and so may ``KIROCREW_BOUND_PORT``: an agent shell of
+    gateway A carries A's export, a gateway started from it inherits it, and that
+    gateway's daemon is spawned before its own export replaces it.
+
+    The fix binds by proof, not by guess. The daemon knows its owner's pid
+    (``--owner-pid``), and the owner records the port it serves in its run-marker
+    after the bind. :func:`run_marker.port_served_by` returns that port only when
+    the marker's pid and start identity both match the live owner. With it in
+    hand the backend's ``KIROCREW_BOUND_PORT`` is SET to it, whatever was
+    inherited, and an inherited ``KIROCREW_PORT`` naming any other port is
+    dropped -- the same correction the ACP launcher applies to its own children.
+
+    Nothing is guessed when no proof exists. An owned daemon whose environment
+    carries either port variable raises :class:`OwnerPortUnproven`, and the
+    resolver declines the spawn: that is the window a prewarm pass runs in
+    (gatewayd prewarms the moment it listens, before its owner has bound), and a
+    backend spawned there would stay pinned to the inherited port for its whole
+    life. An unowned daemon (an operator-run one, with no owner to prove) and an
+    owned one that inherited no port at all keep their environment exactly as it
+    was. The credential each call sends is still read per port and the gateway
+    still verifies it, so a wrong port can only fail closed.
+
+    Mutates *env*.
+    """
+    from kiro_crew.port_resolution import drop_foreign_inherited_port
+
+    owner_pid = facade._OWNER_PID
+    if owner_pid <= 0:
+        return
+    port: Optional[int] = None
+    try:
+        from kiro_crew.instances import run_marker
+
+        port = run_marker.port_served_by(owner_pid)
+    except Exception:
+        logger.debug("mcp-gateway: owner run-marker lookup failed", exc_info=True)
+    if port is not None:
+        env["KIROCREW_BOUND_PORT"] = str(port)
+        drop_foreign_inherited_port(env)
+        return
+    if "KIROCREW_PORT" in env or "KIROCREW_BOUND_PORT" in env:
+        # The hazard this function exists for, with no way to rule it out: an
+        # owned daemon, an inherited port it cannot check, and no proof of the
+        # owner's own. Declining is the retryable answer: the prewarmer skips the
+        # key, a lazy acquisition falls back to a per-session launch (whose env
+        # the ACP launcher binds), and the next acquisition after the marker is
+        # published spawns a bound backend.
+        logger.info(
+            "mcp-gateway: not spawning control-plane backend %r yet: owner pid %s "
+            "has no provable run-marker and the inherited port cannot be checked "
+            "against it",
+            server_name,
+            owner_pid,
+        )
+        raise OwnerPortUnproven(server_name)
+
+
+class OwnerPortUnproven(RuntimeError):
+    """A control-plane spawn was declined until the owner's port can be proven.
+
+    Raised by :func:`bind_control_plane_to_owner` and turned into the resolver's
+    clean "no target" answer by :func:`env_target_resolver`, so the caller retries
+    later instead of reading it as an internal error.
+    """
+
+
 def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dict[str, str], str]]:
     """Look up ``KIROCREW_MCP_TARGET_<SERVER>`` in the process env and return the
     spawn tuple, or ``None`` if no mapping is set.
@@ -522,6 +609,10 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
         for key in tuple(env):
             if any(key.upper().startswith(prefix) for prefix in _SPEC_ENV_DENIED_PREFIXES):
                 env.pop(key, None)
+        try:
+            bind_control_plane_to_owner(env, pool_key.server_name)
+        except OwnerPortUnproven:
+            return None
     else:
         env = without_python_env(env)
     # No KIROCREW_CHANNEL_ID is exported into the backend env. Copying it from

@@ -224,6 +224,7 @@ from kiro_crew.mcp_gateway.daemon.identity import (  # noqa: F401
 )
 from kiro_crew.mcp_gateway.daemon.launch import (  # noqa: F401
     _LAUNCH_APPROVAL_SNAPSHOT,
+    OwnerPortUnproven,
     TargetResolver,
     _approval_env_identity,
     _call_with_approval_snapshot,
@@ -240,6 +241,7 @@ from kiro_crew.mcp_gateway.daemon.launch import (  # noqa: F401
     _resolve_once_home,
     _resolve_target_off_loop,
     _TargetUnknown,
+    bind_control_plane_to_owner,
     env_target_resolver,
     resolvable_target_stems,
     resolve_once_resolver,
