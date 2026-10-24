@@ -40,11 +40,44 @@ class TestOrphanHomes:
             (c.pod_root / n).mkdir(parents=True)
         (c.pod_root / ".e2e-artifacts").mkdir()  # dot dirs are not pods
         monkeypatch.setattr(rt, "active_names", lambda cc: {"running"})
+        # Every candidate judged reclaimable: the judgment has its own tests,
+        # and unstubbed it would shell this host's systemctl and probe ports.
+        monkeypatch.setattr(rt, "reclaim_refusal", lambda cc, n, **k: None)
         return c
 
     def test_reported_on_linux(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         c = self._plane(tmp_path, monkeypatch)
         assert rt.orphan_homes(c) == ["orphan"]
+
+    def test_the_report_lists_every_orphan_without_judging_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The orphan list is the cheap directory scan Dev Fleet polls; the
+        judgment runs only where a reclaim is shown or attempted."""
+        c = self._plane(tmp_path, monkeypatch)
+        monkeypatch.setattr(rt, "reclaim_blocker", lambda cc, n: pytest.fail("judged in the scan"))
+        monkeypatch.setattr(
+            rt, "reclaim_refusal", lambda cc, n, **k: pytest.fail("judged in the scan")
+        )
+        assert rt.orphan_homes(c) == ["orphan"]
+
+    def test_ls_prints_the_refusal_pod_down_would_give(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """`pod ls` and `pod down` use one predicate: a listed orphan the delete
+        refuses carries that refusal instead of a reclaim command."""
+        c = self._plane(tmp_path, monkeypatch)
+        monkeypatch.setattr(rt, "health", lambda cfg, name, port, timeout=3: 200)
+        monkeypatch.setattr(
+            rt,
+            "reclaim_refusal",
+            lambda cc, n, **k: "its pinned checkout /co still has a runnable venv",
+        )
+        pod_cli._ls(c, argparse.Namespace(json=False))
+        out = capsys.readouterr().out
+        assert "1 orphaned pod HOME(s)" in out
+        assert "not reclaimable by `pod down`: its pinned checkout /co still has" in out
+        assert "reclaim: kirocrew pod down orphan" not in out
 
     def test_ls_surfaces_them_with_the_reclaim_command(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
@@ -145,6 +178,10 @@ class TestPrune:
         monkeypatch.setattr(rt, "active_names", lambda cc: set())
         monkeypatch.setattr(rt, "is_active", lambda cc, n: False)
         monkeypatch.setattr(rt, "unit_state", lambda cc, n: ("inactive", 0))
+        # Every candidate judged reclaimable: the judgment has its own tests,
+        # and unstubbed it would shell this host's systemctl and probe ports.
+        monkeypatch.setattr(rt, "reclaim_refusal", lambda cc, n, **k: None)
+        monkeypatch.setattr(rt, "reclaim_blocker", lambda cc, n: None)
         monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)
         # cleanup_home directly from prune would BE the race stop_pod exists to
         # close — any call that does not come through stop_pod is a regression.
@@ -152,6 +189,21 @@ class TestPrune:
             rt, "cleanup_home", lambda *a, **k: pytest.fail("prune bypassed stop_pod")
         )
         return c
+
+    def test_a_refused_orphan_is_skipped_with_its_reason_not_failed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        c = self._plane(tmp_path, monkeypatch, ("keep",))
+        monkeypatch.setattr(
+            rt,
+            "reclaim_refusal",
+            lambda cc, n, **k: "its pinned checkout /co still has a runnable venv",
+        )
+        monkeypatch.setattr(rt, "stop_pod", lambda cc, n: pytest.fail("stopped a refused orphan"))
+        pod_cli._prune(c, self._ns())
+        out = capsys.readouterr().out
+        assert "not reclaimable: its pinned checkout /co still has a runnable venv" in out
+        assert "0 failed" in out
 
     def _ns(self, **kw) -> argparse.Namespace:
         # prune_all=True keeps the reclaim-behavior tests on a full sweep; the
