@@ -254,29 +254,38 @@ def test_an_ambiguous_webex_allowlist_is_refused_rather_than_guessed() -> None:
 
 
 def test_a_channel_that_cannot_dm_proactively_is_in_the_roster_but_yields_no_target() -> None:
-    """The asymmetry the derivation must NOT flatten, on a real transport.
+    """The asymmetry the derivation must NOT flatten.
 
-    Channels differ because platforms differ, and a roster is the wrong place to
-    encode that: Feishu can only reply to an inbound message, so it declares its
-    DM targets unavailable with a reason. Being accepted by ``session`` and being
-    deliverable are therefore separate questions, answered in separate places --
-    the roster admits the value, and ``_owner_dm_target`` declines the send at the
-    side-effect boundary where live config can be read.
-
-    Webex passes the same gate because its platform genuinely permits the send
-    (``toPersonEmail`` opens the 1:1 space server-side), not because the gate is
-    lenient. Pinned on the real ``FeishuTransport`` because a stub with
-    ``available=False`` would prove only that the filter reads the flag, not that
-    a shipped channel sets it.
+    Being accepted by ``session`` and being deliverable are separate questions,
+    answered in separate places: the roster admits the value, and
+    ``_owner_dm_target`` declines the send at the side-effect boundary when the
+    sole direct target is unavailable. Feishu ships a real proactive path
+    (``im.v1.message.create``), so a single allow-listed peer is an unambiguous
+    owner-DM target. The "unavailable yields no target" branch is pinned on a
+    synthetic transport, the only shape that exercises it when every shipped
+    owner-DM channel advertises its targets available.
     """
     from kiro_crew.dashboard.handlers.messaging import _owner_dm_target
     from kiro_crew.feishu.transport import FeishuTransport
+    from kiro_crew.messaging.transport import ConfiguredChannelTarget
 
-    transport = FeishuTransport(client=object(), allowed_open_ids=["ou_notarealid"])
-
+    # Feishu graduated: it is in the roster AND yields a resolvable target.
+    feishu = FeishuTransport(client=object(), allowed_open_ids=["ou_notarealid"])
     assert "feishu" in _CHANNEL_SESSIONS
-    assert [t.available for t in transport.configured_targets()] == [False]
-    assert _owner_dm_target(transport) == ""
+    assert [t.available for t in feishu.configured_targets()] == [True]
+    assert _owner_dm_target(feishu) == "user:ou_notarealid"
+
+    # The side-effect-boundary decline, on a transport whose sole target is
+    # unavailable: the resolver returns "" rather than a target.
+    class _UnavailableTargetTransport:
+        def configured_targets(self) -> list[ConfiguredChannelTarget]:
+            return [
+                ConfiguredChannelTarget(
+                    "user:nobody", "nobody", available=False, unavailable_reason="not reachable"
+                )
+            ]
+
+    assert _owner_dm_target(_UnavailableTargetTransport()) == ""
 
 
 def test_the_roster_move_did_not_change_the_roster() -> None:

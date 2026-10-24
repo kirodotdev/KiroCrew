@@ -23,7 +23,7 @@ platform could support it.
 | Reply length before splitting | 3900 chars | 1900 chars | 4000 chars | 16000 chars | 1750 chars (7000 bytes) | 5120 chars (20480 bytes) | 4000 chars | 4000 chars | 4096 chars | 4000 chars |
 | Tappable choices per prompt | 10 | 25 | 25 | 5 | 5 | 0 | 0 | 0 | 0 | 0 |
 | Approval prompt waits | 600s (config) | 300s | 300s | 300s | 300s | — | — | — | 300s | — |
-| Agent can message you first | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| Agent can message you first | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Dashboard link is two-way | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Answers a send with a message id | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ |
 | Parses `@everyone`-style mentions | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -128,17 +128,22 @@ other messaging channel.
 
 The **owner-DM route** (`session=<channel>`) infers a recipient: it needs exactly
 one allow-listed destination configured on that channel, and it needs the channel
-to be able to send unprompted. Three channels cannot use it:
+to be able to send unprompted. Two channels cannot use it:
 
 - **WeCom** and **Weixin** are excluded outright. Both fold identities learned
   from inbound traffic into their send roster, so "the owner" could resolve to any
   peer who once messaged the bot, and guessing is worse than refusing.
-- **Feishu** is accepted but cannot deliver, because it only ever replies to an
-  inbound message and has nowhere to put an unprompted one.
 
-In all three cases the call falls back to a dashboard notification and says so
+**Feishu** does deliver on this route: it sends proactively to an allow-listed
+open_id over `im.v1.message.create`, so a background `spawn_run` or cron
+completion with no inbound message to reply to reaches the Feishu DM rather than
+only the dashboard. The send is allow-list-gated — it reaches only an open_id the
+operator configured — and it still needs exactly one such destination to infer
+the owner.
+
+In the excluded cases the call falls back to a dashboard notification and says so
 rather than reporting success. An ambiguous allow-list or a channel that is not
-connected falls back the same way.
+connected falls back the same way, on Feishu too.
 
 The **conversation route** (`channel_type`) addresses the conversation you are
 already in rather than inferring a recipient, so it *does* work on WeCom and

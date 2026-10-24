@@ -23,6 +23,7 @@ Dependency direction is ``feishu -> messaging`` (allowed).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -61,7 +62,11 @@ from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
+    DM_SCOPE_UNIFIED,
+    ChannelLink,
+    bind_origin_mirror,
     build_dm_session_key,
+    channel_namespace_of,
     seed_generation,
 )
 from kiro_crew.messaging.pre_turn import resolve_pre_turn
@@ -265,6 +270,16 @@ class FeishuDispatcher:
 
             await surface_dispatcher_session(self)
 
+        # Bind this DM as the session's origin AND its own mirror, so unattended
+        # output -- a background spawn_run subagent completion, a cron result --
+        # reaches the user here instead of only in the dashboard. A Feishu
+        # DM has no inbound anchor at completion time, so the cross-surface reply
+        # leg must resolve the peer open_id off this binding and push proactively.
+        # Direct chats only: a group has no single proactive DM target, and
+        # ``bind_origin_mirror``/``set_origin_link`` likewise decline a ``unified:``
+        # bucket (no single peer). Mirrors the WeCom dispatcher's bind.
+        await self._bind_origin_mirror(session_key, route)
+
         await drive_turn(
             ChannelTurn(
                 start_priority=person_priority(inbound.person_origin),
@@ -402,6 +417,46 @@ class FeishuDispatcher:
         """The agent *route* runs: its ``/agent`` pick, else the configured one."""
         configured = self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
         return self._agent_picks.resolve(route, configured)
+
+    async def _bind_origin_mirror(self, session_key: str, route: tuple[str, str]) -> None:
+        """Bind this DM conversation as the session's origin + outbound mirror.
+
+        Lets unattended output reach the user on Feishu: the cross-surface reply
+        leg resolves ``get_mirror_link`` and the auto-compaction notice resolves
+        ``get_origin_link``, both of which were unset for a Feishu session, so a
+        background spawn_run completion rendered only in the dashboard.
+
+        Direct chats ONLY. A group route has no single addressable proactive DM
+        target, and the conversation IS its own mirror only for a 1:1 peer. The
+        shared ``bind_origin_mirror`` and ``set_origin_link`` additionally decline
+        a ``unified:`` bucket (every allowed user's DMs collapse into one, so "the
+        origin" has no single answer) -- the same key-based guard WeCom applies.
+
+        Re-asserted on every turn (``bind_origin_mirror`` leaves any binding
+        already present alone), and never raises on the turn path. The shared bind
+        is offloaded because it consults ``mirror_opt_out``, whose read can WRITE a
+        generation migration inline.
+        """
+        slot, comp = route
+        if slot != CHAT_TYPE_DIRECT or not comp:
+            return
+        location = ChannelLink("feishu", channel_id=comp, thread_id=None)
+
+        def _bind() -> None:
+            if channel_namespace_of(session_key) == DM_SCOPE_UNIFIED:
+                return
+            try:
+                bind_origin_mirror(self.sessions, key=session_key, location=location)
+            except Exception:
+                logger.debug("feishu: origin mirror bind skipped for %s", session_key)
+            setter = getattr(self.sessions, "set_origin_link", None)
+            if setter is not None:
+                try:
+                    setter(session_key, location)
+                except Exception:
+                    logger.debug("feishu: set_origin_link skipped for %s", session_key)
+
+        await asyncio.to_thread(_bind)
 
     @staticmethod
     def _route(inbound: "LarkInbound") -> tuple[str, str]:

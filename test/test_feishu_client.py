@@ -46,10 +46,11 @@ class _FakeClientBuilder:
 
 
 class _FakeImReply:
-    """Stub for lark.im.v1.message.reply -- records calls."""
+    """Stub for lark.im.v1.message -- records reply AND create calls."""
 
     def __init__(self) -> None:
         self.calls: list[Any] = []
+        self.create_calls: list[Any] = []
         self.succeed = True
         # Fail every call from this index on (None = never). Lets a test drive a
         # multi-chunk send where an early chunk lands and a later one fails.
@@ -58,6 +59,12 @@ class _FakeImReply:
     def reply(self, req: Any) -> "_FakeReplyResp":
         self.calls.append(req)
         if self.fail_after is not None and len(self.calls) > self.fail_after:
+            return _FakeReplyResp(False)
+        return _FakeReplyResp(self.succeed)
+
+    def create(self, req: Any) -> "_FakeReplyResp":
+        self.create_calls.append(req)
+        if self.fail_after is not None and len(self.create_calls) > self.fail_after:
             return _FakeReplyResp(False)
         return _FakeReplyResp(self.succeed)
 
@@ -318,6 +325,60 @@ class _FakeReplyMessageRequestBody:
         return _FakeReplyMessageRequestBodyBuilder()
 
 
+# -- Create (proactive) request stubs --------------------------------------
+
+
+class _FakeCreateMessageRequestBuilder:
+    def __init__(self) -> None:
+        self._receive_id_type: str = ""
+        self._body: Any = None
+
+    def receive_id_type(self, v: str) -> "_FakeCreateMessageRequestBuilder":
+        self._receive_id_type = v
+        return self
+
+    def request_body(self, v: Any) -> "_FakeCreateMessageRequestBuilder":
+        self._body = v
+        return self
+
+    def build(self) -> "_FakeCreateMessageRequestBuilder":
+        return self
+
+
+class _FakeCreateMessageRequest:
+    @staticmethod
+    def builder() -> _FakeCreateMessageRequestBuilder:
+        return _FakeCreateMessageRequestBuilder()
+
+
+class _FakeCreateMessageRequestBodyBuilder:
+    def __init__(self) -> None:
+        self._receive_id: str = ""
+        self._content: str = ""
+        self._msg_type: str = ""
+
+    def receive_id(self, v: str) -> "_FakeCreateMessageRequestBodyBuilder":
+        self._receive_id = v
+        return self
+
+    def content(self, v: str) -> "_FakeCreateMessageRequestBodyBuilder":
+        self._content = v
+        return self
+
+    def msg_type(self, v: str) -> "_FakeCreateMessageRequestBodyBuilder":
+        self._msg_type = v
+        return self
+
+    def build(self) -> "_FakeCreateMessageRequestBodyBuilder":
+        return self
+
+
+class _FakeCreateMessageRequestBody:
+    @staticmethod
+    def builder() -> _FakeCreateMessageRequestBodyBuilder:
+        return _FakeCreateMessageRequestBodyBuilder()
+
+
 # ---------------------------------------------------------------------------
 # Fixture: inject fake lark_oapi into sys.modules
 # ---------------------------------------------------------------------------
@@ -345,6 +406,8 @@ def _fake_lark_sdk():
     im_v1_mod = types.ModuleType("lark_oapi.api.im.v1")
     im_v1_mod.ReplyMessageRequest = _FakeReplyMessageRequest  # type: ignore[attr-defined]
     im_v1_mod.ReplyMessageRequestBody = _FakeReplyMessageRequestBody  # type: ignore[attr-defined]
+    im_v1_mod.CreateMessageRequest = _FakeCreateMessageRequest  # type: ignore[attr-defined]
+    im_v1_mod.CreateMessageRequestBody = _FakeCreateMessageRequestBody  # type: ignore[attr-defined]
 
     api_mod = types.ModuleType("lark_oapi.api")
     im_mod = types.ModuleType("lark_oapi.api.im")
@@ -740,6 +803,58 @@ class TestSyncReply:
         client = LarkClient(app_id="a", app_secret="s")
         # Should not raise
         client._sync_reply("msg-1", "text")
+
+
+class TestSyncProactive:
+    """_sync_proactive builds the im.v1.message.create request the fix depends on.
+
+    The proactive path is the one that was missing when a background completion
+    had no inbound message to anchor to. These assertions pin the three things
+    that only run against the real Lark API otherwise: the request goes through
+    message.create (not reply), it addresses the peer by open_id, and the body
+    is serialised ensure_ascii=False so a CJK answer is not escaped past the
+    byte ceiling and dropped.
+    """
+
+    def test_uses_create_not_reply(self) -> None:
+        from kiro_crew.feishu.client import LarkClient
+
+        client = LarkClient(app_id="a", app_secret="s")
+        client._sync_proactive("ou_abc", "hi")
+        msg = client._lark.im.v1.message
+        assert len(msg.create_calls) == 1  # create path, not reply
+        assert msg.calls == []  # reply path untouched
+
+    def test_create_request_targets_open_id(self) -> None:
+        from kiro_crew.feishu.client import LarkClient
+
+        client = LarkClient(app_id="a", app_secret="s")
+        client._sync_proactive("ou_target", "hi")
+        req = client._lark.im.v1.message.create_calls[0]
+        assert req._receive_id_type == "open_id"
+        assert req._body._receive_id == "ou_target"
+        assert req._body._msg_type == "text"
+
+    def test_create_body_preserves_cjk_unescaped(self) -> None:
+        # ensure_ascii=False: a Chinese answer must not be \uXXXX-escaped, which
+        # would quadruple the byte size and get the create rejected -- the exact
+        # "飞书上没收到这个结果" symptom this path exists to prevent.
+        from kiro_crew.feishu.client import LarkClient
+
+        client = LarkClient(app_id="a", app_secret="s")
+        client._sync_proactive("ou_abc", "结果来了")
+        req = client._lark.im.v1.message.create_calls[0]
+        assert json.loads(req._body._content) == {"text": "结果来了"}
+        assert "结果来了" in req._body._content  # literal CJK, not escaped
+        assert "\\u" not in req._body._content
+
+    def test_raises_runtime_error_on_failure(self) -> None:
+        from kiro_crew.feishu.client import LarkClient
+
+        client = LarkClient(app_id="a", app_secret="s")
+        client._lark.im.v1.message.succeed = False
+        with pytest.raises(RuntimeError, match="Feishu create error"):
+            client._sync_proactive("ou_abc", "text")
 
 
 # ---------------------------------------------------------------------------

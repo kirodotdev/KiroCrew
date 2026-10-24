@@ -26,6 +26,7 @@ class FakeClient:
         self.started = False
         self.closed = False
         self.replies: list[tuple[str, str]] = []
+        self.proactive: list[tuple[str, str]] = []
 
     async def start(self) -> None:
         self.started = True
@@ -35,6 +36,10 @@ class FakeClient:
 
     async def send_reply(self, message_id: str, text: str) -> bool:
         self.replies.append((message_id, text))
+        return True
+
+    async def send_proactive(self, open_id: str, text: str) -> bool:
+        self.proactive.append((open_id, text))
         return True
 
 
@@ -62,7 +67,11 @@ class TestCapabilities:
         assert cap.streaming is False
         assert cap.edit is False
         assert cap.max_buttons == 0
-        assert cap.supports_proactive_send is False
+        # Proactive send is supported: the client carries a free-standing
+        # im.v1.message.create path for unattended output (a spawn_run completion
+        # or a cron result with no inbound message to reply to). The send gate is
+        # the allow-list alone -- see TestConfiguredTargets / TestSendMessage.
+        assert cap.supports_proactive_send is True
         assert cap.max_message_chars == 4000
 
 
@@ -73,8 +82,11 @@ class TestConfiguredTargets:
         assert len(targets) == 2
         ids = {t.target_id for t in targets}
         assert ids == {"user:ou_abc", "user:ou_def"}
-        # All targets are unavailable (no proactive send).
-        assert all(not t.available for t in targets)
+        # Every allow-listed peer is available: the send gate is the allow-list,
+        # and letting inbound traffic decide which allow-listed peer is
+        # "available" would let a colleague who writes first after a restart be
+        # read as the owner by _owner_dm_target.
+        assert all(t.available for t in targets)
 
     def test_empty_allowed_gives_no_targets(self) -> None:
         transport = FeishuTransport(FakeClient(), allowed_open_ids=[])
@@ -459,34 +471,70 @@ class TestLifecycle:
 
 class TestSendMessage:
     @pytest.mark.asyncio
-    async def test_send_delegates_to_client(self) -> None:
+    async def test_threadless_send_is_a_proactive_push(self) -> None:
+        # send_message with no spool thread_id is the proactive path:
+        # conversation_id is an allow-listed peer open_id, delivered via the
+        # client's free-standing create -- NOT the inbound-reply path.
         client = FakeClient()
         t = FeishuTransport(client, allowed_open_ids=["ou_abc"])
-        await t.send_message("msg_anchor", "reply text")
-        assert client.replies == [("msg_anchor", "reply text")]
+        result = await t.send_message("ou_abc", "completion text")
+        assert result == ""
+        assert client.proactive == [("ou_abc", "completion text")]
+        assert client.replies == []
 
     @pytest.mark.asyncio
-    async def test_a_refused_reply_RAISES_rather_than_returning(self) -> None:
-        """The load-bearing half of ``returns_message_id=False``.
-
-        A Feishu reply carries no message id, so the return value cannot express
-        failure and every caller reads "nothing raised" as delivery. Discarding
-        ``send_reply``'s answer therefore made a dropped message indistinguishable
-        from a delivered one -- and a mirror leg then persists the link and reports
-        success for a reply the user never saw.
-        """
+    async def test_proactive_to_cold_allowlisted_peer_still_sends(self) -> None:
+        # An allow-listed peer the process has not seen write (e.g. right after a
+        # restart): the send still goes out, because the gate is the allow-list
+        # alone -- mirroring WeCom's _may_push. This keeps a persisted binding
+        # from being dropped after a restart.
         client = FakeClient()
-        client.send_reply = _refusing_reply  # type: ignore[method-assign]
+        t = FeishuTransport(client, allowed_open_ids=["ou_abc"])
+        result = await t.send_message("ou_abc", "text")
+        assert result == ""
+        assert client.proactive == [("ou_abc", "text")]
+
+    @pytest.mark.asyncio
+    async def test_proactive_to_unlisted_peer_raises(self) -> None:
+        # Not on the allow-list => refuse, raise.
+        client = FakeClient()
         t = FeishuTransport(client, allowed_open_ids=["ou_abc"])
         with pytest.raises(RuntimeError):
-            await t.send_message("msg_anchor", "reply text")
+            await t.send_message("ou_other", "text")  # not allow-listed
+        assert client.proactive == []
 
     @pytest.mark.asyncio
-    async def test_no_anchor_raises_too(self) -> None:
+    async def test_spool_reply_thread_routes_to_reply_anchor(self) -> None:
+        # A spool-marker thread_id is the inbound-reply shape: conversation_id is
+        # the inbound message_id and it is anchored via send_reply, as before.
+        client = FakeClient()
+        t = FeishuTransport(client, allowed_open_ids=["ou_abc"])
+        await t.send_message("msg_anchor", "reply text", thread_id=f"{SPOOL_DM_ROUTE_PREFIX}ou_abc")
+        assert client.replies == [("msg_anchor", "reply text")]
+        assert client.proactive == []
+
+    @pytest.mark.asyncio
+    async def test_a_refused_proactive_send_RAISES_rather_than_returning(self) -> None:
+        """The load-bearing half of ``returns_message_id=False``.
+
+        A Feishu send carries no message id, so the return value cannot express
+        failure and every caller reads "nothing raised" as delivery. Discarding
+        the send's answer would make a dropped message indistinguishable from a
+        delivered one -- and a mirror leg then persists the link and reports
+        success for a message the user never saw.
+        """
+        client = FakeClient()
+        client.send_proactive = _refusing_send  # type: ignore[method-assign]
+        t = FeishuTransport(client, allowed_open_ids=["ou_abc"])
+        with pytest.raises(RuntimeError):
+            await t.send_message("ou_abc", "text")
+
+    @pytest.mark.asyncio
+    async def test_no_conversation_raises_too(self) -> None:
         # Same reason: returning "" here would report a send that never happened.
         t = FeishuTransport(FakeClient(), allowed_open_ids=["ou_abc"])
         with pytest.raises(RuntimeError):
-            await t.send_message("", "reply text")
+            await t.send_message("", "text")
 
     def test_the_capability_declares_the_id_less_convention(self) -> None:
         t = FeishuTransport(FakeClient(), allowed_open_ids=["ou_abc"])
@@ -494,6 +542,10 @@ class TestSendMessage:
 
 
 async def _refusing_reply(message_id: str, text: str) -> bool:
+    return False
+
+
+async def _refusing_send(open_id: str, text: str) -> bool:
     return False
 
 

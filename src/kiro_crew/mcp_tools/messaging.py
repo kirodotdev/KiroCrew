@@ -51,9 +51,11 @@ from kiro_crew.validation import _SLACK_TS_RE, CHANNEL_ID_RE, CHANNEL_MAX_LEN
 #: given channel can actually take a proactive DM is answered per send by
 #: ``_owner_dm_target``, which returns a target only when the transport
 #: advertises exactly ONE available direct target: a channel that needs prior
-#: inbound state (Teams, WeCom) or cannot DM proactively at all (Feishu) marks
+#: inbound state (Teams, WeCom) marks
 #: its targets unavailable and still degrades to the dashboard notification, and
-#: an ambiguous allow-list is refused rather than guessed at. That gate is at the
+#: an ambiguous allow-list is refused rather than guessed at. Feishu sends
+#: proactively to an allow-listed open_id, so its target is available on the
+#: allow-list alone. That gate is at the
 #: side-effect boundary and reads live config, which is where it has to be — a
 #: static tuple here cannot answer a runtime question.
 #:
