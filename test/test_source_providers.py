@@ -992,7 +992,11 @@ class TestAdfToMarkdown:
         sources = [renderer, components / "markdown" / "remarkBase.ts"]
         imported = set()
         for path in sources:
-            imported |= set(re.findall(r"from '((?:remark|rehype)-[a-z0-9-]+)'", path.read_text()))
+            imported |= set(
+                re.findall(
+                    r"from '((?:remark|rehype)-[a-z0-9-]+)'", path.read_text(encoding="utf-8")
+                )
+            )
         assert imported == {
             "remark-parse",
             "remark-gfm",

@@ -377,7 +377,9 @@ def test_an_unreadable_mid_rotation_corpus_refuses_instead_of_approximating() ->
     """
     from pathlib import Path
 
-    src = (Path(__file__).resolve().parents[1] / "src/kiro_crew" / _TARGET).read_text()
+    src = (Path(__file__).resolve().parents[1] / "src/kiro_crew" / _TARGET).read_text(
+        encoding="utf-8"
+    )
     head, _, tail = src.partition("chained-full fork corpus read failed")
     assert tail, "the full-read failure branch is gone -- re-point this guard"
     # Scope to the except block itself: the `if not _rebuilt:` prepend further

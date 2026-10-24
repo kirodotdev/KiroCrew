@@ -540,7 +540,7 @@ class TestTheSpawnEndpointActuallyDelegates:
             "mcp_tools/control_parts/directive.py",
             "mcp_tools/control_parts/monitor.py",
         ):
-            text = (root / rel).read_text()
+            text = (root / rel).read_text(encoding="utf-8")
             assert 'spawn_run(agent="<name>"' not in text, rel
             assert "spawn_run(agent=<crew>" not in text, rel
         # Packaged prompts, skills and docs are guidance too: one that routes with

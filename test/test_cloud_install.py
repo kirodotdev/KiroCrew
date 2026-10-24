@@ -7,7 +7,7 @@ CLOUD_INSTALL_SH = Path(__file__).resolve().parents[1] / "cloud-install.sh"
 
 def test_voice_flag_selects_extra() -> None:
     """``--voice`` must flow through to the editable pip target."""
-    script = CLOUD_INSTALL_SH.read_text()
+    script = CLOUD_INSTALL_SH.read_text(encoding="utf-8")
 
     assert "--voice) WITH_VOICE=1;;" in script
     assert '_pip_target="${REPO_ROOT}[voice]"' in script

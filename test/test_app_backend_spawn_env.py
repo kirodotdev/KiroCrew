@@ -274,7 +274,7 @@ def test_devfleet_repo_survives_the_app_backend_env_allowlist(monkeypatch):
     # apps/backend.py must therefore add it to the explicit platform extras
     # (same mechanism that carries KIROCREW_PROJECT_DIR and the
     # KIROCREW_DEVFLEET_BIN_* trusted-binary overrides).
-    body = Path(bmod.__file__).read_text()
+    body = Path(bmod.__file__).read_text(encoding="utf-8")
     assert (
         '_platform_extra["KIROCREW_DEVFLEET_REPO"]' in body
     ), "the KIROCREW_DEVFLEET_REPO override no longer reaches app backends"

@@ -352,7 +352,7 @@ def test_supervise_gateway_hands_the_pin_to_the_child(supervisor, tmp_path):
 def test_the_canary_pins_a_fake_backend(monkeypatch):
     """The canary must set the seam, or it asserts a pod that cannot serve a turn."""
     source = Path(__file__).resolve().parent / "test_pod_windows_boot.py"
-    text = source.read_text()
+    text = source.read_text(encoding="utf-8")
     assert "KIROCREW_POD_KIRO_BIN" in text
     assert "fake_acp_backend_launcher" in text
 

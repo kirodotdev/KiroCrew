@@ -122,7 +122,7 @@ class TestForgedHostIsNeverDialled:
         src = (
             _p.Path(__file__).resolve().parents[1]
             / "src/kiro_crew/instances/ssh_tunnel_manager_transport.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         fn = next(
             n
             for n in ast.walk(ast.parse(src))

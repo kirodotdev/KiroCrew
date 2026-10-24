@@ -731,7 +731,7 @@ def test_the_publishing_tool_never_writes_the_record_itself():
     """
     from pathlib import Path as _P
 
-    src = (_P(agent_panel.__file__).parent / "mcp_panel.py").read_text()
+    src = (_P(agent_panel.__file__).parent / "mcp_panel.py").read_text(encoding="utf-8")
     assert "agent_panel" not in src, (
         "mcp_panel imports the panel store; the record directory is masked from "
         "sandboxed processes, so writes must stay on the gateway's HTTP route"
