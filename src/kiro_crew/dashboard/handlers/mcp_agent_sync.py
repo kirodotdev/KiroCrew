@@ -24,7 +24,7 @@ from kiro_crew.agent import (
     kiro_agents_dir_path,
 )
 from kiro_crew.dashboard.handlers.mcp_config_files import _GLOBAL_MCP_JSON
-from kiro_crew.mcp_hot_reload import live_sessions_hot_reload
+from kiro_crew.mcp_hot_reload import live_sessions_apply_mcp_live, mark_reinjecting_providers
 from kiro_crew.mcp_provenance import WITHHELD_KEY
 from kiro_crew.mcp_utils import mcp_server_alias, without_mcp_refs
 from kiro_crew.platform.governance import may_skip_gate_now
@@ -416,19 +416,42 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
 
 
 def _mcp_hot_reload_active(request: web.Request) -> bool:
-    """Whether every live session applies agent-file edits without a reset.
+    """Whether every live session applies MCP config edits without a reset.
 
-    Keyed to the processes actually running — the registered sessions plus the
-    warm pool the reset would drain — and to the version each reported at its
-    own handshake, never to the binary on disk (which is newer than every live
-    process after an in-place upgrade). Fails CLOSED: any error answers False,
-    and the caller falls back to the reset that was always correct — a skipped
-    reset is the one outcome a user cannot see.
+    Two mechanisms satisfy it, per provider: the process reconciles the agent
+    file itself (kiro-cli, ``mcp_config_hot_reload``), or Crew re-sends the
+    session's projection at its next turn boundary (KAS,
+    ``mcp_config_wire_reinject``). Keyed to the processes actually running — the
+    registered sessions plus the warm pool the reset would drain — and, for the
+    first mechanism, to the version each reported at its own handshake, never
+    to the binary on disk (which is newer than every live process after an
+    in-place upgrade). Fails CLOSED: any error answers False, and the caller
+    falls back to the reset that was always correct — a skipped reset is the
+    one outcome a user cannot see.
+
+    A True answer is also the moment the re-injecting providers are MARKED:
+    nothing in their engine watches the file, so the skip is only correct if
+    each of them is told a change is due. Marking is a flag per provider, never
+    on the wire, so it runs here under the writer's own locks.
     """
     try:
         sessions = request.app["state"].sessions
         providers = list(sessions.active_providers()) + list(sessions.warm_providers())
-        return live_sessions_hot_reload(providers)
+        if not live_sessions_apply_mcp_live(providers):
+            return False
+        marked = mark_reinjecting_providers(providers)
+        # A warm-pool fill between its start and its enqueue is in neither
+        # snapshot; the pool marks it at the enqueue from this fence.
+        fence = getattr(sessions, "mark_mcp_config_changed", None)
+        if callable(fence):
+            fence()
+        if marked:
+            logger.info(
+                "MCP config changed: %d live session(s) will re-send their projection "
+                "at their next turn instead of being reset",
+                marked,
+            )
+        return True
     except Exception:
         logger.warning("MCP hot-reload gate failed; resetting sessions instead", exc_info=True)
         return False

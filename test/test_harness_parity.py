@@ -69,6 +69,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_MATE_WORKER_KIT,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
+    ACP_BACKENDS_MCP_WIRE_REINJECT,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_MEMBER_TOOL_LIMITS,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
@@ -335,6 +336,28 @@ def test_mcp_config_hot_reload_is_opt_in() -> None:
     assert ACP_BACKEND_KIRO in ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD
     assert ACP_BACKEND_KAS not in ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD
     assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD
+
+
+def test_mcp_wire_reinject_is_opt_in() -> None:
+    """H6: the OTHER way a dashboard MCP write skips the reset is its own membership.
+
+    KAS applies a config change by Crew re-sending its projection (close + load of
+    the same session id + set_mode), not by a file watcher, so it must not join
+    ``ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD`` and no other host inherits the
+    re-injection: both the provider's declaration and the writer's gate read the
+    set, and the mark that makes the skip correct is handed only to members.
+    """
+    from kiro_crew import mcp_hot_reload
+    from kiro_crew.acp import session_provider_mcp_reinject
+
+    assert ACP_BACKENDS_MCP_WIRE_REINJECT == frozenset({ACP_BACKEND_KAS})
+    assert not (ACP_BACKENDS_MCP_WIRE_REINJECT & ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD)
+    declaration = inspect.getsource(session_provider_mcp_reinject.mcp_config_wire_reinject)
+    assert "in ACP_BACKENDS_MCP_WIRE_REINJECT" in declaration
+    gate = inspect.getsource(mcp_hot_reload.live_sessions_apply_mcp_live)
+    assert "provider_reinjects_mcp" in gate
+    marker = inspect.getsource(mcp_hot_reload.mark_reinjecting_providers)
+    assert "provider_reinjects_mcp" in marker
 
 
 def test_steer_capability_declares_its_stamp() -> None:

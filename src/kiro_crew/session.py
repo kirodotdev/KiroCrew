@@ -676,6 +676,7 @@ class SessionManager:
     _mark_identity_epoch = _runtimes._mark_identity_epoch
     drain_warm_pool = _runtimes.drain_warm_pool
     warm_providers = _runtimes.warm_providers
+    mark_mcp_config_changed = _runtimes.mark_mcp_config_changed
     # -- Context budget, compaction and owed history (session_parts.turn_context).
     compact_wait_budget_secs = _turn_context.compact_wait_budget_secs
     check_context_usage = _turn_context.check_context_usage

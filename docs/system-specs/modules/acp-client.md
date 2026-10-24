@@ -1586,6 +1586,25 @@ attempts `session/load` instead of `session/new`:
 The resume ID is consumed on attempt (no retry loop). After successful load,
 `client.resumed` returns `True` — callers use this to skip thread history injection.
 
+`AcpRuntime.load_session` has a second caller on KAS: applying a dashboard MCP
+config change to a LIVE session (`acp/session_provider_mcp_reinject.py`,
+membership `ACP_BACKENDS_MCP_WIRE_REINJECT`). The engine registers a session's
+`_meta.kiro.customAgents` batch once and ignores a re-sent `set_mode` or a
+`session/load` of a session it still holds, so the provider first sends
+`AcpRuntime.evict_session` -- the standard `session/close` as a bounded request
+plus the local unregister, which frees the resident copy and KEEPS the stored
+record (KAS's teardown verb, `_kiro/session/delete`, removes it) -- and then
+`load_session` on the same id with no transcript path, inside
+`AcpRuntime.keep_record_on_teardown(sid)`: the load's failure arms end the
+session through `terminate_session`, whose KAS verb deletes the stored record,
+and inside that scope the call evicts instead. The engine replays the
+conversation, the load re-projects the batch from the spec as it now is, and the
+returned handle replaces the provider's. Measured:
+`test/fixtures/acp_frames/kas/mcp-live-apply-live.jsonl`,
+`mcp-live-remove-live.jsonl`. The decision and the mark are the dashboard's
+(`docs/architecture/mcp.md`, "Live reconcile"); the apply runs at the session's
+next turn boundary under the shared-turn claim, never mid-turn.
+
 Step 3 (`set_mode`) is **conditional**: sent for all kiro-cli backend agents.
 Skipped for claude-agent-acp, whose `session/set_mode` takes permission modes
 (`default`, `acceptEdits`, `plan`, ...) rather than agent names. The claude

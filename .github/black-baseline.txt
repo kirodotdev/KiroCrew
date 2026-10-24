@@ -604,7 +604,6 @@ test/test_mcp_shared_cancelled_bound.py
 test/test_mcp_skill_registry.py
 test/test_mcp_stub_freeze_ratchet.py
 test/test_mcp_stub_migration.py
-test/test_mcp_sync_agent.py
 test/test_meetings_agent_names.py
 test/test_meetings_dictionary.py
 test/test_meetings_providers.py

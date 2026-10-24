@@ -704,6 +704,25 @@ class AcpProvider(LLMProvider):
             self._client.backend, parse_kiro_cli_version(self.agent_version)
         )
 
+    @property
+    def mcp_config_wire_reinject(self) -> bool:
+        """True when this provider's LIVE session takes a re-sent MCP projection.
+
+        Answered by the inner session provider (``AcpSessionProvider``, from
+        ``ACP_BACKENDS_MCP_WIRE_REINJECT`` membership -- harness-parity H6/H14).
+        Before startup ``self._client`` is the placeholder ``AcpClient``, which
+        has no session to re-load and no such attribute, so this reads False
+        and a session still starting is reset like one that cannot apply the
+        change. Only a literal ``True`` passes, so a mock never reads as a skip.
+        """
+        return getattr(self._client, "mcp_config_wire_reinject", False) is True
+
+    def mark_mcp_config_changed(self) -> None:
+        """Hand the mark to the inner session provider; nothing to mark before startup."""
+        mark = getattr(self._client, "mark_mcp_config_changed", None)
+        if callable(mark):
+            mark()
+
     def available_models(self) -> list[dict[str, str]]:
         """Models the backend advertised at session init (may be empty).
 

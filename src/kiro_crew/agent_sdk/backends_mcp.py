@@ -374,7 +374,13 @@ ACP_BACKENDS_CLIENT_META_SETTINGS = frozenset({ACP_BACKEND_KAS})
 #
 # KAS is NOT a member: its MCP servers are broker stubs injected on
 # ``session/new`` (:mod:`kiro_crew.acp.kas_agents`), so nothing on disk
-# describes its running set for a watcher to reconcile against. claude-agent-acp
+# describes its running set for a watcher to reconcile against. It applies a
+# config change live by a different mechanism -- re-injection over the wire at
+# the next turn boundary -- which is its own set below
+# (``ACP_BACKENDS_MCP_WIRE_REINJECT``), because "the harness watches a file" and
+# "Crew re-sends the projection" are different properties with different
+# failure modes, and a reader of THIS set must be able to rely on the file
+# watcher it names. claude-agent-acp
 # reads no agent file at all (``ACP_BACKENDS_SESSION_MCP_ARRAY``), and codex-acp
 # has not demonstrated the capability — neither inherits it.
 # opencode is not a member either, and its reason is unchanged by the mirror: its
@@ -387,3 +393,36 @@ ACP_BACKENDS_CLIENT_META_SETTINGS = frozenset({ACP_BACKEND_KAS})
 # goose is not a member, on the same reason: its Crew MCP set is the ``session/new``
 # array, so no file on disk describes a running session's set.
 ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
+
+# Backends whose RUNNING session takes a changed MCP server set by Crew RE-SENDING
+# its projected agent over the wire, with the conversation kept. The other way a
+# live session applies a config change without a reset; the file-watcher way is
+# ``ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD`` above, and the dashboard's MCP writers
+# skip their all-sessions reset when every live provider answers one OR the other.
+#
+# Membership is a MEASURED verb sequence, not a reading of the engine's schema.
+# On KAS the projection travels as ``_meta.kiro.customAgents``, and the engine
+# registers a session's batch exactly once: a ``session/set_mode`` re-sent with a
+# new batch is answered ``{}`` and ignored, and a ``session/load`` of a session
+# that is still resident is ignored the same way. What the engine DOES take is
+# ``session/close`` on the resident session followed by ``session/load`` of the
+# SAME session id carrying the new batch, then ``session/set_mode``: the engine
+# replays the conversation it kept, the ``_kiro/tools/didChange`` after the
+# activation lists the added server's tools (and omits a withdrawn one's), and
+# the model's next turn reaches the new tool and recalls the earlier
+# turns. Captured live on KAS 0.66.62 (kiro-cli 2.34.0's relay):
+# ``test/fixtures/acp_frames/kas/mcp-live-apply-live.jsonl`` (an added server,
+# with the refused set_mode re-injection in the same session) and
+# ``mcp-live-remove-live.jsonl`` (a withdrawn one). The bundle route runs the
+# same engine over the same wire, so it shares the membership. Crew performs the
+# sequence on a session marked by a dashboard MCP write, at that session's next
+# turn boundary and never mid-turn (``acp/session_provider_mcp_reinject.py``),
+# which is the same moment the file watcher applies an edit on kiro-cli.
+#
+# kiro-cli is NOT a member: it takes its agent at spawn (``--agent``) and reads no
+# customAgents, so there is nothing to re-send, and its own watcher already does
+# the job. Every array-backed host (``ACP_BACKENDS_SESSION_MCP_ARRAY``) is a
+# non-member on the same evidence standard: none has been driven through a close
+# and load of a resident session with a changed array, so none inherits a skip
+# whose wrong grant leaves a server unmounted with nothing red to say why.
+ACP_BACKENDS_MCP_WIRE_REINJECT = frozenset({ACP_BACKEND_KAS})

@@ -105,7 +105,11 @@ from kiro_crew.mcp_gateway.launch_approval import (
 from kiro_crew.mcp_gateway.rewriter import records_dir
 from kiro_crew.mcp_gateway.shareability import ShareEvidence, ShareVerdict, assess
 from kiro_crew.mcp_gateway.verdict_cache import load_cache
-from kiro_crew.mcp_hot_reload import live_sessions_hot_reload
+from kiro_crew.mcp_hot_reload import (  # noqa: F401 - live_sessions_hot_reload is a public name of this facade
+    live_sessions_apply_mcp_live,
+    live_sessions_hot_reload,
+    mark_reinjecting_providers,
+)
 from kiro_crew.mcp_provenance import ABSENT, WITHHELD_KEY, resolve_write, stamp
 from kiro_crew.mcp_utils import (
     INTERNAL_CLIENT_ID_KEY,

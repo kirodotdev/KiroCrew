@@ -258,6 +258,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "mark_continuable": ("function", False, "958babeb61c8", "claims"),
     "mark_first_turn_history_owed": ("function", False, "1eda252b53bd", "session"),
     "mark_lifecycle_lease": ("function", False, "1eda252b53bd", "claims"),
+    "mark_mcp_config_changed": ("function", False, "b60c5fea256e", "runtimes"),
     "mark_needs_reinjection": ("function", False, "958babeb61c8", "turn_context"),
     "mark_provider_switch_replay": ("function", False, "1eda252b53bd", "turn_context"),
     "max_generation": ("function", False, "507f0cfc2b1b", "links"),
