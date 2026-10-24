@@ -100,6 +100,7 @@ describe('one public surface', () => {
       'CONTEXT_TRACE_COALESCE_MS',
       'DASHBOARD_FIELDS_FRAME',
       'MEMBER_DASHBOARD_QUERY_PREFIX',
+      'RESUME_ALL_DONE_EVENT',
       'ROW_STALL_MS',
       'ROW_STALL_TICK_MS',
       'SESSION_DASHBOARD_QUERY_PREFIX',

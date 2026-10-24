@@ -18,6 +18,17 @@ export function emitArtifactDeleted(slug: string): void {
   window.dispatchEvent(new CustomEvent('kirocrew:artifact-deleted', { detail: { slug } }))
 }
 
+import { RESUME_ALL_DONE_EVENT } from '../../lib/resumeAllEvent'
+
+/** The event name the sidebar's Resume-all row listens on. */
+export { RESUME_ALL_DONE_EVENT }
+
+/** A bulk Resume run finished (owner sockets only). The sidebar row that
+ *  started the run, matched by its `run_id`, shows the outcome. */
+export function emitResumeAllDone(detail: unknown): void {
+  window.dispatchEvent(new CustomEvent(RESUME_ALL_DONE_EVENT, { detail }))
+}
+
 /** App dev-mode live reload: the gateway watched a dev-flagged app's ui/ dir
  *  change. AppHost listens for this and re-imports the bundle. */
 export function emitAppReload(detail: { app: string }): void {

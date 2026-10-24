@@ -213,6 +213,11 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         **{
             site: execution
             for site in {
+                # Bulk Resume's candidate set reads the fact the slots
+                # projection serializes as running, so the button's count and
+                # the server's total agree; continue_slot_turn still refuses a
+                # reserved slot, reported as skipped.
+                ("chat_resume_all.py", "collect_interrupted_idle"),
                 ("channel_slots.py", "_window_refresh_is_safe"),
                 ("chat_slack.py", "drain_slack_backfill"),
                 # The synthesis outage re-check fires only on an idle slot: a

@@ -89,6 +89,7 @@ import { renderSessionCleanupPanel, useSessionCleanup } from './chat-sidebar/ses
 import { renderBulkModelPanel, useBulkModelSwitch } from './chat-sidebar/bulkModelSwitch'
 import BroadcastPanel from './chat-sidebar/BroadcastPanel'
 import type { MemorySourceRow } from '../lib/agentMemorySource'
+import { useResumeAll } from './chat-sidebar/resumeAll'
 
 /** Stable empty group list for the board, which groups nothing. */
 const NO_CREW_GROUPS: CrewGroup[] = []
@@ -302,6 +303,7 @@ function ChatSidebar({
   const sessionCleanup = useSessionCleanup({ cleanupOpen, setCleanupOpen, activeSlot, dispatch, queryClient })
 
   const bulkModel = useBulkModelSwitch({ localSlots })
+  const resumeAll = useResumeAll({ localSlots, connected })
 
   const {
     pinned, pinnedOrder, pinnedRank, reorderPinned, pinnedOrderError, setPinnedOrderError,
@@ -814,7 +816,7 @@ function ChatSidebar({
     openHistoryPane, orderedColumns, paintedSidebarWidth, pinned, pinnedBandCaption, pinnedOrderError, popoverPos, queryClient, rawColumns,
     recentAmountDraft, recentUnitDraft, recentWindowMs, refetchColumns, refetchFolders, refetchTags,
     remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId, remoteSessionsError, renameCommit,
-    renameError, reorderColumnsMutation, reportDndActive, restorePreBoardWidth, revealedContainers,
+    renameError, reorderColumnsMutation, reportDndActive, restorePreBoardWidth, resumeAll, revealedContainers,
     revealFlash, rootFolderIds, rootFolders, rowActions, rowAnimEnabled, rowMotionHeld: !rowAnimSettled, rowViews, searchRanked, seedError,
     seedStateLanesMutation, selectInstance, selectRecentPreset, sessionCleanup, setAllFiltersPaused,
     setAutoTitleError, setBoardError, setCleanupOpen, setCollapsedHistoryGroups, setColumnEditId,
