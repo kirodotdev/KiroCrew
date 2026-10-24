@@ -141,10 +141,15 @@ _BLOCKQUOTE_MARKER = re.compile(r"(?m)^(?:>>>|>)[ \t]+")
 #: :func:`severs_a_credential`. A credential framed by a spoiling message on each
 #: side appears in no prefix, suffix or whole reading, so those runs are read too --
 #: but capped, because reading every contiguous run is quadratic in a piece count
-#: the author controls. Four covers a credential the split broke into three
-#: fragments, which is what markup spanning a length cut produces; the cap is what
-#: keeps the reading count linear in the number of messages.
-_INTERIOR_RUN_PIECES = 4
+#: the author controls. Forty-three covers the trailing fixed-length component of
+#: the two-segment link token, whose last segment is exactly 43 base64url characters
+#: followed by a negative lookahead: an alphanumeric character directly after it
+#: spoils every reading that extends past it, so an interior window bounded here
+#: catches any token whose last segment is split into at most 43 pieces. The cap is
+#: what keeps the reading count linear in the number of messages; a credential
+#: spread across more pieces than the cap, with a spoiling frame on each side, is
+#: the residual noted in :func:`_sequence_readings`.
+_INTERIOR_RUN_PIECES = 43
 # How many times an emitted canonical form is rendered again before it is taken
 # to render as itself. Honest input settles in two passes; a link nested one
 # level inside another takes three. The bound is what keeps the cost of an

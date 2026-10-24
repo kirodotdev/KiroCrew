@@ -13,6 +13,7 @@ import pytest
 
 from conftest import CREDENTIAL_STRADDLE_SHAPES
 from kiro_crew.messaging.display_safety import (
+    _INTERIOR_RUN_PIECES,
     _balanced_link_reading,
     _first_close_reading,
     _link_free_reading,
@@ -503,3 +504,74 @@ class TestLinkReadingsAgreeWithoutAnOpener:
             _link_free_reading(window),
         }
         assert len(readings) == 3
+
+
+class TestInteriorRunBoundMutation:
+    """A credential split across more interior pieces than the old cap of four is
+    missed at cap=4 but caught at the current cap of 43.
+
+    The fixture splits the two-segment link token into five consecutive interior
+    messages with a spoiling frame on each side. Every prefix, suffix and whole-
+    sequence reading carries at least one frame character that makes the pattern's
+    negative lookahead or lookbehind fail; only a reading bounded on both sides --
+    an interior window of at least five pieces -- catches it.
+
+    The mutation: temporarily patch ``_INTERIOR_RUN_PIECES`` back to 4 and show
+    the five-piece interior is missed. Restore it and show it is caught.
+    """
+
+    #: Two-segment link token body (eyJ + 100 base64url chars) and fixed-length tail.
+    _FIRST = "eyJ" + "abcdefghij" * 10
+    _LAST = "Z" * 43
+    _TOKEN = _FIRST + "." + _LAST
+
+    #: Five consecutive interior pieces whose join is the link token.
+    _INTERIOR = [_TOKEN[:30], _TOKEN[30:60], _TOKEN[60:100], _TOKEN[100:135], _TOKEN[135:]]
+
+    #: Frame that spoils every prefix, suffix and whole-sequence reading.
+    _FRAME = "zzz"
+
+    def _link_token_redactor(self, text: str) -> str:
+        """Redact only the two-segment link token, for isolation from other patterns."""
+        import re
+
+        return re.sub(
+            r"(?<![A-Za-z0-9_.-])eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])",
+            "[REDACTED: credential]",
+            text,
+        )
+
+    def test_each_interior_piece_is_clean_alone(self) -> None:
+        redact = self._link_token_redactor
+        for piece in self._INTERIOR:
+            assert redact(piece) == piece, f"piece must look clean alone: {piece[:40]!r}"
+
+    def test_the_whole_join_is_spoiled_by_the_frame(self) -> None:
+        """Whole-sequence join has the frame directly adjacent to the token."""
+        redact = self._link_token_redactor
+        whole = "".join([self._FRAME, *self._INTERIOR, self._FRAME])
+        assert redact(whole) == whole, "frames must spoil the whole-join reading"
+
+    def test_the_inner_join_without_frames_is_caught(self) -> None:
+        """Control: without frames the interior pieces form a catchable token."""
+        redact = self._link_token_redactor
+        inner = "".join(self._INTERIOR)
+        assert redact(inner) != inner, "interior join without frames must be caught"
+
+    def test_a_bound_of_four_misses_the_five_piece_interior(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Patching the bound back to 4 shows the pre-fix miss."""
+        import kiro_crew.messaging.display_safety as ds
+
+        monkeypatch.setattr(ds, "_INTERIOR_RUN_PIECES", 4)
+        redact = self._link_token_redactor
+        pieces = [self._FRAME, *self._INTERIOR, self._FRAME]
+        assert not severs_a_credential(pieces, redact), "bound=4 must miss a five-piece interior"
+
+    def test_the_current_bound_catches_the_five_piece_interior(self) -> None:
+        """At the current cap (43) the five-piece interior is caught."""
+        assert _INTERIOR_RUN_PIECES == 43
+        redact = self._link_token_redactor
+        pieces = [self._FRAME, *self._INTERIOR, self._FRAME]
+        assert severs_a_credential(pieces, redact)
