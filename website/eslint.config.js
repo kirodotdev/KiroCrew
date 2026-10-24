@@ -4,6 +4,19 @@ import reactHooksPlugin from 'eslint-plugin-react-hooks'
 import jsxA11y from 'eslint-plugin-jsx-a11y'
 import approvalOneShotDecision from './eslint-rules/approval-one-shot-decision.js'
 import { plugin as shadcn } from '@shadcn/lint'
+import { REACT_COMPILER_FILES } from './react-compiler.config.mjs'
+
+// The react-hooks rules backed by the React Compiler's own analysis, each of
+// which reports code the compiler would bail on. They apply to the compiler's
+// opt-in files only (react-compiler.config.mjs): the rest of the tree still
+// carries hundreds of hits and is not compiled. set-state-in-effect is left
+// out because it does not stop compilation.
+const REACT_COMPILER_RULES = Object.fromEntries([
+  'component-hook-factories', 'config', 'error-boundaries', 'gating', 'globals',
+  'immutability', 'incompatible-library', 'preserve-manual-memoization', 'purity',
+  'refs', 'set-state-in-render', 'static-components', 'unsupported-syntax',
+  'use-memo', 'void-use-memo',
+].map((rule) => [`react-hooks/${rule}`, 'error']))
 
 const HLJS_IMPORT_RULE = {
   name: 'highlight.js',
@@ -374,4 +387,7 @@ export default [
       'shadcn/require-static-classes': 'off',
     },
   },
+  // ESLint refuses an empty `files` list, so the block exists only once a file
+  // is listed.
+  ...(REACT_COMPILER_FILES.length > 0 ? [{ files: REACT_COMPILER_FILES, rules: REACT_COMPILER_RULES }] : []),
 ]
