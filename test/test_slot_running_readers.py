@@ -211,6 +211,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # A return brief must not start or publish after a send has
                 # reserved the slot, even before its model turn begins.
                 ("warm_task_brief.py", "_run_warm_task_brief"),
+                # A worker holding a reservation is in-flight work for the
+                # thread that created it, even before its model turn begins.
+                ("warm_task_brief.py", "_running_workers"),
                 ("warm_task_brief.py", "_settled"),
                 ("warm_task_brief.py", "_still_current"),
                 ("warm_task_brief.py", "_wait_for_idle_turn"),

@@ -188,6 +188,9 @@ class TaskSnapshot:
     conductor: dict[str, Any] | None
     work_items: tuple[dict[str, Any], ...]
     previous_claim: str
+    # Worker sessions this thread created or revived that are running now;
+    # not part of ``fingerprint``.
+    running_workers: int = 0
     # Covers only what the person typed. Patrol turns, worker reports and
     # ledger writes change ``fingerprint`` but never make a prepared brief stale.
     user_fingerprint: str = ""
@@ -230,8 +233,23 @@ def cancel_for_live_user_row(state: "DashboardState", slot_key: str, content: ob
         cancel_warm_task_brief(state, slot_key)
 
 
+# Skip reasons that explain why a real return to a crewmate thread got no brief.
+# They log at INFO the first time a thread hits each one in a row; the reasons
+# every ordinary focus frame produces (on_screen, short_away, ...) stay DEBUG.
+_INFO_SKIPS = frozenset({"no_open_task", "no_request", "no_user_time", "snapshot_unreadable"})
+# Per thread, the INFO reason last logged. Bounded like the on-screen record.
+_skips_logged: dict[str, str] = {}
+
+
 def _skip(slot_key: str, reason: str) -> None:
-    """One debug line per skipped brief: the thread key and a fixed reason."""
+    """One log line per skipped brief: the thread key and a fixed reason."""
+    if reason in _INFO_SKIPS and _skips_logged.get(slot_key) != reason:
+        _skips_logged.pop(slot_key, None)
+        _skips_logged[slot_key] = reason
+        while len(_skips_logged) > _MAX_LAST_SEEN:
+            _skips_logged.pop(next(iter(_skips_logged)))
+        logger.info("warm task brief skipped for %s: %s", slot_key, reason)
+        return
     logger.debug("warm task brief skipped for %s: %s", slot_key, reason)
 
 
@@ -431,7 +449,13 @@ def _has_open_task(
     session_state: dict[str, Any],
     conductor: dict[str, Any] | None,
     items: tuple[dict[str, Any], ...],
+    *,
+    running_workers: int = 0,
 ) -> bool:
+    # A crewmate that drives its work through session_create keeps no ledger
+    # record, so its running worker sessions are the in-flight signal.
+    if running_workers > 0:
+        return True
     if any(not work_item_is_terminal(item.get("state")) for item in items):
         return True
     phase = str(session_state.get("phase") or "").strip().lower()
@@ -499,19 +523,53 @@ def _original_request_for_task(
     return _bounded_request(user_turns[-1].text)
 
 
-def _snapshot_sync(state: "DashboardState", slot: "_ChatSlot") -> TaskSnapshot | None:
+def _running_workers(state: "DashboardState", slot_key: str) -> int:
+    """Worker slots *slot_key* created or revived that are running now.
+
+    A finished worker whose tab stays open is not in-flight work, so this
+    counts only slots holding a turn reservation. In memory, loop thread only.
+    """
+    return sum(
+        1
+        for slot in state._slots.values()
+        if slot.running and slot_key in (slot._created_by, slot._revived_by)
+    )
+
+
+def _snapshot_sync(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    running_workers: int = 0,
+    why: list[str] | None = None,
+    *,
+    require_open: bool = True,
+) -> TaskSnapshot | None:
+    """The task snapshot, or ``None`` with the skip reason appended to *why*.
+
+    *require_open* applies the open-work gate. Only the first read decides
+    eligibility; a re-read passes ``False`` so work closing mid-brief does not
+    drop a brief already underway.
+    """
+
+    def none(reason: str) -> TaskSnapshot | None:
+        if why is not None:
+            why.append(reason)
+        return None
+
     history_key = slot_history_key(slot)
     log = state.conversation_log
     if log is None:
-        return None
+        return none("snapshot_unreadable")
     # Every focus frame on a crewmate thread can land here, so the small
     # ledger reads gate the full history read.
     session_state = read_state(slot.key)
     conductor_record, items_raw = task_records(slot.key)
     conductor = _conductor_payload(conductor_record)
     items = tuple(_work_item_payload(item) for item in items_raw)
-    if not _has_open_task(session_state, conductor, items):
-        return None
+    if require_open and not _has_open_task(
+        session_state, conductor, items, running_workers=running_workers
+    ):
+        return none("no_open_task")
     rows = log.derive_messages_chained(history_key)
     task_rows_source = [
         row
@@ -527,7 +585,7 @@ def _snapshot_sync(state: "DashboardState", slot: "_ChatSlot") -> TaskSnapshot |
     turns = extract_turns(task_rows_source, max_user_chars=2**63 - 1)
     original = _original_request_for_task(turns, session_state, conductor, items)
     if not original:
-        return None
+        return none("no_request")
 
     task_rows: list[dict[str, str]] = []
     for turn in turns:
@@ -566,6 +624,7 @@ def _snapshot_sync(state: "DashboardState", slot: "_ChatSlot") -> TaskSnapshot |
         session_state=session_state,
         conductor=conductor,
         work_items=items,
+        running_workers=running_workers,
         previous_claim=_record_claim(rows),
         last_claim_at=_claim_epoch(rows),
         user_fingerprint=user_fingerprint,
@@ -582,14 +641,27 @@ def _snapshot_sync(state: "DashboardState", slot: "_ChatSlot") -> TaskSnapshot |
     )
 
 
-async def _snapshot(state: "DashboardState", slot: "_ChatSlot") -> TaskSnapshot | None:
+async def _snapshot(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    why: list[str] | None = None,
+    *,
+    require_open: bool = True,
+) -> TaskSnapshot | None:
+    """The task snapshot, or ``None`` with the skip reason appended to *why*."""
     try:
-        return await asyncio.to_thread(_snapshot_sync, state, slot)
+        # The slot registry is read here, on the loop, never from the worker thread.
+        running_workers = _running_workers(state, slot.key)
+        return await asyncio.to_thread(
+            _snapshot_sync, state, slot, running_workers, why, require_open=require_open
+        )
     except (TranscriptBusy, TranscriptWithheld):
-        return None
+        pass
     except Exception:
         logger.debug("warm task brief snapshot failed for %s", slot.key, exc_info=True)
-        return None
+    if why is not None:
+        why.append("snapshot_unreadable")
+    return None
 
 
 def _same_slot(state: "DashboardState", slot: "_ChatSlot") -> bool:
@@ -617,7 +689,9 @@ async def _still_current(
         or slot.key in getattr(state, "_warm_task_brief_abandoned", ())
     ):
         return None
-    current = await _snapshot(state, slot)
+    # Eligibility was settled by the first read. Open work closing since then
+    # (the last worker stopping, an item turning terminal) is not staleness.
+    current = await _snapshot(state, slot, require_open=False)
     if (
         current is None
         or current.user_fingerprint != expected.user_fingerprint
@@ -673,6 +747,7 @@ def _build_prompt(snapshot: TaskSnapshot, verbosity: object = "default") -> str:
         "session_state": snapshot.session_state,
         "conductor": snapshot.conductor,
         "work_items": snapshot.work_items,
+        "running_worker_sessions": snapshot.running_workers,
         "transcript": snapshot.transcript,
     }
     rendered = json.dumps(payload, ensure_ascii=False)
@@ -854,9 +929,10 @@ async def _run_warm_task_brief(
     if not _same_slot(state, slot) or slot.running or not _is_foreground(state, slot.key):
         _skip(slot.key, "not_current")
         return
-    snapshot = await _snapshot(state, slot)
+    why: list[str] = []
+    snapshot = await _snapshot(state, slot, why)
     if snapshot is None:
-        _skip(slot.key, "no_open_task")
+        _skip(slot.key, why[0] if why else "snapshot_unreadable")
         return
     if snapshot.previous_claim == snapshot.fingerprint:
         _skip(slot.key, "already_claimed")

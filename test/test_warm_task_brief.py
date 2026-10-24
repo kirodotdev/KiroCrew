@@ -22,7 +22,8 @@ class _State:
         self._warm_task_brief_abandoned: set[str] = set()
         self.frames: list[tuple[str, dict]] = []
         self.preparing_pushes: list[dict[str, bool]] = []
-        self.slots = {}
+        # The real registry is ``_slots``; one dict serves both names.
+        self.slots = self._slots = {}
         self.sessions = object()
 
     def broadcast_ws_owners(self, kind: str, data: dict) -> None:
@@ -49,6 +50,8 @@ class _Slot:
     def __init__(self, key: str = "thread-x") -> None:
         self.key = key
         self.running = False
+        self._created_by = ""
+        self._revived_by = ""
         self.linked_session_key = ""
         self.channel_origin = False
         self.mode = "member"
@@ -454,7 +457,7 @@ async def test_opener_precedes_the_single_model_call_and_result_is_a_structured_
     state._foreground_slots[1] = slot.key
     snapshot = _snapshot()
 
-    async def read_snapshot(*args):
+    async def read_snapshot(*args, **kwargs):
         return _claimed(snapshot) if slot.flushed else snapshot
 
     kinds_at_call = []
@@ -528,7 +531,7 @@ async def test_existing_claim_suppresses_status_and_model(monkeypatch):
     state.slots[slot.key] = slot
     state._foreground_slots[1] = slot.key
 
-    async def read_snapshot(*args):
+    async def read_snapshot(*args, **kwargs):
         return _snapshot(previous_claim="fp")
 
     async def unexpected(*args, **kwargs):
@@ -549,7 +552,7 @@ async def test_model_failure_posts_an_ordinary_failure_message(monkeypatch):
     state._foreground_slots[1] = slot.key
     snapshot = _snapshot()
 
-    async def read_snapshot(*args):
+    async def read_snapshot(*args, **kwargs):
         return _claimed(snapshot) if slot.flushed else snapshot
 
     async def fail(*args, **kwargs):
@@ -579,7 +582,7 @@ async def test_user_send_drops_stale_result_and_keeps_preparing(monkeypatch):
     sent = replace(_claimed(base), fingerprint="changed", user_fingerprint="sent")
     snapshots = [base, _claimed(base), sent]
 
-    async def read_snapshot(*args):
+    async def read_snapshot(*args, **kwargs):
         return snapshots.pop(0)
 
     async def run_model(*args, **kwargs):
@@ -794,7 +797,7 @@ async def test_unpersisted_claim_never_surfaces_status_or_spends(monkeypatch):
     snapshot = _snapshot()
     state.flush_slot_now = lambda _slot: None
 
-    async def read_snapshot(*args):
+    async def read_snapshot(*args, **kwargs):
         return snapshot
 
     async def unexpected(*args, **kwargs):
@@ -875,7 +878,7 @@ async def test_cancel_during_model_suppresses_result_without_cancelling_acquisit
     release = asyncio.Event()
     model_cancelled = False
 
-    async def read_snapshot(*args):
+    async def read_snapshot(*args, **kwargs):
         return _claimed(snapshot) if slot.rows else snapshot
 
     async def run_model(*args, **kwargs):
@@ -1149,7 +1152,7 @@ def test_non_string_meta_kind_is_not_a_brief_row_and_never_raises(kind):
 
 
 def _arm_model(monkeypatch, slot, snapshots, run_model=None):
-    async def read_snapshot(*args):
+    async def read_snapshot(*args, **kwargs):
         return snapshots.pop(0)
 
     async def default_model(*args, **kwargs):
@@ -1614,3 +1617,220 @@ def test_structured_brief_survives_a_transcript_round_trip(tmp_path):
     (row,) = log.derive_messages_chained("dashboard:thread-x")
     assert row["meta"]["brief"] == brief.as_meta()
     assert row["content"] == "You asked: Fix it\nNow: Ready.\nNext:\n1. Review"
+
+
+class _CrewmateState(_State):
+    """A state whose registry holds a crewmate thread and the worker slots it made."""
+
+    def add_worker(self, creator_key: str, *, running: bool, revived: bool = False) -> _Slot:
+        worker = _Slot(f"worker-{len(self.slots)}")
+        worker.running = running
+        if revived:
+            worker._created_by = "someone-else"
+            worker._revived_by = creator_key
+        else:
+            worker._created_by = creator_key
+        self.slots[worker.key] = worker
+        return worker
+
+
+def _ledgerless_crewmate(
+    monkeypatch, *, workers: int, finished_workers: int = 0
+) -> tuple[_CrewmateState, _Slot]:
+    """A crewmate thread hidden two hours, with no work-ledger or session-ledger record.
+
+    *workers* of its worker slots are running; *finished_workers* stay open but idle.
+    """
+    _, slot, log = _thread(monkeypatch, user_ago=2 * 3600)
+    state = _CrewmateState()
+    state.conversation_log = log
+    state.slots[slot.key] = slot
+    for index in range(workers):
+        # Every other running worker was revived rather than created by the thread.
+        state.add_worker(slot.key, running=True, revived=index % 2 == 1)
+    for _ in range(finished_workers):
+        state.add_worker(slot.key, running=False)
+    # A running worker another thread created is not this thread's work.
+    state.add_worker("another-thread", running=True)
+    monkeypatch.setattr(warm_task_brief, "read_state", lambda key: {})
+    monkeypatch.setattr(warm_task_brief, "task_records", lambda key: (None, []))
+    monkeypatch.setattr(warm_task_brief, "_skips_logged", {})
+    return state, slot
+
+
+def _skip_lines(caplog, level: int) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == warm_task_brief.logger.name and r.levelno == level
+    ]
+
+
+@pytest.mark.asyncio
+async def test_crewmate_with_open_worker_sessions_but_no_ledger_briefs(monkeypatch):
+    state, slot = _ledgerless_crewmate(monkeypatch, workers=2)
+    await _focus(state, 1, slot.key)
+    assert _brief_kinds(slot) == _FULL_BRIEF
+
+
+@pytest.mark.asyncio
+async def test_open_worker_count_reaches_the_brief_prompt(monkeypatch):
+    state, slot = _ledgerless_crewmate(monkeypatch, workers=3)
+    prompts: list[str] = []
+
+    async def run_model(sessions, prompt, **kwargs):
+        prompts.append(prompt)
+        return '{"now":"Three workers are still going."}'
+
+    monkeypatch.setattr(warm_task_brief, "run_bg_oneliner", run_model)
+    await _focus(state, 1, slot.key)
+    assert len(prompts) == 1
+    assert '"running_worker_sessions": 3' in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_finished_worker_tabs_count_neither_as_work_nor_in_the_prompt(monkeypatch):
+    state, slot = _ledgerless_crewmate(monkeypatch, workers=1, finished_workers=2)
+    prompts: list[str] = []
+
+    async def run_model(sessions, prompt, **kwargs):
+        prompts.append(prompt)
+        return '{"now":"One worker is still going."}'
+
+    monkeypatch.setattr(warm_task_brief, "run_bg_oneliner", run_model)
+    await _focus(state, 1, slot.key)
+    assert len(prompts) == 1
+    assert '"running_worker_sessions": 1' in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_crewmate_whose_workers_all_finished_gives_no_brief(monkeypatch, caplog):
+    caplog.set_level("INFO", logger=warm_task_brief.logger.name)
+    state, slot = _ledgerless_crewmate(monkeypatch, workers=0, finished_workers=2)
+    await _focus(state, 1, slot.key)
+
+    assert _brief_kinds(slot) == []
+    assert _skip_lines(caplog, 20) == [f"warm task brief skipped for {slot.key}: no_open_task"]
+
+
+@pytest.mark.asyncio
+async def test_idle_crewmate_logs_no_open_task_once_at_info(monkeypatch, caplog):
+    caplog.set_level("DEBUG", logger=warm_task_brief.logger.name)
+    state, slot = _ledgerless_crewmate(monkeypatch, workers=0)
+    await _focus(state, 1, slot.key)
+    # A second real return to the same idle thread.
+    await _focus(state, 1, "elsewhere")
+    state._warm_task_brief_last_seen[slot.key] = time.time() - 2 * 3600
+    await _focus(state, 1, slot.key)
+
+    assert _brief_kinds(slot) == []
+    expected = f"warm task brief skipped for {slot.key}: no_open_task"
+    assert _skip_lines(caplog, 20) == [expected]
+    assert _skip_lines(caplog, 10).count(expected) == 1
+
+
+@pytest.mark.asyncio
+async def test_busy_crewmate_without_a_typed_request_logs_no_request(monkeypatch, caplog):
+    caplog.set_level("INFO", logger=warm_task_brief.logger.name)
+    state, slot = _ledgerless_crewmate(monkeypatch, workers=1)
+    # Only the crewmate has spoken in this thread.
+    del slot.rows[0]
+    await _focus(state, 1, slot.key)
+
+    assert _brief_kinds(slot) == []
+    assert _skip_lines(caplog, 20) == [f"warm task brief skipped for {slot.key}: no_request"]
+
+
+def test_has_open_task_counts_open_worker_sessions():
+    assert warm_task_brief._has_open_task({}, None, (), running_workers=1)
+    assert not warm_task_brief._has_open_task({}, None, (), running_workers=0)
+
+
+@pytest.mark.parametrize(
+    ("reason", "level"),
+    [
+        pytest.param("on_screen", 10, id="frame_reason_stays_debug"),
+        pytest.param("short_away", 10, id="short_away_stays_debug"),
+        pytest.param("no_request", 20, id="no_request_is_info"),
+        pytest.param("snapshot_unreadable", 20, id="unreadable_is_info"),
+    ],
+)
+def test_skip_level_follows_the_reason(monkeypatch, caplog, reason, level):
+    caplog.set_level("DEBUG", logger=warm_task_brief.logger.name)
+    monkeypatch.setattr(warm_task_brief, "_skips_logged", {})
+    warm_task_brief._skip("thread-x", reason)
+    assert _skip_lines(caplog, level) == [f"warm task brief skipped for thread-x: {reason}"]
+
+
+def test_info_skip_repeats_only_when_the_reason_changes(monkeypatch, caplog):
+    caplog.set_level("INFO", logger=warm_task_brief.logger.name)
+    monkeypatch.setattr(warm_task_brief, "_skips_logged", {})
+    for reason in ("no_open_task", "no_open_task", "no_request", "no_open_task"):
+        warm_task_brief._skip("thread-x", reason)
+    assert [line.rsplit(": ", 1)[1] for line in _skip_lines(caplog, 20)] == [
+        "no_open_task",
+        "no_request",
+        "no_open_task",
+    ]
+
+
+def test_info_skip_record_is_bounded(monkeypatch):
+    monkeypatch.setattr(warm_task_brief, "_skips_logged", {})
+    monkeypatch.setattr(warm_task_brief, "_MAX_LAST_SEEN", 2)
+    for key in ("a", "b", "c"):
+        warm_task_brief._skip(key, "no_open_task")
+    assert list(warm_task_brief._skips_logged) == ["b", "c"]
+
+
+def _work_item(state: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        item_id="item-1",
+        title="Fix the failing test",
+        state=state,
+        verdict="",
+        decision="",
+        worker_session_key="",
+        status="",
+        reason="",
+        summary="",
+        artifacts=[],
+        last_report_at="",
+        created_at="",
+        closed_at="",
+        decided_at="",
+    )
+
+
+@pytest.mark.asyncio
+async def test_last_worker_finishing_during_the_model_call_still_publishes(monkeypatch):
+    state, slot = _ledgerless_crewmate(monkeypatch, workers=1)
+    (worker,) = [w for w in state.slots.values() if w is not slot and w._created_by == slot.key]
+
+    async def run_model(*args, **kwargs):
+        # The thread's only open work closes while the brief is being written.
+        worker.running = False
+        return '{"now":"The worker just finished."}'
+
+    monkeypatch.setattr(warm_task_brief, "run_bg_oneliner", run_model)
+    await _focus(state, 1, slot.key)
+
+    assert warm_task_brief._running_workers(state, slot.key) == 0
+    assert _brief_kinds(slot) == _FULL_BRIEF
+
+
+@pytest.mark.asyncio
+async def test_work_item_closing_during_the_model_call_still_publishes(monkeypatch):
+    state, slot = _ledgerless_crewmate(monkeypatch, workers=0)
+    items = [_work_item("dispatched")]
+    monkeypatch.setattr(warm_task_brief, "task_records", lambda key: (None, list(items)))
+
+    async def run_model(*args, **kwargs):
+        # The ledger's only open item closes while the brief is being written.
+        items[0] = _work_item("accepted")
+        return '{"now":"The item was accepted."}'
+
+    monkeypatch.setattr(warm_task_brief, "run_bg_oneliner", run_model)
+    await _focus(state, 1, slot.key)
+
+    assert items[0].state == "accepted"
+    assert _brief_kinds(slot) == _FULL_BRIEF
