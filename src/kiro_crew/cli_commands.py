@@ -679,8 +679,15 @@ def _handle_secrets(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
         print(format_report(report))
+    elif action == "authorize":
+        # Served by its owner (see ``_OWNERS``); this module's own code never
+        # binds an owner's name, so it is reached through the owner module.
+        importlib.import_module("kiro_crew.cli_commands_secrets")._handle_secrets_authorize(args)
     else:
-        print("Usage: kirocrew secrets import [--apply]", file=sys.stderr)
+        print(
+            "Usage: kirocrew secrets [import [--apply] | authorize <name> <origin>]",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 
@@ -701,6 +708,7 @@ _OWNERS = (
     "kiro_crew.cli_commands_security",
     "kiro_crew.cli_commands_eval",
     "kiro_crew.cli_commands_learn",
+    "kiro_crew.cli_commands_secrets",
 )
 for _owner in _OWNERS:
     importlib.import_module(_owner)
@@ -796,6 +804,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _memory_verb,
         _refuse_forget_outside_owner_terminal,
         _settle_created_database,
+    )
+    from kiro_crew.cli_commands_secrets import (  # noqa: F401
+        _authorize_txn,
+        _handle_secrets_authorize,
+        _publish_secret_request_policy,
     )
     from kiro_crew.cli_commands_security import (  # noqa: F401
         _TIME_SELECTOR_RE,

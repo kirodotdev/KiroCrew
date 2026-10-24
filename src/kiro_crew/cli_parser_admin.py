@@ -278,6 +278,41 @@ def register_secrets_parser(sub: _Commands) -> None:
         action="store_true",
         help="Store the secrets and rewrite .env to secret:// refs (default: dry-run)",
     )
+    # authorize -- the owner binds a stored Custom secret to an exact https origin
+    # for the mediated ``call_api_with_secret`` tool, and SIGNS the policy so
+    # trusted host code can confirm the owner (not the agent) set the destination.
+    secrets_authorize = secrets_sub.add_parser(
+        "authorize",
+        help="Authorize a Custom secret for one exact https origin (agent write requests)",
+    )
+    secrets_authorize.add_argument("secret_name", help="Name of the stored Custom secret")
+    secrets_authorize.add_argument(
+        "origin",
+        nargs="?",
+        default=None,
+        help=(
+            "Exact https origin the agent may call, e.g. https://api.example.com "
+            "(required when adding; omit it with --remove)"
+        ),
+    )
+    secrets_authorize.add_argument(
+        "--header",
+        default=None,
+        help="Inject the secret into this request header (default: Authorization: Bearer)",
+    )
+    secrets_authorize.add_argument(
+        "--remove",
+        action="store_true",
+        help="Remove the authorization for secret_name instead of adding it",
+    )
+    secrets_authorize.add_argument(
+        "--reset",
+        action="store_true",
+        help=(
+            "Discard an existing policy that does not verify or does not parse, and "
+            "start fresh. Without it, authorize refuses rather than erase entries."
+        ),
+    )
 
 
 def register_pod_parser(sub: _Commands) -> None:

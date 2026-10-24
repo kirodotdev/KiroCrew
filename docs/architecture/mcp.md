@@ -1545,6 +1545,7 @@ every boot rather than preserved as user preferences. Preserving them is wrong i
 both directions: a template that later tightens `exclude` would never reach an
 already-enabled install, and anything that edits the agent file could drop the
 exclude list, which the framework would then faithfully preserve forever.
+| `kirocrew-secrets` | `kirocrew mcp-secrets` (`mcp_secrets.py`) | `call_api_with_secret` |
 
 `neutralize` uses explicit tool lists rather than a wildcard, because the app
 discovers the real tool names, so a server that grows a tool cannot quietly slip

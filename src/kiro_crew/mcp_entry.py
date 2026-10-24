@@ -33,6 +33,7 @@ SLIM_SERVERS: dict[str, tuple[str, str]] = {
     "mcp-computer": ("kiro_crew.mcp_computer", "run_mcp_server"),
     "mcp-crew-log": ("kiro_crew.mcp_crew_log", "run_mcp_server"),
     "mcp-debug": ("kiro_crew.mcp_debug", "run_mcp_server"),
+    "mcp-secrets": ("kiro_crew.mcp_secrets", "run_mcp_server"),
 }
 
 

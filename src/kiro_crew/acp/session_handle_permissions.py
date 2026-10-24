@@ -25,7 +25,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from kiro_crew import acp_tool_gate, permission_floor
+from kiro_crew import acp_tool_gate, mediated_request_capability, permission_floor
 from kiro_crew.acp._dispatch import (
     TOOL_CALL_CACHE_MAX_ENTRIES,
     TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS,
@@ -144,12 +144,20 @@ async def approve_tool(
         recheck["withdrawal_check"] = lambda: permission_floor.raise_if_withdrawn(withdraw_if)
     if deadline is not None:
         recheck["before_write"] = grant_deadline_guard(deadline, request_id)
+    # Same mediated-secret capability mint as ``AcpClient.approve_tool``: minted
+    # before the write, revoked unless the answer actually went out.
+    capability_session = self._session_key or ""
+    capability_token = mediated_request_capability.mint_for_gate_event(
+        capability_session, gate_event
+    )
+    sent = False
     try:
         await self._runtime.send_response(
             request_id,
             {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": resolved_id}},
             **recheck,
         )
+        sent = True
     except GrantEnded:
         # Nothing was written: put the request back exactly as it was.
         if gate_event is not None:
@@ -160,6 +168,12 @@ async def approve_tool(
     except permission_floor.ApprovalWithdrawn:
         self._restore_withdrawn(request_id, gate_event, recorded)
         raise
+    finally:
+        # A token is only ever minted from a non-None gate event.
+        if capability_token and gate_event is not None and not sent:
+            mediated_request_capability.revoke_pending(
+                capability_session, gate_event.tool_call_id, capability_token
+            )
     if deadline is not None:
         # Answered only now: until the write the request was still pending.
         self._end_human_wait()
@@ -191,7 +205,10 @@ async def reject_tool(self: AcpSessionHandle, request_id: str | int) -> None:
     later tool call in it without prompting.
     """
     recorded = self._permission_options.pop(request_id, None)
-    self._permission_gate_events.pop(request_id, None)
+    gate_event = self._permission_gate_events.pop(request_id, None)
+    # A deny (or cancel) invalidates any mediated-secret grant minted for this
+    # call id (see ``AcpClient.reject_tool``).
+    mediated_request_capability.invalidate_for_gate_event(self._session_key or "", gate_event)
     # Answered (see approve_tool) — a rejection ends the human wait too.
     self._end_human_wait()
     self._note_steering_denial()

@@ -90,7 +90,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     (
         "Security and privacy",
         (
-            ("secrets", "Migrate .env credentials into the encrypted secret vault"),
+            ("secrets", "Encrypted secret vault: import .env credentials, authorize origins"),
             ("security", "Security audit and deny list"),
             ("file-delivery", "Approve delivery of scanner-flagged files (host step-up)"),
             ("policy", "Inspect the governance security policy + profiles"),

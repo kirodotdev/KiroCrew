@@ -403,6 +403,31 @@ class TestDoctorMcpTools:
         assert "@kirocrew-core" in updated["allowedTools"]
         assert "@kirocrew-cron" in updated["allowedTools"]
 
+    def test_auto_fix_never_blanket_allows_mediated_secret(self, tmp_path, capsys):
+        """Doctor never pre-approves ``@kirocrew-secrets``, even when it is granted.
+
+        ``call_api_with_secret`` has to reach ``hooks.on_tool_call``: that approval
+        is where the single-use capability the host endpoint redeems is minted. An
+        ``allowedTools`` entry approves the call inside kiro-cli, so the host would
+        refuse every call. The server is opt-in, so the fixture grants it the way an
+        owner would (``tools`` ref present) and checks doctor leaves it un-approved.
+        """
+        from kiro_crew.cli_doctor import _NO_BLANKET_ALLOW_MCPS, _doctor_mcp_tools
+
+        assert "kirocrew-secrets" in _NO_BLANKET_ALLOW_MCPS
+        agent_path = tmp_path / "kirocrew.json"
+        _healthy_agent_file(agent_path)
+        data = json.loads(agent_path.read_text(encoding="utf-8"))
+        data["tools"] = [*data.get("tools", []), "@kirocrew-secrets"]
+        data["allowedTools"] = []
+        agent_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        with self._mock_probe({}):
+            _doctor_mcp_tools(agent_path, [])
+        updated = json.loads(agent_path.read_text(encoding="utf-8"))
+        assert "@kirocrew-secrets" not in updated["allowedTools"]
+        assert not [t for t in updated["allowedTools"] if t.startswith("@kirocrew-secrets/")]
+        assert "@kirocrew-core" in updated["allowedTools"]
+
     def test_auto_fix_never_blanket_allows_the_guide_set(self, tmp_path, capsys):
         """The guide set is always on but granted per tool, so doctor mounts its
         ref and never mints the whole-server grant: that would pre-approve a tool

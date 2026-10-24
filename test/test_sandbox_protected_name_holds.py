@@ -379,7 +379,15 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   so no sandboxed writer can plant the spec kiro-cli reads there. At the
     #:   data-home root beside writable siblings, so leaf-only is the only hold.
     #:   Three more entries per tier.
-    EXPECTED: dict[str, int] = {"standard": 290, "cc": 297, "strict": 298}
+    #:
+    #: One more root-level directory, one entry per tier:
+    #:
+    #: * ``secret-request-policy`` -- the mediated-secret request directory (the
+    #:   certified policy-signing key, the owner-signed egress policy and its
+    #:   authorize lock), masked whole. Every publication renames INSIDE it, so the
+    #:   directory's own inode stays the same on a republish. At the data-home root
+    #:   beside writable siblings, so leaf-only is the only hold available.
+    EXPECTED: dict[str, int] = {"standard": 291, "cc": 298, "strict": 299}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

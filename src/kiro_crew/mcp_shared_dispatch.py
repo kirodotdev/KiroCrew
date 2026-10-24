@@ -35,6 +35,7 @@ from kiro_crew.mcp_caller import (
     caller_identity_capability,
     set_current_caller,
     set_current_tenant_nonce,
+    set_current_tool_call_id,
     tenant_nonce_from_meta,
 )
 from kiro_crew.mcp_shared_calls import (
@@ -97,6 +98,22 @@ def _tool_call_name(params: dict[str, Any]) -> str | None:
     """The tool a ``tools/call`` names, or ``None`` when it names none usable."""
     name = params.get("name")
     return name if isinstance(name, str) and name else None
+
+
+def _approved_tool_call_id(params: dict[str, Any], caller: "CallerContext | None") -> str:
+    """The harness ACP ``toolCallId`` a ``tools/call`` was approved under, or ``""``.
+
+    The gateway-authored caller block wins; the request's own
+    ``_meta.progressToken`` (the same value, before the gateway promoted it) is
+    the fallback for the non-pooled topology, where no block is injected.
+    """
+    if caller is not None and caller.tool_call_id:
+        return caller.tool_call_id
+    meta = params.get("_meta")
+    token = meta.get("progressToken") if isinstance(meta, dict) else None
+    if isinstance(token, bool) or not isinstance(token, (str, int)):
+        return ""
+    return str(token)
 
 
 #: Backstop wait while only a worker runs. Not a latency: the wake pipe ends
@@ -361,6 +378,7 @@ def _run_stdio_dispatch_loop(
         cancel_evt: threading.Event,
         caller_ctx: "CallerContext | None" = None,
         tenant_nonce: str = "",
+        tool_call_id: str = "",
     ) -> None:
         """Worker thread: run tool, store result unless cancelled."""
         # Install the verified per-call caller for identity resolvers. A
@@ -372,6 +390,9 @@ def _run_stdio_dispatch_loop(
         # gateway could not name reads it instead of a process-global fallback.
         # Cleared in the same places as the caller.
         set_current_tenant_nonce(tenant_nonce)
+        # The harness ACP toolCallId this call was approved under, for the one
+        # tool (kirocrew-secrets) whose host-side claim is keyed by it.
+        set_current_tool_call_id(tool_call_id)
         try:
             result = call_tool_fn(tool_name, tool_args)
         except ToolCancelled:
@@ -385,6 +406,7 @@ def _run_stdio_dispatch_loop(
                 caller_ctx.session_key if caller_ctx else "",
             )
             set_current_caller(None)
+            set_current_tool_call_id("")
             set_current_tenant_nonce("")
             _result_ready.set()
             _wake.wake()
@@ -396,6 +418,7 @@ def _run_stdio_dispatch_loop(
             _tool_errored = False
         finally:
             set_current_caller(None)
+            set_current_tool_call_id("")
             set_current_tenant_nonce("")
         # Audit decision is made atomically with the cancellation check, under
         # the same lock that guards response delivery: exactly ONE audit event
@@ -647,6 +670,14 @@ def _run_stdio_dispatch_loop(
             # name — the case it exists for — so it cannot be folded
             # into ``_caller_ctx``, which is None exactly then.
             _tenant_nonce = tenant_nonce_from_meta(params.get("_meta"))
+            # Correlation key between the approval gate and this execution: the
+            # harness ACP ``toolCallId`` the approval was keyed by. The harness
+            # carries it as the ``tools/call`` ``_meta.progressToken`` and the
+            # gateway promotes it into the caller block, so it is read from the
+            # caller block when present and from ``progressToken`` otherwise -- the
+            # SAME value either way. A call with no progress token yields an empty
+            # id, and the capability claim it drives is refused fail-closed.
+            _tool_call_id = _approved_tool_call_id(params, _caller_ctx)
             # A queued request may have been cancelled while waiting -- emit
             # no response (per MCP spec) but audit the cancellation.
             if req_id is not None and str(req_id) in _cancelled_ids:
@@ -930,6 +961,7 @@ def _run_stdio_dispatch_loop(
                         _cancel_event,
                         _caller_ctx,
                         _tenant_nonce,
+                        _tool_call_id,
                     ),
                     daemon=True,
                 )

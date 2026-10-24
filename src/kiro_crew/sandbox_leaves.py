@@ -103,6 +103,14 @@ _LIVE_TARGET_STAGING_LEAF: str = "live-target-staging"
 #: needs no backend carve-out to hand the directory back to a sandboxed app.
 _AUTH_STORE_STAGING_LEAF: str = "auth-store-staging"
 
+#: The mediated-secret request directory (``secrets_mediation.provenance.
+#: SECRET_POLICY_DIRNAME``): the certified policy-signing key, the owner-signed
+#: authorization policy and its authorize lock. Hidden as a WHOLE directory and
+#: precreated before every spawn, so every name inside it -- present, future, and the
+#: temps a publication renames over them -- is covered, and a rename inside it never
+#: touches the mount point the mask sits on.
+_SECRET_REQUEST_POLICY_LEAF: str = "secret-request-policy"
+
 #: The md-notebook builtin's name, and its own state files under the crew data home.
 #: Named so the mask, the backend carve-out that lifts it, and the materialiser that
 #: gives it a mount target cannot drift apart on a literal.
@@ -374,6 +382,12 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     "kas",
     "ops_mission_control_secrets.json",
     "ops_mission_control_policy.json",
+    # The mediated-secret request directory: per Custom secret, the exact https origin
+    # the agent may reach with it, plus the key that signs that policy. Read ONLY by the
+    # host gateway and the owner CLI; the sandboxed tool forwards over loopback and
+    # never touches it. Masked, not read-only, like ``.vault``: a program that could
+    # read the key or write the policy would author its own egress allowlist.
+    _SECRET_REQUEST_POLICY_LEAF,
     # No producer and no consumer left in the tree; masked so a backup restore that
     # resurrects a stale file cannot make it readable either.
     ".kiro_cli_binary_trust.json",

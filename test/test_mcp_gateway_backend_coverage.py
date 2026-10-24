@@ -77,6 +77,7 @@ from kiro_crew.mcp_gateway.backend import (
     _PendingRequest,
     _strip_caller_meta,
 )
+from kiro_crew.mcp_gateway.backend_wire import _carry_tool_call_id
 
 # --- Pure request-shaping helpers -------------------------------------------
 
@@ -121,6 +122,32 @@ class TestFrameHelpers:
         assert out["params"]["_meta"]["progressToken"] == 7
         assert out["params"]["name"] == "t"
         assert "_meta" in msg["params"] and CALLER_META_KEY not in msg["params"]["_meta"]
+
+    def test_carry_tool_call_id_promotes_progress_token(self) -> None:
+        """The gateway carries the request's progressToken (kiro-cli's ACP
+        toolCallId) onto the caller so the authored block emits it as the
+        always-present correlation key."""
+        msg: dict[str, Any] = {
+            "method": "tools/call",
+            "params": {"_meta": {"progressToken": "toolu_9"}, "name": "t"},
+        }
+        carried = _carry_tool_call_id(CallerContext(session_key="s"), msg)
+        assert carried.tool_call_id == "toolu_9"
+        block = _inject_caller_meta(msg, carried)["params"]["_meta"][CALLER_META_KEY]
+        assert block["toolCallId"] == "toolu_9"
+
+    def test_carry_tool_call_id_is_noop_without_a_token(self) -> None:
+        """No progressToken: the caller is returned unchanged, so the backend's
+        own progressToken fallback (empty here) still applies."""
+        caller = CallerContext(session_key="s")
+        msg: dict[str, Any] = {"method": "tools/call", "params": {"name": "t"}}
+        assert _carry_tool_call_id(caller, msg) is caller
+        # A numeric token coerces to str, matching the backend reader.
+        msg_num: dict[str, Any] = {
+            "method": "tools/call",
+            "params": {"_meta": {"progressToken": 42}, "name": "t"},
+        }
+        assert _carry_tool_call_id(caller, msg_num).tool_call_id == "42"
 
     def test_strip_caller_meta_also_removes_a_forged_TENANT_block(self) -> None:
         """The nonce decides which namespace an unnamed co-tenant lands in.

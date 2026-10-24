@@ -27,7 +27,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Callable
 
-from kiro_crew import acp_tool_gate, permission_floor
+from kiro_crew import acp_tool_gate, mediated_request_capability, permission_floor
 from kiro_crew import sel as sel_module
 from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
@@ -313,12 +313,23 @@ async def approve_tool(
             grant_check()
 
         recheck["before_write"] = before_write
+    # The approval mints the single-use mediated-secret capability for this call
+    # (a no-op for every tool but the trusted kirocrew-secrets one). It is minted
+    # before the write so the harness can never run the call ahead of the grant,
+    # and revoked unless the answer actually went out: a withdrawn, expired or
+    # failed approval leaves the request pending with no claimable grant.
+    capability_session = getattr(self, "_session_key", "") or ""
+    capability_token = mediated_request_capability.mint_for_gate_event(
+        capability_session, gate_event
+    )
+    sent = False
     try:
         await self._send_response(
             request_id,
             {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": resolved_id}},
             **recheck,
         )
+        sent = True
     except GrantEnded:
         # Nothing was written: put the request back exactly as it was.
         if gate_events is not None and gate_event is not None:
@@ -331,6 +342,12 @@ async def approve_tool(
     except permission_floor.ApprovalWithdrawn:
         _restore_withdrawn(self, request_id, gate_event, recorded, pi_gate_tool)
         raise
+    finally:
+        # A token is only ever minted from a non-None gate event.
+        if capability_token and gate_event is not None and not sent:
+            mediated_request_capability.revoke_pending(
+                capability_session, gate_event.tool_call_id, capability_token
+            )
     return True
 
 
@@ -374,7 +391,13 @@ async def reject_tool(self: AcpClient, request_id: str | int) -> None:
     (kiro-cli), which kiro handles as an ordinary rejection.
     """
     recorded = self._permission_options.pop(request_id, None)
-    getattr(self, "_permission_gate_events", {}).pop(request_id, None)
+    gate_event = getattr(self, "_permission_gate_events", {}).pop(request_id, None)
+    # A deny (or cancel) invalidates any mediated-secret grant minted for this
+    # call id, so an approve-then-reject on the same id leaves nothing a reused id
+    # could claim. By call id, not token: the deny path holds no mint token.
+    mediated_request_capability.invalidate_for_gate_event(
+        getattr(self, "_session_key", "") or "", gate_event
+    )
     self._note_pi_gate_denied(request_id)
     # Read by the concurrent-prompt steer settle: this denial may end the turn
     # before a steer sent into it is read.

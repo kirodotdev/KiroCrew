@@ -77,6 +77,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # change it, so a zero-click fetch never carries what redaction removes.
         # Nothing it returns is redacted text, so it is a gate, not an egress sink.
         "dashboard/handlers/link_meta.py",
+        # Gate-side, same shape as link_meta: the mediated-secret dispatcher runs
+        # both redactors over every agent-supplied outbound value (URL, body,
+        # headers, query) only to REFUSE the request (`MediationError`) when either
+        # would change one, before the vault is ever read. Nothing it returns is
+        # redacted text (the response is a fixed withheld constant), so it is a
+        # refusal gate, not an egress sink.
+        "secrets_mediation/dispatch.py",
         # Validator only: a dashboard package's model field NAME is run through the
         # redactor and the package is REFUSED when the output differs, because a
         # field name is served in the package's `fields` list and written into the

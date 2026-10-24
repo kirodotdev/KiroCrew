@@ -40,6 +40,7 @@ from kiro_crew.mcp_gateway.backend_leases import (
 from kiro_crew.mcp_gateway.backend_wire import (
     TOOL_SURFACE_STUB_PREFIX,
     BackendGone,
+    _carry_tool_call_id,
     _inject_caller_meta,
     _inject_tenant_meta,
     _PendingRequest,
@@ -432,7 +433,12 @@ async def forward_from_stub(
         # inject the authoritative caller block when known.
         msg = _strip_caller_meta(msg)
         if self.supports_caller_identity and caller is not None:
-            msg = _inject_caller_meta(msg, caller)
+            # Carry the harness ACP toolCallId (kiro-cli sends it as the
+            # ``tools/call`` progressToken) through the gateway-authored caller
+            # block, so an identity-aware backend reads the SAME id the approval
+            # gate keyed its mediated-secret grant by. A call with no progress
+            # token leaves it empty, and that claim is refused fail-closed.
+            msg = _inject_caller_meta(msg, _carry_tool_call_id(caller, msg))
         if self.supports_caller_identity and tenant_nonce:
             msg = _inject_tenant_meta(msg, tenant_nonce)
         if retry_fid is not None:

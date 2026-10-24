@@ -682,6 +682,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # opens these paths directly rather than through this gate, so publishing keeps
     # working.
     "auth-store-staging",
+    # Mediated-secret signing key + owner-signed egress policy: writable, it would let an
+    # agent authorize its own origin. Only the gateway and owner CLI open it, directly.
+    "secret-request-policy",
     ".local_secret",
     # Durable channel transport state: Teams' conversation -> serviceUrl and
     # identity -> conversation maps, and Telegram's getUpdates cursor. Two shapes of

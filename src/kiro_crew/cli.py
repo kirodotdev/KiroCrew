@@ -505,6 +505,11 @@ def main() -> None:
     # chat: ``update_self`` and the card-backed asks).
     sub.add_parser("mcp-mate")
 
+    # mcp-secrets (MCP server -- the opt-in mediated-secret request tool: an agent
+    # granted ``@kirocrew-secrets`` may send a write to an owner-authorized origin
+    # with a Custom secret whose value never reaches the model).
+    sub.add_parser("mcp-secrets")
+
     # Builtin app MCP servers (spawned by the agent backend, not user-facing).
     # Only builtins that actually ship an ``mcp_server`` module get a verb —
     # ``_BUILTIN_NAMES`` is load-bearing for HTTP route registration and lists
@@ -894,6 +899,12 @@ def main() -> None:
     elif args.command == "mcp-mate":
         # Lazily imported for the same reason as the guide.
         importlib.import_module("kiro_crew.mcp_mate").run_mcp_server()
+    elif args.command == "mcp-secrets":
+        # Lazily imported like the other opt-in servers: the sandboxed forwarder
+        # pulls in requests (its loopback client), which the gateway boot path
+        # must not import just to exist. It does NOT import the vault -- the
+        # vault read happens host-side in the dashboard handler, never here.
+        importlib.import_module("kiro_crew.mcp_secrets").run_mcp_server()
     elif args.command.startswith("mcp-") and args.command[4:] in _BUILTIN_NAMES:
         # Registration gates this verb on _builtin_mcp_server_available, and
         # _run_app_mcp_server is the ONE dispatch-time spelling of "import the

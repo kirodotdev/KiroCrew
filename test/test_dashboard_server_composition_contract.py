@@ -430,6 +430,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.metrics": "_gauges",
     "kiro_crew.metrics.crew_log_export": "install_otel_crew_log_subscriber",
     "kiro_crew.page_cache": "read_now",
+    "kiro_crew.secrets_mediation.signing_root": "mint_mediation_signing_root",
     "kiro_crew.security": "redact_credentials redact_exfiltration_urls",
     "kiro_crew.sel": "sel",
     "kiro_crew.slack.handler": "load_voice_reply_config",
@@ -456,7 +457,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 92
+    assert len(expected) == 93
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

@@ -39,6 +39,7 @@ if TYPE_CHECKING:
         _kick_connections_warm_scavenge,
         _kick_display_verdicts,
         _kick_local_decision_model,
+        _kick_mediation_signing_root_mint,
         _kick_owner_only_sweep,
         _kick_pinned_order_load,
         _kick_session_search_index,
@@ -438,6 +439,8 @@ async def start_api_server(
     _kick_config_watch(app, state)
     _kick_local_decision_model(state)
     _kick_owner_only_sweep(state)
+    # Parity with start_dashboard: the mediated-secret signing root, post-bind.
+    _kick_mediation_signing_root_mint(state)
     _kick_display_verdicts(state)
 
     logger.info("API-only server listening on %s:%d", bind_addr, port)
