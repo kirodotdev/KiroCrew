@@ -8,6 +8,10 @@ import {
 import {
   ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent, ContextMenuItem,
 } from './ui/context-menu'
+import { useConnected } from '../hooks/useConnected'
+import { i18nT } from '../i18n/t'
+import { offlineMenuRow, offlineProps } from '../utils/offline'
+import { OfflineReasonRow } from './OfflineMenuReason'
 
 interface FolderMoveSubmenuProps {
   readonly folders: readonly ChatFolder[]
@@ -43,9 +47,9 @@ interface FolderMoveSubmenuProps {
    * would take the trigger out of the focus order and drop the tooltip with
    * `pointer-events-none`, leaving a screen-reader user no way to learn why.
    */
-  readonly offline?: boolean
-  /** Offline tooltip for the trigger; required in substance when `offline` is set. */
-  readonly offlineTitle?: string
+  /** Localized verb for the trigger tooltip and the destination rows' offline
+   *  tooltip and name. Defaults to the folder-move verb. */
+  readonly offlineVerb?: string
 }
 
 /**
@@ -70,7 +74,7 @@ interface FolderMoveSubmenuProps {
  *). `Item` is the Radix menu-item primitive of the hosting menu
  * family — items must match their parent menu's family.
  */
-export function FolderPickerItems({ folders, onPick, currentFolderId, rootLabel = 'No folder (root)', Item, sortMode = 'custom' }: {
+export function FolderPickerItems({ folders, onPick, currentFolderId, rootLabel = 'No folder (root)', Item, sortMode = 'custom', offlineVerb }: {
   readonly folders: readonly ChatFolder[]
   /** The sidebar's folder sort mode, so a CHAT-folder picker lists the tree in
    *  the order the sidebar draws. A prop rather than a hook read here because
@@ -81,19 +85,22 @@ export function FolderPickerItems({ folders, onPick, currentFolderId, rootLabel 
   readonly onPick: (folderId: string | null) => void
   readonly currentFolderId?: string | null
   readonly rootLabel?: string
-  readonly Item: React.ComponentType<{ title?: string; style?: React.CSSProperties; onSelect?: (event: Event) => void; children?: React.ReactNode }>
+  readonly offlineVerb?: string
+  readonly Item: React.ComponentType<{ title?: string; style?: React.CSSProperties; onSelect?: (event: Event) => void; offline?: boolean; 'aria-disabled'?: React.AriaAttributes['aria-disabled']; 'aria-label'?: string; children?: React.ReactNode }>
 }) {
+  const connected = useConnected()
+  const verb = offlineVerb ?? i18nT('utils.offline.move_folders')
   const atRoot = currentFolderId == null || currentFolderId === ''
   const ordered = orderFoldersWithPaths(folders, sortMode)
   return (
     <>
-      <Item title={rootLabel} onSelect={() => onPick(null)}>
+      <Item title={rootLabel} {...offlineMenuRow(connected, verb, rootLabel, () => onPick(null))}>
         <Folder size={13} className="text-muted shrink-0" />
         <span className="truncate">{rootLabel}</span>
         {atRoot && <Check size={13} className="ml-auto text-accent shrink-0" />}
       </Item>
       {ordered.map(({ folder: f, depth, path }) => (
-        <Item key={f.id} title={path} style={depth > 0 ? { paddingLeft: `${12 + depth * 16}px` } : undefined} onSelect={() => onPick(f.id)}>
+        <Item key={f.id} title={path} style={depth > 0 ? { paddingLeft: `${12 + depth * 16}px` } : undefined} {...offlineMenuRow(connected, verb, path, () => onPick(f.id))}>
           <Folder size={13} className="text-accent shrink-0" />
           {/* Two nested folders can share a name, and the indent that tells them
               apart is visual only. `title` shows the full path on pointer hover,
@@ -108,6 +115,7 @@ export function FolderPickerItems({ folders, onPick, currentFolderId, rootLabel 
           {currentFolderId === f.id && <Check size={13} className="ml-auto text-accent shrink-0" />}
         </Item>
       ))}
+      {!connected && <OfflineReasonRow testId="folder-move-offline-reason" className="px-2 py-1" message={i18nT('utils.offline.gateway_offline_reconnect', { action: verb })} />}
     </>
   )
 }
@@ -120,29 +128,30 @@ export default function FolderMoveSubmenu({
   label = 'Move to folder',
   rootLabel = 'No folder (root)',
   sortMode = 'custom',
-  offline = false,
-  offlineTitle,
+  offlineVerb,
 }: FolderMoveSubmenuProps) {
+  const connected = useConnected()
+  const gated = !connected
   // Pick the primitive family for this surface. Both families share the same
   // props shape, so the body below is identical regardless of variant.
   const Sub = variant === 'context' ? ContextMenuSub : DropdownMenuSub
   const SubTrigger = variant === 'context' ? ContextMenuSubTrigger : DropdownMenuSubTrigger
   const SubContent = variant === 'context' ? ContextMenuSubContent : DropdownMenuSubContent
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
+  const verb = offlineVerb ?? i18nT('utils.offline.move_folders')
 
   return (
     <Sub>
       <SubTrigger
-        className={offline ? 'text-muted opacity-40' : undefined}
-        aria-disabled={offline || undefined}
-        title={offline ? offlineTitle : undefined}
+        className={gated ? 'text-muted opacity-40' : undefined}
+        {...offlineProps(connected, verb, label)}
       >
         <Folder size={13} className="shrink-0 text-muted" />
         <span className="flex-1">{label}</span>
         <ChevronRight size={12} className="text-muted" />
       </SubTrigger>
       <SubContent className="min-w-[170px] max-h-[280px] overflow-y-auto">
-        <FolderPickerItems folders={folders} onPick={onPick} currentFolderId={currentFolderId} rootLabel={rootLabel} Item={Item} sortMode={sortMode} />
+        <FolderPickerItems folders={folders} onPick={onPick} currentFolderId={currentFolderId} rootLabel={rootLabel} Item={Item} sortMode={sortMode} offlineVerb={offlineVerb} />
       </SubContent>
     </Sub>
   )
