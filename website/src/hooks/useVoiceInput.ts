@@ -728,9 +728,18 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
     setSessionOwner(null)
   }, [streamEnabled, streamCancel, releaseWarm])
 
+  // Drop a stale owner once streaming is the transport and no session of any kind
+  // is in flight here. `streamEnabled` is the saved preference, not a first-hand
+  // signal, so it cannot stand in for "this hook owns a stream": it is equally
+  // true of a live BATCH capture while the preference says streaming. Flipping
+  // the preference to streaming under such a capture would otherwise fire this
+  // and null the owner of a recording that is still running — so the first-hand
+  // recorder flag has to be false too, for the same reason `stop()`, `cancel()`
+  // and `isRecording` route on the transport in flight rather than on the
+  // preference. Only then is there genuinely nothing to own.
   useEffect(() => {
-    if (streamEnabled && !streamRecording && !streamDraining && !startingRef.current) setSessionOwner(null)
-  }, [streamEnabled, streamRecording, streamDraining])
+    if (streamEnabled && !streamRecording && !streamDraining && !recording && !startingRef.current) setSessionOwner(null)
+  }, [streamEnabled, streamRecording, streamDraining, recording])
 
   /**
    * Whether THIS hook's own capture is live.
