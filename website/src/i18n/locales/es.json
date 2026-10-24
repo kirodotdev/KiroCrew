@@ -7964,6 +7964,9 @@
         "press_again_to_clear": "Pulsa de nuevo para borrar",
         "reject": "Rechazar",
         "search": "Buscar…",
+        "decided_clear_failed": "No se pudo descartar esta notificación. Para volver a intentarlo, pulsa su botón «{{button}}» en el feed.",
+        "decision_recorded": "Tu decisión se registró.",
+        "decision_failed_retry": "Es posible que esta decisión no se haya registrado porque la solicitud falló. Vuelve a intentarlo.",
         "show_less": "Mostrar menos",
         "show_muted_count": "Mostrar silenciadas ({{count}})",
         "try_a_different_search": "Prueba con otra búsqueda"
