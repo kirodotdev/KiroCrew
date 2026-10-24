@@ -752,6 +752,7 @@ def project(
     import json
 
     from kiro_crew.dashboard.chat_utils import _prepare_messages
+    from kiro_crew.security.exfil import allowed_host_use_unaudited
 
     rows = []
     for line in lines:
@@ -759,7 +760,8 @@ def project(
             row = json.loads(line)
             if isinstance(row, dict):
                 rows.append(row)
-    with session(history_key, record_all=True, preload=preload):
+    # Nobody is reading this render, so a restored link is not a use to audit.
+    with session(history_key, record_all=True, preload=preload), allowed_host_use_unaudited():
         _prepare_messages(rows, False, live_child="", workspace=workspace)
 
 
