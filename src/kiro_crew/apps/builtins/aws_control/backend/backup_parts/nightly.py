@@ -23,12 +23,14 @@ from kiro_crew.apps.builtins.aws_control.backend.backup_parts.identity import (
 from kiro_crew.apps.builtins.aws_control.backend.backup_parts.ledger import last_runs
 from kiro_crew.apps.builtins.aws_control.backend.backup_parts.state import (
     NIGHTLY_FAILURE_STATE_KEY,
+    NIGHTLY_NO_KEY_STATE_KEY,
     _account_state,
     _account_view,
     _held_runs,
     _locked_state_update,
     _run_is_newer,
     _run_lock,
+    read_state,
 )
 from kiro_crew.apps.builtins.aws_control.backend.backup_parts.traversal import (
     kind_unavailable_reason,
@@ -529,6 +531,155 @@ def _backoff_withholds(account: str, kind: str, now: Optional[dt.datetime]) -> b
         # lasts, with nothing in the state file an operator could read as the cause.
         return False
     return elapsed < delay
+
+
+def nightly_enabled_any_account() -> bool:
+    """Whether ANY connected account has the snapshot or sessions grant on.
+
+    The ``no working key`` skip is install-global and fires before any account
+    resolves, so it has no account to read a grant from -- but recording it for an
+    install that never asked for an unattended backup would be noise, not a signal.
+    So the record is written only when SOMETHING is scheduled: the owner turned on
+    nightly snapshots or nightly transcripts for at least one account. Reads the
+    same ``accounts`` map :func:`nightly_enabled` reads per account, through
+    :func:`read_state` so an unreadable file answers False (fail-closed: no claim
+    that a backup is scheduled when the state cannot be read).
+    """
+    state = read_state()
+    accounts = state.get("accounts")
+    if not isinstance(accounts, dict):
+        return False
+    for account in accounts:
+        if nightly_enabled(account) or nightly_sessions_enabled(account):
+            return True
+    return False
+
+
+def record_nightly_no_key_skip() -> bool:
+    """Record one wake skipped because no registered key resolved. Never raises.
+
+    Returns True when the CALLER should emit a WARNING for this skip, and False
+    when it should stay quiet. The loop wakes every half hour, so warning on each
+    wake would be 48 log lines a day for one standing condition; this returns True
+    only once per STREAK -- the first wake that finds the install with a working
+    key gone -- and False for every wake after, until :func:`clear_nightly_no_key_skip`
+    resets it. That is the ``at least one WARNING per skip streak (not one per
+    30-minute wake)`` the reported issue asks for.
+
+    The record is INSTALL-GLOBAL (top level, not under ``accounts``): the skip is
+    decided before any account is resolved. It carries ``since`` (when the streak
+    began, so a reader can say ``skipped since <date>``), ``at`` (the
+    latest wake) and ``consecutive`` (the streak length). A usable ``since`` is
+    CARRIED across wakes, so it keeps describing the day the key went away; an
+    unusable ``since`` is stamped at the current wake while a valid
+    ``consecutive`` keeps the streak count. ``at`` advances each wake.
+
+    Never raises, by the rule :func:`record_nightly_failure` follows on the same
+    document: this runs on a path already handling a skipped backup, and an
+    unwritable state file must not replace a logged skip with an unhandled error.
+    A skip that did not persist leaves the loop logging as it does today, which is
+    the safe direction.
+    """
+    now_iso = dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
+
+    def mutate(state: dict[str, Any]) -> bool:
+        previous = state.get(NIGHTLY_NO_KEY_STATE_KEY)
+        prev_streak = 0
+        since = now_iso
+        if isinstance(previous, dict):
+            held = previous.get("consecutive")
+            # ``type(...) is int`` not ``isinstance``, the spelling this module uses
+            # on ``sequence``/``consecutive``: ``True`` is an ``int`` subclass, so a
+            # corrupted document carrying a bool must not read as a previous wake.
+            if type(held) is int and held > 0:
+                prev_streak = held
+            carried = previous.get("since")
+            # Carry ``since`` only when it is a usable timestamp, validated the way
+            # ``_backoff_withholds`` validates ``at``. An unusable timestamp restamps
+            # ``since`` to this wake while a valid count keeps the streak, so a
+            # corrupt value can only under-report how long the nightly has skipped.
+            if prev_streak and isinstance(carried, str) and carried:
+                try:
+                    dt.datetime.fromisoformat(carried)
+                except ValueError:
+                    pass
+                else:
+                    since = carried
+        state[NIGHTLY_NO_KEY_STATE_KEY] = {
+            "consecutive": prev_streak + 1,
+            "since": since,
+            "at": now_iso,
+            # Fixed reason token, so the surface renders it in the reader's own
+            # language rather than a sentence chosen here.
+            "reason": "no_working_key",
+        }
+        # Warn only on the first wake of the streak.
+        return prev_streak == 0
+
+    try:
+        return bool(_locked_state_update(mutate))
+    except OSError as exc:
+        logger.warning(
+            "aws-control nightly: no working AWS key, and the skip could not be recorded: %s",
+            exc,
+        )
+        # Could not persist the streak, so the caller cannot rely on once-per-streak
+        # suppression; warn this wake rather than swallow a condition nobody can see.
+        return True
+
+
+def clear_nightly_no_key_skip() -> None:
+    """Drop the install-global no-working-key skip record. Never raises.
+
+    Called the moment a key resolves again (the loop reached an account), so the
+    streak and its ``since`` do not survive into a period when backups are working
+    again. A no-op when there is no record. Never raises, for the same reason
+    :func:`record_nightly_no_key_skip` does not: this runs on the healthy path and
+    an unwritable state file must not turn a recovered nightly into a crash. A
+    clear that did not land leaves a stale record the next wake overwrites or the
+    next success clears.
+    """
+
+    def mutate(state: dict[str, Any]) -> None:
+        state.pop(NIGHTLY_NO_KEY_STATE_KEY, None)
+
+    if NIGHTLY_NO_KEY_STATE_KEY not in read_state():
+        # The healthy path calls this on every wake. An unlocked display read
+        # answers the usual "no record" case, so that wake takes no lock and does
+        # not rewrite the state file; a record written after this read is cleared
+        # on the next wake.
+        return
+    try:
+        _locked_state_update(mutate)
+    except OSError as exc:
+        logger.warning(
+            "aws-control nightly: a working AWS key resolved but the stale "
+            "no-working-key skip record could not be cleared: %s",
+            exc,
+        )
+
+
+def nightly_no_key_skip() -> Optional[dict[str, Any]]:
+    """The install-global no-working-key skip record, or ``None``.
+
+    ``{"consecutive": int, "since": iso8601, "at": iso8601, "reason": str}`` while
+    the nightly loop is skipping every wake for want of a working key, and ``None``
+    once one resolves (the record is cleared). Served by the accounts read as
+    ``nightlyNoKeySkip``, so a caller can tell an operator their nightly has been
+    skipped since a particular day -- which neither ``runs`` (it records successes)
+    nor :func:`nightly_failures` (it is per account, and this skip has none) can say.
+    NO console renderer reads it: the surface is HTTP only, and the gateway log's
+    once-per-streak WARNING is the other place the skip appears.
+
+    Read under ``_run_lock`` and returned as a shallow copy, the way
+    :func:`nightly_failures` serves its rows, so a caller cannot mutate the live
+    state dict. A non-dict value reads as absent.
+    """
+    with _run_lock:
+        record = read_state().get(NIGHTLY_NO_KEY_STATE_KEY)
+        if not isinstance(record, dict):
+            return None
+        return dict(record)
 
 
 def due_for_nightly(account: str, now: Optional[dt.datetime] = None) -> bool:

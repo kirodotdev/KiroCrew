@@ -275,6 +275,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _drop_live_config_snapshot,
     _ensure_event_loop,
     _fake_computer_use_backend,
+    _fresh_aws_bin_dir_trust,
     _fresh_reexec_environment,
     _history_cleanup_throttle_closed,
     _inline_taskq_pump,

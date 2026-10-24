@@ -288,13 +288,50 @@ class TestRouteGates:
             mock.patch.object(
                 routes_mod.accounts_mod, "list_accounts", AsyncMock(return_value=snapshot)
             ) as listed,
+            mock.patch.object(routes_mod.backup_mod, "nightly_no_key_skip", return_value=None),
         ):
             resp = asyncio.run(
                 handlers[("GET", "/accounts")](_request("GET", "/accounts"))  # type: ignore[operator]
             )
         assert resp.status == 200
-        assert _payload(resp) == snapshot
+        assert _payload(resp) == {**snapshot, "nightlyNoKeySkip": None}
         listed.assert_awaited_once_with(refresh=False)
+
+    def test_accounts_adds_fresh_no_key_skip_without_mutating_snapshot(self, tmp_path, monkeypatch):
+        from kiro_crew.apps.builtins.aws_control.backend import backup as backup_mod
+
+        monkeypatch.setattr(backup_mod, "_state_path", lambda: tmp_path / "backup.json")
+        handlers = _registered()
+        snapshot = _snapshot_of(
+            _registry([_entry("broken", account=ACCOUNT)], default="broken"),
+            {"broken": _identity(False, detail="ExpiredToken")},
+        )
+        with (
+            mock.patch.object(routes_mod, "is_app_enabled", return_value=True),
+            mock.patch.object(
+                routes_mod.accounts_mod, "list_accounts", AsyncMock(return_value=snapshot)
+            ) as listed,
+        ):
+            first = asyncio.run(
+                handlers[("GET", "/accounts")](  # type: ignore[operator]
+                    _request("GET", "/accounts")
+                )
+            )
+            assert backup_mod.record_nightly_no_key_skip() is True
+            record = backup_mod.nightly_no_key_skip()
+            second = asyncio.run(
+                handlers[("GET", "/accounts")](  # type: ignore[operator]
+                    _request("GET", "/accounts")
+                )
+            )
+
+        assert first.status == 200
+        assert _payload(first)["nightlyNoKeySkip"] is None
+        assert second.status == 200
+        assert _payload(second)["nightlyNoKeySkip"] == record
+        assert snapshot["accounts"][0]["profiles"][0]["identityOk"] is False
+        assert "nightlyNoKeySkip" not in snapshot
+        assert listed.await_args_list == [mock.call(refresh=False), mock.call(refresh=False)]
 
     def test_accounts_refresh_param_bypasses_cache(self):
         handlers = _registered()
@@ -632,6 +669,134 @@ class TestConsentTargetTracksTheOperation:
         probe.assert_not_called()
         due.assert_not_called()
         sdk.start_async.assert_not_called()
+
+    def test_a_skipped_nightly_with_no_key_is_recorded_and_warns_once_per_streak(
+        self, tmp_path, monkeypatch
+    ):
+        """A nightly the owner enabled, skipped for want of a key, is VISIBLE.
+
+        With no healthy key the loop skips before any account resolves. When a
+        nightly IS scheduled it records an install-global skip the accounts read
+        serves as ``nightlyNoKeySkip`` and warns once per streak, instead of
+        one unread INFO per wake.
+        """
+        from kiro_crew.apps.builtins.aws_control import hooks
+        from kiro_crew.apps.builtins.aws_control.backend import backup as backup_mod
+
+        monkeypatch.setattr(backup_mod, "_state_path", lambda: tmp_path / "backup.json")
+        # The owner turned a nightly on for some account.
+        backup_mod.set_nightly(self.ACCOUNT, True)
+
+        snapshot = _snapshot_of(
+            _registry([_entry("broken", account=self.ACCOUNT)], default="broken"),
+            {"broken": _identity(False, detail="ExpiredToken")},
+        )
+        sdk = mock.Mock(start_async=AsyncMock())
+        with (
+            mock.patch.object(accounts_mod, "list_accounts", AsyncMock(return_value=snapshot)),
+            mock.patch.object(hooks.logger, "warning") as warn,
+        ):
+            asyncio.run(hooks._run_once(sdk))  # first wake of the streak
+            asyncio.run(hooks._run_once(sdk))  # second wake, same streak
+
+        # The skip is now a record the accounts read serves, not nothing.
+        row = backup_mod.nightly_no_key_skip()
+        assert row is not None
+        assert row["consecutive"] == 2
+        assert row["reason"] == "no_working_key"
+        sdk.start_async.assert_not_called()
+        # Warned on the FIRST wake only, not once per wake.
+        assert warn.call_count == 1
+
+    def test_no_skip_is_recorded_when_no_nightly_is_scheduled(self, tmp_path, monkeypatch):
+        """An install that never enabled a nightly must stay silent on a no-key wake."""
+        from kiro_crew.apps.builtins.aws_control import hooks
+        from kiro_crew.apps.builtins.aws_control.backend import backup as backup_mod
+
+        monkeypatch.setattr(backup_mod, "_state_path", lambda: tmp_path / "backup.json")
+        snapshot = _snapshot_of(
+            _registry([_entry("broken", account=self.ACCOUNT)], default="broken"),
+            {"broken": _identity(False, detail="ExpiredToken")},
+        )
+        with mock.patch.object(accounts_mod, "list_accounts", AsyncMock(return_value=snapshot)):
+            asyncio.run(hooks._run_once(mock.Mock(start_async=AsyncMock())))
+        assert backup_mod.nightly_no_key_skip() is None
+
+    def test_a_no_key_wake_with_nothing_scheduled_clears_a_standing_skip(
+        self, tmp_path, monkeypatch
+    ):
+        """With no nightly scheduled, a no-key wake drops a standing skip record.
+
+        The accounts read stops serving ``nightlyNoKeySkip``, and a nightly turned on
+        later starts a fresh streak whose first no-key wake warns.
+        """
+        from kiro_crew.apps.builtins.aws_control import hooks
+        from kiro_crew.apps.builtins.aws_control.backend import backup as backup_mod
+
+        monkeypatch.setattr(backup_mod, "_state_path", lambda: tmp_path / "backup.json")
+        backup_mod.set_nightly(self.ACCOUNT, True)
+        backup_mod.record_nightly_no_key_skip()  # a streak was standing
+        backup_mod.set_nightly(self.ACCOUNT, False)  # then the owner turned it off
+        assert backup_mod.nightly_no_key_skip() is not None
+
+        snapshot = _snapshot_of(
+            _registry([_entry("broken", account=self.ACCOUNT)], default="broken"),
+            {"broken": _identity(False, detail="ExpiredToken")},
+        )
+        sdk = mock.Mock(start_async=AsyncMock())
+        with (
+            mock.patch.object(accounts_mod, "list_accounts", AsyncMock(return_value=snapshot)),
+            mock.patch.object(hooks.logger, "warning") as warn,
+        ):
+            asyncio.run(hooks._run_once(sdk))
+            assert backup_mod.nightly_no_key_skip() is None
+            warn.assert_not_called()
+
+            backup_mod.set_nightly(self.ACCOUNT, True)  # turned on again, still no key
+            asyncio.run(hooks._run_once(sdk))
+
+        row = backup_mod.nightly_no_key_skip()
+        assert row is not None
+        assert row["consecutive"] == 1
+        assert warn.call_count == 1
+        sdk.start_async.assert_not_called()
+
+    def test_a_resolved_key_clears_a_standing_no_key_skip(self, tmp_path, monkeypatch):
+        """Once a key resolves again the standing skip record is dropped.
+
+        The clear runs the moment the account resolves, before the consent gate,
+        so even a wake that then stops at consent clears a stale skip.
+        """
+        from kiro_crew.apps.builtins.aws_control import hooks
+        from kiro_crew.apps.builtins.aws_control.backend import backup as backup_mod
+
+        monkeypatch.setattr(backup_mod, "_state_path", lambda: tmp_path / "backup.json")
+        backup_mod.set_nightly(self.ACCOUNT, True)
+        backup_mod.record_nightly_no_key_skip()  # a streak was standing
+        assert backup_mod.nightly_no_key_skip() is not None
+
+        snapshot = _snapshot_of(
+            _registry([_entry("good", account=self.ACCOUNT)], default="good"),
+            {"good": _identity(True, account=self.ACCOUNT, arn="arn:good")},
+        )
+
+        async def refuse_and_log(service, *, profile, region):
+            return False  # stop before any AWS work; the clear already ran
+
+        with (
+            mock.patch.object(accounts_mod, "list_accounts", AsyncMock(return_value=snapshot)),
+            mock.patch.object(
+                hooks.aws_consent,
+                "probe_identity",
+                AsyncMock(return_value=aws_consent.Identity(ok=True, account=self.ACCOUNT)),
+            ),
+            mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=True),
+            mock.patch.object(hooks.backup_mod, "due_for_sessions_nightly", return_value=False),
+            mock.patch.object(hooks.aws_consent, "refuse_and_log", refuse_and_log),
+        ):
+            asyncio.run(hooks._run_once(mock.Mock(start_async=AsyncMock())))
+
+        assert backup_mod.nightly_no_key_skip() is None
 
     def test_the_voice_services_do_not_touch_the_account_snapshot(self):
         """Polly and Transcribe read their own config; only s3/ce use the registry."""

@@ -89,6 +89,7 @@ class TestRunAws:
         head = str(bin_dir / "aws")
         monkeypatch.setattr(aws, "resolve_aws_bin", lambda: head)
         monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(bin_dir),))
+        monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ((str(bin_dir), str(bin_dir)),))
         monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
         monkeypatch.setattr(aws, "wrap_argv", lambda argv, mode: (argv, ""))
         monkeypatch.setattr(aws, "cgroup_scope_argv", lambda argv: argv)
