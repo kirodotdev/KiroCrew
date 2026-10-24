@@ -415,6 +415,23 @@ KAS_CLIENT_CAPABILITIES: dict = {
     "_meta": {"kiro": {"settings": {}, "openExternalUrl": True}},
 }
 
+# codex-acp gives each native subagent its own ACP session only when the client
+# declares ``clientCapabilities.subagents``. Without it the adapter flattens the
+# child into generic "Start subagent" tool rows on the parent and sends none of
+# the child's own work. The handlers this declaration promises are
+# ``session_handle_native_children._handle_announced_subagent`` (the lifecycle
+# frames) and the runtime's announced-child route (the child's own frames).
+#
+# Adapters built on ACP SDK 1.x drop the key while parsing ``initialize``, so on
+# those the declaration is inert and the legacy activity rows are read instead
+# (``_handle_legacy_codex_subagent``). The adapter's other opt-in, JetBrains
+# AIR's private ``_meta`` capability, is not sent: it turns on the rest of AIR's
+# private contract as well.
+CODEX_CLIENT_CAPABILITIES: dict = {
+    **ACP_CLIENT_CAPABILITIES,
+    "subagents": {},
+}
+
 # ── Claude backend permission modes ──
 # Values written into a per-session settings.local.json
 # ``permissions.defaultMode`` for the ``ACP_BACKEND_CLAUDE`` backend.
@@ -450,6 +467,14 @@ UPDATE_CURRENT_MODE = "current_mode_update"
 UPDATE_CONFIG_OPTION = "config_option_update"
 UPDATE_SESSION_INFO = "session_info_update"
 UPDATE_USAGE = "usage_update"
+# A native subagent's lifecycle, sent on its PARENT's session (codex-acp, after
+# ``clientCapabilities.subagents``): ``subagent_spawned`` and
+# ``subagent_state_update``, keyed on ``subagentSessionId``.
+UPDATE_SUBAGENT_SPAWNED = "subagent_spawned"
+UPDATE_SUBAGENT_STATE = "subagent_state_update"
+SUBAGENT_LIFECYCLE_UPDATES = frozenset({UPDATE_SUBAGENT_SPAWNED, UPDATE_SUBAGENT_STATE})
+#: The ``subagent_state_update.state`` values that end a codex-acp 2.2.x child.
+SUBAGENT_TERMINAL_STATES = frozenset({"completed", "failed", "cancelled", "disconnected"})
 
 # Updates we recognise but don't yet surface (plumbing-only). Listed here so the
 # "unhandled session update" log doesn't fire for them.

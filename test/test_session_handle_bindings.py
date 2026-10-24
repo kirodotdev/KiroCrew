@@ -53,6 +53,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_advertised_model_ids": ("function", False, "6806e867af4e", "session_handle_model_selection"),
     "_answer_kas_hook_execute": ("function", True, "b922d8462af7", "session_handle_kas"),
     "_answer_kas_hooks_request": ("function", True, "87459833bc5c", "session_handle_kas"),
+    "_announced_row": ("function", False, "e6c5ee661479", "session_handle_native_children"),
     "_apply_init_notification": ("function", False, "ac6a24522ec0", "session_handle_mcp"),
     "_apply_kas_context_pct": ("function", False, "386e4643466b", "session_handle_kas"),
     "_apply_kas_turn_completion": ("function", False, "7f31b87afeac", "session_handle_kas"),
@@ -86,6 +87,12 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_emit_watchdog_metric": ("function", False, "8cf581201a27", "session_handle_watchdog"),
     "_end_human_wait": ("function", False, "b60c5fea256e", "session_handle_watchdog"),
     "_end_stalled_tool": ("function", "agen", "1fcba2664f9e", "session_handle_watchdog"),
+    "_handle_announced_subagent": (
+        "function",
+        False,
+        "c1db800dea61",
+        "session_handle_native_children",
+    ),
     "_handle_kas_session_info": ("function", False, "f3c17ef22460", "session_handle_kas"),
     "_handle_kas_subagent": ("function", False, "5f796c64544c", "session_handle_native_children"),
     "_handle_kas_subagent_chunk": (
@@ -95,6 +102,12 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "session_handle_native_children",
     ),
     "_handle_kas_update": ("function", False, "761fcd4d2d41", "session_handle_kas"),
+    "_handle_legacy_codex_subagent": (
+        "function",
+        False,
+        "5f796c64544c",
+        "session_handle_native_children",
+    ),
     "_handle_update": ("function", False, "74878d3f1402", "session_handle_updates"),
     "_identity_unreadable_cache_for_wire": (
         "function",
@@ -162,6 +175,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_remote_flat_launches": ("function", False, "b809e9b1faeb", "session_handle_mcp"),
     "_report_evicted_attributions": ("function", False, "b60c5fea256e", "session_handle_updates"),
     "_restore_withdrawn": ("function", False, "491a23344d9c", "session_handle_permissions"),
+    "_roster_event": ("function", False, "58ee5ea89856", "session_handle_native_children"),
     "_retire_liveness_state": ("function", False, "b60c5fea256e", "session_handle_watchdog"),
     "_run_turn": ("function", "agen", "b55fe99c131a", "session_handle_turn"),
     "_runtime_idle_secs": ("function", False, "59162e39f6f1", "session_handle_watchdog"),

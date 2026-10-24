@@ -7,9 +7,10 @@ Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` 
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_abandoned_prompt_id``, ``_awaiting_permission``, ``_between_turn_credits``,
+Instance fields written: ``_abandoned_prompt_id``, ``_announced_subagent_roster``,
+``_awaiting_permission``, ``_between_turn_credits``,
 ``_cancel_ts``, ``_cancelled``, ``_compaction_terminal_seen``, ``_input_wait_emitted``,
-``_kas_compact_turn``, ``_kas_subagent_roster``, ``_last_stop_reason``,
+``_kas_compact_turn``, ``_kas_subagent_roster``, ``_last_stop_reason``, ``_legacy_subagent_tool_ids``,
 ``_native_child_overflow``, ``_native_child_sids``, ``_native_child_tool_call_ids``,
 ``_parked_since``, ``_parked_total``, ``_pending_reject_notices``,
 ``_permission_gate_events``, ``_permission_options``, ``_prompt_starts``,
@@ -391,6 +392,11 @@ async def _run_turn(
     # which the fresh per-turn _native_tracker resurrects as a duplicate
     # spawn/done card — and the roster would grow unbounded for the session.
     self._kas_subagent_roster.clear()
+    # Same reset for codex's announced children. A child continued in a later
+    # turn is announced again (codex-acp gives it a new generation id), so it
+    # gets a fresh card instead of a resurrected one.
+    self._announced_subagent_roster.clear()
+    self._legacy_subagent_tool_ids.clear()
 
     # Drain frames left over from a prior abandoned turn. The cancel-unacked
     # / stale / tool-stall / timeout paths synthesize a terminal

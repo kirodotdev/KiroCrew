@@ -142,7 +142,7 @@ from kiro_crew.acp.harness.base import (
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
-    ACP_CLIENT_CAPABILITIES,
+    CODEX_CLIENT_CAPABILITIES,
     METHOD_SESSION_CLOSE,
     METHOD_SESSION_UPDATE,
 )
@@ -372,7 +372,13 @@ class CodexHarness(MembershipHarness):
 
     @property
     def client_capabilities(self) -> dict[str, Any]:
-        return ACP_CLIENT_CAPABILITIES
+        """The shared declaration plus ``subagents``.
+
+        ``subagents`` is what makes codex-acp give each native subagent its own
+        ACP session, announced on the parent and streamed under the child's id.
+        The constant's comment names the handlers it promises.
+        """
+        return CODEX_CLIENT_CAPABILITIES
 
     # ── Seam 3: session/new and session/load extras ──
 
@@ -468,8 +474,9 @@ class CodexHarness(MembershipHarness):
     def notification_aliases(self) -> NotificationAliases:
         """Plain ACP, with no forked spellings.
 
-        ``session/update`` only: codex sends no ``_kiro.dev`` alias, announces no
-        subagent roster, and stages no MCP-init frame. Declared explicitly rather
+        ``session/update`` only: codex sends no ``_kiro.dev`` alias, sends no
+        ownerless subagent roster (each child is announced by a ``session/update``
+        on its parent's session instead), and stages no MCP-init frame. Declared explicitly rather
         than inherited from the kiro family, whose ``_kiro.dev/*`` vocabulary exists
         because KAS is reached THROUGH kiro-cli's relay -- codex is not.
         """
