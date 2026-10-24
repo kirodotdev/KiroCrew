@@ -890,6 +890,127 @@ class TestSpawnMasks:
         assert not hasattr(harness_mod, "resolve_mask_only")
 
 
+class TestMacosNestedSandboxRefusal:
+    """macOS + Codex under Crew's Seatbelt is refused BEFORE the spawn.
+
+    Codex applies its own Seatbelt (``sandbox-exec``) per command; nested inside
+    Crew's Seatbelt macOS refuses the second ``sandbox_apply`` and every command
+    fails with exit 71. The refusal is deterministic from the platform and the
+    resolved backend, so it happens here rather than as a spawn whose every
+    command then fails.
+    """
+
+    @pytest.mark.asyncio
+    async def test_macos_with_crew_seatbelt_is_refused_before_the_spawn(self, monkeypatch):
+        """Fails on main (no guard -> proceeds to resolve/spawn); passes here.
+
+        Both seams are mocked: the platform reads ``darwin`` and ``detect_backend``
+        reports Crew's macOS Seatbelt is the layer that would wrap. The bin
+        resolver is a spy that must never be reached, proving the refusal is
+        BEFORE any spawn work.
+        """
+        from kiro_crew.acp import client as client_mod
+        from kiro_crew.acp.transport_errors import AcpCodexNestedSandbox
+
+        monkeypatch.setattr(harness_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(harness_mod, "effective_sandbox_mode", lambda m: m)
+        monkeypatch.setattr(harness_mod, "detect_backend", lambda _mode: "sandbox-exec")
+        resolver = MagicMock(return_value=(["/n/node", "/p/index.js"], "/s"))
+        monkeypatch.setattr(client_mod, "_resolve_codex_acp_bin", resolver)
+
+        with pytest.raises(AcpCodexNestedSandbox) as exc:
+            await CodexHarness().resolve_spawn(_ctx())
+
+        resolver.assert_not_called()
+        message = str(exc.value)
+        assert "exit 71" in message
+        assert "sandbox_apply" in message
+        # Non-retryable and a curated terminal message. Deliberately NOT tagged
+        # session_start_failed: that tag renders the start-timeout card (Resume /
+        # "restart the gateway"), which contradicts this message's own "Retrying
+        # cannot fix this" -- the same reason AcpDelegateLaunchFailed avoids it.
+        assert exc.value.transient is False
+        assert exc.value.user_worded is True
+        assert getattr(exc.value, "session_start_failed", False) is False
+        # It names NO switch that turns a sandbox off.
+        assert "agent.sandbox off" not in message
+        assert '"sandbox": false' not in message
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_is_classified_non_retryable_for_every_decider(self):
+        """One assertion through the shared predicate every consumer reads."""
+        from kiro_crew.acp.transport_errors import AcpCodexNestedSandbox
+        from kiro_crew.llm_helpers import acp_error_is_transient
+
+        assert acp_error_is_transient(AcpCodexNestedSandbox()) is False
+
+    @pytest.mark.asyncio
+    async def test_linux_is_untouched(self, monkeypatch, mask_resolved):
+        """The namespace backend on Linux nests differently and is out of scope here."""
+        from kiro_crew.acp import client as client_mod
+
+        monkeypatch.setattr(harness_mod.sys, "platform", "linux")
+        monkeypatch.setattr(harness_mod, "effective_sandbox_mode", lambda m: m)
+        monkeypatch.setattr(harness_mod, "detect_backend", lambda _mode: "namespace")
+        with patch.object(
+            client_mod, "_resolve_codex_acp_bin", return_value=(["/n/node", "/p/index.js"], "/s")
+        ):
+            plan = await CodexHarness().resolve_spawn(_ctx())
+        assert plan.argv == ["/n/node", "/p/index.js"]
+
+    @pytest.mark.asyncio
+    async def test_the_off_tier_on_macos_is_not_refused(self, monkeypatch, mask_resolved):
+        """A genuinely-off tier means no Crew Seatbelt wraps, so nothing nests.
+
+        ``effective_sandbox_mode`` leaves ``off`` as ``off`` (no governance floor),
+        and ``detect_backend("off")`` is ``"none"``, so the guard does not fire and
+        the spawn proceeds like any unwrapped one.
+        """
+        from kiro_crew.acp import client as client_mod
+
+        monkeypatch.setattr(harness_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(harness_mod, "effective_sandbox_mode", lambda m: m)
+        monkeypatch.setattr(
+            harness_mod, "detect_backend", lambda mode: "none" if mode == "off" else "sandbox-exec"
+        )
+        with patch.object(
+            client_mod, "_resolve_codex_acp_bin", return_value=(["/n/node", "/p/index.js"], "/s")
+        ):
+            plan = await CodexHarness().resolve_spawn(_ctx(sandbox_mode="off"))
+        assert plan.argv == ["/n/node", "/p/index.js"]
+
+    @pytest.mark.asyncio
+    async def test_a_governed_floor_raises_off_and_is_still_refused(self, monkeypatch):
+        """The edge case: ``agent.sandbox=off`` UNDER a governed ``sandbox.min_level``.
+
+        A governance floor silently raises ``off`` to (say) ``standard``, so
+        ``wrap_argv`` still wraps codex-acp in Crew's Seatbelt and every command
+        would hit exit 71. The guard must read the FLOOR-APPLIED tier
+        (``effective_sandbox_mode``), not the raw ``off`` config value -- reading
+        the raw value would answer ``detect_backend("off") == "none"`` and let the
+        doomed session start. The bin resolver must never be reached.
+        """
+        from kiro_crew.acp import client as client_mod
+        from kiro_crew.acp.transport_errors import AcpCodexNestedSandbox
+
+        monkeypatch.setattr(harness_mod.sys, "platform", "darwin")
+        # The governed floor clamps the raw ``off`` up to ``standard``.
+        monkeypatch.setattr(
+            harness_mod, "effective_sandbox_mode", lambda m: "standard" if m == "off" else m
+        )
+        # detect_backend keyed on the tier it is HANDED: raw off would be none,
+        # the floor-applied standard is Crew's macOS Seatbelt.
+        monkeypatch.setattr(
+            harness_mod, "detect_backend", lambda mode: "none" if mode == "off" else "sandbox-exec"
+        )
+        resolver = MagicMock(return_value=(["/n/node", "/p/index.js"], "/s"))
+        monkeypatch.setattr(client_mod, "_resolve_codex_acp_bin", resolver)
+
+        with pytest.raises(AcpCodexNestedSandbox):
+            await CodexHarness().resolve_spawn(_ctx(sandbox_mode="off"))
+        resolver.assert_not_called()
+
+
 class TestReclaimIsScopedToTheCore:
     """The ceiling and the scope are one decision, so they are pinned together."""
 

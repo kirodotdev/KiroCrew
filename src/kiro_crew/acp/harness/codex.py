@@ -41,12 +41,20 @@ thread on it. On a per-session adapter that is one user's session. Here it is EV
 session on the process. Nothing in this module sends ``providers/set``, and nothing
 should start sending it per session.
 
-Codex is confined by Crew's sandbox and by nothing else
-------------------------------------------------------
+Codex is confined by Crew's sandbox, and applies its own on top
+---------------------------------------------------------------
 ``ACP_BACKENDS_INTERNAL_SANDBOX`` does not name codex, so :attr:`internal_sandbox`
-is False and Crew's own seatbelt/bubblewrap wrapper is the only OS confinement a
-codex session gets. The Codex sandbox modes the adapter can apply are in-process
-policy, not an OS sandbox Crew's could nest inside.
+is False and Crew's own seatbelt/bubblewrap wrapper is the OS confinement a codex
+session gets. Codex ALSO applies its own OS sandbox per command, and on macOS it
+does so with ``/usr/bin/sandbox-exec`` (a Seatbelt profile) -- NOT an in-process
+policy Crew's wrapper could ignore. Two Seatbelt sandboxes do not nest: macOS
+refuses a second ``sandbox_apply`` inside an active one, so a codex session wrapped
+by Crew's macOS Seatbelt would fail every command with
+``sandbox-exec: sandbox_apply: Operation not permitted`` and exit 71. That
+combination is therefore refused BEFORE the spawn -- see :meth:`resolve_spawn`,
+which raises :class:`~kiro_crew.acp.transport_errors.AcpCodexNestedSandbox` on
+macOS when ``detect_backend`` reports Crew's Seatbelt would wrap. Linux (where
+Crew's namespace launcher is the layer) and other tiers are unaffected.
 
 Crew's tool gate ENFORCES codex, so the spawn carries a credential mask on its
 ``SpawnPlan``. For an enforced host that mask is the only thing between a
@@ -126,6 +134,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -147,7 +156,7 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_UPDATE,
 )
 from kiro_crew.providers.mirrors.codex import drop_unadvertised_transports
-from kiro_crew.sandbox import detect_backend
+from kiro_crew.sandbox import detect_backend, effective_sandbox_mode
 
 __all__ = ["PROTOCOL_VERSION_CODEX", "CodexHarness"]
 
@@ -269,6 +278,38 @@ class CodexHarness(MembershipHarness):
         # module scope.
         from kiro_crew.acp import client as client_mod
         from kiro_crew.acp.session_handle import AcpRuntimeError
+        from kiro_crew.acp.transport_errors import AcpCodexNestedSandbox
+
+        # macOS nested-Seatbelt refusal, BEFORE the spawn. On macOS Codex enforces
+        # its own sandbox policy by running each command under ``sandbox-exec``
+        # (a Seatbelt profile). codex is not in ``ACP_BACKENDS_INTERNAL_SANDBOX``,
+        # so Crew wraps this process in its OWN Seatbelt (see ``launch.py``), and
+        # macOS refuses a second ``sandbox_apply`` inside an active sandbox: every
+        # command would die with ``sandbox_apply: Operation not permitted`` /
+        # exit 71. This is deterministic from the platform and the resolved
+        # backend, so it is refused here rather than paid for as a spawn whose
+        # every command then fails.
+        #
+        # The backend is resolved from the tier ``wrap_argv`` will ACTUALLY apply
+        # -- ``effective_sandbox_mode``, which clamps the raw ``ctx.sandbox_mode``
+        # up to any governed ``sandbox.min_level`` floor -- NOT the raw config
+        # value. A governed macOS host with ``agent.sandbox=off`` under a
+        # ``standard`` floor still gets Crew's Seatbelt from ``wrap_argv``, and
+        # ``detect_backend("off")`` would answer ``"none"`` and miss it. On the
+        # effective tier ``detect_backend`` returns ``"sandbox-exec"`` only when
+        # Crew's macOS Seatbelt is the backend that WOULD wrap (``"none"`` for a
+        # genuinely-off tier, ``"namespace"`` on Linux), so Linux, Windows, a
+        # truly-off tier, and every other harness are untouched. Both reads run
+        # OFF the event loop (the floor resolve may walk governance profiles and a
+        # cold ``detect_backend`` cache shells out to ``sandbox-exec`` with a
+        # timeout, which ``warm_backend`` does not warm off Linux) -- the same
+        # thread-hop ``_sandbox_wrapper_generations`` below already uses.
+        if sys.platform == "darwin":
+            backend = await asyncio.to_thread(
+                lambda: detect_backend(effective_sandbox_mode(ctx.sandbox_mode))
+            )
+            if backend == "sandbox-exec":
+                raise AcpCodexNestedSandbox()
 
         argv, search_path = await asyncio.to_thread(client_mod._resolve_codex_acp_bin)
         if not argv:
