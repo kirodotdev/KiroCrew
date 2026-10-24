@@ -20,11 +20,14 @@ import pytest
 import yaml
 from ai_review_workflows_helpers import (
     _SCOPE_LANES,
+    DROPPED_IP_WINDOW,
     ROOT,
     _bash,
     _child_env,
+    _dropped_ip_stubs,
     _proc_log,
     _prompt,
+    _slept,
     _step_by_name,
     _step_script,
     _workflow,
@@ -1096,7 +1099,13 @@ class TestPerHeadMonotonicFloor:
     """
 
     def _stub_dir(
-        self, tmp_path: Path, checkruns: str | None, *, gh_fail: bool, floor_rc: int = 0
+        self,
+        tmp_path: Path,
+        checkruns: str | None,
+        *,
+        gh_fail: bool,
+        floor_rc: int = 0,
+        refuse_window: int = 0,
     ) -> Path:
         stub = tmp_path / "stub"
         stub.mkdir(exist_ok=True)
@@ -1121,18 +1130,15 @@ class TestPerHeadMonotonicFloor:
         fixture = tmp_path / "checkruns.json"
         body = '{"total_count":0,"check_runs":[]}' if checkruns is None else checkruns
         fixture.write_text(body, encoding="utf-8")
-        gh = stub / "gh"
-        gh.write_text(
-            "#!/usr/bin/env bash\n"
-            + ("exit 1\n" if gh_fail else "")
+        answer = (
+            ("exit 1\n" if gh_fail else "")
             + 'if [ "$1" = "api" ]; then\n'
-            f'  cat "{fixture}"\n'
-            "  exit 0\n"
-            "fi\n"
-            "exit 0\n",
-            encoding="utf-8",
+            + f'  cat "{fixture}"\n'
+            + "  exit 0\n"
+            + "fi\n"
+            + "exit 0"
         )
-        gh.chmod(0o755)
+        _dropped_ip_stubs(tmp_path, answer, window=refuse_window, bin_dir=stub)
         return stub
 
     # ---- same-repo lane: a separate step whose exit code is the floor ---------
@@ -1223,11 +1229,14 @@ class TestPerHeadMonotonicFloor:
         gh_fail: bool = False,
         floor_rc: int = 0,
         model: str = "PASS",
+        refuse_window: int = 0,
     ) -> tuple[int, dict[str, str], str]:
         bash = _bash()
         if bash is None or shutil.which("jq") is None:
             pytest.skip("the decide step is Bash and encodes the check name with jq")
-        stub = self._stub_dir(tmp_path, checkruns, gh_fail=gh_fail, floor_rc=floor_rc)
+        stub = self._stub_dir(
+            tmp_path, checkruns, gh_fail=gh_fail, floor_rc=floor_rc, refuse_window=refuse_window
+        )
         review = tmp_path / "scope-review-output.md"
         review.write_text(
             f"Scope-Verdict: {model}\n\n[SCOPE-REVIEWED] {_SCOPE_HEAD}\n", encoding="utf-8"
@@ -1289,6 +1298,13 @@ class TestPerHeadMonotonicFloor:
         rc, out, log = self._run_fork_decide(tmp_path, gh_fail=True)
         assert rc == 0, log
         assert out.get("conclusion") == "failure", out
+        assert _slept(tmp_path) == [5, 10, 20, 40]
+
+    def test_fork_prior_read_outlasts_a_dropped_ip_for_one_dns_ttl(self, tmp_path: Path) -> None:
+        rc, out, log = self._run_fork_decide(tmp_path, refuse_window=DROPPED_IP_WINDOW)
+        assert rc == 0, log
+        assert out.get("conclusion") == "success", out
+        assert _slept(tmp_path) == [5, 10, 20, 40]
 
     def test_fork_only_this_prs_prior_sets_the_floor(self, tmp_path: Path) -> None:
         # A failure row from ANOTHER PR on a shared head must not floor this PR.

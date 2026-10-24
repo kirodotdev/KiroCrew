@@ -98,18 +98,19 @@ jobs:
           # Bounded retry: a single-shot `gh api` aborts on a transient TLS/5xx
           # and this lane would then report "no such PR" -- the wrong cause, on a
           # PR that exists. Same convention as the other fork lanes.
+          # 75s of backoff outlasts harden-runner refusing a dropped api.github.com IP for one DNS TTL.
           gh_read() {
             local attempt rc=1 out
-            for attempt in 1 2 3; do
+            for attempt in 1 2 3 4 5; do
               if out="$("$@")"; then
                 printf '%s' "$out"
                 return 0
               else
                 rc=$?
               fi
-              if [ "$attempt" -lt 3 ]; then
+              if [ "$attempt" -lt 5 ]; then
                 echo "resolver query attempt $attempt failed; retrying" >&2
-                sleep $((attempt * 5))
+                sleep $((5 << (attempt - 1)))
               fi
             done
             return "$rc"
@@ -132,7 +133,7 @@ jobs:
           # privileged.
           if ! rows="$(gh_read gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
                         --jq '.[] | [.number, .head.sha, .head.repo.full_name // "", .head.ref] | @tsv')"; then
-            echo "::error::could not list open PRs; the query itself failed on all 3 attempts"
+            echo "::error::could not list open PRs; the query itself failed on all 5 attempts"
             exit 1
           fi
           matches=""
@@ -207,11 +208,16 @@ jobs:
           WR_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: |
           set -uo pipefail
-          id="$(gh api --method POST "repos/$REPO/check-runs" \
-            -f name="Internal Content Scan" -f head_sha="$HEAD" -f status="in_progress" \
-            -f external_id="internal-content-scan-pr-$PR-$WR_RUN_ID-$WR_RUN_ATTEMPT" \
-            -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
-            --jq '.id')"
+          # 75s of backoff outlasts harden-runner refusing a dropped api.github.com IP for one DNS TTL.
+          for attempt in 1 2 3 4 5; do
+            id="$(gh api --method POST "repos/$REPO/check-runs" \
+              -f name="Internal Content Scan" -f head_sha="$HEAD" -f status="in_progress" \
+              -f external_id="internal-content-scan-pr-$PR-$WR_RUN_ID-$WR_RUN_ATTEMPT" \
+              -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
+              --jq '.id')" && break
+            if [ "$attempt" -eq 5 ]; then exit 1; fi
+            sleep $((5 << (attempt - 1)))
+          done
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
       # The TRUSTED base tree. The fork's files are never materialized.
@@ -371,15 +377,16 @@ jobs:
             *) conclusion="failure"; title="NO VERDICT — the scan did not run to completion" ;;
           esac
           summary="Fork internal-content scan for $HEAD. Findings, if any, are in the job log: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+          # 75s of backoff outlasts harden-runner refusing a dropped api.github.com IP for one DNS TTL.
           complete() {
-            for attempt in 1 2; do
+            for attempt in 1 2 3 4 5; do
               if gh api --method PATCH "repos/$REPO/check-runs/$1" \
                 -f status="completed" -f conclusion="$2" \
                 -f "output[title]=Internal Content Scan — $3" \
                 -f "output[summary]=$summary" >/dev/null; then
                 return 0
               fi
-              sleep 5
+              if [ "$attempt" -lt 5 ]; then sleep $((5 << (attempt - 1))); fi
             done
             echo "::warning::could not complete check-run $1 for $HEAD"
             return 1
