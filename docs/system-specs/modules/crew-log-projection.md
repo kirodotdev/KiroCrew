@@ -1463,13 +1463,18 @@ is one, and the creator's expander names the relation ("Collapse sessions under
 create it, so the citation it shows names `slot` rather than `key` -- crediting the
 creating to the ancestor would name a session that did not do it. A created row that
 could NOT be nested (nothing open above it, a cycle)
-says who opened it as VISIBLE text under its name -- "Created by {creator} (not
-running, so shown top-level)", the creator's display name when it has a live row, else the slot the
-log cited; the parenthetical names the one reason a created row is top-level
-that real creation order can produce (a cycle is the other, and cannot arise
-from ``session_create``, which never lets a child create its own ancestor) --
-never as a native `title`: a keyboard or touch reader sees no tooltip, and this
-row has nothing else that says it. The table re-checks the edge it is handed --
+says who opened it as VISIBLE text under its name, and the text names the
+creator by its display name, never by a raw slot id. A creator that still has a
+live row reads "Created by {name} (not running, so shown top-level)"; the
+parenthetical names the one reason a created row is top-level that real creation
+order can produce (a cycle is the other, and cannot arise from ``session_create``,
+which never lets a child create its own ancestor). A creator that has closed and
+resolves to no name reads the fixed "Created by a closed session" -- the
+user-facing fact is that the creator closed, and the slot id nobody can read adds
+nothing. The slot the log cited is kept only on the `data-orphan-of` attribute,
+for the sidebar glyph, not in this visible text. The line is VISIBLE text, never
+a native `title`: a keyboard or touch reader sees no tooltip, and this row has
+nothing else that says it. The table re-checks the edge it is handed --
 a key naming no row in the payload, or a chain returning to its own start --
 because a table must never fail to paint on a payload it did not produce.
 

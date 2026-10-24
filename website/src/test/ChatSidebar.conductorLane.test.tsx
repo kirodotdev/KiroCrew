@@ -497,12 +497,18 @@ describe('chat sidebar — conductor lane', () => {
     ])
     const lane = getByTestId('conductor-view-lane')
     expect(laneRows(lane)).toEqual(['k-conductor', 'k-orphan'])
-    // The creator's name rides the tooltip, not a line of visible text: the row is one
-    // fixed-height card and a stacked line under it is what the session-row rule
+    // The closed-creator fact rides the tooltip, not a line of visible text: the row
+    // is one fixed-height card and a stacked line under it is what the session-row rule
     // forbids. The indicator itself is a Lucide icon in the existing badge cluster, not
     // a hand-authored glyph whose shape depends on the platform's fonts.
     const hint = within(lane).getByTestId('conductor-orphan-k-orphan')
-    expect(hint.getAttribute('title')).toContain('k-gone')
+    // The visible label is a GRACEFUL phrase, never the raw slot id: `k-gone` is a
+    // closed session with no row in this payload, so an id nobody recognises would
+    // explain the nesting no better than silence (#18153). The slot id survives only
+    // on the data attribute, for tests and the DOM, never in the tooltip the reader sees.
+    expect(hint.getAttribute('title')).toBe('Opened by a closed session')
+    expect(hint.getAttribute('title')).not.toContain('k-gone')
+    expect(hint.getAttribute('aria-label')).toBe('Opened by a closed session')
     expect(hint.getAttribute('data-orphan-of')).toBe('k-gone')
     expect(hint.querySelector('svg')).toBeTruthy()
     expect(hint.textContent).toBe('')
@@ -526,7 +532,9 @@ describe('chat sidebar — conductor lane', () => {
     // The citation names the CREATOR, not the ancestor it was placed under.
     const hint = within(lane).getByTestId('conductor-orphan-k-worker')
     expect(hint.getAttribute('data-orphan-of')).toBe('k-mid')
-    expect(hint.getAttribute('title')).toContain('k-mid')
+    // Graceful label, not the raw slot id of the closed creator (#18153).
+    expect(hint.getAttribute('title')).toBe('Opened by a closed session')
+    expect(hint.getAttribute('title')).not.toContain('k-mid')
     // And not the other glyph: that one says the creator is open and merely hidden.
     expect(within(lane).queryByTestId('conductor-cites-parent-k-worker')).toBeNull()
   })
