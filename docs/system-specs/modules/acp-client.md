@@ -3442,8 +3442,21 @@ answer. The `engines` leaf is `READONLY` in every sandbox mode and on the
 file-tool floor ([security.md](security.md)): a sandboxed KAS process reads and
 executes its engine, and nothing in a sandbox rewrites the code the next session
 runs. `kirocrew doctor` reports the route when selected (`_report_kas_bundle`:
-installed version, the exact spawn argv, the vault as the only owner) and never
-mentions kiro-cli there; `kirocrew kas status` is the same facts alone.
+installed version against the release pin, the `install.json` path and its two
+entry points, the exact spawn argv, the vault as the only owner with Crew's own
+sign-in remedy) and asks nothing of kiro-cli there; `kirocrew kas status` is the
+same facts alone. The one predicate every kiro-cli-facing diagnostic shares is
+`agent_sdk.kas_bundle.kas_bundle_route()` -- KAS selected AND `agent.kas_bundle`
+on, positive on both halves, read from config at call time -- so doctor's
+Dependencies and Connectivity rows, its per-harness `kas auth:` row, the
+diagnostics bundle's `versions.txt` (`kiro_cli_version:` says the binary is not
+used; `kas_engine:` names the installed engine and the pin), `kirocrew update`'s
+and the unattended auto-apply's `kiro-cli update` step (skipped, the reason
+printed or logged: the route never runs kiro-cli, and the update does not
+install the engine either -- a changed pin needs `kirocrew kas install`, which
+the printed or logged line names) and the gateway's boot-time outdated-kiro-cli
+warning (skipped) all agree on when kiro-cli is not part of the installation, and all keep their
+relay-route behaviour byte for byte when the predicate is false.
 
 **Setup and the install probe follow the route.** With `agent.kas_bundle` on, KAS never runs kiro-cli, so the two places that decide "is KAS usable on this host" ask the installed engine instead of the binary: `agent_sdk.backend_install._probe_kas` answers `installed` when `installed_bundle()` finds the pinned engine and `missing` with the one component `COMPONENT_KAS_BUNDLE` (and `kirocrew kas install` as the install command) when it does not, consulting kiro's resolver on neither path; and `KiroPrerequisiteService.record_independent_backend_setup("kas")` records first-run completion on the same reader, spawning no `--version` / `acp --help` probe. A host with no kiro-cli at all therefore completes setup once the engine is installed, which is what the switch's help text promises. The dashboard's install handler evicts the KAS probe (`forget_probe`) when an install lands, so the Agent Harness row flips without waiting out the probe TTL. With the switch off both checks are unchanged: KAS is kiro-cli's relay and its verdict is a copy of kiro's. The spec `permissions` block is still gated on kiro-cli's version on this route (#20730); `kirocrew doctor`'s bundle branch says so instead of reporting a kiro-cli fault.
 

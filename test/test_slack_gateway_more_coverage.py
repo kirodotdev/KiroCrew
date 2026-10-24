@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -176,6 +177,24 @@ class TestWarnIfKiroCliOutdated:
         with patch("kiro_crew.kiro_cli.resolve_kiro_cli", return_value=None):
             with patch("asyncio.create_subprocess_exec") as spawn:
                 await orch._warn_if_kiro_cli_outdated()
+        spawn.assert_not_called()
+        assert "outdated" not in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_the_kas_bundle_route_skips_the_probe(self, capsys):
+        """KAS selected and ``agent.kas_bundle`` on: the engine is Crew's own
+        install, so the resolved kiro-cli -- the fixture resolves one -- decides
+        nothing about this gateway's sessions and is neither pinned nor spawned.
+        The predicate is the shared ``agent_sdk.kas_bundle.kas_bundle_route``,
+        read through ``KiroCrewConfig.load``."""
+        orch = _make_orchestrator()
+        base = KiroCrewConfig()
+        cfg = replace(base, agent=replace(base.agent, acp_backend="kas", kas_bundle=True))
+        with patch.object(KiroCrewConfig, "load", classmethod(lambda cls: cfg)):
+            with patch.object(gw, "_pinned_kiro_cli", AsyncMock()) as pinned:
+                with patch("asyncio.create_subprocess_exec") as spawn:
+                    await orch._warn_if_kiro_cli_outdated()
+        pinned.assert_not_awaited()
         spawn.assert_not_called()
         assert "outdated" not in capsys.readouterr().out
 

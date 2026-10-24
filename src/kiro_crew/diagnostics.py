@@ -1009,11 +1009,21 @@ def _kiro_cli_version() -> str:
     Everything is contained: diagnostics must work precisely when the rest of
     the system is broken, so a raising lookup degrades like a failed spawn.
     """
+    # Deferred: the bundle module brings the agent-SDK pin with it, which this
+    # module -- imported on the dashboard's boot path -- does not need until a
+    # bundle is collected.
+    from kiro_crew.agent_sdk import kas_bundle
+
     try:
         binary, unpinned_exists = pin_kiro_cli()
         if binary is None:
             if unpinned_exists:
                 return f"not pinned ({PATH_ONLY_INSTALL_NOTE})"
+            if kas_bundle.kas_bundle_route():
+                # Absent AND not part of this installation: the selected harness
+                # runs Crew's own engine (``kas_engine:`` beside this line). A bare
+                # ``unavailable`` would read as the gap it is on the relay route.
+                return "unavailable (not used: KAS runs Kiro Crew's own engine bundle)"
             return "unavailable"
         out = subprocess.run(
             [binary, "--version"],
@@ -1025,6 +1035,30 @@ def _kiro_cli_version() -> str:
         return (out.stdout or out.stderr).strip() or "unknown"
     except (OSError, subprocess.SubprocessError):
         return "unavailable"
+
+
+def _kas_engine_version() -> str:
+    """The engine line for ``versions.txt``: what the KAS bundle route runs, if selected.
+
+    ``not selected`` when the installation is on the relay route (or another
+    harness), so the kiro-cli line above it is the one that matters; on the bundle
+    route the installed engine with the release pin beside it, or ``not installed``
+    with the command, because a maintainer reading a bundle from such a host wants
+    the engine version where they would otherwise look for kiro-cli's. Contained
+    like the kiro-cli probe: a raising config read degrades to ``unknown``.
+    """
+    from kiro_crew.agent_sdk import kas_bundle
+
+    try:
+        if not kas_bundle.kas_bundle_route():
+            return "not selected"
+        engine = kas_bundle.installed_engine_label()
+        pin = kas_bundle.KAS_PIN_VERSION
+        if engine is None:
+            return f"not installed (release pins KAS {pin}; kirocrew kas install)"
+        return f"{engine} (release pins KAS {pin})"
+    except Exception:  # noqa: BLE001 - diagnostics must survive a broken setup
+        return "unknown"
 
 
 #: PEP 440 prerelease segment — see
@@ -1093,6 +1127,7 @@ def _versions_text(note: str, identity: release_channel.Provenance) -> str:
         f"channel: {identity.channel or 'unknown'}",
         f"channel_record: {identity.recorded or 'absent'}",
         f"kiro_cli_version: {_kiro_cli_version()}",
+        f"kas_engine: {_kas_engine_version()}",
         f"python: {platform.python_version()}",
         f"platform: {platform.platform()}",
         f"machine: {platform.machine()}",

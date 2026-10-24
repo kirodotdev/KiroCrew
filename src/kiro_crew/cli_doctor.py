@@ -86,7 +86,7 @@ from kiro_crew.agent_discovery import (
     project_agent_files,
     project_agent_name,
 )
-from kiro_crew.agent_sdk import kas_engine_gap
+from kiro_crew.agent_sdk import kas_bundle, kas_engine_gap
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.agent_spec_format import (  # noqa: F401
     NATIVE_SKILL_ALIAS_PREFIX,
@@ -115,6 +115,7 @@ from kiro_crew.cli_doctor_parts.kas_relay import (
     _kas_relay_help,
     _report_kas_backend,
     _report_kas_bundle,
+    _report_kas_bundle_pin,
     _report_kas_spec_permissions,
     _report_kas_tool_vocabulary,
 )
@@ -551,9 +552,19 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # this row names the binary a session actually spawns. ``shutil.which`` would
     # name the user's own install on a bundled app, which is not the one running.
     kiro = resolve_kiro_cli()
+    # Decided once here and threaded to the Connectivity row below, so the two
+    # kiro-cli rows of one report cannot read the config at different moments.
+    bundle_route = kas_bundle.kas_bundle_route()
     if kiro:
         print(f"  kiro-cli:    ✅ {kiro}")
         services._doctor_headless_auth(issues)
+    elif bundle_route:
+        # Not a gap: the selected backend runs Crew's own installed engine (the
+        # KAS backend section reports it), so an install hint here would send the
+        # operator to fetch a binary nothing on this host would spawn.
+        print(
+            "  kiro-cli:    ⏭  not installed; not needed (KAS runs Kiro Crew's own engine bundle)"
+        )
     else:
         print("  kiro-cli:    ⏭  not found (the default agent backend)")
         print("               Install kiro-cli per its docs, then: kiro-cli login")
@@ -813,7 +824,17 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Connectivity ──
     print("\nConnectivity")
-    if kiro:
+    if bundle_route:
+        # The engine this host runs, where the kiro-cli version row goes on the
+        # relay route: a ``--version`` spawn of a binary the route never runs
+        # would report the wrong program, and on a host without one would read as
+        # a gap. The install verdict itself is the KAS backend section's.
+        engine = kas_bundle.installed_engine_label()
+        if engine:
+            print(f"  engine:      ✅ {engine} (Kiro Crew's own bundle; kiro-cli not used)")
+        else:
+            print("  engine:      ⏭  no KAS bundle installed (see the KAS backend section)")
+    elif kiro:
         kiro_result = subprocess.run(
             [kiro, "--version"],
             capture_output=True,

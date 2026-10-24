@@ -385,7 +385,17 @@ async def _warn_if_kiro_cli_outdated(self: GatewayOrchestrator) -> None:
     this probe runs unattended at boot, so a shim planted on `PATH` would
     execute here regardless of the `--version` argument. A binary the pin
     refuses has no version worth warning about — and the pin logs why.
+
+    Skipped on the KAS bundle route: the selected harness runs Crew's own
+    engine, so a kiro-cli that happens to be installed decides nothing about
+    this gateway's sessions, and the warning's remedy (update it, or switch
+    backend) would send the operator to fix a program nothing here spawns.
     """
+    # Local import: this body runs on the gateway facade's globals.
+    from kiro_crew.agent_sdk import kas_bundle
+
+    if await asyncio.to_thread(kas_bundle.kas_bundle_route):
+        return
     kiro_cli_bin = await _pinned_kiro_cli("the kiro-cli version check")
     if kiro_cli_bin is None:
         return
