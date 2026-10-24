@@ -524,6 +524,123 @@ class TestSelfHealRefreshRestart:
         assert "in use" in t.status.error.lower()
         assert "post-quantum" not in t.status.error.lower()
 
+    @staticmethod
+    async def _timeout_error_for_live_child(*, tunable=True, **kwargs):
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
+
+        class _LiveProc:
+            returncode = None  # never exits: still connecting at the deadline
+
+        t = _SshTunnel("cd-1", "cd-1-alias", 53992, 7777, connect_timeout_secs=0.05, **kwargs)
+        t._timeout_tunable = tunable
+        t._proc = _LiveProc()
+
+        async def never_reachable():
+            return False
+
+        t._port_reachable = never_reachable  # type: ignore[assignment]
+        assert await t._wait_until_ready() is False
+        return t.status.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_wait_until_ready_timeout_with_live_child_names_the_tunable(self):
+        # A live ssh child at the deadline may be a slow proxy handshake or an
+        # unreachable host: the message names both and the timeout tunable.
+        err = await self._timeout_error_for_live_child()
+        assert "timed out after 0.05s waiting for the ssh forward" in err
+        assert "proxy handshake" in err
+        assert "unreachable" in err
+        assert "instances.connect_timeout_secs" in err
+        assert "ssm" not in err
+
+    @pytest.mark.asyncio
+    async def test_wait_until_ready_timeout_on_ssm_names_the_ssm_session(self):
+        # The SSM transport has no ssh proxy: its live-child timeout speaks of
+        # the SSM session and agent, and still names the timeout tunable.
+        err = await self._timeout_error_for_live_child(
+            transport="ssm", ssm_target="i-0123456789abcdef0"
+        )
+        assert "timed out after 0.05s waiting for the ssm port forward" in err
+        assert "ssm agent" in err
+        assert "instances.connect_timeout_secs" in err
+        assert "ssh" not in err
+        assert "proxy" not in err
+
+    def test_ready_timeout_at_ceiling_does_not_suggest_raising_it(self):
+        # A budget already at the ceiling cannot be raised: the message points
+        # at reachability and omits the tunable.
+        from kiro_crew.instances.constants import CONNECT_TIMEOUT_CEILING_SECS
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
+
+        class _LiveProc:
+            returncode = None
+
+        t = _SshTunnel(
+            "cd-1", "cd-1-alias", 53994, 7777, connect_timeout_secs=CONNECT_TIMEOUT_CEILING_SECS
+        )
+        t._timeout_tunable = True
+        t._proc = _LiveProc()
+        err = t._ready_timeout_error().lower()
+        assert "already at its maximum" in err
+        assert "reachable" in err
+        assert "instances.connect_timeout_secs" not in err
+
+    @pytest.mark.parametrize("kwargs", [{}, {"transport": "ssm", "ssm_target": "i-0abc"}])
+    @pytest.mark.asyncio
+    async def test_ready_timeout_on_an_untunable_tunnel_names_no_setting(self, kwargs):
+        # A tunnel whose budget does not come from instances.connect_timeout_secs
+        # (the desktop tunnel keeper's) keeps the cause text but never tells the
+        # user to raise a setting that would change nothing.
+        err = await self._timeout_error_for_live_child(tunable=False, **kwargs)
+        assert "timed out after 0.05s" in err
+        assert "reachable" in err
+        assert "instances.connect_timeout_secs" not in err
+        assert "kirocrew config set" not in err
+
+    @pytest.mark.asyncio
+    async def test_a_bare_tunnel_is_untunable_and_the_manager_marks_its_own(self, tmp_path):
+        # The default is off, so a tunnel built outside the manager (tunnel_keeper's
+        # make_tunnel) names no setting. The manager reads the setting into the
+        # budget, so connect() and a self-heal rebuild both turn it on.
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, _SshTunnel
+
+        assert _SshTunnel("cd-1", "cd-1-alias", 53995, 7777)._timeout_tunable is False
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        await mgr.connect("cd-1")
+        assert mgr._tunnels["cd-1"]._timeout_tunable is True
+        mgr._tunnels["cd-1"].status.state = TunnelState.ERROR
+        await mgr._recover("cd-1")
+        assert mgr._tunnels["cd-1"]._timeout_tunable is True
+
+    @pytest.mark.asyncio
+    async def test_wait_until_ready_timeout_with_dead_child_stays_generic(self):
+        # A child that exited in the same tick the loop gave up (too late for
+        # _failed_on_child_exit to classify) keeps the generic wording rather
+        # than guessing the proxy-handshake cause.
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
+
+        class _DeadProc:
+            returncode = 255  # already gone by the deadline
+
+        t = _SshTunnel("cd-1", "cd-1-alias", 53993, 7777, connect_timeout_secs=0.05)
+        t._proc = _DeadProc()
+
+        async def never_reachable():
+            return False
+
+        async def never_classified():
+            # Keep the loop from ending early so it reaches the timeout path,
+            # where _proc.returncode is already set (child gone).
+            return False
+
+        t._port_reachable = never_reachable  # type: ignore[assignment]
+        t._failed_on_child_exit = never_classified  # type: ignore[assignment]
+        assert await t._wait_until_ready() is False
+        err = t.status.error.lower()
+        assert "timed out after 0.05s waiting for forward" in err
+        assert "instances.connect_timeout_secs" not in err
+
     def test_exit_error_strips_post_quantum_noise(self):
         from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
 
