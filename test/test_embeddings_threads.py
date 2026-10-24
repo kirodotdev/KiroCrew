@@ -184,10 +184,13 @@ class TestEmbedThreads:
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": 3})
         _pin_cores(monkeypatch, 8)
         emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
-        assert emb.wait_ready(timeout=5)
-        kwargs = fake_cls.instances[0].kwargs
-        assert kwargs["n_threads"] == 3
-        assert kwargs["n_threads_batch"] == 3
+        try:
+            assert emb.wait_ready(timeout=5)
+            kwargs = fake_cls.instances[0].kwargs
+            assert kwargs["n_threads"] == 3
+            assert kwargs["n_threads_batch"] == 3
+        finally:
+            emb.close()  # the published model's idle evictor ends with the test
 
     def test_physical_batch_bounds_scratch_without_reducing_context(
         self, tmp_path: Path, monkeypatch
@@ -195,12 +198,15 @@ class TestEmbedThreads:
         fake_cls = _make_fake_llama_class()
         monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
         emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
-        assert emb.wait_ready(timeout=5)
-        kwargs = fake_cls.instances[0].kwargs
-        assert kwargs["n_ctx"] == embeddings_mod._N_CTX
-        assert kwargs["n_batch"] == embeddings_mod._N_CTX
-        assert kwargs["n_ubatch"] == embeddings_mod._N_UBATCH
-        assert kwargs["n_ubatch"] < kwargs["n_batch"]
+        try:
+            assert emb.wait_ready(timeout=5)
+            kwargs = fake_cls.instances[0].kwargs
+            assert kwargs["n_ctx"] == embeddings_mod._N_CTX
+            assert kwargs["n_batch"] == embeddings_mod._N_CTX
+            assert kwargs["n_ubatch"] == embeddings_mod._N_UBATCH
+            assert kwargs["n_ubatch"] < kwargs["n_batch"]
+        finally:
+            emb.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -286,6 +292,7 @@ class TestEmbedQueueTiming:
         release.set()
         bulk.join(timeout=10)
         short.join(timeout=10)
+        emb.close()  # both embeds are back; the model and its idle evictor end here
 
         big = [e for e in emitted if e[2] == 4000]
         small = [e for e in emitted if e[2] == 2]
@@ -320,6 +327,15 @@ class TestEmbedPriority:
     ever queued. The lock moved to the worker precisely so ordering can exist.
     """
 
+    @pytest.fixture(autouse=True)
+    def _close_gated_embedders(self):
+        """The backend ``_gated`` builds is closed when the test ends (idle evictor
+        included); see ``TestLlamaCppEmbedder._close_built_embedders``."""
+        self._built: list[LlamaCppEmbedder] = []
+        yield
+        for emb in self._built:
+            emb.close()
+
     def _gated(self, tmp_path: Path, monkeypatch):
         """Start a gated worker and return (emb, order, release, queued, threads).
 
@@ -335,6 +351,7 @@ class TestEmbedPriority:
         fake_cls = _make_fake_llama_class()
         monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
         emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
+        self._built.append(emb)
         assert emb.wait_ready(timeout=5)
         order: list[str] = []
         holding = threading.Event()

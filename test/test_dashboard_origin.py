@@ -260,7 +260,24 @@ class TestBuildDashboardUrl:
 
 
 class TestFormatDashboardUrls:
-    @patch.dict("os.environ", {}, clear=True)
+    @pytest.fixture(autouse=True)
+    def _not_over_ssh(self, _floor_monkeypatch):
+        """Unset the two variables ``format_dashboard_urls`` reads, and nothing else.
+
+        Clearing ``os.environ`` would also drop the floor's ``KIROCREW_HOME`` pin for
+        the test's duration. Nothing here resolves the data home, but a resolver left
+        running by an EARLIER test on the worker (a model's idle evictor, a debounced
+        crew-log write) can tick inside that window, fall through to the operator's real
+        ``~/.kiro/crew``, and the teardown guard then blames whichever test here is
+        running -- the hanging-lookup test has the widest window. Removing only what the
+        function reads keeps the pin, so a stray resolution lands in this test's home.
+        Patched through the floor's own instance, not the shared ``monkeypatch``: an
+        autouse fixture on the shared one is lifted by any ``monkeypatch.undo()`` in a
+        test body.
+        """
+        _floor_monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        _floor_monkeypatch.delenv("SSH_CLIENT", raising=False)
+
     @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
     @patch(f"{_MOD}.machine_hostname", return_value="localhost")
     def test_local_direct_url(self, _mh: object, _dp: object) -> None:
@@ -269,14 +286,13 @@ class TestFormatDashboardUrls:
         assert lines[0] == "👻 Dashboard:"
         assert "http://localhost:5476" in lines[1]
 
-    @patch.dict("os.environ", {}, clear=True)
     @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
     @patch(f"{_MOD}.machine_hostname", return_value="localhost")
     def test_token_in_url_shown(self, _mh: object, _dp: object) -> None:
         lines = format_dashboard_urls("http://localhost:5476?token=abc", port=5476)
         assert "token=abc" in lines[1]
 
-    @patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 1234 5.6.7.8 5678"}, clear=True)
+    @patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 1234 5.6.7.8 5678"})
     @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
     @patch(f"{_MOD}.machine_hostname", return_value="myhost")
     @patch(f"{_MOD}.socket.gethostbyname", side_effect=socket.gaierror)
@@ -286,7 +302,6 @@ class TestFormatDashboardUrls:
         assert any("http://localhost:5476?token=t" in ln for ln in lines)
         assert any("systemd" in ln for ln in lines)
 
-    @patch.dict("os.environ", {}, clear=True)
     @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
     @patch(f"{_MOD}.machine_hostname", return_value="myhost.internal.example.com")
     @patch(f"{_MOD}.socket.gethostbyname", return_value="10.0.0.1")
@@ -296,7 +311,6 @@ class TestFormatDashboardUrls:
         lines = format_dashboard_urls("http://localhost:5476", port=5476, local_only=True)
         assert any("Remote" in ln and "ssh -NL" in ln for ln in lines)
 
-    @patch.dict("os.environ", {}, clear=True)
     @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
     @patch(f"{_MOD}.machine_hostname", return_value="Mac-1234.local")
     def test_a_hanging_hostname_lookup_cannot_stall_startup(
@@ -356,7 +370,6 @@ class TestFormatDashboardUrls:
         ], "format_dashboard_urls blocked until the hostname lookup completed"
         assert not any("Remote" in ln for ln in lines)
 
-    @patch.dict("os.environ", {}, clear=True)
     @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
     @patch(f"{_MOD}.machine_hostname", return_value="myhost.internal.example.com")
     @patch(f"{_MOD}.socket.gethostbyname", return_value="10.0.0.1")
@@ -366,21 +379,18 @@ class TestFormatDashboardUrls:
         lines = format_dashboard_urls("http://localhost:5476", port=5476, has_custom_host=True)
         assert not any("Remote" in ln for ln in lines)
 
-    @patch.dict("os.environ", {}, clear=True)
     @patch(f"{_MOD}.devspaces_proxy_url", return_value="https://proxy.devspaces.example.com")
     @patch(f"{_MOD}.machine_hostname", return_value="localhost")
     def test_devspaces_proxy_shown_when_not_local(self, _mh: object, _dp: object) -> None:
         lines = format_dashboard_urls("http://host:5476?token=t", port=5476, local_only=False)
         assert any("Proxy" in ln and "proxy.devspaces" in ln for ln in lines)
 
-    @patch.dict("os.environ", {}, clear=True)
     @patch(f"{_MOD}.devspaces_proxy_url", return_value="https://proxy.devspaces.example.com")
     @patch(f"{_MOD}.machine_hostname", return_value="localhost")
     def test_devspaces_proxy_hidden_when_local(self, _mh: object, _dp: object) -> None:
         lines = format_dashboard_urls("http://localhost:5476", port=5476, local_only=True)
         assert not any("Proxy" in ln for ln in lines)
 
-    @patch.dict("os.environ", {}, clear=True)
     @patch(f"{_MOD}.devspaces_proxy_url", return_value="https://proxy.devspaces.example.com")
     @patch(f"{_MOD}.machine_hostname", return_value="localhost")
     def test_token_propagated_to_proxy_url(self, _mh: object, _dp: object) -> None:
@@ -520,7 +530,7 @@ class TestCheckOriginLoopbackTrust:
 class TestAllowedLoopbackPortsEnv:
     """KIROCREW_ALLOWED_LOOPBACK_PORTS opts specific loopback ports into the allowed set."""
 
-    @patch.dict("os.environ", {"KIROCREW_ALLOWED_LOOPBACK_PORTS": "8777,9000"}, clear=True)
+    @patch.dict("os.environ", {"KIROCREW_ALLOWED_LOOPBACK_PORTS": "8777,9000"})
     def test_env_ports_added(self) -> None:
         origins = build_allowed_origins(7777, local_only=True)
         assert "http://localhost:8777" in origins
@@ -528,13 +538,13 @@ class TestAllowedLoopbackPortsEnv:
         assert "http://[::1]:8777" in origins
         assert "http://localhost:9000" in origins
 
-    @patch.dict("os.environ", {"KIROCREW_ALLOWED_LOOPBACK_PORTS": "notaport"}, clear=True)
+    @patch.dict("os.environ", {"KIROCREW_ALLOWED_LOOPBACK_PORTS": "notaport"})
     def test_non_numeric_ignored(self) -> None:
         origins = build_allowed_origins(7777, local_only=True)
         assert not any(":notaport" in o for o in origins)
 
-    @patch.dict("os.environ", {}, clear=True)
-    def test_no_env_only_bound_port(self) -> None:
+    def test_no_env_only_bound_port(self, monkeypatch) -> None:
+        monkeypatch.delenv("KIROCREW_ALLOWED_LOOPBACK_PORTS", raising=False)
         origins = build_allowed_origins(7777, local_only=True)
         assert "http://localhost:7777" in origins
         assert "http://localhost:8777" not in origins

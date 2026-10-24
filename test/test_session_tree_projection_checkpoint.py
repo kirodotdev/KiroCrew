@@ -77,10 +77,11 @@ def test_an_apply_arms_one_write_for_the_store_it_was_folded_from(
     proj.apply(_record("s-1"))
     proj.apply(_record("s-2", "slot-b"))
     assert len(submitted) == 1, "a burst of applies must coalesce into one armed write"
-    work, target, epoch = submitted[0]
+    work, target, epoch, root = submitted[0]
     assert work == proj._debounced_write
     assert target == stp._checkpoint_path()
     assert epoch == proj._cancel_epoch
+    assert root == stp._current_root(), "the payload's store is pinned when the write is armed"
 
 
 def test_the_debounced_write_saves_the_state_it_was_armed_for(
@@ -96,7 +97,7 @@ def test_the_debounced_write_saves_the_state_it_was_armed_for(
     proj.apply_edge(EdgeRecord(slot="slot-a", parent_slot="slot-x", at=9, sid="s-1", seq=3))
     target = stp._checkpoint_path()
 
-    proj._debounced_write(target, proj._cancel_epoch)
+    proj._debounced_write(target, proj._cancel_epoch, stp._current_root())
 
     assert len(saved) == 1
     payload, path = saved[0]

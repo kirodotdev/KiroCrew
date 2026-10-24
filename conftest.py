@@ -352,12 +352,16 @@ from conftest_floor_reporting import (  # noqa: E402,F401 -- bound for pytest an
 
 # Teardown joins and the globals put back after every test.
 from conftest_floor_restores import (  # noqa: E402,F401 -- bound for pytest and for tests
+    _EMBED_EVICTOR_THREAD,
     _EXECUTOR_JOIN_SECS,
     _TELEMETRY_CONSENT_THREAD,
+    _cancel_session_tree_checkpoints,
     _drain_windows_proactor_finalizers,
     _join_install_receipt_workers,
     _join_test_loop_executor,
+    _live_embed_evictors,
     _live_telemetry_consent_workers,
+    _no_leaked_embed_evictor,
     _no_leaked_telemetry_exporter,
     _restore_hooks_integration_globals,
     _restore_log_queue_listener,
@@ -927,6 +931,9 @@ def pytest_runtest_teardown(item, nextitem):
     # fresh daemon nothing holds a handle to. Stopping the worker once its producers are
     # quiescent is what makes the stop final.
     wedged_eager_fold = _retire_crew_log_eager_fold()
+    # After the fold worker is stopped: it is the fold that arms these, so a write armed
+    # by its last entries is cancelled here rather than re-armed after the cancel.
+    _cancel_session_tree_checkpoints()
     # After every step above: a cancelled task's ``finally`` or a drained writer can
     # itself call ``get_recorder()`` and schedule a consent re-read, and a worker
     # scheduled by teardown must still be joined under this test's pins.

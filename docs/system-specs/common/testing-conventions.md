@@ -791,7 +791,7 @@ worker's last test is checked after that warning is written, so its findings are
 it. The package-attribute floor also undoes a replacement made by a wider-scoped fixture
 that a test created lazily (`request.getfixturevalue`) at that test's teardown.
 
-Five members are there for a different reason — a **process-global** that any testpath
+Seven members are there for a different reason — a **process-global** that any testpath
 can poison for every test after it, which is the same failure shape as host mutation
 one scope down:
 
@@ -805,6 +805,21 @@ one scope down:
   running. See the Rules entry — that thread makes the sandbox probe's fork child
   multithreaded, which the kernel answers with an EINVAL the probe used to cache as
   "this host has no sandbox backend".
+* `_no_leaked_embed_evictor` fails the test that loads an embedding model and leaves its
+  idle evictor running. `LlamaCppEmbedder` starts the daemon `kc-embed-evict` thread when
+  a model is published, and every tick re-reads the memory config through `config_dir()`,
+  so a backend a test never `close()`d keeps resolving the data home from under every
+  later test on the worker; one of those ticks landing in a test that had cleared
+  `os.environ` is how the home guard came to blame `test_dashboard_origin.py` for a leak
+  from `test_custom_embedding_model.py` (class 4). Attributed by difference and stopped
+  through its owner, like the exporter guard.
+* `pytest_runtest_teardown` cancels every debounced session-tree checkpoint write the
+  test armed (`_cancel_session_tree_checkpoints`, through
+  `session_tree_projection.reset_for_tests`), after the fold worker is retired and before
+  the pins lift. The write sleeps a debounce on the gateway's `mc-maint` pool, which no
+  loop join reaches, so without the cancel it fires inside a LATER test. Its paths are
+  pinned when it is armed (the caller-resolves rule), so this is the owner paying for its
+  own queued work rather than a repair of the resolution.
 * `_restore_log_record_factory` puts `logging`'s record factory back. There is one such
   slot per process, and `log_redaction`'s wrapper ALWAYS renders and clears
   `exc_info` (frame locals are unscannable), and clears `args` on any record that
@@ -5079,6 +5094,32 @@ which will not drain — so the cost lands on the test that queued the work rath
 whichever test would have inherited it. It binds `drain_for_shutdown` at SETUP when the
 module is already loaded, so a test of the shutdown path that replaces that function
 with a wedged or recording stand-in cannot wedge the floor.
+
+**A poller or a debounced writer an earlier test left behind resolves the home from
+under a later one, and the guard blames the later one.** MEASURED on a Linux shard with a
+throwaway tripwire on `config_dir()` keyed by the test that started the thread or queued
+the job: in one 22k-test shard, six resolutions by `kc-embed-evict` threads born in
+`test_custom_embedding_model.py` (a `LlamaCppEmbedder` whose fake model was published and
+never `close()`d; its idle evictor re-reads the memory config on every tick) landing in
+four unrelated files, and 36 by `mc-maint` jobs from `test_crew_log_emit.py` and
+`test_crew_log_edge_fanout.py` (`SessionTreeProjection._debounced_write` built its
+payload's `root` with a live `_current_root()` when it WOKE, a debounce after the test
+that armed it had ended). Under the per-test home these resolve another test's home and
+nothing notices. The visible failure needs a third party: a test that cleared
+`os.environ` (`patch.dict("os.environ", {}, clear=True)`) for its own reasons has no
+`KIROCREW_HOME` for its duration, so a tick inside that window falls through to the
+operator's real `~/.kiro/crew`, and `_refuse_a_resolved_real_default_home` fails THAT
+test -- `test_dashboard_origin.py`'s hanging-lookup test, whose 200 ms window was the
+widest in its file, on nine PR branches in a week; the leakers passed every time.
+Reproduced on demand by shrinking the evictor's poll ceiling and running one loader test
+before the victim: red on the parent, green with the fixes. Three fixes, each needed:
+the leakers close what they start (`close()` in the tests that build a backend; the
+projection pins `root` beside `target` when it ARMS the write, so the worker resolves
+nothing); the floor catches the next one by name (`_no_leaked_embed_evictor`, and the
+teardown hook cancels the pending checkpoint writes); and the victim keeps the pin,
+unsetting only the variables its subject reads (`SSH_CONNECTION`, `SSH_CLIENT`) rather
+than clearing the environment -- the Rules entry on dropping the override already says
+so, and the floor's pin cannot survive a `clear=True` any other way.
 
 One thing that floor does not reach, residual rather than fixed: it covers `eventlog-io`
 only — the dashboard's `notif-io` pool
