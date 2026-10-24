@@ -471,6 +471,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SESSION_RETRY_SCHEMA,
         SESSION_REVIVE_SCHEMA,
         SESSION_SEND_SCHEMA,
+        SESSION_SET_BACKEND_SCHEMA,
         SESSION_SET_MODEL_SCHEMA,
         SESSION_STATUS_SCHEMA,
         SESSION_STOP_SCHEMA,

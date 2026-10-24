@@ -293,6 +293,68 @@ class TestFallbackServedTurnAttribution:
         )
 
     @pytest.mark.asyncio
+    async def test_a_mid_turn_backend_switch_keeps_its_cleared_model(self, tmp_path, monkeypatch):
+        """A backend switch taken WHILE this turn streams clears slot.model and
+        queues a reset for the next turn. The completion backfill must not write
+        the old backend's served model back as a crew pin."""
+        from unittest.mock import AsyncMock, patch
+
+        from kiro_crew.acp.types import TurnUsage
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.handlers import usage as usage_mod
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        shard_dir = tmp_path / "usage" / "tokens"
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", shard_dir)
+
+        state = self._make_state(tmp_path, monkeypatch)
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="served by claude")
+            # switch_slot_backend: pick stored, model cleared, reset queued.
+            slot.backend = "codex"
+            slot.model = ""
+            slot._pending_reset_history_key = "s1"
+            yield LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=9.0))
+
+        client, _handle = _deep_chain_client(_stream, primary="claude-model")
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        # A crew model pin is what lets the completion backfill write slot.model.
+        import dataclasses
+
+        from kiro_crew.dashboard import chat_runner as _runner
+
+        _resolve = _runner.resolve_agent_bindings
+
+        def _crew_pinned(*args, **kwargs):
+            return dataclasses.replace(_resolve(*args, **kwargs), model="crew-model")
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.resolve_agent_bindings", _crew_pinned)
+        # The model the old (Claude) session reports serving.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner._backfill_canonical_model",
+            lambda c, p: "claude-model",
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner._consume_pending_reset",
+            AsyncMock(return_value=False),
+        )
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):  # flake-ok: drain sleeps
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        assert slot.model == "", (
+            "the backfill must leave a switched chat's cleared model alone; "
+            f"slot.model is {slot.model!r}"
+        )
+        rows = self._rows(shard_dir)
+        assert len(rows) == 1, rows
+        assert rows[0]["model"] == "claude-model", rows[0]
+
+    @pytest.mark.asyncio
     async def test_stale_sticky_fallback_is_not_billed_after_a_resume(self, tmp_path, monkeypatch):
         """GPT review finding on 3f55ca11f: the sticky candidate can OUTLIVE the
         swap it records.

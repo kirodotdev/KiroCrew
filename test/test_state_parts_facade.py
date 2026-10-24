@@ -542,6 +542,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_queue_persisted_sig": ("str", None),
     "_queue_repository": ("type", "kiro_crew.dashboard.slot_queue_repository.SlotQueueRepository"),
     "_reasoning_effort": ("value", "''"),
+    "backend": ("value", "''"),
     "_recovery_chat_triggered": ("value", "False"),
     "_refusal_client_pick_epoch": ("value", "0"),
     "_refusal_fallback_attempted": ("value", "False"),

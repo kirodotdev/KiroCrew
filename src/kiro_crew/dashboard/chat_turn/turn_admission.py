@@ -19,6 +19,7 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.state import durable_row_count
 from kiro_crew.llm_helpers import _billing_stats
 from kiro_crew.members import DM_SLOT_MODE, is_dispatchable_member_name, member_lifecycle
+from kiro_crew.messaging.commands import compact_unsupported_backend, compact_unsupported_reply
 from kiro_crew.platform import redact_log_via_context
 from kiro_crew.quick_prompts import QUICK_PROMPTS
 
@@ -51,7 +52,10 @@ if TYPE_CHECKING:
         routing_for,
         save_slot_off_loop,
         sel,
+        slot_backend,
+        slot_backend_override,
         slot_switch_session_lock,
+        subagents_attached_async,
         subprocess_executor,
         telemetry_channel_of,
         warm_project_agent_names,
@@ -108,6 +112,65 @@ if TYPE_CHECKING:
         _prepare_spec_hooks,
         _surface_agent_welcome,
     )
+
+
+def _off_backend_pick(state, slot, cfg, live) -> bool:
+    """Whether *live* runs a backend other than the one *slot* is picked onto.
+
+    Only a picked chat, or one whose session was started on a pick (one
+    cleared while a hard Stop's respawn on it was starting), is judged; other
+    unpicked chats follow the gateway default as before.
+    """
+    key = effective_session_key(slot)
+    if live is None:
+        return False
+    if not slot_backend_override(slot) and state.sessions.allocation_backend_override(key) is None:
+        return False
+    picked = slot_backend(slot, cfg.agent.member_acp_backend, cfg.agent.acp_backend, key)
+    return capabilities_of(live).backend != picked
+
+
+def _arm_reset_off_backend_pick(state, slot, cfg) -> None:
+    """Queue a reset when a picked chat's live session runs another backend.
+
+    A backend pick is applied between turns: the switch queues a reset, and a
+    session that came up on another backend (a hard Stop respawns on the
+    gateway default) is caught here, before the turn acquires it.
+    """
+    from kiro_crew.dashboard.session_control import arm_model_switch_reset
+
+    if _off_backend_pick(
+        state, slot, cfg, state.sessions.get_provider(effective_session_key(slot))
+    ):
+        logger.info("Slot %s live session is off its backend pick; resetting it", slot.key)
+        arm_model_switch_reset(state, slot)
+
+
+async def _reclaim_off_backend_pick(state, slot, cfg, claimed, claim):
+    """The claim to run the turn on, made again on the pick when it is off it.
+
+    The check before the claim cannot see a hard Stop's respawn that registers
+    the old backend after it ran, so the claimed session is judged again under
+    the lease. A mismatch is reset and claimed again, as a stale hook
+    projection is; with sub-agents attached the reset is queued instead, since
+    it would release the runtime they run on.
+    """
+    from kiro_crew.dashboard.session_control import arm_model_switch_reset
+
+    if cfg is None or not _off_backend_pick(state, slot, cfg, claimed[0]):
+        return claimed
+    key = effective_session_key(slot)
+    if await subagents_attached_async(state, slot, key, "reclaim_off_backend_pick"):
+        arm_model_switch_reset(state, slot)
+        return claimed
+    logger.info("Slot %s claimed a session off its backend pick; reclaiming it", slot.key)
+    slot.forget_session_model_state()
+    await state.sessions.reset(key)
+    claimed = await claim()
+    adopt = getattr(state.sessions, "adopt_turn", None)
+    if callable(adopt):
+        adopt(key)
+    return claimed
 
 
 def _current_binding(turn) -> tuple:
@@ -486,7 +549,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         # recreated under the same name) must not decide what it projects.
         unbind_session_app_agent(session_key)
     if app_agent_binding_applies(slot):
-        _owner_backend = await _app_agent_turn_backend(state, session_key, loaded_cfg)
+        _owner_backend = await _app_agent_turn_backend(state, session_key, loaded_cfg, slot)
         turn._owner_backend = _owner_backend
         _owner_host_allowed = (
             _owner_backend is not None and routing_for(_owner_backend) is Routing.AGENT_SPEC
@@ -689,6 +752,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             session_key,
             agent=kiro_agent or slot.agent or None,
             crew_agent=crew_alias,
+            backend_override=slot_backend_override(slot).get("backend_override"),
         )
     # Commit a pending session_set_model pick before get_or_create reads
     # slot.model. The pick's authorization is re-checked in the same
@@ -754,6 +818,8 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # helper must take only ``_model_pick_lock`` -- that lock is not reentrant,
     # and re-acquiring it here would hang the turn at session creation.
     await apply_deferred_model_switch(state, slot, session_lock_held=True)
+    if loaded_cfg is not None:
+        _arm_reset_off_backend_pick(state, slot, loaded_cfg)
     # Consume a deferred project-change reset queued while idle, before
     # get_or_create or we'd reuse the stale session for one turn. Safe even
     # though the dispatch lock (slot_switch_session_lock) is held here: reset()
@@ -794,6 +860,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # which decides whether to send it, and the crew log's `session/opened`,
     # which records the choice.
     _requested_model = slot.model or agent_model or ""
+    _picked = slot_backend_override(slot)
+    _pick = _picked.get("backend_override")
+    if _pick is not None and slot_backend(slot, "", "", session_key, _picked) != _pick:
+        # The gate degrades this pick to its fallback, which does not serve a
+        # model chosen for the pick: the turn starts on the fallback's default.
+        _requested_model = ""
     _allocation_kwargs: dict[str, Any] = dict(
         agent=kiro_agent or slot.agent or None,
         # Same canonical crew identity as the eager-spawn path — the two
@@ -809,6 +881,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         reasoning_effort_override=slot.reasoning_effort or None,
         start_priority=_turn_priority,
         **_app_allocation_kwargs(slot),
+        **_picked,
     )
     if _app_launch_agent:
         # An app-owned kiro-cli turn asks kiro-cli for the app's launch copy;
@@ -947,11 +1020,17 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # again on the session this turn now holds, under its lease, before any of
     # its tools run.
     try:
-        client, is_new, resumed = await reproject_claimed_session(
-            state.sessions,
-            session_key,
-            kiro_agent or slot.agent or "",
-            (client, turn.is_new, turn.resumed),
+        client, is_new, resumed = await _reclaim_off_backend_pick(
+            state,
+            slot,
+            loaded_cfg,
+            await reproject_claimed_session(
+                state.sessions,
+                session_key,
+                kiro_agent or slot.agent or "",
+                (client, turn.is_new, turn.resumed),
+                lambda: _claim_session(True),
+            ),
             lambda: _claim_session(True),
         )
         turn.is_new = is_new
@@ -1056,6 +1135,13 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         first_word in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
         and not capabilities_of(client).supports_native_todos
     )
+    # The /compact gate skips a live provider a backend switch queued for reset,
+    # but the reset waits while sub-agents are attached, so the turn can still
+    # hold that provider. It answers here too, as it does for /todos.
+    _refused_compact = compact_unsupported_backend(client) if first_word == "/compact" else None
+    if not (isinstance(_refused_compact, str) and _refused_compact):
+        _refused_compact = None
+    _refused_native_todos = _refused_native_todos or _refused_compact is not None
     if _refused_native_todos:
         _deferred_options_expiry = False
         turn._deferred_options_expiry = _deferred_options_expiry
@@ -1203,6 +1289,19 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # First-claim bookkeeping above also belongs to an unsupported command:
     # no later claimant sees is_new. Refuse before spending Slack OPTIONS;
     # the replay lease and member re-injection preserve undelivered context.
+    if _refused_compact is not None:
+        sel().log_tool_invocation(
+            session_key=session_key,
+            agent=slot.agent or "kirocrew",
+            source="dashboard",
+            tool_name=first_word,
+            tool_kind="slash_command",
+            outcome="auto_managed_backend",
+            metadata={"backend": _refused_compact, "slot": slot.key},
+        )
+        slot.append("assistant", compact_unsupported_reply(_refused_compact), "msg msg-a")
+        state.push_slots_update()
+        return _Flow.END
     if _refused_native_todos:
         _refuse_blocked_slash(turn)
         return _Flow.END

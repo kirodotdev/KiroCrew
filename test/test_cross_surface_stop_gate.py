@@ -441,6 +441,8 @@ def _make_state(tmp_path, *, deny_reason: str, stop_counts: dict[str, int]):
     sessions.check_context_usage = MagicMock()
     # The session manager's Stop record, as the runner reads it.
     sessions.stop_generation = MagicMock(side_effect=lambda key: stop_counts.get(key, 0))
+    # No session started on a backend pick, as for a real SessionManager.
+    sessions.allocation_backend_override = MagicMock(return_value=None)
     state = DashboardState(
         sessions=sessions,
         crons=MagicMock(list_jobs=MagicMock(return_value=[]), status=MagicMock(return_value={})),

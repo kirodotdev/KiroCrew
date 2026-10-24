@@ -934,13 +934,28 @@ async def _run_thread_turn(
         hooks: HookManager | None = (
             state.context_builder.hooks if state.context_builder is not None else None
         )
+        # Deferred: chat_runner imports this module's neighbours at load.
+        from kiro_crew.dashboard.chat_runner import slot_backend, slot_backend_override
+
+        # The chat's own backend pick, read once: the posture below and the
+        # allocation both use it, so a switch landing between them cannot start
+        # the thread on a backend its posture was not built for.
+        picked = slot_backend_override(slot)
         try:
             # The config load reads files: off the loop. The resolver stays
             # inline on purpose, as the main chat's and the side chat's do --
             # offloading it would swallow a StopIteration into a Future and
             # hang the await; it reads only the warmed in-memory snapshot.
             cfg = await asyncio.to_thread(KiroCrewConfig.load)
-            backend = cfg.agent.acp_backend
+            # Gated as the session's own allocation is, so a pick policy
+            # disallows decides no posture.
+            backend = (
+                slot_backend(
+                    slot, cfg.agent.member_acp_backend, cfg.agent.acp_backend, picked=picked
+                )
+                if picked
+                else cfg.agent.acp_backend
+            )
             await warm_project_agent_names(
                 project or "", operation="thread_reply", source="dashboard"
             )
@@ -1006,6 +1021,7 @@ async def _run_thread_turn(
             cwd=project,
             start_priority=start_priority,
             **session_kwargs,
+            **picked,
         )
         acquired_key = session_key
         threads = await asyncio.to_thread(log.read_threads, history_key)

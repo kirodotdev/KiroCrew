@@ -500,6 +500,7 @@ PICK_GEN_WRITERS: dict[tuple[str, str], tuple[str, int]] = {
     # Settings' "follow the default" press: a person's choice for their own chats.
     # A crew's slot is app-owned, so the press never counts or clears it.
     ("dashboard/chat_follow_default.py", "_clear_loaded"): ("pick", 1),
+    ("dashboard/chat_handlers.py", "switch_slot_backend"): ("pick", 1),
     ("dashboard/session_control_parts/session_create.py", "create_session"): ("pick", 1),
     ("dashboard/session_control_parts/model_switch.py", "apply_pending_model_pick"): ("pick", 1),
     ("dashboard/server_runtime/config_watch.py", "_switch_provider"): ("runtime", 1),

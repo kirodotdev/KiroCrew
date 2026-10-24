@@ -51,7 +51,8 @@ if TYPE_CHECKING:
         get_instance,
         logger,
         sel,
-        select_provider_backend,
+        slot_backend,
+        subagents_attached_async,
     )
     from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
     from kiro_crew.dashboard.chat_turn.queue_cycle import _send_chat_done
@@ -70,21 +71,34 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_stats import _context_usage_payload
 
 
-async def _slash_command_backend(state: DashboardState, session_key: str) -> str:
+async def _slash_command_backend(state: DashboardState, session_key: str, slot: Any = None) -> str:
     """The backend a slash command on *session_key* would reach.
 
     A positively live provider answers for itself (peeked, never created);
-    otherwise the factory's member-aware selection does, so a dead row cannot
-    answer for its successor.
+    otherwise the factory's member-aware selection does, with *slot*'s own
+    backend pick, so a dead row cannot answer for its successor. A live
+    provider with a reset already queued (a backend switch) is retiring, so
+    the next turn's backend answers instead, unless attached sub-agents defer
+    that reset and the next turn still runs on the live session.
     """
     provider = state.sessions.get_provider(session_key)
-    if provider is not None and await state.sessions.is_provider_alive(session_key) is True:
+    retiring = (
+        slot is not None
+        and bool(getattr(slot, "_pending_reset_history_key", None))
+        and not await subagents_attached_async(state, slot, session_key, "slash_command_backend")
+    )
+    if (
+        provider is not None
+        and not retiring
+        and await state.sessions.is_provider_alive(session_key) is True
+    ):
         return capabilities_of(provider).backend
     agent_cfg = KiroCrewConfig.load().agent
-    backend = select_provider_backend(
-        session_key,
+    backend = slot_backend(
+        slot,
         getattr(agent_cfg, "member_acp_backend", ""),
         getattr(agent_cfg, "acp_backend", ""),
+        session_key,
     )
     return backend if isinstance(backend, str) else ACP_BACKEND_KIRO
 
@@ -614,7 +628,7 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     # member-aware successor selection. Acquisition still confirms support,
     # because the provider can be replaced between this probe and the claim.
     if first_word in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS:
-        _todos_backend = await _slash_command_backend(state, session_key)
+        _todos_backend = await _slash_command_backend(state, session_key, slot)
         if not capabilities_for(_todos_backend).supports_native_todos:
             _refuse_blocked_slash(turn)
             return _Flow.END
@@ -642,7 +656,13 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
             if _live_provider is not None
             else None
         )
-        if _live_provider is not None and _live_provider_alive is True:
+        # A live provider a backend switch queued for reset is retiring; the
+        # next turn's backend answers instead.
+        if (
+            _live_provider is not None
+            and _live_provider_alive is True
+            and not slot._pending_reset_history_key
+        ):
             # The same predicate every channel's /compact gate asks.
             _compact_unsupported = compact_unsupported_backend(_live_provider)
         elif _is_cc_provider:
@@ -652,10 +672,11 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
             # A dead registry row is not the harness dispatch would reach:
             # get_or_create evicts it and uses this same member-aware selector.
             _agent_cfg = KiroCrewConfig.load().agent
-            _cfg_backend = select_provider_backend(
-                session_key,
+            _cfg_backend = slot_backend(
+                slot,
                 getattr(_agent_cfg, "member_acp_backend", ""),
                 getattr(_agent_cfg, "acp_backend", ""),
+                session_key,
             )
             _compact_unsupported = (
                 _cfg_backend
@@ -707,7 +728,7 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
         and first_word != "/compact"
         and first_word not in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
     ):
-        _command_backend = await _slash_command_backend(state, session_key)
+        _command_backend = await _slash_command_backend(state, session_key, slot)
         if _command_backend == ACP_BACKEND_KAS or (
             _this_turn_is_clear and _command_backend in ACP_BACKENDS_LOCAL_CLEAR
         ):

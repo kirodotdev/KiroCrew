@@ -38,6 +38,8 @@ def _provider_mock() -> AsyncMock:
 def _make_state(tmp_path):
     """Create a DashboardState wired for _run_chat hook tests."""
     sessions = MagicMock(count=0)
+    # No session started on a backend pick, as for a real SessionManager.
+    sessions.allocation_backend_override = MagicMock(return_value=None)
     sessions.remove = AsyncMock()
     sessions.get_pid = MagicMock(return_value=None)
     state = DashboardState(
