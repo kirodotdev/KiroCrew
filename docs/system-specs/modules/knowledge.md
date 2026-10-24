@@ -824,9 +824,88 @@ citation format — is
 #### Entities → Nodes
 
 Each extracted entity becomes a node in the graph:
-- Deduplication: exact name matching + case-insensitive alias lookup
+- Deduplication: **conservative lexical resolution** (3-tier, described below)
 - If "DynamoDB" appears in chunk 1 and chunk 5, both map to the same node
+- Multilingual KB: "뮤직뱅크" and "Music Bank" resolve to the same node when a
+  lexical bridge exists (the alias of one matches the canonical name of the other)
 - Stored in SQLite `entities` table + in-memory `SimpleDiGraph`
+
+##### Entity Deduplication: Conservative Lexical Resolution
+
+`_store_entities` applies a 3-tier lookup to decide whether an extracted entity
+reuses an existing node or creates a new one.  Each tier is strictly more
+permissive than the previous but still safe.
+
+**Tier 1 — Canonical-name hit**:
+  `_store_entities` calls `find_entity(name)` once; that lookup runs
+  exact → case-insensitive → alias lookup.  When the returned candidate's
+  canonical name is casefold-equivalent to the incoming name, the hit is
+  classified as canonical and the entity is reused.  There is no separate
+  canonical-only lookup: the alias lookup may run inside `find_entity`, but a
+  candidate reached through an alias is never classified as Tier 1 — it falls
+  to Tier 2 and its guard.
+
+**Tier 2 — Name-to-existing-alias hit**:
+  When the candidate returned by that same `find_entity(name)` call has a
+  different canonical name, the hit came from the alias lookup: the incoming
+  entity's *own name* (not its aliases) matched one of the candidate's
+  persisted aliases.  This is NOT alias-to-alias.  Covers the KO→EN case where
+  the Korean entity was ingested first and already carries the English name as
+  an alias.
+  Type conflicts (different `entity_type`) are rejected — the same name string
+  used by two conceptually different entity types is treated as a distinct entity.
+
+**Tier 3 — Alias-to-canonical fallback**:
+  Each extracted alias is tested with `find_entity(alias)`.  A candidate is
+  reused only when its canonical name is casefold-equivalent to the alias
+  (canonical-equality guard — a candidate reached only through its own
+  aliases is rejected) AND entity types do not conflict.  Covers the EN→KO
+  case where the English entity was ingested first.
+
+**Invariants preserved across all tiers:**
+- Alias-to-alias matches never trigger reuse (only prevents transitive merges).
+- Entity-type conflicts in Tier 2 and Tier 3 always produce a new entity (not a
+  silent merge); those tiers normalise missing/empty types to ``'concept'``
+  before comparing.  Tier 1 (canonical-name match) has **no** type guard by
+  design: the same canonical name implies the same real-world entity regardless
+  of the LLM's per-chunk classification, and rejecting on a type mismatch would
+  create an unbounded duplicate row on every re-ingest (no ``UNIQUE(name)``
+  constraint exists and no merge path would close the gap).
+- Ingestion order does not affect the final entity count when a lexical bridge
+  exists in the extraction output.
+
+**Tier-scoped enrichment** (when reusing an existing entity):
+- Tier 1: `add_entity_aliases(aliases)` — canonical match; `name` is always
+  rejected by `add_entity_aliases` (casefold-equivalent to canonical), so
+  passing it wastes a lock acquisition per entity.
+- Tier 2: no enrichment — incoming name already in existing aliases; adding the
+  incoming entity's own aliases could enable transitive merges.
+- Tier 3: `add_entity_aliases([name])` only — alias matched canonical; adding
+  the incoming entity's own aliases risks the same transitive collision.
+
+`KnowledgeStore.add_entity_aliases` is the only write path for alias enrichment.
+It runs in `BEGIN IMMEDIATE` and enforces the structural invariants the store
+alone can check: casefold dedupe against canonical + existing + accepted →
+cap (MAX_ENTITY_ALIASES).  Length truncation (MAX_ENTITY_ALIAS_LEN), redaction
+of credentials/URLs and whitespace stripping are the caller's responsibility
+(`_coerce_aliases` in ingestion) before calling.  Aliases past the cap are
+discarded and counted, and the call logs ONE warning naming the count when any
+were discarded — including when the entity was already full, so saturation is
+never silent.  The row is written only when an alias was accepted.
+
+**Alias lookup is indexed.**  `entity_aliases(alias_key, entity_id)` holds one
+row per `str.casefold()`ed alias per entity.  SQL cannot compute that key, so
+every writer of `entities.aliases` — `add_entity`, `add_entity_aliases`,
+`import_bundle` — writes the rows through `index_entity_aliases` in the same
+transaction as the entity row; a delete trigger on `entities` drops them with
+the entity, so merges and the orphan sweep need nothing.  `find_entity`'s alias
+leg is then one probe of `idx_entity_aliases_key` that folds Unicode case
+(`MÜNCHEN`, `STRASSE`/`Straße`), instead of a `json.loads` per aliased entity
+on every query term.  A library that predates the table gets it filled by the
+post-bind one-time build (`ensure_search_indexes` → `_ensure_entity_alias_index`),
+which creates the key index in the same transaction as the fill; until that
+index exists `find_entity` keeps the old scan, so results never depend on the build.
+
 
 #### Relations → Edges
 
