@@ -96,7 +96,11 @@ class TestCancelSession:
     async def test_cancel_no_session_id_skips(self, tmp_path):
         client = AcpClient(work_dir=tmp_path)
         client._session_id = None
+        cancel_ts = client._cancel_ts
         await client.cancel_session()  # should not raise
+        # No session to cancel, so no cancel is armed for the read loop.
+        assert client._cancelled is False
+        assert client._cancel_ts == cancel_ts
 
     @pytest.mark.asyncio
     async def test_cancel_no_process_skips(self, tmp_path):
@@ -311,15 +315,19 @@ class TestParseSlashCommand:
         assert name == "compact"
         assert args == {}
 
-    def test_command_with_value(self):
-        name, args = parse_slash_command("/agent planner")
-        assert name == "agent"
-        assert args == {"value": "planner"}
-
-    def test_command_with_multi_word_value(self):
-        name, args = parse_slash_command("/usage detailed view")
-        assert name == "usage"
-        assert args == {"value": "detailed view"}
+    @pytest.mark.parametrize(
+        ("text", "expected_name", "expected_value"),
+        [
+            pytest.param("/agent planner", "agent", "planner", id="command_with_value"),
+            pytest.param(
+                "/usage detailed view", "usage", "detailed view", id="command_with_multi_word_value"
+            ),
+        ],
+    )
+    def test_command_value(self, text, expected_name, expected_value):
+        name, args = parse_slash_command(text)
+        assert name == expected_name
+        assert args == {"value": expected_value}
 
 
 class TestStreamCommand:

@@ -1142,6 +1142,8 @@ class TestTheEffortChannelIsReadFromItsOwnTable:
         """
         provider = _effort_provider(ACP_BACKEND_KIRO, "claude-fable-5")
         provider._effort_per_model = {"claude-fable-5": "high"}
+        # A level resolves, so the missing push is the channel set's doing.
+        assert provider._resolve_effort() == "high"
         await provider._apply_initial_effort()
         provider._client.set_config_option.assert_not_awaited()
 

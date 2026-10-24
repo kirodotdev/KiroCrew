@@ -826,12 +826,16 @@ class TestTheCompositionPath:
         self._spec(agents_dir, servers={}, tools=["@ghost"])
         client = self._client(tmp_path, agents_dir, ACP_BACKEND_CODEX)
 
+        reached = []
+
         def _boom(*_a, **_k):
+            reached.append(True)
             raise RuntimeError("guard exploded")
 
         monkeypatch.setattr(client_mod, "warn_unresolved_server_refs", _boom)
         client._begin_session_report([])
         client._guard_unresolved_mcp_refs([])  # must not raise
+        assert reached == [True]
 
     def test_a_spec_that_cannot_be_read_leaves_no_snapshot(self, tmp_path, agents_dir, monkeypatch):
         client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CODEX)

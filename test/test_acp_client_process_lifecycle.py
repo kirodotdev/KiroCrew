@@ -15,15 +15,14 @@ from kiro_crew.acp.client import AcpClient, AcpProcessDied
 
 
 class TestGetChildPids:
-    def test_nonexistent_pid(self):
+    @pytest.mark.parametrize(
+        "pid",
+        [pytest.param(999999, id="nonexistent_pid"), pytest.param(None, id="none_pid")],
+    )
+    def test_no_children(self, pid):
         from kiro_crew.acp.client import _get_child_pids
 
-        assert _get_child_pids(999999) == []
-
-    def test_none_pid(self):
-        from kiro_crew.acp.client import _get_child_pids
-
-        assert _get_child_pids(None) == []
+        assert _get_child_pids(pid) == []
 
     def test_own_pid_returns_list(self):
         import os
@@ -53,7 +52,24 @@ class TestIsOurChild:
 
         assert _is_our_child(999999) is False
 
-    def test_own_pid_matches_with_basename(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("live", "recorded", "expected"),
+        [
+            # With correct start_time and basename, should match
+            pytest.param(b"python3", b"python3", True, id="own_pid_matches_with_basename"),
+            pytest.param(b"node", b"node", True, id="basename_match_returns_true"),
+            # Recorded as node, but live reads as firefox → recycled
+            pytest.param(b"firefox", b"node", False, id="basename_mismatch_returns_false"),
+            # Any binary recorded at spawn is supervised — no allowlist needed.
+            pytest.param(
+                b"some-future-mcp-server",
+                b"some-future-mcp-server",
+                True,
+                id="novel_binary_tracked",
+            ),
+        ],
+    )
+    def test_basename_check(self, monkeypatch, live, recorded, expected):
         import sys
 
         import kiro_crew.acp.client as client_mod
@@ -61,44 +77,8 @@ class TestIsOurChild:
 
         monkeypatch.setattr("kiro_crew.platform_compat.get_process_start_id", lambda pid: 42)
         monkeypatch.setattr(sys, "platform", "darwin")
-        monkeypatch.setattr(
-            client_mod.subprocess_mod,
-            "check_output",
-            lambda cmd, **kw: b"python3",
-        )
-        # With correct start_time and basename, should match
-        assert _is_our_child(999, expected_start=42, expected_basename=b"python3") is True
-
-    def test_basename_match_returns_true(self, monkeypatch):
-        import sys
-
-        import kiro_crew.acp.client as client_mod
-        from kiro_crew.acp.client import _is_our_child
-
-        monkeypatch.setattr("kiro_crew.platform_compat.get_process_start_id", lambda pid: 42)
-        monkeypatch.setattr(sys, "platform", "darwin")
-        monkeypatch.setattr(
-            client_mod.subprocess_mod,
-            "check_output",
-            lambda cmd, **kw: b"node",
-        )
-        assert _is_our_child(999, expected_start=42, expected_basename=b"node") is True
-
-    def test_basename_mismatch_returns_false(self, monkeypatch):
-        import sys
-
-        import kiro_crew.acp.client as client_mod
-        from kiro_crew.acp.client import _is_our_child
-
-        monkeypatch.setattr("kiro_crew.platform_compat.get_process_start_id", lambda pid: 42)
-        monkeypatch.setattr(sys, "platform", "darwin")
-        monkeypatch.setattr(
-            client_mod.subprocess_mod,
-            "check_output",
-            lambda cmd, **kw: b"firefox",
-        )
-        # Recorded as node, but live reads as firefox → recycled
-        assert _is_our_child(999, expected_start=42, expected_basename=b"node") is False
+        monkeypatch.setattr(client_mod.subprocess_mod, "check_output", lambda cmd, **kw: live)
+        assert _is_our_child(999, expected_start=42, expected_basename=recorded) is expected
 
     def test_no_start_time_rejects(self):
         import os
@@ -116,26 +96,6 @@ class TestIsOurChild:
         # Our own PID with a wrong start time → should reject (recycled)
         assert _is_our_child(os.getpid(), expected_start=-999) is False
 
-    def test_novel_binary_tracked(self, monkeypatch):
-        """Any binary recorded at spawn is supervised — no allowlist needed."""
-        import sys
-
-        import kiro_crew.acp.client as client_mod
-        from kiro_crew.acp.client import _is_our_child
-
-        monkeypatch.setattr("kiro_crew.platform_compat.get_process_start_id", lambda pid: 42)
-        monkeypatch.setattr(sys, "platform", "darwin")
-        monkeypatch.setattr(
-            client_mod.subprocess_mod,
-            "check_output",
-            lambda cmd, **kw: b"some-future-mcp-server",
-        )
-        # Novel binary name that would have failed the old allowlist
-        assert (
-            _is_our_child(999, expected_start=42, expected_basename=b"some-future-mcp-server")
-            is True
-        )
-
     def test_none_basename_denied_fail_closed(self, monkeypatch):
         """When no basename was recorded, deny (fail-closed)."""
         from kiro_crew.acp.client import _is_our_child
@@ -147,15 +107,43 @@ class TestIsOurChild:
 
 @_POSIX_ONLY
 class TestKillEscapedChildren:
-    def test_empty_dict(self):
+    @staticmethod
+    def _record_sweep(monkeypatch, alive: bool) -> dict[str, list]:
+        """Route the sweep's liveness, ownership and kill seams into one record."""
+        from kiro_crew import platform_compat
+        from kiro_crew.acp import runtime_process_tree
+
+        seen: dict[str, list] = {"probed": [], "owned": [], "killed": []}
+
+        def _pid_exists(pid):
+            seen["probed"].append(pid)
+            return alive
+
+        def _is_our_child(pid, **_kw):
+            seen["owned"].append(pid)
+            return True
+
+        monkeypatch.setattr(platform_compat, "pid_exists", _pid_exists)
+        monkeypatch.setattr(runtime_process_tree, "_is_our_child", _is_our_child)
+        monkeypatch.setattr(
+            platform_compat, "kill_pid", lambda pid, sig: seen["killed"].append(pid)
+        )
+        return seen
+
+    def test_empty_dict(self, monkeypatch):
         from kiro_crew.acp.client import _kill_escaped_children
 
+        seen = self._record_sweep(monkeypatch, alive=True)
         _kill_escaped_children({})
+        assert seen == {"probed": [], "owned": [], "killed": []}
 
-    def test_dead_pids_skipped(self):
+    def test_dead_pids_skipped(self, monkeypatch):
         from kiro_crew.acp.client import _kill_escaped_children
 
+        seen = self._record_sweep(monkeypatch, alive=False)
         _kill_escaped_children({999998: None, 999999: None})
+        # Leaf-first probe of both, and a gone pid is never vetted or killed.
+        assert seen == {"probed": [999999, 999998], "owned": [], "killed": []}
 
     def test_reverse_order_and_allowlist(self, monkeypatch):
         import kiro_crew.acp.client as client_mod
@@ -578,7 +566,12 @@ class TestKillProcess:
     async def test_noop_when_no_process(self):
         client = AcpClient()
         client._process = None
-        await client._kill_process()  # should not raise
+        with patch(
+            "kiro_crew.platform_compat.kill_process_tree_async", new=AsyncMock()
+        ) as tree_kill:
+            await client._kill_process()
+        tree_kill.assert_not_awaited()
+        assert client._kill_sent is None
 
     @pytest.mark.asyncio
     async def test_noop_when_already_exited(self):
@@ -586,7 +579,13 @@ class TestKillProcess:
         proc = MagicMock()
         proc.returncode = 0
         client._process = proc
-        await client._kill_process()  # should not raise
+        with patch(
+            "kiro_crew.platform_compat.kill_process_tree_async", new=AsyncMock()
+        ) as tree_kill:
+            await client._kill_process()
+        tree_kill.assert_not_awaited()
+        assert client._kill_sent is None
+        proc.stdin.close.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_sigterm_success(self):
@@ -698,6 +697,9 @@ class TestKillProcess:
             await client._kill_process(force=True)
 
         proc.kill.assert_called_once()
+        from kiro_crew import platform_compat
+
+        assert client._kill_sent == (int(platform_compat.SIGKILL), "forced stop")
 
     @pytest.mark.asyncio
     async def test_kill_process_awaits_async_variant_not_sync(self):
@@ -926,4 +928,10 @@ class TestKillProcessPipeClose:
             patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
             patch("kiro_crew.acp.client._kill_escaped_children"),
         ):
-            await client._kill_process()  # should not raise
+            await client._kill_process()
+
+        # The failed stdin close neither stops the other pipes closing nor the kill.
+        proc.stdout.close.assert_called_once_with()
+        from kiro_crew import platform_compat
+
+        assert client._kill_sent == (int(platform_compat.SIGTERM), "stop requested")

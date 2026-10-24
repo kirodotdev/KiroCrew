@@ -156,12 +156,15 @@ class TestMounting:
         assert "granted" in names
         assert "ungranted" not in names
 
-    def test_tool_scoped_reference_mounts_the_server(self, agents_dir):
-        _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo/only_this"])
-        assert "foo" in _by_name(session_mcp.session_mcp_servers("kirocrew"))
-
-    def test_wildcard_reference_mounts_everything(self, agents_dir):
-        _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["*"])
+    @pytest.mark.parametrize(
+        "tools",
+        [
+            pytest.param(["@foo/only_this"], id="tool_scoped_reference_mounts_the_server"),
+            pytest.param(["*"], id="wildcard_reference_mounts_everything"),
+        ],
+    )
+    def test_reference_mounts_the_server(self, agents_dir, tools):
+        _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=tools)
         assert "foo" in _by_name(session_mcp.session_mcp_servers("kirocrew"))
 
     def test_a_spec_without_tools_mounts_nothing(self, agents_dir):

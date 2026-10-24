@@ -32,12 +32,20 @@ class TestAcpClientReadMessage:
         assert msg.result == {"ok": True}
 
     @pytest.mark.asyncio
-    async def test_read_non_json_skipped(self, tmp_path):
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param(b"not json\n", id="read_non_json_skipped"),
+            pytest.param(b"\n", id="read_empty_line"),
+            pytest.param(b"", id="read_eof"),
+        ],
+    )
+    async def test_read_yields_no_message(self, tmp_path, line):
         client = AcpClient(work_dir=tmp_path)
 
         mock_process = MagicMock()
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(return_value=b"not json\n")
+        mock_stdout.readline = AsyncMock(return_value=line)
         mock_process.stdout = mock_stdout
         mock_process.returncode = None
         client._process = mock_process
@@ -90,34 +98,6 @@ class TestAcpClientReadMessage:
 
         result = await client._wait_for_response(1, timeout=2.0, method="initialize")
         assert result == {"protocolVersion": 1}
-
-    @pytest.mark.asyncio
-    async def test_read_empty_line(self, tmp_path):
-        client = AcpClient(work_dir=tmp_path)
-
-        mock_process = MagicMock()
-        mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(return_value=b"\n")
-        mock_process.stdout = mock_stdout
-        mock_process.returncode = None
-        client._process = mock_process
-
-        msg = await client._read_message(timeout=1.0)
-        assert msg is None
-
-    @pytest.mark.asyncio
-    async def test_read_eof(self, tmp_path):
-        client = AcpClient(work_dir=tmp_path)
-
-        mock_process = MagicMock()
-        mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(return_value=b"")
-        mock_process.stdout = mock_stdout
-        mock_process.returncode = None
-        client._process = mock_process
-
-        msg = await client._read_message(timeout=1.0)
-        assert msg is None
 
     @pytest.mark.asyncio
     async def test_read_buffer_overrun_drops_frame_and_keeps_reading(self, tmp_path):
@@ -358,17 +338,10 @@ class TestAcpClientTrackUsageUpdate:
         assert client.last_prompt_stats.credits == 1.5
         assert client.last_prompt_stats.context_pct == 40.8
 
-    def test_missing_fields_leave_tokens_zero(self, tmp_path):
-        client = AcpClient(work_dir=tmp_path)
-        client._track_usage_update(self._usage_msg(None, None))
-        stats = client.last_prompt_stats
-        assert stats.context_pct == 0.0
-        assert stats.context_used_tokens == 0
-        assert stats.context_window_tokens == 0
-
     @pytest.mark.parametrize(
         "used,size",
         [
+            pytest.param(None, None, id="missing_fields_leave_tokens_zero"),
             ("50000", "200000"),  # numeric strings: `size > 0` raises TypeError
             (50000, "200000"),
             ([50000], 200000),

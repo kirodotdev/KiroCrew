@@ -215,15 +215,19 @@ class TestAwsCredentialPointersAreNotExportedIntoThePod:
     environment does keep ``AWS_*`` (via ``build_pod_env``), but the ACP child's
     is scrubbed after it."""
 
-    def test_does_not_export_aws_config_file(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "pointer",
+        [
+            pytest.param("AWS_CONFIG_FILE", id="does_not_export_aws_config_file"),
+            pytest.param(
+                "AWS_SHARED_CREDENTIALS_FILE", id="does_not_export_aws_shared_credentials_file"
+            ),
+        ],
+    )
+    def test_does_not_export_the_pointer(self, tmp_path: Path, pointer: str) -> None:
         env = _base_pod_env(tmp_path)
         out = _apply_pod_home_remap(env, pod_home_remap=True)
-        assert "AWS_CONFIG_FILE" not in out
-
-    def test_does_not_export_aws_shared_credentials_file(self, tmp_path: Path) -> None:
-        env = _base_pod_env(tmp_path)
-        out = _apply_pod_home_remap(env, pod_home_remap=True)
-        assert "AWS_SHARED_CREDENTIALS_FILE" not in out
+        assert pointer not in out
 
     def test_no_real_home_path_leaks_into_the_child_env_at_all(self, tmp_path: Path) -> None:
         """The point of the removal: no value handed to the child may name the

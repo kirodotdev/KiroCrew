@@ -142,21 +142,20 @@ class TestApplyToolSearchOverlay:
 
 
 class TestInitWiring:
-    def test_kiro_enabled_applies_on_init(self):
+    @pytest.mark.parametrize(
+        ("backend", "applied"),
+        [
+            pytest.param("", 1, id="kiro_enabled_applies_on_init"),
+            pytest.param(ACP_BACKEND_CLAUDE, 0, id="claude_backend_does_not_apply_on_init"),
+        ],
+    )
+    def test_overlay_on_init(self, backend, applied):
         with patch("kiro_crew.providers.acp.AcpClient") as mock_client, patch.object(
             AcpProvider, "_apply_tool_search_overlay"
         ) as ats:
-            mock_client.return_value.backend = ""
-            AcpProvider(acp_backend="", tool_search=True)
-        ats.assert_called_once()
-
-    def test_claude_backend_does_not_apply_on_init(self):
-        with patch("kiro_crew.providers.acp.AcpClient") as mock_client, patch.object(
-            AcpProvider, "_apply_tool_search_overlay"
-        ) as ats:
-            mock_client.return_value.backend = ACP_BACKEND_CLAUDE
-            AcpProvider(acp_backend=ACP_BACKEND_CLAUDE, tool_search=True)
-        ats.assert_not_called()
+            mock_client.return_value.backend = backend
+            AcpProvider(acp_backend=backend, tool_search=True)
+        assert ats.call_count == applied
 
 
 # ── Config plumbing ──────────────────────────────────────────────────────────
@@ -224,19 +223,20 @@ class TestConfigurableThresholds:
     thresholds to 0 imposed that cost on every install, including ones whose
     specs were nowhere near large enough for deferral to pay for itself."""
 
-    def test_configured_values_are_written(self, tmp_path):
-        _write_tool_search_overlay(tmp_path, True, 12, 1234)
+    @pytest.mark.parametrize(
+        ("min_pct", "min_tokens"),
+        [
+            pytest.param(12, 1234, id="configured_values_are_written"),
+            # Deliberately supported: an operator who wants unconditional deferral
+            # can still ask for it.
+            pytest.param(0, 0, id="zero_zero_still_defers_always"),
+        ],
+    )
+    def test_thresholds_are_written(self, tmp_path, min_pct, min_tokens):
+        _write_tool_search_overlay(tmp_path, True, min_pct, min_tokens)
         data = json.loads(_cli_json(tmp_path).read_text(encoding="utf-8"))
-        assert data["toolSearch.minPct"] == 12
-        assert data["toolSearch.minTokens"] == 1234
-
-    def test_zero_zero_still_defers_always(self, tmp_path):
-        # Deliberately supported: an operator who wants unconditional deferral
-        # (the previous hard-coded behaviour) can still ask for it.
-        _write_tool_search_overlay(tmp_path, True, 0, 0)
-        data = json.loads(_cli_json(tmp_path).read_text(encoding="utf-8"))
-        assert data["toolSearch.minPct"] == 0
-        assert data["toolSearch.minTokens"] == 0
+        assert data["toolSearch.minPct"] == min_pct
+        assert data["toolSearch.minTokens"] == min_tokens
 
     def test_stale_forced_zeros_are_overwritten(self, tmp_path):
         # Migration: machines configured by an earlier build already carry

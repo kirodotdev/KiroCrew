@@ -50,9 +50,12 @@ class TestStoreSessionConfig:
     def test_calls_sync_effort_levels(self):
         client = AcpClient()
         resp = {"configOptions": [{"id": "effort", "options": [{"value": "low"}]}]}
+        seen: list = []
         with patch.object(client, "_sync_effort_levels") as mock_sync:
+            # The sync reads the stored options, so it must run after they land.
+            mock_sync.side_effect = lambda: seen.append(list(client._acp_config_options))
             client._store_session_config(resp)
-        mock_sync.assert_called_once()
+        assert seen == [resp["configOptions"]]
 
 
 class TestHandleConfigOptionUpdate:

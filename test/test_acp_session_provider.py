@@ -133,18 +133,13 @@ class TestAcpSessionProviderLifecycle:
     async def test_start_is_noop(self):
         handle = _make_handle()
         runtime = _make_runtime()
-        provider = AcpSessionProvider(handle, runtime)
-        # Should not raise
+        # An owning provider, because start() is deliberately NOT where the
+        # runtime lease is taken.
+        provider = AcpSessionProvider(handle, runtime, owns_runtime=True)
         await provider.start()
-
-    @pytest.mark.asyncio
-    async def test_shutdown_destroys_handle(self):
-        handle = _make_handle()
-        runtime = _make_runtime()
-        provider = AcpSessionProvider(handle, runtime)
-
-        await provider.shutdown()
-        handle.destroy.assert_awaited_once()
+        assert provider._runtime_lease is None
+        assert handle.mock_calls == []
+        assert runtime.mock_calls == []
 
     @pytest.mark.asyncio
     async def test_shutdown_handles_destroy_error(self):
@@ -205,7 +200,7 @@ class TestAcpSessionProviderLifecycle:
         provider = AcpSessionProvider(handle, runtime, owns_runtime=True)
 
         await provider.shutdown()
-        runtime.kill.assert_awaited_once()
+        runtime.kill.assert_awaited_once_with(expected=True, reason="provider shutdown")
         handle.destroy.assert_not_awaited()
         handle.cancel.assert_not_awaited()
 
@@ -546,7 +541,8 @@ class TestAcpSessionProviderClientCompat:
         handle = _make_handle()
         runtime = _make_runtime(alive=True)
         provider = AcpSessionProvider(handle, runtime)
-        await provider.ensure_ready()  # Should not raise
+        assert await provider.ensure_ready() is None
+        runtime.is_alive.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_ensure_ready_dead_raises(self):
@@ -704,29 +700,6 @@ class TestAcpSessionProviderOwnsRuntime:
     """Tests for owns_runtime=True behavior (parent session path)."""
 
     @pytest.mark.asyncio
-    async def test_shutdown_kills_runtime_when_owns(self):
-        """When owns_runtime=True, shutdown kills the entire runtime."""
-        handle = _make_handle()
-        runtime = _make_runtime()
-        runtime.kill = AsyncMock()
-        provider = AcpSessionProvider(handle, runtime, owns_runtime=True)
-
-        await provider.shutdown()
-        runtime.kill.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_shutdown_only_destroys_handle_when_not_owns(self):
-        """When owns_runtime=False (default), shutdown only destroys the handle."""
-        handle = _make_handle()
-        runtime = _make_runtime()
-        runtime.kill = AsyncMock()
-        provider = AcpSessionProvider(handle, runtime, owns_runtime=False)
-
-        await provider.shutdown()
-        handle.destroy.assert_awaited_once()
-        runtime.kill.assert_not_awaited()
-
-    @pytest.mark.asyncio
     async def test_shutdown_handles_kill_failure(self):
         """shutdown doesn't raise when runtime.kill() fails."""
         handle = _make_handle()
@@ -734,8 +707,8 @@ class TestAcpSessionProviderOwnsRuntime:
         runtime.kill = AsyncMock(side_effect=OSError("already dead"))
         provider = AcpSessionProvider(handle, runtime, owns_runtime=True)
 
-        # Should not raise
         await provider.shutdown()
+        runtime.kill.assert_awaited_once_with(expected=True, reason="provider shutdown")
 
 
 class TestAcpSessionProviderRound4Parity:
@@ -1141,6 +1114,7 @@ class TestNewConversation:
         # The isolation guarantee: the prior session is torn down on the shared
         # process (frees its transcript/context + MCP children — no cross-task bleed).
         old.destroy.assert_awaited_once()
+        assert provider._handle is not old
 
     @pytest.mark.asyncio
     async def test_raises_when_runtime_dead(self):
@@ -1292,6 +1266,7 @@ class TestNewConversation:
         await provider.new_conversation()
 
         new_handle.set_model.assert_not_awaited()
+        assert provider._handle is new_handle
 
     @pytest.mark.asyncio
     async def test_model_reapply_failure_tears_down_and_raises(self):

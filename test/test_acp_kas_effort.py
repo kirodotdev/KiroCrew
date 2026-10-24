@@ -86,6 +86,9 @@ async def test_session_start_pushes_the_configured_level(
 @pytest.mark.asyncio
 async def test_nothing_is_sent_when_no_effort_is_configured() -> None:
     provider = _kas_provider()
+    # KAS is on the config-option channel, so only the missing level stops the push.
+    assert provider.capabilities.effort_via_config_option is True
+    assert not provider._resolve_effort()
     await provider._apply_initial_effort()
     provider._client.set_config_option.assert_not_awaited()
     provider._client.send_command.assert_not_awaited()

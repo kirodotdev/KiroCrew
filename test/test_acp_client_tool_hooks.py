@@ -75,13 +75,17 @@ class TestAcpClientToolAudit:
 
     @pytest.mark.asyncio
     async def test_swallows_sel_errors(self, monkeypatch):
+        reached = []
+
         def _boom():
+            reached.append(True)
             raise RuntimeError("SEL backend down")
 
         monkeypatch.setattr(acp_client, "sel", _boom)
         client = AcpClient(session_key="sk", audit_source="subagent")
         # A SEL failure must never break tool dispatch.
         await client._maybe_audit_tool_call(self._ev())
+        assert reached == [True]
 
     @pytest.mark.asyncio
     async def test_hung_backend_times_out_and_is_swallowed(self, monkeypatch):
@@ -669,16 +673,23 @@ class TestAcpClientToolHooks:
     @pytest.mark.asyncio
     async def test_noop_when_hook_store_uninitialized(self, monkeypatch):
         # get_global_hook_store() returns None before the dashboard registers it.
-        monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: None)
+        looked_up = []
+        monkeypatch.setattr(
+            acp_client, "get_global_hook_store", lambda: looked_up.append(True) or None
+        )
         client = AcpClient(session_key="sk", audit_source="subagent")
         # Must not raise despite no store.
         await client._maybe_fire_pre_tool_hooks(self._call_ev())
         await client._maybe_fire_post_tool_hooks(self._result_ev())
+        assert looked_up == [True, True]
 
     @pytest.mark.asyncio
     async def test_swallows_hook_engine_errors(self, monkeypatch):
+        fired = []
+
         class _BoomStore:
             async def fire(self, event, **kw):
+                fired.append(event)
                 raise RuntimeError("hook engine down")
 
         monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: _BoomStore())
@@ -688,6 +699,7 @@ class TestAcpClientToolHooks:
         # A hook-engine failure must never break tool dispatch.
         await client._maybe_fire_pre_tool_hooks(self._call_ev())
         await client._maybe_fire_post_tool_hooks(self._result_ev())
+        assert fired == ["PreToolUse", "PostToolUse"]
 
     @pytest.mark.asyncio
     async def test_read_prompt_response_update_fires_hooks(self, monkeypatch):
