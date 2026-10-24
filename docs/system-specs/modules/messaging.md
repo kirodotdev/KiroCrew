@@ -59,6 +59,7 @@ legacy metadata do not override a canonical execution.
 | `messaging/transport.py` | **Layer 1** — `MessagingTransport` ABC + the `TransportCapabilities`, `InboundMessage`, and `ConfiguredChannelTarget` value objects (stdlib-only) |
 | `messaging/attachments.py` | Channel-neutral attachment classification, bounded streaming download, extraction/redaction, opaque-file preservation, temp ownership, and SEL audit |
 | `messaging/driver.py` | **Layer 2** — `TurnDriver` (channel-neutral turn loop), approval-mode constants, `_redact` helper |
+| `messaging/dashboard_live.py` | `DashboardLiveRenderer` + `TeeRenderer`: a channel turn shown live in its dashboard tab. See [Live dashboard view of a channel turn](#live-dashboard-view-of-a-channel-turn-dashboard_livepy) |
 | `messaging/empty_turn_copy.py` | The sentences a turn that ended with no assistant text owes the user — the empty-turn verdict's wording, shared by the channel driver and the dashboard runner (`chat_runner`) so a channel thread mirrored into the dashboard reads one story. Two remedies, spelled once: a turn that did no work is told to resend; a turn whose tool already ran is told to continue from where it stopped, never to resend (a resend runs the side effect twice). Stdlib-only leaf, no `kiro_crew` imports |
 | `messaging/renderer.py` | **Layer 2b** — `Renderer` ABC, `OutputEvent`, output-kind constants + `OUTPUT_KINDS`, `chunk_text` helper, `chunk_for_transport` (splits into the transport's own unit: the byte path through `split_markdown_bytes` with a grade-and-re-split loop that falls back to a collapse-clean body, the char path through the credential-aware `split_markdown_safe` plus `bounded_for_delivery`; its optional `redactor` defaults to `_default_redactor`, and a composed host passes its own `redact_via_context`), `session_provenance_tag` (stable callback affinity without exposing session keys), `apply_options_cap`/`cap_choices`/`format_overflow` (`max_buttons` enforcement), `split_options_trailer` (the ONE `[OPTIONS:]` parse — see below; it, `slack/format.py` and the WhatsApp renderer first recover a trailing `[OPTIONS:]` marker glued onto the last line through `constants.relocate_glued_tail_marker`), and `render_options_as_text` — the whole-trailer path for a send with no widget, which numbers every choice through `format_overflow` whatever `max_buttons` says (Weixin, iMessage and Feishu call it, WeCom has its own streaming copy; WhatsApp declares `max_buttons=0` and strips the trailer instead, so a `0` alone does not promise the list survives). The proactive legs in `dashboard/messaging_api/channel_delivery.py` (owner DM, the session's own conversation, a configured target) the cross-surface reply mirror (`dashboard/chat_turn/recipient.py::_deliver_cross_surface_reply`) and the mirror-link backfill of past answers (`dashboard/chat_mirror.py`) call it on every channel, after the display pass: `transport.send_message` takes no choices, so those sends show the choices as a numbered list rather than the raw marker. Also `credential_redaction_notice(count)` — the one sentence a channel sends when credential redaction rewrote text it already delivered, so the reader learns a pasted command will not run. Shared so the wording cannot fork per channel and each spelling need its own audit for leaked bytes; it carries only the count, never secret bytes, and is plain text with no markup or emoji because one string ships to platforms that render different dialects (or none). `redaction_notice(cred_count, url_count)` is the by-kind superset every channel delivery surface now posts through: it delegates to `credential_redaction_notice` byte-for-byte when `url_count` is zero, and otherwise names the suspicious-URL rewrite (`security.EXFILTRATION_REDACTION_TAG_PREFIX`, counted by prefix because the tag interpolates the domain) with the URL remedy — re-check the link against a trusted source — because telling a reader whose URL was rewritten to "supply the secret" names a remedy that cannot help them. Zero/zero is a `ValueError`, never an empty message. `count_redaction_tags(text)` is the shared two-kind tally beside it — exact-match over `CREDENTIAL_REDACTION_TAGS`, prefix-match for the URL tag — so a surface cannot adopt half the count and post a notice worded for the wrong remedy; every counting site routes through it. The notice itself is posted IN-RENDERER at every channel delivery surface, one best-effort follow-up message per turn: each renderer counts the text IT actually delivered — which can differ from the driver's accumulated view, because several renderers run a second display-form redaction pass at their own egress (Slack, Telegram, Teams and Discord re-redact against what the platform RENDERS, so their delivered form can carry placeholders the driver's byte-level stream scan never wrote) — and a failed notice send is logged, never raised, because the answer is already out. It is never folded into the answer text: renderers refuse text once finalized, and prose after an `[OPTIONS:]` trailer breaks the trailer parsers, which require it to END the text. Discord and Telegram tally per LANDED message across seals, recovery re-posts and the posted reasoning (streaming edits supersede each other, so only sealed forms count); Slack counts the final display-safe body plus the posted 💭 reasoning in one tally; WeCom tallies at `on_done` but posts from `close()`, where its deferred-overflow delivery finally settles, consumed on the first call so a second `close()` cannot post twice; `SilentRenderer` posts nothing because it delivers nothing |
 | `messaging/approval.py` | Two channel-neutral approval styles behind one INTERACTIVE `decider`, both deny-by-default on timeout (recording `last_deny_cause = approval_timeout` for the driver, below) and keyed `session_key`+`request_id`. **Typed reply** (`TEXT_APPROVAL_TIMEOUT_S`, the verdict vocabulary, `TextReplyApprovalDecider`) for a `max_buttons=0` channel, with Trust recorded as the session's own approval policy rather than a second trust store. **Widget awaiter** (`PendingApprovals` + `SessionApprovalDecider`) for a press whose correlation id and per-prompt nonce travel a round trip this module cannot see (a Webex Adaptive Card over the device websocket); a typed answer has no nonce, a press has no free text. Also `adoptable_reservation(pending, loop)`, the one rule for whether a stored future may be adopted as a reservation: a channel's registry is process-global and outlives any one event loop, so an entry a closed loop left behind is reachable by key, and awaiting it raises `attached to a different loop` while its lack of a result is not a decision either. Foreign-loop entries are refused whether or not they carry a result, because a verdict recorded on a loop that has ended cannot answer a later request. It lives here, not in each channel, because three copies of an adoption rule is how the per-channel registries diverged in the first place |
@@ -710,6 +711,64 @@ output, which a muted turn always did. It is also deliberately NOT published int
 dispatcher's `_active_renderers`, which silences the mid-turn steer chip and keeps
 channel-local APIs (`note_steer`) off the shared class. Slack never reaches these
 pipelines — it drives its own gateway and is gated by `slack_mirror_is_paused`.
+
+### Live dashboard view of a channel turn (`dashboard_live.py`)
+
+A channel-born conversation's dashboard tab is bound to the channel session, but
+its turns run on the channel path, which writes only the user's row at receipt
+and the reply at the end. To show the turn in between, the Slack transport hands
+the driver a `TeeRenderer(slack_renderer, DashboardLiveRenderer(sink))` and the
+live renderer's `observe` as the driver's `event_tap`:
+
+- The channel renderer is dispatched FIRST and exactly as before, so the channel's
+  output is the same with or without a tab; the live renderer comes second.
+- `TurnDriver(event_tap=)` is a synchronous observer handed every raw provider
+  event before the driver acts on it. It is how the live view sees what an
+  `OutputEvent` does not carry (a tool call's arguments and identity, a tool's
+  result). Its return value is ignored and an exception it raises is logged and
+  swallowed.
+- The live renderer consumes `TEXT_CHUNK` and `TOOL_CALL` (paired by
+  `tool_call_id` with the raw event the tap saw) and the raw tool results. It is
+  fenced: the first failure of its sink switches it off for the rest of the turn.
+  Nothing it does waits on disk: the sink queues each step's transcript write on
+  one ordered background writer.
+- Before any reply write the step writes are SETTLED: `TeeRenderer` settles the
+  mirror ahead of the channel renderer's `DONE` (Slack writes the reply from
+  `on_done`), and the transport settles after `driver.run` and before its
+  failure-path rescue. `ChannelLiveSink.settle` waits up to
+  `SETTLE_TIMEOUT_SECS`, then abandons what is left; the abandon is re-checked
+  under `ConversationLog.atomic_appends`, the lock the reply is written under, so
+  a step lands before the reply or not at all. The transport's `finally`
+  abandons, so nothing lands after the turn.
+- The sink is the dashboard's half, `dashboard/channel_live.py::ChannelLiveSink`.
+  Streamed text goes out as `chat_chunk` frames on the slot's own `_chunk_seq`; a
+  tool call goes out as the dashboard runner's own `tool_call` frame
+  (`tool_rows._tool_call_ws_payload`, which is what draws the sidebar's
+  current-step line) and is appended to the channel TRANSCRIPT as the runner's own
+  tool row (`🔧 <title>`, `msg msg-tool`, `tool_rows._tool_meta`), after which
+  `channel_slots.refresh_linked_channel_slot` pulls it into the tab; a result goes
+  out as the runner's `tool_result` frame. The row is written to disk rather than
+  to the tab's window so the window keeps its single writer
+  (`refresh_channel_window`): the slot never turns dirty mid-turn, and the
+  refresh after the reply appends only the reply. That one-session pull leaves the
+  window's mtime watermark alone, because a row it reads and a reply appended in
+  the same mtime tick would otherwise read to the next full pass as nothing newer.
+- Nothing is projected or written when the conversation has no open tab bound to
+  it, when the gateway runs without a dashboard, when the user's row did not land
+  at receipt (the steps would sit above the question), or for an
+  incognito/temporary thread (re-asked before every frame and write). A step row
+  carries the turn's own `source_thread` / `source_user` / `agent`. History
+  readers filter to user/assistant rows, so a recorded step never enters a later
+  prompt.
+- Not carried: a `tool_call_update` refinement (the step keeps its first title;
+  kiro-cli sends the full title on the call itself), a tool's output on the
+  stored row (it reaches the open tab as the `tool_result` frame only), and the
+  streamed text in a mid-turn snapshot of the tab (it is frames only, so a tab
+  re-read mid-turn shows the text from the next chunk on, and the reply replaces
+  it either way).
+- Discord and Telegram are not wired: they project the user's row and the reply
+  together only after the turn (`project_channel_turn_live`), so a step recorded
+  mid-turn would land above the message that asked for it.
 
 ### `chunk_text(text, max_chars) -> list[str]`
 
