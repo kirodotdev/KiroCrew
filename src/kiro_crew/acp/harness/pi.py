@@ -104,7 +104,14 @@ PI_INSTALL_COMMAND = f"npm i -g {PI_ACP_NPM_PKG} {PI_NPM_PKG}"
 _PI_RPC_ARGS = ("--mode", "rpc", "--no-themes")
 
 _PI_EXTENSION_FLAG = "--extension"
-_PI_SIDE_CONFINE_FLAGS = "--no-extensions --no-approve"
+# A Side Chat pi process also runs with no shell tool. The READ_ONLY gate judges
+# a shell call by its command text, but pi's user settings (``shellCommandPrefix``,
+# ``shellPath``) change what pi actually runs for that text, and ``--no-approve``
+# does not drop them. With ``--exclude-tools bash,powershell`` pi registers neither
+# of its shell tools, so no setting can reach them, ``defaultTools`` included.
+# Driven on pi 0.99.2 and 1.4.0 through this launcher: the read-back answers and
+# pi's tool registry holds no ``bash`` or ``powershell``.
+_PI_SIDE_CONFINE_FLAGS = "--no-extensions --no-approve --exclude-tools bash,powershell"
 
 # The RPC verb whose answer IS the read-back: pi lists every command each loaded
 # extension registered, with the file it came from.
@@ -552,11 +559,13 @@ def _pi_gate_launcher_body(
 
     It forwards every argument the adapter passes and appends the extension flag,
     so the harness process is the one the adapter meant to start plus Crew's gate.
-    A Side Chat launcher also passes ``--no-extensions --no-approve``: discovered,
-    configured and built-in extensions stay unloaded (an explicit ``--extension``
-    still loads, which is how Crew's gate arrives), and project-local files are
-    ignored. A shell script on POSIX; a ``.cmd`` on Windows, where the adapter
-    itself uses a shell for exactly that extension. *program*, when given, is what
+    A Side Chat launcher also passes ``--no-extensions --no-approve --exclude-tools
+    bash,powershell`` after the adapter's own arguments, so a later flag cannot undo them:
+    discovered, configured and built-in extensions stay unloaded (an explicit
+    ``--extension`` still loads, which is how Crew's gate arrives), project-local
+    files are ignored, and pi registers no shell tool. A shell script on POSIX; a
+    ``.cmd`` on Windows, where the adapter itself uses a shell for exactly that
+    extension. *program*, when given, is what
     runs in place of *pi_bin* -- ``(node, pi's script)`` when pi's shebang would
     find a Node below pi's floor (:func:`~kiro_crew.acp.harness.pi_node.choose_pi_node`,
     POSIX only).
@@ -565,11 +574,11 @@ def _pi_gate_launcher_body(
     if platform_compat.IS_WINDOWS:
         return (
             "@echo off\r\n"
-            f'"{pi_bin}" {confine_flags}%* {_PI_EXTENSION_FLAG} "{extension_path}"\r\n'
+            f'"{pi_bin}" %* {confine_flags}{_PI_EXTENSION_FLAG} "{extension_path}"\r\n'
         )
     run = " ".join(shlex.quote(part) for part in (program or (pi_bin,)))
     return (
-        f'#!/bin/sh\nexec {run} {confine_flags}"$@" '
+        f'#!/bin/sh\nexec {run} "$@" {confine_flags}'
         f"{_PI_EXTENSION_FLAG} {shlex.quote(extension_path)}\n"
     )
 

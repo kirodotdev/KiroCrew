@@ -130,9 +130,14 @@ from kiro_crew.agent_sdk.backends import (
 # read proof is the envelope's bare tool name (``PI_READ_ONLY_BUILTINS``:
 # read/grep/find/ls), and that name is proof only because the Side Chat
 # launcher passes ``--no-extensions --no-approve`` so an operator extension
-# cannot register those names; an MCP-rewritten title matches nothing, and the
-# shell is judged by ``is_read_only_bash``. A side turn on pi therefore runs
-# the resolved agent under READ_ONLY, with no client confinement to build.
+# cannot register those names; an MCP-rewritten title matches nothing. The
+# launcher also passes ``--exclude-tools bash,powershell``, added after that
+# capture: pi's user settings ``shellCommandPrefix`` and ``shellPath`` change what
+# a shell command runs, so the text the shell classifier reads would not bound
+# it, and a pi side session has no shell (driven on pi 0.99.2 and 1.4.0: neither
+# tool is registered). The capture's shell calls show the gate asking first;
+# they are not a tool a side turn has today. A side turn on pi therefore
+# runs the resolved agent under READ_ONLY, with no client confinement to build.
 #
 # deepseek is a member on measurement, and not through ``DSH_PERMISSION_MODE``:
 # that sandbox posture denies instead of asking, so it would produce no READ_ONLY

@@ -4,8 +4,8 @@ pi states no tool name on its own frames; its gate-extension envelope carries
 the harness's own tool name (nonce-verified). On a ``side_read_only`` session
 that name is mapped through ``PI_READ_ONLY_BUILTINS`` onto the permission
 event as ``harness_builtin_tool``, where the READ_ONLY gate auto-approves the
-read builtins (read/grep/find/ls, plus read-only bash via the shell branch)
-and refuses everything else. pi's extension renders grep/find/ls as kind
+read builtins (read/grep/find/ls) and refuses everything else. The side
+launcher passes ``--exclude-tools bash,powershell``, so pi has no shell there. pi's extension renders grep/find/ls as kind
 ``search``; a side session rewrites that to ``read`` once the name mapped to a
 read builtin, so the shared gate's "search narrows" rule is unchanged. Off a side session
 the envelope names nothing, so the normal-turn gate sees the input it saw
@@ -15,6 +15,8 @@ before.
 from __future__ import annotations
 
 import json
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -25,6 +27,9 @@ from kiro_crew.acp_backends import ACP_BACKEND_PI, ACP_BACKENDS_SIDE_READONLY
 from kiro_crew.hooks import TOOL_ALLOW, TOOL_AUTO_APPROVE, HookManager
 
 NONCE = "f00dfeed" * 4
+# Absolute on the host running the test: on Windows a POSIX ``/tmp/...`` has no
+# drive, so the dispatch guard would rightly map nothing.
+_ABS_PATH = str(Path(tempfile.gettempdir()) / "a.txt")
 
 
 def _envelope(**overrides) -> str:
@@ -34,7 +39,7 @@ def _envelope(**overrides) -> str:
         "toolCallId": "call_pi_side",
         "tool": "read",
         "kind": "read",
-        "input": {"path": "/tmp/a.txt"},
+        "input": {"path": _ABS_PATH},
     }
     body.update(overrides)
     return json.dumps(body)
@@ -206,6 +211,7 @@ def test_a_proven_read_behind_a_server_still_asks():
     r = _judge(harness_builtin_tool="fs_read", mcp_server_name="x", tool_kind="read")
     assert r.action != TOOL_AUTO_APPROVE
 
+
 def test_the_committed_side_capture_replays_its_gate_envelopes():
     """The corpus file the set cites replays through the dispatch parsers.
 
@@ -213,7 +219,8 @@ def test_the_committed_side_capture_replays_its_gate_envelopes():
     that snapshot must KEEP meaning for this member: four permission frames,
     each read back as its gate envelope (the read with its trusted absolute
     path, the shells with their commands), so the capture stays evidence that
-    every Side Chat call on pi asks through the extension first.
+    every Side Chat call on pi asks through the extension first. The shell
+    calls predate ``--exclude-tools bash,powershell``; a side session has no shell now.
     """
     from pathlib import Path
 

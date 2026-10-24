@@ -1544,6 +1544,8 @@ async def test_a_pi_turn_runs_read_only_on_a_confined_session(tmp_path, monkeypa
     assert acquired["agent"] == "kirocrew"
     assert acquired["side_read_only"] is True
     assert streamed["approval_policy"] == chat_threads.ToolApprovalPolicy.READ_ONLY
+    # The pi side launcher registers no shell tool, so the prompt names none.
+    assert chat_threads.THREAD_BOUNDARY_PROMPT_NO_SHELL in streamed["message"]
 
 
 @pytest.mark.asyncio
