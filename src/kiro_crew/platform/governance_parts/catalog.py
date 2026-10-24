@@ -358,7 +358,14 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # on disk is a separate decision this row does not make.
     # Data row only — CONTRACT_VERSION and the evaluator are untouched (mirrors
     # social_share).
-    "capabilities.feature_videos_download": ScopeSpec(CAPABILITY, capability_default=True),
+    #
+    # Inner ``hosts`` ruleset (``host`` matcher): which hosts the manifest and
+    # its media may be fetched from (a mirror named by the URL override included).
+    # Queried as ``hosts:<host>`` before each manifest request and each clip or
+    # poster request (``feature_videos_manifest.host_denied``).
+    "capabilities.feature_videos_download": ScopeSpec(
+        CAPABILITY, capability_default=True, scope_matchers={"hosts": "host"}
+    ),
     # The Jev decision seam: an enabled, sampled session sends message excerpts and
     # skill descriptions to an external, PAID provider endpoint and spends the
     # operator's account to do it. The keystone ``decisions_consent.json`` is the
