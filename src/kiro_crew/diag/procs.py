@@ -32,10 +32,10 @@ marker fails closed.
 
 Platform coverage follows the ``stall_enrichment`` precedent -- Linux reads
 ``/proc`` directly and spawns no subprocess. macOS uses the ``ps`` snapshot in
-:mod:`kiro_crew.platform_compat`, which yields parent edges only, so every field
-that snapshot cannot carry is reported as ``None`` rather than guessed. Windows
-has neither source: the scan returns an empty roster whose ``degraded`` list
-says so.
+:mod:`kiro_crew.platform_compat` for parent edges and that module's libproc
+``phys_footprint`` reader for each node's ``rss_kb``; every other field is
+reported as ``None`` rather than guessed. Windows has neither source: the scan
+returns an empty roster whose ``degraded`` list says so.
 
 Environment exposure is a four-key allowlist (:data:`ENV_ALLOWLIST`) and nothing
 else, and it is omitted altogether unless a caller asks for it. Command lines go
@@ -725,6 +725,7 @@ def scan(
     tracked_owners_fn: Callable[[], dict[int, int]] | None = None,
     unreachable_orphan_fn: Callable[[int, bytes, set[int]], bool] | None = None,
     ps_snapshot_fn: Callable[[], dict[int, int] | None] | None = None,
+    footprint_fn: Callable[[int], int | None] | None = None,
     clk_tck: int | None = None,
 ) -> Roster:
     """One whole-family snapshot.
@@ -752,7 +753,12 @@ def scan(
         roster.degraded.append("windows: no /proc and no ps snapshot; all fields null")
         return roster
     if platform == "darwin":
-        return _scan_darwin(roster, owner_map=owner_map, ps_snapshot_fn=ps_snapshot_fn)
+        return _scan_darwin(
+            roster,
+            owner_map=owner_map,
+            ps_snapshot_fn=ps_snapshot_fn,
+            footprint_fn=footprint_fn,
+        )
     return _scan_linux(
         roster,
         prev=prev,
@@ -1292,8 +1298,9 @@ def _darwin_parent_edges() -> dict[int, int] | None:
     sanctioned layer and answers the same question.
 
     The trade is RSS: the ACP helper read ``rss=`` and this one reads
-    ``lstart=``, so macOS nodes report ``rss_kb`` as ``None``. Reported as a
-    missing field rather than papered over -- see the ``degraded`` note.
+    ``lstart=``, so this snapshot carries no memory column at all. ``rss_kb``
+    comes from :func:`_darwin_footprint_bytes` instead, an in-process libproc
+    read that spawns nothing, so no second ``ps`` is needed to fill it.
     """
     from kiro_crew import platform_compat
 
@@ -1307,11 +1314,43 @@ def _darwin_parent_edges() -> dict[int, int] | None:
     return {pid: row.ppid for pid, row in snapshot.items()}
 
 
+def _darwin_footprint_bytes(pid: int) -> int | None:
+    """*pid*'s macOS ``phys_footprint`` in bytes, or ``None`` when unreadable.
+
+    The platform layer's own reader, the one the runtime ceilings and the
+    Sessions panel already judge memory by. Imported and looked up when called,
+    as :func:`_darwin_parent_edges` does, so a patch of that reader is the
+    reader this reaches.
+    """
+    from kiro_crew import platform_compat
+
+    return platform_compat.proc_phys_footprint_bytes_for_pid(pid)
+
+
+def _darwin_rss_kb(pid: int, reader: Callable[[int], int | None], roster: Roster) -> int | None:
+    """*pid*'s footprint in KiB, or ``None`` with the failure counted.
+
+    The failure scope is this one node. A pid that exited after the snapshot,
+    or one libproc refuses, keeps its place in the roster with ``rss_kb`` null;
+    it never fails the scan or costs any other node its figure.
+    """
+    try:
+        footprint = reader(pid)
+    except Exception:  # noqa: BLE001 -- one node's figure, never the roster
+        roster.note_repeated("darwin footprint reader raised; rss_kb null")
+        return None
+    if footprint is None:
+        roster.note_repeated("darwin footprint unreadable; rss_kb null")
+        return None
+    return footprint // 1024
+
+
 def _scan_darwin(
     roster: Roster,
     *,
     owner_map: Mapping[int, str] | None,
     ps_snapshot_fn: Callable[[], dict[int, int] | None] | None,
+    footprint_fn: Callable[[int], int | None] | None = None,
 ) -> Roster:
     """macOS family, from a ``ps`` snapshot of parent edges.
 
@@ -1319,6 +1358,10 @@ def _scan_darwin(
     so family membership here is descent from the gateway alone -- there is no
     argv to match and no same-uid ``environ`` to read. Every field it cannot
     carry stays ``None``, and ``degraded`` says which ones and why.
+
+    ``rss_kb`` is the exception: each node's libproc ``phys_footprint`` in KiB,
+    read through *footprint_fn* (the platform reader when ``None``) after the
+    node cap, so the reads are bounded by the roster and not by the host.
     """
     parents = (ps_snapshot_fn or _darwin_parent_edges)()
     if parents is None:
@@ -1326,7 +1369,13 @@ def _scan_darwin(
         return roster
     roster.degraded.append(
         "darwin: ps snapshot carries pid/ppid only; state, threads, env, fds, "
-        "cwd, cmdline, rss and cpu are null"
+        "cwd, cmdline and cpu are null"
+    )
+    # Same key, different measure: the footprint counts pages ps RSS leaves out,
+    # so say which one this is before anyone compares it with a Linux node.
+    roster.degraded.append(
+        "darwin: rss_kb is the libproc phys_footprint, not a resident set; it "
+        "counts compressed and swapped pages, so it reads higher than ps RSS"
     )
     # Without the marker there is no ownership evidence, so no node here can earn
     # the orphan verdict -- and a reparented process is not a gateway descendant,
@@ -1348,6 +1397,7 @@ def _scan_darwin(
             f"node cap {MAX_NODES} reached: {len(family) - MAX_NODES} member(s) omitted"
         )
         family = family[:MAX_NODES]
+    read_footprint = footprint_fn or _darwin_footprint_bytes
     for pid in family:
         label = (owner_map or {}).get(pid)
         roster.nodes[pid] = ProcNode(
@@ -1355,6 +1405,7 @@ def _scan_darwin(
             ppid=parents.get(pid),
             kind="gateway" if pid == root else "other",
             owner=None if label is None else _bounded(label, MAX_OWNER_CHARS, roster, "owner"),
+            rss_kb=_darwin_rss_kb(pid, read_footprint, roster),
             family_reason="descendant",
         )
     return roster
