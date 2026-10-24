@@ -94,7 +94,10 @@ personal account.
 
 ### 2. Have the administrator allow-list the servers
 
-Kiro Crew needs three servers, and they must appear in the registry file under
+Kiro Crew ships six servers, and the registry filter applies to every one of
+them. Which ones a host uses depends on the agents it runs — the first three on
+every install, the last three on installs running conductor, dashboard or
+member-panel agents — and they must appear in the registry file under
 **exactly** these names:
 
 | Server | What is lost without it |
@@ -102,10 +105,13 @@ Kiro Crew needs three servers, and they must appear in the registry file under
 | `kirocrew-core` | `spawn_run`, `learn_add`, artifacts, knowledge, monitoring — the bulk of the product |
 | `kirocrew-cron` | every scheduled job (`cron_add` and the whole cron surface) |
 | `kirocrew-computer` | desktop automation on supported macOS and Windows hosts (inert unless separately enabled, but still filtered) |
+| `kirocrew-work` | the work ledger every conductor records its dispatches to — without it a conductor still runs, but the Dashboard's Workstreams board has nothing to show for its fleet |
+| `kirocrew-dashboard` | the dashboard control surface mounted on every conductor |
+| `kirocrew-panel` | the member panel tools of member-scoped agents |
 
 The registry file format is a subset of the MCP registry standard's server
 schema. Each entry needs a `packages` entry describing how to launch the server,
-and — because all three Kiro Crew servers live behind one package — a
+and — because every Kiro Crew server lives behind one package — a
 `packageArguments` entry naming the subcommand. For a `pypi` package the client
 derives `uvx <identifier> <packageArguments>`, so an entry without the argument
 launches `uvx kirocrew` with no subcommand, which prints CLI help instead of
@@ -152,6 +158,45 @@ that `uvx` uses:
           "registryType": "pypi",
           "identifier": "kirocrew",
           "packageArguments": [{ "type": "positional", "value": "mcp-computer" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-work",
+      "description": "Kiro Crew work ledger (conductor agents)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-work" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-dashboard",
+      "description": "Kiro Crew dashboard control surface (conductor agents)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-dashboard" }],
+          "transport": { "type": "stdio" }
+        }
+      ]
+    },
+    {
+      "name": "kirocrew-panel",
+      "description": "Kiro Crew member panel (member-scoped agents)",
+      "version": "<fleet version>",
+      "packages": [
+        {
+          "registryType": "pypi",
+          "identifier": "kirocrew",
+          "packageArguments": [{ "type": "positional", "value": "mcp-panel" }],
           "transport": { "type": "stdio" }
         }
       ]
