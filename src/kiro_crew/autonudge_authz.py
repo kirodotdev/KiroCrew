@@ -48,6 +48,7 @@ from kiro_crew.autonudge_service.monitor_records import (
     _rollback_monitor_update_locked,
 )
 from kiro_crew.config.loader import workspace_dir_for
+from kiro_crew.constants import MAX_NUDGE_MESSAGE_CHARS
 from kiro_crew.monitoring.limits import validate_runtime_secs
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
@@ -805,8 +806,8 @@ async def authorize_and_update_nudge(
     if message is not None:
         if not isinstance(message, str):
             return _deny("message must be a string", 400)
-        if len(message) > 8000:
-            return _deny("message too long (max 8000 chars)", 400)
+        if len(message) > MAX_NUDGE_MESSAGE_CHARS:
+            return _deny(f"message too long (max {MAX_NUDGE_MESSAGE_CHARS} chars)", 400)
         # A client that RE-SUBMITS the served projection has not edited the message, so
         # applying it would destroy the stored instruction with no error and no warning.
         try:
@@ -1021,7 +1022,7 @@ async def authorize_and_add_nudge(
     the workflow ``ctx.nudge`` bridge, so BOTH enforce identical slot/channel
     ownership checks (dashboard slot must exist; Slack session must be routable;
     Discord DM must be an allowlisted user's CURRENT session — deny-by-default),
-    the 8000-char message limit, and sensitive-``stop_sentinel_path`` refusal.
+    the ``MAX_NUDGE_MESSAGE_CHARS`` message limit, and sensitive-``stop_sentinel_path`` refusal.
     ``slot_key`` must already be the resolved binding key (bare ``chat-N-TS`` for
     dashboard, ``slack:``/``discord:`` for channels) — callers that hold a
     namespaced session key map it first (``autonudge.binding_key_for``).
@@ -1259,8 +1260,8 @@ async def authorize_and_add_nudge(
             )
 
         admission_check = _dashboard_admission
-    if len(message) > 8000:
-        return _deny("message too long (max 8000 chars)", 400)
+    if len(message) > MAX_NUDGE_MESSAGE_CHARS:
+        return _deny(f"message too long (max {MAX_NUDGE_MESSAGE_CHARS} chars)", 400)
     if monitor is None:
         get_by_slot = getattr(svc, "get_by_slot", None)
         existing = get_by_slot(slot_key) if callable(get_by_slot) else None

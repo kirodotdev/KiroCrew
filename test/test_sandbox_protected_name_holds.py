@@ -358,13 +358,18 @@ class TestLeafOnlyPopulationIsRecorded:
     #: agents tree it moved out of was already sealed). A data-home root leaf,
     #: three entries per tier, leaf-only for the same reason as the root leaves above.
     #:
-    #: One more root-level directory, three entries per tier:
+    #: Two more root-level directories, three entries per tier:
     #:
     #: * ``engines`` -- the KAS engine bundles ``kirocrew kas install`` lays down
     #:   (``acp/kas_bundle.py``), sealed read-only like ``playwright-cli`` so a
     #:   sandboxed session cannot rewrite the engine code and Node runtime its
     #:   next session runs. At the data-home root beside writable siblings, so
     #:   leaf-only is the only hold available.
+    #: * ``goal-drafts`` -- the canonical cross-device goal drafts the dashboard
+    #:   serves back into the goal editor, where Start turns them into agent
+    #:   instructions. Masked whole so an agent cannot forge that next prompt through
+    #:   the JSON file, its lock or an atomic-write temp. Also at the data-home root,
+    #:   so it has the same leaf-only hold.
     #:
     #: One more root-level directory, three entries per tier:
     #:
@@ -379,7 +384,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   so no sandboxed writer can plant the spec kiro-cli reads there. At the
     #:   data-home root beside writable siblings, so leaf-only is the only hold.
     #:   Three more entries per tier.
-    EXPECTED: dict[str, int] = {"standard": 290, "cc": 297, "strict": 298}
+    EXPECTED: dict[str, int] = {"standard": 293, "cc": 300, "strict": 301}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
