@@ -1098,7 +1098,7 @@ class CapabilityService:
                         "oauthScopes",
                         "oauth",
                     }
-                    if set(value) - allowed or ("command" in value and "url" in value):
+                    if set(value) - allowed or ("command" in value and value.get("url", "") != ""):
                         raise CapabilityError("invalid_transport", 400)
                     if "oauth" in value and (
                         not isinstance(value["oauth"], dict)

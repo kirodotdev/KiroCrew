@@ -205,9 +205,17 @@ def capability_transport_fields_valid(value: object) -> bool:
     """
     if not isinstance(value, dict):
         return False
-    for field in ("command", "url", "type"):
+    for field in ("command", "type"):
         if field in value and (not isinstance(value[field], str) or not value[field]):
             return False
+    # ``url`` is meaningless for a stdio transport (one with a ``command``),
+    # so a present-but-empty string there means the same as the field being
+    # absent. A remote-only entry has no such fallback, so an empty ``url``
+    # stays invalid there, the same as a non-string value everywhere.
+    if "url" in value and not isinstance(value["url"], str):
+        return False
+    if value.get("url") == "" and "command" not in value:
+        return False
     for field in ("args", "disabledTools", "oauthScopes"):
         if field in value and (
             not isinstance(value[field], list)
