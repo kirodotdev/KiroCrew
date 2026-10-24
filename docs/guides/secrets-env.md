@@ -40,6 +40,43 @@ At spawn the gateway resolves `secret://MY_MCP_SECRET` from the vault.  If the
 named secret does not exist, the server fails to start rather than launching
 with a missing credential.
 
+### Logins and notes
+
+A vault entry can also be a **login** (username, password, the sites it
+belongs to, notes) or a **note**. Store one with the typed
+body of `POST /api/secrets`:
+
+```jsonc
+{
+  "name": "GITHUB",
+  "type": "login",
+  "fields": {
+    "username": "octocat",
+    "password": "…",
+    "urls": ["https://github.com"]
+  }
+}
+```
+
+Pick a field with `#`:
+
+| Reference | Resolves to |
+|---|---|
+| `secret://GITHUB` | the password (a login's default field) |
+| `secret://GITHUB#username` | the username |
+| `secret://GITHUB#url` | the first stored URL |
+| `secret://MY_NOTE` | a note's text |
+
+A field the item does not have fails the spawn, the same way a missing name
+does. Plain secrets are unchanged: `secret://NAME` on one still means its value,
+and a new name may not contain `#` (one stored earlier still resolves whole).
+`#field` works in an MCP server's environment only; a channel credential in
+`.env` reads `secret://NAME` as a whole name.
+
+To change a login without retyping its password, send the fields you change and
+leave `password` and `notes` out: each keeps its stored value. Send one
+as `""` to clear it.
+
 ### Route the server through the gateway
 
 The gateway is the only place a reference is resolved, so **route the server

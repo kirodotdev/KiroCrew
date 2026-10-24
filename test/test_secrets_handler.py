@@ -115,7 +115,9 @@ class TestApiSecretsList:
                 resp = await client.get("/api/secrets")
                 assert resp.status == 200
                 data = await resp.json()
-                assert data == {"names": ["DB_PASS", "TEST_KEY"], "managed": []}
+                assert data["names"] == ["DB_PASS", "TEST_KEY"]
+                assert data["managed"] == []
+                assert [item["type"] for item in data["items"]] == ["secret", "secret"]
 
     @pytest.mark.asyncio
     async def test_empty_vault(self, empty_vault_dir: Path) -> None:
@@ -130,7 +132,7 @@ class TestApiSecretsList:
                 resp = await client.get("/api/secrets")
                 assert resp.status == 200
                 data = await resp.json()
-                assert data == {"names": [], "managed": []}
+                assert data == {"names": [], "items": [], "managed": []}
 
     @pytest.mark.asyncio
     async def test_classifies_only_actual_jira_vault_consumers(self, tmp_path: Path) -> None:
@@ -237,7 +239,7 @@ class TestApiSecretsList:
             async with TestClient(TestServer(app)) as client:
                 response = await client.get("/api/secrets")
                 assert response.status == 200
-                assert await response.json() == {"names": [], "managed": []}
+                assert await response.json() == {"names": [], "items": [], "managed": []}
 
     @pytest.mark.asyncio
     async def test_single_whitespace_jira_entry_is_ignored(self, tmp_path: Path) -> None:
@@ -259,7 +261,7 @@ class TestApiSecretsList:
             async with TestClient(TestServer(app)) as client:
                 response = await client.get("/api/secrets")
                 assert response.status == 200
-                assert await response.json() == {"names": [], "managed": []}
+                assert await response.json() == {"names": [], "items": [], "managed": []}
 
     @pytest.mark.asyncio
     async def test_config_failure_keeps_names_and_reports_managed_error(
@@ -279,7 +281,9 @@ class TestApiSecretsList:
             async with TestClient(TestServer(app)) as client:
                 response = await client.get("/api/secrets")
                 assert response.status == 200
-                assert await response.json() == {
+                data = await response.json()
+                assert [item["name"] for item in data.pop("items")] == ["DB_PASS", "TEST_KEY"]
+                assert data == {
                     "names": ["DB_PASS", "TEST_KEY"],
                     "managed": [],
                     "managed_error": True,
@@ -311,6 +315,7 @@ class TestApiSecretsList:
                 assert response.status == 200
                 assert await response.json() == {
                     "names": [],
+                    "items": [],
                     "managed": [],
                     "managed_error": True,
                 }
@@ -598,12 +603,14 @@ class TestApiSecretsSet:
         # A real .vault directory (not a link), so the symlink branch is not taken.
         (tmp_path / ".vault").mkdir()
 
-        async def _raise_enospc(_self: SecretVault, _name: str, _value: str) -> str:
+        async def _raise_enospc(
+            _self: SecretVault, _name: str, _item_type: str, _fields: object
+        ) -> str:
             raise OSError(errno.ENOSPC, "No space left on device")
 
         with (
             patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(tmp_path)),
-            patch.object(SecretVault, "set_with_revision", _raise_enospc),
+            patch.object(SecretVault, "set_item_with_revision", _raise_enospc),
         ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(

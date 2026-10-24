@@ -1866,14 +1866,14 @@
       "id": "secrets.jira-api-token",
       "label": "Jira API token",
       "tab": "secrets",
-      "route": "/settings/secrets?highlight=secrets.jira-api-token",
+      "route": "/settings/secrets/JIRA_API_TOKEN?highlight=secrets.jira-api-token",
       "description": "Authenticates Jira issue lookups for the configured instance."
     },
     {
       "id": "secrets.wakatime-api-key",
       "label": "WakaTime API key",
       "tab": "secrets",
-      "route": "/settings/secrets?highlight=secrets.wakatime-api-key",
+      "route": "/settings/secrets/WAKATIME_API_KEY?highlight=secrets.wakatime-api-key",
       "description": "Authenticates coding-activity sync when WakaTime is enabled."
     },
     {

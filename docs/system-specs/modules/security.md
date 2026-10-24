@@ -1201,14 +1201,68 @@ gateway and offers no tools. Out of scope: an app-registered
 server (whether an app may name a vault secret is a separate decision) and a
 hand-written agent file that Kiro Crew does not rebuild.
 
+**Typed items (`secrets/items.py`).** An entry is one ciphertext under one
+name; `items.py` decides what the PLAINTEXT inside it looks like. Three types:
+`secret` (the plaintext IS the value, no wrapper -- every entry stored before
+types existed is this type byte for byte, so nothing migrates), `login`
+(`username`, `password`, `urls` as plain http(s) addresses that may not carry a username or
+password, and `notes`, as one canonical JSON object) and `note` (`text`). The type sits in
+the entry in the clear (`type`, with `updated_at`) so a listing can group
+without decrypting, and it is bound into the AES-GCM AAD
+(`v1 + scope + NUL + name + NUL + type`; a `secret` keeps the original
+name-only AAD), so relabelling an entry's type in the store makes it fail to
+decrypt instead of being read as another type. A login's URL and username are
+INSIDE the ciphertext, not in the plaintext index, because a store that leaked
+would otherwise say which sites a person has an account on. Bounds: a login or
+note field is at most `MAX_FIELD_CHARS` (a plain secret's value keeps no bound,
+as before item types), a login carries at most `MAX_LOGIN_URLS`; every
+value is kept as given (only the emptiness check strips). A login keeps no
+one-time-password seed.
+
+A reference is `secret://NAME` or `secret://NAME#FIELD` (`items.parse_reference`
+splits on the FIRST `#`; the dashboard write therefore refuses a name holding
+`#`, and an entry already stored under such a name still resolves whole,
+because `resolve_secret_uris` tries the whole text first). `#FIELD` is read by
+MCP server env resolution (`mcp_gateway/secret_uri.py`) only; the channel
+credential and agent env readers take the whole text as the name. With no field the reference means the type's
+DEFAULT field (`password` for a login, `text` for a note, the value for a
+secret), and `SecretVault.get` / `get_many` / `get_with_revision` answer that
+same default, so every consumer written for a plain secret keeps working when
+the entry under that name becomes a login. An unknown field fails
+closed with an `ItemError` whose `code` is stable
+(`unknown_field`); the
+resolver's message names only the env-var key and that code, never the name or
+a value. The whole item is `get_items_many`; the write is
+`set_item_with_revision`, which validates through `items.validate_item` inside
+the store lock and writes a `secret` item as exactly the entry
+`set_with_revision` writes. Updating an item of the same type, a field a
+listing never shows (`items.KEPT_WHEN_ABSENT`: a login's `password`,
+`notes`; a note's `text`) that the request leaves out keeps its stored value,
+read and rewritten under that one lock; sent as `""` it is cleared. That is
+what lets the edit form, which cannot show those fields, save without erasing
+them. A listing decrypts each typed item for its public fields
+(`get_items_readable`); one whose own ciphertext fails to decrypt is listed
+with `corrupt: true` so it can be deleted, and the rest still list. A missing
+or unreadable key file, or a key that opens no stored entry (another
+install's key beside a restored store), is not a per-item failure: the listing answers
+`500 vault_unreadable` and marks nothing corrupt, because every entry is intact
+and restoring the key is the fix.
+
 Security properties:
 
-- **Write-only surface.** The vault is stored (`POST /api/secrets`), listed by
-  name (`GET /api/secrets` — names only, values never returned) and deleted
+- **Write-only surface.** The vault is stored (`POST /api/secrets`, a plain
+  `{"name","value"}` or a typed `{"name","type","fields"}`), listed
+  (`GET /api/secrets` -- `names`, plus `items` with each entry's `type`,
+  `revision`, `updated_at` and a login's `fields` = `items.public_view`:
+  username and URLs; never a password, seed, note text or secret
+  value) and deleted
   (`DELETE /api/secrets/{name}`) from the dashboard **Settings → Secrets** tab,
   all behind `_owner_only`. There is deliberately **no** read-back path, on the
-  CLI or the API — a stored value cannot be retrieved, only replaced or
+  CLI or the API — a stored credential cannot be retrieved, only replaced or
   deleted, so a prompt-injected agent has no oracle to exfiltrate it through.
+  The public fields of a login are decrypted on the gateway for that listing;
+  they are the part of the item a password manager shows in its list and are
+  not credentials.
   A store answers with the stored entry's `revision`, a short digest of its
   ciphertext under a fresh nonce that says nothing about the value, and
   `DELETE /api/secrets/{name}?if_revision=` deletes only while the entry still
