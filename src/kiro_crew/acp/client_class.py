@@ -18,7 +18,7 @@ import uuid
 from collections import deque
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import pinned_fs
 from kiro_crew.acp import client_claude_seed as _client_claude_seed
@@ -106,6 +106,25 @@ class AcpClient:
     # The scrub this session applies to what a harness reports back, handed to the
     # host adapters that quote such a value (``ProcessSession._scrub_observed``).
     _scrub_observed = staticmethod(_scrub_observed)
+
+    # Idle reader state (see _maybe_start_idle_reader). Class-level so a client
+    # built without __init__ reads the idle defaults.
+    #: Called with this client when the agent starts a turn on its own between
+    #: prompts. The callee then reads that turn with ``stream_unsolicited``.
+    on_agent_turn: Callable[[AcpClient], None] | None = None
+    _idle_reader: asyncio.Task[None] | None = None
+    # Readers currently claiming stdout; the idle reader runs only at zero.
+    _stdout_claims: int = 0
+    # The frame the idle reader saw an agent-started turn begin with, which it
+    # left in _buffer (see _agent_turn_pending).
+    _agent_turn_start: JsonRpcMessage | None = None
+    # _install_idle_reader has bound its steps on this client.
+    _idle_reader_installed: bool = False
+    # Held by stream_unsolicited while it reads; a prompt waits on it (see
+    # _install_idle_reader).
+    _agent_turn_gate: asyncio.Lock | None = None
+    # Prompts past that gate and not yet finished.
+    _prompts_in_flight: int = 0
 
     def __init__(
         self,
@@ -1264,6 +1283,16 @@ class AcpClient:
     _read_message = _client_transport._read_message
     _wait_for_response = _client_transport._wait_for_response
     _drain_notifications = _client_transport._drain_notifications
+    _install_idle_reader = _client_transport._install_idle_reader
+    _claiming_stdout = _client_transport._claiming_stdout
+    _read_turn = _client_transport._read_turn
+    _claim_stdout = _client_transport._claim_stdout
+    _release_stdout = _client_transport._release_stdout
+    _stop_idle_reader = _client_transport._stop_idle_reader
+    _cancel_idle_reader = _client_transport._cancel_idle_reader
+    _agent_turn_pending = _client_transport._agent_turn_pending
+    _maybe_start_idle_reader = _client_transport._maybe_start_idle_reader
+    _idle_read_loop = _client_transport._idle_read_loop
 
     # Prepare an ``AcpClient`` spawn before the process exists: ``kiro_crew.acp.client_spawn_env``.
     _prepare_spawn_workspace = _client_spawn_env._prepare_spawn_workspace
@@ -1286,6 +1315,7 @@ class AcpClient:
     send_message = _client_turn.send_message
     send_message_stream = _client_turn.send_message_stream
     stream_events = _client_turn.stream_events
+    stream_unsolicited = _client_turn.stream_unsolicited
     _dispatch_events = _client_turn._dispatch_events
     _send_prompt = _client_turn._send_prompt
     _read_prompt_response = _client_turn._read_prompt_response

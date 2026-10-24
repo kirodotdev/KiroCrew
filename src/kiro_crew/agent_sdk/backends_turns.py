@@ -3,8 +3,8 @@ command, and report how the turn ended.
 
 The three steering channels, the three answers to a full context and the inline
 ``/compact`` done signal, the slash-command memberships (``_kiro.dev`` commands,
-``/todos``, a locally answered ``/clear``), and how a refusal or a terminal provider
-failure is reported.
+``/todos``, a locally answered ``/clear``), how a refusal or a terminal provider
+failure is reported, and whether a turn the agent starts between prompts is read.
 
 One of the owners of the harness vocabulary in :mod:`kiro_crew.agent_sdk.backends`,
 which re-exports every name defined here and is the import path callers use. Like that
@@ -604,3 +604,13 @@ ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # opencode, goose, pi and deepseek are not members: none of them was read writing a
 # provider failure as message text.
 ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR = frozenset({ACP_BACKEND_CODEX})
+
+# Backends whose AcpClient reads stdout between turns, so a turn the agent starts
+# on its own (a background task finished) is seen when it happens rather than by
+# the next prompt. A member must stream such a turn while no prompt is in flight
+# AND mark where it ends: claude-agent-acp puts ``_meta["_claude/origin"]`` on the
+# cycle's closing ``usage_update``. A harness without that marker would hold its
+# slot until the stale-turn gate or the prompt timeout, so it stays out until its
+# end signal is known.
+# See docs/request-for-change/rfc-agent-started-turns.md.
+ACP_BACKENDS_AGENT_STARTED_TURNS = frozenset({ACP_BACKEND_CLAUDE})
