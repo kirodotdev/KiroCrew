@@ -455,7 +455,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_interactive_approval",
             "method",
-            "(self, source: 'str', slot_resolver: 'Callable[[str], str] | None' = None, nudge_key: 'str' = '', *, raise_when_unreachable: 'bool' = False) -> 'ToolApprovalCallback'",
+            "(self, source: 'str', slot_resolver: 'Callable[[str], str] | None' = None, nudge_key: 'str' = '', *, raise_when_unreachable: 'bool' = False, requester: 'str' = '') -> 'ToolApprovalCallback'",
         ),
         (
             "_heartbeat_approval",

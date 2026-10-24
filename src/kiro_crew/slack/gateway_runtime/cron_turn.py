@@ -266,7 +266,11 @@ async def _cron_run_sequence(
                     ),
                     hooks=self.ctx_builder.hooks,
                     on_tool_approval=(
-                        None if job.approval_mode == "auto" else self._interactive_approval("cron")
+                        None
+                        if job.approval_mode == "auto"
+                        else self._interactive_approval(
+                            "cron", requester=f"cron job {job.name} ({job.id}), agent {agent}"
+                        )
                     ),
                     on_tool_gate=_gate.note,
                     on_complete=_seq_note_complete,
@@ -638,7 +642,13 @@ async def _cron_run_single(
             ),
             hooks=self.ctx_builder.hooks,
             on_tool_approval=(
-                None if job.approval_mode == "auto" else self._interactive_approval("cron")
+                None
+                if job.approval_mode == "auto"
+                else self._interactive_approval(
+                    "cron",
+                    requester=f"cron job {job.name} ({job.id})"
+                    + (f", agent {cron_agent}" if cron_agent else ""),
+                )
             ),
             on_tool_gate=_gate.note,
             on_complete=_note_complete,

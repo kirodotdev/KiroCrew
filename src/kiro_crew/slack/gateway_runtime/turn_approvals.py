@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         _slot_is_trusted,
         command_invokes_git,
         dashboard_slot_key,
+        escape_mrkdwn,
         is_read_only_bash,
         logger,
         name_grant,
@@ -89,6 +90,7 @@ def _interactive_approval(
     nudge_key: str = "",
     *,
     raise_when_unreachable: bool = False,
+    requester: str = "",
 ) -> ToolApprovalCallback:
     """Return an approval callback that races dashboard vs Slack DM.
 
@@ -107,9 +109,24 @@ def _interactive_approval(
     received. Only the spawn gate sets it, because only the spawn gate has a
     terminal path that can report the refusal to the calling agent; a mid-run
     tool approval parks on the prompt instead.
+
+    ``requester`` names what asked, in plain text (a cron job's name and id and
+    its agent). The Slack card carries it while it waits and after it is
+    answered, so a user running several jobs can tell what they are approving
+    and what they approved; the tool title and ``[source]`` alone do not say.
     """
 
     is_background = source in _BACKGROUND_APPROVAL_SOURCES
+    # Redacted and escaped once: a job name is user-authored, and Slack parses
+    # entity markup in the block text AND the top-level fallback text (a job
+    # named ``<!channel>`` would notify the channel from either sink).
+    requester_md = ""
+    requester_safe = ""
+    if requester:
+        requester_safe, _ = redact_exfiltration_urls(redact(requester))
+        requester_safe, _ = redact_credentials(requester_safe)
+        requester_safe = escape_mrkdwn(requester_safe)
+        requester_md = f"Requested by {requester_safe}"
 
     async def _approve(event: LLMEvent, parent_session_key: str = "") -> bool:
         request_id = str(event.request_id)
@@ -404,9 +421,15 @@ def _interactive_approval(
                 )
 
                 blocks = _build_approval_blocks(event, is_dm=is_dm, source=source)
+                if requester_md:
+                    blocks.append(
+                        {"type": "context", "elements": [{"type": "mrkdwn", "text": requester_md}]}
+                    )
                 title_safe, _ = redact_exfiltration_urls(event.title)
                 title_safe, _ = redact_credentials(title_safe)
                 fallback = f"🔐 [{source}] Approve: {title_safe}?"
+                if requester_safe:
+                    fallback += f" ({requester_safe})"
                 approval_ts = await self.slack.post_blocks(
                     channel, blocks, fallback, thread_ts  # type: ignore[arg-type]
                 )
@@ -488,9 +511,12 @@ def _interactive_approval(
                 # Clean up Slack message
                 try:
                     status = "✅ Approved" if outcome == "approved" else "🚫 Rejected"
-                    await self.slack.update_message(
-                        channel, approval_ts, text=f"🔐 *{title_safe}* — {status}"
-                    )
+                    # The answered card keeps who asked: it is the record the
+                    # user scrolls back to.
+                    resolved = f"🔐 *{title_safe}* — {status}"
+                    if requester_md:
+                        resolved += f"\n{requester_md}"
+                    await self.slack.update_message(channel, approval_ts, text=resolved)
                 except Exception:
                     pass
 
