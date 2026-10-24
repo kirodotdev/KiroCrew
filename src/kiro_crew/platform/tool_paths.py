@@ -508,7 +508,8 @@ def is_document_writing_tool(tool_name: str | None, mcp_server_name: str | None)
 #: unlisted tool, keeps the full scan. This is the narrow counterpart of
 #: :data:`DOCUMENT_WRITING_TOOLS`, which no MCP tool may join: a server-side
 #: tool can execute whatever it calls ``content``, so a row is admitted only
-#: for a tool of Kiro Crew's own core server whose handler is known to keep
+#: for a tool of Kiro Crew's own servers (``kirocrew-core``, ``kirocrew-cron``)
+#: whose handler is known to keep
 #: the field as non-executable text. ``knowledge_add_document`` ingests
 #: ``content`` into the knowledge library as the document body. The spawn tools
 #: hand their brief to a sub-agent MODEL as its prompt: ``spawn_run``'s
@@ -517,6 +518,31 @@ def is_document_writing_tool(tool_name: str | None, mcp_server_name: str | None)
 #: each ``spawn_sub_agents`` ``agents`` entry's ``prompt``. The host runs none
 #: of that text; whatever the sub-agent then runs is its own tool call and
 #: goes through its own deny gate.
+#:
+#: The same holds for the other core tools whose field is a prompt for a
+#: model or text for a person, never a command line:
+#:
+#: * ``kirocrew-cron`` ``cron_add`` ``message`` is the prompt the scheduled
+#:   agent turn receives. A script job reads it as its arguments instead, so
+#:   :data:`MCP_DOCUMENT_BODY_VOIDED_BY` drops the exemption for a call that
+#:   names ``script`` or ``command``; those two fields always keep the full
+#:   scan. ``cron_update`` is not listed: it can retarget an existing script
+#:   job, whose kind the gate cannot see.
+#: * ``send_message`` ``text`` / ``title``, ``update_message`` ``text`` and
+#:   ``send_notification`` ``title`` / ``body`` are delivered to a person (or
+#:   injected into a dashboard session as a user turn). ``blocks`` and the
+#:   routing fields keep the full scan.
+#: * ``workflow_run`` / ``workflow_author`` ``intent`` is the goal handed to
+#:   the authoring model. The script it produces is validated import-free and
+#:   acts only through agents with their own gates; ``workflow_run``
+#:   ``source``, ``input`` and ``args`` keep the full scan.
+#: * ``monitor_start`` / ``monitor_update`` ``message`` is re-injected into the
+#:   same session as its next turn.
+#: * ``learn_add`` ``rule`` / ``negative`` are stored lesson text that later
+#:   turns read as prompt context.
+#: * ``artifact_post_comment`` / ``artifact_reply_comment`` ``text`` is a
+#:   stored comment. Artifact ``content`` is NOT listed: a webapp artifact's
+#:   content is deployable code.
 #:
 #: A field is a dotted path from the top of the params: a plain name is a
 #: top-level key, and ``name[]`` steps into each item of the list under
@@ -530,6 +556,27 @@ MCP_DOCUMENT_BODY_FIELDS: Mapping[tuple[str, str], frozenset[str]] = MappingProx
         ("kirocrew-core", "spawn_continue"): frozenset({"task"}),
         ("kirocrew-core", "spawn_steer"): frozenset({"message"}),
         ("kirocrew-core", "spawn_sub_agents"): frozenset({"agents[].prompt"}),
+        ("kirocrew-cron", "cron_add"): frozenset({"message"}),
+        ("kirocrew-core", "send_message"): frozenset({"text", "title"}),
+        ("kirocrew-core", "update_message"): frozenset({"text"}),
+        ("kirocrew-core", "send_notification"): frozenset({"title", "body"}),
+        ("kirocrew-core", "workflow_run"): frozenset({"intent"}),
+        ("kirocrew-core", "workflow_author"): frozenset({"intent"}),
+        ("kirocrew-core", "monitor_start"): frozenset({"message"}),
+        ("kirocrew-core", "monitor_update"): frozenset({"message"}),
+        ("kirocrew-core", "learn_add"): frozenset({"rule", "negative"}),
+        ("kirocrew-core", "artifact_post_comment"): frozenset({"text"}),
+        ("kirocrew-core", "artifact_reply_comment"): frozenset({"text"}),
+    }
+)
+
+#: Arguments whose PRESENCE (any value) turns a listed tool's exemption off for
+#: that call, because they change what the body field means. A ``cron_add``
+#: that names ``script`` or ``command`` is a script job, which reads
+#: ``message`` as its arguments rather than as an agent prompt. Additive only.
+MCP_DOCUMENT_BODY_VOIDED_BY: Mapping[tuple[str, str], frozenset[str]] = MappingProxyType(
+    {
+        ("kirocrew-cron", "cron_add"): frozenset({"script", "command"}),
     }
 )
 
@@ -542,7 +589,11 @@ _EACH_ITEM = "[]"
 _MCP_QUALIFIER_SEPARATOR_RE = re.compile(r"_{2,}")
 
 
-def mcp_document_body_keys(tool_name: str | None, mcp_server_name: str | None) -> frozenset[str]:
+def mcp_document_body_keys(
+    tool_name: str | None,
+    mcp_server_name: str | None,
+    params: Mapping | None = None,
+) -> frozenset[str]:
     """The :data:`MCP_DOCUMENT_BODY_FIELDS` keys for this call, else empty.
 
     Both arguments MUST come from the client's trusted identity caches, never
@@ -551,16 +602,26 @@ def mcp_document_body_keys(tool_name: str | None, mcp_server_name: str | None) -
     tool of the same name resolves to a different ``mcp_server_name`` and gets
     no exemption. A server-qualified *tool_name* resolves only when its
     qualifier names that same server.
+
+    *params* are the call's arguments: a key named in
+    :data:`MCP_DOCUMENT_BODY_VOIDED_BY` for this tool empties the result, and
+    so does omitting *params* for a tool that has such a key (fail closed).
     """
     if not tool_name or not mcp_server_name:
         return frozenset()
+    bare = tool_name
     keys = MCP_DOCUMENT_BODY_FIELDS.get((mcp_server_name, tool_name))
-    if keys is not None:
-        return keys
-    parts = _MCP_QUALIFIER_SEPARATOR_RE.split(tool_name)
-    if len(parts) >= 2 and parts[-2] == mcp_server_name:
-        return MCP_DOCUMENT_BODY_FIELDS.get((mcp_server_name, parts[-1]), frozenset())
-    return frozenset()
+    if keys is None:
+        parts = _MCP_QUALIFIER_SEPARATOR_RE.split(tool_name)
+        if len(parts) >= 2 and parts[-2] == mcp_server_name:
+            bare = parts[-1]
+            keys = MCP_DOCUMENT_BODY_FIELDS.get((mcp_server_name, bare))
+    if not keys:
+        return frozenset()
+    voided_by = MCP_DOCUMENT_BODY_VOIDED_BY.get((mcp_server_name, bare), frozenset())
+    if voided_by and (params is None or any(k in params for k in voided_by)):
+        return frozenset()
+    return keys
 
 
 def split_document_bodies(raw_params: Mapping, body_keys: frozenset[str]) -> tuple[dict, list[str]]:
