@@ -25,7 +25,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_channel_runtime_origin``, ``_created_by``
 ``_title_retry_pending``, ``_title_task``, ``_titled``, ``_turn_timeout_hydrated``,
 ``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``autocompact_pct``,
 ``channel_origin``, ``created_at``, ``executor``, ``forked_from``, ``instance_id``,
-``jev_route``, ``memory_store``, ``project``, ``recovery_retrigger_count``,
+``jev_range``, ``jev_route``, ``memory_store``, ``project``, ``recovery_retrigger_count``,
 ``remote_slot``, ``served_model``, ``turn_timeout_secs``.
 Reads only: ``model``.
 
@@ -129,6 +129,9 @@ def init_session_fields(self: _ChatSlot) -> None:
     # those, which is one filter per reader and a real breakage the first time
     # one is missed. The flag leaves `model` meaning exactly what it meant.
     self.jev_route = False
+    # The owner's bounds on what that routing may pick, in memory only for the
+    # same reason; empty fields mean unbounded.
+    self.jev_range = {"models": [], "effort_min": "", "effort_max": ""}
     # Spawn-time withhold verdict for `model`, and the model id it was
     # computed for. Read through the `model_withheld` property, never these
     # two directly: the pairing is what makes the verdict self-invalidating

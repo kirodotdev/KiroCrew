@@ -8,6 +8,7 @@ effort, while the dashboard's interactive switch re-applied it.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,13 +21,20 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     effort_config_option_id,
     effort_config_option_value,
 )
-from kiro_crew.llm_helpers import resolve_substitute_set_model
+from kiro_crew.dashboard.chat_turn.jev_route_effort import (
+    _JEV_ROUTE_EFFORT_ATTR,
+    _apply_jev_route_effort,
+    _restore_jev_route_effort,
+)
+from kiro_crew.decisions.points import model_route
+from kiro_crew.llm_helpers import pick_epoch_host, resolve_substitute_set_model
 from kiro_crew.providers.acp import AcpProvider
 
 #: Per config-option backend: (model left, model switched to, whether the new
@@ -164,6 +172,235 @@ async def test_a_failed_effort_reapply_does_not_undo_the_switch() -> None:
 
     assert applied == [("model", "claude-sonnet-4.6")]
     assert provider._client._model == "claude-sonnet-4.6"
+
+
+@pytest.mark.asyncio
+async def test_set_model_pushes_nothing_when_the_targets_vocabulary_hides_the_carried_level() -> (
+    None
+):
+    applied: list[tuple[str, str]] = []
+    provider = _provider(ACP_BACKEND_GOOSE, "goose-model-a", applied)
+    provider._effort_per_model["goose-model-a"] = "xhigh"
+    assert provider.accepts_effort_level("xhigh") is False, "the vocabulary must hide this level"
+
+    await provider.set_model("goose-model-b")
+
+    assert applied == [("model", "goose-model-b")]
+    assert "goose-model-b" not in provider._effort_per_model
+
+
+def test_owner_effort_answers_for_the_model_asked_about_not_the_live_one() -> None:
+    provider = _provider(ACP_BACKEND_CLAUDE, "claude-sonnet-4.6", [])
+    provider._effort_per_model["claude-opus-4.7"] = "high"
+
+    assert provider.owner_effort("claude-opus-4.7") == "high"
+    assert not provider.owner_effort("claude-sonnet-4.6"), "the live model has no level stored"
+
+
+@pytest.mark.asyncio
+async def test_an_effort_the_owner_sets_by_hand_drops_the_routed_efforts_restore_mark() -> None:
+    provider = _provider(ACP_BACKEND_CLAUDE, "claude-sonnet-4.6", [])
+    _persistence_spy(provider)
+    host = pick_epoch_host(provider)
+    setattr(host, _JEV_ROUTE_EFFORT_ATTR, "medium")
+
+    assert await provider.change_effort("high") is True
+
+    assert not getattr(host, _JEV_ROUTE_EFFORT_ATTR, None), "the turn end must not undo the pick"
+
+
+def _kiro_provider(*, default: str, applied: list[tuple[str, str]]) -> AcpProvider:
+    """A kiro provider on a model that takes effort, with or without a workspace default."""
+    provider = _provider(ACP_BACKEND_KIRO, "claude-opus-4.7", applied)
+    provider._effort_defaults = {"claude-opus-4.7": default} if default else {}
+    provider._effort_per_model["claude-opus-4.7"] = "low"
+    _persistence_spy(provider)
+    return provider
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("backend", "default", "mark_kept"),
+    [
+        (ACP_BACKEND_CLAUDE, "", True),
+        (ACP_BACKEND_KIRO, "", True),
+        (ACP_BACKEND_KIRO, "high", False),
+    ],
+    ids=["claude", "kiro-no-default", "kiro-default-pushed"],
+)
+async def test_clearing_the_effort_drops_the_restore_mark_only_when_a_default_lands_live(
+    backend: str, default: str, mark_kept: bool
+) -> None:
+    if backend == ACP_BACKEND_KIRO:
+        provider = _kiro_provider(default=default, applied=[])
+    else:
+        provider = _provider(backend, "claude-sonnet-4.6", [])
+        provider._effort_per_model["claude-sonnet-4.6"] = "low"
+        _persistence_spy(provider)
+    host = pick_epoch_host(provider)
+    setattr(host, _JEV_ROUTE_EFFORT_ATTR, "medium")
+
+    with patch("kiro_crew.providers.acp_model_effort._clear_cli_overlay_effort", return_value=True):
+        assert await provider.clear_effort() is bool(default)
+
+    assert bool(getattr(host, _JEV_ROUTE_EFFORT_ATTR, None)) is mark_kept
+
+
+@pytest.mark.asyncio
+async def test_an_automated_switch_onto_a_model_with_no_stored_level_keeps_the_restore_mark() -> (
+    None
+):
+    provider = _provider(ACP_BACKEND_CLAUDE, "claude-opus-4.7", [])
+    _persistence_spy(provider)
+    host = pick_epoch_host(provider)
+    setattr(host, _JEV_ROUTE_EFFORT_ATTR, "medium")
+
+    await provider.set_model("claude-sonnet-4.6")
+
+    assert getattr(host, _JEV_ROUTE_EFFORT_ATTR, None) == "medium"
+
+
+@pytest.mark.asyncio
+async def test_an_effort_change_whose_push_fails_keeps_the_restore_mark() -> None:
+    provider = _provider(ACP_BACKEND_CLAUDE, "claude-sonnet-4.6", [])
+    _persistence_spy(provider)
+    provider._client.set_config_option = AsyncMock(side_effect=RuntimeError("process died"))
+    host = pick_epoch_host(provider)
+    setattr(host, _JEV_ROUTE_EFFORT_ATTR, "medium")
+
+    with pytest.raises(RuntimeError):
+        await provider.change_effort("high")
+
+    assert getattr(host, _JEV_ROUTE_EFFORT_ATTR, None) == "medium"
+
+
+def test_owner_effort_defaults_to_the_live_model() -> None:
+    provider = _provider(ACP_BACKEND_CLAUDE, "claude-sonnet-4.6", [])
+    provider._effort_per_model["claude-sonnet-4.6"] = "low"
+    provider._effort_per_model["claude-opus-4.7"] = "high"
+
+    assert provider.owner_effort() == "low"
+
+
+def test_owner_effort_of_no_model_named_is_not_the_live_models() -> None:
+    provider = _provider(ACP_BACKEND_CLAUDE, "claude-sonnet-4.6", [])
+    provider._effort_per_model["claude-sonnet-4.6"] = "low"
+
+    assert provider.owner_effort("") is None
+    assert provider.owner_effort() == "low"
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_baseline_model_pushes_no_routed_effort_and_marks_nothing() -> None:
+    provider = _provider(ACP_BACKEND_CLAUDE, "claude-sonnet-4.6", [])
+    provider._effort_per_model["claude-sonnet-4.6"] = "low"
+    provider.push_live_effort = AsyncMock(return_value=True)
+    host = pick_epoch_host(provider)
+    slot = SimpleNamespace(
+        key="k", jev_route=True, jev_range={"models": [], "effort_min": "", "effort_max": "high"}
+    )
+    routed = {"tier": "complex"}
+
+    await _apply_jev_route_effort(slot, provider, "k", routed, model_route, "")
+
+    assert routed == {"tier": "complex", "effort_skipped": "baseline-unknown"}
+    provider.push_live_effort.assert_not_awaited()
+    assert not getattr(host, _JEV_ROUTE_EFFORT_ATTR, None)
+
+
+@pytest.mark.asyncio
+async def test_the_restore_after_an_automated_switch_pushes_the_captured_level_and_clears_it() -> (
+    None
+):
+    applied: list[tuple[str, str]] = []
+    provider = _provider(ACP_BACKEND_CLAUDE, "claude-opus-4.7", applied)
+    _persistence_spy(provider)
+    host = pick_epoch_host(provider)
+    setattr(host, _JEV_ROUTE_EFFORT_ATTR, "medium")
+    await provider.set_model("claude-sonnet-4.6")
+    applied.clear()
+
+    await _restore_jev_route_effort(SimpleNamespace(key="k"), provider)
+
+    assert applied == [
+        (
+            effort_config_option_id(ACP_BACKEND_CLAUDE),
+            effort_config_option_value(ACP_BACKEND_CLAUDE, "medium"),
+        )
+    ]
+    assert not getattr(host, _JEV_ROUTE_EFFORT_ATTR, None)
+
+
+# ── push_live_effort: a level sent to the running session and stored nowhere ──
+
+
+def _persistence_spy(provider: AcpProvider) -> MagicMock:
+    provider._apply_effort_overlay = MagicMock(return_value=True)
+    return provider._apply_effort_overlay
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", sorted(BACKEND_CASES))
+async def test_push_live_effort_sends_the_level_without_persisting_it(backend: str) -> None:
+    before, _, _ = BACKEND_CASES[backend]
+    applied: list[tuple[str, str]] = []
+    provider = _provider(backend, before, applied)
+    overlay = _persistence_spy(provider)
+    stored = dict(provider._effort_per_model)
+
+    assert await provider.push_live_effort("high") is True
+
+    assert applied == [
+        (effort_config_option_id(backend), effort_config_option_value(backend, "high"))
+    ]
+    assert provider._effort_per_model == stored
+    overlay.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_push_live_effort_uses_the_slash_command_on_kiro(monkeypatch) -> None:
+    provider = _provider(ACP_BACKEND_KIRO, "kiro-model", [])
+    monkeypatch.setattr("kiro_crew.providers.acp.model_supports_effort", lambda _m: True)
+    overlay = _persistence_spy(provider)
+
+    assert await provider.push_live_effort("high") is True
+
+    provider._client.send_command.assert_awaited_once_with("/effort", args={"level": "high"})
+    assert provider._effort_per_model == {}
+    overlay.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "option_offered"),
+    [("deepseek-v4", True), ("claude-opus-4.7", False)],
+    ids=["model-takes-no-effort", "adapter-exposes-no-option"],
+)
+async def test_push_live_effort_sends_nothing_without_an_effort_channel(
+    model: str, option_offered: bool
+) -> None:
+    applied: list[tuple[str, str]] = []
+    provider = _provider(ACP_BACKEND_CLAUDE, model, applied)
+    provider._client.supports_config_option = MagicMock(return_value=option_offered)
+
+    assert await provider.push_live_effort("high") is False
+
+    assert applied == []
+    provider._client.send_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_push_live_effort_refuses_a_level_the_sessions_vocabulary_hides() -> None:
+    applied: list[tuple[str, str]] = []
+    provider = _provider(ACP_BACKEND_GOOSE, "goose-model-a", applied)
+    overlay = _persistence_spy(provider)
+    assert provider.accepts_effort_level("xhigh") is False, "the vocabulary must hide this level"
+
+    assert await provider.push_live_effort("xhigh") is False
+
+    assert applied == []
+    provider._client.send_command.assert_not_awaited()
+    overlay.assert_not_called()
 
 
 # ── codex: a fallback onto a ``<model>[<effort>]`` candidate ──

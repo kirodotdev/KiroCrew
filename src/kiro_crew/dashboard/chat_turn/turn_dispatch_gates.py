@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         _jev_route_armed,
         _route_model_for_turn,
     )
+    from kiro_crew.dashboard.chat_turn.jev_route_effort import _restore_jev_route_effort
     from kiro_crew.dashboard.chat_turn.model_fallback import _probe_fallback_restore_for_slot
     from kiro_crew.dashboard.chat_turn.prompt_assembly import (
         _checklist_resync,
@@ -403,6 +404,9 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         and message not in _SYNTHETIC_RECOVERY_MSGS
     ):
         await _probe_fallback_restore_for_slot(slot, client)
+
+    # A routed effort is put back when its turn ends; this retries a restore that failed.
+    await _restore_jev_route_effort(slot, client)
 
     # ── Jev model routing (decisions/points/model_route.py) ──
     # For a slot the owner chose not to pin -- the owner picked "Auto (Jev)", or

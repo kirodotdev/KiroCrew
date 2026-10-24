@@ -233,6 +233,26 @@ class TestTheProviderGetsTheMappedModel:
         assert model_rows[0]["baseline_model"] == "model-b"
 
 
+class TestTheSessionsRange:
+    @pytest.mark.asyncio
+    async def test_a_tier_pinned_outside_the_range_never_switches_the_turn(self, tmp_path, answers):
+        answers("complex")
+        slot = _routed_slot()
+        slot.jev_range = {"models": ["model-a", "model-b"], "effort_min": "", "effort_max": ""}
+        client = await _run(tmp_path, slot)
+
+        assert _switched_to(client) == []
+
+    @pytest.mark.asyncio
+    async def test_a_tier_pinned_inside_the_range_still_switches_the_turn(self, tmp_path, answers):
+        answers("complex")
+        slot = _routed_slot()
+        slot.jev_range = {"models": ["model-b", "model-c"], "effort_min": "", "effort_max": ""}
+        client = await _run(tmp_path, slot)
+
+        assert _switched_to(client) == ["model-c"]
+
+
 # ---------------------------------------------------------------------------
 # Every refusal keeps the model the session was already on
 # ---------------------------------------------------------------------------

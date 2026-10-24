@@ -26,6 +26,9 @@ _TO_DICT_KEYS = (
     # Present on EVERY slot, so an absent key and "pinned by hand" are not the
     # same reading for a stale client.
     "jev_route",
+    # The owner's bounds on what that routing may pick: models and an effort span.
+    # Present on EVERY slot, in the same shape, empty when unbounded.
+    "jev_range",
     "model_withheld",
     "served_model",
     "reasoning_effort",

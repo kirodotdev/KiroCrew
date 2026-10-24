@@ -561,6 +561,8 @@ def _shape_fork_child(
     # Inheriting is arming a SECOND routed session, so it answers to the same owner
     # predicate as the arm itself; the caller says whether it passed that predicate.
     new_slot.jev_route = slot.jev_route and jev_route_allowed
+    # Copied, not gated: it routes only while the fork's own flag is on.
+    new_slot.jev_range = dict(slot.jev_range)
     # Inherit the active project directory so the fork keeps the parent's working
     # context (agent resolution, steering files, CWD) instead of falling back to
     # the config/workspace default on first message.

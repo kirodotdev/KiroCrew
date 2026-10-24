@@ -123,7 +123,7 @@ def _sharing_plan_impl(
     """
     kind = _selection_kind(info)
     eff_model = info.model or _subagent_default_model(cfg) or info.routed_model
-    eff_effort = info.reasoning_effort or _subagent_default_effort(cfg)
+    eff_effort = info.reasoning_effort or _subagent_default_effort(cfg) or info.routed_effort
     # Not coerced: the eligibility answer is passed through as the run has
     # always read it, and admission prices a start shared only on a real
     # ``True``, so an answer it cannot trust is priced dedicated.

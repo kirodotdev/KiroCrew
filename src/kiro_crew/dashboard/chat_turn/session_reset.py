@@ -2,7 +2,8 @@
 allocates, and the retry armed while the reset cannot run yet; and the hand-back of the
 session when a turn ends, on any exit path (``_turn_release_session``): the deferred OPTIONS
 expiry, the mirror stream's close, the reset or conversation discard the turn asked for, the
-session permit's release, the turn identity's clear and the unclaimed-directive report."""
+session permit's release, the turn identity's clear and the unclaimed-directive report; the
+owner's effort is put back before that release."""
 
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
         subagents_attached_async,
     )
     from kiro_crew.dashboard.chat_turn.directives import _report_unclaimed_directives
+    from kiro_crew.dashboard.chat_turn.jev_route_effort import _restore_jev_route_effort
     from kiro_crew.dashboard.chat_turn.recipient import (
         cross_surface_withheld,
         slack_publication_withheld,
@@ -393,6 +395,11 @@ async def _turn_release_session(turn: _ChatTurn) -> None:
             # match, and nothing is broadcast (see
             # _broadcast_expired_oauth_banners).
             _broadcast_expired_oauth_banners(state, slot)
+        elif _acquired:
+            # A routed effort lasts one turn: a channel or background prompt next on
+            # this session skips the dispatch gate. A reset or discard drops the host
+            # and its mark, and a push here could respawn a dead process.
+            await _restore_jev_route_effort(slot, turn.client)
     finally:
         if _acquired:
             # A successful reset() above already popped the key under its

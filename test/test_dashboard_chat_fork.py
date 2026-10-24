@@ -77,6 +77,37 @@ class TestForkSlot:
         assert new_slot.tags_revision > max(birth_revisions)
 
     @pytest.mark.asyncio
+    async def test_fork_carries_the_parents_jev_range(self, tmp_path):
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        jev_range = {"models": ["model-a"], "effort_min": "low", "effort_max": "high"}
+        slot.jev_range = jev_range
+        slot.append("user", "hello", "msg msg-u")
+        slot.drain()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/src/fork", json={})
+            assert resp.status == 200
+            data = await resp.json()
+
+        new_slot = state._slots.get(data["key"])
+        assert new_slot.to_dict()["jev_range"] == jev_range
+
+    @pytest.mark.asyncio
+    async def test_fork_copies_the_parents_jev_range_instead_of_sharing_it(self, tmp_path):
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        slot.jev_range = {"models": ["model-a"], "effort_min": "low", "effort_max": "high"}
+        slot.append("user", "hello", "msg msg-u")
+        slot.drain()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/src/fork", json={})
+            data = await resp.json()
+
+        assert state._slots[data["key"]].jev_range is not slot.jev_range
+
+    @pytest.mark.asyncio
     async def test_fork_at_message_id(self, tmp_path):
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("src")
