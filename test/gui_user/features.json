@@ -2051,24 +2051,24 @@
     {
       "id": "sidebar-crew-members-create-menu-entry",
       "feature": "members",
-      "title": "Sidebar create menu 'Mates' routes by preview flag",
-      "user_story": "As a user, I want the Mates menu entry to open the page or the setting that enables it, so that I can find the feature either way.",
-      "start_url": "/chat",
-      "entry_path": "Sidebar New button's chevron ('More create options') > Mates (data-testid open-crew-members) > lands on /members or Settings > Developer > Feature Previews (Mates card)",
+      "title": "Mates page is reached through its preview card",
+      "user_story": "As a user, I want to turn on the Mates preview and find its rail row, so that I can open the page.",
+      "start_url": "/settings/developer",
+      "entry_path": "Settings > Developer > Feature Previews > Mates card toggle on > rail row 'Mates' appears > lands on /members",
       "preconditions": {
         "seed": "minimal",
         "members": [],
         "feature_flags": [
           "mc-preview-crew"
         ],
-        "notes": "Entry is always rendered; PREVIEW_CREW only decides destination (openCrewMembers in chat-sidebar/create.ts). Run once with the flag on and once off. The menu entry and the Feature Previews card are both labelled 'Mates'."
+        "notes": "The sidebar New menu carries no Mates entry; with PREVIEW_CREW off the page is reached only by turning its Feature Previews card on. Toggling the card shows the rail row without a reload."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
-      "rationale": "Two-branch navigation check starting from /chat, distinct from the members page flow; both branches run headless.",
+      "rationale": "Checks the only ingress to a preview-gated page now that the create menu has no Mates entry; runs headless.",
       "source": [
-        "website/src/pages/ChatSidebar.tsx",
-        "website/src/pages/chat-sidebar/create.ts",
+        "website/src/pages/settings/FeaturePreviewsSection.tsx",
+        "website/src/shell/nav/appRail.tsx",
         "website/src/utils/previewFlags.ts"
       ],
       "priority": "P2",

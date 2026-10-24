@@ -15,7 +15,6 @@ import { useGuardedLeave } from '../components/NavigationLeaveGuard'
 import { getOverviewStatCards } from './overviewStatCards'
 import { getOverviewPanel } from './overviewPanel'
 import { isOverviewBuiltinSuppressed } from './overviewBuiltins'
-import { KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
 import { UsageTab, WakaTimeTab } from './overview'
 import { useProvider } from '../providers'
 import { providerUsageQuery } from '../api/providerUsageQuery'
@@ -186,7 +185,7 @@ function MemorySummaryCard({ onOpen }: { onOpen: () => void }) {
             {!data.migrated && <> {i18nT('pages.overviewPage.keeps')} {data.history_max_days ?? 90} {i18nT('pages.overviewPage.days_of_history')}</>}
             {data.migrated && <> {i18nT('pages.overviewPage.semantic_memory_active')}</>}
           </span>
-          <span>{i18nT('pages.overviewPage.memory_graph_and_store_internals_live_on_the_dev')}</span>
+          <Link to="/developer?tab=memory" className="text-accent hover:underline w-fit">{i18nT('pages.overviewPage.memory_developer_link')} <ArrowRight size={12} className="lucide-inline" /></Link>
         </div>
       )}
     </Card>
@@ -207,36 +206,6 @@ export const STAT_LABEL_KEY: Record<StatId, string> = {
   cronJobs: 'pages.overviewPage.stat_cron_jobs',
   subagents: 'pages.overviewPage.stat_subagents',
   lessons: 'pages.overviewPage.stat_lessons',
-}
-
-/**
- * Signpost to the Kiro sign-in card's home, Settings > Agent Harness
- * (`KIRO_SIGN_IN_PATH`), shown only while KAS is the selected backend: those
- * users read token expiry on this page by habit, and the card now sits beside
- * the switch that picks KAS. Everyone else sees nothing -- the identity does not
- * concern the Kiro CLI or Claude backends, so a pointer would be noise for them.
- * Renders no element (not an empty wrapper) when hidden, so the layout above the
- * guided cards keeps no stray gap.
- */
-function KiroSignInMovedPointer() {
-  const cfgQ = useQuery<{ agent?: { acp_backend?: string } }>({
-    queryKey: ['kirocrewConfig'],
-    queryFn: () => api.kirocrewConfig(),
-  })
-  if (cfgQ.data?.agent?.acp_backend !== KIRO_SIGN_IN_BACKEND) return null
-  return (
-    <div className="mb-6">
-      <Link
-        to={KIRO_SIGN_IN_PATH}
-        className="text-[12px] leading-snug text-accent hover:underline"
-        data-testid="kiro-sign-in-moved"
-      >
-        {i18nT('pages.overviewPage.kiro_sign_in_moved')}
-        {' '}
-        <ArrowRight size={12} className="lucide-inline" />
-      </Link>
-    </div>
-  )
 }
 
 export default function OverviewPage() {
@@ -334,9 +303,6 @@ export default function OverviewPage() {
           ErrorBoundary and the spacing wrapper so a suppressed build renders no
           element at all — leaving the `mb-6` div behind would keep a 24px gap
           where the card used to be. The core suppresses nothing. */}
-      <ErrorBoundary scope="overview-kiro-sign-in-moved" fallback={null}>
-        <KiroSignInMovedPointer />
-      </ErrorBoundary>
       {!isOverviewBuiltinSuppressed('tailnet-mobile') && (
         <ErrorBoundary scope="overview-tailnet-mobile" fallback={null}>
           <div className="mb-6">

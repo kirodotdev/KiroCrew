@@ -1,8 +1,7 @@
 /** The sidebar header: the Sessions title, the list menu (dashboards, board
  *  toggle, cleanup, model switch, tags) and the split New button with its create
- *  menu (private chats, import, Crew Members, folders, chat in a folder or on a
- *  crew). */
-import { Plus, Monitor, FolderPlus, FolderX, MessageSquarePlus, Folder, ChevronRight, ChevronDown, BrushCleaning, MoreVertical, Tag as TagIcon, Columns3, Loader2, Cpu, Users, Server, Megaphone } from 'lucide-react'
+ *  menu (folders, private chats, import, chat in a folder or on a crew). */
+import { Plus, Monitor, FolderPlus, FolderX, MessageSquarePlus, Folder, ChevronRight, ChevronDown, BrushCleaning, MoreVertical, Tag as TagIcon, Columns3, Loader2, Cpu, Server, Megaphone } from 'lucide-react'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../../components/ErrorNotice'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../../components/ui/dropdown-menu'
 import { LIST_HEADER_CLS, LIST_TITLE_CLS } from '../../components/listShell'
@@ -20,8 +19,8 @@ import { offlineMenuRow, offlineProps } from '../../utils/offline'
 /** The header row. */
 export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
   const { cleanupOpen, collapsible, connected, createChatInFolder, createChatMutation, createEphemeralChatMutation,
-    createRemoteChatMutation, creatingSlot, crewPreview, folderCleanupOpen, folderCompare, folders, isMobile,
-    missingLanes, navigate, newChatMenuOpen, onMenuCloseAutoFocus, onOpenSlotInNewTab, openCrewMembers,
+    createRemoteChatMutation, creatingSlot, folderCleanupOpen, folderCompare, folders, isMobile,
+    missingLanes, navigate, newChatMenuOpen, onMenuCloseAutoFocus, onOpenSlotInNewTab,
     paintedSidebarWidth, rawColumns, refuseCreateOffline, remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId,
     restorePreBoardWidth, seedStateLanesMutation, setCleanupOpen, setFolderCleanupOpen, setFolderModal,
     setBroadcastOpen, setManageTagsOpen, setNewChatMenuOpen, setRemoteCrewError, setSeedError, setToggleSaveFailed,
@@ -178,11 +177,17 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
                 <DropdownMenuItem data-testid="new-plain-chat" disabled={creatingSlot} {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_chat'), () => { createChatMutation.mutate({ inNewTab: false }) })}>
                   <MessageSquarePlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_chat')}
                 </DropdownMenuItem>
-                {/* The two private modes sit at the top level beside New chat,
-                 *  each naming its own action and what it does with memory. They
-                 *  used to share a submenu named for a word no other surface uses,
-                 *  which at phone width collapsed into a caption that read as a
-                 *  button. */}
+                {/* New folder sits right under New chat: the two everyday
+                 *  create actions come first, then a divider, then the less
+                 *  common kinds of session. */}
+                <DropdownMenuItem data-testid="new-folder" {...offlineMenuRow(connected, i18nT('utils.offline.create_folders'), i18nT('pages.chatSidebar.new_folder'), () => { setFolderModal({ mode: 'create', parentId: '' }) })} {...uiLocation('sessions.create-menu.new-folder')}>
+                  <FolderPlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_folder')}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                {/* The two private modes are top-level rows, each naming its own
+                 *  action and what it does with memory. They used to share a
+                 *  submenu named for a word no other surface uses, which at phone
+                 *  width collapsed into a caption that read as a button. */}
                 <DropdownMenuItem className="items-start" data-testid="new-incognito-chat" disabled={creatingSlot} {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_incognito_chat'), () => { createEphemeralChatMutation.mutate('incognito') })} {...uiLocation('sessions.create-menu.incognito')}>
                   <PrivateChatRow kind="incognito">{i18nT('pages.chatSidebar.new_incognito_chat')}</PrivateChatRow>
                 </DropdownMenuItem>
@@ -193,35 +198,6 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
                  *  rather than only in a per-session ⋯ menu that has to be opened
                  *  on some unrelated session first. */}
                 <ImportSessionItem Item={DropdownMenuItem} />
-                {/* Crew Members is a DOOR, not a create action: it navigates to the
-                 *  Members page (or, while that page is preview-gated, to the
-                 *  Settings card that turns it on — see `openCrewMembers`). It sits
-                 *  among the create entries because this menu is where "crew" was
-                 *  offered until Crew Mode retired, so it is where a returning user
-                 *  looks. Not disabled by `creatingSlot`: it creates nothing.
-                 *
-                 *  CAPTURED: the Feature Previews "See what it looks like" dialog
-                 *  shows the Members page this entry opens. A visible change to
-                 *  that page makes the picture stale — re-shoot with
-                 *  `scripts/capture-feature-previews.mjs`.
-                 *
-                 *  Separators on BOTH sides: every other row here creates something and is
-                 *  named "New …"; this one navigates and is not. Without the rule a
-                 *  reader parsed it as an unnamed create action on every menu open
-                 *  (UX review on #9519). It sits between the session rows and the
-                 *  folder rows, in a group of its own. */}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem className="items-start" data-testid="open-crew-members" onClick={openCrewMembers}>
-                  <Users size={14} className="text-muted mt-[3px] shrink-0" />
-                  <span className="flex min-w-0 flex-col gap-px">
-                    <span>{i18nT('pages.chatSidebar.open_crew_members')}</span>
-                    <span className="whitespace-normal text-[11px] leading-snug text-muted">{crewPreview ? i18nT('pages.chatSidebar.open_crew_members_desc') : i18nT('pages.chatSidebar.open_crew_members_gated_desc')}</span>
-                  </span>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem data-testid="new-folder" {...offlineMenuRow(connected, i18nT('utils.offline.create_folders'), i18nT('pages.chatSidebar.new_folder'), () => { setFolderModal({ mode: 'create', parentId: '' }) })} {...uiLocation('sessions.create-menu.new-folder')}>
-                  <FolderPlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_folder')}
-                </DropdownMenuItem>
                 {folders.length > 0 && (() => {
                   const folderRows = (() => {
                     const roots = folders.filter(f => !f.parent_id).sort(folderCompare)

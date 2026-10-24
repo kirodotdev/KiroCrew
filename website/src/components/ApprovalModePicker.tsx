@@ -46,31 +46,27 @@ function durationLabel(token: string | undefined): string {
 /** Localized label / tooltip / description for a segment, read at call time.
  *  Static literal keys (no runtime assembly) keep the dead-key and dynamic-key
  *  i18n guards happy. */
-function segmentText(key: ApprovalModeKey): { label: string; tooltip: string; desc: string } {
+function segmentText(key: ApprovalModeKey): { label: string; desc: string } {
   switch (key) {
     case 'trust_reads':
       return {
         label: i18nT('components.approvalModePicker.reads_label'),
-        tooltip: i18nT('components.approvalModePicker.reads_tooltip'),
         desc: i18nT('components.approvalModePicker.reads_desc'),
       }
     case 'trust':
       return {
         label: i18nT('components.approvalModePicker.trust_label'),
-        tooltip: i18nT('components.approvalModePicker.trust_tooltip'),
         desc: i18nT('components.approvalModePicker.trust_desc'),
       }
     case 'yolo':
       return {
         label: i18nT('components.approvalModePicker.yolo_label'),
-        tooltip: i18nT('components.approvalModePicker.yolo_tooltip'),
         desc: i18nT('components.approvalModePicker.yolo_desc'),
       }
     case 'normal':
     default:
       return {
         label: i18nT('components.approvalModePicker.normal_label'),
-        tooltip: i18nT('components.approvalModePicker.normal_tooltip'),
         desc: i18nT('components.approvalModePicker.normal_desc'),
       }
   }
@@ -315,7 +311,6 @@ function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onN
           <DropdownMenuItem
             key={s.key}
             disabled={blocked}
-            title={s.key === 'trust' && scopedTooltip ? scopedTooltip : t.tooltip}
             onSelect={e => {
               // Belt-and-braces with `disabled`: a denied mode must never reach
               // `pick()`, whose PUT the gateway answers with 403.

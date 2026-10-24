@@ -1,11 +1,10 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { ScrollText, Monitor, Brain, Archive, Database, Network, Activity, FileCode2, Bug, ArrowRight } from 'lucide-react'
+import { ScrollText, Monitor, Brain, Archive, Database, Network, Activity, FileCode2, Bug } from 'lucide-react'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { ContentSkeleton } from '../components/ui'
 import { settingsPath } from '../components/settingsPath'
 import type { SettingsTarget } from '../components/settingsPath'
-import { SettingsLink } from '../components/SettingsLink'
 import { FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR } from './settings/FeaturePreviewsSection'
 import { AGENT_HARNESS_SETTINGS_TAB } from './developer/kiroSignInLink'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
@@ -61,8 +60,7 @@ const LEGACY_FEATURE_PREVIEWS_TAB = 'feature-previews'
  * Previews section ringed so the reader sees exactly where the tab went rather
  * than landing on a pane and hunting. `key:` is useSettingHighlight's direct
  * `data-setting-key` lookup; the anchor is carried by the section's wrapper.
- * ONE target for both doors — the legacy redirect below and the rail footer's
- * signpost — so they cannot drift apart.
+ * The legacy redirect below lands here.
  */
 const FEATURE_PREVIEWS_TARGET: SettingsTarget = {
   tab: 'developer',
@@ -121,34 +119,8 @@ export default function DeveloperPage() {
     }
   }, [search, navigate])
 
-  // The redirect only catches a URL that still names the old tab. A user who
-  // navigates by memory — rail > Developer, then looks for the tab — finds it
-  // gone with nothing pointing onward, and "Developer" now names two places
-  // (this page and the Settings tab). The rail footer is the one spot every
-  // tab of this page shares, so the signpost lives there and lands on the
-  // same ringed section the redirect does.
-  //
-  // TIME-BOXED, not permanent: the need decays as users relearn, while the
-  // redirect above covers bookmarks, docs and palette history indefinitely.
-  // Retire the footer (and its catalog key) once two releases have shipped
-  // with the move — tracked in kirodotdev/KiroCrew#9017 with the deletion
-  // checklist and a due date.
-  //
-  // The rail is narrow, so the label wraps: plain inline text (not a flex row)
-  // keeps the arrow glued to the last word instead of floating to the far edge.
-  const footer = (
-    <SettingsLink
-      {...FEATURE_PREVIEWS_TARGET}
-      className="text-[12px] leading-snug text-accent hover:underline"
-    >
-      {i18nT('pages.developerPage.feature_previews_moved')}
-      {' '}
-      <ArrowRight size={12} className="lucide-inline" />
-    </SettingsLink>
-  )
-
   return (
-    <SidePanelLayout title={i18nT('pages.developerPage.developer')} tabs={tabs} rememberKey="developer" footer={footer}>
+    <SidePanelLayout title={i18nT('pages.developerPage.developer')} tabs={tabs} rememberKey="developer">
       {tab => <>
         {tab === 'logs' && <div className="h-[calc(100vh-160px)] min-h-[300px] flex flex-col overflow-hidden"><LogViewer compact /></div>}
         {tab === 'system' && <SystemPage embedded />}

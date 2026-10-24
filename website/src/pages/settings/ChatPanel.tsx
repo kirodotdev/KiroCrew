@@ -597,7 +597,6 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
 
         <div className="mb-8">
         <h4 className="text-base font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_subagents')}</h4>
-        <div className="text-[12px] text-muted mb-1">{i18nT('pages.settings.chatPanel.model_for_spawned_sub_agents')}</div>
         {/* The memory cost of a pin, at the place the pin is chosen: a pinned
             subagent cannot share its parent chat's runtime. */}
         <div className="text-[12px] text-muted mb-1" data-testid="subagent-pin-runtime-cost">

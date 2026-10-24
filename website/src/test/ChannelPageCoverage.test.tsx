@@ -111,7 +111,6 @@ describe('ChannelPage — empty states', () => {
     mockApi([])
     await renderPage()
     expect(screen.getByText('No channels yet')).toBeInTheDocument()
-    expect(screen.getByText('Click + New to create one.')).toBeInTheDocument()
     // No selected channel -> the right-hand pane shows its own prompt.
     expect(screen.getByText('Create a channel to get started')).toBeInTheDocument()
   })

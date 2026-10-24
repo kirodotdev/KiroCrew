@@ -125,9 +125,9 @@ describe.each([false, true])('terminal completion ownership (Lexical: %s)', lexi
     await typeInto('! pwd')
     fireEvent.click(screen.getByLabelText('Add files & options'))
     expect(await screen.findByText('Upload file')).toBeVisible()
-    expect(screen.queryByTitle('Reference a file')).not.toBeInTheDocument()
+    expect(screen.queryByText('Reference a file')).not.toBeInTheDocument()
     expect(screen.queryByTitle('Slash commands')).not.toBeInTheDocument()
-    expect(screen.queryByTitle('Use a skill')).not.toBeInTheDocument()
+    expect(screen.queryByText('Use a skill')).not.toBeInTheDocument()
     expect(screen.getByTestId('draft').textContent).toBe('! pwd')
   })
 

@@ -83,9 +83,12 @@ const EXPECTED: Record<string, Expect> = {
     [{ kind: 'condition', id: 'screen_capture_available' }],
   ),
   'composer.add-menu.sketch': menuItem('components.chatInput.sketch', 'Sketch', '草图'),
-  'composer.add-menu.slash': menuItem('components.chatInput.command', 'Command', '命令', ['components.chatInput.slash_commands']),
-  'composer.add-menu.reference-file': menuItem('components.chatInput.file', 'File', '文件', ['components.chatInput.reference_a_file']),
-  'composer.add-menu.skill': menuItem('components.chatInput.skill', 'Skill', '技能', ['components.chatInput.use_a_skill']),
+  // The rows say what they do ("Reference a file", "Use a skill", "Slash
+  // command") instead of a one-word label plus a description line; the old
+  // one-word keys survive as aliases so a find_ui for "File" still lands.
+  'composer.add-menu.slash': menuItem('components.chatInput.command', 'Slash command', '斜杠命令', ['components.chatInput.slash_commands']),
+  'composer.add-menu.reference-file': menuItem('components.chatInput.reference_a_file', 'Reference a file', '引用文件', ['components.chatInput.file']),
+  'composer.add-menu.skill': menuItem('components.chatInput.use_a_skill', 'Use a skill', '使用技能', ['components.chatInput.skill']),
   'composer.context-usage': {
     kind: 'button', labelKey: 'components.chatInput.context_usage', source: SHELF, en: 'Context usage', zh: '上下文用量',
     parents: ['page.chat'], entry: 'toolbar', requires: [OPEN, EXPANDED, { kind: 'condition', id: 'context_usage_reported' }],

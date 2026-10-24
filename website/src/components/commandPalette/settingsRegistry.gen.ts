@@ -2649,7 +2649,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.aws-region-transcribe",
     "label": "AWS Region (Transcribe)",
     "labelKey": "pages.settings.sttSettings.aws_region_transcribe",
-    "description": "AWS region for Transcribe",
     "tab": "voice",
     "type": "input",
     "occurrence": 1

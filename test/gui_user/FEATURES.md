@@ -164,7 +164,7 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 62. Deduped from 387 raw records.
 | P0 | `members-crew-members` | As a crew operator, I want a durable DM thread per member with a docked side panel led by the crew's Dashboard tab, an auto-patrol badge on each roster row, and a filterable roster, so that I can supervise each crew in one place. | `/members` | rich | nightly | 6 |
 | P1 | `crewmate-reply-thread` | As a user talking to a mate, I want to ask about one thing it said in a reply thread on that message, so that the follow-up stays beside the message it is about instead of pushing the mate's findings up the main chat. | `/settings` | rich | nightly | 8 |
 | P1 | `members-private-memory-keeps-thread` | As a crew operator, I want a member's direct-message thread to survive leaving and returning to the member, so that our earlier conversation and the member's ability to answer are not lost. | `/settings` | rich | nightly | 8 |
-| P2 | `sidebar-crew-members-create-menu-entry` | As a user, I want the Mates menu entry to open the page or the setting that enables it, so that I can find the feature either way. | `/chat` | minimal | nightly | 3 |
+| P2 | `sidebar-crew-members-create-menu-entry` | As a user, I want to turn on the Mates preview and find its rail row, so that I can open the page. | `/settings/developer` | minimal | nightly | 3 |
 
 ## Customize (crews, templates, skills, prompts, steering, hooks, workflows) (`capabilities`)
 

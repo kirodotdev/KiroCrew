@@ -1618,7 +1618,7 @@ export default function SttSettings({ cardIndex }: {
               onConsentChange={() => qc.invalidateQueries({ queryKey: ['sttVocabularies'] })}
             />
             <SettingsInput label={i18nT('pages.settings.sttSettings.aws_profile_transcribe')} description={i18nT('pages.settings.sttSettings.aws_credentials_profile_for_transcribe_blank_def')} value={localProfile} onChange={setLocalProfile} onBlur={() => set({ transcribe_profile: localProfile.trim() })} placeholder={i18nT('pages.settings.sttSettings.default')} disabled={saving} />
-            <SettingsInput label={i18nT('pages.settings.sttSettings.aws_region_transcribe')} description={i18nT('pages.settings.sttSettings.aws_region_for_transcribe')} value={localRegion} onChange={setLocalRegion} onBlur={() => set({ transcribe_region: localRegion.trim() })} placeholder={i18nT('pages.settings.sttSettings.us_east_1')} disabled={saving} />
+            <SettingsInput label={i18nT('pages.settings.sttSettings.aws_region_transcribe')} value={localRegion} onChange={setLocalRegion} onBlur={() => set({ transcribe_region: localRegion.trim() })} placeholder={i18nT('pages.settings.sttSettings.us_east_1')} disabled={saving} />
             {/* Below the profile and region because it is read FROM them. Shown once
                 AWS may be asked for the list, or while a vocabulary is stored, so a
                 stored one can always be seen and cleared. */}

@@ -93,10 +93,10 @@ describe('ChatInput', () => {
       touchEnv.touch = true
       renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} />)
       // One "+" and no second pencil button on the row.
-      expect(screen.queryByTitle('Sketch')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /^Sketch\b/ })).not.toBeInTheDocument()
       fireEvent.click(screen.getByRole('button', { name: 'Add files & options' }))
       expect(screen.getByText('Upload file')).toBeInTheDocument()
-      expect(screen.getByTitle('Sketch')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /^Sketch\b/ })).toBeInTheDocument()
     })
   })
 

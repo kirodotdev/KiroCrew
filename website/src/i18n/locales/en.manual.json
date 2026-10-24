@@ -224,7 +224,6 @@
     "kiro_credit_usage_sign_in_type": "Kiro account & credits — balance isn’t available for this sign-in",
     "kiro_credit_usage_config_unreadable": "Kiro account & credits — could not read the backend setting; open to retry",
     "kiro_account_credits": "Kiro account & credits — view usage, manage subscription",
-    "notifications_ask_agent_help": "Leaves this page and opens a new chat with this error's report already filled in, ready for you to send",
     "metrics_card_old_data": "Last updated more than 90 seconds ago",
     "metrics_card_fetch_failed": "The last metrics update failed",
     "metrics_card_cores_one": "{{count}} core",
@@ -1841,7 +1840,7 @@
       "your_selected_setup_is_ready_in_kiro_crew": "Your selected setup is ready in {{productName}}."
     },
     "appHost": {
-      "not_installed": "\"{{name}}\" is not installed"
+      "not_installed": "{{name}} isn't installed"
     },
     "approvalCard": {
       "approval_no_longer_pending": "This approval has expired or was already decided — the agent is no longer waiting on it.",
@@ -1854,18 +1853,14 @@
     "approvalModePicker": {
       "approval_mode_aria": "Approval mode: {{mode}}",
       "normal_label": "Normal",
-      "normal_tooltip": "{{productName}} asks you before doing anything",
       "normal_desc": "{{productName}} checks with you before doing anything",
       "reads_label": "Reads",
-      "reads_tooltip": "{{productName}} runs read-only shell commands on its own, but asks for everything else",
       "reads_desc": "{{productName}} runs read-only shell commands on its own, but asks for everything else",
       "trust_label": "Trust",
       "chat_mode_hint": "chat mode",
       "trust_scope_tooltip": "Trusted by an app grant for this chat; it expires on its own. Pick Normal in this menu to end it now; the app may grant it again until you turn it off in that app.",
-      "trust_tooltip": "In this chat, {{productName}} works without asking you first",
       "trust_desc": "In this chat, {{productName}} works without asking you first",
       "yolo_label": "YOLO",
-      "yolo_tooltip": "In every chat, {{productName}} works without asking you first",
       "yolo_desc": "In every chat, {{productName}} works without asking you first",
       "configure_duration": "Configure duration",
       "yolo_expiration_until_shutdown": "Stays on until {{productName}} restarts — no timed expiry.",
@@ -2983,7 +2978,6 @@
         "show_more_notifications_count_other": "Show {{count}} more notifications"
       },
       "notificationFeed": {
-        "activity_will_appear_here": "Activity will appear here",
         "expand_grouped_notifications": "Expand {{count}} grouped notifications: {{title}}",
         "hide_muted_count": "Hide muted ({{count}})",
         "open_notification": "Open notification: {{title}}",
@@ -3417,7 +3411,7 @@
       "install_restart_timing": "Installing may take several minutes. The app will close and relaunch automatically when the update is complete.",
       "windows_installer_handoff": "A Windows installation window will show progress.",
       "installing_update": "Installing update…",
-      "installing_update_body": "{{productName}} is stopping the local gateway and installing the update. This can take several minutes. It will relaunch automatically.",
+      "installing_update_body": "This can take several minutes. It will relaunch automatically.",
       "install_failed": "Update failed to install",
       "install_failed_body": "The update could not be applied. {{productName}} is restoring the local gateway — you can keep using this version and retry from Settings > About.",
       "back_to_dashboard": "Back to dashboard",
@@ -3866,7 +3860,6 @@
       "next": "Next capture",
       "captures": "Captures",
       "capture_n_of_m": "Capture {{n}} of {{m}}",
-      "where_to_find": "Where you’ll see it",
       "turn_on": "Turn this preview on",
       "screenshot_badge": "Screenshot",
       "is_on": "This preview is on — turning it off only hides it; nothing you made is lost"
@@ -5111,7 +5104,6 @@
         "menu_artifacts": "Artifacts",
         "menu_artifacts_desc": "In-session documents & stars",
         "menu_browser": "Browser",
-        "menu_browser_desc": "View a web page or a local dev server",
         "menu_terminal": "Terminal",
         "menu_terminal_desc": "Shell on the gateway host, scoped to this chat",
         "external_terminal_open_settings": "Open Terminal settings",
@@ -5120,15 +5112,10 @@
         "menu_context": "Context breakdown",
         "menu_context_desc": "Context added during this session's turns",
         "menu_files": "Files",
-        "menu_files_desc": "Project file browser with a built-in viewer",
         "menu_links": "Links",
-        "menu_links_desc": "URLs this chat referenced",
         "menu_issues": "Issues",
-        "menu_issues_desc": "Issues mentioned in this session",
         "menu_logs": "Logs",
-        "menu_logs_desc": "Gateway log stream",
         "menu_pins": "Pins",
-        "menu_pins_desc": "Messages you bookmarked in this session",
         "menu_side": "Side Chat",
         "menu_side_desc": "Ask without interrupting the main agent",
         "menu_subagents": "Subagents",
@@ -5745,7 +5732,6 @@
       "mcp_session_no_tools": "Started, but this session got none of its tools. Another server probably uses the same tool names. Rename them with `toolAliases` in the agent spec.",
       "mcp_session_no_tools_also": "Started, but this session got none of their tools (another server probably uses the same tool names; rename them with `toolAliases` in the agent spec): {{names}}",
       "mcp_session_restart_to_load": "{{name}} is missing a credential, or its credential was rejected. Once the credential works, start a new session to load {{name}}.",
-      "mcp_session_source_note": "The list is this agent's configuration; the status beside each name is what this session reported.",
       "mcp_session_started": "Started in this session",
       "message_queued_until_session_ready": "{{error}}. Your message is queued and will be sent when a session is ready — but it is held in this tab only, so if you navigate away or reload you will need to retype it.",
       "message_saved_as_draft": "{{error}}. Your message is saved as a draft in the session you sent it from.{{extra}}",
@@ -6010,9 +5996,6 @@
       "manual_order_unsaved": "Nothing is saved in Manual yet, so new sessions show first. Drag a session to try again.",
       "sorted_by_hand": "Sorted by hand",
       "board_update_failed": "Board update failed",
-      "open_crew_members": "Mates",
-      "open_crew_members_desc": "Opens the Mates page — each member is a standing agent with its own thread.",
-      "open_crew_members_gated_desc": "Opens Settings first, to turn this preview on — the page is not available until you do.",
       "model_list_failed": "Couldn't load the model list. What's shown may be incomplete or out of date.",
       "hidden_folder_count_one": "{{count}} hidden folder",
       "hidden_folder_count_other": "{{count}} hidden folders",
@@ -6304,7 +6287,6 @@
       "disk_usage_unavailable": "Disk usage unavailable"
     },
     "developerPage": {
-      "feature_previews_moved": "Feature Previews moved to Settings > Developer",
       "tabs": {
         "archive": {
           "description": "Rotated/compacted session history (7-day retention)",
@@ -6544,7 +6526,7 @@
       },
       "settings": {
         "title": "Ingestion Settings",
-        "description": "Control how documents are extracted, indexed, and rate-limited. Changes take effect on the next watcher sweep unless noted otherwise.",
+        "description": "Changes apply on the next watcher sweep.",
         "save_failed": "Failed to save knowledge setting",
         "embed_rate_label": "Embedding rate limit",
         "embed_rate_desc": "How many embedding requests per minute when indexing documents into the vector store. Lower values reduce system load but slow down indexing. 0 = unlimited.",
@@ -7294,7 +7276,7 @@
     "overviewPage": {
       "all_systems_running": "All systems running",
       "connecting": "Connecting…",
-      "kiro_sign_in_moved": "Kiro sign-in moved to Settings > Agent Harness",
+      "memory_developer_link": "Memory graph and internals",
       "reconnecting": "Reconnecting…",
       "stat_cron_jobs": "Cron Jobs",
       "stat_lessons": "Lessons",
@@ -7504,8 +7486,7 @@
       "group_today": "Today",
       "group_yesterday": "Yesterday",
       "group_earlier": "Earlier",
-      "empty_title": "No sessions",
-      "empty_subtitle": "Create one to get started."
+      "empty_title": "No sessions"
     },
     "settings": {
       "mobileLoginCard": {
@@ -7765,7 +7746,6 @@
         "background_model": "Background Model",
         "subagent_model": "Subagent Model",
         "model_for_background_lite_heartbeat_work": "Model for background work — title generation, history compaction, and heartbeat polling.",
-        "model_for_spawned_sub_agents": "Model for spawned subagents.",
         "subagent_pin_runtime_cost": "Setting Subagent Model or Subagent Effort to anything but its default runs each subagent in its own process, about 0.55 GB of memory each, which can slow a machine with 16 GB or less. With both on their defaults, subagents can share the chat's process.",
         "role_model_auto_hint": "'Auto' lets the provider pick — it does not inherit your Default Model. Pin a model to run this work on it.",
         "failed_to_save_role_model": "Failed to save role model",
@@ -8869,7 +8849,7 @@
           "webhooks_where": "A new Webhooks page opens from the “Open Webhooks” link that appears on this card in Settings once this is on; it stays out of the sidebar until the page is finished. Turning it off only hides the page again; tokens you created are kept.",
           "webhooks_media_page": "The Webhooks page: token list on the left, the “Let an outside system wake up your agent” setup on the right.",
           "crew_summary": "Mates lists every agent you have and what each is driving now, with a thread per member. Unrelated to “Chat on a crew” below, which is about another machine.",
-          "crew_where": "“Mates” appears in the sidebar under Sessions once this is on; the New menu’s entry opens it, or this card while off.",
+          "crew_where": "“Mates” appears in the sidebar under Sessions once this is on.",
           "crew_media_members": "The Mates page, with one member selected and its activity panel open."
         },
         "crew_members": "Mates",

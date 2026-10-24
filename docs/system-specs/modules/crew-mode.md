@@ -4416,7 +4416,7 @@ its own standing thread. What remains, and why:
   arm. With no slot able to carry the mode the entry is unreachable, and it is
   left in place rather than re-litigating a security boundary in a removal PR.
 
-The sidebar's create-menu entry that used to create a crew-mode session is now
-a "Crew Members" door: it opens `/members` when `PREVIEW_CREW` (Settings →
-Developer → Feature Previews) is on and lands on that flag's card when it is
-off.
+The sidebar's create menu no longer carries the entry that used to create a
+crew-mode session: `/members` is reached from its rail item while `PREVIEW_CREW`
+(Settings → Developer → Feature Previews) is on, and by turning that card on
+while it is off.
