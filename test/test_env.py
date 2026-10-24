@@ -284,6 +284,71 @@ class TestAugmentedPath:
         for d in dirs:
             assert os.path.isabs(d), f"relative PATH entry leaked: {d!r}"
 
+    # --- a dir the inherited PATH already has keeps the user's order ---
+
+    def test_does_not_reprepend_a_dir_the_inherited_path_already_has(self) -> None:
+        """A well-known dir already on the inherited PATH is not prepended again.
+
+        When the user puts ``/opt/homebrew/bin`` behind a devshell dir on PATH,
+        re-prepending it moves that copy ahead of the devshell's tools and
+        shadows them. ``augmented_path`` must leave the single copy exactly
+        where the user had it.
+        """
+        if not os.path.isabs("/opt/homebrew/bin"):
+            pytest.skip("os.path flavour does not treat the POSIX path as absolute")
+        base = os.pathsep.join(["/devshell/bin", "/opt/homebrew/bin", "/usr/bin"])
+        dirs = augmented_path(base).split(os.pathsep)
+        # Exactly one occurrence, and still behind the devshell dir.
+        homebrew = [i for i, d in enumerate(dirs) if d == "/opt/homebrew/bin"]
+        assert homebrew == [dirs.index("/devshell/bin") + 1]
+        assert dirs.index("/devshell/bin") < dirs.index("/opt/homebrew/bin")
+
+    def test_still_prepends_a_well_known_dir_the_inherited_path_lacks(self) -> None:
+        """A launchd/systemd gateway whose PATH omits the dirs behaves as before.
+
+        When the inherited PATH does not already contain a well-known dir, it is
+        still prepended ahead of base_path, so in-process ``shutil.which``
+        resolves the binaries a login shell would.
+        """
+        if not os.path.isabs("/opt/homebrew/bin"):
+            pytest.skip("os.path flavour does not treat the POSIX path as absolute")
+        dirs = augmented_path("/usr/bin").split(os.pathsep)
+        assert "/opt/homebrew/bin" in dirs
+        assert dirs.index("/opt/homebrew/bin") < dirs.index("/usr/bin")
+
+    def test_interpreter_fallback_is_appended_even_when_inherited(self, monkeypatch) -> None:
+        """The ``sys.executable`` fallback is appended last regardless.
+
+        Its purpose is to resolve console-script wrappers found nowhere else, so
+        the de-dup against base_path must not drop it even if base_path already
+        lists the interpreter dir.
+        """
+        fake_exe = str(Path("/opt/venv/bin/python"))
+        monkeypatch.setattr(sys, "executable", fake_exe)
+        interp_dir = str(Path(fake_exe).parent)
+        dirs = augmented_path(os.pathsep.join(["/usr/bin", interp_dir])).split(os.pathsep)
+        assert dirs[-1] == interp_dir
+
+    def test_reprepend_dedup_uses_normcase_normpath(self, monkeypatch) -> None:
+        """A base_path entry naming the same dir in a different spelling matches.
+
+        The comparison folds case and separator flavour exactly as
+        :func:`_dedup_dirs` does (``normcase``+``normpath``), so a trailing
+        slash — or on Windows a case/separator variant — of a well-known dir on
+        the inherited PATH suppresses the prepend. Here ``/opt/homebrew/bin/``
+        (trailing separator) must match ``/opt/homebrew/bin``.
+        """
+        if not os.path.isabs("/opt/homebrew/bin"):
+            pytest.skip("os.path flavour does not treat the POSIX path as absolute")
+        base = os.pathsep.join(["/devshell/bin", "/opt/homebrew/bin/"])
+        dirs = augmented_path(base).split(os.pathsep)
+        # The normalized homebrew dir appears once (the user's trailing-slash
+        # spelling), not twice.
+        norm = os.path.normcase(os.path.normpath("/opt/homebrew/bin"))
+        occurrences = [d for d in dirs if os.path.normcase(os.path.normpath(d)) == norm]
+        assert len(occurrences) == 1
+        assert occurrences[0] == "/opt/homebrew/bin/"
+
 
 class TestExtraMcpPathDirs:
     """The MCP binary search path must be extensible.

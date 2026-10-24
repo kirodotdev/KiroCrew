@@ -906,6 +906,21 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     ``acp.client``'s claude-backend resolvers), which must not consume a
     contributed directory. That contribution lives on :func:`mcp_search_path` —
     see the section comment near ``_registered_path_dirs``.
+
+    A well-known directory the inherited ``base_path`` ALREADY contains is not
+    prepended again. The prepend exists for a gateway whose inherited ``PATH``
+    lacks these dirs (started under systemd / launchd / another non-login
+    shell), so ``shutil.which`` resolves the binaries a login shell would.
+    When the inherited ``PATH`` already lists one of them — behind directories
+    the user put first, such as a Nix devshell's tool dirs — prepending it moves
+    that copy ahead of the user's choice and shadows it, the opposite of the
+    goal. So each ``extra`` dir is dropped when ``base_path`` already names it,
+    compared through ``normcase(normpath(...))`` exactly as :func:`_dedup_dirs`
+    compares — folding Windows case and separator flavour together. A dir the
+    inherited ``PATH`` lacks is still prepended, so a launchd/systemd-started
+    gateway is unchanged, and any dir the user kept first keeps that position.
+    The ``sys.executable`` fallback is still appended last regardless, since its
+    whole purpose is to resolve names found nowhere else.
     """
     resolved_home = home or os.path.expanduser("~")
     mise_data = mise_data_dir(resolved_home)
@@ -921,6 +936,11 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
         if (e := _validated_bin_dir(d.format(home=resolved_home, mise_data=mise_data)))
     ]
     extra += _node_all_bin_dirs(resolved_home, mise_data, _xdg_config_dir(resolved_home))
+    # Drop any well-known dir the inherited PATH already carries, so a prepend
+    # never moves it ahead of the position the user gave it. Compared the way
+    # _dedup_dirs compares; emitted spellings are untouched.
+    inherited = {os.path.normcase(os.path.normpath(p)) for p in base_path.split(os.pathsep) if p}
+    extra = [e for e in extra if os.path.normcase(os.path.normpath(e)) not in inherited]
     parts = extra + ([base_path] if base_path else [])
     parts.append(str(Path(sys.executable).parent))
     return os.pathsep.join(parts)
