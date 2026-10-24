@@ -54,8 +54,16 @@ async def _restore_dashboard_sessions(state: DashboardState, cfg: KiroCrewConfig
         # Session restores spawn a kiro-cli process per restored tab — the last
         # large group of the startup battery, so it too gets a cautious-boot window.
         await cautious_boot.pause_before("session restore")
+        resume_on = bool(getattr(cfg.dashboard, "resume_interrupted_turns", False))
         with state.suspend_slots_push():
             await chat.restore_open_slots_async(state)
+            if resume_on:
+                # The chats the restart cut exist from here on, and the restore still
+                # awaits below: arm their keys now, so a channel Stop landing before
+                # the boot pass runs is recorded against them (rfc-restart-resume).
+                from kiro_crew.dashboard import restart_resume
+
+                restart_resume.arm_cut_chats(state)
             restored = await chat.restore_recent_sessions_async(
                 state,
                 cfg.dashboard.restore_window_minutes if cfg.dashboard.restore_sessions else 0,
@@ -69,6 +77,24 @@ async def _restore_dashboard_sessions(state: DashboardState, cfg: KiroCrewConfig
             # Reseed it past the highest restored index so the next new chat can't
             # re-mint a colliding low index (which scrambles the tab -> session map).
             state.reseed_slot_counter()
+
+        # Two passes over the slots the restores built, in one background task so
+        # the server's listen waits on neither (each loads transcripts the restore
+        # deferred, one per chat concerned); both are inert unless
+        # ``dashboard.resume_interrupted_turns`` is on (off by default). First: a
+        # chat that comes back holding a different approval mode than the person
+        # last saw it hold is told so (rfc-restart-resume) -- Trust is in memory by
+        # construction and this restores none of it; the notice is the honest half.
+        # Then: Resume is pressed on the person's behalf for every chat the restart
+        # cut off, so the notice lands before a turn could run under the mode the
+        # person does not yet know about. The dispatcher is imported here and only
+        # with the switch on: both passes return at once without it, and a
+        # default-off launch must not load an optional subsystem on the boot path
+        # (AUTOSDE ``no-new-work-on-gateway-boot-path``).
+        if resume_on:
+            from kiro_crew.dashboard import restart_resume
+
+            restart_resume.start_boot_pass(state, cfg)
 
         if state._dynamic_cards is not None:
             state._dynamic_cards.seed_open_sessions()

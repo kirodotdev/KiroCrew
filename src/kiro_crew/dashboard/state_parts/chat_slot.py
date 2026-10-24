@@ -295,6 +295,13 @@ class _ChatSlot:
         "remote_slot",
         "_turn_in_flight_generation",
         "_turn_in_flight_prompt",
+        "_auto_resume_stamps",
+        "_auto_resume_reset_pending",
+        "_auto_resume_task",
+        "_auto_resume_epoch",
+        "_restart_cut_turn",
+        "_restart_stop_count",
+        "_approval_mode_recorded",
         "_active_turn_session_key",
         "_responsive",
         "_side",
@@ -441,6 +448,13 @@ class _ChatSlot:
     # Initialised by state_parts/slot_turns.py.
     _turn_in_flight_generation: int
     _turn_in_flight_prompt: dict[str, Any] | None
+    _auto_resume_stamps: list[float]
+    _auto_resume_reset_pending: bool
+    _auto_resume_task: asyncio.Task[Any] | None
+    _auto_resume_epoch: int
+    _restart_cut_turn: bool
+    _restart_stop_count: int | None
+    _approval_mode_recorded: str
     _buffers: SlotBufferCoordinator
     _queue_repository: SlotQueueRepository
     _closing: int

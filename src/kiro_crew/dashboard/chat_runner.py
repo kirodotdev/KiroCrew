@@ -500,12 +500,16 @@ SESSION_NOT_FOUND_GIVE_UP_TEXT = (
 # classify them identically to the turn logic here). Re-exported here so
 # callers importing them from chat_runner resolve them.
 from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
+    _BUSY_RECOVER_MSG,
+    _CONN_RECOVER_MSG,
+    _MANUAL_RESUME_MSG,
     _POSTTOKEN_RECOVER_MSG,
     CRON_NOTIFICATION_KIND,
     SEED_DECLINED_NOTICE_KIND,
     SUBAGENT_COMPLETION_KIND,
     SYNTHESIS_CLEAR,
     SYNTHETIC_RECOVERY_KIND,
+    TRANSIENT_NOTICE_GIVE_UP,
     should_recover_promise_only,
     subagents_attached_async,
     synthesis_fire_verdict,

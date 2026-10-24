@@ -166,6 +166,19 @@ and its charged budgets. Fixed call, byte, cache and iframe limits and the disab
 contract are documented in
 [learn-cron-dashboard](learn-cron-dashboard.md#automatic-session-status-cards).
 
+`dashboard.resume_interrupted_turns` follows the same cost rule too: default
+false, with `dashboard.resume_retry_limit` (1-20, default 5) and
+`dashboard.resume_retry_window_minutes` (5-1440, default 60) bounding how often
+the gateway may press Resume on the person's behalf per chat. The bounds are
+`RESUME_RETRY_*` in `config/sections_limits.py`; the loader and `PUT
+/api/dashboard/config` clamp to the same constants. The error pass reads the
+live config when it acts; the boot pass takes the limit and window from the
+config the boot loaded and re-reads only the switch, before each dispatch. A
+change therefore takes effect on the next restart or turn end with no restart
+of its own. The mechanism is
+`dashboard/restart_resume.py`; the decision record is
+[rfc-restart-resume](../../request-for-change/rfc-restart-resume.md).
+
 ## Orchestration prompt contract
 
 `config/prompt.md` guides direct work and delegation using a concrete-value

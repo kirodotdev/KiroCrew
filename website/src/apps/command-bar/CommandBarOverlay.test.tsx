@@ -265,9 +265,14 @@ describe('CommandBarOverlay rows', () => {
 
   it('withholds the settings rows the other searches withhold', () => {
     // A browser window: About draws the gateway's switch and no app updater, so a
-    // row for the app switch would land on a tab with nothing to flash.
+    // row for the app switch would land on a tab with nothing to flash. The query
+    // names the two update switches ("Install app updates automatically", "Update
+    // the gateway automatically") rather than the bare word "automatic", which the
+    // titles of unrelated settings also carry: those would compete with the
+    // gateway row for the settings group's six slots and the assertion would then
+    // read the corpus's size, not the withholding.
     mount()
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'automatic' } })
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'update automatically' } })
     const options = screen.getAllByRole('option').map(o => o.textContent ?? '')
     expect(options.some(o => o.includes('Update the gateway automatically'))).toBe(true)
     expect(options.some(o => o.includes('Install app updates automatically'))).toBe(false)

@@ -128,6 +128,13 @@ PROMISE_ONLY_RECOVERY_PREFIX = "[Unfinished action — automatic recovery]"
 # just stops. Body: _COMPACTION_CONTINUE_MSG in chat_utils_injected_rows. One bounded attempt
 # (slot._compaction_continue_retries), never a loop.
 COMPACTION_RECOVERY_PREFIX = "[Context compacted — automatic recovery]"
+# The gateway pressing Resume on the person's behalf (``restart_resume``, behind
+# ``dashboard.resume_interrupted_turns``). Its own prefixes, not the manual one:
+# the model must not read a press that never happened as an answer, and the
+# card must say neither "requested by the user" nor claim an in-turn recovery.
+# Mirrored in ``website/src/pages/chat/RecoveryCard.tsx`` ``PREFIXES``.
+AUTO_RESUME_RESTART_RECOVERY_PREFIX = "[Continue — automatic after a restart]"
+AUTO_RESUME_ERROR_RECOVERY_PREFIX = "[Continue — automatic after an error]"
 
 
 # Prefix on the continuation injected when the USER pressed Continue on an

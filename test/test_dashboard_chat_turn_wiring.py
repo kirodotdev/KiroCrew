@@ -298,6 +298,88 @@ class TestRuntimeWiringTurn:
         # Only the interrupted turn is restored, never the one before it.
         assert "Earlier request, answered long ago" not in sent
 
+    @pytest.mark.asyncio
+    async def test_the_restored_turn_quotes_the_models_words_not_the_gateways_notice(
+        self, tmp_path, monkeypatch
+    ):
+        """The ladder's compact-after-turn notice is an assistant-role row the
+        gateway writes INTO a running turn (``chat_turn.recovery``), so on a chat
+        the process then died on it sits between the request and the resume row,
+        exactly where the restore quotes the model's partial answer. No automatic
+        resume is involved: a plain Resume press on a natively resumed session
+        must hand the model its own words, not the gateway's notice as what it
+        had said."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.dashboard.chat_turn.recovery import (
+            COMPACT_AFTER_TURN_NOTICE,
+            COMPACT_AFTER_TURN_NOTICE_KIND,
+        )
+        from kiro_crew.dashboard.chat_utils import _MANUAL_RESUME_MSG
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+        from kiro_crew.skills import SkillsLoader
+
+        def mock_build_message(text, context_is_new, session_key=None, **kwargs):
+            return text, MagicMock(action=None, text="")
+
+        ctx_builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        ctx_builder.conversation_log = MagicMock()
+        monkeypatch.setattr(ctx_builder, "build_message", mock_build_message)
+        monkeypatch.setattr("kiro_crew.context.build_session_replay", lambda *a, **k: "")
+
+        state = _make_state(tmp_path, context_builder=ctx_builder)
+        hook_store = MagicMock()
+        hook_store.fire = AsyncMock(return_value=[])
+        state._hook_store = hook_store
+        slot = state.get_or_create_slot("resume-native-notice")
+        slot.append("user", "Summarise the incident timeline for TICKET-42")
+        slot.append("assistant", "Pulling the timeline now; first event at 09:14")
+        notice = COMPACT_AFTER_TURN_NOTICE.format(pct=81.0, limit=80.0)
+        slot.append(
+            "assistant",
+            notice,
+            "msg msg-a",
+            meta={"kind": "compaction", "notice": COMPACT_AFTER_TURN_NOTICE_KIND},
+        )
+        resume_row = slot.append("inject", _MANUAL_RESUME_MSG, meta={"injectKind": "recovery"})
+
+        streamed: list[str] = []
+
+        async def stream(stream_message):
+            streamed.append(stream_message)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+        mock_client = MagicMock()
+        mock_client.stream = stream
+        mock_client.stream_command = stream
+        mock_client.context_usage_pct = MagicMock(return_value=10.0)
+        state.sessions.get_or_create = AsyncMock(return_value=(mock_client, True, True))
+        state.sessions.get_pid = MagicMock(return_value=None)
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(
+            state,
+            slot,
+            _MANUAL_RESUME_MSG,
+            _current_message=resume_row,
+            _synthetic_recovery_turn=True,
+        )
+
+        assert len(streamed) == 1
+        sent = streamed[0]
+        assert sent.startswith("[INTERRUPTED TURN")
+        assert "first event at 09:14" in sent
+        # The notice is the gateway's, not the model's: it is not what the model said.
+        assert "will compact after this turn" not in sent
+        assert notice not in sent
+
     @pytest.mark.parametrize(
         ("accepts_inbound", "expected_channel"),
         [(True, "chat-42"), (False, None)],

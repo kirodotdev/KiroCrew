@@ -172,6 +172,8 @@ from kiro_crew.dashboard.state_parts.dashboard_state import (  # noqa: E402,F401
 )
 from kiro_crew.dashboard.state_parts.injected_turns import (  # noqa: E402,F401 -- re-exported; see state_parts
     _REDIRECT_TARGET_RE,
+    AUTO_RESUME_ERROR_RECOVERY_PREFIX,
+    AUTO_RESUME_RESTART_RECOVERY_PREFIX,
     BUSY_RECOVERY_PREFIX,
     COMPACTION_RECOVERY_PREFIX,
     CONN_RECOVERY_PREFIX,

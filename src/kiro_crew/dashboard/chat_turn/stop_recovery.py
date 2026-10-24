@@ -131,7 +131,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
             # depth>0 (nested turn) with budget remaining: reset the session
             # but don't re-queue (mirrors the pipe-death depth>0 handling);
             # surface feedback so the nested turn doesn't fail silently.
-            _emit_stale(turn, "⟳ Turn stalled — please retry.")
+            _emit_stale(turn, "⟳ Turn stalled — please retry.", invites_retry=True)
         return _Flow.END
 
     # Dedicated tool-stall recovery — MUST precede the generic "error:"
@@ -181,7 +181,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                 slot._tool_stall_exhausted_emitted = True
             _emit_stall(turn, "Session stuck — please start a new chat.")
         else:
-            _emit_stall(turn, "⟳ Tool appeared stalled — please retry.")
+            _emit_stall(turn, "⟳ Tool appeared stalled — please retry.", invites_retry=True)
         return _Flow.END
 
     # Automatic compaction failed and the backend then abandoned the turn.
@@ -325,9 +325,10 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                     turn,
                     f"The agent process this chat shares kept restarting{_rc_suffix}"
                     " — please retry.",
+                    invites_retry=True,
                 )
         else:
-            _emit_error(turn, f"⟳ Connection lost{_rc_suffix} — please retry.")
+            _emit_error(turn, f"⟳ Connection lost{_rc_suffix} — please retry.", invites_retry=True)
         return _Flow.END
     return None
 

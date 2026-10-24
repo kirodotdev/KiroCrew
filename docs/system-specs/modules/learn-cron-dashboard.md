@@ -2679,7 +2679,7 @@ record and the slot, not from where the turn stopped:
   stopped, holds the queue and synthesis.
 - An exception above the `try` appends an error row, since the dispatcher
   only logs it, and propagates. The row carries `meta.turn_failed`
-  (`chat_turn.queue_cycle.TURN_FAILED_META`), so the OpenAI-compatible endpoint, which
+  (`chat_utils.TURN_FAILED_META`), so the OpenAI-compatible endpoint, which
   waits for the cycle's `done` row, answers `server_error` instead of an empty
   reply. Raised by a local command's own handler
   (`/goal`, `/workflow`, `/prompts`, recorded as `_TurnExit.local_command`)

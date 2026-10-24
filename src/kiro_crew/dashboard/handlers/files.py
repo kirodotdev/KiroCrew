@@ -77,6 +77,10 @@ from kiro_crew.config.sections import (  # noqa: F401
     LINK_PATTERN_PATTERN_MAX_LEN,
     LINK_PATTERN_URL_MAX_LEN,
     LINK_PATTERNS_MAX,
+    RESUME_RETRY_LIMIT_MAX,
+    RESUME_RETRY_LIMIT_MIN,
+    RESUME_RETRY_WINDOW_MAX,
+    RESUME_RETRY_WINDOW_MIN,
     link_pattern_url_ok,
 )
 from kiro_crew.dashboard import git_repo_touches as _git_repo_touches  # noqa: F401

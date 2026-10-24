@@ -8,7 +8,11 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from kiro_crew.dashboard.chat_utils import SYNTHESIS_HELD, SYNTHESIS_UNKNOWN
+# ``TURN_FAILED_META`` is the meta key on the error row of a turn that raised before its
+# main ``try``. The cycle still ends with a ``done`` row, so an HTTP reader that waits for
+# ``done`` reads this key to report the failure instead of an empty reply. Defined beside
+# the other injected-row markers, where ``restart_resume`` reads it too.
+from kiro_crew.dashboard.chat_utils import SYNTHESIS_HELD, SYNTHESIS_UNKNOWN, TURN_FAILED_META
 from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT
 
 if TYPE_CHECKING:
@@ -335,6 +339,19 @@ async def _finish_queue_cycle(
     slot.task = None
     state.push_slots_update()
     await _send_chat_done(state, slot, payload=payload)
+    # The slot is idle and its tail is final: if the turn ended in a retryable
+    # error, arm one backed-off automatic resume (rfc-restart-resume). Inert
+    # while ``dashboard.resume_interrupted_turns`` is off: the module reads the
+    # switch from the in-memory config snapshot before it reads anything else,
+    # and from disk inside the armed task only while no snapshot is armed yet.
+    # The import is a cached lookup after the first turn end. Never raises into
+    # the cycle end.
+    from kiro_crew.dashboard import restart_resume
+
+    try:
+        restart_resume.schedule_after_error(state, slot)
+    except Exception:
+        logger.debug("restart_resume: schedule_after_error failed", exc_info=True)
     reached_provider = slot._cycle_reached_provider
     slot._cycle_reached_provider = False
     if not reached_provider:
@@ -658,12 +675,6 @@ async def _end_turn_tail(
         predecessor_actor=turn_exit.actor,
         predecessor_turn_id=turn_exit.turn_id,
     )
-
-
-#: Meta key on the error row of a turn that raised before its main ``try``. The
-#: cycle still ends with a ``done`` row, so an HTTP reader that waits for
-#: ``done`` reads this key to report the failure instead of an empty reply.
-TURN_FAILED_META = "turn_failed"
 
 
 def _note_failed_before_the_try(slot: _ChatSlot, turn_exit: _TurnExit) -> None:

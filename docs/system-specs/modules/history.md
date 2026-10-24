@@ -1684,6 +1684,70 @@ no longer destroy older turns.
   except when the gateway is going away (a signal shutdown, or the `close_all()`
   final drain of an in-app restart) and the turn has not landed: that marker is
   kept, because the process ending is the interruption it records.
+- **Pressing Resume on the person's behalf** (`dashboard/restart_resume.py`,
+  behind `dashboard.resume_interrupted_turns`, off by default). Two passes, one
+  mechanism, both dispatched through `continue_slot_turn` so every state the
+  Resume button refuses is refused here too and the SEL `dashboard_continue`
+  line carries a `via` of `restart_resume` or `error_resume`. The **boot pass**
+  runs in one background task with the permissions notice (the notice pass
+  first, then this; neither on the path `KIROCREW_READY` waits on, since both
+  load transcripts the restore deferred) after both restores and the counter
+  reseed: for every restored chat whose metadata line carried the
+  turn-in-flight marker (`_restart_cut_turn`, this process only -- an
+  interruption row an earlier boot left is not resumed on a later one) it
+  loads the window off the loop and, when the newest turn reads as interrupted
+  and ended in no error row or in the `gateway_restart_interruption` row,
+  queues an `inject` whose first line is `[Continue — automatic after a
+  restart]` (`meta.autoResume = {cause, attempt, limit}`), paced by the
+  cautious-boot pause, a settle before the first dispatch and a floor between
+  chats. The **error pass** runs once per local turn end: a turn whose newest
+  row is a retryable terminal error (`transient_give_up`,
+  `session_start_failed`, or `retry_invited` -- the kind the runner's own
+  "please retry" writers stamp; an `error` row with no kind, or a kind off
+  the list, is never retried, whatever its words) arms one
+  backed-off retry (30 s doubling to 10 min, plus jitter) whose inject's first
+  line is `[Continue — automatic after an error]`; the switch is read before
+  arming and again after the backoff. Never resumed: a turn-timeout, a Stop
+  card anywhere in the newest turn, a chat-close interruption, an unanswered
+  approval prompt, a session the recovery declared stuck, a turn that failed
+  before it started, and every kind not on the retryable list. A person's send
+  or Resume press, a Stop, and a close drop an armed retry and move a per-slot
+  epoch the dispatch re-reads under the slot lock before its queue insert. The
+  stamp an automatic resume spends is written to the line, and the write
+  awaited, BEFORE the resume is queued (`_commit_budget`, the turn marker's own
+  fenced merge); a write that did not complete refuses the resume and takes
+  the stamp back, a refusal under the lock takes it back in memory, and a
+  person's reset is carried as the empty list by their own turn's marker.
+- **The automatic-resume budget and the recorded approval mode**
+  (`metadata_codec.py`, consumed by `dashboard/restart_resume.py`). Two more
+  slot-owned keys ride the line. `auto_resume_stamps` is the list of wall-clock
+  times the gateway pressed Resume on the person's behalf for this chat
+  (`dashboard.resume_interrupted_turns`, off by default); it is read back on
+  every purpose so a gateway that restarts, resumes, dies on the resumed turn
+  and restarts again still counts the earlier ones, and a list that is not a
+  list of finite, non-future numbers within `MAX_STAMPS` -- an integer too large
+  for a float included; the read never raises, since it runs inside the slot
+  restore -- reads as FULL: 64 stamps dated now, so the automation is refused for
+  one resume window from the read and the manual Resume is untouched. A person's
+  send or Resume press clears it sooner. `approval_mode_seen` is the grant the chat held at its last
+  save (`trust` | `trust_reads`), written from the live flags: the full save
+  omits the default so a line with no key reads as `normal`, and the merge,
+  which cannot delete a key, writes `normal` so a revoke overwrites an earlier
+  grant. A mode pick on an idle chat marks the slot dirty so the record follows
+  it (the mate seed does not: re-opening a bound thread is a no-op, and the
+  seeded mode reaches the line with the thread's next save). It is read back into `_approval_mode_recorded` ONLY
+  -- never into `_trust` / `_trust_reads`, which stay in memory by construction
+  (`test_trust_flags_not_restored`). With `dashboard.resume_interrupted_turns`
+  on, the startup restore compares it with the mode the chat came back holding
+  and, when they differ, lands one assistant-role system notice (`meta.kind =
+  "approval_mode_dropped"`) saying so, before any automatic resume runs -- the
+  notice is behind the switch like the passes -- except where the grant comes back by
+  its own mechanism with no person to act: an app-owned chat, and a mate's chat
+  -- its thread or a worker it opened, found through the chat's execution record
+  -- whose recorded mode is the one its profile declares (re-applied as each turn
+  is admitted, the resumed one included).
+  Design and decisions:
+  [rfc-restart-resume](../../request-for-change/rfc-restart-resume.md).
 - **Title state round-trips with its provenance** (`metadata_codec.py`). The
   save writes `title_origin`, `title_refresh_mark` and `title_low_signal` beside
   the title; a restore redacts the title for display and resolves the three

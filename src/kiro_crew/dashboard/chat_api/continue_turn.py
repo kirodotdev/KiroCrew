@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         _slot_replaced_while_queued,
         _start_next_queued_turn,
         _subagents_attached_response,
+        cron_slot_creator,
         deny_app_slot_access,
         effective_session_key,
         is_stop_event_row,
@@ -103,11 +104,19 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
     if refusal is not None:
         return refusal
 
+    # Two different questions, as on the send route (``api_chat``): the queue
+    # entry's provenance stays ``not request_app`` (what directive handling and
+    # the drain read), while WHO RESETS THE BUDGET is the send route's person
+    # rule -- no app token AND no attested cron creator -- so a cron's Continue
+    # dispatches exactly as a cron's send does, and like it leaves alone the
+    # automatic-resume budget that bounds the resumes no person asked for.
+    cron_creator = await cron_slot_creator(request)
     try:
         await continue_slot_turn(
             state,
             slot,
-            directive_user_origin=not bool(request.get("app", "")),
+            directive_user_origin=not bool(request_app),
+            resets_budget=not request_app and not cron_creator,
             # Same-name registration can change while the lock or child probe waits.
             replaced=lambda: _slot_replaced_while_queued(
                 state, slot, name, request, "chat.slot_continue"
@@ -140,11 +149,13 @@ async def continue_slot_turn(
     slot: _ChatSlot,
     *,
     directive_user_origin: bool,
+    resets_budget: bool | None = None,
     via: str = "",
     require_interrupted: bool = False,
     before_dispatch: Callable[[], None] | None = None,
     extra_meta: dict[str, Any] | None = None,
     replaced: Callable[[], bool] | None = None,
+    body: str | None = None,
 ) -> str:
     """Queue the Resume/Continue body at the head of *slot* and dispatch it.
 
@@ -158,6 +169,10 @@ async def continue_slot_turn(
     continuation right now, and raises :class:`SlotContinueRefusal` when it
     cannot.
 
+    ``resets_budget`` says whether this continuation is a PERSON's action for
+    the automatic-resume budget; it defaults to ``directive_user_origin`` (the
+    session-control tools pass False either way) and the endpoint sets it from
+    the send route's rule, which also excludes an attested cron creator.
     ``require_interrupted`` refuses a slot whose last turn did not fail
     (``turn_not_failed``); Continue leaves it off. ``before_dispatch`` runs
     synchronously under the slot lock immediately before the queue insert and
@@ -167,7 +182,11 @@ async def continue_slot_turn(
     so a drain-time drop is reported back to it). ``replaced`` is checked after
     each await (the lock, the sub-agent probe) and refuses with a 404
     ``slot_not_found`` when it returns True: the Continue endpoint passes
-    ``_slot_replaced_while_queued`` for its slot name.
+    ``_slot_replaced_while_queued`` for its slot name. ``body`` replaces the
+    continuation text the interruption check would pick: ``restart_resume``
+    passes its own, whose prefix line tells the card and the model that the
+    gateway pressed Resume rather than a person. Every refusal above still
+    applies to it; only the words change.
     """
     async with slot._lock:
         # Same-name registration can change while the lock or child probe waits.
@@ -254,7 +273,21 @@ async def continue_slot_turn(
                 "the last turn did not fail; there is nothing to retry",
                 "turn_not_failed",
             )
-        resume = _MANUAL_RESUME_MSG if interrupted else _MANUAL_CONTINUE_MSG
+        resume = body or (_MANUAL_RESUME_MSG if interrupted else _MANUAL_CONTINUE_MSG)
+        if resets_budget is None:
+            resets_budget = directive_user_origin
+        if body is None and resets_budget:
+            # A PERSON is continuing the chat: the automatic-resume budget starts
+            # over, and an armed retry is moot. An agent's ``session_retry`` /
+            # ``session_continue``, an app's Continue and a cron's carry no human
+            # origin and leave the budget alone -- it bounds exactly what no
+            # person asked for. An automatic resume passes its own body and
+            # never resets it.
+            from kiro_crew.dashboard import (  # imported on use: the dispatcher stays off the boot path (AUTOSDE no-new-work-on-gateway-boot-path)
+                restart_resume,
+            )
+
+            restart_resume.reset_budget(slot)
         if before_dispatch is not None:
             # Synchronous, under the lock, with no await between it and the
             # insert below: a caller whose authority was decided before the lock

@@ -45,7 +45,11 @@ from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, JsonRpcMessage
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard import session_health as sh
 from kiro_crew.dashboard.chat import _run_chat
-from kiro_crew.dashboard.chat_utils import TRANSIENT_NOTICE_GIVE_UP, TRANSIENT_NOTICE_META_KEY
+from kiro_crew.dashboard.chat_utils import (
+    STOPPED_META,
+    TRANSIENT_NOTICE_GIVE_UP,
+    TRANSIENT_NOTICE_META_KEY,
+)
 from kiro_crew.dashboard.session_control import containment_meta
 from kiro_crew.dashboard.state import REFUSAL_RECOVERY_PREFIX
 from kiro_crew.providers.acp import AcpProvider
@@ -707,6 +711,15 @@ def _press_stop_in_flight(_state, slot):
     slot._stop_state = "soft"
 
 
+def _press_stop_from_the_channel(state, slot):
+    """A Stop issued on the linked channel (Slack's Stop, a transport's stop verb).
+
+    ``SessionManager.stop_turn`` moves the session-scoped counter alone: the
+    slot's own state and counter never see it, and no Stop card is written.
+    """
+    state.sessions.stop_generation.return_value = 1
+
+
 def _steer(_state, slot):
     text = "forget that — read the gateway log instead"
     slot._pending_steers.append(text)
@@ -733,7 +746,9 @@ def _followup(state, slot):
 _STOPS = [
     pytest.param(_press_stop_resolved, id="resolved"),
     pytest.param(_press_stop_in_flight, id="in-flight"),
+    pytest.param(_press_stop_from_the_channel, id="channel"),
 ]
+_STOP_PRESSES = {_press_stop_resolved, _press_stop_in_flight, _press_stop_from_the_channel}
 
 
 class TestAStopDuringTheSameModelTransientBackoff:
@@ -767,6 +782,10 @@ class TestAStopDuringTheSameModelTransientBackoff:
         # happened. The give-up token is what returns the Continue affordance.
         assert _errors(run.slot)[-1] == "⟳ Connection unstable — please try again."
         assert len(_give_up_rows(run.slot)) == 1
+        # The row says the Stop caused it: the automatic error pass reads that
+        # and never resumes a turn the person stopped, even when the Stop came
+        # from a surface that writes no Stop card on this slot.
+        assert _give_up_rows(run.slot)[0]["meta"].get(STOPPED_META) is True
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -865,6 +884,10 @@ class TestAnInterruptDuringThePostTokenBackoff:
         assert any("the first half of the answer" in m["content"] for m in run.slot.messages)
         assert _errors(run.slot)[-1] == "⟳ Connection unstable — please try again."
         assert len(_give_up_rows(run.slot)) == 1
+        # Marked stopped only when a Stop caused the drop: a steer or a
+        # follow-up is the person taking over, not stopping.
+        stopped = _give_up_rows(run.slot)[0]["meta"].get(STOPPED_META, False)
+        assert stopped is (deliver in _STOP_PRESSES)
 
     @pytest.mark.asyncio
     async def test_an_uninterrupted_backoff_still_queues_the_continuation(self, tmp_path):

@@ -40,6 +40,7 @@ from kiro_crew.dashboard.chat_runner import (
 )
 from kiro_crew.dashboard.chat_utils import (
     AUTH_REQUIRED_KIND,
+    RETRY_INVITED_KIND,
     TRANSIENT_NOTICE_META_KEY,
     TRANSIENT_NOTICE_RESUMING,
     TRANSIENT_NOTICE_RETRYING,
@@ -127,6 +128,9 @@ class _Arm:
 
 
 _RETRY = ("error", TRANSIENT_RETRY_KIND)
+#: The ladder's terminal "please retry" row: tagged so the restart-resume error
+#: pass can retry it without reading its words.
+_INVITED = ("error", RETRY_INVITED_KIND)
 _PLAIN = ("error", None)
 
 _ARMS: dict[str, _Arm] = {
@@ -182,7 +186,7 @@ _ARMS: dict[str, _Arm] = {
     "process-died-shared-runtime-exhausted": _Arm(
         events=lambda: [Do(_shared_runtime_died), Raise(AcpProcessDied("process exited"))],
         shared_streak=SESSION_RECOVERY_MAX_ATTEMPTS,
-        rows=[_PLAIN],
+        rows=[_INVITED],
         # The process it shares keeps dying: retrying the healthy chat is the advice.
         card="shares kept restarting",
         reset=True,
@@ -199,7 +203,8 @@ _ARMS: dict[str, _Arm] = {
     "prompt-busy-exhausted-nested": _Arm(
         events=lambda: [Raise(PromptBusyExhaustedError())],
         run_kwargs={"_prompt_depth": 1},
-        rows=[_PLAIN],
+        rows=[_INVITED],
+        card="Session busy — please retry.",
         reset=True,
         label=_UNNAMED,
         after={"_prompt_busy_retries": 1},

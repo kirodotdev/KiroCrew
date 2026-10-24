@@ -199,6 +199,20 @@ UPLOAD_MAX_MB_MIN = 1
 UPLOAD_MAX_MB_MAX = 512
 MCP_PROBE_TIMEOUT_MIN = 5
 MCP_PROBE_TIMEOUT_MAX = 120
+
+#: Bounds of ``dashboard.resume_retry_limit`` and ``dashboard.resume_retry_window_minutes``:
+#: the loader clamps to them, the PUT handler clamps to them, and the Settings controls
+#: mirror them (``RESUME_RETRY_LIMIT_MIN`` / ``_MAX`` and ``RESUME_WINDOW_OPTIONS`` in
+#: ``website/src/pages/settings/chatPanelOptions.ts``). The floor of the limit is 1
+#: because 0 would be the switch spelled a second way. The window floor is 5 minutes,
+#: the shortest choice the select offers: the first error-retry backoff is 30 s, so a
+#: 5-minute window still holds the first few retries of the curve (30 s, 60 s, 2 min)
+#: and a shorter one would make the limit meaningless for the backoff it bounds; the
+#: ceiling is a day, like ``restore_window_minutes``.
+RESUME_RETRY_LIMIT_MIN = 1
+RESUME_RETRY_LIMIT_MAX = 20
+RESUME_RETRY_WINDOW_MIN = 5
+RESUME_RETRY_WINDOW_MAX = 1440
 # ``dashboard.title_refresh_every_turns``: 0 is "built-in schedule"; any other
 # value is at least MIN, so a typo of 1 cannot spend an LLM call on every turn.
 TITLE_REFRESH_EVERY_TURNS_MIN = 4
