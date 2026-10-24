@@ -127,18 +127,22 @@ from kiro_crew.agent_sdk.backends import (
 # extension asks about EVERY tool call (pi runs every call without asking, by
 # design, and no allowedTools/autoApprove bypass exists), so every call reaches
 # the READ_ONLY gate with no pre-approval surface to close. Captured LIVE on
-# pi-acp 0.0.33 over pi 1.3.0, driving meta/muse-spark-1.3 through the confined
-# Side Chat launcher, and committed as
-# ``test/fixtures/acp_frames/pi/side-read-only-live.jsonl``: a read of an
-# absolute path (kind ``read``, the envelope-proving ``read`` builtin) and three
-# shell calls (kind ``execute``) each raised ``session/request_permission``
-# through the gate extension first, and ran after the client answered yes. The
-# read proof is the envelope's bare tool name (``PI_READ_ONLY_BUILTINS``:
-# read/grep/find/ls), and that name is proof only because the Side Chat
-# launcher passes ``--no-extensions --no-approve`` so an operator extension
-# cannot register those names; an MCP-rewritten title matches nothing, and the
-# shell is judged by ``is_read_only_bash``. A side turn on pi therefore runs
-# the resolved agent under READ_ONLY, with no client confinement to build.
+# pi-acp 0.0.34 over pi 1.3.0 (the lane pin) through the confined Side Chat
+# launcher, and committed as
+# ``test/fixtures/acp_frames/pi/side-read-only-live.jsonl``: one ``read``,
+# ``grep``, ``find`` and ``ls`` call on an absolute path each raised
+# ``session/request_permission`` through the gate extension first, and ran after
+# the client answered yes. The read proof is the envelope's bare tool name
+# (``PI_READ_ONLY_BUILTINS``: read/grep/find/ls), and that name is proof only
+# because the Side Chat launcher passes ``--no-extensions --no-approve`` so an
+# operator extension cannot register those names; an MCP-rewritten title
+# matches nothing. The launcher also passes ``--exclude-tools bash,powershell``:
+# pi's user settings ``shellCommandPrefix`` and ``shellPath`` change what a shell
+# command runs, so the text the shell classifier reads would not bound it, and a
+# pi side session has no shell (driven on pi 0.99.2 and 1.4.0: neither tool is
+# registered; in the capture no model request offered one). A side turn on pi
+# therefore runs the resolved agent under READ_ONLY, with no client confinement
+# to build.
 #
 # deepseek is a member on measurement, and not through ``DSH_PERMISSION_MODE``:
 # that sandbox posture denies instead of asking, so it would produce no READ_ONLY

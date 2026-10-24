@@ -348,8 +348,11 @@ class TestGateLauncher:
         body = _pi_gate_launcher_body("/opt/pi", "/site/gate.ts", confine=True)
         assert "--no-extensions" in body
         assert "--no-approve" in body
+        assert "--exclude-tools bash,powershell" in body
         assert '"$@"' in body
-        assert body.index("--no-extensions") < body.index('"$@"')
+        # After the adapter's own arguments, so a later flag cannot undo them.
+        assert body.index('"$@"') < body.index("--no-extensions")
+        assert body.index('"$@"') < body.index("--exclude-tools bash,powershell")
         assert body.rstrip().endswith("--extension '/site/gate.ts'") or body.rstrip().endswith(
             "--extension /site/gate.ts"
         )
@@ -359,6 +362,13 @@ class TestGateLauncher:
         body = _pi_gate_launcher_body("/opt/pi", "/site/gate.ts")
         assert "--no-extensions" not in body
         assert "--no-approve" not in body
+        assert "--exclude-tools" not in body
+
+    def test_the_windows_side_launcher_drops_the_shell_after_the_adapter_args(self, monkeypatch):
+        monkeypatch.setattr(acp_client.platform_compat, "IS_WINDOWS", True)
+        body = _pi_gate_launcher_body("C:\\tools\\pi.cmd", "C:\\site\\gate.ts", confine=True)
+        assert body.index("%*") < body.index("--exclude-tools bash,powershell")
+        assert body.index("%*") < body.index("--no-extensions")
 
     def test_the_windows_body_is_a_cmd_that_forwards_arguments(self, monkeypatch):
         monkeypatch.setattr(acp_client.platform_compat, "IS_WINDOWS", True)

@@ -697,6 +697,8 @@ async def test_side_turn_on_pi_runs_read_only_without_deriving_a_spec(
     assert parent._side.binding[2] == "pi_read_only"
     assert stream_mock.await_args.kwargs["approval_policy"] is ToolApprovalPolicy.READ_ONLY
     assert "lookups work here, but changes don't" in stream_mock.await_args.args[1]
+    # The pi side launcher registers no shell tool, so the prompt names none.
+    assert "There is no shell here" in stream_mock.await_args.args[1]
 
 
 def _side_turn_fixture(tmp_path, run_id: str):
