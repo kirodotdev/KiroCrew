@@ -11796,6 +11796,7 @@
         "sensitive_in_card": "分享前请注意——卡片中检测到：{{kinds}}",
         "sensitive_in_caption": "分享前请注意——帖子文案中检测到：{{kinds}}",
         "withdrawn_by_policy": "分享功能已被策略关闭。想保留文案就先复制——关闭此对话框后不会保存。",
+        "sites_unavailable": "无法确认可以分享到哪些网站，因此暂不提供。请稍后再试。",
         "copy_text_only": "复制文案",
         "copied_text": "已复制",
         "copy_text_failed": "复制失败",

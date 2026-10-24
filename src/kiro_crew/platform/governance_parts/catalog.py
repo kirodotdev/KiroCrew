@@ -324,7 +324,14 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # surface through ``vet_and_audit``, fail-closed, mirroring the
     # mobile_connect listing). Data row only — CONTRACT_VERSION and the
     # evaluator are untouched.
-    "capabilities.social_share": ScopeSpec(CAPABILITY, capability_default=True),
+    #
+    # Inner ``sites`` ruleset (``identifier`` matcher): which share sites the
+    # dialog may offer, by id -- ``x``, ``linkedin`` (``social_share.SHARE_SITES``).
+    # ``GET /api/dashboard/config`` reports the permitted ids as
+    # ``social_share_sites`` and the dialog draws only those buttons.
+    "capabilities.social_share": ScopeSpec(
+        CAPABILITY, capability_default=True, scope_matchers={"sites": "identifier"}
+    ),
     # Hosted feature-video clips: the gateway fetches a signed manifest from a
     # vendor CDN and then downloads media from it into the data home
     # (``feature_videos_manifest`` / ``feature_videos_cache``). That is outbound
