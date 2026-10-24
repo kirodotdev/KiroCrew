@@ -93,6 +93,7 @@ export type ErrorNoticeNoHandoff =
     askAgent?: never
     askAgentLabel?: never
     onHandoff?: never
+    onStage?: never
   }
 
 /**
@@ -131,6 +132,7 @@ export default function ErrorNotice({
   scrollMessage = false,
   footer,
   onHandoff,
+  onStage,
   className = '',
   messageClassName = '',
   messageTooltip,
@@ -249,6 +251,14 @@ export default function ErrorNotice({
    * as a dead button. Ignored when `askAgent` is off.
    */
   onHandoff?: () => void
+  /**
+   * Stages the error's hand-off prompt in a composer the caller owns, in place
+   * of the fresh-chat hand-off: for a surface bound to THIS chat's remote
+   * workspace, which a fresh chat's agent could not reach. Nothing navigates.
+   * Unset (every other caller), the hand-off opens a fresh chat as before.
+   * Ignored when `askAgent` is off.
+   */
+  onStage?: (prompt: string) => void
   className?: string
   /**
    * Classes for the `message` span only — e.g. `font-mono` when the message is
@@ -312,6 +322,7 @@ export default function ErrorNotice({
             report={report}
             message={message}
             onHandoff={onHandoff}
+            onStage={onStage}
             label={askAgentLabel}
           />
         )}
@@ -382,6 +393,7 @@ export default function ErrorNotice({
               report={report}
               message={message}
               onHandoff={onHandoff}
+              onStage={onStage}
               label={askAgentLabel}
             />
           </div>
@@ -392,6 +404,7 @@ export default function ErrorNotice({
           report={report}
           message={message}
           onHandoff={onHandoff}
+          onStage={onStage}
           label={askAgentLabel}
           className="mt-[1px]"
         />
