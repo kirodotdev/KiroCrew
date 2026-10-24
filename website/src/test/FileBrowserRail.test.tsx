@@ -24,6 +24,7 @@ const H = vi.hoisted(() => ({
     projectTree: vi.fn(),
     projectGitStatus: vi.fn(),
     fileSearch: vi.fn(),
+    uploadToDirectory: vi.fn(),
   },
   fileGrep: vi.fn(),
 }))
@@ -42,6 +43,7 @@ vi.mock('../pierre/tree', () => ({
     onFileOpen?: (abs: string) => void
     onOpenFolder?: (folder: string) => void
     reveal?: { path: string; nonce: number } | null
+    onUploadRequest?: (absDir: string) => void
   }) => (
     <>
       {/* Stands in for the limit row under a cut folder: present only when
@@ -61,6 +63,16 @@ vi.mock('../pierre/tree', () => ({
         onClick={() => p.onFileOpen?.(H.OPENED)}
       >
         tree
+      </button>
+      {/* Stands in for a directory row's "Upload files…" context-menu action:
+          PierreWorkspaceTreeImpl.test.tsx pins that click wired to this same
+          callback, so this probe only needs to pin that FileBrowserRail
+          forwards it and reacts correctly when it fires. */}
+      <button
+        data-testid="upload-request"
+        onClick={() => p.onUploadRequest?.(`${p.projectDir}/target-dir`)}
+      >
+        upload-request
       </button>
     </>
   ),
@@ -311,6 +323,84 @@ describe('FileBrowserRail file opens', () => {
   it('passes an empty selection when no file is open', () => {
     mount()
     expect(tree()).toHaveAttribute('data-selected', '')
+  })
+})
+
+function fileTransfer(name = 'a.txt'): DataTransfer {
+  const file = new File(['x'], name, { type: 'text/plain' })
+  return {
+    types: ['Files'],
+    items: [{ kind: 'file', type: file.type, getAsFile: () => file }],
+    files: [file],
+    dropEffect: 'none',
+  } as unknown as DataTransfer
+}
+
+describe('FileBrowserRail upload', () => {
+  beforeEach(() => {
+    H.api.uploadToDirectory.mockReset().mockResolvedValue({ ok: true, path: `${DIR}/a.txt`, name: 'a.txt' })
+  })
+
+  const railEl = () => rail()
+
+  it('shows the drop overlay naming the project root for an OS file drag over the rail', () => {
+    mount()
+    fireEvent.dragEnter(railEl(), { dataTransfer: fileTransfer() })
+    expect(screen.getByText('Drop to upload into repo')).toBeInTheDocument()
+  })
+
+  it('uploads a pane-wide drop (no specific row) into the tree root', async () => {
+    mount()
+    fireEvent.drop(railEl(), { dataTransfer: fileTransfer() })
+
+    await waitFor(() => expect(H.api.uploadToDirectory).toHaveBeenCalledWith(DIR, expect.any(File)))
+  })
+
+  it('uploads a drop released over a folder row or a file row into the tree root', async () => {
+    // The overlay hides the tree, so the row under the pointer must not pick
+    // the destination. These rows carry the attributes @pierre/trees renders.
+    mount()
+    const folderRow = document.createElement('div')
+    folderRow.setAttribute('data-item-path', 'src/')
+    folderRow.setAttribute('data-item-type', 'folder')
+    const fileRow = document.createElement('div')
+    fileRow.setAttribute('data-item-path', 'src/a.ts')
+    fileRow.setAttribute('data-item-type', 'file')
+    fileRow.setAttribute('data-item-parent-path', 'src/')
+    tree().append(folderRow, fileRow)
+
+    fireEvent.drop(folderRow, { dataTransfer: fileTransfer('one.txt') })
+    fireEvent.drop(fileRow, { dataTransfer: fileTransfer('two.txt') })
+
+    await waitFor(() => expect(H.api.uploadToDirectory).toHaveBeenCalledTimes(2))
+    expect(H.api.uploadToDirectory.mock.calls.map(([dir, file]) => [dir, (file as File).name])).toEqual([
+      [DIR, 'one.txt'],
+      [DIR, 'two.txt'],
+    ])
+  })
+
+  it('forwards onUploadRequest to the tree and uploads the picker selection into that directory', async () => {
+    mount()
+    fireEvent.click(screen.getByTestId('upload-request'))
+    const input = screen.getByLabelText('Upload files…') as HTMLInputElement
+    const file = new File(['y'], 'picked.txt', { type: 'text/plain' })
+
+    fireEvent.change(input, { target: { files: [file] } })
+
+    await waitFor(() => expect(H.api.uploadToDirectory).toHaveBeenCalledWith(`${DIR}/target-dir`, file))
+  })
+
+  it('shows an upload failure inline and lets it be dismissed', async () => {
+    H.api.uploadToDirectory.mockResolvedValue({ ok: false, status: 400, code: 'unsupported_file_type', error: 'Unsupported file type: .exe' })
+    mount()
+
+    fireEvent.drop(railEl(), { dataTransfer: fileTransfer('a.exe') })
+
+    const notice = await screen.findByTestId('file-browser-rail-upload-error')
+    expect(notice).toHaveTextContent('Unsupported file type: .exe')
+
+    fireEvent.click(within(notice).getByLabelText('Dismiss'))
+    expect(screen.queryByTestId('file-browser-rail-upload-error')).toBeNull()
   })
 })
 

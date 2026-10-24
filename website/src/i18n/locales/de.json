@@ -11919,6 +11919,8 @@
         "content_searching": "Suche läuft…",
         "ctx_add_to_chat": "Zum Chat hinzufügen",
         "ctx_download": "Herunterladen",
+        "ctx_upload_files": "Dateien hochladen…",
+        "drop_to_upload": "Ablegen, um in {{folder}} hochzuladen",
         "filter_placeholder": "Dateien filtern…",
         "git_status_failed": "Git-Status konnte nicht gelesen werden",
         "mode_content": "Inhalt",
@@ -11930,7 +11932,9 @@
         "search_names": "Dateinamen durchsuchen",
         "tree_mode": "Dateilisten-Modus",
         "content_engine_slow": "Auf diesem Host ist ripgrep nicht vorhanden, daher wurde die langsamere integrierte Suche verwendet.",
-        "content_one_row_per_file": "eine Zeile pro Datei"
+        "content_one_row_per_file": "eine Zeile pro Datei",
+        "upload_exists": "„{{name}}“ existiert bereits in diesem Ordner. Benenne deine Datei um oder entferne die vorhandene und lade dann erneut hoch.",
+        "upload_failed": "Hochladen von {{name}} fehlgeschlagen"
       },
       "filesHome": {
         "no_project_dir": "Für diesen Chat ist kein Projektverzeichnis festgelegt",
