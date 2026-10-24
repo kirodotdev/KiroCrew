@@ -114,7 +114,7 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
         jitter = self._compute_jitter(job) if trigger != "manual" else 0
         claim.jitter = jitter
         # ``last_result`` is a cross-run context-carry field for AGENT jobs
-        # (see build_cron_session_context): result-less runs leave the
+        # (see cron_prior_result_context): result-less runs leave the
         # previous value in place so the next run's prompt keeps its dedup
         # context. Command and script jobs have theirs cleared once in the
         # finally below, because the prompt built for them is never

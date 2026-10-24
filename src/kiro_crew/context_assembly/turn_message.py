@@ -26,6 +26,7 @@ from collections.abc import Collection
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.context_assembly import inclusion as _inclusion
+from kiro_crew.context_assembly import markers as _markers
 from kiro_crew.context_assembly import member as _member
 from kiro_crew.context_assembly import sections as _sections
 from kiro_crew.context_assembly import turn as _turn
@@ -354,11 +355,11 @@ def build_message(
                 None,
             )
             if _rules_prefix is not None:
-                session_ctx = _rules_prefix + ctx._neutralize_structural_markers(
+                session_ctx = _rules_prefix + _markers._neutralize_context_payload(
                     session_ctx[len(_rules_prefix) :]
                 )
             else:
-                session_ctx = ctx._neutralize_structural_markers(session_ctx)
+                session_ctx = _markers._neutralize_context_payload(session_ctx)
             if slim_resume:
                 # Re-anchor the critical rules (dashboard/Slack UI
                 # contracts: diff blocks, [OPTIONS:] buttons, absolute
@@ -457,7 +458,7 @@ def build_message(
         if compressed_history:
             parts.append(
                 "[CONVERSATION HISTORY — recent session replay, tail-heavy, may be truncated]\n"
-                + ctx._neutralize_structural_markers(compressed_history)
+                + _markers._neutralize_context_payload(compressed_history)
                 + "\n[END CONVERSATION HISTORY]\n\n"
             )
 
@@ -541,7 +542,7 @@ def build_message(
         if ch_ctx:
             # Group-channel context is authored by other users — scrub the
             # primary boundary markers so it cannot forge a prompt boundary.
-            parts.append(ctx._neutralize_structural_markers(ch_ctx))
+            parts.append(_markers._neutralize_context_payload(ch_ctx))
 
     # Thread parent text — inject whenever available, even alongside
     # channel history (they serve different purposes: ch_ctx has recent
@@ -561,7 +562,7 @@ def build_message(
     # for injection when it was read; here the block is fenced and its
     # markers neutralized, the same framing as the thread parent above.
     if channel_id and thread_ts and thread_replies_text:
-        safe_replies = ctx._neutralize_structural_markers(
+        safe_replies = _markers._neutralize_context_payload(
             ctx._neutralize_fence_markers(thread_replies_text)
         )
         parts.append(
