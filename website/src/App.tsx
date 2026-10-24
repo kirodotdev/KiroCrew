@@ -24,6 +24,8 @@ import ChatPage from './pages/ChatPage'
 import PopoutFrame from './pages/PopoutFrame'
 import ArtifactPopoutFrame from './pages/ArtifactPopoutFrame'
 import TerminalPopoutFrame from './pages/TerminalPopoutFrame'
+import AppPopoutFrame from './pages/AppPopoutFrame'
+import AppPopoutHost from './components/AppPopoutHost'
 
 import ErrorBoundary from './components/ErrorBoundary'
 import AskAgentButton from './components/AskAgentButton'
@@ -299,7 +301,7 @@ export { NavItem, NavBadge }
 export default function App() {
   const shell = useAppShell()
   const {
-    isEmbed, isPopout, initialPopoutPath, dispatch, updateAvailable, terminalEnabled, terminalPoppedOut,
+    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, updateAvailable, terminalEnabled, terminalPoppedOut,
     bottomTerminalOpen, mobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
     colorTheme, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
@@ -527,7 +529,21 @@ export default function App() {
         the dashboard inside the local pane (below), where it hides with the
         local Crew. */}
     {(isPopout || isEmbed) && <ImportSessionOutcomeNotice />}
-    {isPopout ? (
+    {appPopoutRoute ? (
+      /* An app pop-out window. Its router is mounted at `/popout/app`
+         (main.tsx, via appPopoutRouterBasename), so the paths here are the
+         app's OWN — `/dev-fleet/…`, `/apps/<name>` — exactly as the dashboard
+         branch below spells them, and an app's absolute sub-path navigation
+         resolves unchanged. The two arms are the dashboard's two app arms; the
+         frame renders the pinned app for its own route and hands any other
+         destination (an app's "go to chat" exit, a link to Settings) to the
+         main window instead of mounting it here. */
+      <Routes>
+        <Route path="/apps/:name" element={<ErrorBoundary><AppPopoutFrame route={appPopoutRoute} /></ErrorBoundary>} />
+        <Route path="/:builtinApp/*" element={<ErrorBoundary><AppPopoutFrame route={appPopoutRoute} /></ErrorBoundary>} />
+        <Route path="*" element={<ErrorBoundary><AppPopoutFrame route={appPopoutRoute} /></ErrorBoundary>} />
+      </Routes>
+    ) : isPopout ? (
       <Routes>
         <Route path="/popout/chat/:slug?" element={<ErrorBoundary><PopoutFrame /></ErrorBoundary>} />
         <Route path="/popout/artifact/:slug" element={<ErrorBoundary><ArtifactPopoutFrame /></ErrorBoundary>} />
@@ -788,6 +804,9 @@ export default function App() {
             control, so it opts out of the global :focus-visible ring the way
             the tabIndex={-1} page headings do. */}
         <main id="main-content" tabIndex={-1} className={`outline-hidden flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
+          {/* First child, so its sticky row owns the top of this scroll
+              container on an app page; renders nothing on every other route. */}
+          <AppPopoutHost />
           <MigrationCheck />
           {/* Route-independent, unlike MigrationCheck: "you crashed" is true of
               the app, not of the page, and the launch after a crash rarely lands

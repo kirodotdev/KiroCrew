@@ -5938,6 +5938,15 @@
       "this_app_is_disabled": "Diese App ist deaktiviert",
       "this_app_provides_agents_and_skills_but_no_visua": "Diese App stellt Agenten und Skills bereit, aber keine visuelle Oberfläche.\n            Verwenden Sie ihre Agenten aus dem Chat."
     },
+    "appPopoutControl": {
+      "pop_out_app_to_its_own_window": "App in ein eigenes Fenster auskoppeln",
+      "popped_out": "Ausgekoppelt",
+      "this_app_is_open_in_its_own_window_focus_it": "Diese App ist in einem eigenen Fenster geöffnet — dieses fokussieren",
+      "focus_popped_out_window": "Ausgekoppeltes Fenster fokussieren",
+      "return": "Zurückholen",
+      "return_to_main_window": "Zum Hauptfenster zurückkehren",
+      "return_this_app_to_the_main_window": "Diese App in das Hauptfenster zurückholen"
+    },
     "approvalCard": {
       "actions_group": "Freigabeaktionen",
       "approval_no_longer_pending": "Diese Genehmigung ist abgelaufen oder wurde bereits entschieden — der Agent wartet nicht mehr darauf.",
@@ -10541,6 +10550,14 @@
       "retry": "Wiederholen",
       "back_to_apps": "Zurück zu Apps",
       "failed_to_load_app": "App konnte nicht geladen werden"
+    },
+    "appPopoutFrame": {
+      "app": "App",
+      "window_title": "{{label}} — {{productName}}",
+      "no_app_at_route": "Keine App unter {{route}}",
+      "no_app_at_route_lead": "Dieses Fenster wurde für eine Seite geöffnet, die keine App ist, oder für eine App, die nicht mehr installiert ist. Kehre zum Hauptfenster zurück, um fortzufahren.",
+      "could_not_load_the_app_list": "Die App-Liste konnte nicht geladen werden",
+      "retry": "Wiederholen"
     },
     "appsPage": {
       "action_failed": "{{action}} für {{name}} fehlgeschlagen",

@@ -5805,6 +5805,15 @@
       "this_app_is_disabled": "이 앱은 비활성화되어 있습니다",
       "this_app_provides_agents_and_skills_but_no_visua": "이 앱은 에이전트와 스킬을 제공하지만 시각적 인터페이스는 없습니다.\n 채팅에서 이 앱의 에이전트를 사용하세요."
     },
+    "appPopoutControl": {
+      "pop_out_app_to_its_own_window": "앱을 별도 창으로 분리",
+      "popped_out": "별도 창에 표시 중",
+      "this_app_is_open_in_its_own_window_focus_it": "이 앱은 별도 창에서 열려 있습니다 — 그 창으로 포커스 이동",
+      "focus_popped_out_window": "분리된 창으로 포커스 이동",
+      "return": "되돌리기",
+      "return_to_main_window": "기본 창으로 되돌리기",
+      "return_this_app_to_the_main_window": "이 앱을 기본 창으로 되돌리기"
+    },
     "approvalCard": {
       "actions_group": "승인 작업",
       "approval_no_longer_pending": "이 승인은 만료되었거나 이미 결정되었습니다 — 에이전트가 더 이상 기다리지 않습니다.",
@@ -10395,6 +10404,14 @@
       "retry": "다시 시도",
       "back_to_apps": "앱으로 돌아가기",
       "failed_to_load_app": "앱을 불러오지 못했습니다"
+    },
+    "appPopoutFrame": {
+      "app": "앱",
+      "window_title": "{{label}} — {{productName}}",
+      "no_app_at_route": "{{route}}에 앱이 없습니다",
+      "no_app_at_route_lead": "이 창은 앱이 아닌 페이지 또는 더 이상 설치되어 있지 않은 앱을 위해 열렸습니다. 계속하려면 기본 창으로 되돌아가세요.",
+      "could_not_load_the_app_list": "앱 목록을 불러오지 못했습니다",
+      "retry": "다시 시도"
     },
     "appsPage": {
       "action_failed": "{{name}} {{action}}에 실패했습니다",

@@ -676,6 +676,13 @@ export function subscribeChatHandoff(fn: () => void): () => void {
   return () => { _handoffListeners.delete(fn) }
 }
 
+/** Notify mounted ChatPage listeners that the hand-off queue has new work. */
+export function notifyChatHandoffs(): void {
+  for (const fn of _handoffListeners) {
+    try { fn() } catch { /* a bad subscriber must not strand the hand-off */ }
+  }
+}
+
 /**
  * Stage the prompt and get the user to a fresh chat session.
  *
@@ -708,9 +715,7 @@ export function sendErrorToChat(prompt: string, opts: { hard?: boolean; leaveGra
   if (softNavigate) {
     // Notify before navigating: an already-mounted ChatPage drains here, and a
     // not-yet-mounted one drains on mount instead.
-    for (const fn of _handoffListeners) {
-      try { fn() } catch { /* a bad subscriber must not strand the hand-off */ }
-    }
+    notifyChatHandoffs()
     softNavigate('/chat')
     return true
   }

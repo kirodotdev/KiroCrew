@@ -6142,6 +6142,15 @@
       "this_app_is_disabled": "Это приложение отключено",
       "this_app_provides_agents_and_skills_but_no_visua": "Это приложение предоставляет агентов и навыки, но не имеет визуального интерфейса.\n            Используйте его агентов из чата."
     },
+    "appPopoutControl": {
+      "pop_out_app_to_its_own_window": "Открыть приложение в отдельном окне",
+      "popped_out": "В отдельном окне",
+      "this_app_is_open_in_its_own_window_focus_it": "Это приложение открыто в отдельном окне — перейти к нему",
+      "focus_popped_out_window": "Перейти к отдельному окну",
+      "return": "Вернуть",
+      "return_to_main_window": "Вернуть в главное окно",
+      "return_this_app_to_the_main_window": "Вернуть это приложение в главное окно"
+    },
     "approvalCard": {
       "actions_group": "Действия подтверждения",
       "approval_no_longer_pending": "Срок этого запроса на одобрение истёк, или решение уже принято — агент больше его не ждёт.",
@@ -10833,6 +10842,14 @@
       "retry": "Повторить",
       "back_to_apps": "Назад к приложениям",
       "failed_to_load_app": "Не удалось загрузить приложение"
+    },
+    "appPopoutFrame": {
+      "app": "Приложение",
+      "window_title": "{{label}} — {{productName}}",
+      "no_app_at_route": "По адресу {{route}} нет приложения",
+      "no_app_at_route_lead": "Это окно было открыто для страницы, которая не является приложением, или для приложения, которое больше не установлено. Вернитесь в главное окно, чтобы продолжить.",
+      "could_not_load_the_app_list": "Не удалось загрузить список приложений",
+      "retry": "Повторить"
     },
     "appsPage": {
       "action_failed": "Не удалось {{action}} {{name}}",

@@ -6040,6 +6040,15 @@
       "this_app_is_disabled": "Cette application est désactivée",
       "this_app_provides_agents_and_skills_but_no_visua": "Cette application fournit des agents et des compétences, mais aucune interface visuelle.\n            Utilisez ses agents depuis le chat."
     },
+    "appPopoutControl": {
+      "pop_out_app_to_its_own_window": "Détacher l'application dans sa propre fenêtre",
+      "popped_out": "Détachée",
+      "this_app_is_open_in_its_own_window_focus_it": "Cette application est ouverte dans sa propre fenêtre — l'activer",
+      "focus_popped_out_window": "Activer la fenêtre détachée",
+      "return": "Rattacher",
+      "return_to_main_window": "Rattacher à la fenêtre principale",
+      "return_this_app_to_the_main_window": "Rattacher cette application à la fenêtre principale"
+    },
     "approvalCard": {
       "actions_group": "Actions d'approbation",
       "approval_no_longer_pending": "Cette approbation a expiré ou a déjà été décidée — l’agent ne l’attend plus.",
@@ -10687,6 +10696,14 @@
       "retry": "Réessayer",
       "back_to_apps": "Retour aux applications",
       "failed_to_load_app": "Échec du chargement de l’application"
+    },
+    "appPopoutFrame": {
+      "app": "Application",
+      "window_title": "{{label}} — {{productName}}",
+      "no_app_at_route": "Aucune application à {{route}}",
+      "no_app_at_route_lead": "Cette fenêtre a été ouverte pour une page qui n'est pas une application, ou pour une application qui n'est plus installée. Reviens à la fenêtre principale pour continuer.",
+      "could_not_load_the_app_list": "Échec du chargement de la liste des applications",
+      "retry": "Réessayer"
     },
     "appsPage": {
       "action_failed": "Échec de l’action « {{action}} » sur {{name}}",

@@ -4234,6 +4234,15 @@
       "this_app_is_disabled": "This app is disabled",
       "this_app_provides_agents_and_skills_but_no_visua": "This app provides agents and skills but no visual interface.\n            Use its agents from chat."
     },
+    "appPopoutControl": {
+      "pop_out_app_to_its_own_window": "Pop out app to its own window",
+      "popped_out": "Popped out",
+      "this_app_is_open_in_its_own_window_focus_it": "This app is open in its own window — focus it",
+      "focus_popped_out_window": "Focus popped-out window",
+      "return": "Return",
+      "return_to_main_window": "Return to main window",
+      "return_this_app_to_the_main_window": "Return this app to the main window"
+    },
     "approvalCard": {
       "actions_group": "Approval actions",
       "approve": "Approve",
@@ -6160,6 +6169,14 @@
     },
     "appPage": {
       "loading_app": "Loading app…"
+    },
+    "appPopoutFrame": {
+      "app": "App",
+      "window_title": "{{label}} — {{productName}}",
+      "no_app_at_route": "No app at {{route}}",
+      "no_app_at_route_lead": "This window was opened for a page that is not an app, or for an app that is no longer installed. Return to the main window to continue.",
+      "could_not_load_the_app_list": "Could not load the app list",
+      "retry": "Retry"
     },
     "appsPage": {
       "add_an_app_source_gear_icon_above_or_install_fro": "Add an app source (Sources, top right) or install from a local path.",

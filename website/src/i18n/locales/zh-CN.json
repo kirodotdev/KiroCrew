@@ -5836,6 +5836,15 @@
       "this_app_is_disabled": "此应用已停用",
       "this_app_provides_agents_and_skills_but_no_visua": "此应用提供代理和技能，但没有可视界面。\n            请在聊天中使用它的代理。"
     },
+    "appPopoutControl": {
+      "pop_out_app_to_its_own_window": "把应用弹出到独立窗口",
+      "popped_out": "已弹出",
+      "this_app_is_open_in_its_own_window_focus_it": "此应用已在独立窗口中打开 — 聚焦它",
+      "focus_popped_out_window": "聚焦弹出窗口",
+      "return": "返回",
+      "return_to_main_window": "返回主窗口",
+      "return_this_app_to_the_main_window": "把此应用返回到主窗口"
+    },
     "approvalCard": {
       "actions_group": "审批操作",
       "approval_no_longer_pending": "这条审批已过期或已被处理 — 代理不再等待它。",
@@ -10395,6 +10404,14 @@
       "retry": "重试",
       "back_to_apps": "返回应用",
       "failed_to_load_app": "加载应用失败"
+    },
+    "appPopoutFrame": {
+      "app": "应用",
+      "window_title": "{{label}} — {{productName}}",
+      "no_app_at_route": "{{route}} 没有对应的应用",
+      "no_app_at_route_lead": "打开此窗口的页面不是应用，或该应用已被卸载。请返回主窗口以继续。",
+      "could_not_load_the_app_list": "加载应用列表失败",
+      "retry": "重试"
     },
     "appsPage": {
       "action_failed": "{{action}} {{name}} 失败",
