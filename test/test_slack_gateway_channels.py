@@ -187,16 +187,18 @@ class TestUnreadyChannelBadge:
         # guessing which of several a channel needs.
         assert "TELEGRAM_BOT_TOKEN" in error
 
-    def test_a_disabled_channel_is_not_badged(self):
-        """It has nothing to report, and a row for it would be the noise the
-        Services filter exists to remove."""
-        orch, boot = self._orch_with(telegram={"enabled": False, "bot_token": ""})
-        orch._badge_unready_channels(boot)
-        assert not isinstance(orch.dashboard_state.telegram_connect_error, str)
-
-    def test_a_ready_channel_is_not_badged(self):
-        """A credentialed channel is the gateway's own outcome to report."""
-        orch, boot = self._orch_with(telegram={"enabled": True, "bot_token": "12345:AA"})
+    @pytest.mark.parametrize(
+        ("enabled", "bot_token"),
+        [
+            # A disabled channel has nothing to report, and a row for it would be
+            # the noise the Services filter exists to remove.
+            pytest.param(False, "", id="test_a_disabled_channel_is_not_badged"),
+            # A credentialed channel is the gateway's own outcome to report.
+            pytest.param(True, "12345:AA", id="test_a_ready_channel_is_not_badged"),
+        ],
+    )
+    def test_channel_is_not_badged(self, enabled: bool, bot_token: str):
+        orch, boot = self._orch_with(telegram={"enabled": enabled, "bot_token": bot_token})
         orch._badge_unready_channels(boot)
         assert not isinstance(orch.dashboard_state.telegram_connect_error, str)
 
@@ -210,12 +212,17 @@ class TestUnreadyChannelBadge:
         """Best-effort by construction: a diagnostic must not stop a transport."""
         orch, boot = self._orch_with(telegram={"enabled": True, "bot_token": ""})
         orch._cfg.load_credentials = MagicMock(side_effect=RuntimeError("cred store down"))
-        orch._badge_unready_channels(boot)  # must not raise
+        orch._badge_unready_channels(boot)
+        orch._cfg.load_credentials.assert_called_once_with()
+        assert not isinstance(orch.dashboard_state.telegram_connect_error, str)
 
     def test_no_dashboard_state_is_tolerated(self):
         orch, boot = self._orch_with(telegram={"enabled": True, "bot_token": ""})
         orch.dashboard_state = None
-        orch._badge_unready_channels(boot)  # must not raise
+        orch._cfg.load_credentials = MagicMock(return_value={})
+        orch._badge_unready_channels(boot)
+        # The missing dashboard is the gate: the credential store is never read.
+        orch._cfg.load_credentials.assert_not_called()
 
 
 class TestChannelTransportStartGate:

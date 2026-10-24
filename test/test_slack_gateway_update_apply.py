@@ -58,7 +58,6 @@ class TestCheckForUpdates:
         import kiro_crew.dashboard.handlers as _h
         from kiro_crew.platform.governance import UpdatePins
 
-        # Create a config with auto_update=False
         fake_cfg = MagicMock()
         fake_cfg.auto_update = False
         # The check's verdict and nothing else: an earlier test's keys (a provider's
@@ -202,12 +201,15 @@ class TestCheckForUpdates:
     @pytest.mark.asyncio
     async def test_update_check_exception_handled(self):
         orch = _make_orchestrator()
+        orch._auto_apply_update = AsyncMock()
         with patch(
             "kiro_crew.dashboard.handlers._do_update_check",
             new_callable=AsyncMock,
             side_effect=RuntimeError("network"),
-        ):
-            await orch._check_for_updates()  # should not raise
+        ) as check:
+            await orch._check_for_updates()
+        check.assert_awaited_once()
+        orch._auto_apply_update.assert_not_awaited()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -221,8 +223,19 @@ class TestAutoApplyUpdate:
     @pytest.mark.asyncio
     async def test_no_project_dir_returns_early(self):
         orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
         with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": ""}, clear=False):
-            await orch._auto_apply_update()  # should not raise
+            with patch(
+                "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
+                return_value="/trusted/bin/git",
+            ) as resolve_git:
+                with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as spawn:
+                    await orch._auto_apply_update()
+        # The env read is the gate: nothing past it, not even the git lookup, runs.
+        resolve_git.assert_not_called()
+        spawn.assert_not_awaited()
+        ds.push_update_progress.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_non_mainline_branch_skips(self):
@@ -230,13 +243,32 @@ class TestAutoApplyUpdate:
         proc = AsyncMock()
         proc.communicate = AsyncMock(return_value=(b"feat/test\n", b""))
         proc.returncode = 0
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
         with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}, clear=False):
-            with patch(
-                "asyncio.create_subprocess_exec",
-                new_callable=AsyncMock,
-                return_value=proc,
+            with (
+                patch(
+                    "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
+                    return_value="/trusted/bin/git",
+                ),
+                # Permissive, so only the branch gate can stop the run before the
+                # next precondition (the repo-named exec config) is read.
+                patch(
+                    "kiro_crew.slack.gateway.repo_exec_config_reason", return_value=""
+                ) as exec_config,
+                patch("kiro_crew.slack.gateway.tracks_upstream", return_value=True),
+                patch(
+                    "asyncio.create_subprocess_exec",
+                    new_callable=AsyncMock,
+                    return_value=proc,
+                ) as spawn,
             ):
                 await orch._auto_apply_update()
+        # Only the branch probe ran: no fetch follows a non-primary branch.
+        exec_config.assert_not_called()
+        spawn.assert_awaited_once()
+        assert "--abbrev-ref" in spawn.await_args.args
+        ds.push_update_progress.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_failure_path_resolves_the_restart_hint_off_the_event_loop(self):
@@ -288,15 +320,16 @@ class TestAutoApplyUpdate:
 class TestBrazilInstallAndDeps:
     """Static helper and dep repair."""
 
-    def test_is_brazil_install_with_method_file(self, tmp_path):
-        method = tmp_path / ".install-method"
-        method.write_text("brazil")
-        assert GatewayOrchestrator._is_brazil_install(str(tmp_path)) is True
-
-    def test_is_brazil_install_pip(self, tmp_path):
-        method = tmp_path / ".install-method"
-        method.write_text("pip")
-        assert GatewayOrchestrator._is_brazil_install(str(tmp_path)) is False
+    @pytest.mark.parametrize(
+        ("method_text", "expected"),
+        [
+            pytest.param("brazil", True, id="test_is_brazil_install_with_method_file"),
+            pytest.param("pip", False, id="test_is_brazil_install_pip"),
+        ],
+    )
+    def test_is_brazil_install_reads_method_file(self, tmp_path, method_text, expected):
+        (tmp_path / ".install-method").write_text(method_text)
+        assert GatewayOrchestrator._is_brazil_install(str(tmp_path)) is expected
 
     def test_is_brazil_install_no_file_no_brazil(self, tmp_path):
         with patch("shutil.which", return_value=None):
@@ -304,15 +337,25 @@ class TestBrazilInstallAndDeps:
 
     def test_check_missing_deps_no_missing(self):
         orch = _make_orchestrator()
-        with patch("importlib.util.find_spec", return_value=MagicMock()):
-            asyncio.run(orch._check_missing_deps())  # should not raise
+        with patch("importlib.util.find_spec", return_value=MagicMock()) as find_spec:
+            with patch.object(GatewayOrchestrator, "_is_brazil_install") as is_brazil:
+                with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as spawn:
+                    asyncio.run(orch._check_missing_deps())
+        assert find_spec.call_count == len(GatewayOrchestrator._REQUIRED_DEPS)
+        is_brazil.assert_not_called()
+        spawn.assert_not_awaited()
 
     def test_check_missing_deps_brazil_skips(self):
         orch = _make_orchestrator()
         with patch("importlib.util.find_spec", return_value=None):
             with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/proj"}):
-                with patch.object(GatewayOrchestrator, "_is_brazil_install", return_value=True):
-                    asyncio.run(orch._check_missing_deps())  # should not raise, skips pip
+                with patch.object(
+                    GatewayOrchestrator, "_is_brazil_install", return_value=True
+                ) as is_brazil:
+                    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as spawn:
+                        asyncio.run(orch._check_missing_deps())
+        is_brazil.assert_called_once_with("/proj")
+        spawn.assert_not_awaited()
 
     # --- _check_console_script -------------------------------------------------
 
@@ -661,13 +704,15 @@ class TestAutoApplyUpdateGitPath:
         ds = _mock_dashboard_state()
         orch.dashboard_state = ds
 
-        # branch detection succeeds, fetch fails
-        _fake_exec = _git_exec_fake(fetch_rc=1)
+        record: list = []
+        _fake_exec = _git_exec_fake(fetch_rc=1, record=record)
 
         with patch("kiro_crew.env.is_toolbox_install", return_value=False):
             with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
                 with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
                     await orch._auto_apply_update()
+        assert [args for args in record if "fetch" in args], "the fetch never ran"
+        assert not [args for args in record if "reset" in args]
         ds.clear_update_progress.assert_called()
 
     @pytest.mark.asyncio
@@ -677,7 +722,8 @@ class TestAutoApplyUpdateGitPath:
         orch.dashboard_state = ds
 
         # diff --quiet reports no difference, so the run stops before the reset.
-        _fake_exec = _git_exec_fake(diff_rc=0)
+        record: list = []
+        _fake_exec = _git_exec_fake(diff_rc=0, record=record)
 
         with patch("kiro_crew.env.is_toolbox_install", return_value=False):
             with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
@@ -686,6 +732,8 @@ class TestAutoApplyUpdateGitPath:
         # A voluntary apply settles silently: it clears the bar and does not
         # light the badge. (A "pulling" progress fires during the fetch above;
         # the distinction from a mandatory no-diff is the final outcome.)
+        assert [args for args in record if "diff" in args], "the diff never ran"
+        assert not [args for args in record if "reset" in args]
         ds.clear_update_progress.assert_called()
         ds.push_refresh.assert_not_called()
 

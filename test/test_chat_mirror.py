@@ -820,22 +820,23 @@ class TestMirrorUnlink:
             assert resp.status == 404
 
     @pytest.mark.asyncio
-    async def test_unlink_success(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "was_linked",
+        [
+            pytest.param(True, id="test_unlink_success"),
+            pytest.param(False, id="test_unlink_noop"),
+        ],
+    )
+    async def test_unlink_reports_whether_a_link_was_cleared(
+        self, tmp_path, monkeypatch, was_linked
+    ):
         state = _prep(tmp_path, monkeypatch)
-        state.sessions.clear_mirror_link = MagicMock(return_value=True)
+        state.sessions.clear_mirror_link = MagicMock(return_value=was_linked)
         async with TestClient(TestServer(_make_mirror_app(state))) as client:
             resp = await client.post("/api/chat/slots/s1/mirror-unlink")
             assert resp.status == 200
-            assert (await resp.json())["was_linked"] is True
-
-    @pytest.mark.asyncio
-    async def test_unlink_noop(self, tmp_path, monkeypatch):
-        state = _prep(tmp_path, monkeypatch)
-        state.sessions.clear_mirror_link = MagicMock(return_value=False)
-        async with TestClient(TestServer(_make_mirror_app(state))) as client:
-            resp = await client.post("/api/chat/slots/s1/mirror-unlink")
-            assert resp.status == 200
-            assert (await resp.json())["was_linked"] is False
+            assert (await resp.json())["was_linked"] is was_linked
+        state.sessions.clear_mirror_link.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_a_stale_row_cannot_unlink_a_replacement_binding(self, tmp_path, monkeypatch):
@@ -1169,7 +1170,22 @@ class TestMirrorReminder:
         transport.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_invalid_utf8_body_is_400_not_500(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "body,content_type",
+        [
+            pytest.param(
+                b"\xff\xfe\x00bad",
+                "application/json",
+                id="test_invalid_utf8_body_is_400_not_500",
+            ),
+            pytest.param(
+                b'{"channel_type":"discord"}',
+                "application/json; charset=nosuchcharset",
+                id="test_unknown_charset_is_400_not_500",
+            ),
+        ],
+    )
+    async def test_undecodable_body_is_400_not_500(self, tmp_path, monkeypatch, body, content_type):
         """A body that cannot be decoded is a client error, not a traceback."""
         state = _prep(tmp_path, monkeypatch)
         transport = _fake_transport("discord")
@@ -1178,24 +1194,8 @@ class TestMirrorReminder:
         async with TestClient(TestServer(_make_mirror_app(state))) as client:
             resp = await client.post(
                 "/api/chat/slots/s1/mirror-link",
-                data=b"\xff\xfe\x00bad",
-                headers={"Content-Type": "application/json"},
-            )
-            assert resp.status == 400
-
-        transport.send_message.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_unknown_charset_is_400_not_500(self, tmp_path, monkeypatch):
-        state = _prep(tmp_path, monkeypatch)
-        transport = _fake_transport("discord")
-        state.register_channel_transport(transport)
-
-        async with TestClient(TestServer(_make_mirror_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/s1/mirror-link",
-                data=b'{"channel_type":"discord"}',
-                headers={"Content-Type": "application/json; charset=nosuchcharset"},
+                data=body,
+                headers={"Content-Type": content_type},
             )
             assert resp.status == 400
 
@@ -1251,12 +1251,25 @@ class TestMirrorPause:
         return _build
 
     @pytest.mark.asyncio
-    async def test_slot_not_found_returns_404(self, tmp_path, monkeypatch, mirror_pause_app):
+    @pytest.mark.parametrize(
+        "slot_id,status,code",
+        [
+            pytest.param("ghost", 404, "slot_not_found", id="test_slot_not_found_returns_404"),
+            # get_mirror_link returns None → no explicit mirror, and session key is
+            # not a channel key → not origin-connected either.
+            pytest.param("s1", 409, "mirror_not_linked", id="test_not_linked_returns_409"),
+        ],
+    )
+    async def test_pause_is_refused_without_a_mirror(
+        self, tmp_path, monkeypatch, mirror_pause_app, slot_id, status, code
+    ):
         state = _prep(tmp_path, monkeypatch)
         async with TestClient(TestServer(mirror_pause_app(state))) as client:
-            resp = await client.post("/api/chat/slots/ghost/mirror-pause", json={"paused": True})
-            assert resp.status == 404
-            assert (await resp.json())["code"] == "slot_not_found"
+            resp = await client.post(
+                f"/api/chat/slots/{slot_id}/mirror-pause", json={"paused": True}
+            )
+            assert resp.status == status
+            assert (await resp.json())["code"] == code
 
     @pytest.mark.asyncio
     async def test_pause_explicit_mirror_link(self, tmp_path, monkeypatch, mirror_pause_app):
@@ -1288,17 +1301,6 @@ class TestMirrorPause:
             data = await resp.json()
             assert data["paused"] is False
             assert data["was_paused"] is True
-
-    @pytest.mark.asyncio
-    async def test_not_linked_returns_409(self, tmp_path, monkeypatch, mirror_pause_app):
-        """Pausing a session with no explicit mirror returns 409."""
-        state = _prep(tmp_path, monkeypatch)
-        # get_mirror_link returns None → no explicit mirror, and session key is
-        # not a channel key → not origin-connected either.
-        async with TestClient(TestServer(mirror_pause_app(state))) as client:
-            resp = await client.post("/api/chat/slots/s1/mirror-pause", json={"paused": True})
-            assert resp.status == 409
-            assert (await resp.json())["code"] == "mirror_not_linked"
 
     @pytest.mark.asyncio
     async def test_pause_sends_disconnect_note_when_governance_permits(

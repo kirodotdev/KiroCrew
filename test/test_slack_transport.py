@@ -70,17 +70,17 @@ class TestAuthorize:
         t = _t()  # no allowed_users
         assert t.authorize(InboundMessage("slack", "U_OWNER", "C1", "hi")) is False
 
-    def test_owner_allowed(self):
+    @pytest.mark.parametrize(
+        ("user_id", "allowed"),
+        [
+            pytest.param("U_OWNER", True, id="test_owner_allowed"),
+            pytest.param("U_OTHER", False, id="test_non_owner_denied"),
+            pytest.param("", False, id="test_empty_user_denied"),
+        ],
+    )
+    def test_authorize_against_owner_allowlist(self, user_id, allowed):
         t = _t(allowed_users={"U_OWNER"})
-        assert t.authorize(InboundMessage("slack", "U_OWNER", "C1", "hi")) is True
-
-    def test_non_owner_denied(self):
-        t = _t(allowed_users={"U_OWNER"})
-        assert t.authorize(InboundMessage("slack", "U_OTHER", "C1", "hi")) is False
-
-    def test_empty_user_denied(self):
-        t = _t(allowed_users={"U_OWNER"})
-        assert t.authorize(InboundMessage("slack", "", "C1", "hi")) is False
+        assert t.authorize(InboundMessage("slack", user_id, "C1", "hi")) is allowed
 
     def test_denial_audited_even_with_empty_user(self, monkeypatch):
         # Deny-by-default must be observable: SEL audit fires for ALL denials,
@@ -165,32 +165,43 @@ class TestReceive:
         assert seen[0].user_id == "U_OWNER" and seen[0].thread_id == "9.9"
 
     @pytest.mark.asyncio
-    async def test_bot_message_dropped(self):
+    @pytest.mark.parametrize(
+        "event",
+        [
+            pytest.param(
+                {"bot_id": "B1", "channel": "C1", "text": "spam"}, id="test_bot_message_dropped"
+            ),
+            pytest.param(
+                {"user": "U_OTHER", "channel": "C1", "text": "hi"},
+                id="test_unauthorized_user_dropped",
+            ),
+        ],
+    )
+    async def test_message_dropped(self, event):
         seen = []
 
         async def dispatch(m):
             seen.append(m)
 
         t = SlackTransport(FakeClient(), allowed_users={"U_OWNER"}, dispatch=dispatch)
-        await t.receive({"event": {"bot_id": "B1", "channel": "C1", "text": "spam"}})
-        assert seen == []
-
-    @pytest.mark.asyncio
-    async def test_unauthorized_user_dropped(self):
-        seen = []
-
-        async def dispatch(m):
-            seen.append(m)
-
-        t = SlackTransport(FakeClient(), allowed_users={"U_OWNER"}, dispatch=dispatch)
-        await t.receive({"event": {"user": "U_OTHER", "channel": "C1", "text": "hi"}})
+        await t.receive({"event": event})
         assert seen == []
 
     @pytest.mark.asyncio
     async def test_no_dispatch_is_safe(self):
         t = SlackTransport(FakeClient(), allowed_users={"U_OWNER"})  # dispatch=None
-        # Should not raise even for an authorized message.
+        verdicts: list[tuple[str, bool]] = []
+        real_authorize = t.authorize
+
+        def spy(msg):
+            verdict = real_authorize(msg)
+            verdicts.append((msg.user_id, verdict))
+            return verdict
+
+        t.authorize = spy
+        # An authorized message reaches the dispatch step, which is skipped without raising.
         await t.receive({"event": {"user": "U_OWNER", "channel": "C1", "text": "hi"}})
+        assert verdicts == [("U_OWNER", True)]
 
 
 class TestReceiveTrustedBots:
@@ -280,19 +291,18 @@ class TestReceiveTrustedBots:
         assert kwargs["resources"] == "trusted_bot"
 
     @pytest.mark.asyncio
-    async def test_own_bot_never_trusted_even_when_listed(self, monkeypatch):
-        monkeypatch.setattr(enterprise_mod, "validated_self_bot_id", lambda: "B_SELF")
+    @pytest.mark.parametrize(
+        ("self_id", "bot_id"),
+        [
+            pytest.param("B_SELF", "B_SELF", id="test_own_bot_never_trusted_even_when_listed"),
+            pytest.param("", "B_PEER", id="test_unverified_self_id_fails_closed"),
+        ],
+    )
+    async def test_listed_bot_refused(self, monkeypatch, self_id, bot_id):
+        monkeypatch.setattr(enterprise_mod, "validated_self_bot_id", lambda: self_id)
         seen, dispatch = self._collector()
-        t = SlackTransport(FakeClient(), trusted_bot_ids={"B_SELF"}, dispatch=dispatch)
-        await t.receive({"event": {"bot_id": "B_SELF", "channel": "C1", "text": "echo"}})
-        assert seen == []
-
-    @pytest.mark.asyncio
-    async def test_unverified_self_id_fails_closed(self, monkeypatch):
-        monkeypatch.setattr(enterprise_mod, "validated_self_bot_id", lambda: "")
-        seen, dispatch = self._collector()
-        t = SlackTransport(FakeClient(), trusted_bot_ids={"B_PEER"}, dispatch=dispatch)
-        await t.receive({"event": {"bot_id": "B_PEER", "channel": "C1", "text": "ping"}})
+        t = SlackTransport(FakeClient(), trusted_bot_ids={bot_id}, dispatch=dispatch)
+        await t.receive({"event": {"bot_id": bot_id, "channel": "C1", "text": "ping"}})
         assert seen == []
 
     @pytest.mark.asyncio

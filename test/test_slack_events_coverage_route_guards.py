@@ -176,6 +176,7 @@ class TestRouteMessageGuards:
                 )
                 await _drain(orch)
         hm.assert_awaited_once()
+        assert hm.await_args.args[3] == "!channel on"
 
     @pytest.mark.asyncio
     async def test_activation_off_strips_mention_before_bang_check(self):
@@ -190,6 +191,7 @@ class TestRouteMessageGuards:
                 )
                 await _drain(orch)
         hm.assert_awaited_once()
+        assert hm.await_args.args[3] == "!channel on"
 
     @pytest.mark.asyncio
     async def test_missing_sender_or_text_returns_early(self):
@@ -199,6 +201,10 @@ class TestRouteMessageGuards:
             await ev._route_message(orch, _event(channel=""), ev.SeenCache())
             await ev._route_message(orch, _event(text="", files=[]), ev.SeenCache())
         hm.assert_not_called()
+        orch.channel_history.push.assert_not_called()
+        orch.slack.post_message.assert_not_called()
+        orch.slack.post_ephemeral.assert_not_called()
+        assert orch._session_tasks == {}
 
     @pytest.mark.asyncio
     async def test_channels_governance_denial_blocks_message(self, _mock_sel):
@@ -418,6 +424,8 @@ class TestRouteMessageGuards:
                 )
                 await _drain(orch)
         hm.assert_not_awaited()
+        orch.channel_history.push.assert_not_called()
+        assert orch._session_tasks == {}
 
     @pytest.mark.asyncio
     async def test_trusted_bot_malformed_attachment_member_is_skipped(self):
@@ -503,6 +511,8 @@ class TestRouteMessageGuards:
                 )
                 await _drain(orch)
         hm.assert_not_awaited()
+        orch.channel_history.push.assert_not_called()
+        assert orch._session_tasks == {}
 
     @pytest.mark.parametrize("marker", ["is_share", "is_msg_unfurl"])
     def test_trusted_bot_shared_attachment_is_skipped_before_content(self, marker):
@@ -638,6 +648,8 @@ class TestRouteMessageGuards:
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
                 await ev._route_message(orch, event, ev.SeenCache())
         hm.assert_not_called()
+        orch.channel_history.push.assert_not_called()
+        assert orch._session_tasks == {}
 
     @pytest.mark.asyncio
     async def test_trusted_bot_attachment_blocks_dispatch_the_shared_rendering(self):
@@ -1029,6 +1041,7 @@ class TestRouteMessageGuards:
                 )
                 await _drain(orch)
         hm.assert_awaited_once()
+        assert hm.await_args.args[3] == "real content"
 
     @pytest.mark.asyncio
     async def test_bot_without_trusted_flag_is_not_processed(self):
@@ -1043,6 +1056,9 @@ class TestRouteMessageGuards:
                     from_trusted_bot=False,
                 )
         hm.assert_not_called()
+        orch.channel_history.push.assert_not_called()
+        orch.slack.post_ephemeral.assert_not_called()
+        assert orch._session_tasks == {}
 
     @pytest.mark.asyncio
     async def test_trusted_bot_denied_in_review_channel(self, _mock_sel):
@@ -1070,7 +1086,13 @@ class TestRouteMessageGuards:
         orch = _make_orch()
         orch.slack.post_ephemeral = AsyncMock(side_effect=RuntimeError("channel_not_found"))
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
-            await ev._route_message(orch, _event(), ev.SeenCache())
+            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                await ev._route_message(orch, _event(), ev.SeenCache())
+        orch.slack.post_ephemeral.assert_awaited_once()
+        assert orch.slack.post_ephemeral.await_args.args[:2] == ("D1", "U_OWNER")
+        assert "not authorized" in orch.slack.post_ephemeral.await_args.args[2]
+        hm.assert_not_called()
+        assert orch._session_tasks == {}
 
     @pytest.mark.asyncio
     async def test_duplicate_event_is_dropped(self):
@@ -1106,6 +1128,9 @@ class TestRouteMessageGuards:
                 )
                 await _drain(orch)
         hm.assert_not_called()
+        # The mention-only text still reaches the history buffer; only dispatch is skipped.
+        orch.channel_history.push.assert_called_once()
+        assert orch._session_tasks == {}
 
     @pytest.mark.asyncio
     async def test_handle_message_task_creation_failure_is_contained(self):

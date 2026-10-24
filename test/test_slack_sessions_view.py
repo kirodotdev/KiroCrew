@@ -92,14 +92,38 @@ class TestClassifySessionKey:
 
 
 class TestDefaultSessionTitle:
-    def test_dashboard_colon(self):
-        assert _default_session_title("dashboard:chat-1-123", _SESSION_KIND_DASHBOARD) == "Dashboard chat-1-123"
 
-    def test_dashboard_underscore(self):
-        assert _default_session_title("dashboard_chat-1-123", _SESSION_KIND_DASHBOARD) == "Dashboard chat-1-123"
-
-    def test_taskrunner_underscore(self):
-        assert _default_session_title("taskrunner_run-foo", _SESSION_KIND_TASKRUNNER) == "Task Runner run-foo"
+    @pytest.mark.parametrize(
+        ("key", "kind", "expected"),
+        [
+            pytest.param(
+                "dashboard:chat-1-123",
+                _SESSION_KIND_DASHBOARD,
+                "Dashboard chat-1-123",
+                id="test_dashboard_colon",
+            ),
+            pytest.param(
+                "dashboard_chat-1-123",
+                _SESSION_KIND_DASHBOARD,
+                "Dashboard chat-1-123",
+                id="test_dashboard_underscore",
+            ),
+            pytest.param(
+                "taskrunner_run-foo",
+                _SESSION_KIND_TASKRUNNER,
+                "Task Runner run-foo",
+                id="test_taskrunner_underscore",
+            ),
+            pytest.param(
+                "taskrunner:run:42",
+                _SESSION_KIND_TASKRUNNER,
+                "Task Runner 42",
+                id="test_taskrunner_colon",
+            ),
+        ],
+    )
+    def test_default_title(self, key, kind, expected):
+        assert _default_session_title(key, kind) == expected
 
     def test_taskrunner_underscore_run_id_format(self):
         # Production format is ``taskrunner_run_<task_id>`` (after _safe_key
@@ -113,9 +137,6 @@ class TestDefaultSessionTitle:
             _default_session_title("taskrunner_abc_step1", _SESSION_KIND_TASKRUNNER)
             == "Task Runner step1"
         )
-
-    def test_taskrunner_colon(self):
-        assert _default_session_title("taskrunner:run:42", _SESSION_KIND_TASKRUNNER) == "Task Runner 42"
 
     def test_other_returns_key_unchanged(self):
         assert _default_session_title("cron:abc", _SESSION_KIND_OTHER) == "cron:abc"
@@ -594,7 +615,14 @@ class TestSessionsIncludeEndedArgument:
             assert sessions_include_ended(f"sessions {word}") is True
 
     @pytest.mark.asyncio
-    async def test_keyword_handler_forwards_the_opt_in(self):
+    @pytest.mark.parametrize(
+        ("command", "include_ended"),
+        [
+            pytest.param("sessions all", True, id="test_keyword_handler_forwards_the_opt_in"),
+            pytest.param("sessions", False, id="test_keyword_handler_defaults_to_hiding_ended"),
+        ],
+    )
+    async def test_keyword_handler_include_ended(self, command, include_ended):
         seen: dict = {}
 
         async def _fake(sessions, **kwargs):
@@ -603,25 +631,8 @@ class TestSessionsIncludeEndedArgument:
 
         slack = MockSlackClient()
         with patch("kiro_crew.slack.handler._collect_recent_sessions_off_loop", _fake):
-            await _handle_sessions_command(
-                "sessions all", slack, "C1", "1.0", "1.0", "slack:C1", None
-            )
-        assert seen["include_ended"] is True
-
-    @pytest.mark.asyncio
-    async def test_keyword_handler_defaults_to_hiding_ended(self):
-        seen: dict = {}
-
-        async def _fake(sessions, **kwargs):
-            seen.update(kwargs)
-            return []
-
-        slack = MockSlackClient()
-        with patch("kiro_crew.slack.handler._collect_recent_sessions_off_loop", _fake):
-            await _handle_sessions_command(
-                "sessions", slack, "C1", "1.0", "1.0", "slack:C1", None
-            )
-        assert seen["include_ended"] is False
+            await _handle_sessions_command(command, slack, "C1", "1.0", "1.0", "slack:C1", None)
+        assert seen["include_ended"] is include_ended
 
 
 class TestBuildSessionsBlocks:
@@ -670,61 +681,60 @@ class TestBuildSessionsBlocks:
         assert blocks[2]["type"] == "divider"
         assert blocks[5]["type"] == "divider"
 
-    def test_active_session_uses_in_progress_status(self):
+    @pytest.mark.parametrize(
+        ("key", "title", "active", "status", "icon"),
+        [
+            pytest.param(
+                "dashboard:active",
+                "running",
+                True,
+                "in_progress",
+                "🟢",
+                id="test_active_session_uses_in_progress_status",
+            ),
+            pytest.param(
+                "dashboard:done",
+                "done",
+                False,
+                "complete",
+                "⚫",
+                id="test_inactive_session_uses_complete_status",
+            ),
+        ],
+    )
+    def test_session_status(self, key, title, active, status, icon):
         rows = [
             {
-                "key": "dashboard:active",
-                "title": "running",
+                "key": key,
+                "title": title,
                 "agent": "kirocrew",
                 "mtime": 0.0,
-                "active": True,
+                "active": active,
                 "kind": _SESSION_KIND_DASHBOARD,
                 "msgs": [],
             }
         ]
         card = _build_sessions_blocks(rows)[0]
-        assert card["status"] == "in_progress"
-        assert "🟢" in card["title"]
+        assert card["status"] == status
+        assert icon in card["title"]
 
-    def test_inactive_session_uses_complete_status(self):
-        rows = [
-            {
-                "key": "dashboard:done",
-                "title": "done",
-                "agent": "kirocrew",
-                "mtime": 0.0,
-                "active": False,
-                "kind": _SESSION_KIND_DASHBOARD,
-                "msgs": [],
-            }
-        ]
-        card = _build_sessions_blocks(rows)[0]
-        assert card["status"] == "complete"
-        assert "⚫" in card["title"]
-
-    def test_redacts_credentials_in_title(self):
+    @pytest.mark.parametrize(
+        ("title", "agent"),
+        [
+            # ASK-style credential pattern is redacted by redact_credentials
+            pytest.param(
+                "AKIAIOSFODNN7EXAMPLE secret", "kirocrew", id="test_redacts_credentials_in_title"
+            ),
+            # Parity with title: agent strings are redacted before reaching session_task_card.
+            pytest.param("ok", "AKIAIOSFODNN7EXAMPLE", id="test_redacts_credentials_in_agent"),
+        ],
+    )
+    def test_redacts_credentials(self, title, agent):
         rows = [
             {
                 "key": "dashboard:k",
-                # ASK-style credential pattern is redacted by redact_credentials
-                "title": "AKIAIOSFODNN7EXAMPLE secret",
-                "agent": "kirocrew",
-                "mtime": 0.0,
-                "active": False,
-                "kind": _SESSION_KIND_DASHBOARD,
-                "msgs": [],
-            }
-        ]
-        card = _build_sessions_blocks(rows)[0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in card["title"]
-
-    def test_redacts_credentials_in_agent(self):
-        """Parity with title — agent strings are redacted before reaching session_task_card."""
-        rows = [
-            {
-                "key": "dashboard:k",
-                "title": "ok",
-                "agent": "AKIAIOSFODNN7EXAMPLE",
+                "title": title,
+                "agent": agent,
                 "mtime": 0.0,
                 "active": False,
                 "kind": _SESSION_KIND_DASHBOARD,

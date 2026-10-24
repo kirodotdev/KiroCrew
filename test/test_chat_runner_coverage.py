@@ -375,11 +375,12 @@ class TestRunChatWakaTimeCodingAccounting:
         events = [_statusless_coding_tool_call(f"tc-wt-{i}") for i in range(500)]
         _set_stream(client, [*events, _complete()])
 
+        config = self._wakatime_config()
         with (
             patch.object(
                 chat_runner.KiroCrewConfig,
                 "load",
-                return_value=self._wakatime_config(),
+                return_value=config,
             ),
             patch.object(chat_runner, "note_coding_activity") as note_activity,
         ):
@@ -388,6 +389,7 @@ class TestRunChatWakaTimeCodingAccounting:
         # Per-call ids are not retained: any number of successful coding calls
         # collapses to one bounded bit and one turn-level heartbeat.
         note_activity.assert_called_once()
+        assert note_activity.call_args.kwargs["config"] is config
 
     @pytest.mark.asyncio
     async def test_auto_approved_coding_call_emits_one_cadence_heartbeat(self, tmp_path):
@@ -423,7 +425,7 @@ class TestRunChatWakaTimeCodingAccounting:
 
         client.approve_tool.assert_not_awaited()
         client.reject_tool.assert_not_awaited()
-        note_cadence.assert_called_once()
+        note_cadence.assert_called_once_with(slot.project or None)
 
     @pytest.mark.asyncio
     async def test_many_auto_approved_coding_results_emit_one_throttled_cadence(self, tmp_path):
@@ -453,7 +455,7 @@ class TestRunChatWakaTimeCodingAccounting:
             await _drive(state, slot)
 
         client.approve_tool.assert_not_awaited()
-        note_cadence.assert_called_once()
+        note_cadence.assert_called_once_with(slot.project or None)
 
     @pytest.mark.asyncio
     async def test_approved_coding_call_emits_one_cadence_heartbeat(self, tmp_path):
@@ -495,7 +497,8 @@ class TestRunChatWakaTimeCodingAccounting:
         ):
             await _drive(state, slot)
 
-        note_cadence.assert_called_once()
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
+        note_cadence.assert_called_once_with(slot.project or None)
 
     @pytest.mark.asyncio
     async def test_denied_pending_id_is_drained_before_a_later_decision(self, tmp_path):
@@ -544,6 +547,8 @@ class TestRunChatWakaTimeCodingAccounting:
         ):
             await _drive(state, slot)
 
+        client.reject_tool.assert_awaited_once_with("req-wt-deny")
+        client.approve_tool.assert_awaited_once_with("req-wt-later")
         note_activity.assert_not_called()
 
     @pytest.mark.asyncio
@@ -634,6 +639,7 @@ class TestRunChatWakaTimeCodingAccounting:
             )
         await _settle(slot)
 
+        client.stream.assert_called_once()
         note_activity.assert_not_called()
 
     @pytest.mark.asyncio
@@ -683,6 +689,7 @@ class TestRunChatWakaTimeCodingAccounting:
             )
         await _settle(slot)
 
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
         note_cadence.assert_not_called()
 
     @pytest.mark.asyncio
@@ -706,9 +713,17 @@ class TestRunChatWakaTimeCodingAccounting:
             ],
         )
 
-        with patch.object(chat_runner, "note_coding_activity") as note_activity:
+        with (
+            patch.object(
+                chat_runner.KiroCrewConfig,
+                "load",
+                return_value=self._wakatime_config(),
+            ),
+            patch.object(chat_runner, "note_coding_activity") as note_activity,
+        ):
             await _drive(state, slot)
 
+        client.stream.assert_called_once()
         note_activity.assert_not_called()
 
     @pytest.mark.asyncio
@@ -738,8 +753,12 @@ class TestRunChatWakaTimeCodingAccounting:
             await _drive(state, slot)
 
         # Exactly one shed summary for the whole turn, not one line per dropped
-        # call — the amplified-log finding.
-        shed = [r for r in caplog.records if "wakatime pending-coding cap" in r.message]
+        # call.
+        shed = [
+            r
+            for r in caplog.records
+            if r.name == chat_runner.logger.name and "wakatime pending-coding cap" in r.message
+        ]
         assert len(shed) == 1
         assert "shed" in shed[0].message
         # Unguarded execution counts once for the turn.
@@ -762,17 +781,19 @@ class TestRunChatWakaTimeCodingAccounting:
             ],
         )
 
+        config = self._wakatime_config()
         with (
             patch.object(
                 chat_runner.KiroCrewConfig,
                 "load",
-                return_value=self._wakatime_config(),
+                return_value=config,
             ),
             patch.object(chat_runner, "note_coding_activity") as note_activity,
         ):
             await _drive(state, slot)
 
         note_activity.assert_called_once()
+        assert note_activity.call_args.kwargs["config"] is config
 
     @pytest.mark.asyncio
     async def test_heartbeat_uses_project_captured_at_turn_start(self, tmp_path):
@@ -820,6 +841,7 @@ class TestRunChatWakaTimeCodingAccounting:
         ):
             await _drive(state, slot, _turn_actor="cron")
 
+        client.stream.assert_called_once()
         note_activity.assert_not_called()
 
     @pytest.mark.asyncio
@@ -862,6 +884,7 @@ class TestRunChatWakaTimeCodingAccounting:
         ):
             await _drive(state, slot, _turn_actor="cron")
 
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
         note_cadence.assert_not_called()
 
 

@@ -13,13 +13,14 @@ handler wiring.
 
 import asyncio
 import re
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 from test_chat_slack import _make_slack_app
 
+from kiro_crew.dashboard import chat_slack
 from kiro_crew.dashboard.chat_backfill import select_backfill_messages
 from kiro_crew.dashboard.chat_slack import drain_slack_backfill
 from kiro_crew.slack.format import SLACK_MAX_TEXT, SLACK_MSG_LIMIT
@@ -610,6 +611,11 @@ class TestBackfillHandlerWiring:
 
         await drain_slack_backfill(state, slot, "C1", "1700.1")
 
+        # The first failed post ends the seeding: nothing after it is attempted.
+        state.slack_client.post_message.assert_awaited_once()
+        channel, _text, thread_ts = state.slack_client.post_message.await_args.args
+        assert (channel, thread_ts) == ("C1", "1700.1")
+
     @pytest.mark.asyncio
     async def test_no_slack_client_is_a_noop(self, tmp_path):
         state = _state(tmp_path)
@@ -617,4 +623,7 @@ class TestBackfillHandlerWiring:
         _seed(slot, [("user", "one"), ("assistant", "two")])
         state.slack_client = None
 
-        await drain_slack_backfill(state, slot, "C1", "1700.1")
+        with patch.object(chat_slack, "select_backfill_messages") as select:
+            await drain_slack_backfill(state, slot, "C1", "1700.1")
+
+        select.assert_not_called()

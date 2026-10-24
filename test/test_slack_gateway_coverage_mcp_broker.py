@@ -59,7 +59,10 @@ class TestInitMcpGateway:
         orch._cfg.mcp_gateway.stub_servers = ["alpha-mcp"]
         with patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=False) as probe:
             await orch._init_mcp_gateway()
-        probe.assert_called_once()
+        # The routed server reached the platform probe; the unsupported answer
+        # is what keeps the broker down here.
+        probe.assert_called_once_with()
+        assert orch._mcp_gateway_manager is None
 
     @pytest.mark.asyncio
     async def test_turning_sharing_off_restarts_rather_than_stops_when_routed(self):

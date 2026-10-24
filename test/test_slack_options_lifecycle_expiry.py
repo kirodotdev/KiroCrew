@@ -113,6 +113,8 @@ class TestExpireOptions:
         await expire_options(slack, posted)  # must not raise
 
         slack.update_message.assert_awaited_once()
+        assert slack.update_message.await_args.args == ("C1", "opt_ts")
+        assert not _is_live_control(slack.update_message.await_args.kwargs["blocks"])
 
 
 class TestReplaceOptionsBlocks:
@@ -242,8 +244,10 @@ class TestLifecycleOnTheSlot:
         slot = state.get_or_create_slot("s1")
         key = effective_session_key(slot)
         remember_slack_options(state, key, self._posted())
+        assert _recs(state, slot)
 
         forget_slack_options(state, key)
+        assert _recs(state, slot) == ()
         await expire_slack_options(state, key)
 
         state.slack_client.update_message.assert_not_awaited()
@@ -258,28 +262,45 @@ class TestLifecycleOnTheSlot:
         from kiro_crew.dashboard.chat_utils import (
             expire_slack_options,
             forget_slack_options,
+            options_records,
             remember_slack_options,
         )
 
+        slack = _slack()
+
         class _NoSlots:
-            slack_client = None
+            slack_client = slack
 
         bare = _NoSlots()
 
         remember_slack_options(bare, "dashboard:s1", self._posted())
+        assert options_records(bare, "dashboard:s1") == ()
         await expire_slack_options(bare, "dashboard:s1")
         forget_slack_options(bare, "dashboard:s1")
 
+        assert vars(bare) == {}
+        slack.update_message.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_a_raising_slot_registry_cannot_break_the_turn(self, tmp_path, monkeypatch):
-        from kiro_crew.dashboard.chat_utils import expire_slack_options
+        from kiro_crew.dashboard.chat_utils import (
+            expire_slack_options,
+            options_records,
+            remember_slack_options,
+        )
 
         state = self._state(tmp_path, monkeypatch)
         state.get_slot = MagicMock(side_effect=RuntimeError("registry down"))
+        remember_slack_options(state, "dashboard:s1", self._posted())
 
         await expire_slack_options(state, "dashboard:s1")
 
-        state.slack_client.update_message.assert_not_awaited()
+        # The store is keyed by session key, so a broken slot registry neither
+        # blocks the expiry nor is consulted by it.
+        state.slack_client.update_message.assert_awaited_once()
+        assert state.slack_client.update_message.await_args.args == ("C1", "opt_ts")
+        assert options_records(state, "dashboard:s1") == ()
+        state.get_slot.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_click_clears_the_record_a_mirroring_session_holds(self, tmp_path, monkeypatch):
@@ -468,9 +489,29 @@ class TestTurnEntryWiring:
 
         assert calls == []
 
+    @pytest.mark.parametrize(
+        ("thread_owner", "expected_key"),
+        [
+            # The live Slack path, which never reaches the dashboard engine. A
+            # Slack-born thread has no owner in the thread index, so the turn runs
+            # under the syntactic slack:<ts> key.
+            pytest.param(None, "slack:1785370133.085469", id="test_slack_inbound_turn_expires"),
+            # A Slack reply in a dashboard-owned thread must spend THAT session's
+            # control. The dispatcher resolves the thread to its owning session
+            # before the turn begins, so the expiry has to run after that
+            # resolution: expiring slack:<ts> would leave the dashboard session's
+            # control live and strike through nothing.
+            pytest.param(
+                "dashboard:chat-7-1785370000",
+                "dashboard:chat-7-1785370000",
+                id="test_slack_inbound_expires_the_threads_owning_session",
+            ),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_slack_inbound_turn_expires(self, monkeypatch):
-        """Covers the live Slack path, which never reaches the dashboard engine."""
+    async def test_slack_inbound_turn_expires_under_the_owning_key(
+        self, monkeypatch, thread_owner, expected_key
+    ):
         from kiro_crew.slack import transport_dispatch
 
         calls: list[str] = []
@@ -496,10 +537,9 @@ class TestTurnEntryWiring:
 
         slack = _slack()
         sessions = MagicMock()
-        # Slack-born: the thread index has no owner for it, so the turn runs
-        # under the syntactic slack:<ts> key. Must be set explicitly — a bare
-        # MagicMock returns a truthy stub and the dispatcher would reroute to it.
-        sessions.get_session_for_thread.return_value = None
+        # Set explicitly even when None: a bare MagicMock returns a truthy stub and
+        # the dispatcher would reroute to it.
+        sessions.get_session_for_thread.return_value = thread_owner
         # A PLAIN message, not "ping". The expiry deliberately sits below every
         # short-circuit, so only a message that actually starts a turn reaches
         # it -- see test_a_non_conversational_command_does_not_spend_a_live_control.
@@ -517,7 +557,7 @@ class TestTurnEntryWiring:
         except Exception:
             pass
 
-        assert calls == ["slack:1785370133.085469"]
+        assert calls == [expected_key]
 
     @pytest.mark.asyncio
     async def test_ping_does_not_spend_the_control(self, monkeypatch):
@@ -603,53 +643,3 @@ class TestTurnEntryWiring:
             f"{func_name} must expire AGAIN after get_or_create returns, or a "
             "control posted while this turn was queued stays clickable"
         )
-
-    @pytest.mark.asyncio
-    async def test_slack_inbound_expires_the_threads_owning_session(self, monkeypatch):
-        """A Slack reply in a dashboard-owned thread must spend THAT session's control.
-
-        The dispatcher resolves the thread to its owning session before the turn
-        begins, so a thread the dashboard created answers under its own key. The
-        expiry has to run after that resolution — expiring ``slack:<ts>`` would
-        leave the dashboard session's control live and strike through nothing.
-        """
-        from kiro_crew.slack import transport_dispatch
-
-        calls: list[str] = []
-
-        async def _record(_state, session_key):
-            calls.append(session_key)
-
-        async def _no_linked_thread(*_a, **_k):
-            return False
-
-        # Patch the binding the module actually calls, not the definition site:
-        # the import is module-scope, so `transport_dispatch` holds its own
-        # reference and patching `chat_utils` would not intercept it.
-        monkeypatch.setattr(transport_dispatch, "expire_slack_options", _record)
-        monkeypatch.setattr(transport_dispatch, "maybe_route_linked_thread", _no_linked_thread)
-        monkeypatch.setattr(
-            transport_dispatch,
-            "_hydrate_thread_overrides",
-            AsyncMock(),
-        )
-        monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", MagicMock())
-        _stub_non_turn_paths(monkeypatch, transport_dispatch)
-
-        slack = _slack()
-        sessions = MagicMock()
-        sessions.get_session_for_thread.return_value = "dashboard:chat-7-1785370000"
-        try:
-            await transport_dispatch.handle_message_transport(
-                slack,
-                sessions,
-                "C1",
-                "hello",
-                "1785370133.085469",
-                "1785370133.085469",
-                "U1",
-            )
-        except Exception:
-            pass
-
-        assert calls == ["dashboard:chat-7-1785370000"]

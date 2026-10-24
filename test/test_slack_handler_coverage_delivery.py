@@ -210,6 +210,7 @@ class TestSafeUpdates:
         broken = MagicMock()
         broken.update_message = AsyncMock(side_effect=RuntimeError("gone"))
         await h._safe_update(broken, "C1", "m1", "hi")
+        broken.update_message.assert_awaited_once_with("C1", "m1", "hi")
 
     @pytest.mark.asyncio
     async def test_final_update_splits_long_text(self, slack):
@@ -225,6 +226,10 @@ class TestSafeUpdates:
         broken.update_message = AsyncMock(side_effect=RuntimeError("x"))
         broken.post_message = AsyncMock(side_effect=RuntimeError("y"))
         await h._safe_final_update(broken, "C1", "m1", "z " * 8000, "t1")
+        broken.update_message.assert_awaited_once()
+        # Every overflow part is still attempted after the primary update failed.
+        assert broken.post_message.await_count >= 1
+        assert all(c.args[2] == "t1" for c in broken.post_message.await_args_list)
 
     @pytest.mark.asyncio
     async def test_reject_orphaned_tool_swallows_failure(self):
@@ -235,8 +240,11 @@ class TestSafeUpdates:
 
     @pytest.mark.asyncio
     async def test_safe_voice_reply_never_raises(self, slack, monkeypatch):
-        monkeypatch.setattr(h, "_voice_reply_fn", AsyncMock(side_effect=RuntimeError("no tts")))
+        boom = AsyncMock(side_effect=RuntimeError("no tts"))
+        monkeypatch.setattr(h, "_voice_reply_fn", boom)
         await h._safe_voice_reply(slack, "C1", "t1", "hello")
+        assert boom.await_args is not None
+        assert boom.await_args.args == (slack, "C1", "t1", "hello")
 
     @pytest.mark.asyncio
     async def test_safe_voice_reply_forwards_settings(self, slack, monkeypatch):

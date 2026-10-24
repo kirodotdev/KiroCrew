@@ -8,9 +8,11 @@ branch, and the event loop staying responsive during slow startup work.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -26,6 +28,8 @@ from slack_gateway_helpers import (
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.slack.gateway import GatewayOrchestrator
+
+_GATEWAY_LOGGER = "kiro_crew.slack.gateway"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: _init_dashboard and _init_mcp_discovery
@@ -58,15 +62,41 @@ class TestInitDashboard:
         assert orch._dashboard_runner is runner
         assert start.await_args.kwargs["assume_kiro_ready"] is True
 
-    def test_init_mcp_discovery_logs(self):
+    @pytest.mark.parametrize(
+        "servers, expected",
+        [
+            pytest.param([], "No MCP servers configured", id="test_init_mcp_discovery_logs"),
+            pytest.param(
+                [SimpleNamespace(name="alpha"), SimpleNamespace(name="beta")],
+                "Configured MCP servers: alpha, beta",
+                id="named_servers",
+            ),
+        ],
+    )
+    def test_init_mcp_discovery_logs(self, caplog, servers, expected):
         orch = _make_orchestrator()
-        with patch("kiro_crew.mcp_discovery.list_servers", return_value=[]):
-            orch._init_mcp_discovery()  # should not raise
+        with (
+            patch("kiro_crew.mcp_discovery.list_servers", return_value=servers) as listing,
+            caplog.at_level(logging.INFO, logger=_GATEWAY_LOGGER),
+        ):
+            orch._init_mcp_discovery()
+        listing.assert_called_once_with()
+        assert expected in [r.getMessage() for r in caplog.records if r.name == _GATEWAY_LOGGER]
 
-    def test_init_mcp_discovery_handles_error(self):
+    def test_init_mcp_discovery_handles_error(self, caplog):
         orch = _make_orchestrator()
-        with patch("kiro_crew.mcp_discovery.list_servers", side_effect=RuntimeError("fail")):
-            orch._init_mcp_discovery()  # should not raise
+        with (
+            patch(
+                "kiro_crew.mcp_discovery.list_servers", side_effect=RuntimeError("fail")
+            ) as listing,
+            caplog.at_level(logging.DEBUG, logger=_GATEWAY_LOGGER),
+        ):
+            orch._init_mcp_discovery()
+        listing.assert_called_once_with()
+        records = [r for r in caplog.records if r.name == _GATEWAY_LOGGER]
+        failed = [r for r in records if r.getMessage() == "MCP server listing failed"]
+        assert len(failed) == 1
+        assert isinstance(failed[0].exc_info[1], RuntimeError)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -86,9 +116,13 @@ class TestRunGateway:
             # The aggregate-cgroup-ceiling apply shells out to systemctl —
             # a host-service mutation the rootdir guard refuses; stub it.
             with patch("kiro_crew.slack.gateway.ensure_agents_slice_limits", return_value=True):
-                with patch.object(GatewayOrchestrator, "run", new_callable=AsyncMock) as mock_run:
+                with patch.object(GatewayOrchestrator, "run", autospec=True) as mock_run:
                     await run_gateway(cfg, no_dashboard=True, no_crons=True)
         mock_run.assert_awaited_once()
+        orch = mock_run.await_args.args[0]
+        assert isinstance(orch, GatewayOrchestrator)
+        assert orch._no_dashboard is True
+        assert orch._no_crons is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -106,7 +140,6 @@ class TestRunMethod:
 
         orch = _make_orchestrator()
 
-        # Mock all init methods
         orch._init_services = AsyncMock()
         # _init_services is mocked so vector_memory never gets created — mock
         # the default-on embeddings wiring too (it dereferences vector_memory).
@@ -125,7 +158,6 @@ class TestRunMethod:
         orch._check_for_updates = AsyncMock()
         orch._shutdown = AsyncMock()
 
-        # Set shutdown immediately
         kiro_crew.shutdown_event.set()
         # loop.add_signal_handler -> set_wakeup_fd fails on xdist worker threads.
         loop = asyncio.get_running_loop()

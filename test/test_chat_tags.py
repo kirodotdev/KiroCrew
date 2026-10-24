@@ -27,20 +27,18 @@ _hermetic_signing_secret = chat_tags_helpers._hermetic_signing_secret
 
 
 class TestValidColor:
-    def test_accepts_lowercase_hex(self):
-        assert _valid_color("#abcdef") == "#abcdef"
-
-    def test_accepts_uppercase_hex(self):
-        assert _valid_color("#ABCDEF") == "#ABCDEF"
-
-    def test_rejects_short_hex(self):
-        assert _valid_color("#abc") == "#6b7280"
-
-    def test_rejects_no_hash(self):
-        assert _valid_color("ff0000") == "#6b7280"
-
-    def test_rejects_garbage(self):
-        assert _valid_color("not-a-color") == "#6b7280"
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            pytest.param("#abcdef", "#abcdef", id="test_accepts_lowercase_hex"),
+            pytest.param("#ABCDEF", "#ABCDEF", id="test_accepts_uppercase_hex"),
+            pytest.param("#abc", "#6b7280", id="test_rejects_short_hex"),
+            pytest.param("ff0000", "#6b7280", id="test_rejects_no_hash"),
+            pytest.param("not-a-color", "#6b7280", id="test_rejects_garbage"),
+        ],
+    )
+    def test_valid_color(self, value, expected):
+        assert _valid_color(value) == expected
 
 
 class TestNormalizeColumn:
@@ -52,16 +50,22 @@ class TestNormalizeColumn:
         ]
         return state
 
-    def test_returns_none_for_non_dict(self, tmp_path):
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param("not-a-dict", id="test_returns_none_for_non_dict"),
+            # An unknown id must reject the payload, not be silently dropped —
+            # a drop lands the column on tag_ids [] (match-all), which presents
+            # to the user as "the filter does nothing".
+            pytest.param({"tag_ids": ["t1", "ghost", "t2"]}, id="test_rejects_unknown_tag_ids"),
+            pytest.param({"tag_ids": ["t1", 42]}, id="test_rejects_non_string_tag_id_entries"),
+            pytest.param({"tag_ids": "not-a-list"}, id="test_rejects_non_list_tag_ids"),
+            pytest.param({"mode": "fancy"}, id="test_rejects_invalid_mode"),
+        ],
+    )
+    def test_invalid_column_is_rejected(self, tmp_path, payload):
         state = self._state_with_tags(tmp_path)
-        assert _normalize_column(state, "not-a-dict") is None
-
-    def test_rejects_unknown_tag_ids(self, tmp_path):
-        # An unknown id must reject the payload, not be silently dropped —
-        # a drop lands the column on tag_ids [] (match-all), which presents
-        # to the user as "the filter does nothing".
-        state = self._state_with_tags(tmp_path)
-        assert _normalize_column(state, {"tag_ids": ["t1", "ghost", "t2"]}) is None
+        assert _normalize_column(state, payload) is None
 
     def test_accepts_known_tag_ids(self, tmp_path):
         state = self._state_with_tags(tmp_path)
@@ -76,36 +80,25 @@ class TestNormalizeColumn:
         assert col is not None
         assert col["tag_ids"] == []
 
-    def test_rejects_non_string_tag_id_entries(self, tmp_path):
-        state = self._state_with_tags(tmp_path)
-        assert _normalize_column(state, {"tag_ids": ["t1", 42]}) is None
-
-    def test_rejects_non_list_tag_ids(self, tmp_path):
-        state = self._state_with_tags(tmp_path)
-        assert _normalize_column(state, {"tag_ids": "not-a-list"}) is None
-
-    def test_rejects_invalid_mode(self, tmp_path):
-        state = self._state_with_tags(tmp_path)
-        assert _normalize_column(state, {"mode": "fancy"}) is None
-
     def test_truncates_name_to_max(self, tmp_path):
         state = self._state_with_tags(tmp_path)
         col = _normalize_column(state, {"name": "x" * 200})
         assert col is not None
         assert len(col["name"]) == 60
 
-    def test_coerces_order_to_int(self, tmp_path):
+    @pytest.mark.parametrize(
+        "order,expected",
+        [
+            pytest.param("5", 5, id="test_coerces_order_to_int"),
+            # An unparseable order falls back to the default.
+            pytest.param("abc", 0, id="test_ignores_unparseable_order"),
+        ],
+    )
+    def test_order_is_normalized(self, tmp_path, order, expected):
         state = self._state_with_tags(tmp_path)
-        col = _normalize_column(state, {"order": "5"})
+        col = _normalize_column(state, {"order": order})
         assert col is not None
-        assert col["order"] == 5
-
-    def test_ignores_unparseable_order(self, tmp_path):
-        state = self._state_with_tags(tmp_path)
-        col = _normalize_column(state, {"order": "abc"})
-        assert col is not None
-        # Default applied via setdefault
-        assert col["order"] == 0
+        assert col["order"] == expected
 
     def test_include_untagged_coerced_to_bool(self, tmp_path):
         state = self._state_with_tags(tmp_path)
@@ -463,45 +456,44 @@ class TestTagVocabulary:
             assert live["name"] == "Old"  # rename did NOT land
 
     @pytest.mark.asyncio
-    async def test_update_tag_string_status_row_not_promoted_by_agent_patch(
-        self, tmp_path, monkeypatch
+    @pytest.mark.parametrize(
+        "name,forged_status,agent",
+        [
+            # Dashboard create records the tag as non-status, so an agent-policy
+            # PATCH inherits that bit rather than truth-testing agent-writable JSON.
+            pytest.param(
+                "Forged",
+                "false",
+                "add-only",
+                id="test_update_tag_string_status_row_not_promoted_by_agent_patch",
+            ),
+            pytest.param(
+                "Forged2",
+                True,
+                "add-remove",
+                id="test_agent_patch_does_not_promote_forged_bool_status",
+            ),
+        ],
+    )
+    async def test_forged_status_is_not_promoted_by_agent_patch(
+        self, tmp_path, monkeypatch, name, forged_status, agent
     ):
-        """A forged string status never overrides protected identity.
-
-        Dashboard create records the tag as non-status, so an agent-policy
-        PATCH inherits that bit rather than truth-testing agent-writable JSON.
-        """
+        """A forged status in agent-writable tags.json never overrides protected identity."""
         from kiro_crew.dashboard.chat_tags import agent_tag_grant
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
-            tag = await (await client.post("/api/chat/tags", json={"name": "Forged"})).json()
-            # Simulate the hand-edited file: a string status on the live row.
+            tag = await (await client.post("/api/chat/tags", json={"name": name})).json()
+            # Simulate the hand-edited file: a forged status on the live row.
             live = next(t for t in state._tags if t["id"] == tag["id"])
-            live["status"] = "false"
-            resp = await client.patch(f"/api/chat/tags/{tag['id']}", json={"agent": "add-only"})
-            assert resp.status == 200
-            assert agent_tag_grant({"id": tag["id"]}) == ("add-only", False)
-
-    @pytest.mark.asyncio
-    async def test_agent_patch_does_not_promote_forged_bool_status(self, tmp_path, monkeypatch):
-        """A forged boolean status never overrides protected identity."""
-        from kiro_crew.dashboard.chat_tags import agent_tag_grant
-
-        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        state = _make_state(tmp_path)
-        app = _make_tags_app(state)
-        async with TestClient(TestServer(app)) as client:
-            tag = await (await client.post("/api/chat/tags", json={"name": "Forged2"})).json()
-            live = next(t for t in state._tags if t["id"] == tag["id"])
-            live["status"] = True  # forged in agent-writable tags.json
-            resp = await client.patch(f"/api/chat/tags/{tag['id']}", json={"agent": "add-remove"})
+            live["status"] = forged_status
+            resp = await client.patch(f"/api/chat/tags/{tag['id']}", json={"agent": agent})
             assert resp.status == 200
             # Policy updated, but NO workflow-state authority minted — the
             # forged tags.json bit never reaches the protected store.
-            assert agent_tag_grant({"id": tag["id"]}) == ("add-remove", False)
+            assert agent_tag_grant({"id": tag["id"]}) == (agent, False)
 
     @pytest.mark.asyncio
     async def test_failed_mint_restores_prior_grant(self, tmp_path, monkeypatch):
@@ -793,6 +785,8 @@ class TestTagVocabulary:
             tag = await (await client.post("/api/chat/tags", json={"name": "Keep"})).json()
             resp = await client.patch(f"/api/chat/tags/{tag['id']}", json={"name": "   "})
             assert resp.status == 400
+            live = next(t for t in state._tags if t["id"] == tag["id"])
+            assert live["name"] == "Keep"
 
     @pytest.mark.asyncio
     async def test_update_tag_unparseable_order_ignored(self, tmp_path, monkeypatch):
@@ -801,8 +795,11 @@ class TestTagVocabulary:
         app = _make_tags_app(state)
         async with TestClient(TestServer(app)) as client:
             tag = await (await client.post("/api/chat/tags", json={"name": "X"})).json()
+            await client.patch(f"/api/chat/tags/{tag['id']}", json={"order": 7})
             resp = await client.patch(f"/api/chat/tags/{tag['id']}", json={"order": "abc"})
             assert resp.status == 200
+            live = next(t for t in state._tags if t["id"] == tag["id"])
+            assert live["order"] == 7
 
     @pytest.mark.asyncio
     async def test_update_tag_not_found(self, tmp_path, monkeypatch):

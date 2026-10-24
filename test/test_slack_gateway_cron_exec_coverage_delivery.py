@@ -83,10 +83,24 @@ class TestChannelReplyLink:
         orch.sessions = _channel_sessions(stored_raises=True)
         assert orch._channel_reply_link("discord:kirocrew:direct:U9") is None
 
-    def test_no_stored_channel_returns_none(self):
+    @pytest.mark.parametrize(
+        ("stored", "key"),
+        [
+            pytest.param(
+                "", "discord:kirocrew:direct:U9", id="test_no_stored_channel_returns_none"
+            ),
+            # A group key's stored value is the sender, so it must not become a DM.
+            pytest.param(
+                "discord:U9",
+                "discord:kirocrew:group:C1",
+                id="test_group_session_never_takes_the_stored_rung",
+            ),
+        ],
+    )
+    def test_stored_rung_yields_no_link(self, stored: str, key: str):
         orch = _make_orchestrator()
-        orch.sessions = _channel_sessions(stored="")
-        assert orch._channel_reply_link("discord:kirocrew:direct:U9") is None
+        orch.sessions = _channel_sessions(stored=stored)
+        assert orch._channel_reply_link(key) is None
 
     @pytest.mark.parametrize(
         "stored",
@@ -108,12 +122,6 @@ class TestChannelReplyLink:
         orch = _make_orchestrator()
         orch.sessions = _channel_sessions(stored=stored)
         assert orch._channel_reply_link("unified:kirocrew:direct:U9") is None
-
-    def test_group_session_never_takes_the_stored_rung(self):
-        """A group key's stored value is the sender, so it must not become a DM."""
-        orch = _make_orchestrator()
-        orch.sessions = _channel_sessions(stored="discord:U9")
-        assert orch._channel_reply_link("discord:kirocrew:group:C1") is None
 
     def test_origin_link_wins_and_needs_no_dm_resolution(self):
         orch = _make_orchestrator()
@@ -567,13 +575,16 @@ class TestTaskNotifyChannelRouting:
             await notify("Task 3 requires approval", "run the deploy?", "t-3")
 
         deliver.assert_not_awaited()
-        orch.slack.post_message.assert_awaited_once()
+        orch.slack.post_message.assert_awaited_once_with(
+            "D1", "*Task 3 requires approval*\nrun the deploy?"
+        )
 
     @pytest.mark.asyncio
     async def test_ordinary_progress_title_notifies_neither(self):
         """The title gate is unchanged: only approval/denial escalates off-dashboard."""
         orch = _make_orchestrator()
-        orch.dashboard_state = None
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
         orch.slack = self._slack_double()
         orch._owner_id = "U_OWNER"
         deliver = AsyncMock(return_value=True)
@@ -582,6 +593,7 @@ class TestTaskNotifyChannelRouting:
         with patch.object(orch, "_deliver_channel_reply", deliver):
             await notify("Task 3 complete", "all good", "t-3", session_key=_TG_KEY)
 
+        assert ds.notify.call_args.args == ("taskrunner", "Task 3 complete", "all good")
         deliver.assert_not_awaited()
         orch.slack.post_message.assert_not_awaited()
 
@@ -660,6 +672,7 @@ class TestCronDeliversEmbeddedImages:
 
         orch.slack.upload_file.assert_not_awaited()
         orch.slack.post_blocks.assert_awaited_once()
+        assert "Máy in bình thường, không ảnh." in orch.slack.post_blocks.await_args.args[2]
 
     @pytest.mark.asyncio
     async def test_posts_into_job_thread_ts(self, tmp_path):
