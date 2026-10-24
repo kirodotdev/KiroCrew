@@ -5,6 +5,7 @@ import type { KiroCrewAgent } from '../components/AgentSelector'
 import { hideMateWithoutPreview } from '../lib/assistantMember'
 import { withMarkdownBlocks } from '../lib/markdownAgents'
 import { PREVIEW_CREW } from '../utils/previewFlags'
+import { jsonEqual } from '../utils/structuralEqual'
 import { usePreviewFlag } from './usePreviewFlag'
 
 /**
@@ -62,15 +63,24 @@ import { usePreviewFlag } from './usePreviewFlag'
  *   the one recovery affordance looks broken during the very outage it exists
  *   for. Callers use it to make the attempt visibly complete.
  */
+/** The roster before any load, and after a scope switch empties it. One shared
+ *  array, so emptying an already empty roster is not a state change. */
+const NO_CHOICES: KiroCrewAgent[] = []
+
+/** `next` unless it is structurally equal to `prev`, in which case `prev`. */
+function keepIfEqual(prev: KiroCrewAgent[], next: KiroCrewAgent[]): KiroCrewAgent[] {
+  return jsonEqual(prev, next) ? prev : next
+}
+
 export function useAgents(refreshTrigger: number, sessionKey?: string, projectDir?: string) {
-  const [choices, setChoices] = useState<KiroCrewAgent[]>([])
+  const [choices, setChoices] = useState<KiroCrewAgent[]>(NO_CHOICES)
   // The last roster that actually LOADED, kept across a scope switch. `choices`
   // is emptied on a switch so the picker cannot offer the old scope's agents,
   // but surfaces that only DESCRIBE agents (the sidebar's agent-label tint, the
   // row's inherited session colour) must not go blank for that window: every row
   // briefly lost its agent colour on each session switch and flashed back once
   // the new fetch resolved. Never use this to pick or send an agent.
-  const [displayChoices, setDisplayChoices] = useState<KiroCrewAgent[]>([])
+  const [displayChoices, setDisplayChoices] = useState<KiroCrewAgent[]>(NO_CHOICES)
   const [defaultAgent, setDefaultAgent] = useState('')
   // Closed until the config says otherwise: a missing or failed read keeps
   // the templates-only pop-up the gateway ships with.
@@ -105,7 +115,7 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
     if (lastKey.current !== sessionKey || lastProject.current !== projectDir) {
       lastKey.current = sessionKey
       lastProject.current = projectDir
-      setChoices([])
+      setChoices(NO_CHOICES)
       // The previous scope's verdict says nothing about this one.
       setError(false)
     }
@@ -115,8 +125,12 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
       // same "Kiro Agent only" pill: the catalog was asked for THIS chat, so its
       // `session_backend` is the harness this chat runs.
       const rows = withMarkdownBlocks(d.agents || [], d)
-      setChoices(rows)
-      setDisplayChoices(rows)
+      // Every `refresh` frame and every session switch refetches the catalog,
+      // and the reply is almost always the roster already held. Keeping the
+      // held array then keeps every memo downstream of it, including the
+      // sidebar's per-row shell, so an unchanged roster re-renders no row.
+      setChoices(prev => keepIfEqual(prev, rows))
+      setDisplayChoices(prev => keepIfEqual(prev, rows))
       setDefaultAgent(d.default_agent || '')
       setError(false)
       setReloading(false)

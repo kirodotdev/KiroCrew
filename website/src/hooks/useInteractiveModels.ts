@@ -155,14 +155,25 @@ export function filterInteractiveModels(
   })
 }
 
+/** The hidden list while the config is loading or failed to load. */
+const NO_HIDDEN_MODELS: string[] = []
+
 export function useModelPickerHiddenModelsQuery() {
   const query = useQuery({
     queryKey: ['dashboardConfig'],
     queryFn: fetchDashboardConfig,
+    // In `select`, React Query structurally shares the output, so an equal
+    // hidden list keeps its array across refetches and renders. Normalizing in
+    // the hook body made a new array on every render, which broke the model
+    // picker memos that depend on it.
+    select: config => normalizeHiddenModels(config?.model_picker_hidden_models),
   })
   return {
-    ...query,
-    data: normalizeHiddenModels(query.data?.model_picker_hidden_models),
+    // Getters, not a `...query` spread: a spread reads every result field, so
+    // React Query re-renders the caller for every fetch-state flip.
+    get data() { return query.data ?? NO_HIDDEN_MODELS },
+    get isError() { return query.isError },
+    refetch: query.refetch,
   }
 }
 
