@@ -490,7 +490,6 @@ class TestDashboardConfigAPI:
                 data = await resp.json()
                 assert data["ok"] is True
 
-                # Verify it was persisted
                 assert cfg_file.exists()
                 saved = json.loads(cfg_file.read_text(encoding="utf-8"))
                 assert saved["dashboard"]["restore_sessions"] is True

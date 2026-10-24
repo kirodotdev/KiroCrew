@@ -409,9 +409,12 @@ class TestFetchUsageBg:
     @pytest.mark.asyncio
     async def test_reentrancy_guard_skips_when_already_fetching(self):
         sessions_mod._usage_fetching = True
+        cache_before = sessions_mod._usage_cache
         with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn") as resolve:
-            await sessions_mod._fetch_usage_bg()
+            assert await sessions_mod._fetch_usage_bg() is None
         resolve.assert_not_called()
+        assert sessions_mod._usage_cache is cache_before
+        assert sessions_mod._usage_fetching is True, "the in-flight refresh still owns the flag"
 
     @pytest.mark.asyncio
     async def test_timeout_caches_unavailable_and_reaps(self):
@@ -699,53 +702,57 @@ class TestTextScrapeRegressesApiValue:
         prev = {"credits_used": 41336.0, "source": "api", **self.ID, **self.CYCLE}
         assert _text_scrape_regresses_api_value(prev, {"credits_used": 100.0}, self.ID) is False
 
-    def test_different_identity_never_preserved(self):
-        # Account switch A->B: cached A value (higher usage) must NOT be kept
-        # when the current identity is B — otherwise A's usage + email leak.
+    @pytest.mark.parametrize(
+        "prev_email, prev_start_url, email, start_url",
+        [
+            # Account switch A->B: cached A value (higher usage) must NOT be kept
+            # when the current identity is B — otherwise A's usage + email leak.
+            pytest.param(
+                "alice@amazon.com",
+                "https://a.awsapps.com/start",
+                "bob@amazon.com",
+                "https://b.awsapps.com/start",
+                id="different_identity_never_preserved",
+            ),
+            # Same human email across two Identity Center orgs (different start_url)
+            # is NOT the same account — must not preserve.
+            pytest.param(
+                "carol@amazon.com",
+                "https://orgA.awsapps.com/start",
+                "carol@amazon.com",
+                "https://orgB.awsapps.com/start",
+                id="same_email_different_org_never_preserved",
+            ),
+        ],
+    )
+    def test_a_different_identity_is_never_preserved(
+        self, prev_email, prev_start_url, email, start_url
+    ):
         prev = {
             "credits_used": 41336.0,
             "source": "api",
-            "email": "alice@amazon.com",
-            "start_url": "https://a.awsapps.com/start",
+            "email": prev_email,
+            "start_url": prev_start_url,
         }
         new = {"credits_used": 100.0}
         assert (
-            _text_scrape_regresses_api_value(
-                prev, new, {"email": "bob@amazon.com", "start_url": "https://b.awsapps.com/start"}
-            )
+            _text_scrape_regresses_api_value(prev, new, {"email": email, "start_url": start_url})
             is False
         )
 
-    def test_same_email_different_org_never_preserved(self):
-        # Same human email across two Identity Center orgs (different start_url)
-        # is NOT the same account — must not preserve.
-        prev = {
-            "credits_used": 41336.0,
-            "source": "api",
-            "email": "carol@amazon.com",
-            "start_url": "https://orgA.awsapps.com/start",
-        }
-        new = {"credits_used": 100.0}
-        assert (
-            _text_scrape_regresses_api_value(
-                prev,
-                new,
-                {"email": "carol@amazon.com", "start_url": "https://orgB.awsapps.com/start"},
-            )
-            is False
-        )
-
-    def test_different_reset_date_allows_scrape(self):
-        # New billing cycle (reset date changed): the lower scrape is a
-        # legitimate rollover, not the overage-blind cap — let it win.
+    @pytest.mark.parametrize(
+        "scrape_credits, resets, expected",
+        [
+            # New billing cycle (reset date changed): the lower scrape is a
+            # legitimate rollover, not the overage-blind cap — let it win.
+            pytest.param(200.0, "2026-09-01", False, id="different_reset_date_allows_scrape"),
+            pytest.param(3164.0, "2026-08-01", True, id="same_reset_date_still_blocks"),
+        ],
+    )
+    def test_reset_date_decides_whether_the_scrape_wins(self, scrape_credits, resets, expected):
         prev = {"credits_used": 41336.0, "source": "api", "resets": "2026-08-01", **self.ID}
-        new = {"credits_used": 200.0, "resets": "2026-09-01"}
-        assert _text_scrape_regresses_api_value(prev, new, self.ID) is False
-
-    def test_same_reset_date_still_blocks(self):
-        prev = {"credits_used": 41336.0, "source": "api", "resets": "2026-08-01", **self.ID}
-        new = {"credits_used": 3164.0, "resets": "2026-08-01"}
-        assert _text_scrape_regresses_api_value(prev, new, self.ID) is True
+        new = {"credits_used": scrape_credits, "resets": resets}
+        assert _text_scrape_regresses_api_value(prev, new, self.ID) is expected
 
     def test_missing_email_on_either_side_never_preserved(self):
         prev_no_email = {"credits_used": 41336.0, "source": "api"}
@@ -954,6 +961,8 @@ class TestApiKeyAuthFailFast:
             await sessions_mod._fetch_usage_bg()
         fetch.assert_not_called()
         spawn.assert_not_called()
+        assert sessions_mod._usage_cache == {"available": False, "reason": "api_key_auth"}
+        assert sessions_mod._usage_fetching is False
 
     @pytest.mark.asyncio
     async def test_sso_account_types_still_reach_the_usage_api(self):
@@ -1014,14 +1023,18 @@ class TestFetchWhoami:
         out = self._run(b'{"accountType":"BuilderId","email":"a@b.com"}')
         assert out == {"email": "a@b.com", "account_type": "BuilderId"}
 
-    def test_non_string_values_dropped(self):
-        assert self._run(b'{"email":{"nested":1},"accountType":null}') == {}
-
-    def test_no_json_returns_empty(self):
-        assert self._run(b"Not logged in\n") == {}
-
-    def test_unterminated_json_returns_empty(self):
-        assert self._run(b'{"email":"a@b.com"') == {}
+    @pytest.mark.parametrize(
+        "stdout",
+        [
+            pytest.param(
+                b'{"email":{"nested":1},"accountType":null}', id="non_string_values_dropped"
+            ),
+            pytest.param(b"Not logged in\n", id="no_json_returns_empty"),
+            pytest.param(b'{"email":"a@b.com"', id="unterminated_json_returns_empty"),
+        ],
+    )
+    def test_unusable_whoami_output_returns_empty(self, stdout):
+        assert self._run(stdout) == {}
 
     def test_values_are_length_bounded(self):
         out = self._run(b'{"email":"' + b"x" * 400 + b'@b.com"}')
@@ -1066,24 +1079,32 @@ class TestIdentityAccountCoupling:
     merge is refused unless the accounts provably match.
     """
 
-    def test_matching_arns_are_coupled(self):
+    @pytest.mark.parametrize(
+        "expected, email, profile_arn",
+        [
+            pytest.param(
+                True,
+                "a@b.com",
+                "arn:aws:codewhisperer:us-east-1:1:profile/A",
+                id="matching_arns_are_coupled",
+            ),
+            # The exact misattribution the reviewer flagged: API billed account A,
+            # whoami describes account B.
+            pytest.param(
+                False,
+                "b@b.com",
+                "arn:aws:codewhisperer:us-east-1:2:profile/B",
+                id="differing_arns_are_refused",
+            ),
+        ],
+    )
+    def test_identity_account_coupling(self, expected, email, profile_arn):
         assert (
             sessions_mod._identity_matches_account(
                 "arn:aws:codewhisperer:us-east-1:1:profile/A",
-                {"email": "a@b.com", "_profile_arn": "arn:aws:codewhisperer:us-east-1:1:profile/A"},
+                {"email": email, "_profile_arn": profile_arn},
             )
-            is True
-        )
-
-    def test_differing_arns_are_refused(self):
-        # The exact misattribution the reviewer flagged: API billed account A,
-        # whoami describes account B.
-        assert (
-            sessions_mod._identity_matches_account(
-                "arn:aws:codewhisperer:us-east-1:1:profile/A",
-                {"email": "b@b.com", "_profile_arn": "arn:aws:codewhisperer:us-east-1:2:profile/B"},
-            )
-            is False
+            is expected
         )
 
     def test_no_arns_is_never_coupled(self):

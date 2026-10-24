@@ -134,6 +134,14 @@ def _stub_state(tmp_path):
     return state
 
 
+def _assert_record_applied_once(spy, slot) -> None:
+    """The parked record, not the frame, was applied exactly once and consumed."""
+    spy.assert_called_once()
+    assert spy.call_args.args[3] == "monitor_start"
+    assert spy.call_args.args[4] == VALIDATED_ARGS
+    assert directive_queue.depth(effective_session_key(slot)) == 0
+
+
 async def _drive(state, slot, events, monkeypatch, *, park=True, park_input=None):
     """Stream *events* through ``_run_chat``; return the apply spy.
 
@@ -309,7 +317,7 @@ class TestRawInputArrivesLate:
             AcpEvent(kind=EVENT_COMPLETE),
         ]
         spy = await _drive(state, slot, events, monkeypatch)
-        spy.assert_called_once()
+        _assert_record_applied_once(spy, slot)
 
     @pytest.mark.asyncio
     async def test_no_input_on_any_frame_applies_nothing_and_says_why(
@@ -422,7 +430,7 @@ class TestTheKeyStillGrantsNothing:
         call, result, *tail = _kas_events(text)
         mid = AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="tc-kas", tool_output=text)
         spy = await _drive(state, slot, [call, mid, result, *tail], monkeypatch)
-        spy.assert_called_once()
+        _assert_record_applied_once(spy, slot)
 
 
 class TestTheToolSideOfTheKey:
@@ -1219,7 +1227,7 @@ class TestKasWireTitleCarriesTheBackendPrefix:
         events[0].title = "Running: @kirocrew-core/monitor_start"
         events[0].wire_title = "Running: @kirocrew-core/monitor_start"
         spy = await _drive(state, slot, events, monkeypatch)
-        spy.assert_called_once()
+        _assert_record_applied_once(spy, slot)
 
 
 class TestDisplayStripKeepsAnEnvelopeReadable:

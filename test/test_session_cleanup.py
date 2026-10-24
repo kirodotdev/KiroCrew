@@ -37,6 +37,7 @@ from kiro_crew.subagent_persistence import (
     update_state,
     write_tombstone,
 )
+from kiro_crew.testing.wait import await_until
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
@@ -185,8 +186,7 @@ class TestAcpCleanupDeletesFiles:
     def test_acp_cleanup_missing_files_no_error(self, tmp_path):
         """Cleanup succeeds when files don't exist."""
         with patch("kiro_crew.subagent_persistence.Path.home", return_value=tmp_path):
-            # Should not raise
-            _cleanup_session_files_sync("nonexistent-id", "acp")
+            assert _cleanup_session_files_sync("nonexistent-id", "acp") is True
 
     def test_acp_cleanup_partial_files(self, tmp_path):
         """Cleanup works when only one file exists."""
@@ -219,22 +219,23 @@ class TestCleanupNeverRaises:
         For any session ID (including empty, special chars, non-existent paths),
         _cleanup_session_files_sync returns without raising.
         """
-        # Should never raise regardless of input
         with patch("kiro_crew.subagent_persistence.Path.home", return_value=tmp_path):
-            _cleanup_session_files_sync(session_id, "acp")
-            _cleanup_session_files_sync(session_id, "claude_code")
-            _cleanup_session_files_sync(session_id, "bedrock")
-            _cleanup_session_files_sync(session_id, "unknown_provider")
+            assert isinstance(_cleanup_session_files_sync(session_id, "acp"), bool)
+            # Only kiro-cli transcripts are reachable here; any other backend
+            # reports failure so the prune keeps its retry metadata.
+            for provider in ("claude_code", "bedrock", "unknown_provider"):
+                assert _cleanup_session_files_sync(session_id, provider) is (session_id == "")
 
-    def test_cleanup_empty_string(self, tmp_path):
-        """Empty session_id is a no-op."""
+    @pytest.mark.parametrize(
+        "session_id, completed",
+        [
+            pytest.param("", True, id="empty_string_is_a_noop"),
+            pytest.param("abc\x00def", False, id="null_bytes_do_not_raise"),
+        ],
+    )
+    def test_cleanup_degenerate_id(self, tmp_path, session_id, completed):
         with patch("kiro_crew.subagent_persistence.Path.home", return_value=tmp_path):
-            _cleanup_session_files_sync("", "acp")
-
-    def test_cleanup_null_bytes(self, tmp_path):
-        """Null bytes in session_id don't raise."""
-        with patch("kiro_crew.subagent_persistence.Path.home", return_value=tmp_path):
-            _cleanup_session_files_sync("abc\x00def", "acp")
+            assert _cleanup_session_files_sync(session_id, "acp") is completed
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -308,21 +309,20 @@ class TestCleanupRestriction:
         cfg.session.pool_ttl_secs = 0
         manager = SessionManager(cfg=cfg, provider_factory=None)
 
-        # Create a mock session with a provider that has session_id
         provider = MagicMock()
         provider.session_id = "some-session-id"
         provider.cleanup_session = AsyncMock()
 
         session = MagicMock()
         session.provider = provider
-        session.semaphore = MagicMock()
+        session.semaphore = asyncio.Semaphore(0)
         manager._sessions[key] = session
+        tasks_before = asyncio.all_tasks()
 
         manager.release(key, cleanup=True)
 
-        # cleanup_session should NOT be called for non-subagent keys
-        # (asyncio.ensure_future would have been called if it were a subagent key)
-        # Verify by checking that no future was scheduled
+        assert asyncio.all_tasks() == tasks_before, "no cleanup task was scheduled"
+        assert not session.semaphore.locked(), "the permit is still released"
         provider.cleanup_session.assert_not_called()
 
     @pytest.mark.asyncio
@@ -342,13 +342,16 @@ class TestCleanupRestriction:
 
         session = MagicMock()
         session.provider = provider
-        session.semaphore = MagicMock()
+        session.semaphore = asyncio.Semaphore(0)
         manager._sessions["subagent:abc123"] = session
+        tasks_before = asyncio.all_tasks()
 
         manager.release("subagent:abc123", cleanup=True)
-        # Give the ensure_future task a chance to run
-        await asyncio.sleep(0.01)
+        scheduled = asyncio.all_tasks() - tasks_before
+        assert len(scheduled) == 1
+        await await_until(asyncio.gather(*scheduled), what="the scheduled cleanup task")
         provider.cleanup_session.assert_awaited_once_with("test-session-uuid")
+        assert not session.semaphore.locked()
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -482,7 +485,6 @@ class TestSubagentManagerCleanupIntegration:
 
         provider.stream = MagicMock(side_effect=lambda *a, **kw: _ok())
         sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
-        # Make release raise to simulate a cleanup failure
         sessions.release = MagicMock(side_effect=OSError("cleanup failed"))
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
@@ -585,7 +587,6 @@ class TestTombstonePruningCleansSessionFiles:
         if d.exists():
             shutil.rmtree(d)
 
-        # Create a plain subagent folder with explicit non-retention and session identity.
         create_agent_folder(agent_id, task="old task")
         update_state(agent_id, session_id=session_id, provider="acp", keep=False)
         remember_live_cleanup_identity(
@@ -603,7 +604,6 @@ class TestTombstonePruningCleansSessionFiles:
         ts["session_id"] = session_id
         ts_path.write_text(json.dumps(ts))
 
-        # Create corresponding session files
         sessions_dir = tmp_path / ".kiro" / "sessions" / "cli"
         sessions_dir.mkdir(parents=True, exist_ok=True)
         json_file = sessions_dir / f"{session_id}.json"
@@ -670,7 +670,6 @@ class TestStartupSweep:
             if d.is_dir():
                 shutil.rmtree(d)
 
-        # Create orphaned subagent folders with session_ids
         for i, sid in enumerate(session_ids):
             agent_id = f"orphan-{i}"
             create_agent_folder(agent_id, task=f"task-{i}")
@@ -694,9 +693,9 @@ class TestStartupSweep:
         from kiro_crew.subagent_persistence import _agent_dir as _adir
 
         for i in range(len(session_ids)):
-            assert (_adir(f"orphan-{i}") / "tombstone.json").exists(), (
-                f"orphan-{i} was not tombstoned"
-            )
+            assert (
+                _adir(f"orphan-{i}") / "tombstone.json"
+            ).exists(), f"orphan-{i} was not tombstoned"
 
     @pytest.mark.asyncio
     async def test_sweep_continues_on_individual_failure(self, agent_root):
@@ -709,7 +708,6 @@ class TestStartupSweep:
         from kiro_crew.subagent import SubagentManager
         from kiro_crew.subagent_persistence import _agent_dir as _adir
 
-        # Create two orphans
         create_agent_folder("fail-orphan", task="t1")
         update_state("fail-orphan", session_id="fail-sid", provider="acp", pid=88888)
         create_agent_folder("ok-orphan", task="t2")

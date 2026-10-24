@@ -39,7 +39,6 @@ class TestReloadProviderFactoryRefillsPool:
     async def test_reload_resets_pool_started_and_refills(self):
         """After reload_provider_factory, warm pool is replenished with new provider type."""
         mgr, factory = _make_manager(pool_size=1)
-        # Simulate initial start_pool having run
         mgr._pool_started = True
         old_provider = _make_provider()
         mgr._warm_pool.put_nowait((old_provider, time.monotonic()))
@@ -80,6 +79,7 @@ class TestReloadProviderFactoryRefillsPool:
             await mgr.reload_provider_factory()
 
         fake_task.cancel.assert_called_once()
+        assert mgr._pool_health_task is not fake_task, "a fresh health loop replaced it"
         await mgr.close_all()
 
 
@@ -242,21 +242,22 @@ class TestDefaultProjectDir:
 
 
 class TestPoolCwd:
-    def test_pool_cwd_set_from_default_project_dir(self):
+    @pytest.mark.parametrize(
+        "project_dir, expected",
+        [
+            pytest.param(
+                "/custom/workspace", "/custom/workspace", id="pool_cwd_set_from_default_project_dir"
+            ),
+            pytest.param("", "", id="pool_cwd_empty_when_no_workspace"),
+        ],
+    )
+    def test_pool_cwd_follows_default_project_dir(self, project_dir, expected):
         from kiro_crew.session import SessionManager
 
         cfg = _make_cfg()
-        with patch("kiro_crew.session.default_project_dir", return_value="/custom/workspace"):
+        with patch("kiro_crew.session.default_project_dir", return_value=project_dir):
             mgr = SessionManager(cfg)
-        assert mgr._pool_cwd == "/custom/workspace"
-
-    def test_pool_cwd_empty_when_no_workspace(self):
-        from kiro_crew.session import SessionManager
-
-        cfg = _make_cfg()
-        with patch("kiro_crew.session.default_project_dir", return_value=""):
-            mgr = SessionManager(cfg)
-        assert mgr._pool_cwd == ""
+        assert mgr._pool_cwd == expected
 
     @pytest.mark.asyncio
     async def test_pool_claimed_when_cwd_matches_pool_cwd(self):
@@ -306,6 +307,8 @@ class TestPoolCwd:
 
         mgr._drain_and_claim.assert_not_awaited()
         factory.assert_called_once()
+        assert provider is not pooled
+        assert mgr._warm_pool.qsize() == 1
 
     @pytest.mark.asyncio
     async def test_fill_warm_pool_passes_pool_cwd(self):
