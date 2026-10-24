@@ -10508,7 +10508,10 @@
       "toggle_left_sidebar": "Показать или скрыть левую боковую панель",
       "toggle_session_panel": "Показать или скрыть панель сессий",
       "toggle_side_panel": "Показать или скрыть боковую панель",
-      "toggle_terminal": "Показать или скрыть терминал"
+      "toggle_terminal": "Показать или скрыть терминал",
+      "switcher_dialog_label": "Switch recent session",
+      "switcher_recent_count": "{{count}} most recent",
+      "switcher_hint": "Hold to step · release to switch · Esc to cancel"
     },
     "useNativeNotification": {
       "new_notifications_few": "{{count}} новых уведомления",

@@ -10220,7 +10220,10 @@
       "toggle_left_sidebar": "বাঁ সাইডবার দেখান/লুকান",
       "toggle_session_panel": "সেশন প্যানেল দেখান/লুকান",
       "toggle_side_panel": "সাইড প্যানেল দেখান/লুকান",
-      "toggle_terminal": "টার্মিনাল দেখান/লুকান"
+      "toggle_terminal": "টার্মিনাল দেখান/লুকান",
+      "switcher_dialog_label": "Switch recent session",
+      "switcher_recent_count": "{{count}} most recent",
+      "switcher_hint": "Hold to step · release to switch · Esc to cancel"
     },
     "useNativeNotification": {
       "new_notifications_one": "{{count}}টি নতুন বিজ্ঞপ্তি",

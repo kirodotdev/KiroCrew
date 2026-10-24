@@ -10076,7 +10076,10 @@
       "toggle_left_sidebar": "切换左侧边栏",
       "toggle_session_panel": "切换会话面板",
       "toggle_side_panel": "切换侧边面板",
-      "toggle_terminal": "切换终端"
+      "toggle_terminal": "切换终端",
+      "switcher_dialog_label": "Switch recent session",
+      "switcher_recent_count": "{{count}} most recent",
+      "switcher_hint": "Hold to step · release to switch · Esc to cancel"
     },
     "useNativeNotification": {
       "new_notifications_other": "{{count}} 条新通知"

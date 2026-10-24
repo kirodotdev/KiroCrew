@@ -10076,7 +10076,10 @@
       "toggle_left_sidebar": "왼쪽 사이드바 표시 전환",
       "toggle_session_panel": "세션 패널 표시 전환",
       "toggle_side_panel": "사이드 패널 표시 전환",
-      "toggle_terminal": "터미널 표시 전환"
+      "toggle_terminal": "터미널 표시 전환",
+      "switcher_dialog_label": "Switch recent session",
+      "switcher_recent_count": "{{count}} most recent",
+      "switcher_hint": "Hold to step · release to switch · Esc to cancel"
     },
     "useNativeNotification": {
       "new_notifications_other": "새 알림 {{count}}개"

@@ -16,6 +16,7 @@ import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '.
 import chatReducer from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import ShortcutsModal from '../components/ShortcutsModal'
+import { cancelSessionSwitcher, getSessionSwitcher } from '../lib/sessionSwitcher'
 import type { RootState } from '../store'
 
 beforeEach(() => localStorage.clear())
@@ -242,19 +243,32 @@ describe('useKeyboardShortcuts — toggle behavior', () => {
     }
     const press = (mods: KeyboardEventInit) =>
       !document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Backquote', cancelable: true, bubbles: true, ...mods }))
+    const release = (key: string) => act(() => {
+      document.dispatchEvent(new KeyboardEvent('keyup', { key, cancelable: true, bubbles: true }))
+    })
     let prevPlatform = ''
     beforeEach(() => { prevPlatform = navigator.platform })
-    afterEach(() => { Object.defineProperty(navigator, 'platform', { value: prevPlatform, configurable: true }) })
+    afterEach(() => {
+      act(() => cancelSessionSwitcher())
+      Object.defineProperty(navigator, 'platform', { value: prevPlatform, configurable: true })
+    })
 
-    it('macOS: ⌃⌥` jumps to the last visited session', () => {
+    it('macOS: ⌃⌥` opens the switcher and release jumps to the last visited session', () => {
       const store = setupMru('MacIntel')
       expect(press({ ctrlKey: true, altKey: true })).toBe(true)
+      // The overlay opens on the chord; the switch lands on modifier release.
+      expect(getSessionSwitcher()?.keys).toEqual(['slot-2', 'slot-1'])
+      expect(store.getState().chat.activeSlot).toBe('slot-2')
+      release('Control')
+      release('Alt')
       expect(store.getState().chat.activeSlot).toBe('slot-1')
     })
 
-    it('macOS: ⌃⌥⇧` walks back the MRU history', () => {
+    it('macOS: ⌃⌥⇧` opens the switcher walking back and release commits', () => {
       const store = setupMru('MacIntel')
       expect(press({ ctrlKey: true, altKey: true, shiftKey: true })).toBe(true)
+      expect(getSessionSwitcher()?.keys).toEqual(['slot-2', 'slot-1'])
+      release('Alt')
       expect(store.getState().chat.activeSlot).toBe('slot-1')
     })
 
@@ -262,14 +276,18 @@ describe('useKeyboardShortcuts — toggle behavior', () => {
       const store = setupMru('MacIntel')
       expect(press({ altKey: true })).toBe(false)
       expect(press({ altKey: true, shiftKey: true })).toBe(false)
+      expect(getSessionSwitcher()).toBeNull()
       expect(store.getState().chat.activeSlot).toBe('slot-2')
     })
 
-    it('Windows/Linux: Alt+` jumps to the last visited session; Ctrl+Alt+` (AltGr) does not', () => {
+    it('Windows/Linux: Alt+` opens the switcher; Ctrl+Alt+` (AltGr) does not', () => {
       const store = setupMru('Win32')
       expect(press({ ctrlKey: true, altKey: true })).toBe(false)
+      expect(getSessionSwitcher()).toBeNull()
       expect(store.getState().chat.activeSlot).toBe('slot-2')
       expect(press({ altKey: true })).toBe(true)
+      expect(getSessionSwitcher()?.keys).toEqual(['slot-2', 'slot-1'])
+      release('Alt')
       expect(store.getState().chat.activeSlot).toBe('slot-1')
     })
   })

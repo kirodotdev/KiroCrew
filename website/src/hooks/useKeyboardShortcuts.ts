@@ -40,6 +40,12 @@ import { isEditableTarget } from '../utils/editableTarget'
 import { closeShownCrewWindow, crewWindowShown } from '../pages/chat/crew-window/crewWindowStore'
 import { stepTurn } from '../pages/chat/turnStep'
 import { noteEscapeStoppedSpeech } from '../utils/speechStopKey'
+import {
+  getSessionSwitcher,
+  heldModifiers,
+  openSessionSwitcher,
+  sessionSwitcherOrder,
+} from '../lib/sessionSwitcher'
 
 /** Shortcuts scoped to the session on screen (see the crew-window guard). */
 const CREW_WINDOW_SCOPED: ReadonlySet<string> = new Set([
@@ -1060,15 +1066,33 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     if (code === 'Backquote' && e.altKey && !e.metaKey && e.ctrlKey === isMacPlatform()) {
       if (!enabled || disabled) return
       e.preventDefault()
+      // Repeat presses while the overlay is up are claimed (and stepped) by its
+      // own capture-phase listener before this bubble handler runs; this branch
+      // only ever OPENS.
+      if (getSessionSwitcher()) return
+      // Open the overlay as the visual layer of the MRU walk, seeded from the
+      // same slotHistory. onCommit routes through kbSwitch, so release-to-switch
+      // is identical to every other keyboard switch (macOS composer release,
+      // missing-session handling). A quick tap commits before the ~120ms paint,
+      // reproducing today's instant last-visited toggle; a hold paints the grid.
+      const keys = sessionSwitcherOrder(orderedSlots.map(s => s.key), activeSlot, slotHistory)
+      const opened = openSessionSwitcher({
+        keys,
+        holdKeys: heldModifiers(e),
+        stepKey: '`',
+        onCommit: kbSwitch,
+        backwards: e.shiftKey,
+      })
+      if (opened) return
+      // Fewer than two switchable sessions: nothing to walk. Keep the shipped
+      // instant toggle so a single prior session still jumps.
       if (e.shiftKey) {
-        // Walk back MRU history
         if (slotHistory.length === 0) return
         mruIndexRef.current = Math.min(mruIndexRef.current + 1, slotHistory.length - 1)
         const target = slotHistory[slotHistory.length - 1 - mruIndexRef.current]
         if (target) kbSwitch(target)
         return
       }
-      // MRU toggle (last visited)
       const prev = slotHistory.length > 0 ? slotHistory[slotHistory.length - 1] : null
       if (prev && prev !== activeSlot) kbSwitch(prev)
       return
