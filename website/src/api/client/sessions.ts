@@ -9,7 +9,16 @@ import type { CrewBoardAction, CrewBoardActionResult, WorkBoardResponse } from '
 
 export const SEARCH_MIN_CHARS = 2  // backend session search threshold (must match kiro_crew.history.SEARCH_MIN_CHARS)
 
-export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCrewBoard }: ClientTransport) {
+/** One file in the consolidated session archive, as `/api/session/archive` lists it. */
+export interface ArchiveEntry {
+  name: string
+  key: string
+  stamp: string
+  size: number
+  mtime: number
+}
+
+export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, sendResponseAuthRecovery, jCrewBoard }: ClientTransport) {
   const runtimes = {
     restartSessions: () =>
       post('/api/sessions/restart').then(j) as Promise<{
@@ -87,6 +96,21 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCre
     // name can match several.
     sessionsNamed: (name: string) => fetch('/api/sessions?limit=200&name=' + encodeURIComponent(name))
       .then(j) as Promise<{ sessions: Array<{ key: string; title?: string }> }>,
+    // The consolidated session archive (redacted before it is served). The list
+    // is JSON; `j` parses it and runs auth recovery like every other read here.
+    sessionArchiveList: () =>
+      fetch('/api/session/archive').then(j) as Promise<{ archives: ArchiveEntry[] }>,
+    // One archive file, returned as JSONL TEXT — so this reads the raw `Response`
+    // itself (`j` is JSON-only and would throw on it) and runs the same auth
+    // recovery a `j` call gets via `sendResponseAuthRecovery`, exactly as the
+    // chat-core send does for its own raw receipt. `jfetch` (the `fetch` alias
+    // here) journals a transport rejection with this route + method, so a network
+    // drop carries its endpoint into the Ask-agent hand-off (#18723). A non-2xx
+    // is handed back raw for the caller to read, matching the page's own `!r.ok`
+    // handling; the abort signal rides through for the superseded-open case.
+    sessionArchiveRead: (name: string, signal?: AbortSignal) =>
+      fetch('/api/session/archive/' + encodeURIComponent(name), signal ? { signal } : undefined)
+        .then(sendResponseAuthRecovery),
   }
 
   const historyDetail = {

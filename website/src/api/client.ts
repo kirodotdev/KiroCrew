@@ -162,6 +162,7 @@ export type {
 } from './client/cloud'
 export type { MemoryCarveQuery, MemoryCarveResult } from './client/memory'
 export { SEARCH_MIN_CHARS } from './client/sessions'
+export type { ArchiveEntry } from './client/sessions'
 export type {
   McpShareReason,
   McpShareRecommendation,
