@@ -232,6 +232,16 @@
       "doc": "",
       "cta_prompt": "",
       "action": { "kind": "route", "label": "Open Secrets settings", "route": "/settings/secrets" }
+    },
+    {
+      "id": "shortcuts-help",
+      "feature": "Keyboard Shortcuts",
+      "title": "See every keyboard shortcut",
+      "body": "Press **⌘/** (**Ctrl+/**) for the full shortcut list, searchable by name or by chord. **⌥K** (**Alt+K**) opens it too, and keeps working when shortcuts are switched off — so there is always a keyboard route back. Rebind anything in **Settings › Shortcuts**.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Shortcuts settings", "route": "/settings/shortcuts" }
     }
   ]
 }
