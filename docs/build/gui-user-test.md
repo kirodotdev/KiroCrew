@@ -22,7 +22,7 @@ while the code holding credentials is not. `pr-readiness.yml` does not read this
 | Path | Role |
 |---|---|
 | `.github/workflows/gui-user-test.yml` | Triggers, boot, run, artifact, run summary, nightly issue, lane status. |
-| `scripts/gui-user-test/boot.sh` | Xvfb -> `seed_home.py` -> `python -m kiro_crew gateway --test-mode --approval yolo --no-crons` on the packaged fake ACP backend -> Chromium at the dashboard URL. Writes `target.env` (origin + one-time token, mode 0600) and `pids`. Also stages the sample notes folder and the sample project at a fixed path (see "Seeds" below). |
+| `scripts/gui-user-test/boot.sh` | Xvfb -> `seed_home.py` -> `python -m kiro_crew gateway --test-mode --approval yolo --no-crons` on the packaged fake ACP backend -> Chromium at the dashboard URL. Writes `target.env` (origin, one-time token and the gateway session cookie, mode 0600) and `pids`. Also stages the sample notes folder and the sample project at a fixed path (see "Seeds" below). |
 | `scripts/gui-user-test/seed_home.py` | Copies a fixture into `$KIROCREW_HOME` through `kiro_crew.seed`, marks the install onboarded (including `dashboard.crewmates_onboarded`), writes `config.agents.default` and then `config.agents.<slug>` for each `--member` so the Mates page has a roster, and with `--project` gives the pinned starter session (`dashboard_starter.jsonl`) the staged sample project. |
 | `scripts/gui-user-test/teardown.sh` | Kills the three process groups and removes the scratch home, the browser profile and the staged sample folders. |
 | `test/gui_user/harness.py` | The screenshot -> Bedrock Messages API -> action loop with the step, time and budget gates. |
@@ -185,6 +185,15 @@ mate. A scenario that reads the boot state (an empty inbox, a one-card roster)
 sets `preconditions.fresh_target: true` and must not write anything itself.
 `scenarios.select` runs every such scenario first, before the rest in file-name
 order, and the harness refuses a run order that puts one after any other scenario.
+
+The one thing the harness does restore is the seeded session titles in
+`harness.SEEDED_SLOT_TITLES`. `chat-session-title` renames the pinned starter session and
+renames it back as its last step, so an attempt that aborts mid-flow would leave the
+rename for its own retry and every later scenario. Before each attempt the harness
+PATCHes any drifted title back to its fixture value through
+`PATCH /api/chat/slots/{slot}/title`, authenticated with the gateway session cookie
+`boot.sh` writes to `target.env` (`--dashboard-cookie-file`). Without that file the
+reset does nothing.
 
 Because one seed serves every scenario, a surface that needs content gets it from the
 `rich` fixture itself rather than from a second seed: `rich` ships the three saved
