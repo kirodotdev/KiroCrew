@@ -653,7 +653,7 @@ Examples:
     )
     _tunnel_opts(_c_tunnel)
     _c_login = cloud_sub.add_parser(
-        "login", help="Sign kiro-cli in on the instance (fixes 'not logged in' chat errors)"
+        "login", help="Sign Kiro in on the instance (fixes 'not logged in' chat errors)"
     )
     _cloud_common(_c_login)
     _c_login.add_argument(
@@ -661,7 +661,7 @@ Examples:
     )
     _cloud_identity_opts(_c_login)
     _c_logout = cloud_sub.add_parser(
-        "logout", help="Sign kiro-cli out on the instance (to switch Kiro account)"
+        "logout", help="Sign Kiro out on the instance (to switch Kiro account)"
     )
     _cloud_common(_c_logout)
     _c_stop = cloud_sub.add_parser("stop", help="Stop the instance (pause billing)")

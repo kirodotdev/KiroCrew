@@ -228,6 +228,7 @@ async def _refresh_social(token: KasToken, *, session: aiohttp.ClientSession) ->
         refresh_token=data.get("refreshToken") or token.refresh_token,
         profile_arn=profile_arn,
         region=token.region,
+        extra=dict(token.extra),
     )
 
 
@@ -255,6 +256,7 @@ async def _refresh_sso_oidc(token: KasToken, *, session: aiohttp.ClientSession) 
         region=region,
         client_id=token.client_id,
         client_secret=token.client_secret,
+        extra=dict(token.extra),
     )
 
 
@@ -285,6 +287,7 @@ async def _refresh_external_idp(token: KasToken, *, session: aiohttp.ClientSessi
         auth_method="external_idp",
         client_id=token.client_id,
         token_endpoint=token.token_endpoint,
+        extra=dict(token.extra),
     )
 
 

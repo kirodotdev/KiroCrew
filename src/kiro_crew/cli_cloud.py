@@ -248,7 +248,11 @@ def _cloud_connect(args: argparse.Namespace) -> int:
 
 
 def _cloud_login(args: argparse.Namespace) -> int:
-    """Sign kiro-cli into the instance (device-code) — the backend chats need this.
+    """Sign the instance's Kiro backend in (device-code) — the backend chats need this.
+
+    The box decides which program that is: ``kiro-cli`` on the relay route, Crew's
+    own vault (``kirocrew kas login``) on the KAS bundle route, which installs no
+    kiro-cli. The prompt, the identity check and the sign-out read the same here.
 
     Standalone re-entry for the wizard's sign-in step: after a non-interactive
     launch (``--yes``) nobody approved the browser code, so kiro-cli is logged
@@ -327,7 +331,7 @@ def _cloud_login(args: argparse.Namespace) -> int:
 
 
 def _cloud_logout(args: argparse.Namespace) -> int:
-    """Sign kiro-cli out on the instance — the way to switch Kiro accounts.
+    """Sign the instance's Kiro backend out — the way to switch Kiro accounts.
 
     ``cloud login`` short-circuits when a session already exists, so switching
     accounts otherwise means an SSM console round-trip to run ``kiro-cli
@@ -340,16 +344,14 @@ def _cloud_logout(args: argparse.Namespace) -> int:
         ui.fail(f"No running instance for tag '{tag}'.")
         return 1
 
-    with ui.Spinner("Signing kiro-cli out on the instance…"):
+    with ui.Spinner("Signing out on the instance…"):
         signed_out = login_mod.logout(st["instance_id"], profile, region)
     if not signed_out:
         ui.fail("Could not confirm the instance is signed out.")
         ui.detail("The session may still be active — retry, or check with: kirocrew cloud connect")
         return 1
     ui.ok("Signed out on the instance.")
-    ui.detail(
-        "Any in-flight chats/cron sessions were stopped (their kiro-cli runtimes were killed)."
-    )
+    ui.detail("Any in-flight chats/cron sessions were stopped or will stop at their next turn.")
     ui.detail("Sign in with another account: kirocrew cloud login")
     return 0
 
@@ -679,8 +681,8 @@ def handle_cloud(args: argparse.Namespace) -> int:
         ui.detail("status      Show one instance's state")
         ui.detail("tunnel      Open the dashboard SSM tunnel (alias: connect)")
         ui.detail("connect     Open the dashboard over an SSM tunnel")
-        ui.detail("login       Sign kiro-cli in on the instance (fixes chat errors)")
-        ui.detail("logout      Sign kiro-cli out on the instance (switch Kiro account)")
+        ui.detail("login       Sign Kiro in on the instance (fixes chat errors)")
+        ui.detail("logout      Sign Kiro out on the instance (switch Kiro account)")
         ui.detail("stop|start  Pause / resume (save cost)")
         ui.detail("destroy     Remove everything from AWS")
         ui.detail("iam-policy  Print the least-privilege IAM policy to apply")

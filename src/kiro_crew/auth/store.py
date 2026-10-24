@@ -22,6 +22,7 @@ import enum
 import json
 import logging
 import os
+import secrets
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -224,6 +225,42 @@ class TokenStore:
         make_owner_only_dir(self._kas_dir)
         return self._kas_dir / f"refresh-{identity}.lock"
 
+    def signout_lock_path(self) -> Path:
+        """Path to the store-wide sign-out lock (owner-only ``kas`` dir).
+
+        One lock for the whole store, taken OUTSIDE any identity's refresh lock:
+        a sign-out holds it across every slot's delete and the generation bump,
+        and a login holds it across its generation compare and its save, so the
+        two cannot interleave between the compare and the write. Order is always
+        sign-out lock, then an identity's refresh lock, never the reverse.
+        """
+        self._assert_unlinked()
+        make_owner_only_dir(self._kas_dir)
+        return self._kas_dir / "signout.lock"
+
+    def with_signout_lock(self, action: Callable[[], None]) -> None:
+        """Run ``action`` while holding the store-wide sign-out lock.
+
+        Same flock discipline as :meth:`_with_refresh_lock`; lock failures are
+        ``TokenStoreError``. ``action`` may take identity refresh locks inside
+        (``save`` and ``delete`` do), never the other way round.
+        """
+        try:
+            fd = os.open(str(self.signout_lock_path()), os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError as err:
+            raise TokenStoreError("could not take the sign-out lock") from err
+        try:
+            try:
+                acquire_lock(fd, exclusive=True)
+            except OSError as err:
+                raise TokenStoreError("could not take the sign-out lock") from err
+            try:
+                action()
+            finally:
+                release_lock(fd)
+        finally:
+            os.close(fd)
+
     def _with_refresh_lock(self, identity: str, action: Callable[[], None]) -> None:
         """Run ``action`` while holding the identity's refresh lock (:meth:`lock_path`).
 
@@ -414,6 +451,49 @@ class TokenStore:
             return _parse_dt(raw)
         except ValueError:
             return None
+
+    # ── sign-out generation: one marker every process that empties the vault bumps ──
+
+    def _signout_generation_path(self) -> Path:
+        return self._kas_dir / "signed-out"
+
+    def signout_generation(self) -> str:
+        """An opaque value that changes on every sign-out, ``""`` before the first.
+
+        A login reads it when it begins and again, under :meth:`with_signout_lock`,
+        right before it persists its credential
+        (:meth:`KasLoginService._persist_and_finish`); a different value means a
+        sign-out landed in between -- from ANY process on this host, the gateway's
+        own sign-out or a ``kirocrew kas logout`` in a shell -- and the credential
+        must not be written into the vault that sign-out just emptied. The gateway's
+        in-memory epoch covers only its own pending logins; this is the same guard
+        across processes. An unreadable marker reads as ``""``, so a login that began
+        before the marker existed still refuses once one is written.
+        """
+        try:
+            return self._signout_generation_path().read_text(encoding="utf-8").strip()
+        except (OSError, ValueError):
+            return ""
+
+    def bump_signout_generation(self) -> None:
+        """Record a sign-out so a login begun before it refuses to persist.
+
+        Called by every sign-out path after the slots are deleted, inside
+        :meth:`with_signout_lock`. NOT best-effort, unlike the refresh-rejected
+        marker: the marker IS the fence that keeps a login pending in another
+        process from re-filling the vault this sign-out emptied, so a marker that
+        cannot be written raises ``TokenStoreError`` and the sign-out reports
+        failure -- the slots are already gone, but "signed out" must not be
+        published while a pending approval can still undo it. A fresh random
+        value rather than a counter, so two processes bumping at once cannot land
+        on one value a pending login already read.
+        """
+        try:
+            self._assert_unlinked()
+            make_owner_only_dir(self._kas_dir)
+            self._signout_generation_path().write_text(secrets.token_hex(16), encoding="utf-8")
+        except OSError as err:
+            raise TokenStoreError("could not record the sign-out generation") from err
 
     def resolve(self) -> KasToken | None:
         """Return the highest-priority stored token (External > Builder > Social).

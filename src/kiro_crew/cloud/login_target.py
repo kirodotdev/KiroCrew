@@ -295,6 +295,47 @@ def target_from_whoami(identity: Mapping[str, Any], *, region: str = "") -> Kiro
         return None
 
 
+def _local_vault_owns_sign_in() -> bool:
+    """Whether THIS machine runs the KAS bundle route (:func:`auth.whoami.vault_owns_sign_in`)."""
+    from kiro_crew.auth.whoami import vault_owns_sign_in
+
+    return vault_owns_sign_in()
+
+
+def local_vault_identity() -> dict[str, str] | None:
+    """The identity Crew's own vault on THIS machine is signed in as.
+
+    Same three answers as the kiro-cli reading: the parsed identity when the vault
+    holds a usable sign-in, ``{}`` when it is proven to hold none (nothing to
+    inherit), and ``None`` when the vault could not be read, or holds an entry that
+    could not be read -- an identity of unknown kind, never Builder ID. The document is the one
+    ``kirocrew kas whoami --format json`` prints
+    (:func:`kiro_crew.auth.whoami.whoami_document`) and it is read through
+    :func:`parse_whoami_output`, so the local and the remote reading share one
+    vocabulary and one parser. ``kiro_crew.auth`` is imported here, at call time:
+    it brings the ``cryptography`` wheel, which is not a price every ``kirocrew
+    cloud`` verb should pay.
+    """
+    from kiro_crew.auth.bridge import default_token_store
+    from kiro_crew.auth.whoami import whoami_document
+
+    try:
+        store = default_token_store()
+        token = store.resolve()
+        if token is None:
+            # `resolve` reports a vault it cannot read or decrypt as empty. Only a
+            # vault PROVEN to hold no entry is "nothing to inherit"; an entry that
+            # would not read is an unknown identity, which the caller must not
+            # resolve to Builder ID (the same rule as a kiro-cli whoami that failed).
+            return {} if store.holds_no_identity() else None
+    except Exception:  # noqa: BLE001 - discovery is best-effort
+        logger.debug("local vault could not be read", exc_info=True)
+        return None
+    if not token.is_usable():
+        return {}
+    return parse_whoami_output(json.dumps(whoami_document(token)))
+
+
 def discover_local_identity(
     kiro_bin: str | None = None, *, timeout: float = 15.0
 ) -> dict[str, str] | None:
@@ -312,8 +353,16 @@ def discover_local_identity(
     Used by the CLI launch paths to inherit the launching machine's identity.
     The dashboard has its own async, sandbox-tiered fetch; this one is the
     plain synchronous form for ``kirocrew setup`` / ``kirocrew cloud launch``.
+
+    On the KAS bundle route (``agent.acp_backend == "kas"`` with
+    ``agent.kas_bundle`` on) this machine's Kiro sign-in is Crew's own vault, not
+    kiro-cli's store -- the route installs no kiro-cli -- so the answer comes from
+    :func:`local_vault_identity`, rendered in the same ``whoami`` document shape
+    and read through the same parser, with the same three answers.
     """
     if kiro_bin is None:
+        if _local_vault_owns_sign_in():
+            return local_vault_identity()
         try:
             kiro_bin = resolve_kiro_cli()
         except Exception:  # noqa: BLE001 - discovery is best-effort
