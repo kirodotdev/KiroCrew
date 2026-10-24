@@ -471,6 +471,15 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # ``_cleanup_app_crons_from_scheduler`` above. No child process is
         # created; the sole input is the operator-typed app name.
         "cli_commands_app.py::_register_app_crons_to_scheduler",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``) driving ``KasLoginService``'s device-code
+        # sign-in and sign-out coroutines from the loop-less ``kirocrew kas
+        # login`` / ``kas logout`` verbs. No child process is created: the
+        # inputs are operator-typed flags (provider, start URL, region) that go
+        # into HTTPS requests to the issuer and into Crew's own vault, never
+        # into an argv. Same classification as ``cli_doctor.py::_doctor``.
+        "cli_kas_login.py::_login",
+        "cli_kas_login.py::_logout",
         "cli_doctor.py::_doctor",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``) driving the async Discord

@@ -257,9 +257,14 @@ Examples:
   kirocrew kas install --from ./bundle   # offline: manifest.json + artifacts in a directory
   kirocrew kas status
   kirocrew kas remove
+  kirocrew kas login                     # sign Kiro Crew's vault in with a device code (Builder ID)
+  kirocrew kas login --provider idc --start-url https://my-org.awsapps.com/start --region us-east-1
+  kirocrew kas whoami --format json      # who the vault is signed in as; exit 1 when signed out
+  kirocrew kas logout
+  kirocrew kas route                     # kas-bundle | kiro-cli: which program owns the sign-in here
 
 Then: kirocrew config set agent.kas_bundle true && kirocrew restart
-The engine signs in through Kiro Crew's own login (dashboard → Sign in).
+The engine signs in through Kiro Crew's own login (dashboard → Sign in, or `kas login`).
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

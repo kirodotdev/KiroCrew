@@ -332,8 +332,69 @@ access token.
 - `KIRO_API_KEY` remains a supported headless path (matches KAS `EnvAuthProvider`), and
   its ApiKey identity must fail-fast on usage/credit APIs (existing lesson).
 
+## Sign-in from a shell, and on a remote crew
+
+The dashboard card is one driver of `KasLoginService`; `kirocrew kas login | whoami |
+logout | route` (`cli_kas_login.py`) is the other, for a host with no browser and no
+dashboard session. It exists because on the bundle route the vault is the engine's
+ONLY credential and kiro-cli is not installed, so `kiro-cli login/whoami/logout` have
+nothing to act on there. The verbs deliberately speak kiro-cli's vocabulary:
+
+| Verb | Does | Output / exit |
+|---|---|---|
+| `kas login [--provider builder_id\|idc\|google\|github] [--start-url] [--region]` | device-code sign-in (the one transport that needs no callback to reach the host), polls until approved, saves to the vault | prints `Open <verification URL>` and `code: XXXX-XXXX`, exits 0 once stored; on a vault that already holds a usable identity prints `already signed in` and exits 0 (switching is `logout` then `login`) |
+| `kas whoami [--format json]` | who the vault is signed in as: `KasToken.is_usable` (the predicate the spawn reads) AND no refresh-rejected marker on the slot, so a sign-in doctor and the card call "expired -- sign in again" reads as signed out here too and `kas login` replaces it | exit 0 + the `kiro-cli whoami --format json` document (`auth/whoami.whoami_document`: `accountType`, and `startUrl` when recorded -- nothing else, never a token or e-mail); exit 1 when signed out |
+| `kas logout` | removes every stored identity (`KasLoginService.logout`) and bumps the store's **sign-out generation** (below) | a running gateway retires its agent processes on the next turn: the vault is in its identity fingerprint and the pre-turn identity-change check runs the same sweep the dashboard's sign-out runs; a dashboard login pending at that moment is refused when its code is approved |
+| `kas route` | which program owns the Kiro sign-in on this host | `kas-bundle` when `agent.acp_backend == "kas"` AND `agent.kas_bundle` is on (`auth/whoami.vault_owns_sign_in`), `kiro-cli` otherwise |
+
+`accountType` is spelled as kiro-cli spells it (`BuilderId`, `IamIdentityCenter`,
+`ExternalIdP`, `Social<Provider>`), so `cloud/login_target.parse_whoami_output` and
+`identity_matches_target` read a vault identity and a kiro-cli one through one parser.
+An SSO-OIDC sign-in records the start URL it was begun against on the stored token
+(`KasToken.extra["start_url"]`, written by `_poll_oidc`): it is configuration, not a
+credential, and it is the one field that tells one organisation's Identity Center
+sign-in from another's. Every refresh (`auth/refresh.py`'s three builders) carries
+`extra` onto the renewed token, so the claim survives the token it was recorded on. Tokens stored before it was recorded carry none, and a
+`whoami` without it is read as "an Identity Center sign-in of an unknown
+organisation", never as Builder ID.
+
+**Sign-out generation.** The service's in-memory epoch stops a login begun in THIS
+process from re-filling a vault a sign-out in this process emptied. `kirocrew kas
+logout` is a second process over the same vault, so the store carries a marker beside
+the refresh-rejected ones (`TokenStore.signout_generation` / `bump_signout_generation`,
+`kas/signed-out`, a fresh random value per sign-out): every `begin_*` snapshots it, every
+sign-out bumps it after the slots are deleted, and `_persist_and_finish` compares the
+two before it writes. Compare-and-save (with the `replaces` slot deletions of an
+account switch) and delete-all-and-bump each run under one store-wide flock (`TokenStore.with_signout_lock`, `kas/signout.lock`, taken outside any
+identity's refresh lock), so a sign-out cannot land between a login's compare and its
+write. `kirocrew kas logout` runs the same sign-out over an empty vault too, so the
+generation moves even when nothing was stored. A mismatch is terminal for that login
+(`{"status": "error", "code": "signed_out_during_login"}`, the entry is dropped);
+`POST /api/kas-login/poll` answers it as the same coded 409 the begin handlers answer
+for the in-flight case, so the card ends the sign-in and offers Start over instead of
+restarting the provider on the device flow as it does for an ordinary terminal loopback
+answer. Unlike the refresh-rejected marker this one is not best-effort: it is the
+fence itself, so a bump that cannot be written raises `TokenStoreError` and the
+sign-out reports failure rather than publishing "signed out" while a pending approval
+can still undo it.
+
+The remote crew uses exactly these verbs: `kirocrew cloud login|logout` and the
+launch wizard run their sign-in scripts on the instance over SSM, and every script
+asks the box's own `kirocrew kas route` which program to drive
+([cloud.md](cloud.md) § `login_vault.py`). The local machine never reads the remote
+config and never holds the remote credential. The aws_control crew container has no
+sign-in surface of its own -- its identity arrives from Secrets Manager into the
+vault -- and on the bundle route it skips kiro-cli's store seed and requires the
+engine instead ([aws-control.md](aws-control.md)).
+
 ## Validation status
 
+- Builder ID **device-code** flow through the vault, from a shell (`kirocrew kas login
+  --provider builder_id` in an isolated data home, no kiro-cli): `RegisterClient` and
+  `StartDeviceAuthorization` were accepted by the live `oidc.us-east-1.amazonaws.com`
+  and the verification URL + user code were printed. The approval half (a human
+  signing in to the printed URL) and the resulting `CreateToken` have NOT been run
+  live; IdC and External IdP remain unit-tested only.
 - Social **device-code** flow: **validated end-to-end** — a stdlib-only Python client
   (no kiro-cli) obtained a real Google `{accessToken, refreshToken, profileArn}` via
   `/oauth/device/authorization` → user browser approval → `/oauth/device/poll`. Confirms
@@ -351,8 +412,9 @@ access token.
 
 ## Not yet done
 
-- Live-endpoint validation of Builder ID / IdC / External IdP (only social device flow
-  is proven against the real service).
+- Live-endpoint validation of the approval and token half of Builder ID, and of IdC /
+  External IdP end to end (only the social device flow is proven against the real
+  service; Builder ID is proven up to the device prompt).
 - The loopback flow has a dashboard driver: `POST /api/kas-login/loopback`
   (`api_kas_login_begin_loopback`) starts the PKCE loopback sign-in and returns the
   portal URL plus the polling handle. A coded 409 `loopback_unavailable` (the install

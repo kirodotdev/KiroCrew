@@ -2684,8 +2684,10 @@ Seeding the vault is necessary and not sufficient. `kiro-cli acp` validates its 
 credential store before it offers an ACP handshake, so on a store it has never signed
 into it exits `rc=1` "You are not logged in" and that token request is never reached:
 the container answers `/health` 200 and every dashboard turn with
-`503 kiro_prerequisite_required`. So `kiro_login.seed_kiro_cli_login` runs immediately
-after `require_model_identity`. It empties that store's `auth_kv` table
+`503 kiro_prerequisite_required`. So `kiro_login.seed_kiro_cli_login` runs after
+`require_model_identity` and after `write_backend_config` -- which program owns the
+sign-in is a property of the WRITTEN config (a crew bundle may ship one), so the seed
+reads that file first (`kiro_login.kas_bundle_route`). It empties that store's `auth_kv` table
 (`DELETE FROM auth_kv`; `$XDG_DATA_HOME/kiro-cli/data.sqlite3`, falling back to
 `$HOME/.local/share/...`, plain JSON), writes one row, and then requires
 `kiro-cli whoami` to accept it; a non-zero exit is a startup refusal. Emptying the
@@ -2712,6 +2714,21 @@ It is written in the container supervisor and nowhere else, which is what keeps 
 internal-only: a desktop host signs kiro-cli in by itself. Every failure inside it is
 a startup refusal, because the alternative is the 503 above with a healthy-looking
 task in front of it.
+
+**On the KAS bundle route none of this runs.** When the written config names the KAS
+harness with `agent.kas_bundle` on -- positive on both halves, the shape
+`kiro_prerequisite_service._kas_bundle_route` reads -- the backend spawns the installed
+engine directly: there is no kiro-cli in the task, no login check in front of the
+engine's credential request, and so no store to seed. The vault `seed_model_identity`
+fills is the engine's only credential there, exactly as on a bundle-route desktop
+([kas-auth.md](kas-auth.md)). What that route requires instead is the engine itself
+under the task's data home (`kiro_login.require_bundled_engine`, `<data
+home>/engines/kas/<pin>`), refused at startup for the same reason the store is refused
+here: a task that starts and then fails every turn. The image this spec describes pins
+kiro-cli and ships no engine, so the route is reachable today only by a crew bundle or
+data home that carries one; the branch exists so the container and the remote crew
+have the same two sign-in owners as a desktop. A config that cannot be read answers
+"relay route", the one the image was measured on.
 
 **That is defence in depth, not a licence to drop the sandbox.** What decides whether
 an auto-approved worker is safe is whether it can REACH a credential, not whether one

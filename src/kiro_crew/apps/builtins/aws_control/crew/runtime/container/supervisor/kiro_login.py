@@ -79,6 +79,15 @@ every turn, which is the healthy-looking task answering 503 that this module exi
 remove, arrived at a second way. With it, that drift is loud and names the version.
 
 Every failure here is a startup refusal, for the same reason.
+
+ON THE KAS BUNDLE ROUTE NONE OF THIS RUNS. When the written config names the KAS
+harness with ``agent.kas_bundle`` on (:func:`kas_bundle_route`), the backend spawns
+the installed engine directly: there is no kiro-cli in the task, no login check in
+front of the engine's credential request, and so no store to seed. The vault seeded
+by ``backend.seed_model_identity`` is the engine's only credential there, exactly as it
+is on a bundle-route desktop. What that route requires instead is the engine itself
+(:func:`require_bundled_engine`), refused at startup for the same reason the store is
+refused here: a task that starts and then fails every turn.
 """
 
 from __future__ import annotations
@@ -343,3 +352,77 @@ def seed_kiro_cli_login(
     _require_accepted(binary, path, run=run, env=env)
     log.info("kiro-cli accepts its login store at %s (row %s)", path, key)
     return path
+
+
+# ── the bundle route: no kiro-cli, so no store to seed ───────────────────────
+
+#: The ``agent.acp_backend`` value that selects the KAS harness, spelled as
+#: ``backend.FORCED_AGENT_SETTINGS`` writes it. Read from that mapping rather than
+#: repeated, so the two cannot drift.
+_KAS_BACKEND_KEY: str = "acp_backend"
+_KAS_BUNDLE_KEY: str = "kas_bundle"
+
+
+def kas_bundle_route(config_path: Path | None) -> bool:
+    """Whether the config the backend boots with runs Crew's OWN engine.
+
+    True only when the written ``config.json`` names the KAS harness AND turns
+    ``agent.kas_bundle`` on -- positive on both halves, the same shape the
+    gateway's readiness gate reads (``kiro_prerequisite_service._kas_bundle_route``).
+    On that route the backend spawns the installed engine directly, kiro-cli is
+    not part of the task, and the engine's credential request reaches the vault
+    with no kiro-cli login check in front of it: the sentinel row this module
+    writes has nothing to satisfy, and a kiro-cli that is not installed cannot be
+    asked to accept it. Everywhere else (the relay route, the container's default)
+    the seed runs exactly as before.
+
+    Read from the FILE the backend reads, after ``backend.write_backend_config`` has
+    written it, so the answer is about the config that boots and not about an
+    earlier draft a crew bundle may have changed. A file that cannot be read or
+    parsed answers False: the relay route is the one the image was measured on,
+    and its seed is what refuses loudly when something is wrong.
+    """
+    from . import backend  # sibling; imported here to keep the standalone import tree flat
+
+    if not isinstance(config_path, Path):
+        # Nothing was written (a stubbed writer answers None): no route to read.
+        return False
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    agent = raw.get("agent") if isinstance(raw, dict) else None
+    if not isinstance(agent, dict):
+        return False
+    return (
+        agent.get(_KAS_BACKEND_KEY) == backend.FORCED_AGENT_SETTINGS[_KAS_BACKEND_KEY]
+        and agent.get(_KAS_BUNDLE_KEY) is True
+    )
+
+
+def require_bundled_engine(data_home: Path) -> None:
+    """Refuse to start unless the engine the bundle route runs is installed under *data_home*.
+
+    The bundle route's counterpart of :func:`_require_accepted`: with no kiro-cli
+    there is no login check to pass, but there is an engine to spawn, and a task
+    whose config says "run the installed engine" with none installed would serve
+    ``/health`` 200 and answer every turn with a spawn failure -- the same
+    healthy-looking 503 this module exists to remove. So the engine is required
+    here, at startup, by name.
+
+    Asked under the task's OWN data home (``<data home>/engines/kas``), not the
+    supervisor's environment: ``build_backend_env`` points the backend there, so
+    that is the root the backend's spawn resolves.
+    """
+    from kiro_crew.agent_sdk.kas_bundle import installed_bundle, kas_engines_root, pinned_version
+
+    root = kas_engines_root(data_home)
+    if installed_bundle(root=root) is None:
+        raise common.ConfigError(
+            f"agent.kas_bundle is on but KAS {pinned_version()} is not installed under "
+            f"{root}. On the bundle route the backend spawns that engine directly (no "
+            "kiro-cli), so a task without it would start and then fail every turn. "
+            "Install it into the image or the data home (`kirocrew kas install`), or "
+            "turn agent.kas_bundle off to run through kiro-cli. Refusing to start."
+        )
+    log.info("KAS bundle route: engine present under %s; kiro-cli's store is not seeded", root)

@@ -646,7 +646,7 @@ def launch(
     # recheck positively confirms the right identity.
     mismatch_seen = False
     if login.is_logged_in(instance_id, profile, region, target=target):
-        ui.ok(f"kiro-cli is already signed in on the instance as {target.describe()}.")
+        ui.ok(f"Kiro is already signed in on the instance as {target.describe()}.")
     elif login.remote_identity_state(instance_id, profile, region, target=target) == "mismatch":
         # A resumed instance can carry a valid session for the WRONG account --
         # for any target, the Builder ID default included (an Identity Center
@@ -657,7 +657,7 @@ def launch(
         ui.warn(f"The instance is signed in to a different Kiro identity than {target.describe()}.")
         ui.detail(f"To switch: {target.recovery_command()}")
     else:
-        ui.info(f"Starting kiro-cli sign-in on the instance as {target.describe()}…")
+        ui.info(f"Starting Kiro sign-in on the instance as {target.describe()}…")
         prompt = login.start_device_login(
             instance_id, profile, region, open_browser=True, target=target
         )

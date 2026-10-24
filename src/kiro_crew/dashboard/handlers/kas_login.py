@@ -223,6 +223,20 @@ async def api_kas_login_poll(request: web.Request) -> web.Response:
             {"error": "Kiro auth service is unreachable.", "code": "auth_service_unreachable"},
             status=502,
         )
+    if result.get("code") == "signed_out_during_login":
+        # A sign-out landed (in this gateway or from `kirocrew kas logout` in a
+        # shell) while this login was pending, so its credential was not
+        # persisted. The same 409 the begin handlers answer for the in-flight
+        # case: the card ends this sign-in and offers Start over, and never
+        # restarts the provider on another transport as it would for a plain
+        # terminal poll answer.
+        return web.json_response(
+            {
+                "error": "Signed out while the sign-in was pending.",
+                "code": "signed_out_during_login",
+            },
+            status=409,
+        )
     # Only the authorized transition persists a credential — that is the state
     # change worth an audit line; a pending tick is just a read.
     if result.get("status") == "authorized":
