@@ -310,7 +310,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _strip_redirect,
         _substitution_bodies,
         _substitution_depth_delta,
-        _xargs_here_string_rebuild,
+        _xargs_here_string_feeds,
     )
     from kiro_crew.security.vocabulary import (  # noqa: F401
         _KILL_BY_NAME_PROGRAMS,
