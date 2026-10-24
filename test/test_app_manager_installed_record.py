@@ -6,6 +6,7 @@ absent one. ``test_app_manager.py`` heads the suite and lists its parts.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 from pathlib import Path
@@ -21,6 +22,9 @@ from kiro_crew.apps.manager import (
     _read_installed,
     _write_installed,
     app_enabled_state,
+    get_app,
+    is_app_enabled,
+    list_apps,
     uninstall_app,
 )
 
@@ -536,3 +540,48 @@ class TestEnabledStateTellsUnreadableFromNotInstalled:
         )
 
         assert app_enabled_state("shape-probe") is True
+
+
+class TestEnabledReadsStrictly:
+    """Only a JSON boolean ``true`` (or a missing key) reads as enabled.
+
+    ``bool(data.get("enabled", True))`` made any non-empty string enabled, so
+    ``"enabled": "false"`` turned an app ON for every reader. Each reader family
+    is checked, since they all share ``InstalledApp.from_dict``.
+    """
+
+    @pytest.mark.parametrize("value", ["false", "true", "0", "no", 1, 0, None, [], {}])
+    def test_from_dict_reads_a_non_boolean_as_disabled(self, value):
+        assert InstalledApp.from_dict({"name": "x", "enabled": value}).enabled is False
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_from_dict_keeps_a_real_boolean(self, value):
+        assert InstalledApp.from_dict({"name": "x", "enabled": value}).enabled is value
+
+    def test_a_missing_key_still_reads_as_enabled(self):
+        assert InstalledApp.from_dict({"name": "x"}).enabled is True
+
+    def _write_record(self, app_home, enabled):
+        app_root = app_home / "apps" / "strict-probe"
+        app_root.mkdir(parents=True)
+        (app_root / "installed.json").write_text(
+            json.dumps({"name": "strict-probe", "enabled": enabled}), encoding="utf-8"
+        )
+
+    def test_every_reader_reports_a_string_false_as_disabled(self, app_home):
+        self._write_record(app_home, "false")
+
+        assert app_enabled_state("strict-probe") is False
+        assert is_app_enabled("strict-probe") is False
+        assert get_app("strict-probe")["enabled"] is False
+        rows = [r for r in list_apps() if r.get("name") == "strict-probe"]
+        assert [r["enabled"] for r in rows] == [False]
+
+    def test_every_reader_reports_a_real_true_as_enabled(self, app_home):
+        self._write_record(app_home, True)
+
+        assert app_enabled_state("strict-probe") is True
+        assert is_app_enabled("strict-probe") is True
+        assert get_app("strict-probe")["enabled"] is True
+        rows = [r for r in list_apps() if r.get("name") == "strict-probe"]
+        assert [r["enabled"] for r in rows] == [True]

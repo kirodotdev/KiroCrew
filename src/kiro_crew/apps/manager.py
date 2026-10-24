@@ -147,6 +147,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _parse_approved_grants,
         _pending_session_approval_after_manifest_change,
         _read_approved_grants,
+        _read_enabled,
         _read_installed,
         _record_lock_path,
         _record_lock_state,

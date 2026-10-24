@@ -76,6 +76,28 @@ _VALID_RESOURCES: frozenset[str] = frozenset({"gateway", "app"})
 _VALID_LIFECYCLE: frozenset[str] = frozenset({"gateway", "app", "locked"})
 
 
+def _read_enabled(data: dict[str, Any]) -> bool:
+    """The one reading of ``enabled`` that every app reader shares.
+
+    A JSON boolean is taken as is. A missing key reads as enabled, as before:
+    every host writer stores a real bool, so only a hand-made record lacks it.
+    Any other value (``"false"``, ``"true"``, ``0``, ``1``, ``null``) reads as
+    DISABLED. ``bool()`` made any non-empty string enabled, so ``"false"``
+    turned an app on; failing closed means an unclear value never runs an app.
+    """
+    if "enabled" not in data:
+        return True
+    value = data["enabled"]
+    if isinstance(value, bool):
+        return value
+    logger.warning(
+        "InstalledApp %s has a non-boolean enabled value %r: reading it as disabled",
+        data.get("name", ""),
+        value,
+    )
+    return False
+
+
 @dataclass
 class InstalledApp:
     """Metadata persisted in ``installed.json`` for each installed app.
@@ -168,7 +190,7 @@ class InstalledApp:
             name=str(data.get("name", "")),
             version=str(data.get("version", "")),
             displayName=str(data.get("displayName", "")),
-            enabled=bool(data.get("enabled", True)),
+            enabled=_read_enabled(data),
             installedAt=str(data.get("installedAt", "")),
             updatedAt=str(data.get("updatedAt", "")),
             source=str(data.get("source", "")),
