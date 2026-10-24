@@ -8553,6 +8553,7 @@
       "mark_as_read": "Marcar como leída",
       "mark_as_unread": "Marcar como no leída",
       "move_to_folder": "Mover a la carpeta…",
+      "new_folder": "Nueva carpeta…",
       "open_in_new_tab": "Abrir en una pestaña de sesión",
       "pin": "Fijar",
       "pop_out_to_window": "Abrir en una ventana aparte",
@@ -8571,6 +8572,16 @@
       "unmute": "Dejar de silenciar esta sesión",
       "mute_failed": "No se pudo silenciar esta sesión",
       "unmute_failed": "No se pudo reactivar el sonido de esta sesión"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "Cancelar",
+      "create_and_move": "Crear y mover",
+      "inside_current": "Crear dentro de “{{name}}”",
+      "move_failed": "Se creó “{{name}}”, pero la sesión no se movió a ella: {{error}}",
+      "name_label": "Nombre de la carpeta",
+      "retry_move": "Reintentar el movimiento",
+      "session_closed": "Esta sesión se cerró, así que no hay nada que mover.",
+      "title": "Nueva carpeta"
     },
     "sessionTurnLimit": {
       "all_sessions": "Todas las sesiones: abrir Ajustes",

@@ -8418,6 +8418,7 @@
       "mark_as_read": "पढ़ा हुआ चिह्नित करें",
       "mark_as_unread": "अनपढ़ा चिह्नित करें",
       "move_to_folder": "फ़ोल्डर में ले जाएँ…",
+      "new_folder": "नया फ़ोल्डर…",
       "open_in_new_tab": "सत्र टैब में खोलें",
       "pin": "पिन करें",
       "pop_out_to_window": "अलग विंडो में खोलें",
@@ -8436,6 +8437,16 @@
       "unmute": "यह सत्र अनम्यूट करो",
       "mute_failed": "यह सत्र म्यूट नहीं हो सका",
       "unmute_failed": "यह सत्र अनम्यूट नहीं हो सका"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "रद्द करो",
+      "create_and_move": "बनाओ और ले जाओ",
+      "inside_current": "“{{name}}” के अंदर बनाओ",
+      "move_failed": "“{{name}}” बनाया गया, लेकिन सेशन उसमें नहीं ले जाया जा सका: {{error}}",
+      "name_label": "फ़ोल्डर का नाम",
+      "retry_move": "फिर से ले जाओ",
+      "session_closed": "यह सेशन बंद हो चुका है, इसलिए ले जाने के लिए कुछ नहीं है।",
+      "title": "नया फ़ोल्डर"
     },
     "sessionTurnLimit": {
       "all_sessions": "सभी सत्र: सेटिंग्स खोलो",

@@ -8283,6 +8283,7 @@
       "mark_as_read": "読了にマーク",
       "mark_as_unread": "未読にマーク",
       "move_to_folder": "フォルダーに移動…",
+      "new_folder": "新しいフォルダー…",
       "open_in_new_tab": "セッションタブで開く",
       "pin": "ピン留め",
       "pop_out_to_window": "ウィンドウにポップアウト",
@@ -8301,6 +8302,16 @@
       "unmute": "このセッションのミュートを解除",
       "mute_failed": "このセッションをミュートできませんでした",
       "unmute_failed": "このセッションのミュートを解除できませんでした"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "キャンセル",
+      "create_and_move": "作成して移動",
+      "inside_current": "「{{name}}」内に作成",
+      "move_failed": "「{{name}}」を作成しましたが、セッションを移動できませんでした: {{error}}",
+      "name_label": "フォルダー名",
+      "retry_move": "移動を再試行",
+      "session_closed": "このセッションは閉じられたため、移動するものはありません。",
+      "title": "新しいフォルダー"
     },
     "sessionTurnLimit": {
       "all_sessions": "すべてのセッション：設定を開く",

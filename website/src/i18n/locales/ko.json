@@ -8283,6 +8283,7 @@
       "mark_as_read": "읽음으로 표시",
       "mark_as_unread": "읽지 않음으로 표시",
       "move_to_folder": "폴더로 이동…",
+      "new_folder": "새 폴더…",
       "open_in_new_tab": "세션 탭에서 열기",
       "pin": "고정",
       "pop_out_to_window": "별도 창으로 분리",
@@ -8301,6 +8302,16 @@
       "unmute": "이 세션 음소거 해제",
       "mute_failed": "이 세션을 음소거할 수 없습니다",
       "unmute_failed": "이 세션의 음소거를 해제할 수 없습니다"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "취소",
+      "create_and_move": "만들고 이동",
+      "inside_current": "‘{{name}}’ 안에 만들기",
+      "move_failed": "‘{{name}}’을(를) 만들었지만 세션을 그 안으로 이동하지 못했습니다: {{error}}",
+      "name_label": "폴더 이름",
+      "retry_move": "다시 이동",
+      "session_closed": "이 세션은 닫혀서 이동할 항목이 없습니다.",
+      "title": "새 폴더"
     },
     "sessionTurnLimit": {
       "all_sessions": "모든 세션: 설정 열기",

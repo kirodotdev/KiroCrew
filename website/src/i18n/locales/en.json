@@ -5315,10 +5315,21 @@
       "copy_link": "Copy link",
       "focus_popped_out_window": "Focus popped-out window",
       "move_to_folder": "Move to folder…",
+      "new_folder": "New folder…",
       "pop_out_to_window": "Pop out to window",
       "rename": "Rename",
       "reveal_in_sidebar": "Reveal in sidebar",
       "tags": "Tags…"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "Cancel",
+      "create_and_move": "Create and move",
+      "inside_current": "Create inside “{{name}}”",
+      "move_failed": "Created “{{name}}”, but the session was not moved into it: {{error}}",
+      "name_label": "Folder name",
+      "retry_move": "Retry move",
+      "session_closed": "This session was closed, so there is nothing to move.",
+      "title": "New folder"
     },
     "sessionTurnLimit": {
       "all_sessions": "All sessions: open Settings",

@@ -8418,6 +8418,7 @@
       "mark_as_read": "Als gelesen markieren",
       "mark_as_unread": "Als ungelesen markieren",
       "move_to_folder": "In Ordner verschieben…",
+      "new_folder": "Neuer Ordner…",
       "open_in_new_tab": "In einem Sitzungs-Tab öffnen",
       "pin": "Anpinnen",
       "pop_out_to_window": "In ein Fenster auskoppeln",
@@ -8436,6 +8437,16 @@
       "unmute": "Stummschaltung dieser Sitzung aufheben",
       "mute_failed": "Diese Sitzung konnte nicht stummgeschaltet werden",
       "unmute_failed": "Stummschaltung dieser Sitzung konnte nicht aufgehoben werden"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "Abbrechen",
+      "create_and_move": "Erstellen und verschieben",
+      "inside_current": "In „{{name}}“ erstellen",
+      "move_failed": "„{{name}}“ wurde erstellt, aber die Sitzung konnte nicht hineinverschoben werden: {{error}}",
+      "name_label": "Ordnername",
+      "retry_move": "Verschieben erneut versuchen",
+      "session_closed": "Diese Sitzung wurde geschlossen, es gibt also nichts zu verschieben.",
+      "title": "Neuer Ordner"
     },
     "sessionTurnLimit": {
       "all_sessions": "Alle Sitzungen: Einstellungen öffnen",

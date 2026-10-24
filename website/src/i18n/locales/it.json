@@ -8553,6 +8553,7 @@
       "mark_as_read": "Segna come letto",
       "mark_as_unread": "Segna come non letto",
       "move_to_folder": "Sposta nella cartella…",
+      "new_folder": "Nuova cartella…",
       "open_in_new_tab": "Apri in una scheda di sessione",
       "pin": "Fissa",
       "pop_out_to_window": "Apri in una finestra",
@@ -8571,6 +8572,16 @@
       "unmute": "Riattiva l'audio di questa sessione",
       "mute_failed": "Impossibile silenziare questa sessione",
       "unmute_failed": "Impossibile riattivare l'audio di questa sessione"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "Annulla",
+      "create_and_move": "Crea e sposta",
+      "inside_current": "Crea in «{{name}}»",
+      "move_failed": "«{{name}}» è stata creata, ma la sessione non è stata spostata al suo interno: {{error}}",
+      "name_label": "Nome della cartella",
+      "retry_move": "Riprova lo spostamento",
+      "session_closed": "Questa sessione è stata chiusa, quindi non c’è nulla da spostare.",
+      "title": "Nuova cartella"
     },
     "sessionTurnLimit": {
       "all_sessions": "Tutte le sessioni: apri le Impostazioni",

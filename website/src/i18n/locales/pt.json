@@ -8553,6 +8553,7 @@
       "mark_as_read": "Marcar como lida",
       "mark_as_unread": "Marcar como não lida",
       "move_to_folder": "Mover para pasta…",
+      "new_folder": "Nova pasta…",
       "open_in_new_tab": "Abrir em uma aba de sessão",
       "pin": "Fixar",
       "pop_out_to_window": "Destacar em uma janela",
@@ -8571,6 +8572,16 @@
       "unmute": "Reativar som desta sessão",
       "mute_failed": "Não foi possível silenciar esta sessão",
       "unmute_failed": "Não foi possível reativar o som desta sessão"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "Cancelar",
+      "create_and_move": "Criar e mover",
+      "inside_current": "Criar dentro de “{{name}}”",
+      "move_failed": "“{{name}}” foi criada, mas a sessão não foi movida para ela: {{error}}",
+      "name_label": "Nome da pasta",
+      "retry_move": "Tentar mover de novo",
+      "session_closed": "Esta sessão foi fechada, então não há nada para mover.",
+      "title": "Nova pasta"
     },
     "sessionTurnLimit": {
       "all_sessions": "Todas as sessões: abrir Configurações",

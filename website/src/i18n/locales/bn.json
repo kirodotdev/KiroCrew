@@ -8418,6 +8418,7 @@
       "mark_as_read": "পড়া হিসেবে চিহ্নিত করো",
       "mark_as_unread": "অপঠিত হিসেবে চিহ্নিত করো",
       "move_to_folder": "ফোল্ডারে সরান…",
+      "new_folder": "নতুন ফোল্ডার…",
       "open_in_new_tab": "সেশন ট্যাবে খুলুন",
       "pin": "পিন করো",
       "pop_out_to_window": "উইন্ডোতে পপ আউট করুন",
@@ -8436,6 +8437,16 @@
       "unmute": "এই সেশনের নীরবতা তুলে নাও",
       "mute_failed": "এই সেশন নীরব করা যায়নি",
       "unmute_failed": "এই সেশনের নীরবতা তোলা যায়নি"
+    },
+    "newFolderMoveDialog": {
+      "cancel": "বাতিল",
+      "create_and_move": "তৈরি করে সরাও",
+      "inside_current": "“{{name}}”-এর ভিতরে তৈরি করো",
+      "move_failed": "“{{name}}” তৈরি হয়েছে, কিন্তু সেশনটি সেখানে সরানো যায়নি: {{error}}",
+      "name_label": "ফোল্ডারের নাম",
+      "retry_move": "আবার সরানোর চেষ্টা করো",
+      "session_closed": "এই সেশনটি বন্ধ হয়ে গেছে, তাই সরানোর মতো কিছু নেই।",
+      "title": "নতুন ফোল্ডার"
     },
     "sessionTurnLimit": {
       "all_sessions": "সব সেশন: সেটিংস খোলো",
