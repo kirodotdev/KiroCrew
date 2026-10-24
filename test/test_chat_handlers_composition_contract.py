@@ -682,7 +682,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "resume_slot_from_history",
             "async function",
-            "(state: \"'DashboardState'\", *, name: 'str', history_key: 'str | None' = None, request_app: 'str' = '', caller_label: 'str' = '', request_title: 'str' = '', containment: \"'Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None'\" = None, final_check: \"'Callable[[_ChatSlot], ResumeRefusal | None] | None'\" = None) -> 'ResumeOutcome'",
+            "(state: \"'DashboardState'\", *, name: 'str', history_key: 'str | None' = None, request_app: 'str' = '', caller_label: 'str' = '', request_title: 'str' = '', containment: \"'Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None'\" = None, final_check: \"'Callable[[_ChatSlot], ResumeRefusal | None] | None'\" = None, rebind_manager: 'bool' = True) -> 'ResumeOutcome'",
         ),
     ),
     "slot_lifecycle": (
@@ -717,7 +717,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "close_slot",
             "async function",
-            "(state: 'DashboardState', slot: \"'_ChatSlot'\", name: 'str', *, pre_pop_check: 'Callable[[], None] | None' = None) -> 'None'",
+            "(state: 'DashboardState', slot: \"'_ChatSlot'\", name: 'str', *, pre_pop_check: 'Callable[[], None] | None' = None, hand_back: 'bool' = True) -> 'None'",
         ),
         (
             "_close_slot",

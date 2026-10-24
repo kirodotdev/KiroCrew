@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+from kiro_crew.dashboard import session_managers
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.history import transcript_stem
 from kiro_crew.sel import sel
@@ -342,6 +343,77 @@ def _created_by_other(slot: Any, caller_key: str) -> bool:
     return getattr(slot, "_created_by", "") != caller_key
 
 
+#: The verbs a handoff moves to the new manager: the ones that RUN a session. The
+#: verbs that mint a session or act for its creator's memory (create, fork, rename,
+#: set_model, ...) stay on ``_created_by``, which a handoff never rewrites.
+HANDOFF_WIDENED_OPERATIONS: frozenset[str] = frozenset(
+    {"send", "read", "summary", "stop", "close", "adopt", "release", "handoff"}
+)
+
+#: How far up the manager line :func:`_outside_reach` walks with the chain switch on.
+MAX_MANAGER_CHAIN = 16
+
+
+def manager_chain_enabled() -> bool:
+    """Whether ``agent.session_manager_chain`` is on. Off, and off on a config error."""
+    try:
+        return bool(KiroCrewConfig.load().agent.session_manager_chain)
+    except Exception:
+        logger.warning("session_manager_chain: config read failed; treating it as off")
+        return False
+
+
+#: ``agent.session_manager_chain`` as last read OFF the loop by
+#: :func:`refresh_manager_chain`. The synchronous fence reads only this, so a re-check
+#: inside a no-suspension window (``close_target``'s ``pre_pop_check``) never loads
+#: config. Off until the first read.
+_manager_chain_on = False
+
+
+def manager_chain_snapshot() -> bool:
+    """The chain switch as of the last off-loop read. No IO."""
+    return _manager_chain_on
+
+
+async def refresh_manager_chain() -> None:
+    """Read the chain switch in a thread and publish it for the synchronous fence."""
+    global _manager_chain_on
+    _manager_chain_on = await asyncio.to_thread(manager_chain_enabled)
+
+
+def _outside_reach(state: "DashboardState", slot: Any, caller_key: str, operation: str) -> bool:
+    """Whether a FENCED *caller_key* may not act on *slot* for *operation*.
+
+    Outside :data:`HANDOFF_WIDENED_OPERATIONS` this is the creator fence unchanged. Inside
+    it the caller must be the session's manager (:func:`session_managers.holder`, which
+    is the creator until a handoff names someone else). With
+    ``agent.session_manager_chain`` on, a manager's manager reaches it too, up the line.
+    A gap in the line (a manager that is not open, an undecided record, a loop, a line
+    longer than :data:`MAX_MANAGER_CHAIN`) withholds reach.
+    """
+    if operation not in HANDOFF_WIDENED_OPERATIONS:
+        return _created_by_other(slot, caller_key)
+    holder = session_managers.holder(slot)
+    if not holder:
+        return True
+    if holder == caller_key:
+        return False
+    if not manager_chain_snapshot():
+        return True
+    seen = {str(getattr(slot, "key", ""))}
+    for _ in range(MAX_MANAGER_CHAIN):
+        above = state.get_slot(holder) if holder not in seen else None
+        if above is None:
+            return True
+        seen.add(holder)
+        holder = session_managers.holder(above)
+        if not holder:
+            return True
+        if holder == caller_key:
+            return False
+    return True
+
+
 def _app_owned_cron_refusal(state: "DashboardState", caller_key: str) -> tuple[str, str] | None:
     """``(message, code)`` when *caller_key* is an APP's cron, else ``None``.
 
@@ -648,6 +720,10 @@ async def prewarm_enabled_check() -> None:
     """
     try:
         await asyncio.to_thread(session_control_enabled)
+        # The managers file too, so the fence's first read after a start is not a
+        # disk read on the loop. Cached after that, so this is free.
+        await asyncio.to_thread(session_managers.load)
+        await refresh_manager_chain()
     except Exception:  # pragma: no cover - the gate re-reads and decides
         logger.debug("session-control config prewarm failed; the gate will read it inline")
 

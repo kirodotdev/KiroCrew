@@ -407,6 +407,7 @@ class TestWhatThisSetGrants:
         # already returns one at a time.
         "session_status",
         "session_adopt",
+        "session_handoff",
         "session_release",
         "session_read_message",
         "session_summary",

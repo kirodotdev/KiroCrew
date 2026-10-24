@@ -120,6 +120,7 @@
     "session_close": "Close session",
     "session_send": "Send to session",
     "session_adopt": "Adopt session",
+    "session_handoff": "Hand off session",
     "session_broadcast": "Broadcast to sessions",
     "session_release": "Release session",
     "session_read_message": "Read session message",
