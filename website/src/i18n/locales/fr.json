@@ -9839,7 +9839,12 @@
       "term_added": "Commande ajoutée au panneau Terminal — rien n’a été exécuté.",
       "term_check": "C’est l’agent qui a écrit cette commande. Vérifie-la attentivement avant d’appuyer sur Entrée.",
       "term_failed": "Impossible d’ouvrir le panneau Terminal.",
-      "undo": "Annuler"
+      "undo": "Annuler",
+      "preview_cred_floor": "La valeur n'a jamais été enregistrée, donc rien ici ne peut l'afficher.",
+      "preview_cred_title": "Identifiant supprimé avant l'enregistrement",
+      "preview_link_many": "Plusieurs liens vers ce site ont été bloqués. Sélectionne Inspecter pour voir chacun avec sa raison.",
+      "preview_link_title": "Lien vers {{host}} bloqué",
+      "preview_session_title": "Jeton de session supprimé avant l'enregistrement"
     },
     "mcpApp": {
       "from_app": "Envoyé par l'application {{app}}",

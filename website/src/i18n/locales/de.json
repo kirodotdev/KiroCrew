@@ -9696,7 +9696,12 @@
       "term_added": "Befehl zum Terminal-Panel hinzugefügt — nichts wurde ausgeführt.",
       "term_check": "Diesen Befehl hat der Agent geschrieben. Prüf ihn sorgfältig, bevor du Enter drückst.",
       "term_failed": "Das Terminal-Panel konnte nicht geöffnet werden.",
-      "undo": "Rückgängig"
+      "undo": "Rückgängig",
+      "preview_cred_floor": "Der Wert wurde nie gespeichert, daher kann ihn hier nichts anzeigen.",
+      "preview_cred_title": "Zugangsdaten vor dem Speichern entfernt",
+      "preview_link_many": "Mehrere Links zu dieser Website wurden blockiert. Wähle Untersuchen, um jeden mit seinem Grund zu sehen.",
+      "preview_link_title": "Link zu {{host}} blockiert",
+      "preview_session_title": "Sitzungstoken vor dem Speichern entfernt"
     },
     "mcpApp": {
       "from_app": "Von der App {{app}} gesendet",

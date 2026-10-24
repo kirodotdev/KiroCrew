@@ -9553,7 +9553,12 @@
       "term_added": "命令已添加到终端面板 — 未运行任何内容。",
       "term_check": "这条命令由 agent 编写。按回车前请务必仔细检查。",
       "term_failed": "无法打开终端面板。",
-      "undo": "撤销"
+      "undo": "撤销",
+      "preview_cred_floor": "该值从未被保存，因此这里无法显示它。",
+      "preview_cred_title": "凭据已在保存前移除",
+      "preview_link_many": "此网站的多个链接已被拦截。选择“检查”即可查看每个链接及其原因。",
+      "preview_link_title": "指向 {{host}} 的链接已被拦截",
+      "preview_session_title": "会话令牌已在保存前移除"
     },
     "mcpApp": {
       "from_app": "由 {{app}} 应用发送",

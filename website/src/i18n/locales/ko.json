@@ -9553,7 +9553,12 @@
       "term_added": "터미널 패널에 명령이 추가되었습니다 — 실행된 것은 없습니다.",
       "term_check": "이 명령은 에이전트가 작성했습니다. Enter를 누르기 전에 반드시 꼼꼼히 확인하세요.",
       "term_failed": "터미널 패널을 열지 못했습니다.",
-      "undo": "실행 취소"
+      "undo": "실행 취소",
+      "preview_cred_floor": "이 값은 저장된 적이 없으므로 여기서 표시할 수 없습니다.",
+      "preview_cred_title": "저장 전에 자격 증명을 제거함",
+      "preview_link_many": "이 사이트로 가는 링크 여러 개가 차단되었습니다. 검사를 선택하면 각 링크와 이유를 볼 수 있습니다.",
+      "preview_link_title": "{{host}} 링크 차단됨",
+      "preview_session_title": "저장 전에 세션 토큰을 제거함"
     },
     "mcpApp": {
       "from_app": "{{app}} 앱에서 보냄",

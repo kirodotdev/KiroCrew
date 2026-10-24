@@ -9839,7 +9839,12 @@
       "term_added": "Comando añadido al panel de Terminal — no se ejecutó nada.",
       "term_check": "Este comando lo escribió el agente. Revísalo con cuidado antes de pulsar Enter.",
       "term_failed": "No se pudo abrir el panel de Terminal.",
-      "undo": "Deshacer"
+      "undo": "Deshacer",
+      "preview_cred_floor": "El valor nunca se guardó, así que aquí no se puede mostrar.",
+      "preview_cred_title": "Credencial eliminada antes de guardar",
+      "preview_link_many": "Se bloquearon varios enlaces a este sitio. Selecciona Inspeccionar para ver cada uno con su motivo.",
+      "preview_link_title": "Enlace a {{host}} bloqueado",
+      "preview_session_title": "Token de sesión eliminado antes de guardar"
     },
     "mcpApp": {
       "from_app": "Enviado por la aplicación {{app}}",
