@@ -36,6 +36,7 @@ test("module has no top-level Electron dependency and its factory accepts fakes"
     "stopForUpdate",
     "stopOnQuit",
     "reopenTunnel",
+    "noteResume",
     "syncTunnel",
     "onInstallDispatched",
     "onInstallFailed",

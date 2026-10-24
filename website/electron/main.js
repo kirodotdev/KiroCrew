@@ -610,10 +610,12 @@ app.whenReady().then(async () => {
   releaseEarlyBootGuard();
 
   // A managed SSH forward does not survive sleep; reopen it on wake. A no-op
-  // unless this launch is keeping one.
+  // unless this launch is keeping one. The liveness monitor gives the gateway
+  // a grace window after the wake.
   try {
     electron.powerMonitor.on("resume", () => {
       glog("power: resumed from sleep");
+      gateway.noteResume();
       gateway.reopenTunnel();
     });
   } catch (error) {

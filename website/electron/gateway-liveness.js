@@ -24,7 +24,20 @@
 // A suspend is not a failure. A probe that settles more than two intervals after
 // it started was held up by the host, not the backend (a probe in flight when the
 // host sleeps fails on wake); it is logged and not counted. The run it interrupts
-// is kept, so a backend that was already failing still trips on its next failure.
+// is kept, so a backend that was already failing still trips on its next counted failure.
+//
+// A resume gets a grace window. Right after a wake the gateway can be slow for
+// tens of seconds (disks spinning up, helper processes paged back in) without
+// being wedged, so for RESUME_GRACE_MS after a resume a failed probe is logged
+// and not counted. A resume is known from Electron's powerMonitor (noteResume),
+// from a probe held across the sleep, or from a gap of more than two intervals
+// since the monitor last ran: timers do not run while the host sleeps. A
+// backend still failing once the window ends trips as usual.
+
+/** How long after a resume probe failures are not counted. Covers the
+ *  gateway's own post-resume grace (loop_watchdog.RESUME_GRACE_SECS, 60 s, plus
+ *  its 25 s exit budget), so the desktop does not kill what the gateway spares. */
+const RESUME_GRACE_MS = 90_000;
 
 /**
  * @param {object} o
@@ -43,6 +56,7 @@
  * @param {(h: any) => void} [o.clearIntervalFn]
  * @param {(msg: string) => void} [o.log]
  * @returns {{start: () => void, stop: () => void, tick: () => Promise<void>,
+ *            noteResume: () => void,
  *            getState: () => {consecutiveFailures: number, fired: boolean, running: boolean}}}
  */
 function createLivenessMonitor({
@@ -61,6 +75,17 @@ function createLivenessMonitor({
   let fired = false; // onUnresponsive already fired for the current episode
   let inFlight = false; // a probe is still outstanding (don't overlap)
   let timer = null;
+  let graceUntil = -Infinity; // failures before this wall time are not counted
+  let lastRanAt = null; // wall time the monitor last started or settled a tick
+
+  function startGrace(reason) {
+    graceUntil = now() + RESUME_GRACE_MS;
+    log(`${reason}; probe failures are not counted for ${Math.round(RESUME_GRACE_MS / 1000)}s`);
+  }
+
+  function noteResume() {
+    startGrace("host resumed");
+  }
 
   async function tick() {
     // Once we've fired, we pause until the caller stop()s us and starts a fresh
@@ -70,11 +95,18 @@ function createLivenessMonitor({
       stop();
       return;
     }
+    const t = now();
+    if (lastRanAt !== null && t - lastRanAt > 2 * intervalMs) {
+      startGrace(`monitor did not run for ${Math.round((t - lastRanAt) / 1000)}s (host slept)`);
+    }
+    lastRanAt = t;
     if (inFlight) return; // previous probe slower than the interval; skip
     inFlight = true;
     const startedAt = now();
     try {
       await probe();
+      // Held across a sleep but answered on wake: the host still just woke.
+      if (now() - startedAt > 2 * intervalMs) startGrace("host slept during a probe");
       if (consecutiveFailures > 0) {
         log(`backend responsive again after ${consecutiveFailures} failed probe(s)`);
         try { onRecovered(); } catch (e) { log(`onRecovered threw: ${e && e.message}`); }
@@ -88,6 +120,11 @@ function createLivenessMonitor({
       const heldMs = now() - startedAt;
       if (heldMs > 2 * intervalMs) {
         log(`backend probe failed after ${Math.round(heldMs / 1000)}s across a suspend; not counted`);
+        startGrace("host slept during a probe");
+        return;
+      }
+      if (now() < graceUntil) {
+        log("backend probe failed within the post-resume grace; not counted");
         return;
       }
       consecutiveFailures += 1;
@@ -99,6 +136,7 @@ function createLivenessMonitor({
       }
     } finally {
       inFlight = false;
+      lastRanAt = now();
     }
   }
 
@@ -107,6 +145,7 @@ function createLivenessMonitor({
     consecutiveFailures = 0;
     fired = false;
     inFlight = false;
+    lastRanAt = null; // a stopped monitor's idle time is not a sleep
     timer = setIntervalFn(() => { void tick(); }, intervalMs);
     // Don't let the poll timer keep the process alive at quit time.
     if (timer && typeof timer.unref === "function") timer.unref();
@@ -123,7 +162,7 @@ function createLivenessMonitor({
     return { consecutiveFailures, fired, running: !!timer };
   }
 
-  return { start, stop, tick, getState };
+  return { start, stop, tick, noteResume, getState };
 }
 
 // How long ONE post-handoff probe waits for /api/status before it counts as a
@@ -167,4 +206,9 @@ function createBackendProbe({ httpMod, url, timeoutMs = LIVENESS_PROBE_TIMEOUT_M
   });
 }
 
-module.exports = { createLivenessMonitor, createBackendProbe, LIVENESS_PROBE_TIMEOUT_MS };
+module.exports = {
+  createLivenessMonitor,
+  createBackendProbe,
+  LIVENESS_PROBE_TIMEOUT_MS,
+  RESUME_GRACE_MS,
+};

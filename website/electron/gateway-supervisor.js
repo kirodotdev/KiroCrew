@@ -1518,6 +1518,9 @@ function createGatewaySupervisor({
     // After sleep the old forward can look alive while carrying nothing, so a
     // wake rebuilds it at once instead of waiting out ssh's keepalive.
     reopenTunnel: () => tunnelKeeper.restart(),
+    // A gateway is slow for a while after a wake without being wedged; the
+    // liveness monitor spares the failures right after a wake.
+    noteResume: () => { if (livenessMonitor) livenessMonitor.noteResume(); },
     // A remote-crew edit re-applies the launch port's tunnel choice at once:
     // start, replace (new host or port) or stop the forward to match it.
     syncTunnel: () => tunnelKeeper.start(),
