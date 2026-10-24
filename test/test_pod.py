@@ -54,6 +54,70 @@ class TestConfig:
         assert c.repo_hint is None
         assert c.worktrees_root is None
 
+    @staticmethod
+    def _default_parts(
+        home: Path, monkeypatch: pytest.MonkeyPatch, *, mise_data_dir: str | None = None
+    ) -> list[str]:
+        """The default gateway PATH ``PodConfig.load`` derives for *home*."""
+        for k in list(os.environ):
+            if k.startswith("KIROCREW_POD_"):
+                monkeypatch.delenv(k, raising=False)
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+        if mise_data_dir is None:
+            monkeypatch.delenv("MISE_DATA_DIR", raising=False)
+        else:
+            monkeypatch.setenv("MISE_DATA_DIR", mise_data_dir)
+        return PodConfig.load().gateway_path.split(os.pathsep)
+
+    def test_default_gateway_path_reaches_user_tool_managers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pod finds a CLI installed through a user-level tool manager.
+
+        The pod gateway gets ONLY this PATH, so a ``glab`` behind a mise shim or
+        in ``~/.volta/bin`` was invisible in every pod while the host gateway
+        found it.
+        """
+        parts = self._default_parts(tmp_path, monkeypatch)
+        assert str(tmp_path / ".local" / "share" / "mise" / "shims") in parts
+        assert str(tmp_path / ".volta" / "bin") in parts
+        # ~/.local/bin still leads and the system dirs still close the list.
+        assert parts[0] == str(tmp_path / ".local" / "bin")
+        assert parts[-2:] == ["/usr/bin", "/bin"]
+        assert len(parts) == len(set(parts))
+
+    def test_default_gateway_path_never_copies_the_live_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Whatever leads the operator's PATH at install time stays out of pods."""
+        planted = str(tmp_path / "worktree" / ".venv" / "bin")
+        monkeypatch.setenv("PATH", os.pathsep.join([planted, "/usr/bin"]))
+        assert planted not in self._default_parts(tmp_path, monkeypatch)
+
+    def test_default_gateway_path_drops_a_relative_mise_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A relative MISE_DATA_DIR would put a cwd-relative entry on the pod PATH."""
+        parts = self._default_parts(tmp_path, monkeypatch, mise_data_dir="relative/mise")
+        assert all(os.path.isabs(p) for p in parts)
+        # The rest of the default survives the dropped entry.
+        assert str(tmp_path / ".volta" / "bin") in parts
+
+    def test_default_gateway_path_carries_the_hosts_tool_dirs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pods and the host share one tool-manager list, so they cannot drift."""
+        from kiro_crew.env import user_tool_bin_dirs
+
+        parts = self._default_parts(tmp_path, monkeypatch)
+        missing = [d for d in user_tool_bin_dirs(str(tmp_path)) if d not in parts]
+        assert missing == []
+
+    def test_explicit_pod_path_still_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("KIROCREW_POD_PATH", "/only/this")
+        assert PodConfig.load().gateway_path == "/only/this"
+
     def test_env_overrides_build_a_hermetic_plane(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("KIROCREW_POD_UNIT_PREFIX", "kirocrew-podtest")
         monkeypatch.setenv("KIROCREW_POD_BASE_PORT", "7300")

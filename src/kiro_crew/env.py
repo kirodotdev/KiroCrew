@@ -875,6 +875,25 @@ def _managed_browser_cli_dirs() -> list[str]:
     return [value for entry in entries if (value := _validated_bin_dir(str(entry)))]
 
 
+def user_tool_bin_dirs(home: str) -> list[str]:
+    """:data:`_EXTRA_PATH_DIRS` formatted for *home*, invalid entries dropped.
+
+    The fixed tool-manager bin dirs, and nothing else: no managed browser CLI,
+    no per-version Node bins, no inherited ``PATH`` and no interpreter dir. That
+    is the part of :func:`augmented_path`'s search a process can pin once for a
+    whole account, which is what the pod gateway's default ``PATH`` needs (see
+    ``pod.config.default_gateway_path``). Every entry passes the same
+    absolute-only :func:`_validated_bin_dir` gate, so a relative
+    ``MISE_DATA_DIR`` cannot introduce a cwd-relative entry.
+    """
+    mise_data = mise_data_dir(home)
+    return [
+        e
+        for d in _EXTRA_PATH_DIRS
+        if (e := _validated_bin_dir(d.format(home=home, mise_data=mise_data)))
+    ]
+
+
 def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     """Return *base_path* prepended with well-known MCP binary directories.
 
