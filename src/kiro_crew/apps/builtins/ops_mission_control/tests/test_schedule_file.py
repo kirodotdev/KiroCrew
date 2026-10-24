@@ -504,6 +504,9 @@ class TestRoster(_Env):
         described = rotation.describe(schedule_file.resolve_now(self._at("2026-08-05T12:00")))
         self.assertIn("roster", described)
         self.assertTrue(described["roster"]["members"])
+        # The card also renders incident.io's roster, and only this one may drive the
+        # GitHub-login field and the rotation.yaml warnings.
+        self.assertEqual(described["roster"]["source"], "schedule-file")
 
     def test_no_schedule_means_no_roster_rather_than_an_empty_one(self) -> None:
         """A solo install has no team; the UI should render nothing, not 'team: none'."""
