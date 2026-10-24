@@ -67,6 +67,7 @@ if TYPE_CHECKING:
         run_config_write,
         safety_override,
         sel,
+        slack_title_text,
         spawn_command_reply,
         task_command_reply,
         yolo_policy_permits,
@@ -1124,6 +1125,8 @@ async def _bang_title(
     parts = cmd_text.split()
     title_text = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
     if title_text:
+        # Typed in Slack, so mrkdwn: read as plain text first, then cut.
+        title_text = slack_title_text(title_text)
         title_text, _ = redact_exfiltration_urls(title_text)
         title_text, _ = redact_credentials(title_text)
         await slack.set_thread_title(channel, session_key, title_text[:80])

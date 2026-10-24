@@ -34,6 +34,11 @@ from kiro_crew.label_guard import (
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.members import DM_SLOT_MODE
 from kiro_crew.memory_stores import UnknownMemoryStore
+from kiro_crew.mrkdwn_title import (
+    SLACK_TEXT_META_KEY,
+    is_slack_session_key,
+    slack_title_text,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -1017,23 +1022,35 @@ async def _persist_title(
         logger.debug("Explicit title landed during persist for slot %s; re-persisting", slot.key)
 
 
-def _fallback_title_from_messages(messages: list[dict[str, Any]]) -> str:
+def _is_slack_slot(slot: _ChatSlot) -> bool:
+    """Whether *slot* is a Slack conversation's tab, so its user text is Slack mrkdwn."""
+    return is_slack_session_key(slot.key)
+
+
+def _fallback_title_from_messages(messages: list[dict[str, Any]], *, slack: bool = False) -> str:
     """Fallback title used only when the LLM can't title the chat: the first
     user message, cleaned and truncated to ~60 chars with an ellipsis.
+
+    *slack*: the messages are a Slack conversation's, stored as Slack mrkdwn, so
+    the text is read as plain text (``mrkdwn_title``) before it is cut. A row
+    copied in from a Slack thread (``SLACK_TEXT_META_KEY``) is read the same way.
 
     Trims back to a word boundary so the cut isn't mid-word. Short messages are
     returned whole (no ellipsis). Returns ``NEW_SESSION_TITLE`` if there's no
     usable user text, so the caller always has something to show.
     """
-    first = next(
+    first, first_row = next(
         (
-            text
+            (text, m)
             for m in messages
             if m.get("role") == "user"
             and (text := _title_text(m.get("content", ""), _message_attachment_paths(m)))
         ),
-        "",
+        ("", None),
     )
+    row_meta = first_row.get("meta") if first_row else None
+    if slack or (isinstance(row_meta, dict) and row_meta.get(SLACK_TEXT_META_KEY) is True):
+        first = slack_title_text(first)
     first, _ = redact_exfiltration_urls(first)
     first, _ = redact_credentials(first)
     first = " ".join(first.split())
@@ -1056,7 +1073,9 @@ def _fallback_title_from_messages(messages: list[dict[str, Any]]) -> str:
 _TITLE_OPAQUE_ID_RE = re.compile(r"\d{6,}")
 
 
-def _is_low_signal_title(title: str, messages: list[dict[str, Any]]) -> bool:
+def _is_low_signal_title(
+    title: str, messages: list[dict[str, Any]], *, slack: bool = False
+) -> bool:
     """True when an auto title can only be restating its low-signal source.
 
     Decides (deterministically — no LLM call) whether a freshly locked AUTO
@@ -1080,7 +1099,7 @@ def _is_low_signal_title(title: str, messages: list[dict[str, Any]]) -> bool:
         return True
     if _TITLE_OPAQUE_ID_RE.search(title):
         return True
-    return title == _fallback_title_from_messages(messages)
+    return title == _fallback_title_from_messages(messages, slack=slack)
 
 
 # ``dashboard.title_ticket_prefix``: a ticket key in the session's opening
@@ -1265,13 +1284,15 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
             # A title may have landed during the config hop; it outranks ours.
             if slot._titled or slot._title_in_flight:
                 return
-            summary = _fallback_title_from_messages(messages)
+            summary = _fallback_title_from_messages(messages, slack=_is_slack_slot(slot))
             slot.title = _with_ticket_prefix(summary, key)
             slot._titled = True
             slot._title_origin = _TITLE_ORIGIN_AUTO
             # The fallback is an echo of the first message — flag it so the
             # refresh becomes due immediately rather than at the next milestone.
-            slot._title_low_signal = _is_low_signal_title(summary, messages)
+            slot._title_low_signal = _is_low_signal_title(
+                summary, messages, slack=_is_slack_slot(slot)
+            )
             await _persist_title(state, slot)
             state.push_slot_title(slot.key, slot.title)
         return
@@ -1330,7 +1351,9 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
             # A title generated from a link/ticket-key opener can only restate
             # the link; flag it so the background refresh re-examines it as
             # soon as the first turn's transcript names the real topic.
-            slot._title_low_signal = _is_low_signal_title(summary, messages)
+            slot._title_low_signal = _is_low_signal_title(
+                summary, messages, slack=_is_slack_slot(slot)
+            )
             await _persist_title(state, slot, still_current=still_current)
             if not still_current():
                 return
@@ -1345,7 +1368,7 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
             # the end-of-turn retry can still upgrade the truncation to a real
             # LLM title.
             current = _titling_messages(slot)
-            summary = _fallback_title_from_messages(current)
+            summary = _fallback_title_from_messages(current, slack=_is_slack_slot(slot))
             slot.title = _with_ticket_prefix(summary, key)
             slot._titled = attempt_has_assistant
             if attempt_has_assistant:
@@ -1354,7 +1377,9 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
                 # it so the refresh prompt (which reads the conversational tail
                 # and frames the task as keep-or-rename rather than
                 # title-or-SKIP) gets one immediate shot at a real name.
-                slot._title_low_signal = _is_low_signal_title(summary, current)
+                slot._title_low_signal = _is_low_signal_title(
+                    summary, current, slack=_is_slack_slot(slot)
+                )
             await _persist_title(state, slot, still_current=still_current)
             if not still_current():
                 return
@@ -1747,7 +1772,7 @@ async def generate_manual_title(state: DashboardState, slot: _ChatSlot) -> str:
         return _with_ticket_prefix(title, key)
     except Exception:
         logger.debug("Title generation failed for slot %s", slot.key, exc_info=True)
-        title = _fallback_title_from_messages(slot.messages)
+        title = _fallback_title_from_messages(slot.messages, slack=_is_slack_slot(slot))
         return "" if title == NEW_SESSION_TITLE else title
 
 

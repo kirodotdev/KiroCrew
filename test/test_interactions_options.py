@@ -646,7 +646,7 @@ class _Slot:
         self.title = ""
         self.rows: list[tuple[str, str, str]] = []
 
-    def append(self, role: str, text: str, css: str) -> None:
+    def append(self, role: str, text: str, css: str, *, meta: dict | None = None) -> None:
         self.rows.append((role, text, css))
 
 

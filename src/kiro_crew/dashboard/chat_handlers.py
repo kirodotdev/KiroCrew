@@ -513,6 +513,7 @@ from kiro_crew.memory_startup import (  # noqa: F401
 )
 from kiro_crew.memory_stores import UnknownMemoryStore  # noqa: F401
 from kiro_crew.messaging.link import canonical_key, is_channel_session_key  # noqa: F401
+from kiro_crew.mrkdwn_title import SLACK_TEXT_META_KEY
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
 from kiro_crew.safety_override import (  # noqa: F401
@@ -590,7 +591,11 @@ _SESSION_RELOAD_NOTICE = (
 #: could displace human sessions. Stripped here so the gateway re-applies it below
 #: only for a genuine human send. ``TURN_ACTOR_META_KEY`` is the gateway's record
 #: that an app sent the row, which the title counter reads (``chat_title``).
-RESERVED_ROW_META_KEYS = frozenset({"decisions_strip", HUMAN_TURN_META_KEY, TURN_ACTOR_META_KEY})
+#: ``SLACK_TEXT_META_KEY`` is the gateway's record that a row was copied in from a
+#: Slack thread, which the fallback title reads as Slack mrkdwn.
+RESERVED_ROW_META_KEYS = frozenset(
+    {"decisions_strip", HUMAN_TURN_META_KEY, TURN_ACTOR_META_KEY, SLACK_TEXT_META_KEY}
+)
 
 #: The ``steer`` value that means "let Jev choose between the two paths" rather
 #: than naming one. A STRING beside the boolean the two manual modes send, so the
