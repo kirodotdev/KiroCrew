@@ -63,7 +63,9 @@ _B64_CHUNK_RE = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
 # character class or the `{40,}` floor must be mirrored in `_B64_CHUNK_RE` above.
 # `test_the_two_base64_run_patterns_stay_structurally_coupled` pins both literals
 # so such an edit fails loudly rather than drifting.
-_BARE_SECRET_RUN_RE = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}(?![A-Za-z0-9+/])")
+_BARE_SECRET_RUN_RE = re.compile(
+    r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}(?![A-Za-z0-9+/])"
+)
 
 # Exactly-40 is the AWS secret-key length. Keeping the shape check length-exact
 # (rather than ">=40") is what lets the structural gates below cleanly separate
@@ -78,7 +80,8 @@ _SECRET_KEY_LEN = 40
 #: ``ABC...``, ``012...``), which a table a program indexes into has and a random key does
 #: not. Everything else, a glued run included, is judged exactly as outside the scope.
 _DATA_URI_BEFORE_RE = re.compile(
-    r"data:[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+(?:;[A-Za-z0-9=.+-]+)*;base64,\Z", re.IGNORECASE
+    r"data:[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+(?:;[A-Za-z0-9=.+-]+)*;base64,\Z",
+    re.IGNORECASE,
 )
 #: How far back from a run the data URI header may start.
 _DATA_URI_REACH = 128
@@ -252,7 +255,8 @@ _DARWIN_USER_TEMP_DIR_RE = re.compile(
 # The terms are computed with the same operations the inline expression used, which
 # is what makes this a pure precomputation rather than a re-derivation.
 _ENTROPY_TERMS_KEY_LEN: tuple[float, ...] = (0.0,) + tuple(
-    (c / _SECRET_KEY_LEN) * math.log2(c / _SECRET_KEY_LEN) for c in range(1, _SECRET_KEY_LEN + 1)
+    (c / _SECRET_KEY_LEN) * math.log2(c / _SECRET_KEY_LEN)
+    for c in range(1, _SECRET_KEY_LEN + 1)
 )
 
 
@@ -554,11 +558,14 @@ def _bare_secret_window_starts(
     if _decodes_to_printable_text(run):
         return
     commit_starts = (
-        [match.start("commit") for match in _ROUTED_COMMIT_RE.finditer(run)] if is_fragment else []
+        [match.start("commit") for match in _ROUTED_COMMIT_RE.finditer(run)]
+        if is_fragment
+        else []
     )
     for start in range(len(run) - _SECRET_KEY_LEN + 1):
         if skip_spans and any(
-            min(start + _SECRET_KEY_LEN, end) - max(start, begin) >= _HOST_ID_EXEMPT_OVERLAP
+            min(start + _SECRET_KEY_LEN, end) - max(start, begin)
+            >= _HOST_ID_EXEMPT_OVERLAP
             for begin, end in skip_spans
         ):
             continue
@@ -611,7 +618,9 @@ def _decode_b64_chunk(chunk: str) -> str:
     # failing both a total-length and a stripped-length predicate. Pinned by
     # `test_a_decode_length_precondition_would_be_version_dependent`.
     try:
-        decoded = base64.b64decode(chunk, validate=True).decode("utf-8", errors="ignore")
+        decoded = base64.b64decode(chunk, validate=True).decode(
+            "utf-8", errors="ignore"
+        )
     except Exception:
         return ""
     # Gate the alternation behind the cheap superset pre-filter, exactly as pass 1
@@ -643,7 +652,9 @@ def _decode_b64_safe(text: str) -> str:
     """
     for m in _B64_CHUNK_RE.finditer(text):
         try:
-            decoded = base64.b64decode(m.group(), validate=True).decode("utf-8", errors="ignore")
+            decoded = base64.b64decode(m.group(), validate=True).decode(
+                "utf-8", errors="ignore"
+            )
             if _contains_credential_pattern(decoded):
                 return decoded
         except Exception:
@@ -663,7 +674,10 @@ def _contains_fixed_credential(text: str) -> bool:
 
 def _text_contains_bare_secret(text: str) -> bool:
     """Return True when *text* contains an isolated bare AWS-secret run."""
-    return any(_contains_bare_secret(match.group()) for match in _BARE_SECRET_RUN_RE.finditer(text))
+    return any(
+        _contains_bare_secret(match.group())
+        for match in _BARE_SECRET_RUN_RE.finditer(text)
+    )
 
 
 # ── Document links the bare-secret pass leaves alone ──
@@ -731,7 +745,10 @@ _DOCUMENT_LINK_RE = re.compile(
     r")/?(?![A-Za-z0-9+/_-])"
 )
 _PLANTUML_ALPHABET = {
-    c: i for i, c in enumerate("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_")
+    c: i
+    for i, c in enumerate(
+        "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_"
+    )
 }
 #: Decoded diagram text one call may inflate, in total, and per encoded
 #: character. Real diagrams stay under 10x; anything larger keeps its link
@@ -765,7 +782,12 @@ def _plantuml_source(encoded: str, limit: int) -> str | None:
     # over the limit is not a whole diagram, so text glued after a diagram, or a
     # diagram cut mid-group, is never kept.
     padding = inflater.unused_data
-    if not inflater.eof or len(padding) > 2 or padding.strip(b"\0") or not source.strip():
+    if (
+        not inflater.eof
+        or len(padding) > 2
+        or padding.strip(b"\0")
+        or not source.strip()
+    ):
         return None
     if not all(c.isprintable() or c in "\t\n\r" for c in source):
         return None
