@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { withUnifiedPatchHeaders } from './unifiedPatchHeaders'
+import {
+  branchBehindHandoff,
+  mergeConflictHandoff,
+  rebaseRequiredHandoff,
+  type MergeBlockerHandoffSource,
+} from './mergeBlockerHandoff.prompt'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
@@ -32,6 +38,7 @@ import type {
 import {
   findSourceForUrl,
   MAX_PULL_REQUEST_SOURCES,
+  sourceInstanceHost,
   sourceLinkKey,
   type PullRequestLink,
 } from '../utils/pullRequestLinks'
@@ -176,37 +183,33 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
   const state = source.state.toLowerCase()
   if ((state !== 'open' && state !== 'opened') || source.mergedAt || source.draft) return null
   const base = source.baseBranch || 'the base branch'
-  const label = sourceProviderMeta(source.provider).refLabel(source.number)
-  const sourceUrl = safeExternalUrl(source.url)
-  const handoffHeader = (problem: string) => [
-    `${problem} on ${label} (${source.title}):`,
-    '',
-    `- Branch: ${source.headBranch || 'the feature branch'} -> ${base}`,
-    ...(sourceUrl ? [`- Pull request: ${sourceUrl}`] : []),
-    '',
-  ]
+  // The handoff bodies are agent-facing prompts, so they live in the
+  // `*.prompt.ts` module beside this file; only the banner copy is translated.
+  const handoffSource: MergeBlockerHandoffSource = {
+    provider: source.provider,
+    title: source.title,
+    headBranch: source.headBranch,
+    label: sourceProviderMeta(source.provider).refLabel(source.number),
+    base,
+    sourceUrl: safeExternalUrl(source.url) ?? '',
+  }
   if (source.mergeable === 'conflicting') {
     return {
       tone: 'danger',
       title: i18nT('components.pullRequestPanel.merge_conflicts'),
       detail: i18nT('components.pullRequestPanel.merge_conflicts_detail', { base }),
-      handoff: [
-        ...handoffHeader('Merge conflict'),
-        `Resolve the conflicts with ${base}. If the branch is shared with other contributors, prefer merging ${base} into the branch; otherwise rebase onto ${base} and push with \`git push --force-with-lease\` (abort if the lease fails).`,
-      ].join('\n'),
+      handoff: mergeConflictHandoff(handoffSource),
     }
   }
   if (source.mergeStateStatus === 'need_rebase') {
-    // GitLab-specific: the project requires a rebase (e.g. fast-forward-only
-    // merge method) -- a merge commit cannot unblock this MR.
+    // The project requires a rebase (a fast-forward-only merge method on
+    // GitLab, or a fast-forward-only Gerrit project) -- a merge commit cannot
+    // unblock it.
     return {
       tone: 'warn',
       title: i18nT('components.pullRequestPanel.rebase_required'),
       detail: i18nT('components.pullRequestPanel.rebase_required_detail', { base }),
-      handoff: [
-        ...handoffHeader('Rebase required'),
-        `This project requires a rebase (merge commits will not unblock the MR). If the branch is shared with other contributors, coordinate with them before rewriting history; otherwise rebase onto ${base} and push with \`git push --force-with-lease\` (abort if the lease fails).`,
-      ].join('\n'),
+      handoff: rebaseRequiredHandoff(handoffSource),
     }
   }
   if (source.mergeStateStatus === 'behind') {
@@ -214,10 +217,7 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
       tone: 'warn',
       title: i18nT('components.pullRequestPanel.branch_is_behind'),
       detail: i18nT('components.pullRequestPanel.branch_is_behind_detail', { base }),
-      handoff: [
-        ...handoffHeader('Out-of-date branch'),
-        `Update the branch without rewriting history: merge ${base} into the branch (or use the provider's update-branch option) and push normally. Only rebase if the repository requires a linear history, and never force-push a shared branch without checking with its other contributors.`,
-      ].join('\n'),
+      handoff: branchBehindHandoff(handoffSource),
     }
   }
   if (source.mergeStateStatus === 'blocked') {
@@ -244,6 +244,16 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
         tone: 'warn',
         title: i18nT('components.pullRequestPanel.merge_blocked'),
         detail: i18nT('components.pullRequestPanel.waiting_on_checks_detail'),
+      }
+    }
+    // Gerrit has no branch protection: a change that is open, mergeable and not
+    // submittable is waiting on the votes its submit rules require, and the
+    // verb Gerrit uses for landing it is "submit".
+    if (source.provider === 'gerrit') {
+      return {
+        tone: 'warn',
+        title: i18nT('components.pullRequestPanel.submit_blocked'),
+        detail: i18nT('components.pullRequestPanel.submit_requirements_not_met'),
       }
     }
     return {
@@ -702,10 +712,11 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
   }
 
   if (!pullRequestIsLive(source)) return null
-  // Ready-for-review and auto-merge are merge-state writes. A provider whose
-  // gateway plugin does not implement them must not get buttons that can only
-  // return "unsupported by this provider".
-  if (!meta.capabilities.mergeState) return null
+  // Ready-for-review and auto-merge are writes. A provider whose gateway plugin
+  // does not implement them must not get buttons that can only return
+  // "unsupported by this provider" -- even one that reports merge state, since
+  // the banner and the buttons are different things (Gerrit has the former only).
+  if (!(meta.capabilities.mergeActions ?? meta.capabilities.mergeState)) return null
   const showReady = source.draft
   const showAutoMerge = !source.draft && !source.autoMerge
   const errorDetails = pullRequestErrorDetails(readyMutation.error || autoMergeMutation.error)
@@ -973,6 +984,7 @@ export default function PullRequestPanel({
   const source = query.data
   const queryError = pullRequestErrorDetails(query.error)
   const sourceUrl = safeExternalUrl(source?.url || '')
+  const instanceHost = source ? sourceInstanceHost(source) : null
   // One meta lookup for every provider-shaped decision in this component: the
   // Checks tab and its poll, the merge affordances, and the labels.
   const providerChecks = Boolean(
@@ -1277,6 +1289,12 @@ export default function PullRequestPanel({
             <div className="flex items-center gap-2 text-[11px] text-muted">
               <span className={`px-1.5 py-0.5 rounded font-medium ${stateTone(source)}`}>{stateLabel(source)}</span>
               <span>{sourceProviderMeta(source.provider).displayName}</span>
+              {/* Which INSTANCE: two Gerrit servers (or a GitHub Enterprise and
+                  github.com) render the same provider word, and until now only
+                  the open-in-browser tooltip told them apart. A host is an
+                  identifier, not prose, so it is not translated. Elided when
+                  the provider name already implies the host (github.com). */}
+              {instanceHost && <span className="min-w-0 truncate" title={instanceHost} data-testid="pull-request-panel-instance-host">{instanceHost}</span>}
               {source.headBranch && source.baseBranch && (
                 <span className="min-w-0 flex items-center gap-1 truncate"><CopyBranchButton branch={source.headBranch} /><ArrowRight className="lucide-inline shrink-0" /><span className="truncate">{source.baseBranch}</span></span>
               )}

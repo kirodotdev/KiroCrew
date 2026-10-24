@@ -216,6 +216,7 @@ _OWNED_NAMES: dict[str, tuple[str, ...]] = {
         "_merge_state_settled",
         "_or_empty",
         "_project_state",
+        "_record_merge_state",
         "_rollup_ci",
         "_safe_https_url",
         "_SECONDARY_PAGE_SIZE",
@@ -325,6 +326,8 @@ _OWNED_NAMES: dict[str, tuple[str, ...]] = {
     # Holds no name callers reach through this module; listed so the handler
     # loads it, which installs the Bitbucket Server provider into the seam.
     "bitbucket_server": (),
+    # Likewise: importing it installs the Gerrit provider into the seam.
+    "gerrit": (),
     "chip_status": (
         "_check_cache",
         "_CHECK_CACHE_MAX",
@@ -356,7 +359,6 @@ _OWNED_NAMES: dict[str, tuple[str, ...]] = {
         "_note_check_flap",
         "_queue_check_update",
         "record_full_payload_status",
-        "_record_merge_state",
         "_refresh_repo_visibility",
         "register_status_delta_sink",
         "schedule_visibility_refresh",

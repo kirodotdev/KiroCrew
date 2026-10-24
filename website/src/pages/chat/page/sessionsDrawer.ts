@@ -51,6 +51,7 @@ interface SessionsDrawerOptions {
   hasLiveAppTab: boolean
   jiraSourceHostsRef: MutableRefObject<string[]>
   bitbucketServerSourceHostsRef: MutableRefObject<string[]>
+  gerritSourceHostsRef: MutableRefObject<string[]>
   search: ReturnType<typeof useChatPageResourcesController>['search']
   selectSource: (kind: SourceLinkKind, url: string, forSlot?: string) => void
   setRevealedSources: Dispatch<SetStateAction<RevealedSources>>
@@ -74,7 +75,7 @@ interface SessionsDrawerOptions {
  */
 export function useSessionsDrawer({
   embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
-  hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, search, selectSource, setRevealedSources, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef, sidebarAutoHidden,
+  hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, search, selectSource, setRevealedSources, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef, sidebarAutoHidden,
   toggleAct,
 }: SessionsDrawerOptions) {
   /**
@@ -564,6 +565,7 @@ export function useSessionsDrawer({
       jiraSourceHostsRef.current,
       githubSourceHostsRef.current,
       bitbucketServerSourceHostsRef.current,
+      gerritSourceHostsRef.current,
     )
     if (!link) return false
     const view = link.kind === 'issue' ? 'issues' : 'changes'

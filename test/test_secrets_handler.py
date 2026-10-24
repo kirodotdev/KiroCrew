@@ -370,6 +370,105 @@ class TestApiSecretsList:
         ]
 
 
+_GERRIT_ONE = "gerrit.example.com:9080"
+_GERRIT_ONE_NAME = "GERRIT_HTTP_CREDENTIAL_6765727269742E6578616D706C652E636F6D3A39303830"
+_GERRIT_TWO = "gerritv.example.com:9081"
+_GERRIT_TWO_NAME = "GERRIT_HTTP_CREDENTIAL_676572726974762E6578616D706C652E636F6D3A39303831"
+
+
+class TestGerritManagedRows:
+    """``dashboard.gerrit_hosts`` publishes one labelled row per host.
+
+    The user fills the row by host and never derives the hex-suffixed vault
+    name, which the provider's credential lookup still reads.
+    """
+
+    def test_no_hosts_no_rows(self) -> None:
+        assert _managed_secret_catalog([], [], False, False, []) == []
+
+    def test_lone_host_offers_the_global_name(self) -> None:
+        catalog = _managed_secret_catalog([], [], False, False, [_GERRIT_ONE])
+        assert catalog == [
+            {
+                "name": "GERRIT_HTTP_CREDENTIAL",
+                "kind": "gerrit_http_credential",
+                "host": _GERRIT_ONE,
+            }
+        ]
+
+    def test_lone_host_with_stored_per_host_name_lists_that_name(self) -> None:
+        """The provider prefers the per-host entry, so the row must edit that one."""
+        catalog = _managed_secret_catalog([_GERRIT_ONE_NAME], [], False, False, [_GERRIT_ONE])
+        assert catalog == [
+            {"name": _GERRIT_ONE_NAME, "kind": "gerrit_http_credential", "host": _GERRIT_ONE}
+        ]
+
+    def test_two_hosts_get_per_host_rows_and_no_global_row(self) -> None:
+        catalog = _managed_secret_catalog(
+            ["GERRIT_HTTP_CREDENTIAL"], [], False, False, [_GERRIT_ONE, _GERRIT_TWO]
+        )
+        assert catalog == [
+            {"name": _GERRIT_ONE_NAME, "kind": "gerrit_http_credential", "host": _GERRIT_ONE},
+            {"name": _GERRIT_TWO_NAME, "kind": "gerrit_http_credential", "host": _GERRIT_TWO},
+        ]
+
+    def test_rows_follow_jira_rows_and_precede_connections(self) -> None:
+        catalog = _managed_secret_catalog([], ["jira.corp"], False, True, [_GERRIT_ONE])
+        assert [entry["kind"] for entry in catalog] == [
+            "wakatime_api_key",
+            "jira_host_token",
+            "gerrit_http_credential",
+        ]
+
+    def test_global_name_unused_reasons(self) -> None:
+        assert _unused_stored_secrets(
+            ["GERRIT_HTTP_CREDENTIAL"], [], False, False, [_GERRIT_ONE, _GERRIT_TWO]
+        ) == [{"name": "GERRIT_HTTP_CREDENTIAL", "reason": "gerrit_multi_host"}]
+        assert _unused_stored_secrets(
+            ["GERRIT_HTTP_CREDENTIAL", _GERRIT_ONE_NAME], [], False, False, [_GERRIT_ONE]
+        ) == [{"name": "GERRIT_HTTP_CREDENTIAL", "reason": "gerrit_host_precedence"}]
+        # A lone host served by the global name: nothing is unused.
+        assert (
+            _unused_stored_secrets(["GERRIT_HTTP_CREDENTIAL"], [], False, False, [_GERRIT_ONE])
+            == []
+        )
+        # No hosts listed: the stored name is an ordinary user secret, not flagged.
+        assert _unused_stored_secrets(["GERRIT_HTTP_CREDENTIAL"], [], False, False, []) == []
+
+    @pytest.mark.asyncio
+    async def test_list_reads_gerrit_hosts_from_config(self, tmp_path: Path) -> None:
+        """The endpoint threads ``dashboard.gerrit_hosts`` into rows and unused hints."""
+        vault = SecretVault(tmp_path)
+        vault._set_sync("GERRIT_HTTP_CREDENTIAL", "user:pw")
+        app = _app()
+        config = SimpleNamespace(
+            wakatime=SimpleNamespace(enabled=False),
+            dashboard=SimpleNamespace(jira_auth=[], gerrit_hosts=[_GERRIT_TWO, _GERRIT_ONE]),
+        )
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        with (
+            patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(tmp_path)),
+            patch("kiro_crew.dashboard.handlers.secrets.KiroCrewConfig.load", return_value=config),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                data = await (await client.get("/api/secrets")).json()
+
+        assert data["managed"] == [
+            {"name": _GERRIT_ONE_NAME, "kind": "gerrit_http_credential", "host": _GERRIT_ONE},
+            {"name": _GERRIT_TWO_NAME, "kind": "gerrit_http_credential", "host": _GERRIT_TWO},
+        ]
+        assert data["unused"] == [{"name": "GERRIT_HTTP_CREDENTIAL", "reason": "gerrit_multi_host"}]
+
+    def test_row_names_match_the_provider_lookup(self) -> None:
+        """The row's name is exactly the vault name the provider reads for the host."""
+        from kiro_crew.dashboard.source_providers import gerrit
+
+        assert gerrit.host_credential_name(_GERRIT_ONE) == _GERRIT_ONE_NAME
+        assert gerrit.GLOBAL_CREDENTIAL_NAME == "GERRIT_HTTP_CREDENTIAL"
+
+
 class TestApiSecretsSet:
     """Tests for POST /api/secrets."""
 

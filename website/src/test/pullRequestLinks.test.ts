@@ -16,6 +16,10 @@ import {
   PullRequestLinkIndex,
   recordNewPullRequestLinks,
   slotChangeUrls,
+  sourceInstanceHost,
+  sourceLinkKey,
+  sourceProjectHost,
+  sourceProjectPath,
   sourceSelection,
   withSourceSelection,
 } from '../utils/pullRequestLinks'
@@ -1174,5 +1178,131 @@ describe('Bitbucket Server hosts', () => {
     expect(commitRevealedSource('slot-b', 'change', PR)).toBe(true)
     expect(loadRevealedSources()['slot-b'].change).toEqual(LINK)
     expect(commitRevealedSource('slot-c', 'change', `${PR}/overview`)).toBe(false)
+  })
+})
+
+describe('Gerrit hosts', () => {
+  const GERRIT = 'gerrit.acme.example:8443'
+  const CHANGE = `https://${GERRIT}/r/c/platform/hal/+/466698`
+  const LINK = { url: CHANGE, provider: 'gerrit', number: 466698, repo: 'platform/hal', kind: 'change' }
+
+  afterEach(() => { localStorage.clear() })
+
+  it('refuses a Gerrit link while no host is listed', () => {
+    expect(parseSourceLinkUrl(CHANGE)).toBeNull()
+    expect(extractPullRequestLinks(messages(`Pushed ${CHANGE}`))).toEqual([])
+  })
+
+  it('recognizes a listed host, keeps a patchset pin and drops the file or comment suffix', () => {
+    expect(parseSourceLinkUrl(`${CHANGE}/`, [], [], [], [], [GERRIT])).toEqual(LINK)
+    expect(parseSourceLinkUrl(`${CHANGE}/2/src/cache.py`, [], [], [], [], [GERRIT]))
+      .toEqual({ ...LINK, url: `${CHANGE}/2` })
+    expect(parseSourceLinkUrl(`${CHANGE}/comment/abc123/`, [], [], [], [], [GERRIT])).toEqual(LINK)
+    expect(parseSourceLinkUrl(`${CHANGE}/1..2`, [], [], [], [], [GERRIT])).toEqual(LINK)
+    expect(extractPullRequestLinks(messages(`Pushed ${CHANGE}.`), [], [], [], [], [GERRIT])).toEqual([LINK])
+    expect(parseSourceLinkUrl(`https://${GERRIT}/c/HAL/+/7`, [], [], [], [], [GERRIT]))
+      .toEqual({ url: `https://${GERRIT}/c/HAL/+/7`, provider: 'gerrit', number: 7, repo: 'HAL', kind: 'change' })
+  })
+
+  it('does not recognize lookalike, unlisted or malformed links', () => {
+    for (const url of [
+      `https://gerrit.acme.example/r/c/platform/hal/+/466698`,
+      `https://${GERRIT}.evil.example/c/platform/hal/+/466698`,
+      `https://${GERRIT}/466698`,
+      `https://${GERRIT}/c/466698`,
+      `https://${GERRIT}/q/466698`,
+      `https://${GERRIT}/c/+/1`,
+      `https://${GERRIT}/c/p/+/0`,
+      `https://${GERRIT}/c/p%2Fq/+/1`,
+    ]) {
+      expect(parseSourceLinkUrl(url, [], [], [], [], [GERRIT])).toBeNull()
+    }
+  })
+
+  it('leaves every existing provider as it was', () => {
+    for (const url of [
+      'https://github.com/acme/widgets/pull/12',
+      'https://gitlab.com/acme/widgets/-/merge_requests/3',
+      'https://acme.atlassian.net/browse/PROJ-9',
+    ]) {
+      expect(parseSourceLinkUrl(url, [], [], [], [], [GERRIT])).toEqual(parseSourceLinkUrl(url))
+    }
+  })
+
+  it('retro-detects transcript links when the allowlist arrives', () => {
+    const index = new PullRequestLinkIndex()
+    const history = messages(`Pushed ${CHANGE}`, 'done')
+    expect(index.update('slot-1', history)).toEqual([])
+    expect(index.update('slot-1', history, [], [], [], [], [GERRIT]).map(link => link.url)).toEqual([CHANGE])
+  })
+
+  it('lists a change once when a patchset-pinned and a plain link both appear', () => {
+    // The canonical url keeps a patchset pin, so the key cannot be the url: the
+    // backend's identity leaves the url out and the sidebar chips show one
+    // change, and the panel must agree with them rather than open two tabs.
+    const pinned = { ...LINK, url: `${CHANGE}/2` }
+    expect(sourceLinkKey(pinned)).toBe(sourceLinkKey(LINK))
+    expect(sourceLinkKey(LINK)).not.toBe(sourceLinkKey({ ...LINK, url: `https://${GERRIT}/c/platform/hal/+/1`, number: 1 }))
+    expect(sourceLinkKey(LINK)).not.toBe(sourceLinkKey({ ...LINK, url: `https://other.acme.example/c/platform/hal/+/466698` }))
+    // Two instances behind one host under different context paths are two
+    // changes even with the same project and number: the context path is in
+    // the url and nowhere else, so the key must come from the url.
+    const one = `https://${GERRIT}/one/c/platform/hal/+/466698`
+    const two = `https://${GERRIT}/two/c/platform/hal/+/466698`
+    expect(sourceLinkKey({ ...LINK, url: one })).not.toBe(sourceLinkKey({ ...LINK, url: two }))
+    expect(sourceLinkKey({ ...LINK, url: `${one}/2` })).toBe(sourceLinkKey({ ...LINK, url: one }))
+    expect(extractPullRequestLinks(messages(`See ${one}`, `and ${two}`), [], [], [], [], [GERRIT]).map(link => link.url))
+      .toEqual([one, two])
+    expect(extractPullRequestLinks(messages(`See ${CHANGE}`, `now ${CHANGE}/2`), [], [], [], [], [GERRIT]))
+      .toHaveLength(1)
+    // The selection remembered at patchset 1 still names the change once the
+    // list holds patchset 2, with no allowlist to hand: a listed source already
+    // passed it, so the remembered url is parsed the way persisted urls are.
+    const other = { ...LINK, url: `https://${GERRIT}/c/platform/other/+/1`, repo: 'platform/other', number: 1 }
+    expect(findSourceForUrl([other, pinned], CHANGE)).toEqual(pinned)
+    expect(findSourceForUrl([other, pinned], `${CHANGE}/3`)).toEqual(pinned)
+    expect(findSourceForUrl([other], CHANGE)).toBeUndefined()
+  })
+
+  it('persists a revealed Gerrit link across a reload', () => {
+    expect(commitRevealedSource('slot-g', 'change', CHANGE)).toBe(true)
+    expect(loadRevealedSources()['slot-g'].change).toEqual(LINK)
+    expect(commitRevealedSource('slot-h', 'change', `${CHANGE}/comment/x/`)).toBe(false)
+  })
+
+  it('recovers the project and host, so two servers qualify the tabs and chips', () => {
+    // The same change number can exist on every Gerrit server, so a project is
+    // unique only on its host: both are part of the identity the tab-strip and
+    // chip qualifier keys on, as for self-managed GitLab.
+    expect(sourceProjectPath(LINK)).toBe('platform/hal')
+    expect(sourceProjectHost(LINK)).toBe(GERRIT)
+    expect(sourceProjectPath({ url: `https://${GERRIT}/c/HAL/+/7`, provider: 'gerrit' })).toBe('HAL')
+    expect(sourceProjectPath({ url: `https://${GERRIT}/c/HAL/+/7/2`, provider: 'gerrit' })).toBe('HAL')
+    expect(sourceProjectPath({ url: 'not a url', provider: 'gerrit' })).toBeNull()
+  })
+
+  it('names the instance host beside a provider whose name does not imply it', () => {
+    // Two Gerrit servers render the same word "Gerrit"; the host is what tells
+    // them apart. github.com and gitlab.com are implied by their provider name,
+    // an Enterprise or self-managed host is not. Jira and a registered provider
+    // name nothing.
+    expect(sourceInstanceHost(LINK)).toBe(GERRIT)
+    expect(sourceInstanceHost({ url: 'https://bitbucket.acme.example/projects/P/repos/r/pull-requests/1', provider: 'bitbucket_server' })).toBe('bitbucket.acme.example')
+    expect(sourceInstanceHost({ url: 'https://github.com/acme/widgets/pull/12', provider: 'github' })).toBeNull()
+    expect(sourceInstanceHost({ url: 'https://ghe.acme.example/acme/widgets/pull/12', provider: 'github' })).toBe('ghe.acme.example')
+    expect(sourceInstanceHost({ url: 'https://gitlab.com/acme/svc/-/merge_requests/3', provider: 'gitlab' })).toBeNull()
+    expect(sourceInstanceHost({ url: 'https://gitlab.internal:8443/acme/svc/-/merge_requests/3', provider: 'gitlab' })).toBe('gitlab.internal:8443')
+    expect(sourceInstanceHost({ url: 'https://acme.atlassian.net/browse/PROJ-9', provider: 'jira' })).toBeNull()
+    expect(sourceInstanceHost({ url: 'https://code.example/cr/1', provider: 'crux' })).toBeNull()
+    expect(sourceInstanceHost({ url: 'not a url', provider: 'gerrit' })).toBeNull()
+  })
+})
+
+describe('mergeActions capability', () => {
+  it('a registered descriptor that predates mergeActions inherits mergeState', async () => {
+    const { sourceProviderMeta } = await import('../utils/sourceProviderMeta')
+    expect(sourceProviderMeta('gerrit').capabilities).toMatchObject({ mergeState: true, mergeActions: false })
+    expect(sourceProviderMeta('github').capabilities).toMatchObject({ mergeState: true, mergeActions: true })
+    expect(sourceProviderMeta('bitbucket_server').capabilities).toMatchObject({ mergeState: false, mergeActions: false })
   })
 })

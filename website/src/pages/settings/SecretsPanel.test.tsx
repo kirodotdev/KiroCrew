@@ -24,7 +24,7 @@ import enManual from '../../i18n/locales/en.manual.json'
  * `{ ok, status, json }` literal does not have.
  */
 type FetchCall = { url: string; method: string; body?: unknown; headers?: Record<string, string> }
-type ManagedSecret = { name: string; kind: 'jira_api_token' | 'jira_host_token'; host?: string }
+type ManagedSecret = { name: string; kind: 'jira_api_token' | 'jira_host_token' | 'gerrit_http_credential'; host?: string }
 
 let calls: FetchCall[] = []
 
@@ -424,6 +424,63 @@ describe('SecretsPanel', () => {
 
     expect(await screen.findByText('JIRA_API_TOKEN')).toBeInTheDocument()
     expect(screen.getByText('Not used because the host-specific Jira credential takes precedence. Delete this entry if you no longer need the fallback.')).toBeInTheDocument()
+  })
+
+  it('offers an unset Gerrit credential as a host-labelled slot with no hex to type', async () => {
+    listManaged = [{
+      name: 'GERRIT_HTTP_CREDENTIAL',
+      kind: 'gerrit_http_credential',
+      host: 'gerrit.example.com:9080',
+    }]
+    mount()
+
+    expect(await screen.findByText('Gerrit HTTP credential — gerrit.example.com:9080')).toBeInTheDocument()
+    expect(screen.getByText(/username:HTTP password/)).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Paste secret value')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Secret name')).not.toBeInTheDocument()
+  })
+
+  it('labels configured per-host Gerrit credentials by host and lets them be replaced in place', async () => {
+    const name = 'GERRIT_HTTP_CREDENTIAL_6765727269742E6578616D706C652E636F6D3A39303830'
+    listNames = [name]
+    listManaged = [{ name, kind: 'gerrit_http_credential', host: 'gerrit.example.com:9080' }]
+    mount()
+
+    expect(await screen.findByText('Gerrit HTTP credential — gerrit.example.com:9080')).toBeInTheDocument()
+    expect(screen.getByText(name)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /replace/i })).toBeInTheDocument()
+  })
+
+  it('explains when a stored global Gerrit credential is inactive in multi-host mode', async () => {
+    listNames = ['GERRIT_HTTP_CREDENTIAL']
+    listUnused = [{ name: 'GERRIT_HTTP_CREDENTIAL', reason: 'gerrit_multi_host' }]
+    listManaged = [
+      {
+        name: 'GERRIT_HTTP_CREDENTIAL_6765727269742E6578616D706C652E636F6D3A39303830',
+        kind: 'gerrit_http_credential',
+        host: 'gerrit.example.com:9080',
+      },
+      {
+        name: 'GERRIT_HTTP_CREDENTIAL_676572726974762E6578616D706C652E636F6D3A39303831',
+        kind: 'gerrit_http_credential',
+        host: 'gerritv.example.com:9081',
+      },
+    ]
+    mount()
+
+    expect(await screen.findByText('GERRIT_HTTP_CREDENTIAL')).toBeInTheDocument()
+    expect(screen.getByText('Not used by Gerrit while multiple hosts are configured. Set each host’s credential above, or delete this entry.')).toBeInTheDocument()
+  })
+
+  it('explains when a stored per-host Gerrit credential takes precedence over the global one', async () => {
+    const name = 'GERRIT_HTTP_CREDENTIAL_6765727269742E6578616D706C652E636F6D3A39303830'
+    listNames = ['GERRIT_HTTP_CREDENTIAL', name]
+    listUnused = [{ name: 'GERRIT_HTTP_CREDENTIAL', reason: 'gerrit_host_precedence' }]
+    listManaged = [{ name, kind: 'gerrit_http_credential', host: 'gerrit.example.com:9080' }]
+    mount()
+
+    expect(await screen.findByText('GERRIT_HTTP_CREDENTIAL')).toBeInTheDocument()
+    expect(screen.getByText('Not used because the host-specific Gerrit credential takes precedence. Delete this entry if you no longer need the fallback.')).toBeInTheDocument()
   })
 
   it('sends the session key header on the list request', async () => {

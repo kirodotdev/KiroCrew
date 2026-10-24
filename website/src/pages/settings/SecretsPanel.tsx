@@ -11,6 +11,8 @@ const UNUSED_REASON_KEYS = {
   wakatime_disabled: 'settings.secrets.wakatime_unused_hint',
   jira_multi_host: 'settings.secrets.jira_global_unused_multi_host',
   jira_host_precedence: 'settings.secrets.jira_global_unused_host_token',
+  gerrit_multi_host: 'settings.secrets.gerrit_global_unused_multi_host',
+  gerrit_host_precedence: 'settings.secrets.gerrit_global_unused_host_credential',
 } as const
 import { Btn, IconButton, Input, PanelSectionHeader } from '../../components/ui'
 import { api, isAuthExpiredError, type ManagedSecret, type SecretsListResponse } from '../../api/client'
@@ -100,8 +102,17 @@ function managedCopy(kind: string) {
       description: i18nT('settings.secrets.jira_api_token_description'),
     }
   }
+  if (kind === 'gerrit_http_credential') {
+    return {
+      label: i18nT('settings.secrets.gerrit_http_credential_label'),
+      description: i18nT('settings.secrets.gerrit_http_credential_description'),
+    }
+  }
   return null
 }
+
+/** Managed kinds whose row names one host, shown as "<label> — <host>". */
+const HOST_LABELLED_KINDS: ReadonlySet<string> = new Set(['jira_host_token', 'gerrit_http_credential'])
 
 function ManagedSecretRow({
   secret,
@@ -125,7 +136,7 @@ function ManagedSecretRow({
   const deleteCancelRef = useRef<HTMLButtonElement>(null)
   const [editing, setEditing] = useState(!configured)
   const copy = managedCopy(secret.kind)
-  const label = secret.kind === 'jira_host_token' && secret.host
+  const label = HOST_LABELLED_KINDS.has(secret.kind) && secret.host
     ? `${copy?.label ?? secret.name} — ${secret.host}`
     : copy?.label ?? secret.name
 

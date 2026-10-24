@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { PullRequestSource, PullRequestStatus } from '../types'
 import {
@@ -200,6 +200,28 @@ describe('PullRequestPanel', () => {
     expect(mark!.getAttribute('class')).toContain('lucide-link-2')
     expect(mark!.getAttribute('width')).toBe('13')
     expect(tab.querySelector('.lucide-git-pull-request')).toBeNull()
+  })
+
+  it('labels a Gerrit tab by its change number with the neutral mark', async () => {
+    // Gerrit has no sigil of its own: the long label is the word Gerrit uses
+    // ("Change 466698"), and like Bitbucket Server it ships no logo.
+    const gerritUrl = 'https://gerrit.example.test/c/platform/hal/+/466698'
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets' },
+            { url: gerritUrl, provider: 'gerrit', number: 466698, repo: 'platform/hal' },
+          ]}
+          selectedUrl={github.url}
+          onSelect={() => {}}
+        />
+      </QueryClientProvider>,
+    )
+    const tab = await screen.findByRole('tab', { name: /Change 466698/i })
+    expect(tab.querySelector('[data-provider-mark="neutral"]')).not.toBeNull()
+    expect(tab.querySelector('[data-provider-mark="github"]')).toBeNull()
   })
 
   it('copies the head branch name to the clipboard when the branch chip is clicked', async () => {
@@ -1028,6 +1050,44 @@ describe('PullRequestPanel', () => {
   })
 })
 
+describe('PullRequestPanel instance host', () => {
+  it('names the Gerrit server in the header, which the word Gerrit alone cannot', async () => {
+    // Two Gerrit servers both render "Gerrit"; before this only the
+    // open-in-browser tooltip told them apart.
+    renderSource({ ...github, provider: 'gerrit', url: 'https://gerritv.acme.example:9081/c/platform/hal/+/466698', number: 466698, title: 'Gerrit change' })
+    expect(await screen.findByText('Gerrit change')).toBeInTheDocument()
+    const host = screen.getByTestId('pull-request-panel-instance-host')
+    expect(host).toHaveTextContent('gerritv.acme.example:9081')
+    expect(host).toHaveAttribute('title', 'gerritv.acme.example:9081')
+  })
+
+  it('names a GitHub Enterprise host but not github.com, which GitHub already says', async () => {
+    renderSource(github)
+    expect(await screen.findByText('Add source tabs')).toBeInTheDocument()
+    expect(screen.queryByTestId('pull-request-panel-instance-host')).not.toBeInTheDocument()
+    cleanup()
+    renderSource({ ...github, url: 'https://ghe.acme.example/acme/widgets/pull/12' })
+    expect(await screen.findByText('Add source tabs')).toBeInTheDocument()
+    expect(screen.getByTestId('pull-request-panel-instance-host')).toHaveTextContent('ghe.acme.example')
+  })
+
+  it('qualifies Gerrit tabs by project, and by host when the project name repeats across servers', async () => {
+    mockApi.pullRequestSource.mockImplementation((url: string) => Promise.resolve({ ...github, provider: 'gerrit', url, number: 1 }))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const srcs = [
+      { url: 'https://gerrit.acme.example:9080/c/HAL/+/1', provider: 'gerrit' as const, number: 1, repo: 'HAL', kind: 'change' as const },
+      { url: 'https://gerritv.acme.example:9081/c/HAL/+/1', provider: 'gerrit' as const, number: 1, repo: 'HAL', kind: 'change' as const },
+    ]
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel sources={srcs} selectedUrl={srcs[0].url} onSelect={() => {}} onAddToChat={vi.fn()} />
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByRole('tab', { name: /gerrit\.acme\.example:9080\/HAL Change 1/i })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /gerritv\.acme\.example:9081\/HAL Change 1/i })).toBeInTheDocument()
+  })
+})
+
 function renderSource(source: PullRequestSource) {
   mockApi.pullRequestSource.mockImplementation(() => Promise.resolve(source))
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -1044,6 +1104,26 @@ function renderSource(source: PullRequestSource) {
 }
 
 describe('PullRequestPanel actions', () => {
+  it('shows a Gerrit change its merge conflict but offers no auto-merge or ready action', async () => {
+    // Gerrit reports merge state (so the conflict banner is real information) but
+    // has no auto-merge and no draft-to-ready write, so neither button may render:
+    // the gateway refuses both as unsupported for this provider.
+    const gerrit: PullRequestSource = {
+      ...github,
+      provider: 'gerrit',
+      url: 'https://gerrit.example.test/c/platform/hal/+/466698',
+      number: 466698,
+      title: 'Gerrit change',
+      mergeable: 'conflicting',
+      mergeStateStatus: 'dirty',
+    }
+    renderSource(gerrit)
+    expect(await screen.findByText('Gerrit change')).toBeInTheDocument()
+    expect(await screen.findByText(/Merge conflicts/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Enable auto-merge/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Ready for review/i })).not.toBeInTheDocument()
+  })
+
   it('requires a confirming click before arming auto-merge', async () => {
     renderSource(github)
     const enable = await screen.findByRole('button', { name: /Enable auto-merge/i })
@@ -1272,6 +1352,42 @@ describe('pullRequestMergeBlocker', () => {
     expect(blocker?.handoff).toContain('merge commits will not unblock the MR')
     expect(blocker?.handoff).toContain('--force-with-lease')
     expect(blocker?.handoff).not.toContain('merge main into the branch')
+  })
+
+  it('hands off a Gerrit conflict or rebase as a new patchset, never a force-push', () => {
+    const gerrit = {
+      ...github,
+      provider: 'gerrit' as const,
+      url: 'https://gerrit.example.test/c/platform/hal/+/466698',
+      number: 466698,
+      baseBranch: 'dev',
+    }
+    const conflict = pullRequestMergeBlocker({ ...gerrit, mergeable: 'conflicting', mergeStateStatus: 'dirty' })
+    expect(conflict).toMatchObject({ tone: 'danger', title: 'Merge conflicts' })
+    expect(conflict?.handoff).toContain('- Change: https://gerrit.example.test/c/platform/hal/+/466698')
+    expect(conflict?.handoff).toContain('refs/for/dev')
+    expect(conflict?.handoff).not.toContain('--force-with-lease')
+    const rebase = pullRequestMergeBlocker({ ...gerrit, mergeable: 'unknown', mergeStateStatus: 'need_rebase' })
+    expect(rebase).toMatchObject({ tone: 'warn', title: 'Rebase required' })
+    expect(rebase?.handoff).toContain('refs/for/dev')
+    expect(rebase?.handoff).not.toContain('--force-with-lease')
+  })
+
+  it('words a blocked Gerrit change as submit rules, not branch protection', () => {
+    // Gerrit has no branch protection: open + mergeable + not submittable means
+    // the submit rules still want votes, and Gerrit's verb is "submit".
+    const blocker = pullRequestMergeBlocker({
+      ...github,
+      provider: 'gerrit',
+      url: 'https://gerrit.example.test/c/platform/hal/+/466698',
+      number: 466698,
+      mergeable: 'mergeable',
+      mergeStateStatus: 'blocked',
+      checks: [{ ...github.checks[0], name: 'Verified', status: 'FAILURE', conclusion: 'FAILURE', bucket: 'failed' as const }],
+    })
+    expect(blocker).toMatchObject({ tone: 'warn', title: 'Submit blocked' })
+    expect(blocker?.detail).toContain('submit rules')
+    expect(blocker?.detail).not.toContain('Branch protection')
   })
 
   it('returns null for clean, unknown, draft, merged, closed, and locked states', () => {

@@ -416,6 +416,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     jiraSourceHostsRef,
     githubSourceHostsRef,
     bitbucketServerSourceHostsRef,
+    gerritSourceHostsRef,
     panelSources,
     panelIssues,
     selectedSourceUrl,
@@ -910,7 +911,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     sidebarOnScreen, flyoutTriggerRef, flyoutSurfaceRef, flyoutEligible, flyout, expandFrom, expandSidebar,
   } = useSessionsDrawer({
     embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
-    hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, search, selectSource, setRevealedSources, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef,
+    hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, search, selectSource, setRevealedSources, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef,
     sidebarAutoHidden, toggleAct,
   })
   // "Open Sidebar Sessions in a Session Tab" (Settings > Chat > Sessions). A

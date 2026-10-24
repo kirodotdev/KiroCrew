@@ -1093,6 +1093,27 @@ class DashboardConfig:
             "Without a token the read is anonymous.",
         ),
     )
+    gerrit_hosts: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Gerrit Hosts",
+            "Exact hostnames (optionally host:port) of Gerrit Code Review "
+            "instances whose change URLs the Changes panel and session source "
+            "links may read, read-only, over the instance's REST API. Empty = "
+            "none (deny-by-default): a /c/<project>/+/<number> URL is only "
+            "fetched when its host is an exact member of this list. Suffixes "
+            "and wildcards are not matched. A host that is also listed in "
+            "gitlab_hosts, jira_hosts, github_hosts or bitbucket_server_hosts "
+            "is refused. Gerrit refuses anonymous REST reads on most instances, "
+            "so the gateway authenticates with the HTTP credential of the "
+            "listed host only: the vault secret GERRIT_HTTP_CREDENTIAL, holding "
+            "<username>:<HTTP password> as generated under the Gerrit account's "
+            "HTTP Credentials settings, serves a single listed host, and "
+            "GERRIT_HTTP_CREDENTIAL_<HEX> (the host's hex encoding) serves one "
+            "host of several. Settings > Secrets offers one labelled row per "
+            "listed host, so the name is never typed by hand.",
+        ),
+    )
     jira_auth: list[JiraAuthEntry] = field(
         default_factory=list,
         metadata=_meta(

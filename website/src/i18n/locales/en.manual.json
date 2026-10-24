@@ -9045,6 +9045,10 @@
     "secrets": {
       "managed_title": "Used automatically by {{productName}}",
       "managed_description": "Credentials {{productName}} recognizes and uses automatically. Add or rotate their values here.",
+      "gerrit_http_credential_label": "Gerrit HTTP credential",
+      "gerrit_http_credential_description": "Authenticates Gerrit change lookups for one configured host. Enter it as username:HTTP password, generated under that server’s HTTP Credentials settings.",
+      "gerrit_global_unused_multi_host": "Not used by Gerrit while multiple hosts are configured. Set each host’s credential above, or delete this entry.",
+      "gerrit_global_unused_host_credential": "Not used because the host-specific Gerrit credential takes precedence. Delete this entry if you no longer need the fallback.",
       "jira_api_token_label": "Jira API token",
       "jira_api_token_description": "Authenticates Jira issue lookups for the configured instance.",
       "jira_global_unused_multi_host": "Not used by Jira while multiple hosts are configured. Set each host’s credential above, or delete this entry.",

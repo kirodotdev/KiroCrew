@@ -5151,6 +5151,7 @@
       "add_to_chat": "Add to chat",
       "auto_merge_enabled": "Auto-merge enabled",
       "cancel": "Cancel",
+      "change_number": "Change {{number}}",
       "file_status_added": "Added",
       "file_status_changed": "Changed",
       "file_status_copied": "Copied",
@@ -5174,6 +5175,8 @@
       "quoting_a_pull_request_comment_by_author_on_loca": "Quoting a pull request comment by {{author}} on {{location}}.",
       "ready_for_review": "Ready for review",
       "retry": "Retry",
+      "submit_blocked": "Submit blocked",
+      "submit_requirements_not_met": "The change is not yet submittable: its submit rules still need votes (typically Code-Review +2 and a passing Verified).",
       "the_provider_did_not_return_a_patch_for_this_fil": "The provider did not return a patch for this file.",
       "updated": "Updated"
     },

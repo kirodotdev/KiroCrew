@@ -233,6 +233,7 @@ from kiro_crew.config.sections_dashboard_hosts import (  # noqa: F401
     _GITHUB_PUBLIC_HOSTS,
     _GITLAB_HOST_NAME_RE,
     _coerce_bitbucket_server_hosts,
+    _coerce_gerrit_hosts,
     _coerce_github_hosts,
     _coerce_gitlab_hosts,
     _coerce_jira_hosts,

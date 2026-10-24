@@ -998,6 +998,10 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
     github_hosts = _sections._coerce_github_hosts(
         section.get("github_hosts"), claimed=(*gitlab_hosts, *jira_hosts)
     )
+    bitbucket_server_hosts = _sections._coerce_bitbucket_server_hosts(
+        section.get("bitbucket_server_hosts"),
+        claimed=(*gitlab_hosts, *jira_hosts, *github_hosts),
+    )
     return DashboardConfig(
         url=section.get("url"),
         tailscale=_tailscale_config_from(
@@ -1141,9 +1145,10 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         github_hosts=github_hosts,
         gitlab_hosts=gitlab_hosts,
         jira_hosts=jira_hosts,
-        bitbucket_server_hosts=_sections._coerce_bitbucket_server_hosts(
-            section.get("bitbucket_server_hosts"),
-            claimed=(*gitlab_hosts, *jira_hosts, *github_hosts),
+        bitbucket_server_hosts=bitbucket_server_hosts,
+        gerrit_hosts=_sections._coerce_gerrit_hosts(
+            section.get("gerrit_hosts"),
+            claimed=(*gitlab_hosts, *jira_hosts, *github_hosts, *bitbucket_server_hosts),
         ),
         # These two parse raw JSON entries into DTOs, so they are handed only a
         # stored value; an omitted key is the field default as built.

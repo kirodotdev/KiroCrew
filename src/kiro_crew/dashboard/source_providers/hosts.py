@@ -32,6 +32,8 @@ _jira_hosts_snapshot: frozenset[str] = frozenset()
 _github_hosts_snapshot: frozenset[str] = frozenset()
 # Bitbucket Server hosts (``dashboard.bitbucket_server_hosts``) ride it too.
 _bitbucket_server_hosts_snapshot: frozenset[str] = frozenset()
+# As do Gerrit hosts (``dashboard.gerrit_hosts``).
+_gerrit_hosts_snapshot: frozenset[str] = frozenset()
 # Whether the sidebar renders a session card's PR/issue chips at all
 # (``dashboard.session_card_source_links``). Same read, same TTL, same
 # generation as the allowlists above, for the same reason: it is another
@@ -68,21 +70,24 @@ def _publish_provider_hosts(
     jira: frozenset[str],
     github: frozenset[str] = frozenset(),
     bitbucket_server: frozenset[str] = frozenset(),
+    gerrit: frozenset[str] = frozenset(),
 ) -> None:
     """Install freshly loaded snapshots, bumping the generation on real change."""
     global _gitlab_hosts_snapshot, _jira_hosts_snapshot, _github_hosts_snapshot
-    global _bitbucket_server_hosts_snapshot
+    global _bitbucket_server_hosts_snapshot, _gerrit_hosts_snapshot
     global _gitlab_hosts_loaded_at, _gitlab_hosts_generation
     if (
         gitlab != _gitlab_hosts_snapshot
         or jira != _jira_hosts_snapshot
         or github != _github_hosts_snapshot
         or bitbucket_server != _bitbucket_server_hosts_snapshot
+        or gerrit != _gerrit_hosts_snapshot
     ):
         _gitlab_hosts_snapshot = gitlab
         _jira_hosts_snapshot = jira
         _github_hosts_snapshot = github
         _bitbucket_server_hosts_snapshot = bitbucket_server
+        _gerrit_hosts_snapshot = gerrit
         _gitlab_hosts_generation += 1
     _gitlab_hosts_loaded_at = time.monotonic()
 
@@ -137,16 +142,16 @@ def session_card_source_links_enabled() -> bool:
 
 
 def _load_source_link_settings() -> (
-    tuple[frozenset[str], frozenset[str], bool, frozenset[str], frozenset[str]]
+    tuple[frozenset[str], frozenset[str], bool, frozenset[str], frozenset[str], frozenset[str]]
 ):
-    """Read the source-link config: GitLab, Jira, chips, GitHub, Bitbucket Server.
+    """Read the source-link config: GitLab, Jira, chips, GitHub, Bitbucket Server, Gerrit.
 
     BLOCKING -- never on the loop. ``KiroCrewConfig.load()`` stats, reads,
     parses, and validates config files, so a slow or network-backed config
     directory would stall the sole event loop. Callers reach this only through
     :func:`ensure_gitlab_hosts_loaded`.
 
-    One read for all five because they live in one file and are consumed by the
+    One read for all six because they live in one file and are consumed by the
     same synchronous slot serialization; a second read would double the cost of
     every refresh round and let the two halves disagree within one round.
     """
@@ -160,12 +165,13 @@ def _load_source_link_settings() -> (
             bool(dashboard.session_card_source_links),
             frozenset(dashboard.github_hosts),
             frozenset(dashboard.bitbucket_server_hosts),
+            frozenset(dashboard.gerrit_hosts),
         )
     except Exception:
         logger.debug("source-link settings unavailable", exc_info=True)
         # Hosts fail closed, the chip switch fails open: an unreadable config
         # must not blank a strip the user never asked to hide.
-        return frozenset(), frozenset(), True, frozenset(), frozenset()
+        return frozenset(), frozenset(), True, frozenset(), frozenset(), frozenset()
 
 
 async def ensure_gitlab_hosts_loaded() -> frozenset[str]:
@@ -188,10 +194,10 @@ async def ensure_gitlab_hosts_loaded() -> frozenset[str]:
         # Another waiter may have refreshed while this one queued.
         if _gitlab_hosts_fresh():
             return _gitlab_hosts_snapshot
-        gitlab, jira, chips, github, bitbucket_server = await asyncio.to_thread(
+        gitlab, jira, chips, github, bitbucket_server, gerrit = await asyncio.to_thread(
             _load_source_link_settings
         )
-        _publish_provider_hosts(gitlab, jira, github, bitbucket_server)
+        _publish_provider_hosts(gitlab, jira, github, bitbucket_server, gerrit)
         # Safe to install unconditionally: this lock is held across the load
         # above, so a config write that raced it waits and publishes after us
         # (see publish_session_card_chips_now).
@@ -240,3 +246,13 @@ def _allowed_bitbucket_server_hosts() -> frozenset[str]:
     URL fails closed until the first load lands.
     """
     return _bitbucket_server_hosts_snapshot
+
+
+def _allowed_gerrit_hosts() -> frozenset[str]:
+    """Return the cached Gerrit hosts. Same discipline as GitLab.
+
+    Loaded by the same :func:`ensure_gitlab_hosts_loaded` refresh, matched
+    exactly against ``host[:port]``, and empty while cold, so a Gerrit URL fails
+    closed until the first load lands.
+    """
+    return _gerrit_hosts_snapshot

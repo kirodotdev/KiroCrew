@@ -114,6 +114,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "jira_hosts",
             "github_hosts",
             "bitbucket_server_hosts",
+            "gerrit_hosts",
             "social_share_enabled",
             "decisions_enabled",
             "model_picker_hidden_models",
@@ -746,6 +747,8 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "github_hosts": list(cfg.dashboard.github_hosts),
             # And for Bitbucket Server, which has no public default host at all.
             "bitbucket_server_hosts": list(cfg.dashboard.bitbucket_server_hosts),
+            # And for Gerrit, likewise recognized only through its allowlist.
+            "gerrit_hosts": list(cfg.dashboard.gerrit_hosts),
             # Read-only: the per-file upload ceiling (`dashboard.upload_max_mb`).
             # Both composers pre-check against it and name it in their refusal;
             # the upload handlers enforce it again server-side.

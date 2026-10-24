@@ -68,7 +68,9 @@ _PROVIDER_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 # Ids the core owns. A plugin may not claim one: `parse_source_url` checks the
 # built-in hosts first, so a shadowing plugin would be dead for parsing yet live
 # for fetching -- two layers disagreeing about one provider.
-_BUILTIN_PROVIDER_IDS = frozenset({"github", "gitlab", "jira", contract.BITBUCKET_SERVER_PROVIDER})
+_BUILTIN_PROVIDER_IDS = frozenset(
+    {"github", "gitlab", "jira", contract.BITBUCKET_SERVER_PROVIDER, contract.GERRIT_PROVIDER}
+)
 
 _SOURCE_PROVIDER_PLUGINS: dict[str, SourceProviderPlugin] = {}
 
@@ -79,6 +81,10 @@ _SOURCE_PROVIDER_PLUGINS: dict[str, SourceProviderPlugin] = {}
 # module when it is imported (the handler imports every owner at load), and never
 # cleared by `reset_source_providers_for_tests`, which only drops registrations.
 _CORE_SEAM_PROVIDERS: dict[str, SourceProviderPlugin] = {}
+#: The ids served ONLY through the seam. A ref carrying one of these with no
+#: installed owner fails closed in `_plugin_for_change` instead of reaching a
+#: built-in branch.
+_CORE_SEAM_PROVIDER_IDS = frozenset({contract.BITBUCKET_SERVER_PROVIDER, contract.GERRIT_PROVIDER})
 
 
 def _install_core_seam_provider(plugin: SourceProviderPlugin) -> None:
@@ -200,6 +206,10 @@ def source_link_path_markers() -> tuple[str, ...]:
     # transcript scan with no such host does exactly the work it always did.
     if hosts._allowed_bitbucket_server_hosts():
         markers.append("/pull-requests/")
+    # A Gerrit change lives at ``/c/<project>/+/<number>``; ``/+/`` is the one
+    # segment every such URL carries and no other provider uses. Same gating.
+    if hosts._allowed_gerrit_hosts():
+        markers.append("/+/")
     for plugin in _SOURCE_PROVIDER_PLUGINS.values():
         hook = getattr(plugin, "path_markers", None)
         if not callable(hook):
@@ -292,7 +302,7 @@ def _plugin_for_change(ref: SourceRef) -> SourceProviderPlugin | None:
     GitHub or GitLab code path with a foreign host.
     """
     plugin = _SOURCE_PROVIDER_PLUGINS.get(ref.provider) or _CORE_SEAM_PROVIDERS.get(ref.provider)
-    if plugin is None and ref.provider == contract.BITBUCKET_SERVER_PROVIDER:
+    if plugin is None and ref.provider in _CORE_SEAM_PROVIDER_IDS:
         raise SourceProviderError(f"the {ref.provider} source provider is not loaded")
     return plugin
 

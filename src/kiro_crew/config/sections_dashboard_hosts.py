@@ -227,6 +227,29 @@ def _coerce_bitbucket_server_hosts(raw: object, *, claimed: Iterable[str] = ()) 
     return out
 
 
+def _coerce_gerrit_hosts(raw: object, *, claimed: Iterable[str] = ()) -> list[str]:
+    """Coerce the Gerrit allowlist to clean ``host[:port]`` entries.
+
+    Entries follow the self-hosted GitLab grammar (see :func:`_coerce_gitlab_hosts`),
+    ports included, because a Gerrit instance commonly listens on a non-default
+    port. Gerrit has no public default host, so nothing is accepted implicitly.
+    ``claimed`` holds the hosts another provider allowlist already owns; such an
+    entry is refused with a warning so this list never changes how those resolve.
+    """
+    taken = set(claimed)
+    out: list[str] = []
+    for host in _coerce_gitlab_hosts(raw):
+        if host in taken:
+            logger.warning(
+                "dashboard.gerrit_hosts entry %r is also listed in gitlab_hosts, jira_hosts, "
+                "github_hosts or bitbucket_server_hosts; it is ignored as a Gerrit host",
+                host,
+            )
+            continue
+        out.append(host)
+    return out
+
+
 def _coerce_link_patterns(raw: object) -> list[LinkPatternRule]:
     """Coerce the transcript link rules, skipping malformed entries.
 

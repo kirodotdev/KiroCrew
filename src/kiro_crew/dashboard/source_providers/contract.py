@@ -2,7 +2,7 @@
 
 The validated refs every entry point hands around, the full-change payload a
 provider returns, the protocol a downstream edition implements to add a provider,
-and the errors each layer raises. Only types, the URL bound and a core provider id
+and the errors each layer raises. Only types, the URL bound and the core provider ids
 live here, so every sibling can import this module and it imports none of them.
 """
 
@@ -28,6 +28,9 @@ _MAX_URL_LENGTH = 2048
 #: provider served through the registered-provider dispatch (see ``plugins``),
 #: so it is named here where every layer that routes on it can read it.
 BITBUCKET_SERVER_PROVIDER = "bitbucket_server"
+#: The provider id of Gerrit Code Review changes. Served through the same core
+#: seam dispatch as Bitbucket Server, for the same reason.
+GERRIT_PROVIDER = "gerrit"
 
 
 class SourceProviderError(RuntimeError):

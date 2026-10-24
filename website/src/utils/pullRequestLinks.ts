@@ -2,6 +2,7 @@ import type { ComponentType } from 'react'
 import type { ChatMessage, ChatSlot, SourceProviderId } from '../types'
 import { reportSeamCollision } from '../apps/seamCollision'
 import { safeSetItem } from './safeStorage'
+import { bitbucketServerHostSet, bitbucketServerLink, gerritHostSet, gerritLink } from './selfHostedForgeLinks'
 
 /** A provider brand glyph. Rendered by the chip / tab sites at THEIR size, so a
  *  descriptor supplies a component rather than an element: the same mark draws
@@ -59,7 +60,11 @@ export function partitionSourceLinks(
  * (`.../cr/123` and `.../cr/123/revisions/2` are one review), so its links key
  * on the object's own fields instead, the way the backend's `SourceRef.identity`
  * leaves the url out. The host stays in, because a number is only unique per
- * instance.
+ * instance. Gerrit is the one built-in that keeps a pin (`/+/123` and
+ * `/+/123/2` are one change), so it keys on its canonical url with the pin
+ * removed. The url, not the object's fields, because a Gerrit url also carries
+ * the instance's context path (`/one/c/tools/+/1` and `/two/c/tools/+/1` are
+ * two instances on one host, and two changes), which `repo` leaves out.
  *
  * A GitHub url keys case-folded. GitHub resolves owner and repository names
  * case-insensitively, so `Acme/Widgets/pull/10` and `acme/widgets/pull/10`
@@ -69,6 +74,7 @@ export function partitionSourceLinks(
  */
 export function sourceLinkKey(link: PullRequestLink): string {
   if (link.provider === 'github') return link.url.toLowerCase()
+  if (link.provider === 'gerrit') return link.url.replace(/^(.*\/\+\/\d+)\/\d+$/, '$1')
   if (!sourceProviderDescriptor(link.provider)) return link.url
   let host = ''
   try {
@@ -91,12 +97,18 @@ export function findSourceForUrl<T extends PullRequestLink>(
 ): T | undefined {
   const exact = sources.find(source => source.url === url)
   if (exact || !url) return exact
-  // Matched without re-parsing, because the parse below has no Enterprise host
-  // list and would reject a GitHub Enterprise url outright.
+  // Matched without re-parsing, because a GitHub url keys case-folded.
   const folded = url.toLowerCase()
   const spelling = sources.find(source => source.provider === 'github' && sourceLinkKey(source) === folded)
   if (spelling) return spelling
-  const remembered = parseSourceLinkUrl(url)
+  // The remembered url is parsed the way every persisted url is: permissively
+  // per self-hosted provider, since the allowlist is not to hand here. That is
+  // not an authorization: the result only ever selects among sources that are
+  // already listed, each of which passed the allowlist when it was extracted.
+  // The bare parser would reject a self-hosted Gerrit, GHE or Bitbucket url
+  // outright, so a Gerrit tab remembered at patchset 1 would fall back to the
+  // first tab the moment a message mentioned patchset 2.
+  const remembered = parseStoredCanonicalLink(url)
   if (!remembered) return undefined
   const key = sourceLinkKey(remembered)
   return sources.find(source => sourceLinkKey(source) === key)
@@ -148,9 +160,15 @@ export interface SourceProviderCapabilities {
    *  sidebar chip badge. */
   checks: boolean
   /** Mergeability / merge-state detail is reported — gates the merge-blocker
-   *  banner and the ready-for-review + auto-merge actions. Backend hooks:
-   *  `mark_ready` and `enable_auto_merge`. */
+   *  banner. */
   mergeState: boolean
+  /** The ready-for-review and auto-merge WRITES exist on this provider — gates
+   *  those two buttons. Backend hooks: `mark_ready` and `enable_auto_merge`.
+   *  Optional: a descriptor that omits it inherits `mergeState`, which is what
+   *  every descriptor written before this flag existed meant by it. Gerrit is
+   *  the provider that splits the two: it reports merge state but has no
+   *  auto-merge, so a button there could only answer "unsupported". */
+  mergeActions?: boolean
   /** Review threads can be resolved / reopened / replied to. One flag for all
    *  three: the backend plugin must implement `resolve_thread` (dispatched with
    *  `resolved=True` and `False`) AND `reply_to_thread`, because this flag is
@@ -189,7 +207,7 @@ export interface SourceProviderDescriptor {
 /** Ids the core owns. A descriptor may never claim one: the built-in branches
  *  run first, so a shadowing registration would be silently dead for extraction
  *  yet live for chip labels — two layers disagreeing about one provider. */
-const BUILTIN_PROVIDER_IDS: ReadonlySet<string> = new Set(['github', 'gitlab', 'jira', 'bitbucket_server'])
+const BUILTIN_PROVIDER_IDS: ReadonlySet<string> = new Set(['github', 'gitlab', 'jira', 'bitbucket_server', 'gerrit'])
 
 /** Registration order is consultation order, so a later provider cannot
  *  intercept an earlier one's URLs. */
@@ -406,54 +424,11 @@ const NO_JIRA_HOSTS: ReadonlySet<string> = new Set<string>()
 const NO_GITHUB_HOSTS: ReadonlySet<string> = new Set<string>()
 const NO_BITBUCKET_SERVER_HOSTS: ReadonlySet<string> = new Set<string>()
 
-/** Normalize the configured Bitbucket Server hosts to a lookup set.
- * Same normalization as gitlabHostSet — entries are exact `host[:port]` values
- * from operator config (dashboard.bitbucket_server_hosts). Bitbucket Server has
- * no public default host, so a link is recognized only when listed here. */
-export function bitbucketServerHostSet(hosts: readonly string[] | undefined): ReadonlySet<string> {
-  return new Set(
-    (hosts ?? [])
-      .map(host => host.trim().toLowerCase().replace(/:443$/, ''))
-      .filter(Boolean),
-  )
-}
+const NO_GERRIT_HOSTS: ReadonlySet<string> = new Set<string>()
 
-/** Bitbucket Server path pieces. Mirrors the backend grammar so a link this
- *  module builds always re-parses there: matched from the END of the path, with
- *  any reverse-proxy context path before `/projects/` kept in the canonical url,
- *  and the UI tab suffix the link was copied from dropped. */
-const BITBUCKET_SERVER_TABS: ReadonlySet<string> = new Set(['overview', 'diff', 'commits', 'builds'])
-const BITBUCKET_SERVER_KEY_RE = /^[A-Za-z][A-Za-z0-9_]{0,127}$/
-const BITBUCKET_SERVER_SLUG_RE = /^[A-Za-z0-9._-]{1,128}$/
-const BITBUCKET_SERVER_CONTEXT_RE = /^[A-Za-z0-9._~-]{1,64}$/
-
-function bitbucketServerLink(origin: string, path: string): PullRequestLink | null {
-  let segments = path.split('/')
-  if (segments.length > 1 && BITBUCKET_SERVER_TABS.has(segments[segments.length - 1].toLowerCase())) {
-    segments = segments.slice(0, -1)
-  }
-  const n = segments.length
-  if (n < 7 || segments[0] !== '' || segments[n - 6] !== 'projects'
-    || segments[n - 4] !== 'repos' || segments[n - 2] !== 'pull-requests') return null
-  const key = segments[n - 5]
-  const slug = segments[n - 3]
-  const numberText = segments[n - 1]
-  const context = segments.slice(1, n - 6)
-  if (!BITBUCKET_SERVER_KEY_RE.test(key) || !BITBUCKET_SERVER_SLUG_RE.test(slug)) return null
-  if (slug === '.' || slug === '..') return null
-  if (!/^\d{1,15}$/.test(numberText) || Number(numberText) <= 0) return null
-  if (context.length > 8) return null
-  if (context.some(seg => seg === '.' || seg === '..' || !BITBUCKET_SERVER_CONTEXT_RE.test(seg))) return null
-  const number = Number(numberText)
-  const prefix = context.map(seg => `/${seg}`).join('')
-  return {
-    url: `https://${origin}${prefix}/projects/${key}/repos/${slug}/pull-requests/${number}`,
-    provider: 'bitbucket_server',
-    number,
-    repo: slug,
-    kind: 'change',
-  }
-}
+// The Bitbucket Server and Gerrit grammars live in their own module; the host-set
+// functions are re-exported so this file stays the import path callers use.
+export { bitbucketServerHostSet, gerritHostSet }
 
 /** GitLab path markers, in match order. Both a merge request and an issue live
  * under the project's `/-/` namespace and end in a numeric id, so the marker
@@ -554,6 +529,8 @@ function parseCandidate(
   anyGithubHost = false,
   bitbucketServerHosts: ReadonlySet<string> = NO_BITBUCKET_SERVER_HOSTS,
   anyBitbucketServerHost = false,
+  gerritHosts: ReadonlySet<string> = NO_GERRIT_HOSTS,
+  anyGerritHost = false,
 ): PullRequestLink | null {
   // Trim trailing punctuation and markdown emphasis (**bold**, *italic*,
   // `code`, _underscore_, ~~strike~~) that the candidate scan may have
@@ -590,6 +567,8 @@ function parseCandidate(
   // Bitbucket Server is recognized only through its allowlist, after GitHub
   // Enterprise and GitLab, matching the backend's order.
   if (anyBitbucketServerHost || bitbucketServerHosts.has(hostWithPort)) return bitbucketServerLink(hostWithPort, path)
+  // Gerrit: the same allowlist-only recognition, for the same reason.
+  if (anyGerritHost || gerritHosts.has(hostWithPort)) return gerritLink(hostWithPort, path)
   // Jira: Atlassian Cloud (*.atlassian.net) is recognized automatically;
   // self-hosted Jira/Data Center instances require explicit allowlisting via
   // dashboard.jira_hosts, matching the same discipline as self-hosted GitLab.
@@ -644,6 +623,11 @@ function parseStoredCanonicalLink(value: string): PullRequestLink | null {
       value, NO_GITLAB_HOSTS, false, NO_JIRA_HOSTS, false, NO_GITHUB_HOSTS, false,
       NO_BITBUCKET_SERVER_HOSTS, true,
     )
+    // Sixth probe, permissive, for Gerrit, for the same reason.
+    ?? parseCandidate(
+      value, NO_GITLAB_HOSTS, false, NO_JIRA_HOSTS, false, NO_GITHUB_HOSTS, false,
+      NO_BITBUCKET_SERVER_HOSTS, false, NO_GERRIT_HOSTS, true,
+    )
 }
 
 function isCanonicalStoredUrl(value: string): boolean {
@@ -657,6 +641,7 @@ function linksInMessage(
   githubHosts: ReadonlySet<string> = NO_GITHUB_HOSTS,
   limit = MAX_PULL_REQUEST_SOURCES,
   bitbucketServerHosts: ReadonlySet<string> = NO_BITBUCKET_SERVER_HOSTS,
+  gerritHosts: ReadonlySet<string> = NO_GERRIT_HOSTS,
 ): AttributedLink[] {
   if (message?.role === 'streaming' || message?.role === 'chunk' || limit <= 0) return []
   // Non-transient roles other than 'user' (assistant, tool, thinking, …) are all
@@ -669,7 +654,8 @@ function linksInMessage(
   URL_CANDIDATE_RE.lastIndex = 0
   for (const match of content.matchAll(URL_CANDIDATE_RE)) {
     const link = parseCandidate(
-      match[0], gitlabHosts, false, jiraHosts, false, githubHosts, false, bitbucketServerHosts,
+      match[0], gitlabHosts, false, jiraHosts, false, githubHosts, false, bitbucketServerHosts, false,
+      gerritHosts,
     )
     if (!link) continue
     // A later mention of the same change replaces the url in place: text is read
@@ -698,6 +684,7 @@ export function parseSourceLinkUrl(
   jiraHosts: readonly string[] = [],
   githubHosts: readonly string[] = [],
   bitbucketServerHosts: readonly string[] = [],
+  gerritHosts: readonly string[] = [],
 ): PullRequestLink | null {
   return parseCandidate(
     url,
@@ -708,6 +695,8 @@ export function parseSourceLinkUrl(
     githubHostSet(githubHosts),
     false,
     bitbucketServerHostSet(bitbucketServerHosts),
+    false,
+    gerritHostSet(gerritHosts),
   )
 }
 
@@ -742,31 +731,64 @@ export function forgeChipLabel(link: PullRequestLink): string | null {
   return `${project}${sigil}${link.number}`
 }
 
-/** The FULL project path a GitHub / GitLab link belongs to — `owner/repo` for
- *  GitHub, `group/subgroup/project` for GitLab (subgroups included). Recovered
- *  from the parser's own canonical `url`, because `link.repo` deliberately keeps
- *  only the last path segment (see the `PullRequestLink` docs), which two
- *  same-named projects in different groups would collide on. Returns null for
- *  Jira, for a registered provider (which owns its own chip grammar), and for
- *  any shape the parser would not have produced. Derives only from a url THIS
- *  module built, never from raw chat text. */
+/** The providers whose canonical url carries a recoverable project path. */
+const PROJECT_PATH_PROVIDERS: ReadonlySet<string> = new Set(['github', 'gitlab', 'gerrit'])
+
+/** The FULL project path a GitHub / GitLab / Gerrit link belongs to —
+ *  `owner/repo` for GitHub, `group/subgroup/project` for GitLab (subgroups
+ *  included), the Gerrit project (`platform/hal`). Recovered from the parser's
+ *  own canonical `url`, because `link.repo` deliberately keeps only the last
+ *  path segment (see the `PullRequestLink` docs), which two same-named projects
+ *  in different groups would collide on. Returns null for Jira, for a
+ *  registered provider (which owns its own chip grammar), and for any shape the
+ *  parser would not have produced. Derives only from a url THIS module built,
+ *  never from raw chat text. */
 export function sourceProjectPath(link: SourceLinkRef): string | null {
-  if (link.provider !== 'github' && link.provider !== 'gitlab') return null
+  if (!PROJECT_PATH_PROVIDERS.has(link.provider)) return null
   return projectPathFromUrl(link)
 }
 
-/** The host a GitHub / GitLab link lives on (`gitlab.com`, `gitlab.internal`).
- *  Project paths are only unique per host — self-managed GitLab is a supported
- *  configuration, so `group/svc` can exist on two hosts at once — which makes
- *  the host part of a project's identity even though it is usually elided from
- *  labels. Null for Jira and registered providers, matching sourceProjectPath. */
+/** The host a GitHub / GitLab / Gerrit link lives on (`gitlab.com`,
+ *  `gitlab.internal`, `gerrit.example.test:9080`). Project paths are only unique
+ *  per host — self-managed GitLab is a supported configuration, so `group/svc`
+ *  can exist on two hosts at once, and a Gerrit project name is unique only on
+ *  its own server — which makes the host part of a project's identity even
+ *  though it is usually elided from labels. Null for Jira and registered
+ *  providers, matching sourceProjectPath. */
 export function sourceProjectHost(link: SourceLinkRef): string | null {
-  if (link.provider !== 'github' && link.provider !== 'gitlab') return null
+  if (!PROJECT_PATH_PROVIDERS.has(link.provider)) return null
   try {
     return new URL(link.url).host
   } catch {
     return null
   }
+}
+
+/** The one public host a provider's name already implies, so a link there needs
+ *  no host beside the name. A provider absent here (Bitbucket Server, Gerrit)
+ *  has no public instance at all: every host is somebody's own server. */
+const IMPLIED_PROVIDER_HOST: Readonly<Record<string, string>> = {
+  github: 'github.com',
+  gitlab: 'gitlab.com',
+}
+
+/** The host to NAME beside the provider so the user can tell which instance a
+ *  change is on, or null when the provider name already says it. `GitHub` on
+ *  github.com and `GitLab` on gitlab.com name their instance; a GitHub
+ *  Enterprise or self-managed GitLab host, and every Bitbucket Server or Gerrit
+ *  host, does not — two Gerrit servers render the same word, and only the url
+ *  tells them apart. Null for Jira and for a registered provider, which owns
+ *  its own grammar. Derives only from a url this module built. */
+export function sourceInstanceHost(link: SourceLinkRef): string | null {
+  if (link.provider === 'jira' || !BUILTIN_PROVIDER_IDS.has(link.provider)) return null
+  let host: string
+  try {
+    host = new URL(link.url).host
+  } catch {
+    return null
+  }
+  if (!host) return null
+  return IMPLIED_PROVIDER_HOST[link.provider] === host ? null : host
 }
 
 function projectPathFromUrl(link: SourceLinkRef): string | null {
@@ -781,6 +803,16 @@ function projectPathFromUrl(link: SourceLinkRef): string | null {
     const parts = path.split('/').filter(Boolean)
     if (parts.length !== 4) return null
     return `${parts[0]}/${parts[1]}`
+  }
+  if (link.provider === 'gerrit') {
+    // Canonical shape: [/<context>]/c/<project...>/+/N[/P]. The project is every
+    // segment between the `c` marker and the `+` marker (Gerrit project names
+    // nest, `platform/hal`).
+    const parts = path.split('/')
+    const cIndex = parts.indexOf('c', 1)
+    const plusIndex = cIndex < 0 ? -1 : parts.indexOf('+', cIndex + 2)
+    if (plusIndex < 0) return null
+    return parts.slice(cIndex + 1, plusIndex).join('/')
   }
   // GitLab: the project path is everything before the /-/ marker.
   for (const { marker } of GITLAB_MARKERS) {
@@ -830,14 +862,16 @@ export function extractPullRequestLinks(
   jiraHosts: readonly string[] = [],
   githubHosts: readonly string[] = [],
   bitbucketServerHosts: readonly string[] = [],
+  gerritHosts: readonly string[] = [],
 ): PullRequestLink[] {
   const hosts = gitlabHostSet(gitlabHosts)
   const jHosts = jiraHostSet(jiraHosts)
   const ghHosts = githubHostSet(githubHosts)
   const bbsHosts = bitbucketServerHostSet(bitbucketServerHosts)
+  const grHosts = gerritHostSet(gerritHosts)
   const found = new Map<string, AttributedLink>()
   for (const message of messages) {
-    addLinks(found, linksInMessage(message, hosts, jHosts, ghHosts, MAX_PULL_REQUEST_SOURCES, bbsHosts))
+    addLinks(found, linksInMessage(message, hosts, jHosts, ghHosts, MAX_PULL_REQUEST_SOURCES, bbsHosts, grHosts))
     // Once MAX agent sources are captured, no further message can add an emitted
     // Change source, so stop scanning (user links past this point are moot).
     if (roleCount(found, 'agent') >= MAX_PULL_REQUEST_SOURCES) break
@@ -873,6 +907,7 @@ export class PullRequestLinkIndex {
   private jHosts: ReadonlySet<string> = NO_JIRA_HOSTS
   private ghHosts: ReadonlySet<string> = NO_GITHUB_HOSTS
   private bbsHosts: ReadonlySet<string> = NO_BITBUCKET_SERVER_HOSTS
+  private grHosts: ReadonlySet<string> = NO_GERRIT_HOSTS
   private hostsKey = ''
 
   update(
@@ -882,6 +917,7 @@ export class PullRequestLinkIndex {
     jiraHosts: readonly string[] = [],
     githubHosts: readonly string[] = [],
     bitbucketServerHosts: readonly string[] = [],
+    gerritHosts: readonly string[] = [],
   ): PullRequestLink[] {
     // An operator adding a self-managed host mid-session must retro-detect the
     // MRs already in the transcript, so a changed allowlist forces a full
@@ -890,12 +926,14 @@ export class PullRequestLinkIndex {
       + '|' + [...jiraHostSet(jiraHosts)].sort().join(',')
       + '|' + [...githubHostSet(githubHosts)].sort().join(',')
       + '|' + [...bitbucketServerHostSet(bitbucketServerHosts)].sort().join(',')
+      + '|' + [...gerritHostSet(gerritHosts)].sort().join(',')
     if (hostsKey !== this.hostsKey) {
       this.hostsKey = hostsKey
       this.hosts = gitlabHostSet(gitlabHosts)
       this.jHosts = jiraHostSet(jiraHosts)
       this.ghHosts = githubHostSet(githubHosts)
       this.bbsHosts = bitbucketServerHostSet(bitbucketServerHosts)
+      this.grHosts = gerritHostSet(gerritHosts)
       this.rebuild(slot, messages)
       return this.result
     }
@@ -918,7 +956,7 @@ export class PullRequestLinkIndex {
     if (appended) {
       if (!this.tailTransient) addLinks(this.settled, this.tail)
       for (let index = previousLength; index < nextLength - 1; index += 1) {
-        addLinks(this.settled, linksInMessage(messages[index], this.hosts, this.jHosts, this.ghHosts, MAX_PULL_REQUEST_SOURCES, this.bbsHosts))
+        addLinks(this.settled, linksInMessage(messages[index], this.hosts, this.jHosts, this.ghHosts, MAX_PULL_REQUEST_SOURCES, this.bbsHosts, this.grHosts))
         if (roleCount(this.settled, 'agent') >= MAX_PULL_REQUEST_SOURCES) break
       }
       this.setTail(messages[nextLength - 1])
@@ -939,7 +977,7 @@ export class PullRequestLinkIndex {
     this.messages = messages
     this.settled = new Map()
     for (let index = 0; index < Math.max(0, messages.length - 1); index += 1) {
-      addLinks(this.settled, linksInMessage(messages[index], this.hosts, this.jHosts, this.ghHosts, MAX_PULL_REQUEST_SOURCES, this.bbsHosts))
+      addLinks(this.settled, linksInMessage(messages[index], this.hosts, this.jHosts, this.ghHosts, MAX_PULL_REQUEST_SOURCES, this.bbsHosts, this.grHosts))
       if (roleCount(this.settled, 'agent') >= MAX_PULL_REQUEST_SOURCES) break
     }
     this.setTail(messages.at(-1))
@@ -948,7 +986,7 @@ export class PullRequestLinkIndex {
 
   private setTail(message: ChatMessage | undefined): void {
     this.tailTransient = message?.role === 'streaming' || message?.role === 'chunk'
-    this.tail = linksInMessage(message, this.hosts, this.jHosts, this.ghHosts, MAX_PULL_REQUEST_SOURCES, this.bbsHosts)
+    this.tail = linksInMessage(message, this.hosts, this.jHosts, this.ghHosts, MAX_PULL_REQUEST_SOURCES, this.bbsHosts, this.grHosts)
   }
 
   private materialize(): void {

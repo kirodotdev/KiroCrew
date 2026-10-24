@@ -89,6 +89,13 @@ count as multiple runtime entries, so they never accidentally enable the global
 fallback. For a single host, an already-stored per-host token remains visible
 because the runtime gives it precedence.
 
+Gerrit follows the same rule from `dashboard.gerrit_hosts`, as kind
+`gerrit_http_credential` with `host` set on every row: one listed host is
+offered the global `GERRIT_HTTP_CREDENTIAL` slot (or its already-stored
+`GERRIT_HTTP_CREDENTIAL_<HEX>`, which the provider prefers); two or more hosts
+are each offered their own `GERRIT_HTTP_CREDENTIAL_<HEX>` row. The dashboard
+labels each row by host, so the hex-suffixed name is never typed by hand.
+
 A stored Connections OAuth client secret,
 `KIROCREW_CONNECTIONS_<SLUG>_CLIENT_SECRET`, appears in the catalog as kind
 `connections_client_secret`, with `host` set to the provider slug. It is listed
@@ -99,9 +106,10 @@ name returns `409` with code `managed_by_connections`; change it under
 When a stored integration name is one the runtime will not read, the response
 also carries an `unused` list of `{name, reason}` entries. The reasons are
 `wakatime_disabled` (`WAKATIME_API_KEY` stored while WakaTime is off),
-`jira_multi_host` (`JIRA_API_TOKEN` stored with more than one Jira host), and
+`jira_multi_host` (`JIRA_API_TOKEN` stored with more than one Jira host),
 `jira_host_precedence` (`JIRA_API_TOKEN` stored beside the single host's own
-`JIRA_TOKEN_<HEX>`, which wins).
+`JIRA_TOKEN_<HEX>`, which wins), and their Gerrit counterparts
+`gerrit_multi_host` and `gerrit_host_precedence` for `GERRIT_HTTP_CREDENTIAL`.
 
 The catalog is deliberately based on **actual vault consumers**, not the broader
 set of credential names accepted from `.env`. Most channel credentials still

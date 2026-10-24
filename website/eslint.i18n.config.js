@@ -952,7 +952,7 @@ export default [
               // merely mentions a forge is still reported — only the bare name is
               // exempt, and the sentences AROUND it stayed in the catalog (that is
               // what `{{provider}}` is for).
-              '^(GitHub|GitLab|Azure DevOps|Bitbucket Server)$',
+              '^(GitHub|GitLab|Azure DevOps|Bitbucket Server|Gerrit)$',
               // The PPTX Maker chat-token KEYWORDS (`[Style: name]`,
               // `[Template: name]`). Enumerated and whole-value-anchored, exactly like
               // the modifier-key caps below: the agent prompts parse this literal
