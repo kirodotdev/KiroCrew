@@ -18,6 +18,7 @@ import asyncio
 import logging
 import re
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -227,9 +228,16 @@ class KasLoginService:
         store: TokenStore,
         *,
         session: aiohttp.ClientSession | None = None,
+        on_identity_change: Callable[[], None] | None = None,
     ) -> None:
         self._store = store
         self._session = session
+        # Told, synchronously and under the pending lock, the moment the vault's
+        # identity changes: right after a credential is saved and right after a
+        # sign-out's deletes. The caller decides what that means (the dashboard
+        # hands in the KAS model catalog's forget), so this module never names a
+        # consumer; a hook that raises is logged, never propagated.
+        self._on_identity_change = on_identity_change
         self._pending: dict[str, _PendingKind] = {}
         # login_id -> the identity slot a re-authentication replaces once its own
         # credential lands (see _persist_and_finish). Kept beside, not inside, the
@@ -655,13 +663,31 @@ class KasLoginService:
                     result["replaced"] = removed
                 if failed:
                     result["code"] = "previous_identity_not_removed"
+                # The vault's answer changed AGAIN: until the deletes above landed,
+                # ``resolve`` still picked the outranking old slot, so a process
+                # that took its credential in that window holds the previous
+                # account. Announce the change a second time so whatever it
+                # reports is attributed to the account before this one.
+                self._identity_changed()
         return result
+
+    def _identity_changed(self) -> None:
+        """Run the identity-change hook; a hook failure is logged, never raised."""
+        if self._on_identity_change is None:
+            return
+        try:
+            self._on_identity_change()
+        except Exception:  # noqa: BLE001 - the credential write already landed
+            logger.warning("KAS identity-change hook failed", exc_info=True)
 
     async def _save_token(self, token: KasToken) -> dict[str, Any]:
         """Write an approved token to the store and shape the poll's terminal answer.
 
         Takes no lock, so ``_persist_and_finish`` can run it while holding
-        ``self._lock`` to keep the login cancellable until the write lands.
+        ``self._lock`` to keep the login cancellable until the write lands. The
+        identity-change hook runs right after the write, with no await between
+        them, so nothing that reads the new credential can be observed before the
+        change is announced.
         """
         try:
             await asyncio.to_thread(self._store.save, token)
@@ -674,6 +700,7 @@ class KasLoginService:
             # The one poll error a dashboard must NOT retry on another transport:
             # the store itself is unwritable, so every flavor would fail the same way.
             return {"status": "error", "code": "token_store_failed"}
+        self._identity_changed()
         return {"status": "authorized", "provider": token.provider}
 
     async def begin_loopback(self, provider_str: str, *, replaces: str = "") -> dict[str, Any]:
@@ -837,13 +864,19 @@ class KasLoginService:
                 _release(entry)
             # The named slot first: an unknown kind raises before any write.
             await asyncio.to_thread(self._store.delete, identity)
-            for other in KNOWN_IDENTITIES:
-                if other != identity:
-                    await asyncio.to_thread(self._store.delete, other)
-            # Nothing may resolve after a sign-out. A slot that survived is a
-            # failure to sign out, not a detail.
-            if await asyncio.to_thread(self._store.resolve) is not None:
-                raise TokenStoreError("a stored Kiro identity survived sign-out")
+            try:
+                for other in KNOWN_IDENTITIES:
+                    if other != identity:
+                        await asyncio.to_thread(self._store.delete, other)
+                # Nothing may resolve after a sign-out. A slot that survived is a
+                # failure to sign out, not a detail.
+                if await asyncio.to_thread(self._store.resolve) is not None:
+                    raise TokenStoreError("a stored Kiro identity survived sign-out")
+            finally:
+                # Announced even when a later delete fails: the named slot is
+                # already gone, so what ``resolve`` answers has changed whatever
+                # happened after, and the error still reaches the handler.
+                self._identity_changed()
 
     async def _forget(self, login_id: str) -> None:
         async with self._lock:

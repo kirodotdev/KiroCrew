@@ -30,6 +30,7 @@ import GithubLogo from './icons/GithubLogo'
 import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { copyToClipboard } from '../utils/clipboard'
+import { clearCachedModels } from '../providers/adapters/acp'
 import { providerLabel, type KasLoginProvider } from './kasProviderLabel'
 
 import { i18nT } from '../i18n/t'
@@ -815,6 +816,14 @@ function KasLoginFlow({
   useEffect(() => {
     if (!authorized) return
     void queryClient.invalidateQueries({ queryKey: QUERY_KEY })
+    // The model list belongs to the account: on the KAS bundle route the gateway
+    // forgets the previous account's catalog at this same moment, and
+    // `['available-models']` is refetched only on a session spawn (global
+    // `staleTime: Infinity`), so without this the picker keeps showing the
+    // previous account's models and prices. Drop localStorage first, then reset,
+    // the same pair the Agent Harness switch uses.
+    clearCachedModels()
+    void queryClient.resetQueries({ queryKey: ['available-models'] })
     // A switch whose old slot could not be removed is a sign-in that landed AND
     // a failure the user has to act on: the previous account still wins by slot
     // priority, so the re-read status will keep showing it. Kept as a notice

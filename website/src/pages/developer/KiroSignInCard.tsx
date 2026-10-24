@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle2, KeyRound, Loader2, LogOut, RefreshCw } fro
 import { api, type KasLoginStatus } from '../../api/client'
 import { KasLoginEmbedded } from '../../components/KasLoginGate'
 import { providerLabelFromWire } from '../../components/kasProviderLabel'
+import { clearCachedModels } from '../../providers/adapters/acp'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Card, CardTitle } from '../../components/ui'
 import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
@@ -32,6 +33,11 @@ function SignedInSummary({
     onSuccess: () => {
       onSignedOut()
       void queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
+      // The signed-out account's model list goes with it: the gateway forgot its
+      // catalog on this sign-out, and `['available-models']` would otherwise stay
+      // fresh (global `staleTime: Infinity`) until a session spawns.
+      clearCachedModels()
+      void queryClient.resetQueries({ queryKey: ['available-models'] })
     },
   })
   const lapsed = signInLapsed(status)

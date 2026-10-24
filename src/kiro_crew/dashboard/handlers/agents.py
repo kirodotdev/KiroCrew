@@ -314,6 +314,7 @@ from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
     read_only_reason_for_path,
     validate_definition_patch,
 )
+from kiro_crew.dashboard.handlers.models_kas_bundle import api_models_kas_bundle, kas_bundle_route
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
     owner_view_for_request,
 )
@@ -1408,6 +1409,13 @@ async def api_models(request: web.Request) -> web.Response:
                 request, backend, configured_default=_scoped_default(cfg, backend)
             )
         )
+    # KAS from Crew's own engine bundle: no kiro-cli to list models with, so the
+    # readiness gate, the ``--list-models`` spawn and the ``_entitled_kiro_models``
+    # narrowing below never apply (the engine's select is already the signed-in
+    # account's list). Decided per ROUTE (backend AND the bundle switch), not per
+    # backend, which is why it is not a capability-set branch like the one above.
+    if kas_bundle_route(cfg):
+        return await api_models_kas_bundle(request)
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
     # (--no-interactive does not suppress it, and there is no opt-out env var),
