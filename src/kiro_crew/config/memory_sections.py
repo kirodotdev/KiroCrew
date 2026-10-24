@@ -205,6 +205,19 @@ class MemoryConfig:
         default_factory=list,
         metadata=_meta("Semantic Keys", "Keys to index for semantic search."),
     )
+    recency_boost: float = field(
+        default=0.0,
+        metadata=_meta(
+            "V2 Recency Boost",
+            "V2 only. Maximum multiplicative boost for recent memories in recall "
+            "ranking, halving every 7 days (0 = disabled, preserving the default "
+            "age-neutral ranking; 0.15 = a 15% boost for today's entries). An old "
+            "entry with a decisively better semantic match still wins. Session "
+            "affinity (a small additive boost for memories from the current "
+            "conversation) is always on and independent of this knob. "
+            "Clamped to 0..1.",
+        ),
+    )
     history_idle_hours: float = field(
         default=3.0,
         metadata=_meta(
