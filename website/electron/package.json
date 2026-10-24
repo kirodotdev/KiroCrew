@@ -167,6 +167,7 @@
       "external-terminal.js",
       "gateway-env.js",
       "mac-env.js",
+      "system-proxy-env.js",
       "bundle-integrity.js",
       "data-home.js",
       "auto-update.js",

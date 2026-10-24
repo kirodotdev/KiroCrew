@@ -282,10 +282,93 @@ test("a GUI-launched macOS gateway appends only the launchd domain's new PATH en
   });
 
   assert.strictEqual(await supervisor.start(), true);
-  assert.deepStrictEqual(launchctlCalls, [["/bin/launchctl", "getenv", "PATH"]]);
+  // One launchd PATH read and one system-proxy read: the proxy discovery runs
+  // beside the PATH recovery (issue #19821) and this environment carries no
+  // proxy variable, so gateway-env.js asks the system store. A store without
+  // a manual proxy must leave the spawn env untouched — asserted below.
+  assert.deepStrictEqual(launchctlCalls, [
+    ["/bin/launchctl", "getenv", "PATH"],
+    ["/usr/sbin/scutil", "--proxy"],
+  ]);
   assert.strictEqual(spawnCalls[0][2].env.PATH, "/usr/bin:/bin:/opt/homebrew/bin");
+  assert.strictEqual(
+    spawnCalls[0][2].env.HTTP_PROXY,
+    undefined,
+    "a proxy-less scutil answer discovers nothing",
+  );
   assert.ok(logs.includes("PATH recovered from launchd domain: +1 dir(s) appended"));
   assert.strictEqual(spawnCalls[0][2].env.KIROCREW_PORT, undefined, "the explicit --port wins");
+});
+
+test("a proxy-only macOS host gets the system store's proxy into the gateway env", async () => {
+  // A GUI launch inherits launchd's environment, not the shell's: with the
+  // proxy only in System Settings, the spawn env must come from scutil —
+  // this is the whole fix for issue #19821's "every turn fails as a
+  // transient 5xx".
+  const { supervisor, spawnCalls } = harness({
+    processRef: {
+      platform: "darwin",
+      arch: "arm64",
+      env: { KIROCREW_HOME: "/virtual/kirocrew-home", PATH: "/usr/bin:/bin" },
+      resourcesPath: "/virtual/resources",
+      kill() { throw new Error("process kill must not run in this harness"); },
+    },
+    execFileSyncFn: (file) => {
+      if (file === "/usr/sbin/scutil") {
+        return [
+          "<dictionary> {",
+          "  HTTPEnable : 1",
+          "  HTTPPort : 7890",
+          "  HTTPProxy : proxy.corp.example",
+          "  HTTPSEnable : 1",
+          "  HTTPSPort : 7890",
+          "  HTTPSProxy : proxy.corp.example",
+          "  ExceptionsList : <array> {",
+          "    0 : *.local",
+          "  }",
+          "}",
+          "",
+        ].join("\n");
+      }
+      return "/opt/homebrew/bin:/usr/bin\n";
+    },
+  });
+
+  assert.strictEqual(await supervisor.start(), true);
+  const env = spawnCalls[0][2].env;
+  assert.strictEqual(env.HTTP_PROXY, "http://proxy.corp.example:7890");
+  assert.strictEqual(env.HTTPS_PROXY, "http://proxy.corp.example:7890");
+  assert.strictEqual(env.NO_PROXY, ".local,localhost,127.0.0.1,::1");
+  assert.strictEqual(env.PATH, "/usr/bin:/bin:/opt/homebrew/bin");
+});
+
+test("an inherited proxy variable suppresses the system-proxy read at spawn", async () => {
+  let scutilReads = 0;
+  const { supervisor, spawnCalls } = harness({
+    processRef: {
+      platform: "darwin",
+      arch: "arm64",
+      env: {
+        KIROCREW_HOME: "/virtual/kirocrew-home",
+        PATH: "/usr/bin:/bin",
+        HTTPS_PROXY: "http://operator.example:3128",
+      },
+      resourcesPath: "/virtual/resources",
+      kill() { throw new Error("process kill must not run in this harness"); },
+    },
+    execFileSyncFn: (file) => {
+      if (file === "/usr/sbin/scutil") scutilReads += 1;
+      return "/opt/homebrew/bin:/usr/bin\n";
+    },
+  });
+
+  assert.strictEqual(await supervisor.start(), true);
+  assert.strictEqual(scutilReads, 0, "an explicit env must not pay for discovery");
+  assert.strictEqual(
+    spawnCalls[0][2].env.HTTPS_PROXY,
+    "http://operator.example:3128",
+    "the operator's own proxy variable wins verbatim",
+  );
 });
 
 test("PATH is left exactly as inherited off macOS", async () => {
