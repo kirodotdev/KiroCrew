@@ -65,6 +65,7 @@ from kiro_crew.agent_sdk.tool_gate import ADAPTER_EXPOSED_CREDENTIAL_LEAVES
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.mcp_gateway.claim import schedule_claim
+from kiro_crew.process_identity import record_live_children_after_turn
 from kiro_crew.providers.base import CancelOutcome, LLMEvent, LLMProvider
 from kiro_crew.recovery.ladder import InfraError
 from kiro_crew.runtime_ownership import (
@@ -662,7 +663,15 @@ class AcpSessionProvider(LLMProvider):
             # it instead of hitting its generic `except Exception`.
             raise AcpError(str(exc)) from exc
         finally:
+            # End the shared turn FIRST so the tenancy release is never delayed
+            # or skipped, then record any child this turn forked while the
+            # leader is still alive (it stays alive past the turn), so a leader
+            # that exits before teardown does not leave them unrecorded and
+            # their group reported "kill failed". The record is bounded and a
+            # cancel during it propagates, so releasing the claim first keeps
+            # that release off the record's cancel path.
             await self._end_shared_turn(claim)
+            await record_live_children_after_turn(self)
 
     async def discard_unanswered_prompt(self) -> bool:
         """Forward to the session handle: rewind KAS history to before the last prompt."""
@@ -733,6 +742,7 @@ class AcpSessionProvider(LLMProvider):
             raise AcpError(str(exc)) from exc
         finally:
             await self._end_shared_turn(claim)
+            await record_live_children_after_turn(self)
 
     async def _connection_failure_is_signed_out(self, exc: AcpError) -> bool:
         """Whether a pre-output connection failure is really a missing sign-in.

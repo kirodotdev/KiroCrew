@@ -29,6 +29,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
 )
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
+from kiro_crew.process_identity import record_live_children_after_turn
 from kiro_crew.providers.base import CancelOutcome, LLMEvent
 
 if TYPE_CHECKING:
@@ -163,11 +164,17 @@ async def stream(
         send = functools.partial(send, allow_image=False)
     if timeout is not None:
         send = functools.partial(send, timeout=timeout)
-    async with aclosing(
-        self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
-    ) as events:
-        async for e in events:
-            yield self._to_llm_event(e)
+    try:
+        async with aclosing(
+            self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
+        ) as events:
+            async for e in events:
+                yield self._to_llm_event(e)
+    finally:
+        # Record any child this turn forked while the leader is still alive,
+        # so a leader that exits before teardown does not leave them
+        # unrecorded and their group reported "kill failed".
+        await record_live_children_after_turn(self._client)
 
 
 async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEvent]:
@@ -193,11 +200,14 @@ async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEv
         if self._client.backend not in ACP_BACKENDS_KIRO_SLASH_COMMANDS
         else self._client.stream_command
     )
-    async with aclosing(
-        self.essential_delivery.stream(command, send, lambda: self.context_incarnation)
-    ) as events:
-        async for e in events:
-            yield self._to_llm_event(e)
+    try:
+        async with aclosing(
+            self.essential_delivery.stream(command, send, lambda: self.context_incarnation)
+        ) as events:
+            async for e in events:
+                yield self._to_llm_event(e)
+    finally:
+        await record_live_children_after_turn(self._client)
 
 
 async def compact(self: AcpProvider, context: str = "") -> None:
