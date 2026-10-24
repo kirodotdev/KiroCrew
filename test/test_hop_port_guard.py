@@ -54,6 +54,42 @@ def _bind_from_another_process(port: int) -> str:
     return out.stdout.strip()
 
 
+def _wait_for_bind_from_another_process(port: int, *, timeout: float = 5.0, probe=None) -> str:
+    """Poll for a legitimate bind, tolerating a short-lived competing bind."""
+    probe = probe or _bind_from_another_process
+    deadline = time.monotonic() + timeout
+    while True:
+        result = probe(port)
+        if result == "BOUND":
+            return result
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError(f"port remained unavailable after {timeout:g}s: {result}")
+        time.sleep(min(0.05, remaining))
+
+
+class TestWaitForBindablePort:
+    def test_retries_after_a_transient_bind_refusal(self):
+        results = iter(("REFUSED 98", "BOUND"))
+
+        assert (
+            _wait_for_bind_from_another_process(12345, timeout=1, probe=lambda _port: next(results))
+            == "BOUND"
+        )
+
+    def test_fails_after_a_bounded_wait_if_the_port_stays_unavailable(self):
+        calls = 0
+
+        def _refuse(_port):
+            nonlocal calls
+            calls += 1
+            return "REFUSED 98"
+
+        with pytest.raises(AssertionError, match="remained unavailable"):
+            _wait_for_bind_from_another_process(12345, timeout=0, probe=_refuse)
+        assert calls == 1
+
+
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -154,13 +190,28 @@ class TestAnotherProcessCannotTakeAHeldPort:
 
     def test_release_frees_it_for_a_legitimate_reconnect(self, guard):
         """The crew comes back and needs a port to bind: our own hold must not be what
-        refuses it."""
+        refuses it. release() closes the held socket synchronously, so that is
+        assertable the moment it returns -- no retry can stand in for it. The external
+        probe afterwards only rules out anything ELSE keeping the port, and its wait
+        tolerates a short-lived competing bind, which is contention, not a late
+        release of ours."""
         port = _hold_a_port(guard, time.time() + 300)
         assert _bind_from_another_process(port).startswith("REFUSED")
 
+        # Capture the held socket BEFORE release: the invariant is on the object
+        # release() closes, not on the port number, which another process can
+        # grab the instant the close lands.
+        with guard._lock:
+            sock = guard._held[port][0]
+
         guard.release(port)
 
-        assert _bind_from_another_process(port) == "BOUND", "release did not free the port"
+        assert sock.fileno() == -1, "release() returned with the held socket still open"
+        assert guard.held_ports() == set()
+
+        # Containment check only; the synchronous close above is the release
+        # invariant, so this bounded wait weakens nothing.
+        _wait_for_bind_from_another_process(port)
 
     def test_a_repeated_failure_does_not_re_log_at_error(self, guard, caplog):
         """The retry must not bury every other error in the gateway.
