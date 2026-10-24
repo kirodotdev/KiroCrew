@@ -1099,8 +1099,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _compose_controls,
         _compose_posture,
         _dedup,
+        _refuse_unmatchable_host_entries,
         _reject_unknown_keys,
         _str_tuple,
+        _unmatchable_glob,
     )
     from kiro_crew.platform.governance_parts.baseline import (  # noqa: F401
         _CAPABILITY_OFF,
@@ -1169,6 +1171,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MATCHERS,
         _NETWORK_SCHEMES,
         _ORDINAL_SCALES,
+        _PLAIN_HOST_RE,
+        _canonical_ip,
         _expand,
         _looks_like_host,
         _match_command,
@@ -1179,6 +1183,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _norm_item,
         _url_host,
         register_matcher,
+        url_policy_hosts,
     )
     from kiro_crew.platform.governance_parts.parsing import (  # noqa: F401
         _KEY_OPEN_NAMESPACES,
