@@ -23,6 +23,7 @@ from runner_watchdog import (
     _WATCHED_SET,
     ACTIONABLE_CANDIDATE_STATUSES,
     CANDIDATE_STATUSES,
+    EVIDENCE_LISTING_PAGES,
     JOBS_LISTING_MAX_PAGES,
     PAGE_SIZE,
     REPO_LISTING_MAX_PAGES,
@@ -57,12 +58,19 @@ def _iter_repo_runs(
     get: Callable[[str], Any] | None = None,
     log: Callable[[str], None] = print,
     created_at_most: str | None = None,
+    created_after: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Yield runs of EVERY workflow with the given status, newest first, across at
     most ``max_pages`` pages of ``PAGE_SIZE``.
 
     ``created_at_most`` narrows the listing to runs created at or before that
-    instant (``created=<=…``); see ``_iter_actionable_runs``.
+    instant (``created=<=…``); see ``_iter_actionable_runs``. ``created_after``
+    narrows it to runs created strictly after one (``created=>…``), the young
+    band ``gather_all_candidate_runs`` reads for evidence. At most one is given.
+    That young-band read is best-effort: its shortfall is logged as a plain line,
+    not a ``::warning::``, because an unread young run hides no orphan and a
+    warning on every busy tick would bury the real truncation warnings. It still
+    lands in ``truncated`` when one is given, so a caller that must know can.
 
     ``GET /repos/{repo}/actions/runs?status=…`` is repo-wide: one paginated call
     returns runs of every workflow, so a single call chain per status covers the
@@ -99,6 +107,8 @@ def _iter_repo_runs(
         params: dict[str, Any] = {"status": status, "per_page": PAGE_SIZE, "page": page}
         if created_at_most is not None:
             params["created"] = f"<={created_at_most}"
+        elif created_after is not None:
+            params["created"] = f">{created_after}"
         query = urllib.parse.urlencode(params)
         payload = fetch(f"repos/{repo}/actions/runs?{query}")
         batch = (payload or {}).get("workflow_runs") or []
@@ -130,6 +140,11 @@ def _iter_repo_runs(
         f"({page - 1} page(s) read, cap {max_pages}, API ceiling "
         f"{REPO_LISTING_RESULT_CEILING})"
     )
+    if created_after is not None:
+        log(f"{message}; best-effort evidence read, no orphan can sit in the unread runs")
+        if truncated is not None:
+            truncated.append(message)
+        return
     if hit_cap or at_ceiling:
         log(f"::warning::{message}; the oldest were not read")
         if truncated is not None:
@@ -188,6 +203,7 @@ def _iter_actionable_runs(
     truncated: list[str],
     get: Callable[[str], Any] | None = None,
     log: Callable[[str], None] = print,
+    initial_upper: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Yield every run of an ACTIONABLE status, reading past the result ceiling.
 
@@ -197,11 +213,16 @@ def _iter_actionable_runs(
     oldest run already read. ``<=`` rather than ``<`` so runs that share that
     second are not skipped; the caller drops the repeats by id.
 
+    When ``initial_upper`` is set (a ``candidate_threshold``), the first window
+    already starts at that timestamp: only runs created at or before it are
+    returned, so orphan-aged runs are on page one however many younger runs sit
+    ahead of them in the unfiltered listing.
+
     Truncation is recorded only for the LAST window, and only when it still hit a
     nameable cause: the window cap ran out, or a full window made no progress
     (every run in it shares one ``created_at``), so narrowing cannot reach further.
     """
-    upper: str | None = None
+    upper: str | None = initial_upper
     for window in range(1, REPO_LISTING_MAX_WINDOWS + 1):
         sink: list[str] = []
         oldest: str | None = None
@@ -232,6 +253,8 @@ def gather_all_candidate_runs(
     api: Api,
     repo: str,
     *,
+    candidate_threshold: str | None = None,
+    young_unread: list[str] | None = None,
     get: Callable[[str], Any] | None = None,
     log: Callable[[str], None] = print,
 ) -> tuple[list[dict[str, Any]], ApiError | None, list[str]]:
@@ -250,6 +273,20 @@ def gather_all_candidate_runs(
     the runs being hunted; the page cap bounds the listing cost, and the global
     per-tick heal cap still bounds how many runs are acted on.
 
+    When ``candidate_threshold`` is set (``now - saturation_wait``, on the clock of
+    the sweep or of the pre-cancel re-read), the actionable listing starts at that timestamp through
+    ``_iter_actionable_runs``'s ``initial_upper``, so orphan-aged runs AND the runs
+    able to carry a slow start (age >= ``saturation_wait``) sit on page one however
+    many younger runs precede them. A burst of young runs then no longer pushes an
+    orphan past the windows. ``EVIDENCE_LISTING_PAGES`` pages of the excluded young
+    band (``created=>threshold``) are read too, so the tick still absorbs their
+    prompt CodeBuild starts as dispatch evidence. That read is best-effort: its
+    shortfall is not a tick failure, because a run younger than the line cannot
+    hold the slow start the partial-evidence hold looks for when it is read. It
+    can by the time a later cancel is judged, so the shortfall is appended to
+    ``young_unread`` when given, and the pre-cancel re-read turns it into an
+    unread candidate. Without ``candidate_threshold`` every live run is listed.
+
     An actionable status is read through ``_iter_actionable_runs``, which narrows
     by created window past the result ceiling. The third element names each
     ACTIONABLE status whose listing still did not reach its own ``total_count``. It is a tick-level failure rather than a note, because the
@@ -265,8 +302,30 @@ def gather_all_candidate_runs(
         for status in CANDIDATE_STATUSES:
             if status in ACTIONABLE_CANDIDATE_STATUSES:
                 runs = _iter_actionable_runs(
-                    api, repo, status=status, truncated=truncated, get=get, log=log
+                    api,
+                    repo,
+                    status=status,
+                    truncated=truncated,
+                    get=get,
+                    log=log,
+                    initial_upper=candidate_threshold,
                 )
+                if candidate_threshold is not None:
+                    for run in runs:
+                        if _is_watched(run):
+                            seen.setdefault(int(run["id"]), run)
+                    # The young band the bounded pass left out: never actionable,
+                    # but a prompt start in it is evidence the fleet dispatches.
+                    runs = _iter_repo_runs(
+                        api,
+                        repo,
+                        status=status,
+                        max_pages=EVIDENCE_LISTING_PAGES,
+                        get=get,
+                        log=log,
+                        created_after=candidate_threshold,
+                        truncated=young_unread,
+                    )
             else:
                 runs = _iter_repo_runs(
                     api, repo, status=status, max_pages=REPO_LISTING_MAX_PAGES, get=get, log=log

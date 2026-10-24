@@ -1181,7 +1181,18 @@ Details worth knowing:
     six-hour `main` outages; the six-hour orphan behind the second one sat on page
     seven. Live statuses read at most ten
     pages each — the API's reachable window, since a status-filtered runs listing
-    stops at 1000 results. A listed live run older than `GHOST_AFTER` (two days,
+    stops at 1000 results. The main sweep's actionable listings are bounded by
+    `created=<=<now-saturation_wait>`, so orphan-aged runs and every run old enough
+    to hold a slow start (five minutes) sit on page one however many younger runs
+    fill the head of the listing; a same-second burst of older runs is still
+    subject to the window cap. One best-effort page of the younger runs
+    (`created=>…`) is read too, because a prompt CodeBuild start in one is still
+    dispatch evidence. The pre-cancel re-read is bounded the same way on its own
+    clock, and when its bounded listing is still truncated nothing is cancelled and
+    the tick goes red (`listing-truncated`), since a slow start among the unread
+    runs cannot be ruled out. Young runs its evidence page did not list cross the
+    line while the cancels are judged, so they count as one unread run and the
+    partial-evidence hold holds the cancel. A listed live run older than `GHOST_AFTER` (two days,
     its age taken from the newer of `created_at` and `run_started_at`) is a ghost:
     GitHub cancels a job that has not started within a day, so no job of it will
     run. Ghosts are dropped before the read bound is drawn, so they are neither
