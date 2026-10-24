@@ -162,8 +162,11 @@ describe('useWebSocket slot-activity coalescing', () => {
     })
     runFrames()
 
-    const touches = dispatchSpy.mock.calls.filter(
-      ([a]) => (a as { type?: string })?.type === 'dashboard/touchSlotActivity')
+    // The frame's recency bumps ride in its one `stream/flush` action.
+    const touches = dispatchSpy.mock.calls.flatMap(([a]) => {
+      const act = a as { type?: string; payload?: { recency?: { key: string }[] } }
+      return act?.type === 'stream/flush' ? act.payload?.recency ?? [] : []
+    })
     expect(touches).toHaveLength(1)
     // Last-seen wins, matching the un-buffered path's terminal state.
     expect(lastTs('slot-1')).toBe('2026-08-10T10:00:29Z')

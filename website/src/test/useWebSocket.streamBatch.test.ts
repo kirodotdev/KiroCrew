@@ -140,22 +140,38 @@ describe('useWebSocket defers notifications for background stream traffic', () =
     await vi.waitFor(() => expect(notifications).toBeGreaterThanOrEqual(1), { timeout: 2000, interval: 5 })
   })
 
-  it('an open-slot chunk notifies at dispatch', () => {
+  it('an open-slot chunk notifies once, at the flush, with its status', () => {
     const ws = mount()
     act(() => { ws.simulateMessage(chunk(OPEN, 'hello', 1)) })
-    expect(notifications).toBe(1)   // the streaming status transition
+    expect(notifications).toBe(0)
     runFrames()
-    expect(notifications).toBe(2)   // the flushed text
+    // The text and the streaming status transition land in one notification.
+    expect(notifications).toBe(1)
+    expect(statusKind(OPEN)).toBe('streaming')
     expect(globalStore.getState().chat.messages.find(m => m.role === 'streaming')?.content).toBe('hello')
   })
 
-  it('an open-slot dispatch delivers held background changes with it', () => {
+  it('one frame lands every streaming slot in one notification', () => {
+    const ws = mount()
+    act(() => {
+      ws.simulateMessage(chunk(BACKGROUND, 'bg', 1))
+      ws.simulateMessage(chunk(OPEN, 'fg', 1))
+    })
+    runFrames()
+    expect(notifications).toBe(1)
+    expect(statusKind(BACKGROUND)).toBe('streaming')
+    expect(statusKind(OPEN)).toBe('streaming')
+  })
+
+  it('an open-slot flush delivers held background changes with it', () => {
     const ws = mount()
     act(() => { ws.simulateMessage(chunk(BACKGROUND, 'bg', 1)) })
+    runFrames()
     expect(notifications).toBe(0)
     let seen: string | undefined
     const unsub = globalStore.subscribe(() => { seen ??= statusKind(BACKGROUND) })
     act(() => { ws.simulateMessage(chunk(OPEN, 'fg', 1)) })
+    runFrames()
     unsub()
     expect(notifications).toBe(1)
     expect(seen).toBe('streaming')

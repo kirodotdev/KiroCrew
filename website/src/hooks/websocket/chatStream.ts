@@ -192,11 +192,10 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       // and recomputing the O(N) displayItems / index maps — on every token.
       const cs = data.slot
       if (cs) {
+        // The flush also moves the slot's status to `streaming` (see
+        // store/streamFlush.ts), so a chunk costs no dispatch of its own.
         const entry = buffers.bufferChunk(cs, data.seq, data.content ?? '', data.gen)
         if (!entry) return
-        if (store.getState().chat.slotStatusDetail[cs]?.kind !== 'streaming') {
-          dispatch(batchedUnlessOpen(cs, setSlotStatusDetail({ slot: cs, kind: 'streaming', ts: Date.now() })))
-        }
         buffers.drainOrScheduleChunks(entry)
       }
     },
@@ -207,21 +206,11 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       // dispatch recomputes the O(N) displayItems on each.
       const thinkSlot = data.slot as string | undefined
       const thinkText = (data as { content?: string }).content || ''
+      // The flush moves the status to 'thinking' only on a genuine kind
+      // TRANSITION (from neither 'streaming' nor 'thinking'), so a long
+      // reasoning stream does not rewrite the entry, and with it the
+      // slotStatusDetail map identity, on every frame.
       if (thinkSlot && thinkText) buffers.bufferThinking(thinkSlot, thinkText)
-      // Dispatch the status detail only on a genuine kind TRANSITION into
-      // 'thinking'. Guarding merely on `!== 'streaming'` would not
-      // self-limit — 'thinking' is itself `!== 'streaming'`, so it would
-      // re-dispatch on EVERY thought frame with a fresh `ts`. Because
-      // setSlotStatusDetail replaces slotStatusDetail[slot] wholesale, that
-      // bumps the map identity per frame and re-renders every whole-map
-      // subscriber (ChatSidebar, CommandPalette) for the duration of the
-      // model's reasoning. The sibling chat_chunk guard writes 'streaming'
-      // and so is naturally idempotent; this is the same shape, made
-      // explicit.
-      const detailKind = data.slot ? store.getState().chat.slotStatusDetail[data.slot]?.kind : undefined
-      if (data.slot && detailKind !== 'streaming' && detailKind !== 'thinking') {
-        dispatch(batchedUnlessOpen(data.slot, setSlotStatusDetail({ slot: data.slot, kind: 'thinking', ts: Date.now() })))
-      }
     },
     onToolCall(data) {
       emitToolCall(data)
@@ -270,7 +259,9 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
         // is not localized, is stored as a string.
         const derivedAction = derivedInfo.action
         const derivedTitle = derivedInfo.derived && !derivedAction ? sanitizeLlmOutput(derivedInfo.title) : ''
-        const prev = store.getState().chat.slotStatusDetail[data.slot]
+        // A buffered label or chunk since the tool call has moved the line
+        // off this tool, so a refinement then has nothing to merge into.
+        const prev = buffers.hasPendingStatus(data.slot) ? undefined : store.getState().chat.slotStatusDetail[data.slot]
         const mergeInto = isUpdate && tcid && prev?.kind === 'tool' && prev.toolCallId === tcid
           ? prev
           : undefined

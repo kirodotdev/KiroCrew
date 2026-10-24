@@ -11,7 +11,8 @@
  *  that dispatch this slice's own actions (`deleteSlot`, `requestStop`), and
  *  `loadOlderMessages` with its reducers, whose slot capture `chatPins.test.tsx`
  *  reads from this file. */
-import { createSlice, createAsyncThunk, type PayloadAction } from '@reduxjs/toolkit'
+import { createSlice, createAsyncThunk, isDraft, original, type PayloadAction } from '@reduxjs/toolkit'
+import { streamFlush, type StreamFlushPayload } from './streamFlush'
 import { whenScrollQuiet } from '../lib/scrollQuiet'
 import { nextActiveAfterClose } from '../lib/sessionTabs'
 import { api } from '../api/client'
@@ -861,6 +862,37 @@ export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force
   },
 )
 
+/** Apply one frame of buffered stream traffic (see `store/streamFlush.ts`):
+ *  per slot the reasoning, then the content, then the status line those
+ *  events imply, then the sub-agent text. The dashboard slice applies the
+ *  same action's recency bumps. */
+function applyStreamFlush(state: ChatState, p: StreamFlushPayload): void {
+  // The entries as they stood before this action, to compare against what the
+  // hook saw when each slot's newest event arrived.
+  const statusBefore = (state.slotStatusDetail && isDraft(state.slotStatusDetail) ? original(state.slotStatusDetail) : state.slotStatusDetail) ?? {}
+  for (const s of p.slots) {
+    if (s.thinking) messageReducers.sseThinkingChunk(state, { type: sseThinkingChunk.type, payload: { slot: s.slot, content: s.thinking } })
+    if (s.content) {
+      const { text, seq, gen, parts } = s.content
+      const frame: ChatFrame = { slot: s.slot, role: 'chunk', content: text, seq, gen, batched: true, parts }
+      if (s.slot !== state.activeSlot) applyNonActiveFrame(state, frame)
+      else applyActiveFrame(state, frame)
+    }
+    const st = s.status
+    if (!st || isUnsafeKey(s.slot)) continue
+    const k = safeKey(s.slot)
+    // Written directly since the newest buffered event, so newer than all of them.
+    if (statusBefore[k] !== st.seen) continue
+    const start = st.label ?? st.seen
+    const kind = start?.kind
+    let next = st.label
+    if (st.content && kind !== 'streaming') next = { kind: 'streaming', ts: p.ts }
+    else if (st.thinking && kind !== 'streaming' && kind !== 'thinking') next = { kind: 'thinking', ts: p.ts }
+    if (next) (state.slotStatusDetail ??= {})[k] = next
+  }
+  if (p.subagents.length) subagentReducers.sseSubagentBatchChunks(state, { type: sseSubagentBatchChunks.type, payload: { chunks: p.subagents } })
+}
+
 const chatSlice = createSlice({
   name: 'chat',
   initialState,
@@ -933,6 +965,7 @@ const chatSlice = createSlice({
     addSlotRefreshCases(builder)
     addLifecycleCases(builder)
     builder
+      .addCase(streamFlush, (state, action) => { applyStreamFlush(state, action.payload) })
       .addCase(deleteSlot.fulfilled, (state, action) => {
         // A 404 close closed nothing: the close that did pop the key can still
         // fail and restore the slot, so its caches stay until an authoritative

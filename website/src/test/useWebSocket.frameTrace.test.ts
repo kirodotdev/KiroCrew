@@ -738,7 +738,7 @@ describe('useWebSocket lifecycle trace', () => {
     expect(trace).toEqual(EXPECTED_LIFECYCLE['StrictMode mounts twice and connects once'])
   })
 
-  it('a stream hold defers all three pipelines to one timer each', async () => {
+  it('a stream hold defers the frame flush of all three buffers to one timer', async () => {
     const { ws } = await mountOpen()
     vi.useFakeTimers()
     try {
@@ -757,10 +757,10 @@ describe('useWebSocket lifecycle trace', () => {
       vi.useRealTimers()
     }
     expect(rafQueue).toHaveLength(0)
-    expect(trace).toEqual(EXPECTED_LIFECYCLE['a stream hold defers all three pipelines to one timer each'])
+    expect(trace).toEqual(EXPECTED_LIFECYCLE['a stream hold defers the frame flush of all three buffers to one timer'])
   })
 
-  it('without requestAnimationFrame every pipeline flushes on a 16ms timer', async () => {
+  it('without requestAnimationFrame the frame flush runs on a 16ms timer', async () => {
     const { ws } = await mountOpen()
     vi.stubGlobal('requestAnimationFrame', undefined)
     vi.stubGlobal('cancelAnimationFrame', undefined)
@@ -778,7 +778,7 @@ describe('useWebSocket lifecycle trace', () => {
     } finally {
       vi.useRealTimers()
     }
-    expect(trace).toEqual(EXPECTED_LIFECYCLE['without requestAnimationFrame every pipeline flushes on a 16ms timer'])
+    expect(trace).toEqual(EXPECTED_LIFECYCLE['without requestAnimationFrame the frame flush runs on a 16ms timer'])
   })
 
   it('voice frames for a registered request', async () => {
@@ -849,14 +849,14 @@ describe('useWebSocket lifecycle trace', () => {
     expect(trace).toEqual(EXPECTED_LIFECYCLE['frames inside the reconnect catch-up window'])
   })
 
-  it('an overflowing chunk lands its status before the flush; reasoning after it', async () => {
+  it('an overflowing chunk or reasoning stream flushes its slot at once', async () => {
     const { ws } = await mountOpen()
     trace = []
     act(() => {
       ws.frame({ type: 'chat_chunk', data: { slot: ACTIVE, seq: 1, content: 'x'.repeat(50_001) } })
       ws.frame({ type: 'chat_thinking', data: { slot: BACKGROUND, content: 'y'.repeat(50_001) } })
     })
-    expect(trace.map(line => line.slice(0, 120))).toEqual(EXPECTED_LIFECYCLE['an overflowing chunk lands its status before the flush; reasoning after it'])
+    expect(trace.map(line => line.slice(0, 120))).toEqual(EXPECTED_LIFECYCLE['an overflowing chunk or reasoning stream flushes its slot at once'])
   })
 
   it('turn boundaries speak the tail and keep the delivery floor across a segment', async () => {
@@ -1159,7 +1159,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action chat/setSlotStatusDetail {"slot":"slot-a","kind":"thinking","ts":"<clock>"}',
     'frame',
     'cancel-frame 1',
-    'action dashboard/touchSlotActivity {"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}',
+    'action stream/flush {"slots":[],"subagents":[],"recency":[{"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}],"ts":"<clock>"}',
   ],
   "chat_message assistant row in a background slot": [
     'action chat/sseChatMessage {"slot":"slot-b","role":"assistant","content":"done","ts":"2026-09-01T00:00:00.000Z"}',
@@ -1167,7 +1167,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'event mc-theme-sound {"trigger":"message-received"}',
     'frame',
     'cancel-frame 1',
-    'action dashboard/touchSlotActivity {"key":"slot-b","ts":"2026-09-01T00:00:00.000Z","settled":false}',
+    'action stream/flush {"slots":[],"subagents":[],"recency":[{"key":"slot-b","ts":"2026-09-01T00:00:00.000Z","settled":false}],"ts":"<clock>"}',
   ],
   "chat_message permission row in a background slot": [
     'action chat/sseChatMessage {"slot":"slot-b","role":"permission","content":"[agent] shell","ts":"2026-09-01T00:00:00.000Z"}',
@@ -1191,7 +1191,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action chat/sseChatMessage {"slot":"slot-a","role":"tool_result","content":"out","ts":"2026-09-01T00:00:00.000Z"}',
     'frame',
     'cancel-frame 1',
-    'action dashboard/touchSlotActivity {"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":false}',
+    'action stream/flush {"slots":[],"subagents":[],"recency":[{"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":false}],"ts":"<clock>"}',
   ],
   "chat_message passive note": [
     'action chat/sseChatMessage {"slot":"slot-a","role":"inject","cls":"msg msg-note","content":"note","ts":"2026-09-01T00:00:00.000Z"}',
@@ -1200,7 +1200,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action chat/setSlotStatusDetail {"slot":"slot-a","kind":"thinking","ts":"<clock>"}',
     'frame',
     'cancel-frame 1',
-    'action dashboard/touchSlotActivity {"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}',
+    'action stream/flush {"slots":[],"subagents":[],"recency":[{"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}],"ts":"<clock>"}',
   ],
   "chat_message_update by tool call and by row": [
     'action chat/sseChatMessageUpdate {"slot":"slot-a","tool_call_id":"tc-1","content":"x"}',
@@ -1214,22 +1214,21 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action chat/removeQueuedMessage {"slot":"slot-a","queue_id":"q-1"}',
     'frame',
     'cancel-frame 1',
-    'action dashboard/touchSlotActivity {"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}',
+    'action stream/flush {"slots":[],"subagents":[],"recency":[{"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}],"ts":"<clock>"}',
   ],
   "steer_push": [
     'action chat/appendSlotMessage {"slot":"slot-a","message":{"role":"user","content":"steer","cls":"msg msg-u","meta":{"steer":true,"sendId":"s-1","steerState":"written","mid":"m-9","files":["f"],"dirs":["d"]},"ts":"2026-09-01T00:00:00.000Z"}}',
     'frame',
     'cancel-frame 2',
-    'action dashboard/touchSlotActivity {"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}',
+    'action stream/flush {"slots":[],"subagents":[],"recency":[{"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}],"ts":"<clock>"}',
   ],
   "steer_push without a slot": [
     'action chat/appendSlotMessage {"slot":"slot-a","message":{"role":"user","content":"steer","cls":"msg msg-u","meta":{"steer":true}}}',
   ],
   "chat_chunk": [
-    'action chat/setSlotStatusDetail {"slot":"slot-a","kind":"streaming","ts":"<clock>"}',
     'frame',
     'cancel-frame 1',
-    'action chat/sseChatMessage {"slot":"slot-a","role":"chunk","content":"Hello world","seq":2,"gen":"g-1","batched":true,"parts":[{"seq":1,"text":"Hello"},{"seq":2,"text":" world"}]}',
+    'action stream/flush {"slots":[{"slot":"slot-a","content":{"text":"Hello world","seq":2,"gen":"g-1","parts":[{"seq":1,"text":"Hello"},{"seq":2,"text":" world"}]},"status":{"content":true,"thinking":false}}],"subagents":[],"recency":[],"ts":"<clock>"}',
   ],
   "tool_call and refinement": [
     'event kirocrew-tool-call {"slot":"slot-a","tool":"Terminal","kind":"execute","purpose":"List files","input_preview":"ls -la","is_shell":true,"tool_call_id":"tc-1"}',
@@ -1282,13 +1281,13 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action chat/sseSubagentTool {"slot":"slot-a","id":"sa-1","tool":"read","turns":1}',
     'action chat/sseSubagentStalled {"slot":"slot-a","id":"sa-1","stalled":true}',
     'cancel-frame 1',
-    'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-1","slot":"slot-a","text":"partialmore"}]}',
+    'action stream/flush {"slots":[],"subagents":[{"id":"sa-1","slot":"slot-a","text":"partialmore"}],"recency":[],"ts":"<clock>"}',
     'action chat/sseSubagentRetrying {"slot":"slot-a","id":"sa-1","attempt":2}',
     'cancel-frame 2',
-    'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-1","slot":"slot-a","text":"again"}]}',
+    'action stream/flush {"slots":[],"subagents":[{"id":"sa-1","slot":"slot-a","text":"again"}],"recency":[],"ts":"<clock>"}',
     'action chat/sseSubagentRetrying {"slot":"slot-a","id":"sa-1"}',
     'cancel-frame 3',
-    'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-1","slot":"slot-a","text":"last"}]}',
+    'action stream/flush {"slots":[],"subagents":[{"id":"sa-1","slot":"slot-a","text":"last"}],"recency":[],"ts":"<clock>"}',
     'action chat/sseSubagentDone {"slot":"slot-a","id":"sa-1","elapsed":3,"credits":1.5}',
   ],
   "subagent snapshot and batches": [
@@ -1296,7 +1295,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-3","slot":"slot-a","text":"x"}]}',
     'action chat/sseSubagentBatchUpdate {"updates":[{"slot":"slot-a","id":"sa-3","attempt":2},{"slot":"slot-a","id":"sa-4","tool":"grep"}]}',
     'cancel-frame 2',
-    'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-5","slot":"slot-a","text":"y"}]}',
+    'action stream/flush {"slots":[],"subagents":[{"id":"sa-5","slot":"slot-a","text":"y"}],"recency":[],"ts":"<clock>"}',
     'action chat/sseSubagentBatchChunks {"chunks":[{"slot":"slot-a","id":"sa-5","text":"z"}]}',
     'action chat/sseSubagentSnapshot {"slot":"slot-a","id":"sa-7","task":"t","agent":"a","streaming":"","last_tool":"","started":1}',
     'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-6","slot":"slot-a","text":"w"}]}',
@@ -1335,17 +1334,18 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action chat/sseContextUsage {"slot":"slot-a","pct":40}',
   ],
   "chat_thinking": [
-    'action chat/setSlotStatusDetail {"slot":"slot-a","kind":"thinking","ts":"<clock>"}',
     'frame',
     'cancel-frame 1',
-    'action chat/sseThinkingChunk {"slot":"slot-a","content":"mullmore"}',
+    'action stream/flush {"slots":[{"slot":"slot-a","thinking":"mullmore","status":{"content":false,"thinking":true}}],"subagents":[],"recency":[],"ts":"<clock>"}',
   ],
   "chat_segment": [
     'action chat/sseChatMessage {"slot":"slot-a","role":"_segment"}',
   ],
   "chat_status and variant switch": [
-    'action chat/setSlotStatusDetail {"slot":"slot-a","kind":"thinking","label":"Compacting","ts":"<clock>"}',
     'action chat/refreshSlot/pending',
+    'frame',
+    'cancel-frame 1',
+    'action stream/flush {"slots":[{"slot":"slot-a","status":{"content":false,"thinking":false,"label":{"kind":"thinking","label":"Compacting","ts":"<clock>"}}}],"subagents":[],"recency":[],"ts":"<clock>"}',
   ],
   "chat_done in the active slot": [
     'action chat/sseChatMessage {"slot":"slot-a","ts":"2026-09-01T00:00:00.000Z","role":"_done"}',
@@ -1500,10 +1500,8 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'action dashboard/sseDisconnected undefined',
     'connect ws:/api/ws?caps=slot_patch',
     'query invalidateQueries ["crew-log-projections"] {"cancelRefetch":false}',
+    'action stream/flush {"slots":[{"slot":"slot-a","thinking":"kept","status":{"content":true,"thinking":true}}],"subagents":[],"recency":[],"ts":"<clock>"}',
     'cancel-frame 1',
-    'action chat/sseThinkingChunk {"slot":"slot-a","content":"kept"}',
-    'cancel-frame 2',
-    'cancel-frame 3',
     'action dashboard/sseConnected undefined',
     'action dashboard/fetchSlots/pending',
     'query invalidateQueries ["session-summary"]',
@@ -1543,13 +1541,8 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'reload',
   ],
   "unmount": [
+    'action stream/flush {"slots":[{"slot":"slot-a","thinking":"salvaged","status":{"content":true,"thinking":true}}],"subagents":[{"id":"sa-1","slot":"slot-a","text":"flushed"}],"recency":[{"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}],"ts":"<clock>"}',
     'cancel-frame 1',
-    'cancel-frame 2',
-    'cancel-frame 3',
-    'action dashboard/touchSlotActivity {"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}',
-    'cancel-frame 2',
-    'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-1","slot":"slot-a","text":"flushed"}]}',
-    'action chat/sseThinkingChunk {"slot":"slot-a","content":"salvaged"}',
     'close',
     'action chat/setVoicePlaying false',
   ],
@@ -1610,23 +1603,17 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'action notifications/fetch/fulfilled',
     'action chat/resyncWaitingSideConversations/fulfilled',
   ],
-  "a stream hold defers all three pipelines to one timer each": [
-    'action chat/setSlotStatusDetail {"slot":"slot-a","kind":"streaming","ts":"<clock>"}',
+  "a stream hold defers the frame flush of all three buffers to one timer": [
     'action chat/appendQueuedMessage {"slot":"slot-a","content":"q","queue_id":"q-7","ts":"2026-09-01T00:00:00.000Z","queueId":"<id>"}',
     'before hold ends',
     'hold ended',
-    'action chat/sseChatMessage {"slot":"slot-a","role":"chunk","content":"held","seq":1,"batched":true,"parts":[{"seq":1,"text":"held"}]}',
-    'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-1","slot":"slot-a","text":"held"}]}',
-    'action dashboard/touchSlotActivity {"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}',
+    'action stream/flush {"slots":[{"slot":"slot-a","content":{"text":"held","seq":1,"parts":[{"seq":1,"text":"held"}]},"status":{"content":true,"thinking":false}}],"subagents":[{"id":"sa-1","slot":"slot-a","text":"held"}],"recency":[{"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}],"ts":"<clock>"}',
   ],
-  "without requestAnimationFrame every pipeline flushes on a 16ms timer": [
-    'action chat/setSlotStatusDetail {"slot":"slot-a","kind":"streaming","ts":"<clock>"}',
+  "without requestAnimationFrame the frame flush runs on a 16ms timer": [
     'action chat/appendQueuedMessage {"slot":"slot-a","content":"q","queue_id":"q-6","ts":"2026-09-01T00:00:00.000Z","queueId":"<id>"}',
     'before 16ms',
     '15ms',
-    'action chat/sseChatMessage {"slot":"slot-a","role":"chunk","content":"timed","seq":1,"batched":true,"parts":[{"seq":1,"text":"timed"}]}',
-    'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-1","slot":"slot-a","text":"timed"}]}',
-    'action dashboard/touchSlotActivity {"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}',
+    'action stream/flush {"slots":[{"slot":"slot-a","content":{"text":"timed","seq":1,"parts":[{"seq":1,"text":"timed"}]},"status":{"content":true,"thinking":false}}],"subagents":[{"id":"sa-1","slot":"slot-a","text":"timed"}],"recency":[{"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}],"ts":"<clock>"}',
   ],
   "voice frames for a registered request": [
     'event voice-synthesis-start {"slot":"slot-a","request_id":"r-1"}',
@@ -1665,22 +1652,19 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'query invalidateQueries ["pull-request-statuses"] {"refetchType":"none"}',
     'query invalidateQueries ["session-control-status","dashboard:slot-b"] {"refetchType":"none"}',
   ],
-  "an overflowing chunk lands its status before the flush; reasoning after it": [
-    'action chat/setSlotStatusDetail {"slot":"slot-a","kind":"streaming","ts":"<clock>"}',
-    'action chat/sseChatMessage {"slot":"slot-a","role":"chunk","content":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-    'action chat/sseThinkingChunk {"slot":"slot-b","content":"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy',
-    'action chat/setSlotStatusDetail {"slot":"slot-b","kind":"thinking","ts":"<clock>"}',
+  "an overflowing chunk or reasoning stream flushes its slot at once": [
+    'action stream/flush {"slots":[{"slot":"slot-a","content":{"text":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+    'action stream/flush {"slots":[{"slot":"slot-b","thinking":"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy',
   ],
   "turn boundaries speak the tail and keep the delivery floor across a segment": [
-    'action chat/setSlotStatusDetail {"slot":"slot-a","kind":"streaming","ts":"<clock>"}',
     'frame',
     'cancel-frame 1',
-    'action chat/sseChatMessage {"slot":"slot-a","role":"chunk","content":"First sentence. Second","seq":1,"batched":true,"parts":[{"seq":1,"text":"First sentence. Second"}]}',
+    'action stream/flush {"slots":[{"slot":"slot-a","content":{"text":"First sentence. Second","seq":1,"parts":[{"seq":1,"text":"First sentence. Second"}]},"status":{"content":true,"thinking":false}}],"subagents":[],"recency":[],"ts":"<clock>"}',
     'action chat/setVoicePreparing true',
     'action chat/sseChatMessage {"slot":"slot-a","role":"_segment"}',
     'frame',
     'cancel-frame 2',
-    'action chat/sseChatMessage {"slot":"slot-a","role":"chunk","content":"After tool. Tail","seq":2,"batched":true,"parts":[{"seq":2,"text":"After tool. Tail"}]}',
+    'action stream/flush {"slots":[{"slot":"slot-a","content":{"text":"After tool. Tail","seq":2,"parts":[{"seq":2,"text":"After tool. Tail"}]},"status":{"seen":{"kind":"streaming","ts":"<clock>"},"content":true,"thinking":false}}],"subagents":[],"recency":[],"ts":"<clock>"}',
     'action chat/sseChatMessage {"slot":"slot-a","ts":"2026-09-01T00:00:00.000Z","role":"_done"}',
     'event mc-notification {"kind":"turn"}',
     'send {"type":"slot_read","slot":"slot-a","read_ts":"2026-09-01T00:00:00.000Z"}',
@@ -1688,7 +1672,7 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     "synthesize slot-a \"First sentence.\\nSecond\\nAfter tool.\\nTail\"",
   ],
   "unmount during backoff still lands the buffered recency bump": [
-    'action dashboard/touchSlotActivity {"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}',
+    'action stream/flush {"slots":[],"subagents":[],"recency":[{"key":"slot-a","ts":"2026-09-01T00:00:00.000Z","settled":true}],"ts":"<clock>"}',
     'action chat/setVoicePlaying false',
   ],
   "focus sender": [
