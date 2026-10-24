@@ -12157,6 +12157,7 @@
         "sensitive_in_card": "Prima di condividere — la card contiene: {{kinds}}",
         "sensitive_in_caption": "Prima di condividere — il testo del post contiene: {{kinds}}",
         "withdrawn_by_policy": "La condivisione è stata disattivata da una politica. Copia il tuo testo adesso se vuoi conservarlo — alla chiusura di questa finestra non viene salvato.",
+        "sites_unavailable": "Impossibile verificare su quali siti puoi condividere, quindi non ne viene offerto nessuno. Riprova più tardi.",
         "copy_text_only": "Copia testo",
         "copied_text": "Copiato",
         "copy_text_failed": "Copia non riuscita",

@@ -11975,6 +11975,7 @@
         "sensitive_in_card": "Vor dem Teilen — die Karte enthält: {{kinds}}",
         "sensitive_in_caption": "Vor dem Teilen — der Beitragstext enthält: {{kinds}}",
         "withdrawn_by_policy": "Das Teilen wurde per Richtlinie deaktiviert. Kopiere deinen Text jetzt, wenn du ihn behalten willst — beim Schließen dieses Dialogs wird er nicht gespeichert.",
+        "sites_unavailable": "Es ließ sich nicht prüfen, auf welchen Seiten du teilen darfst, daher wird keine angeboten. Versuche es später erneut.",
         "copy_text_only": "Text kopieren",
         "copied_text": "Kopiert",
         "copy_text_failed": "Kopieren fehlgeschlagen",

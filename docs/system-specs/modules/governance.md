@@ -3314,6 +3314,8 @@ would commit a pre-bump value that the next read can never match.
 The Security panel picks the row up automatically (`api_governance_policy` iterates
 `SCOPE_CATALOG`; its label is the humanised leaf, "Social share").
 
+**Which sites — the `sites` list.** An inner `sites` ruleset (`identifier` matcher) names the share sites the dialog may offer, by id: `x`, `linkedin` (`social_share.SHARE_SITES`; RFC [crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md), appendix row "Share to sites"). `GET /api/dashboard/config` reports the permitted ids as the read-only `social_share_sites` (one audited `sites:<id>` row each, skipped when the entry itself is withdrawn). The dialog draws only those buttons, and asks the endpoint again after the card export and before it points the pre-opened tab at the site, so a list tightened while composing closes the tab instead. A failed read offers no site. A policy without the ruleset permits every site.
+
 ### Which ACP harness a deployment may select — `agent_backend`
 
 `agent.acp_backend` chooses the harness a session runs on (kiro-cli, KAS, and

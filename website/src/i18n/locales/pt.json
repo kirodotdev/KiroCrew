@@ -12157,6 +12157,7 @@
         "sensitive_in_card": "Antes de compartilhar — o cartão contém: {{kinds}}",
         "sensitive_in_caption": "Antes de compartilhar — o texto da publicação contém: {{kinds}}",
         "withdrawn_by_policy": "O compartilhamento foi desativado por política. Copie seu texto agora se quiser mantê-lo — ele não é salvo ao fechar esta caixa de diálogo.",
+        "sites_unavailable": "Não foi possível verificar em quais sites você pode compartilhar, então nenhum é oferecido. Tente novamente mais tarde.",
         "copy_text_only": "Copiar texto",
         "copied_text": "Copiado",
         "copy_text_failed": "Falha ao copiar",

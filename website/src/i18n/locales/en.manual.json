@@ -5356,6 +5356,7 @@
         "sensitive_in_card": "Before you share — the card contains: {{kinds}}",
         "sensitive_in_caption": "Before you share — the post text contains: {{kinds}}",
         "withdrawn_by_policy": "Sharing was turned off by policy. Copy your text now if you want to keep it — it is not saved when you close this dialog.",
+        "sites_unavailable": "Couldn't check which sites you may share to, so none are offered. Try again later.",
         "copy_text_only": "Copy text",
         "copied_text": "Copied",
         "copy_text_failed": "Copy failed",
