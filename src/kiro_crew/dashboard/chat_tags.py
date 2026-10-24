@@ -36,6 +36,7 @@ from kiro_crew.dashboard.chat_tags_store import (
 )
 from kiro_crew.dashboard.chat_tags_vocabulary import _refuse_vocabulary_write
 from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.dashboard.chat_utils_slots import effective_session_key
 from kiro_crew.dashboard.create_rate_limit import TAG_COLUMN_CREATE, allow_create
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.slot_ownership import (
@@ -50,6 +51,7 @@ from kiro_crew.dashboard.token_auth import (
     refuse_unattributable_caller,
     request_origin,
 )
+from kiro_crew.hooks import dispatch_session_lane_changed_bulk
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.dashboard.chat_tags")
@@ -69,6 +71,21 @@ _VALID_STATE_KEYS = {"needs_approval", "waiting", "working", "idle"}
 
 
 # ── Slot tag assignment ────────────────────────────────────────────────────
+
+
+def _tag_vocabulary(state: DashboardState) -> dict[str, dict]:
+    """``{id: tag}`` over the live vocabulary, for resolving a slot's tag ids.
+
+    ``slot.tags`` holds ids; the ``status`` field that makes an id a LANE lives on
+    the tag object here. Built per dispatch rather than cached: ``state._tags`` is
+    mutated under ``_tags_write_lock`` by the tag CRUD, and a stale view would
+    classify a freshly promoted label as not-a-lane.
+    """
+    return {
+        tag_id: tag
+        for tag in state._tags
+        if isinstance(tag, dict) and isinstance(tag_id := tag.get("id"), str)
+    }
 
 
 async def api_chat_slot_tags(request: web.Request) -> web.Response:
@@ -309,6 +326,15 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
             )
 
     state.push_slots_update()
+    # The write is persisted and answered by here, so a hook cannot veto it and a
+    # hook that breaks cannot wedge the board. The rollback branch above returns
+    # before this point, which is what keeps a refused write silent.
+    await dispatch_session_lane_changed_bulk(
+        [(slot.key, prior_tags, new_tags)],
+        tags_by_id=_tag_vocabulary(state),
+        session_keys={slot.key: effective_session_key(slot)},
+        request=request,
+    )
     sel().log_api_access(
         caller="dashboard",
         operation="chat.slot_tags",
@@ -947,6 +973,14 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
             state.push_slots_update()
             return _rejected("session was deleted or rebound", "session_gone")
     state.push_slots_update()
+    # Same placement and the same reason as ``api_chat_slot_tags``: past the
+    # rollback branch, after the persist, before the response is built.
+    await dispatch_session_lane_changed_bulk(
+        [(slot.key, prior_tags, written_tags)],
+        tags_by_id=_tag_vocabulary(state),
+        session_keys={slot.key: effective_session_key(slot)},
+        request=request,
+    )
     sel().log_api_access(
         caller=audit_caller,
         operation="chat.slot_drop",

@@ -49,6 +49,7 @@ const EVENT_STYLE: Record<string, string> = {
   FileEdited: 'bg-ok-subtle text-ok-text border-ok/30',
   FileDeleted: 'bg-warn-subtle text-warn-text border-warn/30',
   UserTriggered: 'bg-accent/15 text-accent border-accent/30',
+  SessionLaneChanged: 'bg-accent/15 text-accent border-accent/30',
 }
 
 const EVENT_BADGE: Record<string, 'ok' | 'err' | 'warn' | 'aim'> = {
@@ -57,6 +58,7 @@ const EVENT_BADGE: Record<string, 'ok' | 'err' | 'warn' | 'aim'> = {
   PreTaskExecution: 'aim', PostTaskExecution: 'aim',
   FileCreated: 'ok', FileEdited: 'ok', FileDeleted: 'warn',
   UserTriggered: 'ok',
+  SessionLaneChanged: 'ok',
 }
 
 const EVENT_ORDER = Object.fromEntries(EVENTS.map((e, i) => [e, i]))
@@ -64,6 +66,8 @@ const EVENT_ORDER = Object.fromEntries(EVENTS.map((e, i) => [e, i]))
 /** The padding and rule every hooks-table cell carries. */
 const BASE_CELL = 'px-2.5 py-2 border-b border-border'
 
+/** Whether nothing fires this event today, for any of the reasons.
+ *
 /** The mark an event carries when no event fires it, or undefined when one does.
  *
  *  Two marks, not one: the distance to running differs. A task trigger is asked
@@ -179,7 +183,9 @@ function HookForm({ hook, onSave, onCancel }: {
       ? i18nT('pages.hooksPage.matcher_placeholder_regex')
       : matcherMode === 'contains'
         ? i18nT('pages.hooksPage.matcher_placeholder_contains')
-        : i18nT('pages.hooksPage.matcher_optional_e_g_deploy')
+        : event === 'SessionLaneChanged'
+          ? i18nT('pages.hooksPage.matcher_placeholder_lane')
+          : i18nT('pages.hooksPage.matcher_optional_e_g_deploy')
 
   return (
     <Card>
@@ -237,13 +243,13 @@ function HookForm({ hook, onSave, onCancel }: {
               case, never below 120px. Same idiom as the tokens row in
               WebhooksPage, which had the identical defect. */}
           {/* No matcher for a trigger no event fires: the store refuses one there,
-              because a matcher filters something in the event's payload and these
-              events have no payload yet. Offering the field would be a form that
-              cannot save. Timeout stays — Test honours it. */}
-          {!dormantMark(event) && (
+              so offering the field would be a form that cannot save. All six carry
+              no payload to filter at all, and the line below says so. Timeout
+              stays — Test honours it. */}
+          {!KAS_ONLY_EVENTS.includes(event) && (
             <Input className="basis-full sm:basis-auto" placeholder={matcherPlaceholder} value={matcher} onChange={e => setMatcher(e.target.value)} />
           )}
-          {!isToolHook && !dormantMark(event) && (
+          {!isToolHook && !KAS_ONLY_EVENTS.includes(event) && (
             <SimpleSelect
               options={MATCHER_MODES}
               value={matcherMode}
@@ -253,10 +259,23 @@ function HookForm({ hook, onSave, onCancel }: {
           )}
           {/* Two fields disappearing with no word for it left the reader
               guessing at a bug. One line where they were says which fact
-              removed them. */}
-          {dormantMark(event) && (
+              removed them.
+
+              One line, because all six share the one reason: they carry no event
+              data to filter. */}
+          {KAS_ONLY_EVENTS.includes(event) && (
             <span className="basis-full sm:basis-auto text-[13px] text-muted">
               {i18nT('pages.hooksPage.no_matcher_for_trigger')}
+            </span>
+          )}
+          {/* The matcher is matched against the whole delta string, so a bare lane
+              id matches nothing and `*done*` also matches `removed:done;` -- it
+              would run close-out work when a session LEAVES the lane. Neither
+              failure is visible in the form, the table or Test, so the two forms
+              are named here rather than only in the docs. */}
+          {event === 'SessionLaneChanged' && (
+            <span className="basis-full sm:basis-auto text-[13px] text-muted">
+              {i18nT('pages.hooksPage.matcher_lane_grammar')}
             </span>
           )}
           <div className="flex items-center gap-1.5 text-[13px] text-muted shrink-0">
@@ -308,11 +327,18 @@ function HookForm({ hook, onSave, onCancel }: {
             natural repair, flipping it on, is exactly the pre-authorisation the
             off state exists to prevent. Say it before Save, not after.
 
-            Shown for a create, and for an edit that MOVES a hook off a live
-            event onto one of the six -- the store switches it off on that
-            transition too. Not for a hook already on one of the six: that one
-            keeps the state it has, so the line would be false there. */}
-        {dormantMark(event) && (!hook || !dormantMark(hook.event)) && (
+            Three cases, because the store switches off in three: a create, an
+            edit that moves a hook off a LIVE event onto one of the six, and an
+            edit that lands on an event nothing fires at all. The third is why
+            the second clause is not enough on its own -- a hook already on one
+            of the six is dormant BEFORE the edit, so moving it onto this event
+            reads as "no transition" to the gate while the store still disarms
+            it, and the user met a switch that silently went off.
+
+            Not shown for a dormant-to-dormant move WITHIN the six: that one
+            really does keep the state it has, so the line would be false. */}
+        {dormantMark(event)
+          && (!hook || !dormantMark(hook.event)) && (
           <div className="text-[13px] text-muted">
             {/* Per mark, not one shared sentence: beside "Never runs on its own",
                 a trailing "nothing fires this trigger YET" read as "it might
@@ -325,7 +351,7 @@ function HookForm({ hook, onSave, onCancel }: {
         <div className="flex gap-2 items-center">
           {/* The matcher is dropped HERE, for a trigger whose payload cannot be
               filtered, so the value survives a round trip through the picker. */}
-          <SendBtn onClick={() => onSave({ name, event, matcher: dormantMark(event) ? '' : matcher, matcher_mode: matcherMode, command, skills, timeout })}>{i18nT('pages.hooksPage.save')}</SendBtn>
+          <SendBtn onClick={() => onSave({ name, event, matcher: KAS_ONLY_EVENTS.includes(event) ? '' : matcher, matcher_mode: matcherMode, command, skills, timeout })}>{i18nT('pages.hooksPage.save')}</SendBtn>
           <Btn onClick={onCancel} className="h-9 px-4 text-sm font-semibold rounded-lg">{i18nT('pages.hooksPage.cancel')}</Btn>
         </div>
       </div>
@@ -576,20 +602,11 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                         <button
                           className={`w-9 h-5 rounded-full relative transition-colors cursor-pointer ${h.enabled ? 'bg-accent' : 'bg-border'}`}
                           onClick={() => handleToggle(h.id)}
-                          // "Everything is enabled" and "this never runs on its own" read
-                          // as a contradiction on the same row. They are both true: the
-                          // switch is the author's intent, the mark is what the gateway
-                          // does, and for these triggers the two do not meet yet.
-                          //
-                          // In the NAME, not only the `title`: a tooltip reaches a pointer
-                          // and nothing else, so a keyboard or touch user met an ON switch
-                          // beside `never fires` with nothing reconciling them. The action
-                          // stays first, so the control still announces what it does.
                           aria-label={[
                             h.enabled ? i18nT('pages.hooksPage.disable_hook') : i18nT('pages.hooksPage.enable_hook'),
                             h.enabled ? dormantOnNote(h.event) : '',
                           ].filter(Boolean).join(' — ')}
-                          title={h.enabled ? dormantOnNote(h.event) : undefined}
+                          title={h.enabled ? dormantOnNote(h.event) || undefined : undefined}
                         >
                           <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${h.enabled ? 'left-[18px]' : 'left-0.5'}`} />
                         </button>
@@ -643,7 +660,18 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                               // mark the column can hold.
                               aria-label={`${dormantMark(h.event)} — ${dormantHint(h.event)}`}
                               className={`whitespace-normal text-[11px] leading-[1.15] max-w-[4.75rem] ${dormantBadgeClass(h.event)}`}
-                            >{dormantMark(h.event)}</Badge>
+                            >
+                              {/* The MARK only. The refusal used to ride in here as
+                                  `<mark> · can't turn on yet`, and in a 76px cell at
+                                  11px that broke to SEVEN lines -- "not / fired / yet ·
+                                  / can't / turn / on / yet" -- which doubled the row's
+                                  height against its neighbours and said "yet" twice.
+                                  It now sits beside the switch it explains, which also
+                                  puts it in the FIRST column rather than the far right,
+                                  where a narrow viewport scrolls it behind the sticky
+                                  ACTIONS column and leaves a dead switch unexplained. */}
+                              {dormantMark(h.event)}
+                            </Badge>
                           )}
                           {/* An em dash reads as "has not run yet", which is the
                               wrong story for a row nothing will ever run — so the

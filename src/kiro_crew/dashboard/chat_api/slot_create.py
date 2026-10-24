@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         default_template,
         deny_app_slot_session_access,
         dispatch_kiro_agent,
+        dispatch_session_lane_changed_bulk,
         drained_to_thread,
         effective_session_key,
         folder_principal,
@@ -567,6 +568,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             slot._artifact = artifact_slug
         # File the slot before the coalesced broadcast, so its first appearance
         # in every client is already inside the folder.
+        # Set by the folder-inheritance branch below when it appends a tag;
+        # stays None when this create files into no folder, which is why it
+        # is bound here rather than inside that conditional branch.
+        lane_move: tuple[str, list[str], list[str]] | None = None
         folder_applied = False
         if folder_id:
             # Mirror PATCH /api/chat/slots/{slot}/folder: a CHANGED folder must
@@ -633,6 +638,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     async with tags_write_lock(state):
                         inherited = await state.read_folders(_read_folder_tags)
                         appended = False
+                        # Captured before the append: a folder's status tag puts the
+                        # new session into a lane without either tag HANDLER running,
+                        # which is the gap a two-handler design misses.
+                        tags_before = list(slot.tags)
                         for tid in validate_folder_tag_ids(inherited, state):
                             if tid not in slot.tags:
                                 slot.tags.append(tid)
@@ -643,6 +652,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                         # the inherited list must not ship under that same one.
                         if appended:
                             _bump_slot_tags_revision(slot)
+                            lane_move = (slot.key, tags_before, list(slot.tags))
         # A slot with no project filed into a project-linked folder inherits
         # from the nearest configured ancestor before its first broadcast. The
         # server owns this fallback because the client folder cache can be
@@ -863,6 +873,22 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         state.push_slots_update()
         if defer_plain_create_broadcast:
             request_deferred_flush(f"create slot {slot.key!r}")
+    # A folder's STATUS tag puts this new session into a lane without either tag
+    # handler running, so without this the folder-inherited path is a silent gap in
+    # the event rather than a deferral. Captured under ``tags_write_lock`` above and
+    # dispatched here, outside it: the hooks this spawns must not run while the
+    # board's write lock is held.
+    if lane_move is not None:
+        await dispatch_session_lane_changed_bulk(
+            [lane_move],
+            session_keys={slot.key: effective_session_key(slot)},
+            tags_by_id={
+                tag_id: tag
+                for tag in state._tags
+                if isinstance(tag, dict) and isinstance(tag_id := tag.get("id"), str)
+            },
+            request=request,
+        )
     # Speculative session creation: overlap the ACP handshake with the user's
     # think-time before their first message. No-op unless session.eager_spawn.
     #

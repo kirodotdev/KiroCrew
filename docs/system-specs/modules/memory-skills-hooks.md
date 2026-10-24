@@ -5995,26 +5995,73 @@ sibling `emit_internal_read_audit(read_id)` — same audit + fail-closed contrac
 `_AUDIT_ONLY_READ_IDS` registry. Adding an allowlist entry is a security-review event; the bytes
 never reach an LLM/agent surface.
 
-### `SessionLaneChanged` — board-lane transitions (`_fire_session_lane_changed`)
+### `SessionLaneChanged` — board-lane transitions (`dispatch_session_lane_changed_bulk`)
 
-**Status: this section specifies a PENDING implementation, not the tree as it
-stands.** `SessionLaneChanged` is not a live hook event yet: it is absent from
-`HOOK_EVENTS`, from `ALLOWED_HOOK_EVENTS` and from `_VALID_HOOK_EVENTS`, and none
-of the symbols named below exist in `src/`. The three sets are not the same size:
-`HOOK_EVENTS` and `_VALID_HOOK_EVENTS` carry the five turn-lifecycle events, while
-`ALLOWED_HOOK_EVENTS` carries eleven — the five plus the six Kiro Agent triggers
-in `hooks.HOOK_EVENTS_KAS_ONLY`, which are registrable but fired by nothing. Read
-every present-tense sentence here as the contract the implementation must meet.
-Until it lands, `handlers/hooks.py` and the Hooks page behave as the rest of this
-module already describes.
+`SessionLaneChanged` is a fired hook event: it is in `HOOK_EVENTS`, which is the
+promise that something calls `fire`, and in `ALLOWED_HOOK_EVENTS`, which is the
+authoring vocabulary. It is absent from `_VALID_HOOK_EVENTS`, and stays absent:
+that is kiro-cli's own closed enum, and a spec carrying a key outside it does not
+load. The sets are therefore not the same size: `_VALID_HOOK_EVENTS` carries the
+five turn-lifecycle events, `HOOK_EVENTS` carries those five plus this one, and
+`ALLOWED_HOOK_EVENTS` carries twelve -- the six, plus the six Kiro Agent triggers
+in `hooks.HOOK_EVENTS_KAS_ONLY`. A test pins all three memberships together with
+this rationale, so the divergence cannot be "fixed" by syncing them.
 
-The implementation is PR #7669, and this section stands or falls with it: it is
-owned by that PR, whose tests pin the event's behaviour but not this text, and
-**must be deleted if #7669 is withdrawn** rather than left describing
-code that never arrived. The RFC amendment in
-`docs/request-for-change/rfc-session-tag-change-event.md` records which writers
-emit and which remain silent; that document, not this section, is where the
-firing coverage is stated.
+**It is the one member of `HOOK_EVENTS` whose call site is not a turn boundary.**
+The other five fire from the session lifecycle; this one fires from the dashboard's
+tag writers, which is why its emit sites are inventoried below rather than left to
+be inferred.
+
+**The dashboard's event picker offers it.**
+`website/src/pages/hookEventWireValues.ts`'s `EVENTS` is `HOOK_EVENTS_ALL` in
+order, pinned by
+`test_hook_events_kas_triggers.py::test_the_picker_offers_every_authorable_event`.
+The authoring surface and the vocabulary are the same set: while nothing fired the
+event the picker withheld it, because choosing it bought a label rather than a
+trigger, and that withholding was removed with the emitter rather than narrowed.
+
+A hook on it **arms like any other fired event**. It is outside
+`hooks.HOOK_EVENTS_KAS_ONLY`, the set the store reads for its activation contract,
+so it honours the caller's `enabled` on all three write paths -- `create`, `update`
+and `toggle`. It **takes a matcher** too, against the token grammar below. Both
+were refused while nothing fired it, so that the change which started firing it
+could not inherit a pre-authorised command or a filter written against an
+unspecified payload; the emitter lifted both together with the grammar it
+implements.
+
+**A row saved against this name is not lost if the name ever changes.** If it
+changes, splits or is withdrawn, a hook stored against it stops loading -- it is
+outside `HOOK_EVENTS_ALL`, which the loader gates on -- but it is **not erased**:
+`_load` keeps the row in `_unparsed_hook_entries` and `_save` writes it back, so the
+row stays in `hooks.json` and runs again if the name returns. The warning it logs is
+`Skipping unparseable hook entry`, whose traceback carries the raised
+`hook entry <id> has an invalid event <event>`, so the operator can find the row to
+rename. The upper bound on a rejected name is therefore a hook that does not run and
+a row to rename by hand, not lost work. What such a row cannot be is ARMED, which is
+what the refusals above buy.
+
+**The emit sites, and the ones that stay silent.** Three writers dispatch, all of
+them under a dashboard request, which is what `_lane_dispatch_is_permitted`
+checks: `api_chat_slot_tags` and `api_chat_slot_drop`
+(`dashboard/chat_tags.py`), and the folder-tag inheritance in `_read_folder_tags`
+reached from `api_chat_slot_create` (`dashboard/chat_api/slot_create.py`). That
+third one is the site a two-handler design misses, because
+`validate_folder_tag_ids` screens a folder tag id's shape and vocabulary but not
+its `status` field, so an inherited folder status tag puts a session into a lane
+without either handler running.
+
+Each dispatch runs AFTER its write has persisted and on the success path only: both
+`chat_tags.py` handlers roll `slot.tags` back when `save_slot_off_loop` refuses and
+answer 409, so a rolled-back write fires nothing.
+
+Silent, deliberately: load-time reconstruction (`chat_persistence.py`,
+`chat_handlers.py`), which would replay the whole tag history on every restart and
+read every existing Done as just-entered; the two `slot.tags.append` sites in
+`surface_channel_session` (`channel_slots.py`), which have no dashboard caller and
+so no authorization answer yet; and `chat_auto_tag.maybe_auto_tag`, which never
+writes a status tag by construction. The RFC's write-surface table in
+`docs/request-for-change/rfc-session-tag-change-event.md` carries the full
+inventory and the closing order for the two that remain.
 
 Fires when a chat session's **status** tags change through a session-level tag
 transition, so an automation can react to a board lane transition as it happens

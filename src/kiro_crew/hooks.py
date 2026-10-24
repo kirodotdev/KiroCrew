@@ -123,6 +123,10 @@ from kiro_crew.hook_runtime.governance_gate import (  # noqa: F401
     _spawn_policy_denial,
 )
 from kiro_crew.hook_runtime.hook_dispatch import (  # noqa: F401
+    _lane_dispatch_is_permitted,
+    _run_one_lane_hook,
+    _status_tag_ids,
+    dispatch_session_lane_changed_bulk,
     fire_tool_hooks,
     get_global_hook_store,
     permission_pre_tool_block,
@@ -271,6 +275,12 @@ from kiro_crew.validation import _bounded_pattern_search  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
+#: Strong references to in-flight ``SessionLaneChanged`` dispatches. Without them
+#: asyncio may collect a task mid-run, which would drop a hook silently rather than
+#: noisily. Lives on the facade because owner functions run on these globals, so a
+#: set defined in the owner would be written to a namespace nothing else reads.
+_lane_dispatch_tasks: set[asyncio.Task] = set()
+
 
 # ── Hook Results ──
 
@@ -292,6 +302,8 @@ HOOK_EVENT_PRE_TOOL_USE = "PreToolUse"
 HOOK_EVENT_POST_TOOL_USE = "PostToolUse"
 HOOK_EVENT_STOP = "Stop"
 
+HOOK_EVENT_SESSION_LANE_CHANGED = "SessionLaneChanged"
+
 #: The events the gateway itself fires. ``ScriptHookStore.fire`` has a call site
 #: for each one, and ``steering-and-hooks.md`` documents their exit-code
 #: contract. Membership here is what makes an event a *lifecycle* event.
@@ -301,6 +313,7 @@ HOOK_EVENTS = (
     HOOK_EVENT_PRE_TOOL_USE,
     HOOK_EVENT_POST_TOOL_USE,
     HOOK_EVENT_STOP,
+    HOOK_EVENT_SESSION_LANE_CHANGED,
 )
 
 # Triggers a Kiro Agent session owns that the gateway has no lifecycle call site
@@ -344,6 +357,11 @@ HOOK_EVENT_FILE_EDITED = "FileEdited"
 HOOK_EVENT_FILE_DELETED = "FileDeleted"
 HOOK_EVENT_USER_TRIGGERED = "UserTriggered"
 
+#: Every event nothing fires today, whatever the reason. The store reads this one
+#: for the activation contract -- a hook created on any of these is stored switched
+#: off -- because an armed-looking row that cannot run is the same defect either
+#: way. The six honour a caller's explicit ``enabled: true``, because a Kiro Agent
+#: can already ask for them, so that consent names a moment that exists.
 HOOK_EVENTS_KAS_ONLY = (
     HOOK_EVENT_PRE_TASK_EXECUTION,
     HOOK_EVENT_POST_TASK_EXECUTION,
@@ -367,8 +385,67 @@ HOOK_EVENTS_AGENT_REQUESTED = (
 #: Every event a hook may be authored against and persisted under. This is the
 #: authoring vocabulary -- the dashboard form's options, the create/update
 #: schemas, and the store's own load and save gates all read this set, so an
-#: event absent from it is refused at authoring time and dropped on reload.
+#: event absent from it is refused at authoring time and not loaded on reload.
+#: Not ERASED, though: ``_load`` keeps such a row in ``_unparsed_hook_entries``
+#: and ``_save`` writes it back, so a row stored under a name that later leaves
+#: this set survives in ``hooks.json`` and runs again if the name returns.
 HOOK_EVENTS_ALL = HOOK_EVENTS + HOOK_EVENTS_KAS_ONLY
+
+
+#: A lane is a status tag, and this is the whole predicate: plain truthiness of the
+#: stored ``status`` field. Every reader asks it -- the drop path's mutual-exclusion
+#: strip, the delete path, the auto-tagger, and this event's dispatch filter -- so a
+#: stricter test here would RECLASSIFY a hand-edited ``"status": "false"`` from a lane
+#: to an ordinary tag and silently un-strip it on the drop path, where the board still
+#: draws it as a column. The board already reads it this way (the tag manager's toggle
+#: is ``!!t.status``), so this matches rather than narrows it.
+def _is_status_tag(tag: object) -> bool:
+    return bool(isinstance(tag, dict) and tag.get("status"))
+
+
+#: A tag id reaches the matcher grammar only if it matches this. An allowlist rather
+#: than a separator screen: refusing ``:`` and ``;`` alone would still admit
+#: ``fnmatch`` metacharacters, and the grammar is consumed by ``fnmatch`` -- an id of
+#: ``*`` would make the selector written for it match EVERY lane change and run that
+#: tag's hook on sessions it was never registered for. ``.`` is admitted because
+#: ``fnmatch`` treats it as a literal, so a hand-named ``in.review`` still reaches a
+#: matcher. Lower-case only, because ``_context_matches`` folds case and an upper-case
+#: id would otherwise admit two spellings of one token.
+_TOKEN_ALLOWED = re.compile(r"\A[a-z0-9_.-]+\Z")
+
+
+def _session_lane_matcher_context(added: Sequence[str], removed: Sequence[str]) -> str:
+    """Build the direction-tagged matcher context for a lane transition.
+
+    Grammar, which is this event's compatibility surface once a hook binds to it::
+
+        added:<id>;  removed:<id>;
+
+    Direction is in the grammar because the motivating case is "a session ENTERED
+    Done", which an untagged context cannot express: a bare ``<id>`` matcher would
+    fire on leaving the lane too. The trailing ``;`` stops a selector for a short id
+    also matching every longer id it prefixes, and the leading ``:`` stops it matching
+    an id it is a suffix of; neither bound is forgeable, because both characters are
+    outside ``_TOKEN_ALLOWED``.
+
+    An id the allowlist refuses is SKIPPED with a warning rather than escaped or
+    rewritten: ``tags.json`` is persisted state a human can edit, and degrading
+    matching for that one tag is better than splitting it into two tokens or forging
+    the opposite direction.
+    """
+    parts: list[str] = []
+    for direction, ids in (("added", added), ("removed", removed)):
+        for tag_id in ids:
+            if not isinstance(tag_id, str) or not _TOKEN_ALLOWED.match(tag_id):
+                logger.warning(
+                    "SessionLaneChanged: skipping unmatchable tag id %r in %s",
+                    tag_id,
+                    direction,
+                )
+                continue
+            parts.append(f"{direction}:{tag_id};")
+    return "  ".join(parts)
+
 
 #: Every ``matcher_mode`` a script hook may be authored with; ``glob`` is the
 #: default. ``validate_hook_fields`` refuses any other value at create and update,

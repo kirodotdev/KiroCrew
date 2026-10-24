@@ -266,4 +266,62 @@ describe('hooks table — row actions', () => {
     expect(row.queryByRole('button', { name: 'Delete?' })).toBeNull()
     expect(screen.getByText(/gateway said no/)).toBeTruthy()
   })
+
+  it('leaves the visible off-is-final line off a trigger that can be armed again', async () => {
+    // The control for the line above: an enabled row on one of the six can be
+    // switched off and back on, so it must not be warned about.
+    hooksPayload = { hooks: [{ ...HOOK, event: 'FileEdited', enabled: true }] }
+    renderPage()
+    const row = await findRow()
+
+    expect(row.queryByText('off is final')).toBeNull()
+  })
+
+  it('leaves that warning off a dormant trigger that can be armed again', async () => {
+    // The control: an enabled row on one of the six can be switched off and back
+    // on, so the irreversibility note must not appear there.
+    hooksPayload = { hooks: [{ ...HOOK, event: 'FileEdited', enabled: true }] }
+    renderPage()
+    const row = await findRow()
+
+    const toggle = row.getByRole('button', { name: /Disable hook/ }) as HTMLButtonElement
+    expect(toggle.getAttribute('aria-label')).not.toMatch(/cannot be turned back on/i)
+    expect(toggle.getAttribute('title')).not.toMatch(/cannot be turned back on/i)
+  })
+
+  it('still offers the switch for a dormant trigger a Kiro Agent can ask for', async () => {
+    // The negative control: without it, a passing assertion above could mean the
+    // switch is disabled for every dormant row rather than only for the one the
+    // store refuses. These six are refused a matcher too, but they CAN be armed.
+    hooksPayload = { hooks: [{ ...HOOK, event: 'FileEdited', enabled: false }] }
+    renderPage()
+    const row = await findRow()
+
+    const toggle = row.getByRole('button', { name: /Enable hook/ }) as HTMLButtonElement
+    expect(toggle.disabled).toBe(false)
+  })
+  it('offers a working switch on a lane hook', async () => {
+    // The inverse of a refusal this page used to carry: while nothing fired
+    // `SessionLaneChanged` the store rejected arming it on create, update AND
+    // toggle, so the switch was disabled and a visible line said why. The
+    // dashboard's tag writers fire it now, so it is an ordinary event and the
+    // switch is live -- asserted rather than assumed, because a stale `disabled`
+    // would leave the one event this page exists to author unarmable from the UI.
+    hooksPayload = {
+      hooks: [{ ...HOOK, event: 'SessionLaneChanged', enabled: false }],
+    }
+    renderPage()
+    const row = await findRow()
+
+    const toggle = row.getByRole('button', { name: /Enable hook/ }) as HTMLButtonElement
+    expect(toggle.disabled).toBe(false)
+    expect(toggle.className).toContain('cursor-pointer')
+    expect(toggle.className).not.toContain('opacity-60')
+    // The retired wording must be gone from the row, not merely unreachable.
+    expect(row.queryByText("can't turn on")).toBeNull()
+    expect(row.queryByText('off is final')).toBeNull()
+    expect(toggle.getAttribute('aria-label')).not.toMatch(/can't be turned on yet/i)
+    // And it is no longer marked dormant: something fires it.
+    expect(row.queryByText('not fired yet')).toBeNull()
+  })
 })

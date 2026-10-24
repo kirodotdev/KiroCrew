@@ -6339,6 +6339,8 @@
       "total_runs": "Total Runs",
       "matcher_placeholder_regex": "Matcher (regex, e.g. \\b(auth|login)\\b)",
       "matcher_placeholder_contains": "Matcher (contains, e.g. deploy|release)",
+      "matcher_placeholder_lane": "Matcher (e.g. *added:done;* — entered Done)",
+      "matcher_lane_grammar": "Filter on *added:<tag-id>;* to run when a session enters a lane, or *removed:<tag-id>;* when it leaves. A bare tag id matches nothing.",
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "test_failed": "Test failed",
       "retry": "Retry",

@@ -440,7 +440,15 @@ class ScriptHookStore:
                 # stored against a Kiro Agent trigger must survive a reload,
                 # and the narrower set would quarantine it as unparseable.
                 if h.get("event", HOOK_EVENT_USER_PROMPT_SUBMIT) not in HOOK_EVENTS_ALL:
-                    raise ValueError("hook entry has an invalid event")
+                    # Name the row. The recovery for a row whose event left the
+                    # vocabulary is to rename it by hand, and the operator cannot
+                    # do that from "Skipping unparseable hook entry" alone. The
+                    # value is from a hand-edited file, so it is sliced rather
+                    # than logged whole.
+                    raise ValueError(
+                        f"hook entry {str(h.get('id'))[:64]!r} has an invalid event "
+                        f"{str(h.get('event'))[:64]!r}"
+                    )
                 hook = ScriptHook.from_dict(h)
                 # Keep insertion inside the per-entry guard: a hand-edited ID
                 # can be an unhashable list/dict even when from_dict succeeds.
@@ -550,8 +558,11 @@ class ScriptHookStore:
         # disabled, so it cannot silently run a shell command somebody wrote
         # months earlier and never reconfirmed. ``fire`` skips a disabled hook;
         # the Test endpoint does not read ``enabled``, so Test still works, which
-        # is the only way one of these runs at all. An explicit ``enabled: true``
-        # is honoured -- that IS the reconfirmation.
+        # is the only way one of these runs at all. The six still default OFF:
+        # this side has no call site for them, so a row left at its default would
+        # look armed while nothing here runs it. An explicit ``enabled: true`` is
+        # honoured, because a Kiro Agent can already ask for them, so that consent
+        # names a moment that exists.
         if "enabled" not in data and hook.event in HOOK_EVENTS_KAS_ONLY:
             hook.enabled = False
         # Enforce the SAME invariants `update` does, via the shared validator:
