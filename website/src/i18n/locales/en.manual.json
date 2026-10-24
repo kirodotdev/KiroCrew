@@ -2440,7 +2440,16 @@
       "tags_loading_hint": "Loading tags…",
       "tags_error_hint": "Tags couldn't load.",
       "tags_retry": "Retry",
-      "top_level": "Top level"
+      "top_level": "Top level",
+      "default_crew": "Default crew",
+      "default_crew_hint": "New chats started from this folder run on this crew. Moving an existing chat here keeps it where it runs.",
+      "default_crew_offline_notice": "This crew is offline. New chat in this folder will say so and offer Local for that one chat.",
+      "default_crew_not_registered_notice": "This crew is no longer registered. New chat in this folder will say so and offer Local for that one chat. Choose another crew to start them there again.",
+      "default_agent_hint_with_crew": "Pre-selected for new chats started on Local. A chat on the folder's crew uses that crew's own default agent.",
+      "crew_local": "Local",
+      "crew_online": "{{name}} (online)",
+      "crew_offline": "{{name}} (offline)",
+      "crew_not_registered": "{{id}} (not registered)"
     },
     "folderColorNames": {
       "amber": "Amber",
@@ -5986,7 +5995,13 @@
       "process_released": "Asleep: wakes on the next message",
       "chat_with_folder": "Chat with {{folder}} folder",
       "chat_with_folder_desc": "The chat that started this folder's other chats",
-      "conductor_tag": "conductor"
+      "conductor_tag": "conductor",
+      "folder_crew_offline": "{{name}} is offline, so no chat was started. New chats in this folder run on that crew.",
+      "folder_crew_offline_use_local": "Start this chat on Local instead",
+      "folder_crew_starting": "Starting a chat on {{name}}…",
+      "folder_crew_started_background": "Started a chat on {{name}}. It's listed under {{name}} in the sidebar.",
+      "folder_crew_not_registered": "{{name}} is no longer a registered crew, so no chat was started. Choose another crew in Folder settings, or start this chat on Local.",
+      "folder_crew_new_on_local": "New chat in {{name}} on Local"
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",

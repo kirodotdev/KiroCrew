@@ -79,6 +79,61 @@ class TestFolderCRUD:
             assert data["default_agent"] == "kirocrew-dev"
 
     @pytest.mark.asyncio
+    async def test_create_folder_accepts_default_crew(self, tmp_path, monkeypatch):
+        """The folder's default crew rides create next to ``default_agent``."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state, authenticate_owner=True)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/folders",
+                json={"name": "Payments", "default_crew": "  crew-a1  "},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["default_crew"] == "crew-a1"
+            assert state._folders[0]["default_crew"] == "crew-a1"
+
+    @pytest.mark.asyncio
+    async def test_create_folder_without_default_crew_is_local(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/folders", json={"name": "Oncall"})
+            assert (await resp.json())["default_crew"] == ""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("junk", [None, 7, ["crew-a1"], {"id": "crew-a1"}, True])
+    async def test_create_folder_reads_a_non_string_default_crew_as_local(
+        self, tmp_path, monkeypatch, junk
+    ):
+        """Only a string names a crew; nothing else is stringified into an id."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/folders", json={"name": "Oncall", "default_crew": junk}
+            )
+            assert resp.status == 201
+            assert (await resp.json())["default_crew"] == ""
+
+    @pytest.mark.asyncio
+    async def test_create_folder_caps_default_crew_length(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_folder_default_crew import MAX_DEFAULT_CREW_LEN
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state, authenticate_owner=True)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/folders",
+                json={"name": "Oncall", "default_crew": "c" * (MAX_DEFAULT_CREW_LEN + 50)},
+            )
+            assert len((await resp.json())["default_crew"]) == MAX_DEFAULT_CREW_LEN
+
+    @pytest.mark.asyncio
     async def test_create_folder_accepts_palette_color(self, tmp_path, monkeypatch):
         """Create persists an allowlisted palette color and rejects others."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -537,6 +592,47 @@ class TestFolderCRUD:
             resp = await client.patch("/api/chat/folders/f1", json={"default_agent": ""})
             data = await resp.json()
             assert data["default_agent"] == ""
+
+    @pytest.mark.asyncio
+    async def test_update_folder_default_crew(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state, authenticate_owner=True)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/folders", json={"name": "MS&AD"})
+            folder = await resp.json()
+            resp = await client.patch(
+                f"/api/chat/folders/{folder['id']}", json={"default_crew": " crew-a1 "}
+            )
+            data = await resp.json()
+            assert data["default_crew"] == "crew-a1"
+            assert state._folders[0]["default_crew"] == "crew-a1"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cleared", ["", None])
+    async def test_update_folder_clear_default_crew(self, tmp_path, monkeypatch, cleared):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state._folders = [
+            {"id": "f1", "name": "Test", "order": 0, "collapsed": False, "default_crew": "crew-a1"}
+        ]
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch("/api/chat/folders/f1", json={"default_crew": cleared})
+            assert (await resp.json())["default_crew"] == ""
+
+    @pytest.mark.asyncio
+    async def test_update_folder_leaves_default_crew_when_not_sent(self, tmp_path, monkeypatch):
+        """A rename must not wipe the crew another client pinned."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state._folders = [
+            {"id": "f1", "name": "Test", "order": 0, "collapsed": False, "default_crew": "crew-a1"}
+        ]
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch("/api/chat/folders/f1", json={"name": "Renamed"})
+            assert (await resp.json())["default_crew"] == "crew-a1"
 
     @pytest.mark.asyncio
     async def test_create_folder_with_project_dir(self, tmp_path, monkeypatch):

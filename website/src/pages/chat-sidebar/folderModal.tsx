@@ -9,7 +9,7 @@ import type { FolderModalTarget, SidebarScope } from './scope'
 
 /** The modal for the folder the sidebar targets. */
 export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalTarget): React.ReactNode {
-  const { createFolderMutation, defaultAgent, dispatch, flatView, folders, installedAgents, refetchTags, setFlatView,
+  const { createFolderMutation, crewChoices, crewChoicesLoaded, defaultAgent, dispatch, flatView, folders, installedAgents, refetchTags, remoteCrewChatPreview, setFlatView,
     setFolderModal, tagsData, tagsQueryFailed, updateFolderMutation } = shell
   return (
         <FolderConfigModal
@@ -20,6 +20,8 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
           folders={folders}
           installedAgents={installedAgents}
           globalDefaultAgent={defaultAgent}
+          crewChoices={remoteCrewChatPreview ? crewChoices : undefined}
+          crewChoicesLoaded={crewChoicesLoaded}
           availableTags={tagsData}
           availableTagsFailed={tagsQueryFailed}
           onRetryTags={() => { void refetchTags() }}
@@ -36,6 +38,7 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
                 parentId: folderModal.parentId || undefined,
                 projectDir: draft.projectDir,
                 defaultAgent: draft.defaultAgent,
+                defaultCrew: draft.defaultCrew,
                 color: draft.color,
                 icon: draft.icon,
                 tags: draft.tags,
@@ -67,6 +70,7 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
               if (touched.has('name')) body.name = draft.name
               if (touched.has('projectDir')) body.project_dir = draft.projectDir
               if (touched.has('defaultAgent')) body.default_agent = draft.defaultAgent
+              if (touched.has('defaultCrew')) body.default_crew = draft.defaultCrew
               // '' is a legitimate color instruction: it clears back to gray.
               if (touched.has('color')) body.color = draft.color
               // regenerate_icon and a manual icon are mutually exclusive on the

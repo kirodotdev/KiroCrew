@@ -6851,7 +6851,16 @@
       "tags_loading_hint": "正在加载标签…",
       "tags_error_hint": "无法加载标签。",
       "tags_retry": "重试",
-      "top_level": "顶层"
+      "top_level": "顶层",
+      "default_crew": "默认 Crew",
+      "default_crew_hint": "从此文件夹开始的新聊天将在该 Crew 上运行。把已有的聊天移到这里，它仍在原来的位置运行。",
+      "default_crew_offline_notice": "该 Crew 处于离线状态。在此文件夹中新建聊天时会提示这一点，并仅为这一次聊天提供“本地”选项。",
+      "default_crew_not_registered_notice": "此 Crew 已不再注册。在此文件夹中新建聊天时会提示这一点，并仅为该聊天提供本地选项。选择其他 Crew，即可让新聊天重新在那里开始。",
+      "default_agent_hint_with_crew": "为在本地开始的新聊天预先选择。在文件夹所设 Crew 上运行的聊天会使用该 Crew 自己的默认智能体。",
+      "crew_local": "本地",
+      "crew_online": "{{name}}（在线）",
+      "crew_offline": "{{name}}（离线）",
+      "crew_not_registered": "{{id}}（未注册）"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "文件夹建议",
@@ -12652,7 +12661,13 @@
       "broadcast_col_result": "结果",
       "broadcast_open_unknown": "未确认 · 打开",
       "broadcast_delivery_hint": "不会打断正在进行的工作：运行中的会话在当前工具调用结束后读到；空闲的会话开始新一轮。",
-      "broadcast_retry": "重试 {{n}} 个失败的"
+      "broadcast_retry": "重试 {{n}} 个失败的",
+      "folder_crew_offline": "{{name}} 处于离线状态，因此未开始聊天。此文件夹中的新聊天将在该 Crew 上运行。",
+      "folder_crew_offline_use_local": "改为在本地开始此聊天",
+      "folder_crew_starting": "正在 {{name}} 上开始聊天…",
+      "folder_crew_started_background": "已在 {{name}} 上开始聊天。它列在侧边栏的 {{name}} 下。",
+      "folder_crew_not_registered": "{{name}} 已不再是已注册的 Crew，因此未开始聊天。请在文件夹设置中选择其他 Crew，或改为在本地开始此聊天。",
+      "folder_crew_new_on_local": "在 {{name}} 中于本地新建聊天"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

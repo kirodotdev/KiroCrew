@@ -6972,7 +6972,16 @@
       "tags_loading_hint": "Tags werden geladen…",
       "tags_error_hint": "Tags konnten nicht geladen werden.",
       "tags_retry": "Erneut versuchen",
-      "top_level": "Oberste Ebene"
+      "top_level": "Oberste Ebene",
+      "default_crew": "Standard-Crew",
+      "default_crew_hint": "Neue Chats aus diesem Ordner laufen auf dieser Crew. Ein vorhandener Chat, den du hierher verschiebst, läuft weiter, wo er läuft.",
+      "default_crew_offline_notice": "Diese Crew ist offline. Ein neuer Chat in diesem Ordner weist darauf hin und bietet für diesen einen Chat Lokal an.",
+      "default_crew_not_registered_notice": "Diese Crew ist nicht mehr registriert. Ein neuer Chat in diesem Ordner weist darauf hin und bietet für diesen einen Chat Lokal an. Wähle eine andere Crew, damit neue Chats wieder dort starten.",
+      "default_agent_hint_with_crew": "Für neue Chats, die lokal gestartet werden, vorausgewählt. Ein Chat auf der Crew des Ordners nutzt den Standard-Agenten dieser Crew.",
+      "crew_local": "Lokal",
+      "crew_online": "{{name}} (online)",
+      "crew_offline": "{{name}} (offline)",
+      "crew_not_registered": "{{id}} (nicht registriert)"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Ordnervorschlag",
@@ -12866,7 +12875,13 @@
       "broadcast_col_result": "Ergebnis",
       "broadcast_open_unknown": "Nicht bestätigt · öffnen",
       "broadcast_delivery_hint": "Laufende Arbeit wird nicht unterbrochen: Ein laufender Turn liest sie nach dem aktuellen Tool-Aufruf, eine ruhende Sitzung startet einen neuen Turn.",
-      "broadcast_retry": "{{n}} fehlgeschlagene erneut senden"
+      "broadcast_retry": "{{n}} fehlgeschlagene erneut senden",
+      "folder_crew_offline": "{{name}} ist offline, daher wurde kein Chat gestartet. Neue Chats in diesem Ordner laufen auf dieser Crew.",
+      "folder_crew_offline_use_local": "Diesen Chat stattdessen lokal starten",
+      "folder_crew_starting": "Chat auf {{name}} wird gestartet…",
+      "folder_crew_started_background": "Auf {{name}} wurde ein Chat gestartet. Du findest ihn in der Seitenleiste unter {{name}}.",
+      "folder_crew_not_registered": "{{name}} ist keine registrierte Crew mehr, daher wurde kein Chat gestartet. Wähle in den Ordnereinstellungen eine andere Crew oder starte diesen Chat lokal.",
+      "folder_crew_new_on_local": "Neuer Chat in {{name}} lokal"
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",

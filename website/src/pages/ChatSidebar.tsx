@@ -71,6 +71,7 @@ import { useFolderDropOps, useSidebarMoveUndo, useSidebarDragHandlers, useNative
 import { useSidebarReveal } from './chat-sidebar/reveal'
 import { useHoldPinnedHeaderOnCollapse } from './chat-sidebar/stickyCollapse'
 import { useFolderChatCreate, useSessionCreate } from './chat-sidebar/create'
+import { useFolderCrewRouter, useStartCrewChat } from '../hooks/folderCrew'
 export { FOLDER_BODY_INSET_PX, FOLDER_BODY_CLS, BOARD_FOLDER_BODY_CLS, SIDEBAR_TEXT_CONTROL_CLS, STALE_TOGGLE_CLS } from './chat-sidebar/chrome'
 export { connectedChannelLinks } from './chat-sidebar/SessionRow'
 import type { ChatSidebarProps, SidebarScope } from './chat-sidebar/scope'
@@ -187,7 +188,7 @@ function ChatSidebar({
     [localSlots],
   )
   const {
-    historySearchResults, instancesList, instanceSessions, remoteSessionsError, allRows, allLiveSlots,
+    historySearchResults, instancesList, instancesLoaded, instanceSessions, remoteSessionsError, allRows, allLiveSlots,
     selectInstance, crewGroups,
   } = useSessionSources({ historyFilter, slotTitleDigest, localSlots })
   // Whether any row renders a runs-elsewhere chip, i.e. whether this sidebar
@@ -224,6 +225,14 @@ function ChatSidebar({
       // compareText, not `localeCompare`: a bare localeCompare collates in the
       // HOST locale and ignores the app language entirely, so the crew list
       // would order itself differently from every other list on the page.
+      .sort((a, b) => compareText(a.name, b.name)),
+    [warmMap, instancesList],
+  )
+  // Every registered crew with whether it holds a live tunnel, for the Folder
+  // settings Default crew picker (which shows each crew's online state).
+  const crewChoices = useMemo(
+    () => instancesList
+      .map(i => ({ id: i.id, name: i.name || i.id, online: !!warmMap && Object.prototype.hasOwnProperty.call(warmMap, i.id) }))
       .sort((a, b) => compareText(a.name, b.name)),
     [warmMap, instancesList],
   )
@@ -676,14 +685,16 @@ function ChatSidebar({
     handleSidebarDragStart, reportDndActive, handleSidebarDragEnd, handleSidebarDragCancel,
     handleSidebarDragOver,
   } = useSidebarDragHandlers({ releaseHoverPin, setDragFrozen, hideFolderReorderHint, setActiveDrag, activeDrag, dragFrozen, folderReorderable, folderSortRead, showFolderReorderHint, moveFolderByDrag, reorderFolders, searchRanked, pinned, reorderPinned, reorderManual, localSlots, activeSlot, onDropSessionRef, moveByDrag, folders, boardFolderCollapsed, updateFolderMutation, clearBoardCollapse })
+  const routeFolderCrew = useFolderCrewRouter()
+  const startCrewChat = useStartCrewChat(onOpenPeerSession)
   const {
     folderCreateError, setFolderCreateError, createChatInFolder, refuseCreateOffline,
-  } = useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation, onOpenSlotInNewTab, onSelectSlot, updateFolderMutation, clearBoardCollapse, connected, setFolderOfflineNotice })
+  } = useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation, onOpenSlotInNewTab, onSelectSlot, updateFolderMutation, clearBoardCollapse, connected, setFolderOfflineNotice, routeFolderCrew, startCrewChat })
 
   const {
     crewPreview, openCrewMembers, remoteCrewChatPreview,
     createChatMutation, createRemoteChatMutation, createEphemeralChatMutation,
-  } = useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotInNewTab, onSelectSlot, setRemoteCrewError, setNewChatMenuOpen, onOpenPeerSession })
+  } = useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotInNewTab, onSelectSlot, setRemoteCrewError, setNewChatMenuOpen, startCrewChat })
   // A conductor-lane member anchor opens on the Members page (see renderSessionRow).
   const navigate = useNavigate()
 
@@ -830,7 +841,7 @@ function ChatSidebar({
     tagsQueryFailed, tintAgents, toggleCollapse, toggleColumnCollapse, toggleCrewCollapsed, toggleFilter,
     toggleFolderFilter, toggleFoldersShelved, toggleHideFilter, toggleModelFilter, toggleReveal,
     toggleSaveFailed, toggleSpaceCollapsed, toggleTagFilter, ungroupedSlots, unreadSet, updateColumnMutation,
-    updateFolderMutation, visibleRootFolders, warmCrews }
+    updateFolderMutation, visibleRootFolders, warmCrews, crewChoices, crewChoicesLoaded: instancesLoaded }
   const laneRows = createLaneRows(scope)
   const folderBlocks = createFolderBlocks({ ...scope, ...laneRows })
   const lanes = createListLanes({ ...scope, ...laneRows, ...folderBlocks })

@@ -73,6 +73,7 @@ class TestRemovableFolderIds:
         [
             ("project_dir", "/srv/x"),
             ("default_agent", "kirocrew-worker"),
+            ("default_crew", "crew-a1"),
             ("steering_dirs", ["/srv/steer"]),
             ("tags", ["t1"]),
             ("color", "#3b82f6"),
