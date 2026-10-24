@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,6 +33,13 @@ class _Req:
 
     async def json(self):
         return self._body
+
+
+def _approve_req(loader, slug):
+    """An approve request carrying the digest the detail read returns, as the panel sends."""
+    detail = loader.get_pending_skill(slug) or {}
+    body = {"content_sha256": detail.get("content_sha256") or "0" * 64}
+    return _Req(loader, match={"slug": slug}, body=body)
 
 
 def _payload(resp):
@@ -125,7 +133,7 @@ async def test_detail_executor_failure_audits_and_500s(loader, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_approve_promotes(loader):
-    resp = await H.api_skill_pending_approve(_Req(loader, match={"slug": "deploy-helper"}))
+    resp = await H.api_skill_pending_approve(_approve_req(loader, "deploy-helper"))
     assert resp.status == 200
     assert _payload(resp)["approved"] == "auto/deploy-helper"
     assert [s["key"] for s in loader.list_auto_skills()] == ["auto/deploy-helper"]
@@ -134,7 +142,7 @@ async def test_approve_promotes(loader):
 
 @pytest.mark.asyncio
 async def test_approve_missing_returns_404_coded(loader):
-    resp = await H.api_skill_pending_approve(_Req(loader, match={"slug": "nope"}))
+    resp = await H.api_skill_pending_approve(_approve_req(loader, "nope"))
     assert resp.status == 404
     data = _payload(resp)
     assert data["code"] == "pending_skill_not_found"
@@ -231,24 +239,20 @@ async def test_update_detail_includes_live_body(loader, monkeypatch):
             "meta": {"kind": "update", "target": "auto/deploy-helper"},
             "content": "## Steps\nnew\n",
             "scripts": [],
+            "update_preview": {
+                "live_body": "## Steps\nOLD BODY\n",
+                "proposed_body": "## Steps\nNEW BODY\n",
+                "diff": "--- a\n+++ b\n@@ -1 +1 @@\n-OLD BODY\n+NEW BODY\n",
+                "from_version": 2,
+                "to_version": 3,
+                "base_version": 2,
+                "stale_base": False,
+            },
         },
-    )
-    monkeypatch.setattr(
-        loader,
-        "preview_pending_update",
-        lambda slug: {
-            "live_body": "## Steps\nOLD BODY\n",
-            "proposed_body": "## Steps\nNEW BODY\n",
-            "diff": "--- a\n+++ b\n@@ -1 +1 @@\n-OLD BODY\n+NEW BODY\n",
-            "from_version": 2,
-            "to_version": 3,
-            "base_version": 2,
-            "stale_base": False,
-        },
-        raising=False,
     )
     resp = await H.api_skill_pending_detail(_Req(loader, match={"slug": "deploy-helper-update"}))
     data = _payload(resp)
+    assert "update_preview" not in data
     assert data["live_body"] == "## Steps\nOLD BODY\n"
     assert data["proposed_body"] == "## Steps\nNEW BODY\n"
     assert "+NEW BODY" in data["diff"]
@@ -268,13 +272,8 @@ async def test_update_detail_live_body_null_when_target_gone(loader, monkeypatch
             "meta": {"kind": "update", "target": "auto/deploy-helper"},
             "content": "## Steps\nnew\n",
             "scripts": [],
+            "update_preview": None,
         },
-    )
-    monkeypatch.setattr(
-        loader,
-        "preview_pending_update",
-        lambda slug: None,
-        raising=False,
     )
     resp = await H.api_skill_pending_detail(_Req(loader, match={"slug": "deploy-helper-update"}))
     data = _payload(resp)
@@ -294,25 +293,26 @@ async def test_new_detail_has_no_live_body(loader):
 @pytest.mark.asyncio
 async def test_approve_routes_update_to_approve_pending_update_checked(loader, monkeypatch):
     """kind=='update' → approve_pending_update_checked; approve_pending_skill_checked untouched."""
-    monkeypatch.setattr(
-        loader,
-        "get_pending_skill",
-        lambda slug: {"slug": slug, "meta": {"kind": "update", "target": "auto/deploy-helper"}},
+    cand = loader._pending_root() / "deploy-helper-update"
+    cand.mkdir(parents=True)
+    (cand / "SKILL.md").write_text("---\nname: x\n---\nbody\n", encoding="utf-8")
+    (cand / ".meta.json").write_text(
+        json.dumps({"kind": "update", "target": "auto/deploy-helper"}), encoding="utf-8"
     )
     called: dict = {}
 
-    def _upd(slug):
+    def _upd(slug, *, src=None):
         called["update"] = slug
         return "auto/deploy-helper"
 
-    def _new(slug):
+    def _new(slug, *, src=None):
         called["new"] = slug
         return "auto/should-not-run"
 
     monkeypatch.setattr(loader, "approve_pending_update_checked", _upd, raising=False)
     monkeypatch.setattr(loader, "approve_pending_skill_checked", _new)
     monkeypatch.setattr(loader, "run_skill_lifecycle", lambda **k: None)
-    resp = await H.api_skill_pending_approve(_Req(loader, match={"slug": "deploy-helper-update"}))
+    resp = await H.api_skill_pending_approve(_approve_req(loader, "deploy-helper-update"))
     assert resp.status == 200
     assert _payload(resp)["approved"] == "auto/deploy-helper"
     assert called.get("update") == "deploy-helper-update"
@@ -324,13 +324,13 @@ async def test_approve_routes_new_to_approve_pending_skill_checked(loader, monke
     """A candidate without kind=='update' promotes via approve_pending_skill_checked."""
     called: dict = {}
 
-    def _upd(slug):
+    def _upd(slug, *, src=None):
         called["update"] = slug
         return "auto/should-not-run"
 
     monkeypatch.setattr(loader, "approve_pending_update_checked", _upd, raising=False)
     # get_pending_skill + approve_pending_skill_checked remain the real impls.
-    resp = await H.api_skill_pending_approve(_Req(loader, match={"slug": "deploy-helper"}))
+    resp = await H.api_skill_pending_approve(_approve_req(loader, "deploy-helper"))
     assert resp.status == 200
     assert _payload(resp)["approved"] == "auto/deploy-helper"
     assert "update" not in called
@@ -379,7 +379,7 @@ def flagged_loader(tmp_path):
 
 @pytest.mark.asyncio
 async def test_approve_validation_failure_returns_coded_422_with_report(flagged_loader):
-    resp = await H.api_skill_pending_approve(_Req(flagged_loader, match={"slug": "evil-helper"}))
+    resp = await H.api_skill_pending_approve(_approve_req(flagged_loader, "evil-helper"))
     assert resp.status == 422
     data = _payload(resp)
     assert data["code"] == "script_validation_failed"
@@ -394,7 +394,7 @@ async def test_approve_live_exists_returns_coded_409(loader):
     live = loader._dir / "auto" / "deploy-helper"
     live.mkdir(parents=True)
     (live / "SKILL.md").write_text("---\nname: auto/deploy-helper\n---\nbody\n", encoding="utf-8")
-    resp = await H.api_skill_pending_approve(_Req(loader, match={"slug": "deploy-helper"}))
+    resp = await H.api_skill_pending_approve(_approve_req(loader, "deploy-helper"))
     assert resp.status == 409
     assert _payload(resp)["code"] == "live_skill_exists"
 
@@ -409,7 +409,7 @@ async def test_approve_validation_refusal_audits_rejected_not_not_found(
         "_sel",
         lambda: SimpleNamespace(log_tool_invocation=lambda **kw: events.append(kw)),
     )
-    resp = await H.api_skill_pending_approve(_Req(flagged_loader, match={"slug": "evil-helper"}))
+    resp = await H.api_skill_pending_approve(_approve_req(flagged_loader, "evil-helper"))
     assert resp.status == 422
     assert events, "refusal must be SEL-audited"
     assert events[-1]["outcome"] == "rejected"
@@ -895,6 +895,11 @@ _UNPREDICTABLE_APPROVE_REFUSALS: dict[str, str] = {
         "candidate was merged against. A live-vs-candidate version comparison "
         "made at click time, not a candidate scripts finding."
     ),
+    "content_changed": (
+        "the candidate on disk differs from the digest the reviewer's read "
+        "returned. A write after that read is a click-time fact; no earlier poll "
+        "can predict it."
+    ),
     "redaction_failed": (
         "the in-place redaction of SKILL.md / a script could not read or write "
         "the file. The write half is click-time I/O a read-only poll cannot "
@@ -1200,7 +1205,7 @@ async def test_validation_report_bounded_on_every_http_surface(
     report = {f"s{i}.py": ["invalid layout: example"] for i in range(cap + 7)}
     monkeypatch.setattr(skills_mod, "validate_scripts", lambda _scripts: (False, report))
     monkeypatch.setattr(flagged_loader, "_pending_scripts_verdict", lambda _pdir: (False, report))
-    request = _Req(flagged_loader, match={"slug": "evil-helper"})
+    request = _approve_req(flagged_loader, "evil-helper")
     if surface == "approve":
         response = await H.api_skill_pending_approve(request)
         assert response.status == 422
@@ -1323,3 +1328,223 @@ def test_verdict_resolves_the_candidate_root_exactly_once(loader, monkeypatch):
         f"expected exactly one pinned resolution of the candidate root, got {calls} — "
         "anything below the root must be opened dir_fd-relative to the retained descriptor"
     )
+
+
+# ── Approve against the bytes the reviewer read ──
+
+
+@pytest.mark.asyncio
+async def test_detail_digest_is_stable_and_tracks_every_file(loader):
+    pdir = loader._pending_root() / "deploy-helper"
+    first = loader.get_pending_skill("deploy-helper")["content_sha256"]
+    assert len(first) == 64
+    assert loader.get_pending_skill("deploy-helper")["content_sha256"] == first
+    (pdir / "scripts").mkdir()
+    (pdir / "scripts" / "run.sh").write_text("echo hi\n", encoding="utf-8")
+    with_script = loader.get_pending_skill("deploy-helper")["content_sha256"]
+    assert with_script != first
+    (pdir / "scripts" / "run.sh").write_text("echo bye\n", encoding="utf-8")
+    assert loader.get_pending_skill("deploy-helper")["content_sha256"] != with_script
+
+
+@pytest.mark.asyncio
+async def test_approve_refuses_a_write_between_read_and_click(loader):
+    resp = await H.api_skill_pending_detail(_Req(loader, match={"slug": "deploy-helper"}))
+    seen = _payload(resp)["content_sha256"]
+    skill_md = loader._pending_root() / "deploy-helper" / "SKILL.md"
+    skill_md.write_text(
+        skill_md.read_text(encoding="utf-8") + "\n2. a step nobody reviewed\n", encoding="utf-8"
+    )
+    resp = await H.api_skill_pending_approve(
+        _Req(loader, match={"slug": "deploy-helper"}, body={"content_sha256": seen})
+    )
+    assert resp.status == 409
+    assert _payload(resp)["code"] == "pending_skill_changed"
+    assert loader.list_auto_skills() == []
+    assert [p["slug"] for p in loader.list_pending_skills()] == ["deploy-helper"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [_OMITTED, {}, {"content_sha256": ""}, {"content_sha256": 7}, []])
+async def test_approve_without_a_digest_is_refused(loader, body):
+    resp = await H.api_skill_pending_approve(
+        _Req(loader, match={"slug": "deploy-helper"}, body=body)
+    )
+    assert resp.status == 400
+    assert _payload(resp)["code"] == "content_sha256_required"
+    assert loader.list_auto_skills() == []
+
+
+@pytest.mark.asyncio
+async def test_a_write_after_the_digest_check_is_not_what_goes_live(loader, monkeypatch):
+    """The bytes compared are the bytes promoted: a write by slug path mid-approve misses."""
+    req = _approve_req(loader, "deploy-helper")
+    queued = loader._pending_root() / "deploy-helper"
+    real_validate = loader._validate_and_redact_candidate
+
+    def _write_then_validate(src, name):
+        # Runs after the digest check, before the move: a writer rewrites the
+        # candidate by its queue path, as the auto-skill writer does.
+        queued.mkdir(exist_ok=True)
+        (queued / "SKILL.md").write_text("---\nname: x\n---\nunreviewed body\n", encoding="utf-8")
+        return real_validate(src, name)
+
+    monkeypatch.setattr(loader, "_validate_and_redact_candidate", _write_then_validate)
+    monkeypatch.setattr(loader, "run_skill_lifecycle", lambda **k: None)
+    resp = await H.api_skill_pending_approve(req)
+    assert resp.status == 200
+    live = (loader._dir / "auto" / "deploy-helper" / "SKILL.md").read_text(encoding="utf-8")
+    assert "unreviewed body" not in live
+    assert "go" in live
+
+
+@pytest.mark.asyncio
+async def test_a_refused_approval_returns_the_candidate_to_the_queue(loader):
+    pdir = loader._pending_root() / "deploy-helper"
+    before = {p.name: p.read_bytes() for p in pdir.iterdir() if p.is_file()}
+    resp = await H.api_skill_pending_approve(
+        _Req(loader, match={"slug": "deploy-helper"}, body={"content_sha256": "0" * 64})
+    )
+    assert resp.status == 409
+    assert {p.name: p.read_bytes() for p in pdir.iterdir() if p.is_file()} == before
+    assert [c.name for c in loader._pending_root().iterdir()] == ["deploy-helper"]
+
+
+@pytest.mark.asyncio
+async def test_a_descriptor_kept_open_cannot_change_what_goes_live(loader, monkeypatch):
+    req = _approve_req(loader, "deploy-helper")
+    kept = open(loader._pending_root() / "deploy-helper" / "SKILL.md", "r+b")  # noqa: SIM115
+    real_validate = loader._validate_and_redact_candidate
+
+    def _write_then_validate(src, name):
+        kept.seek(0)
+        kept.write(b"---\nname: x\n---\nunreviewed via descriptor\n")
+        kept.truncate()
+        kept.flush()
+        return real_validate(src, name)
+
+    monkeypatch.setattr(loader, "_validate_and_redact_candidate", _write_then_validate)
+    monkeypatch.setattr(loader, "run_skill_lifecycle", lambda **k: None)
+    try:
+        resp = await H.api_skill_pending_approve(req)
+    finally:
+        kept.close()
+    assert resp.status == 200
+    live = (loader._dir / "auto" / "deploy-helper" / "SKILL.md").read_text(encoding="utf-8")
+    assert "unreviewed via descriptor" not in live
+    # Only the private copy must be gone; Windows cannot remove the queued file
+    # while the descriptor holds it, so the queued original may remain there.
+    assert [p.name for p in loader._pending_root().iterdir()] in ([], ["deploy-helper"])
+    if os.name == "posix":  # the private copy's owner-only mode must not go live
+        assert (loader._dir / "auto" / "deploy-helper").stat().st_mode & 0o777 == 0o755
+
+
+@pytest.mark.asyncio
+async def test_the_slug_stays_reserved_while_the_promotion_runs(loader, monkeypatch):
+    """Staging takes the same claim lock, so it cannot take the slug mid-approve."""
+    import contextlib
+
+    state = {"held": False, "seen": None}
+    real_lock = loader._auto_slug_claim_lock
+
+    @contextlib.contextmanager
+    def _tracked_lock():
+        with real_lock() as locked:
+            state["held"] = locked
+            try:
+                yield locked
+            finally:
+                state["held"] = False
+
+    real_validate = loader._validate_and_redact_candidate
+
+    def _observe_then_validate(src, name):
+        state["seen"] = state["held"]
+        return real_validate(src, name)
+
+    monkeypatch.setattr(loader, "_auto_slug_claim_lock", _tracked_lock)
+    monkeypatch.setattr(loader, "_validate_and_redact_candidate", _observe_then_validate)
+    monkeypatch.setattr(loader, "run_skill_lifecycle", lambda **k: None)
+    resp = await H.api_skill_pending_approve(_approve_req(loader, "deploy-helper"))
+    assert resp.status == 200
+    assert state["seen"] is True
+
+
+def test_the_update_preview_describes_the_read_the_digest_names(loader, monkeypatch):
+    cand = loader._pending_root() / "deploy-helper-update"
+    cand.mkdir(parents=True)
+    (cand / "SKILL.md").write_text("---\nname: x\n---\nread body\n", encoding="utf-8")
+    (cand / ".meta.json").write_text(
+        json.dumps({"kind": "update", "target": "auto/deploy-helper"}), encoding="utf-8"
+    )
+    seen: dict = {}
+
+    def _preview(slug, *, candidate=None):
+        seen["candidate"] = candidate
+        return {"diff": "d"}
+
+    monkeypatch.setattr(loader, "preview_pending_update", _preview)
+    detail = loader.get_pending_skill("deploy-helper-update")
+    assert detail["update_preview"] == {"diff": "d"}
+    body, meta = seen["candidate"]
+    assert body == "---\nname: x\n---\nread body\n"
+    assert meta["target"] == "auto/deploy-helper"
+
+
+@pytest.mark.asyncio
+async def test_a_stray_top_level_file_is_refused_and_kept(loader):
+    pdir = loader._pending_root() / "deploy-helper"
+    req = _approve_req(loader, "deploy-helper")
+    (pdir / "extra.txt").write_text("stray\n", encoding="utf-8")
+    resp = await H.api_skill_pending_approve(req)
+    assert resp.status == 409
+    assert _payload(resp)["reason"] == "invalid_layout"
+    assert (pdir / "extra.txt").read_text(encoding="utf-8") == "stray\n"
+    assert loader.list_auto_skills() == []
+
+
+@pytest.mark.asyncio
+async def test_the_candidate_stays_listed_while_its_promotion_runs(loader, monkeypatch):
+    """A process stopped mid-approve leaves the candidate in the queue, not hidden."""
+    seen: dict = {}
+    real_validate = loader._validate_and_redact_candidate
+
+    def _observe_then_validate(src, name):
+        seen["listed"] = [p["slug"] for p in loader.list_pending_skills()]
+        return real_validate(src, name)
+
+    monkeypatch.setattr(loader, "_validate_and_redact_candidate", _observe_then_validate)
+    monkeypatch.setattr(loader, "run_skill_lifecycle", lambda **k: None)
+    resp = await H.api_skill_pending_approve(_approve_req(loader, "deploy-helper"))
+    assert resp.status == 200
+    assert seen["listed"] == ["deploy-helper"]
+    assert loader.list_pending_skills() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("queue_removable", [True, False], ids=["removed", "left-behind"])
+async def test_the_review_is_reported_done_only_once_the_queued_candidate_is_gone(
+    loader, monkeypatch, queue_removable
+):
+    from kiro_crew import skills_review
+
+    emitted: list[dict] = []
+    # Through the facade: more than one owner binds this name.
+    monkeypatch.setattr(skills_mod, "_emit_pending_consumed", emitted.append)
+    queued = loader._pending_root() / "deploy-helper"
+    real_rmtree = skills_review.shutil.rmtree
+
+    def _rmtree(path, *a, **k):
+        if Path(path) == queued and not queue_removable:
+            return None  # a held file lock: ignore_errors swallows the failure
+        return real_rmtree(path, *a, **k)
+
+    monkeypatch.setattr(skills_review.shutil, "rmtree", _rmtree)
+    monkeypatch.setattr(loader, "run_skill_lifecycle", lambda **k: None)
+    resp = await H.api_skill_pending_approve(_approve_req(loader, "deploy-helper"))
+    assert resp.status == 200
+    if queue_removable:
+        assert [e["slug"] for e in emitted] == ["deploy-helper"]
+    else:
+        assert emitted == []
+        assert [p["slug"] for p in loader.list_pending_skills()] == ["deploy-helper"]

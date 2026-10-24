@@ -98,8 +98,11 @@ export function createSkillsEndpoints({ get, post, put, del, j, jfetch: fetch }:
     skillPendingDetail: (slug: string) => fetch('/api/skills/-/pending/' + encodeURIComponent(slug)).then(j),
     /** Throws ApiError on refusal: 404 `pending_skill_not_found`, 409
      *  `live_skill_exists`, 422 `script_validation_failed` (body carries a
-     *  `report` of `{file: [findings]}`), 409 `pending_approval_refused`. */
-    approvePendingSkill: (slug: string) => post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/approve', {}).then(j),
+     *  `report` of `{file: [findings]}`), 409 `pending_skill_changed` (the
+     *  candidate moved since the read whose `content_sha256` is sent here),
+     *  409 `pending_approval_refused`. */
+    approvePendingSkill: (slug: string, contentSha256: string) =>
+      post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/approve', { content_sha256: contentSha256 }).then(j),
     dismissPendingSkill: (slug: string) => post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/dismiss', {}).then(j),
     dismissAllPendingSkills: (slugs: string[]) => post('/api/skills/-/pending/-/dismiss-all', { slugs }).then(j),
     pinSkill: (name: string, pinned: boolean) => post('/api/skills/-/pin', { name, pinned }).then(j),

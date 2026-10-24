@@ -96,7 +96,7 @@ describe('SkillsTab pending updates', () => {
     mockApi.skillPendingDetail.mockResolvedValue({
       name: 'auto/deploy-helper-update',
       content: '## Steps\nnew\n',
-      scripts: [],
+      scripts: [], content_sha256: 'c'.repeat(64),
       diff: DIFF,
       live_body: 'old',
       proposed_body: 'new',
@@ -116,7 +116,7 @@ describe('SkillsTab pending updates', () => {
     mockApi.skillPendingDetail.mockResolvedValue({
       name: 'auto/deploy-helper-update',
       content: '',
-      scripts: [],
+      scripts: [], content_sha256: 'c'.repeat(64),
       diff: DIFF,
       from_version: 5,
       to_version: 6,
@@ -136,7 +136,7 @@ describe('SkillsTab pending updates', () => {
     mockApi.skillPendingDetail.mockResolvedValue({
       name: 'auto/deploy-helper-update',
       content: '## Steps\nnew\n',
-      scripts: [],
+      scripts: [], content_sha256: 'c'.repeat(64),
       diff: null,
       live_body: null,
       stale_base: false,
@@ -156,7 +156,7 @@ describe('SkillsTab pending updates', () => {
     mockApi.skillPendingDetail.mockResolvedValue({
       name: 'auto/fresh-skill',
       content: '## Steps\nrun it\n',
-      scripts: [],
+      scripts: [], content_sha256: 'c'.repeat(64),
     })
     renderWithQuery()
     // The queue mounts only after the `skills` read settles, and then fetches
@@ -174,7 +174,7 @@ describe('SkillsTab pending updates', () => {
     mockApi.skillPendingDetail.mockResolvedValue({
       name: 'auto/deploy-helper-update',
       content: '',
-      scripts: [],
+      scripts: [], content_sha256: 'c'.repeat(64),
       diff: DIFF,
       from_version: 2,
       to_version: 3,
@@ -186,7 +186,7 @@ describe('SkillsTab pending updates', () => {
     await waitFor(() => expect(screen.getByTestId('diff')).toBeTruthy())
     fireEvent.click(screen.getByText('Approve'))
     await waitFor(() =>
-      expect(mockApi.approvePendingSkill).toHaveBeenCalledWith('deploy-helper-update'),
+      expect(mockApi.approvePendingSkill).toHaveBeenCalledWith('deploy-helper-update', 'c'.repeat(64)),
     )
   })
 })

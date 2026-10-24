@@ -12,11 +12,13 @@ Instance fields read: ``_dir``.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import logging
 import os
 import shutil
 import stat
+import tempfile
 from datetime import datetime, timezone
 from itertools import islice
 from pathlib import Path
@@ -55,7 +57,8 @@ class PendingApprovalRefused(Exception):
     (``report`` carries the redacted ``{filename: [findings]}`` map from
     ``validate_scripts``), ``target_missing`` (an update candidate whose live
     target is gone), ``stale_base`` (an update merged against an older live
-    version), ``invalid_layout`` (symlink / unexpected candidate entry),
+    version), ``content_changed`` (the candidate on disk differs from the
+    digest the reviewer's read returned), ``invalid_layout`` (symlink / unexpected candidate entry),
     ``redaction_failed``, or ``promotion_failed`` (an OS-level I/O failure —
     a read or write, a refused read of the live skill's metadata included).
     Raised by the ``*_checked`` approve variants so
@@ -121,8 +124,8 @@ def catalog_project_skills(self, project_dir: str | Path) -> list[dict]:
     return skills
 
 
-def _read_pending_meta(self, slug: str) -> dict:
-    mf = self._pending_root() / slug / ".meta.json"
+def _read_pending_meta(self, slug: str, pdir: Path | None = None) -> dict:
+    mf = (pdir if pdir is not None else self._pending_root() / slug) / ".meta.json"
     # Never follow an LLM-planted symlink (could point at a sensitive file).
     if mf.is_symlink():
         return {}
@@ -612,6 +615,10 @@ def get_pending_skill(self, slug: str) -> dict | None:
         logger.warning("Refusing to read pending %s: candidate is not a plain tree of files", slug)
         return None
     body, meta, scripts = read
+    # Identity of the bytes this read served, taken BEFORE the display redaction
+    # below so any change on disk moves it. Approve sends it back and is refused
+    # when the candidate on disk differs from it.
+    digest = _candidate_digest(body, meta, scripts)
     # Same hardened verdict as the pending LIST (descriptor-pinned walk,
     # fail-closed on unreadable/oversized entries) — deriving it from the
     # display collection instead would let a silently omitted unreadable
@@ -632,7 +639,15 @@ def get_pending_skill(self, slug: str) -> dict | None:
         "base_version": meta.get("base_version"),
         "content": self._redact_text(body),
         "scripts": scripts,
+        "content_sha256": digest,
     }
+    if detail["kind"] == "update":
+        # The approval preview is built from this same read, so the diff the
+        # reviewer sees describes the bytes ``content_sha256`` names.
+        try:
+            detail["update_preview"] = self.preview_pending_update(slug, candidate=(body, meta))
+        except Exception:
+            detail["update_preview"] = None
     if verdict is not None:
         v_ok, v_report = verdict
         detail["script_validation"] = {
@@ -640,6 +655,93 @@ def get_pending_skill(self, slug: str) -> dict | None:
             "report": self._redact_validation_report(v_report),
         }
     return detail
+
+
+def _candidate_digest(body: str, meta: dict, scripts: list[dict]) -> str:
+    """sha256 over one pinned read of a candidate: SKILL.md, metadata and scripts.
+
+    ``meta`` is the already-redacted metadata (the raw text is not kept); the body
+    and the scripts are the raw bytes as read. Scripts are sorted by name so the
+    walk order does not move the digest.
+    """
+    payload = {
+        "body": body,
+        "meta": meta,
+        "scripts": sorted([str(s.get("filename", "")), str(s.get("content", ""))] for s in scripts),
+    }
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def approve_pending_as_read(self, slug: str, content_sha256: str) -> str:
+    """Approve a candidate only if it is still the bytes the reviewer read.
+
+    Under the slug claim lock, one pinned read of the queued candidate is hashed and
+    compared with ``content_sha256``. The promoted tree is a fresh private copy
+    written from that same read, so the bytes compared are the bytes promoted: a
+    write to the queued files after the read, by path or through a descriptor kept
+    open, never reaches it. The queued candidate stays in place until the promotion
+    succeeds, so a refusal or an interrupted process leaves it in the queue.
+    """
+    if not self._is_pending_slug_safe(slug):
+        raise PendingApprovalRefused("not_found")
+    queued = self._pending_root() / slug
+    if not (queued / "SKILL.md").exists():
+        raise PendingApprovalRefused("not_found")
+    # The staging lock keeps a same-slug candidate from being staged while this
+    # promotion runs.
+    with self._auto_slug_claim_lock() as locked:
+        if not locked:
+            raise PendingApprovalRefused("promotion_failed")
+        # The original keeps its own layout verdict: the copy holds only what the
+        # read returned, so a stray entry would otherwise vanish unrefused.
+        if not self._candidate_layout_ok(queued, f"{AUTO_SKILL_NAMESPACE}/{slug}"):
+            raise PendingApprovalRefused("invalid_layout")
+        read = self._read_candidate_pinned(queued)
+        if read is None or _candidate_digest(*read) != content_sha256:
+            raise PendingApprovalRefused("content_changed")
+        try:
+            fresh = Path(tempfile.mkdtemp(prefix=".approving-", dir=self._pending_root()))
+        except OSError:
+            raise PendingApprovalRefused("promotion_failed")
+        # Captured before the promotion: a same-slug candidate staged after this
+        # instant keeps its notification.
+        consumed_at = datetime.now(tz=timezone.utc).isoformat()
+        try:
+            _write_candidate_copy(fresh, *read)
+            if read[1].get("kind") == "update":
+                name = self.approve_pending_update_checked(slug, src=fresh)
+            else:
+                name = self.approve_pending_skill_checked(slug, src=fresh)
+        finally:
+            shutil.rmtree(fresh, ignore_errors=True)
+        # Promoted: the queued original is consumed. Its review is reported done
+        # only once it is really gone, or the queue would still show it.
+        shutil.rmtree(queued, ignore_errors=True)
+        if not queued.exists():
+            _emit_pending_consumed(
+                {"slug": slug, "outcome": "approved", "name": name, "consumed_at": consumed_at}
+            )
+        return name
+
+
+def _write_candidate_copy(dest: Path, body: str, meta: dict, scripts: list[dict]) -> None:
+    """Write a candidate tree into the empty directory ``dest`` from one pinned read."""
+    try:
+        (dest / "SKILL.md").write_bytes(body.encode("utf-8"))
+        if meta:
+            (dest / ".meta.json").write_bytes(json.dumps(meta).encode("utf-8"))
+        for s in scripts:
+            rel = Path(str(s.get("filename", "")))
+            if rel.is_absolute() or not rel.parts or ".." in rel.parts:
+                raise PendingApprovalRefused("invalid_layout")
+            target = dest / "scripts" / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(str(s.get("content", "")).encode("utf-8"))
+        # mkdtemp made it owner-only; a new skill is moved live as this directory.
+        dest.chmod(0o755)
+    except OSError:
+        raise PendingApprovalRefused("promotion_failed")
 
 
 def _restore_redacted(backup: dict[Path, bytes]) -> None:
@@ -756,7 +858,9 @@ def _redact_validation_report(self, report: dict) -> dict:
     return safe
 
 
-def preview_pending_update(self, slug: str) -> dict | None:
+def preview_pending_update(
+    self, slug: str, *, candidate: tuple[str, dict] | None = None
+) -> dict | None:
     """Return an approval preview for a pending UPDATE candidate.
 
     Produces ``{live_body, proposed_body, diff, from_version, to_version,
@@ -769,14 +873,17 @@ def preview_pending_update(self, slug: str) -> dict | None:
     not an update, or its target is not a live auto-skill whose metadata
     can be read (a refused rewrite read included). Read-only:
     never mutates the candidate or the live skill.
+
+    ``candidate`` is ``(body, meta)`` from a read already made, so the preview
+    describes those same bytes; omitted, the candidate is read by ``slug``.
     """
     if not self._is_pending_slug_safe(slug):
         return None
     src = self._pending_root() / slug
     cand_file = src / "SKILL.md"
-    if not cand_file.exists() or cand_file.is_symlink():
+    if candidate is None and (not cand_file.exists() or cand_file.is_symlink()):
         return None
-    meta = self._read_pending_meta(slug)
+    meta = candidate[1] if candidate is not None else self._read_pending_meta(slug)
     if meta.get("kind") != "update":
         return None
     target = meta.get("target")
@@ -795,10 +902,13 @@ def preview_pending_update(self, slug: str) -> dict | None:
     live_body = self.read_auto_skill_body(target_name)
     if live_body is None:
         return None
-    try:
-        cand_body = cand_file.read_text(encoding="utf-8")
-    except OSError:
-        return None
+    if candidate is not None:
+        cand_body = candidate[0]
+    else:
+        try:
+            cand_body = cand_file.read_text(encoding="utf-8")
+        except OSError:
+            return None
     try:
         current_version = self.get_auto_skill_version(target_name)
         _live_fm = self._cached_frontmatter(live_file, within=None, for_write=True)
@@ -838,7 +948,7 @@ def preview_pending_update(self, slug: str) -> dict | None:
     }
 
 
-def approve_pending_update_checked(self, slug: str) -> str:
+def approve_pending_update_checked(self, slug: str, *, src: Path | None = None) -> str:
     """Promote a pending UPDATE candidate over its live target auto-skill.
 
     Preconditions (all checked BEFORE any live mutation; a failure here
@@ -857,13 +967,18 @@ def approve_pending_update_checked(self, slug: str) -> str:
     candidate scripts into the live ``scripts/`` (exec bit set on POSIX),
     prune ``.versions`` to the newest ``MAX_SKILL_VERSIONS``, delete the
     pending dir, and SEL-audit. Returns ``auto/<target>`` on success.
+
+    ``src`` is a held copy of the candidate (see ``approve_pending_as_read``);
+    omitted, the candidate is read from the pending queue by ``slug``.
     """
     if not self._is_pending_slug_safe(slug):
         raise PendingApprovalRefused("not_found")
-    src = self._pending_root() / slug
+    owns_queue = src is None
+    if src is None:
+        src = self._pending_root() / slug
     if not (src / "SKILL.md").exists():
         raise PendingApprovalRefused("not_found")
-    meta = self._read_pending_meta(slug)
+    meta = self._read_pending_meta(slug, src)
     if meta.get("kind") != "update":
         raise PendingApprovalRefused("not_found")
     target = meta.get("target")
@@ -1126,7 +1241,8 @@ def approve_pending_update_checked(self, slug: str) -> str:
     # though the update went live. Only report it consumed when the
     # directory is really gone — otherwise the queue still shows an
     # actionable review and its notification must stay unread.
-    if not src.exists():
+    # A caller that passed ``src`` owns the queued candidate and reports it.
+    if owns_queue and not src.exists():
         _emit_pending_consumed(
             {
                 "slug": slug,
@@ -1138,7 +1254,7 @@ def approve_pending_update_checked(self, slug: str) -> str:
     return target_name
 
 
-def approve_pending_skill_checked(self, slug: str) -> str:
+def approve_pending_skill_checked(self, slug: str, *, src: Path | None = None) -> str:
     """Promote a pending candidate to a live auto-skill.
 
     Re-validates + redacts the candidate, then moves ``auto/.pending/<slug>``
@@ -1149,10 +1265,15 @@ def approve_pending_skill_checked(self, slug: str) -> str:
     symlink, script validation fails, or redaction fails. Every check runs
     BEFORE the move, so a rejected candidate is left untouched in the
     pending queue.
+
+    ``src`` is a held copy of the candidate (see ``approve_pending_as_read``);
+    omitted, the candidate is read from the pending queue by ``slug``.
     """
     if not self._is_pending_slug_safe(slug):
         raise PendingApprovalRefused("not_found")
-    src = self._pending_root() / slug
+    owns_queue = src is None
+    if src is None:
+        src = self._pending_root() / slug
     if not (src / "SKILL.md").exists():
         raise PendingApprovalRefused("not_found")
     # An UPDATE candidate must never be consumed down this path: promoting
@@ -1164,7 +1285,7 @@ def approve_pending_skill_checked(self, slug: str) -> str:
     # candidate exists and is approvable via its own path, and the
     # not-found recovery copy ("approved or dismissed elsewhere") would be
     # a lie for a still-pending candidate.
-    if self._read_pending_meta(slug).get("kind") == "update":
+    if self._read_pending_meta(slug, src).get("kind") == "update":
         logger.warning(
             "Refusing to approve %s as a NEW skill: candidate metadata marks it an update",
             slug,
@@ -1274,7 +1395,9 @@ def approve_pending_skill_checked(self, slug: str) -> str:
                         pass
     self._invalidate_iter_cache()
     logger.info("Approved pending skill: %s", name)
-    _emit_pending_consumed(
-        {"slug": slug, "outcome": "approved", "name": name, "consumed_at": consumed_at}
-    )
+    # A caller that passed ``src`` owns the queued candidate and reports it.
+    if owns_queue:
+        _emit_pending_consumed(
+            {"slug": slug, "outcome": "approved", "name": name, "consumed_at": consumed_at}
+        )
     return name
