@@ -115,6 +115,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.prompts_skill_edits import logger  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_skill_edits import (  # noqa: F401
         READONLY_SKILL_KEY_PREFIXES,
+        _live_skill_mutation_refused,
         _under_skill_write_lock,
         api_skill_inject_on_trigger,
     )
@@ -175,6 +176,8 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.skill_trust import revoke_project_trust  # noqa: F401
     from kiro_crew.skills import PROJECT_SKILL_BODY_CAP  # noqa: F401
     from kiro_crew.skills import SKILL_READ_CAPACITY  # noqa: F401
+    from kiro_crew.skills import LiveSkillMutationRefused  # noqa: F401
     from kiro_crew.skills import PendingApprovalRefused  # noqa: F401
+    from kiro_crew.skills import PendingDismissalRefused  # noqa: F401
     from kiro_crew.skills import SkillReadRefusal  # noqa: F401
     from kiro_crew.validation import MAX_SKILL_KEY_CHARS  # noqa: F401

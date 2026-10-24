@@ -81,11 +81,13 @@ _BASE_MODULE_NAMES = frozenset("""
     _CONSOLIDATION_LEASE_RENEW_SECS _LEASE_INCARNATION _LEASE_MONOTONIC _LEASE_PID
     _LEASE_START _LEASE_TOKEN _LeaseLostMidRun _lease_holder_is_live _no_pass_ran os
     platform_compat uuid
+    _auto_skill_promotion_disabled_reason canonical_skill_text_hash
     """.split())
 #: The members whose bodies moved to an owner.
 _MOVED = frozenset("""
     _consolidate _call_llm _run_skill_detection _dedupe_candidate _dedupe_judge
     _merge_skill_update _skill_publication_guard _stage_skill_update _process_auto_skills
+    _auto_apply_staged_update
     _gated_lesson_scope _lesson_tier _lesson_delete_decision _save_lessons
     _write_structured_memory
     _acquire_consolidation_lease _renew_consolidation_lease _heartbeat_consolidation_lease
@@ -100,7 +102,7 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "function",
         False,
         False,
-        "(self, log: 'ConversationLog', memory: 'MemoryStore', sessions: 'SessionManager | None' = None, lesson_store: 'LessonStore | None' = None, history_idle_secs: 'float' = 10800, vector_store: \"'VectorMemoryStore | None'\" = None, migrated: 'bool' = False, skills_loader: \"'SkillsLoader | None'\" = None, auto_skills_enabled: 'bool' = False, auto_refine_enabled: 'bool' = False, auto_min_tool_calls: 'int' = 5, auto_similarity_threshold: 'float' = 0.85, approval_required: 'bool' = True, max_auto_skills: 'int' = 100, stale_after_days: 'int' = 30, archive_after_days: 'int' = 90, generate_scripts: 'bool' = True, judge_model: 'str' = '') -> 'None'",
+        "(self, log: 'ConversationLog', memory: 'MemoryStore', sessions: 'SessionManager | None' = None, lesson_store: 'LessonStore | None' = None, history_idle_secs: 'float' = 10800, vector_store: \"'VectorMemoryStore | None'\" = None, migrated: 'bool' = False, skills_loader: \"'SkillsLoader | None'\" = None, auto_skills_enabled: 'bool' = False, auto_refine_enabled: 'bool' = False, auto_min_tool_calls: 'int' = 5, auto_similarity_threshold: 'float' = 0.85, approval_required: 'bool' = True, auto_apply_updates: 'bool' = False, max_auto_skills: 'int' = 100, stale_after_days: 'int' = 30, archive_after_days: 'int' = 90, generate_scripts: 'bool' = True, judge_model: 'str' = '') -> 'None'",
     ),
     "_acquire_consolidation_lease": (
         "function",
@@ -125,6 +127,12 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         False,
         "(self, key: 'str', span: 'AttemptedSpan') -> 'None'",
+    ),
+    "_auto_apply_staged_update": (
+        "function",
+        False,
+        False,
+        "(self, *, key: 'str', staged_name: 'str', target_key: 'str', candidate_binding: 'str') -> 'None'",
     ),
     "_busy": ("function", False, False, "(self, key: 'str') -> 'bool'"),
     "_call_llm": (
@@ -284,7 +292,7 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "function",
         False,
         False,
-        "(self, *, key: 'str', target_key: 'str', description: 'str', triggers: 'str', procedure_md: 'str', scripts: \"'list[dict] | None'\" = None, guard_publication: 'bool' = False, commit_state: '_RunCommitState | None' = None, refusal: 'ClaimRefusal | None' = None) -> 'None'",
+        "(self, *, key: 'str', target_key: 'str', description: 'str', triggers: 'str', procedure_md: 'str', scripts: \"'list[dict] | None'\" = None, guard_publication: 'bool' = False, commit_state: '_RunCommitState | None' = None, refusal: 'ClaimRefusal | None' = None, scripts_supplied: 'bool' = False) -> 'None'",
     ),
     "_start_counted": (
         "function",

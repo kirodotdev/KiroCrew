@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         boot_platform,
         configure_default_executor,
         ensure_agents_slice_limits,
+        initialize_gateway_auto_skill_private_authority,
         kiro_agents_dir,
         kiro_crew,
         logger,
@@ -374,6 +375,23 @@ async def run_gateway(
     # E2E gate never spawns the developer's real kiro-cli.
     if not test_mode:
         _start_kas_cli_floor(cfg)
+
+    # ── Auto-skill private authority startup certificate ──
+    # The sole production provisioning boundary. It runs on every host before
+    # GatewayOrchestrator can construct a loader or session; every ordinary
+    # skill path is verify-only. It stays on the readiness path on purpose, so
+    # no agent this gateway spawns can run before its stale-state checks, and
+    # its cost is bounded whatever state was planted
+    # (``skills._STALE_CLAIM_SCAN_LIMIT`` lists the work). It never stops the
+    # gateway: where authority cannot be provisioned or certified (an
+    # unverifiable authority root awaiting stopped-installation recovery, or a
+    # platform whose agents run in a delegated sandbox Kiro Crew cannot fence)
+    # the gateway keeps serving with auto-skill staging and promotion disabled,
+    # which the warning names.
+    try:
+        await asyncio.to_thread(initialize_gateway_auto_skill_private_authority)
+    except Exception as exc:  # noqa: BLE001 -- fail closed for auto-skills, not for the gateway
+        logger.warning("Auto-skill staging and promotion are disabled: %s", exc)
 
     # ── Aggregate cgroup ceiling for all agent scopes ──
     # The per-spawn scope wrapper (sandbox.cgroup_scope_argv) bounds ONE spawn

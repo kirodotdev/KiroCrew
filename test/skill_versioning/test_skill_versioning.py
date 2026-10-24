@@ -11,68 +11,27 @@ from __future__ import annotations
 
 import os
 import shutil
-from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
 import kiro_crew.skills as skills_mod
-from kiro_crew.skills import MAX_SKILL_VERSIONS, AutoSkillProvenance, SkillsLoader
+from kiro_crew.skills import MAX_SKILL_VERSIONS, SkillsLoader
+
+from .skill_versioning_support import _prov, _stage_update, _write_live
+
+# This module's auto-skill boundaries initialize explicitly through the
+# ``loader`` fixture; every ``uninitialized_loader`` path must see production
+# fail closed.
+pytestmark = pytest.mark.usefixtures("no_auto_skill_authority_startup")
 
 
-@pytest.fixture()
-def loader(tmp_path):
-    return SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
-
-
-def _prov(created_at: str = "") -> AutoSkillProvenance:
-    return AutoSkillProvenance(
-        session_key="s",
-        created_at=created_at
-        or datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-    )
-
-
-def _write_live(
-    loader,
-    slug,
-    *,
-    version=None,
-    created_at="2020-01-01T00:00:00+00:00",
-    body="original body",
-):
-    """Write a live auto-skill directly (optionally with a ``version`` line)."""
-    live = loader._dir / "auto" / slug
-    live.mkdir(parents=True, exist_ok=True)
-    fm = [
-        f"name: auto/{slug}",
-        "description: live desc",
-        "triggers: t",
-        "source: auto",
-        f"created_at: {created_at}",
-    ]
-    if version is not None:
-        fm.append(f"version: {version}")
-    content = "---\n" + "\n".join(fm) + "\n---\n\n# " + slug + "\n\n" + body + "\n"
-    (live / "SKILL.md").write_text(content, encoding="utf-8")
-    loader._invalidate_iter_cache()
-    return live
-
-
-def _stage_update(loader, slug, *, target, base_version=1, body="## Steps\n\nnew steps", scripts=None):
-    return loader.stage_skill_candidate(
-        slug,
-        description=f"updated {slug}",
-        triggers=slug,
-        procedure_md=body,
-        provenance=_prov(created_at="2099-12-31T00:00:00+00:00"),
-        scripts=scripts,
-        kind="update",
-        target=target,
-        base_version=base_version,
-    )
+def test_simulated_windows_opened_identity_pins_delegation_false():
+    assert skills_mod._agent_sandbox_is_delegated() is False
 
 
 # ── version reads ──
+
 
 def test_get_auto_skill_version_defaults_to_one(loader):
     loader.create_auto_skill(
@@ -100,6 +59,7 @@ def test_read_auto_skill_body_and_namespace_guard(loader):
 
 # ── staging update candidates ──
 
+
 def test_staged_update_meta_appears_in_pending_list(loader):
     _write_live(loader, "greet")
     assert _stage_update(loader, "greet", target="auto/greet", base_version=1) == "auto/greet"
@@ -115,6 +75,7 @@ def test_staged_update_meta_appears_in_pending_list(loader):
 
 # ── approve_pending_update_checked happy path ──
 
+
 def test_approve_update_carries_the_injection_opt_out_forward(loader):
     """A candidate never sets `inject_on_trigger`, so live must supply it.
 
@@ -124,9 +85,7 @@ def test_approve_update_carries_the_injection_opt_out_forward(loader):
     live_dir = _write_live(loader, "quiet", body="v1 body")
     live = live_dir / "SKILL.md"
     live.write_text(
-        live.read_text(encoding="utf-8").replace(
-            "\n---\n", "\ninject_on_trigger: false\n---\n", 1
-        ),
+        live.read_text(encoding="utf-8").replace("\n---\n", "\ninject_on_trigger: false\n---\n", 1),
         encoding="utf-8",
     )
     loader._invalidate_iter_cache()
@@ -193,6 +152,7 @@ def test_approve_update_moves_scripts_executable(loader):
 
 # ── rejections ──
 
+
 def test_approve_update_rejects_missing_target(loader):
     # target names a skill that is not live → refused, candidate intact.
     _stage_update(loader, "orphan", target="auto/nope")
@@ -219,6 +179,33 @@ def test_approve_update_rejects_non_update_kind(loader):
     assert any(p["slug"] == "plain-cand" for p in loader.list_pending_skills())
 
 
+def test_new_skill_approval_rejects_claimed_update_kind(loader):
+    live = _write_live(loader, "stale-route", version=1, body="live original")
+    _stage_update(
+        loader,
+        "stale-route-update",
+        target="auto/stale-route",
+        body="## Steps\n\nupdated body",
+    )
+    pending = loader._pending_root() / "stale-route-update"
+    candidate_before = (pending / "SKILL.md").read_bytes()
+    metadata_file = pending / ".meta.json"
+    normalized_metadata = metadata_file.read_bytes().replace(b"\r\n", b"\n")
+    metadata_before = normalized_metadata.replace(b"\n", b"\r\n")
+    metadata_file.write_bytes(metadata_before)
+    live_before = (live / "SKILL.md").read_bytes()
+
+    # Simulate a dashboard request routed as "new" from stale pre-claim metadata.
+    with pytest.raises(skills_mod.PendingApprovalRefused) as refused:
+        loader.approve_pending_skill_checked("stale-route-update")
+    assert refused.value.reason == "kind_mismatch"
+
+    assert (live / "SKILL.md").read_bytes() == live_before
+    assert not (loader._dir / "auto" / "stale-route-update").exists()
+    assert (pending / "SKILL.md").read_bytes() == candidate_before
+    assert (pending / ".meta.json").read_bytes() == metadata_before
+
+
 def test_approve_update_rejects_symlink(loader):
     _write_live(loader, "symk", version=1, body="untouched")
     _stage_update(loader, "symk", target="auto/symk")
@@ -239,11 +226,11 @@ def test_approve_update_rejects_symlink(loader):
 def test_failed_update_leaves_candidate_and_live_intact(loader, monkeypatch):
     _write_live(loader, "faux", version=1, body="live original")
     _stage_update(loader, "faux", target="auto/faux")
-    # Redaction fails → abort before any live mutation.
-    monkeypatch.setattr(loader, "_redact_file_in_place", lambda *a, **k: False)
+    # Snapshot validation fails → abort before any live mutation.
+    monkeypatch.setattr(loader, "_validate_and_redact_candidate", lambda *a, **k: None)
     with pytest.raises(skills_mod.PendingApprovalRefused) as refused:
         loader.approve_pending_update_checked("faux")
-    assert refused.value.reason == "redaction_failed"
+    assert refused.value.reason == "promotion_failed"
     # Candidate intact.
     assert (loader._pending_root() / "faux" / "SKILL.md").exists()
     # Live untouched, no snapshot written.
@@ -253,6 +240,7 @@ def test_failed_update_leaves_candidate_and_live_intact(loader, monkeypatch):
 
 
 # ── version pruning ──
+
 
 def test_approve_update_prunes_versions_at_cap(loader):
     over = MAX_SKILL_VERSIONS + 5  # current live version
@@ -274,6 +262,7 @@ def test_approve_update_prunes_versions_at_cap(loader):
 
 
 # ── .versions never surfaces as a live skill ──
+
 
 def test_versions_dir_absent_from_list_skills(loader):
     _write_live(loader, "shown", body="v1")
@@ -372,14 +361,15 @@ def test_approve_update_script_promotion_failure_loses_nothing(loader, monkeypat
     )
     cand_dir = loader._pending_root() / "prom-fail-update"
 
-    real_copy = shutil.copy2
+    real_atomic_write = skills_mod.atomic_write
 
-    def boom(src, dst, *a, **kw):
-        if str(src).endswith("go.py"):
+    def boom(path, content, **kwargs):
+        candidate = Path(path)
+        if candidate.name == "go.py" and candidate.parents[1].name.startswith(".publish-"):
             raise OSError("read-only scripts dir")
-        return real_copy(src, dst, *a, **kw)
+        return real_atomic_write(path, content, **kwargs)
 
-    monkeypatch.setattr(shutil, "copy2", boom)
+    monkeypatch.setattr(skills_mod, "atomic_write", boom)
     with pytest.raises(skills_mod.PendingApprovalRefused) as refused:
         loader.approve_pending_update_checked("prom-fail-update")
     assert refused.value.reason == "promotion_failed"
@@ -472,14 +462,15 @@ def test_approve_update_rollback_restores_overwritten_live_script(loader, monkey
         ],
     )
 
-    real_copy = shutil.copy2
+    real_atomic_write = skills_mod.atomic_write
 
-    def boom(src, dst, *a, **kw):
-        if str(src).endswith("b.py"):
+    def boom(path, content, **kwargs):
+        candidate = Path(path)
+        if candidate.name == "b.py" and candidate.parents[1].name.startswith(".publish-"):
             raise OSError("disk full")
-        return real_copy(src, dst, *a, **kw)
+        return real_atomic_write(path, content, **kwargs)
 
-    monkeypatch.setattr(shutil, "copy2", boom)
+    monkeypatch.setattr(skills_mod, "atomic_write", boom)
     with pytest.raises(skills_mod.PendingApprovalRefused) as refused:
         loader.approve_pending_update_checked("ow-skill-update")
     assert refused.value.reason == "promotion_failed"
@@ -505,13 +496,16 @@ def test_refine_preserves_version_and_pinned(loader):
     live_skill = loader._dir / "auto" / "refine-keep" / "SKILL.md"
     assert loader.set_pinned("auto/refine-keep", True) is True
 
-    assert loader.update_auto_skill(
-        "auto/refine-keep",
-        description="refined desc",
-        triggers="t",
-        procedure_md="## Steps\n\nrefined",
-        provenance=_prov(created_at="2099-01-01T00:00:00+00:00"),
-    ) is True
+    assert (
+        loader.update_auto_skill(
+            "auto/refine-keep",
+            description="refined desc",
+            triggers="t",
+            procedure_md="## Steps\n\nrefined",
+            provenance=_prov(created_at="2099-01-01T00:00:00+00:00"),
+        )
+        is True
+    )
 
     body = live_skill.read_text(encoding="utf-8")
     assert "version: 3" in body
@@ -531,13 +525,16 @@ def test_refine_preserves_the_injection_opt_out(loader):
     live_skill = loader._dir / "auto" / "refine-quiet" / "SKILL.md"
     assert loader.set_inject_on_trigger("auto/refine-quiet", False) is True
 
-    assert loader.update_auto_skill(
-        "auto/refine-quiet",
-        description="refined desc",
-        triggers="t",
-        procedure_md="## Steps\n\nrefined",
-        provenance=_prov(),
-    ) is True
+    assert (
+        loader.update_auto_skill(
+            "auto/refine-quiet",
+            description="refined desc",
+            triggers="t",
+            procedure_md="## Steps\n\nrefined",
+            provenance=_prov(),
+        )
+        is True
+    )
 
     body = live_skill.read_text(encoding="utf-8")
     assert "refined" in body
@@ -573,13 +570,16 @@ def test_refine_refuses_a_live_file_that_does_not_vet(loader, monkeypatch):
 
 def test_refine_does_not_invent_an_opt_out(loader):
     _write_live(loader, "refine-loud", body="OLD")
-    assert loader.update_auto_skill(
-        "auto/refine-loud",
-        description="d",
-        triggers="t",
-        procedure_md="## Steps\n\nrefined",
-        provenance=_prov(),
-    ) is True
+    assert (
+        loader.update_auto_skill(
+            "auto/refine-loud",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n\nrefined",
+            provenance=_prov(),
+        )
+        is True
+    )
     body = (loader._dir / "auto" / "refine-loud" / "SKILL.md").read_text(encoding="utf-8")
     assert "inject_on_trigger" not in body
 
@@ -631,6 +631,50 @@ def test_approve_update_rejects_symlinked_live_scripts_dir(loader, tmp_path):
     assert list(outside.iterdir()) == []
     assert (live_dir / "SKILL.md").read_text(encoding="utf-8") == live_before
     assert (loader._pending_root() / "sym-live-update" / "SKILL.md").exists()
+
+
+def test_approve_update_never_copies_a_transient_live_credential_symlink(
+    loader, tmp_path, monkeypatch
+):
+    """A live file swapped after capture is refused without copying its target bytes."""
+    if os.name == "nt":
+        pytest.skip("symlink creation needs privileges on Windows")
+    _write_live(loader, "transient-live", version=1, body="OLD")
+    live_dir = loader._dir / "auto" / "transient-live"
+    scripts = live_dir / "scripts"
+    scripts.mkdir()
+    live_script = scripts / "run.py"
+    live_script.write_text("print('safe')\n", encoding="utf-8")
+    secret = tmp_path / "credentials"
+    secret.write_text("aws_secret_access_key = SHOULD-NEVER-BE-COPIED\n", encoding="utf-8")
+    _stage_update(loader, "transient-live-update", target="auto/transient-live")
+
+    real_resolve = loader._resolve_snapshot_version
+    real_copy2 = shutil.copy2
+
+    def swap_after_snapshot(*args, **kwargs):
+        version = real_resolve(*args, **kwargs)
+        live_script.unlink()
+        live_script.symlink_to(secret)
+        return version
+
+    def reject_credential_copy(source, destination, *args, **kwargs):
+        if Path(source).is_symlink() and Path(source).resolve() == secret:
+            pytest.fail("live-tree retention followed a transient credential symlink")
+        return real_copy2(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(loader, "_resolve_snapshot_version", swap_after_snapshot)
+    monkeypatch.setattr(skills_mod.shutil, "copy2", reject_credential_copy)
+
+    with pytest.raises(skills_mod.PendingApprovalRefused) as refused:
+        loader.approve_pending_update_checked("transient-live-update")
+    assert refused.value.reason == "promotion_failed"
+    assert secret.read_text(encoding="utf-8") == (
+        "aws_secret_access_key = SHOULD-NEVER-BE-COPIED\n"
+    )
+    private = loader._private_root()
+    assert not list(private.glob(".publish-*"))
+    assert not list(loader._live_quarantine_root().iterdir())
 
 
 def test_read_auto_skill_body_refuses_symlinked_skill_file(loader, tmp_path):
@@ -703,6 +747,31 @@ def test_approve_update_rejects_a_stale_base(loader):
     assert "FROM-A" in body and "FROM-B" not in body
     assert loader.get_auto_skill_version("auto/race") == 2
     assert (loader._pending_root() / "race-b" / "SKILL.md").exists()
+
+
+def test_approve_update_stale_base_gate_survives_a_poisoned_mtime_cache(loader):
+    """The frontmatter cache is keyed by mtime alone, so a cross-process writer
+    replacing the live skill within one mtime tick leaves this process's cache
+    asserting the OLD version. The locked approve path must not trust it: the
+    entry is dropped once the target lock is held, so the staleness gate reads
+    the version actually on disk and refuses the v1-based candidate."""
+    _write_live(loader, "tick", version=2, body="LIVE-V2")
+    live = loader._dir / "auto" / "tick" / "SKILL.md"
+    # Simulate the same-tick stale read: cache claims v1 under the CURRENT mtime,
+    # while the bytes on disk say v2 — exactly what a same-tick replacement
+    # leaves behind. Without the under-lock invalidation, the v1-based candidate
+    # below would pass the base_version gate and clobber v2.
+    loader._fm_cache[str(live)] = (live.stat().st_mtime, {"version": "1"})
+    _stage_update(
+        loader, "tick-old", target="auto/tick", base_version=1, body="## Steps\n\nOLD-MERGE"
+    )
+
+    with pytest.raises(skills_mod.PendingApprovalRefused) as refused:
+        loader.approve_pending_update_checked("tick-old")
+    assert refused.value.reason == "stale_base"
+    body = live.read_text(encoding="utf-8")
+    assert "LIVE-V2" in body and "OLD-MERGE" not in body
+    assert (loader._pending_root() / "tick-old" / "SKILL.md").exists()
 
 
 def test_approve_update_allows_a_candidate_without_base_version(loader):

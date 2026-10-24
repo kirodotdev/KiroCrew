@@ -60,6 +60,46 @@ def _candidate_has_symlink(pdir: Path) -> bool:
     return False
 
 
+def _candidate_has_unsafe_inode(pdir: Path) -> bool:
+    """True unless a tree contains only real dirs and lone regular files.
+
+    Renaming a candidate directory does not sever a hardlink to one of its
+    files. Reject every file whose inode has another name so no public alias
+    can mutate claimed bytes after review. Traversal and stat errors fail
+    closed because an uninspected entry is not safe to promote.
+    """
+    try:
+        if is_link_or_junction(pdir):
+            return True
+        if not stat.S_ISDIR(os.lstat(pdir).st_mode):
+            return True
+
+        def raise_walk_error(error: OSError) -> None:
+            raise error
+
+        for root, dirs, files in os.walk(
+            pdir,
+            onerror=raise_walk_error,
+            followlinks=False,
+        ):
+            for nm in dirs:
+                entry = Path(root) / nm
+                if is_link_or_junction(entry):
+                    return True
+                if not stat.S_ISDIR(os.lstat(entry).st_mode):
+                    return True
+            for nm in files:
+                entry = Path(root) / nm
+                if is_link_or_junction(entry):
+                    return True
+                entry_stat = os.lstat(entry)
+                if not stat.S_ISREG(entry_stat.st_mode) or entry_stat.st_nlink != 1:
+                    return True
+    except OSError:
+        return True
+    return False
+
+
 def _collect_scripts(sdir: Path) -> list[dict]:
     """Recursively collect ``{filename, content}`` for every regular file
     under ``sdir`` (relative filenames). Recursion + symlink-skip ensure a
@@ -224,17 +264,17 @@ def _candidate_layout_findings_at(self, root_fd: int) -> list[str]:
 def _candidate_layout_ok(self, src: Path, name: str) -> bool:
     """Shared candidate-layout guard for BOTH approve paths.
 
-    Rejects (a) any symlink anywhere in the candidate (defense-in-depth on
-    top of the mandatory human review — promotion + chmod must only touch
-    real files), and (b) any unexpected top-level entry: only ``SKILL.md``,
+    Rejects (a) any link, hardlinked/non-regular file, or unstatable entry
+    anywhere in the candidate (promotion + chmod must touch only stable,
+    private inodes), and (b) any unexpected top-level entry: only ``SKILL.md``,
     ``.meta.json`` and a ``scripts`` DIRECTORY are allowed. An injected
     auxiliary file (dropped outside the validated set) would ride live
     WITHOUT validation or redaction; a regular file named ``scripts`` would
     skip the directory-only script validation + redaction walk. Returns True
     only when the layout is safe to promote.
     """
-    if self._candidate_has_symlink(src):
-        logger.warning("Refusing to approve %s: candidate contains a symlink", name)
+    if self._candidate_has_unsafe_inode(src):
+        logger.warning("Refusing to approve %s: candidate tree is unsafe", name)
         return False
     # One copy of the rule: the verdict's precheck reads this same set, so
     # an entry added here is automatically predicted by the badge.

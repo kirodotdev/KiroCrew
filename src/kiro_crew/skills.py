@@ -33,7 +33,13 @@ from typing import TYPE_CHECKING, Iterable, Iterator, Literal, NamedTuple
 
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import hooks as hooks_module  # noqa: F401
-from kiro_crew import pinned_fs, skill_trust  # noqa: F401
+from kiro_crew import pinned_fs, platform_compat, skill_trust  # noqa: F401
+from kiro_crew import skills_auto_authority as _auto_authority
+from kiro_crew import skills_auto_claims as _auto_claims
+from kiro_crew import skills_auto_locks as _auto_locks
+from kiro_crew import skills_auto_pinning as _auto_pinning
+from kiro_crew import skills_auto_promotion as _auto_promotion
+from kiro_crew import skills_auto_snapshot as _auto_snapshot
 from kiro_crew import skills_body_reads as _body_reads
 from kiro_crew import skills_builtin_sync as _builtin_sync
 from kiro_crew import skills_candidate_tree as _candidate_tree
@@ -46,12 +52,18 @@ from kiro_crew import skills_selection as _selection
 # callers may import any of them from here.
 from kiro_crew.atomic_write import (  # noqa: F401
     atomic_write,
+    fsync_dir,
+    fsync_open_dir,
     open_access_control_source,
     pinned_parent_replace_supported,
     replace_with_retry,
 )
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir  # noqa: F401
+from kiro_crew.constants import (  # noqa: F401
+    AUTO_SKILL_AUTHORITY_PARENT_DIRNAME,
+    AUTO_SKILL_PRIVATE_STATE_DIRNAME,
+)
 from kiro_crew.cron import referenced_skill_names  # noqa: F401
 from kiro_crew.dep_sync import normalize as normalize_distribution_name  # noqa: F401
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
@@ -121,11 +133,65 @@ from kiro_crew.skill_search_index import (  # noqa: F401
 )
 from kiro_crew.skill_usage import names_skill_file  # noqa: F401  (read_credit reads it via sk)
 from kiro_crew.skill_usage import SKILL_USAGE_FILENAME, SkillUsageLedger
+from kiro_crew.skills_auto_authority import (  # noqa: F401
+    _AUTHORITY_HOME_IDENTITIES,
+    _AUTHORITY_HOME_IDENTITIES_LOCK,
+    _active_authority_claim_names,
+    _agent_sandbox_is_delegated,
+    _auto_skill_authority_masked_view_reason,
+    _auto_skill_authority_retire_hint,
+    _auto_skill_authority_root_exists,
+    _auto_skill_authority_sandbox_refusal,
+    _auto_skill_promotion_ruled_out,
+    _auto_skill_sandbox_excludes_every_promoter,
+    _gateway_authority_homes,
+    _move_authority_aside,
+    _no_replace_refusal_still_binds_data_home,
+    _normalized_authority_path,
+    _reset_auto_skill_private_authority_for_tests,
+    _retire_untrusted_authority,
+    _retire_verified_authority,
+    auto_skill_promotion_disabled_reason,
+    initialize_auto_skill_private_authority,
+    initialize_gateway_auto_skill_private_authority,
+    require_auto_skill_private_authority,
+    retire_auto_skill_private_authority,
+    verify_auto_skill_private_authority,
+)
+from kiro_crew.skills_auto_locks import _canonical_skill_name  # noqa: F401
 from kiro_crew.skills_auto_model import (  # noqa: F401
+    _ACTIVE_CLAIM_SCAN_LIMIT,
+    _AUTHORITY_PROVENANCE_DOMAIN,
+    _AUTHORITY_PROVENANCE_MAX_BYTES,
+    _AUTHORITY_PROVENANCE_NAME,
+    _AUTHORITY_PROVENANCE_PARENT,
+    _AUTHORITY_PROVENANCE_VERSION,
+    _AUTHORITY_RETIRE_COMMAND,
     _AUTO_NAME_PATTERN,
+    _CLAIM_LOCK_MAX_STATE_BYTES,
+    _DELEGATED_SANDBOX_REFUSAL,
+    _NO_REPLACE_RENAME_REFUSAL,
+    _ORPHANED_RENAME_PROBE_CLEANUP_LIMIT,
+    _ORPHANED_RENAME_PROBE_MIN_AGE_S,
     _PENDING_DOCUMENT_MAX_BYTES,
+    _PROMOTE_LOCK_POLL_S,
+    _PROMOTE_LOCK_TIMEOUT_S,
+    _RENAME_PROBE_PREFIX,
+    _SANDBOX_MASK_UNAVAILABLE_REFUSAL,
+    _SANDBOX_OFF_REFUSAL,
+    _SKILL_SNAPSHOT_MAX_DEPTH,
+    _SKILL_SNAPSHOT_MAX_ENTRIES,
+    _SKILL_SNAPSHOT_MAX_FILE_BYTES,
+    _SKILL_SNAPSHOT_MAX_TOTAL_BYTES,
+    _STALE_CLAIM_SCAN_LIMIT,
     AUTO_ARCHIVE_DIRNAME,
+    AUTO_CLAIMS_DIRNAME,
+    AUTO_EVIDENCE_DIRNAME,
+    AUTO_LIVE_QUARANTINE_DIRNAME,
+    AUTO_LOCKS_DIRNAME,
     AUTO_PENDING_DIRNAME,
+    AUTO_QUARANTINE_DIRNAME,
+    AUTO_SKILL_LOCK_ORDER,
     AUTO_SKILL_MAX_PROCEDURE_CHARS,
     AUTO_SKILL_NAMESPACE,
     AUTO_SKILL_SOURCE_VALUE,
@@ -135,12 +201,28 @@ from kiro_crew.skills_auto_model import (  # noqa: F401
     VERSIONS_DIRNAME,
     AutoSkillProvenance,
     ClaimRefusal,
+    LiveSkillMutationRefused,
+    PendingDismissalRefused,
+    _ActiveClaimScanOverflow,
+    _bounded_stale_claim_names,
     _build_auto_skill_content,
+    _CertifiedAuthorityBinding,
+    _ClaimSnapshot,
     _emit_pending_consumed,
     _emit_pending_staged,
+    _emit_update_auto_applied,
+    _PinnedPrivateState,
+    _PinnedSkillParent,
+    _SkillTreeSnapshot,
+    _StaleClaimScanOverflow,
+    _TaggedFileIdentity,
+    _ValidatedCandidateSnapshot,
+    canonical_skill_text_hash,
     set_pending_consumed_hook,
     set_pending_staged_hook,
+    set_update_auto_applied_hook,
 )
+from kiro_crew.skills_auto_pinning import _DIR_FD_SUPPORTED  # noqa: F401
 from kiro_crew.skills_body_reads import (  # noqa: F401
     _CONTENT_READ_TOOLS,
     _SHELL_READ_VERBS,
@@ -245,6 +327,7 @@ from kiro_crew.skills_review import (  # noqa: F401
     _VALIDATION_REPORT_MAX_STRING_CHARS,
     _VALIDATION_REPORT_TRUNCATION_KEY,
     PendingApprovalRefused,
+    _note_refusal,
 )
 from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES, validate_scripts  # noqa: F401
 from kiro_crew.skills_selection import (  # noqa: F401
@@ -259,35 +342,6 @@ from kiro_crew.skills_selection import (  # noqa: F401
 from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP, trigger_score, words_of  # noqa: F401
 
 logger = logging.getLogger(__name__)
-
-
-# Whether skill CRUD can address the skill directory and its SKILL.md relative to
-# a pinned parent descriptor. supports_pinned_walk covers the openat capability
-# itself; the extras are exactly the OTHER descriptor-relative syscalls the CRUD
-# pinned branches issue (create, update and create's rollback in
-# ``skill_runtime/authoring.py``, delete here), named one per call site so the
-# probe stays derived from the code rather than copied from a neighbour:
-#   os.mkdir  -- create, the leaf skill directory under the pinned parent
-#   os.unlink -- create's rollback (the partial SKILL.md), and update, via
-#                atomic_write's staging cleanup under the pinned parent
-#   os.stat   -- delete, via pinned_fs.stat_at, and create's rollback, via
-#                pinned_fs.remove_dir_verified (os.lstat is not a supports_dir_fd
-#                member even on Linux; the capability belongs to os.stat)
-#   os.rename -- create's rollback, via remove_dir_verified's stage-aside
-#   os.rmdir  -- create's rollback, both the staged-aside directory and the
-#                reclaim when the leaf open loses a race to the mkdir
-# delete's own removal is still a by-name shutil.rmtree, the residual documented
-# there -- os.rmdir is here for the ROLLBACK, not for that. update additionally
-# needs a descriptor-relative rename for atomic_write's publish, which is that
-# module's own probe and is asked at the call site. Where this is False (Windows)
-# the by-name create/write/rmtree are the floor, unchanged.
-_DIR_FD_SUPPORTED = pinned_fs.supports_pinned_walk() and {
-    os.mkdir,
-    os.unlink,
-    os.stat,
-    os.rename,
-    os.rmdir,
-}.issubset(os.supports_dir_fd)
 
 
 # ── $skill inline trigger ──
@@ -665,6 +719,12 @@ class SkillsLoader:
     preview_pending_update = _review.preview_pending_update
     approve_pending_update_checked = _review.approve_pending_update_checked
     approve_pending_skill_checked = _review.approve_pending_skill_checked
+    _candidate_metadata_from_bytes = _review._candidate_metadata_from_bytes
+    _restore_claimed_update = _review._restore_claimed_update
+    _validate_and_redact_snapshot = _review._validate_and_redact_snapshot
+    _promote_pending_update = _review._promote_pending_update
+    _approve_claimed_skill_locked = _review._approve_claimed_skill_locked
+    _refuse_failing_pending_scripts = _review._refuse_failing_pending_scripts
 
     def _iter_uncached(self, project_key: str | None = None) -> list[tuple[str, Path, str | None]]:
         """Walk the skills dir, extra paths, and an already-canonical project root."""
@@ -781,9 +841,17 @@ class SkillsLoader:
     def create_skill(self, name: str, content: str) -> bool:
         """Create a new skill directory with SKILL.md.  Returns True on success.
 
+        An ``auto/`` name is written under its per-target lock so it cannot
+        interleave with a promotion (:data:`AUTO_SKILL_LOCK_ORDER`).
         Contract and rationale: ``skill_runtime.authoring.create_skill``.
         """
-        return _authoring.create_skill(self, name, content)
+        if not self._safe_name(name):
+            return False
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Create lock unavailable for %s", name)
+                return False
+            return _authoring.create_skill(self, name, content)
 
     def _create_skill_pinned(
         self, name: str, content: str, skill_dir: Path, parent_fd: int
@@ -794,9 +862,17 @@ class SkillsLoader:
     def update_skill(self, name: str, content: str) -> bool:
         """Overwrite an existing skill's SKILL.md.  Returns True if found.
 
-        Contract and rationale: ``skill_runtime.authoring.update_skill``.
+        An ``auto/`` name is written under its per-target lock (lock order:
+        :data:`AUTO_SKILL_LOCK_ORDER`). Contract and rationale:
+        ``skill_runtime.authoring.update_skill``.
         """
-        return _authoring.update_skill(self, name, content)
+        if not self._safe_name(name):
+            return False
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Update lock unavailable for %s", name)
+                return False
+            return _authoring.update_skill(self, name, content)
 
     @staticmethod
     def _write_skill_md(skill_file: Path, content: str, *, dir_fd: int | None) -> bool:
@@ -807,37 +883,89 @@ class SkillsLoader:
         """Delete a skill directory.  Returns True if found and removed."""
         if not self._safe_name(name):
             return False
-        skill_dir = self._dir / name
-        if not skill_dir.is_dir():
-            return False
-        if _DIR_FD_SUPPORTED:
-            # A recursive descriptor-relative delete is out of proportion for a
-            # skill dir, so the residual guarded here is narrower: pin the parent,
-            # answer "is this name a real directory?" from a descriptor-relative
-            # lstat, and only then rmtree. The is_dir() above FOLLOWS a link, so a
-            # symlinked skill dir reaches this point; shutil.rmtree then refuses it
-            # with an OSError the caller would surface as a 500 instead of the
-            # not-found the by-name floor gives. A directory swapped for a link
-            # after this check is the remaining window -- recorded, and the by-name
-            # floor below carries the same posture.
-            try:
-                parent_fd = pinned_fs.open_dir_pinned(skill_dir.parent, what="skill directory")
-            except pinned_fs.PinnedPathRefusal:
+        # ``auto/`` names are removed under their target lock, and the bare
+        # namespace (or an alias spelling of it) is refused outright: deleting it
+        # would remove every live, pending and quarantined auto-skill entry.
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Delete lock unavailable for %s", name)
                 return False
-            except OSError:
+            skill_dir = self._dir / name
+            if not skill_dir.is_dir():
                 return False
-            try:
-                st = pinned_fs.stat_at(parent_fd, skill_dir.name)
-                if st is None or not stat.S_ISDIR(st.st_mode):
+            if _DIR_FD_SUPPORTED:
+                # A recursive descriptor-relative delete is out of proportion for a
+                # skill dir, so the residual guarded here is narrower: pin the parent,
+                # answer "is this name a real directory?" from a descriptor-relative
+                # lstat, and only then rmtree. The is_dir() above FOLLOWS a link, so a
+                # symlinked skill dir reaches this point; shutil.rmtree then refuses it
+                # with an OSError the caller would surface as a 500 instead of the
+                # not-found the by-name floor gives. A directory swapped for a link
+                # after this check is the remaining window -- recorded, and the by-name
+                # floor below carries the same posture.
+                try:
+                    parent_fd = pinned_fs.open_dir_pinned(skill_dir.parent, what="skill directory")
+                except pinned_fs.PinnedPathRefusal:
                     return False
-            finally:
-                os.close(parent_fd)
-        elif is_link_or_junction(skill_dir):
-            return False
-        shutil.rmtree(skill_dir)
-        self._invalidate_iter_cache()  # so the removal is reflected in list_skills() now
-        logger.info("Deleted skill: %s", name)
-        return True
+                except OSError:
+                    return False
+                try:
+                    st = pinned_fs.stat_at(parent_fd, skill_dir.name)
+                    if st is None or not stat.S_ISDIR(st.st_mode):
+                        return False
+                finally:
+                    os.close(parent_fd)
+            elif is_link_or_junction(skill_dir):
+                return False
+            shutil.rmtree(skill_dir)
+            self._invalidate_iter_cache()  # so the removal is reflected in list_skills() now
+            logger.info("Deleted skill: %s", name)
+            return True
+
+    # ── Auto-skill locks and the claim-lock journal: ``kiro_crew.skills_auto_locks`` ──
+    delete_skill_checked = _auto_locks.delete_skill_checked
+    _live_auto_mutation_refusal = _auto_locks._live_auto_mutation_refusal
+    set_pinned_checked = _auto_locks.set_pinned_checked
+    _file_lock = _auto_locks._file_lock
+    _promotion_lock = _auto_locks._promotion_lock
+    _audit_reserved_auto_mutation_denial = staticmethod(
+        _auto_locks._audit_reserved_auto_mutation_denial
+    )
+    _live_auto_target_lock_slug = staticmethod(_auto_locks._live_auto_target_lock_slug)
+    _live_auto_mutation_lock = _auto_locks._live_auto_mutation_lock
+    _quarantine_is_consumed_evidence = _auto_locks._quarantine_is_consumed_evidence
+    _pending_slug_claimed = _auto_locks._pending_slug_claimed
+    _claim_lock_path = _auto_locks._claim_lock_path
+    _claim_lock_state_payload = staticmethod(_auto_locks._claim_lock_state_payload)
+    _read_authenticated_claim_lock_payload = classmethod(
+        _auto_locks._read_authenticated_claim_lock_payload
+    )
+    _authenticated_claim_lock_state = classmethod(_auto_locks._authenticated_claim_lock_state)
+    _write_claim_lock_payload = classmethod(_auto_locks._write_claim_lock_payload)
+    _initialize_claim_lock_state = _auto_locks._initialize_claim_lock_state
+    _claim_snapshot_fields = staticmethod(_auto_locks._claim_snapshot_fields)
+    _claim_snapshot_from_fields = staticmethod(_auto_locks._claim_snapshot_from_fields)
+    _write_claim_snapshot_state = _auto_locks._write_claim_snapshot_state
+    _authenticated_claim_snapshot_state = _auto_locks._authenticated_claim_snapshot_state
+    _prepare_claim_publication = _auto_locks._prepare_claim_publication
+    _authenticated_claim_publication = _auto_locks._authenticated_claim_publication
+    _publication_live_backup_identity = _auto_locks._publication_live_backup_identity
+    _authenticated_claim_restore_state = _auto_locks._authenticated_claim_restore_state
+    _write_claim_restore_state = _auto_locks._write_claim_restore_state
+    _clear_claim_restore_state = _auto_locks._clear_claim_restore_state
+    _authenticated_claim_evidence_state = _auto_locks._authenticated_claim_evidence_state
+    _public_claim_evidence_matches = _auto_locks._public_claim_evidence_matches
+    _commit_claim_evidence_state = _auto_locks._commit_claim_evidence_state
+    _commit_claim_lock_state = _auto_locks._commit_claim_lock_state
+    _published_update_evidence_matches = _auto_locks._published_update_evidence_matches
+    _retain_published_update_evidence = _auto_locks._retain_published_update_evidence
+    _commit_claim_consumption = _auto_locks._commit_claim_consumption
+    _cleanup_claim_lock = _auto_locks._cleanup_claim_lock
+    _completion_marker_present = _auto_locks._completion_marker_present
+    _remove_untrusted_completion_marker = _auto_locks._remove_untrusted_completion_marker
+    _authenticated_completion_marker = _auto_locks._authenticated_completion_marker
+    _write_completion_marker = _auto_locks._write_completion_marker
+    _cleanup_completed_claim = _auto_locks._cleanup_completed_claim
 
     # ── Auto skill creation ──
 
@@ -874,8 +1002,9 @@ class SkillsLoader:
         """Write a new auto-generated skill under ``auto/<slug>/SKILL.md``.
 
         The caller passes already-redacted content. ``None`` is a refusal; a
-        ``ClaimRefusal`` says whether it was the lock. Contract and rationale:
-        ``skill_runtime.auto_skills.create_auto_skill``.
+        ``ClaimRefusal`` says whether it was a lock. The owner takes the slug
+        claim lock and then the target's lock (:data:`AUTO_SKILL_LOCK_ORDER`).
+        Contract and rationale: ``skill_runtime.auto_skills.create_auto_skill``.
         """
         return _auto_skills.create_auto_skill(
             self,
@@ -898,17 +1027,29 @@ class SkillsLoader:
     ) -> bool:
         """Update an existing auto-generated skill with a refined procedure.
 
-        The caller passes already-redacted content. Contract and rationale:
+        The caller passes already-redacted content. Runs under the target's lock
+        (:data:`AUTO_SKILL_LOCK_ORDER`). Contract and rationale:
         ``skill_runtime.auto_skills.update_auto_skill``.
         """
-        return _auto_skills.update_auto_skill(
-            self,
-            name,
-            description=description,
-            triggers=triggers,
-            procedure_md=procedure_md,
-            provenance=provenance,
-        )
+        if not self.is_auto_generated(name):
+            logger.warning(
+                "Refusing to auto-refine non-auto skill: %s (not in %s/)",
+                name,
+                AUTO_SKILL_NAMESPACE,
+            )
+            return False
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Refine lock unavailable for %s", name)
+                return False
+            return _auto_skills.update_auto_skill(
+                self,
+                name,
+                description=description,
+                triggers=triggers,
+                procedure_md=procedure_md,
+                provenance=provenance,
+            )
 
     def list_auto_skills(self) -> list[dict]:
         """Return metadata dicts for all skills under the auto namespace.
@@ -935,16 +1076,27 @@ class SkillsLoader:
     def set_pinned(self, name: str, pinned: bool) -> bool:
         """Pin/unpin an auto-skill (exempt from lifecycle eviction).
 
-        Contract and rationale: ``skill_runtime.authoring.set_pinned``.
+        Runs under the target's lock (:data:`AUTO_SKILL_LOCK_ORDER`). Contract and
+        rationale: ``skill_runtime.authoring.set_pinned``.
         """
-        return _authoring.set_pinned(self, name, pinned)
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Pin lock unavailable for %s", name)
+                return False
+            return _authoring.set_pinned(self, name, pinned)
 
     def set_inject_on_trigger(self, name: str, inject: bool) -> bool:
         """Opt a skill in or out of full-body injection on a trigger match.
 
-        Contract and rationale: ``skill_runtime.authoring.set_inject_on_trigger``.
+        An ``auto/`` skill is rewritten under its target lock
+        (:data:`AUTO_SKILL_LOCK_ORDER`). Contract and rationale:
+        ``skill_runtime.authoring.set_inject_on_trigger``.
         """
-        return _authoring.set_inject_on_trigger(self, name, inject)
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Injection lock unavailable for %s", name)
+                return False
+            return _authoring.set_inject_on_trigger(self, name, inject)
 
     def _archive_root(self) -> Path:
         return _auto_skills._archive_root(self)
@@ -957,15 +1109,26 @@ class SkillsLoader:
     def archive_auto_skill(self, name: str) -> bool:
         """Move an auto-skill into the archive (recoverable, never deleted).
 
-        Contract and rationale: ``skill_runtime.auto_skills.archive_auto_skill``.
+        Runs under the target's lock (:data:`AUTO_SKILL_LOCK_ORDER`). Contract and
+        rationale: ``skill_runtime.auto_skills.archive_auto_skill``.
         """
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Archive lock unavailable for %s", name)
+                return False
+            return _auto_skills.archive_auto_skill(self, name)
+
+    def _archive_auto_skill_lifecycle_locked(self, name: str) -> bool:
+        """Archive after lifecycle has acquired the target lock and checked recovery."""
         return _auto_skills.archive_auto_skill(self, name)
 
     def restore_auto_skill(self, slug: str) -> str | None:
         """Restore an archived auto-skill back to ``auto/<slug>``.
 
-        ``None`` is a refusal: not found, a live name clash, or the claim lock. Contract
-        and rationale: ``skill_runtime.auto_skills.restore_auto_skill``.
+        ``None`` is a refusal: not found, a live name clash, or a lock. The owner
+        takes the slug claim lock and then the target's lock
+        (:data:`AUTO_SKILL_LOCK_ORDER`). Contract and rationale:
+        ``skill_runtime.auto_skills.restore_auto_skill``.
         """
         return _auto_skills.restore_auto_skill(self, slug)
 
@@ -1033,11 +1196,14 @@ class SkillsLoader:
         target: str | None = None,
         base_version: int | None = None,
         refusal: ClaimRefusal | None = None,
+        notify: bool = True,
+        base_content_hash: str | None = None,
+        unattended_binding_out: list[str] | None = None,
     ) -> str | None:
         """Write a skill candidate to the pending queue (not live).
 
         The caller passes already-redacted content. ``None`` means nothing was staged; a
-        ``ClaimRefusal`` says whether it was the lock. Contract and rationale:
+        ``ClaimRefusal`` says whether it was a lock. Contract and rationale:
         ``skill_runtime.auto_skills.stage_skill_candidate``.
         """
         return _auto_skills.stage_skill_candidate(
@@ -1053,10 +1219,91 @@ class SkillsLoader:
             target=target,
             base_version=base_version,
             refusal=refusal,
+            notify=notify,
+            base_content_hash=base_content_hash,
+            unattended_binding_out=unattended_binding_out,
         )
+
+    # ── Pinned auto-skill state: ``kiro_crew.skills_auto_pinning`` ──
+    _quarantine_root = _auto_pinning._quarantine_root
+    _live_quarantine_root = _auto_pinning._live_quarantine_root
+    _private_root = _auto_pinning._private_root
+    _authority_provenance_path = _auto_pinning._authority_provenance_path
+    _tag_opened_identity = staticmethod(_auto_pinning._tag_opened_identity)
+    _identity_payload = staticmethod(_auto_pinning._identity_payload)
+    _identity_from_payload = staticmethod(_auto_pinning._identity_from_payload)
+    _claims_root = _auto_pinning._claims_root
+    _evidence_root = _auto_pinning._evidence_root
+    _locks_root = _auto_pinning._locks_root
+    _pinned_parent_matches = staticmethod(_auto_pinning._pinned_parent_matches)
+    _sync_pinned_parent = _auto_pinning._sync_pinned_parent
+    _sync_pinned_rename_parents = _auto_pinning._sync_pinned_rename_parents
+    _opened_path_matches = staticmethod(_auto_pinning._opened_path_matches)
+    _pin_skill_parent = _auto_pinning._pin_skill_parent
+    _pin_skill_child_parent = _auto_pinning._pin_skill_child_parent
+    _restrict_private_parent = _auto_pinning._restrict_private_parent
+    _read_pinned_regular_file = _auto_pinning._read_pinned_regular_file
+    _stat_pinned_child = staticmethod(_auto_pinning._stat_pinned_child)
+    _pinned_child_identity = _auto_pinning._pinned_child_identity
+    _rename_skill_child_no_replace = _auto_pinning._rename_skill_child_no_replace
+    _rename_untrusted_link_no_replace = _auto_pinning._rename_untrusted_link_no_replace
+    _unlink_skill_child = _auto_pinning._unlink_skill_child
+    _remove_private_tree = _auto_pinning._remove_private_tree
+    _open_skill_lock = _auto_pinning._open_skill_lock
+    _create_pinned_child_exclusive = _auto_pinning._create_pinned_child_exclusive
+    _write_pinned_new_file = _auto_pinning._write_pinned_new_file
+    _pinned_child_exists = _auto_pinning._pinned_child_exists
+    # ── The private auto-skill authority: ``kiro_crew.skills_auto_authority`` ──
+    _authority_record_body = staticmethod(_auto_authority._authority_record_body)
+    _authority_record_mac = staticmethod(_auto_authority._authority_record_mac)
+    _authority_record_valid = _auto_authority._authority_record_valid
+    _authority_handoff = staticmethod(_auto_authority._authority_handoff)
+    _ensure_private_authority = _auto_authority._ensure_private_authority
+    _stale_authority_claims = _auto_authority._stale_authority_claims
+    _set_aside_stale_authority = _auto_authority._set_aside_stale_authority
+    _preflight_private_state = _auto_authority._preflight_private_state
+    _pin_private_state = _auto_authority._pin_private_state
+    _private_state_roots_safe = _auto_authority._private_state_roots_safe
+    _probe_rename_under_authority = _auto_authority._probe_rename_under_authority
+    _probe_no_replace_rename = _auto_authority._probe_no_replace_rename
+    # ── Captured skill-tree generations: ``kiro_crew.skills_auto_snapshot`` ──
+    _auto_apply_candidate_binding = staticmethod(_auto_snapshot._auto_apply_candidate_binding)
+    _stage_candidate_under_pending_parent = _auto_snapshot._stage_candidate_under_pending_parent
+    _capture_claim_snapshot = _auto_snapshot._capture_claim_snapshot
+    _emit_pending_staged_metadata = staticmethod(_auto_snapshot._emit_pending_staged_metadata)
+    emit_pending_staged = _auto_snapshot.emit_pending_staged
+    _lone_regular_file_hash = staticmethod(_auto_snapshot._lone_regular_file_hash)
+    _skill_tree_entries_hash = staticmethod(_auto_snapshot._skill_tree_entries_hash)
+    _lone_regular_file_hash_at = _auto_snapshot._lone_regular_file_hash_at
+    _stable_file_payload = staticmethod(_auto_snapshot._stable_file_payload)
+    _skill_tree_snapshot_pinned = staticmethod(_auto_snapshot._skill_tree_snapshot_pinned)
+    _snapshot_path_matches = staticmethod(_auto_snapshot._snapshot_path_matches)
+    _skill_tree_snapshot_by_name = staticmethod(_auto_snapshot._skill_tree_snapshot_by_name)
+    _skill_tree_snapshot = staticmethod(_auto_snapshot._skill_tree_snapshot)
+    _skill_tree_hash = staticmethod(_auto_snapshot._skill_tree_hash)
+    _skill_tree_snapshot_child = _auto_snapshot._skill_tree_snapshot_child
+    _skill_tree_hash_child = _auto_snapshot._skill_tree_hash_child
+    _sync_skill_tree = staticmethod(_auto_snapshot._sync_skill_tree)
+    _publication_paths = _auto_snapshot._publication_paths
+    _claim_materialization_path = _auto_snapshot._claim_materialization_path
+    _restoration_path = _auto_snapshot._restoration_path
+    _cleanup_publication_artifacts = _auto_snapshot._cleanup_publication_artifacts
+    _materialize_candidate_snapshot = staticmethod(_auto_snapshot._materialize_candidate_snapshot)
+    _materialize_skill_tree_snapshot = staticmethod(_auto_snapshot._materialize_skill_tree_snapshot)
+    # ── Claim transactions and their recovery: ``kiro_crew.skills_auto_claims`` ──
+    _claim_pending_update = _auto_claims._claim_pending_update
+    _retain_claim_evidence = _auto_claims._retain_claim_evidence
+    _discard_trusted_claim = _auto_claims._discard_trusted_claim
+    _publish_prepared_skill_tree = _auto_claims._publish_prepared_skill_tree
+    _reconcile_prepared_claim = _auto_claims._reconcile_prepared_claim
+    _reconcile_prepared_claim_pinned = _auto_claims._reconcile_prepared_claim_pinned
+    _restore_failed_promotion_claim = _auto_claims._restore_failed_promotion_claim
+    _recover_recorded_claim_restore = _auto_claims._recover_recorded_claim_restore
+    _recover_abandoned_claims = _auto_claims._recover_abandoned_claims
 
     # ── Pending candidate trees: ``kiro_crew.skills_candidate_tree`` ──
     _candidate_has_symlink = staticmethod(_candidate_tree._candidate_has_symlink)
+    _candidate_has_unsafe_inode = staticmethod(_candidate_tree._candidate_has_unsafe_inode)
     _collect_scripts = staticmethod(_candidate_tree._collect_scripts)
     _collect_scripts_pinned = _candidate_tree._collect_scripts_pinned
     _candidate_layout_findings_at = _candidate_tree._candidate_layout_findings_at
@@ -1118,16 +1365,123 @@ class SkillsLoader:
         """Keep only the newest ``MAX_SKILL_VERSIONS`` ``v<N>-SKILL.md`` snapshots in *versions_dir*, deleting the lowest-numbered excess."""
         return _versions._prune_versions(self, versions_dir)
 
-    def _resolve_snapshot_version(self, versions_dir: Path, fm_version: int) -> int:
-        """Return the version number to snapshot the CURRENT live body under."""
-        return _versions._resolve_snapshot_version(self, versions_dir, fm_version)
+    def _resolve_snapshot_version(
+        self,
+        versions_dir: Path,
+        fm_version: int,
+        live_snapshot: _SkillTreeSnapshot | None = None,
+    ) -> int:
+        """Return the version number to snapshot the CURRENT live body under.
+
+        With ``live_snapshot`` the answer comes from that authenticated
+        generation's own ``.versions`` entries, never from a re-read of the
+        mutable live directory. Contract and rationale:
+        ``skill_runtime.versions._resolve_snapshot_version``.
+        """
+        return _versions._resolve_snapshot_version(
+            self, versions_dir, fm_version, live_snapshot=live_snapshot
+        )
 
     def dismiss_pending_skill(self, slug: str) -> bool:
-        """Delete a pending candidate. Returns True if it existed.
+        """Atomically claim and durably consume a pending candidate.
 
-        Contract and rationale: ``skill_runtime.auto_skills.dismiss_pending_skill``.
+        A committed marker makes a failed physical cleanup recoverable by the
+        same abandoned-claim pass used after promotion. Until that marker is
+        durable, every failure restores the exact claim to review. The public
+        candidate inode is retained as evidence, never deleted, because a
+        writer holding a descriptor into it may still be writing.
+
+        Lock-free dismissal is allowed only when an unmasked process observes this
+        data home has no authority root, or freshly re-proves its no-replace
+        refusal. No authority-backed claim can race in either state, so the
+        candidate is removed by name as before this protocol. A sandboxed process
+        treats both verdicts as indeterminate. With a root possible in every other
+        state, dismissal takes the authority lock and fails closed when it cannot.
         """
-        return _auto_skills.dismiss_pending_skill(self, slug)
+        if not self._is_pending_slug_safe(slug):
+            return False
+        if _auto_skill_promotion_ruled_out():
+            return _auto_skills.dismiss_pending_skill(self, slug)
+        claimed = self._claim_pending_update(slug)
+        if claimed is None:
+            return False
+        claim, claim_fd, consumed_at, claim_snapshot = claimed
+        consumed = False
+        quarantine = self._quarantine_root() / claim.name
+        try:
+            if is_link_or_junction(quarantine):
+                try:
+                    with self._pin_private_state(
+                        create=False,
+                        require_sensitive=True,
+                    ) as private_state:
+                        linked = self._stat_pinned_child(
+                            private_state.quarantine,
+                            claim.name,
+                        )
+                        if not (
+                            stat.S_ISLNK(linked.st_mode)
+                            or bool(getattr(linked, "st_reparse_tag", 0))
+                            or is_link_or_junction(private_state.quarantine.path / claim.name)
+                        ):
+                            raise OSError("linked quarantine changed kind before unlink")
+                        captured_identity = claim_snapshot.quarantine_identity
+                        linked_identity = self._pinned_child_identity(
+                            private_state.quarantine,
+                            claim.name,
+                        )
+                        if (
+                            captured_identity is None
+                            or linked_identity is None
+                            or linked_identity != captured_identity
+                            or not self._unlink_skill_child(
+                                private_state.quarantine,
+                                claim.name,
+                                expected=linked,
+                                expected_identity=linked_identity,
+                            )
+                        ):
+                            raise OSError("linked quarantine changed before unlink")
+                except OSError:
+                    logger.warning("Could not unlink pending-skill link: %s", slug)
+                    return False
+                consumed = True
+            else:
+                if not self._commit_claim_consumption(claim, claim_fd):
+                    logger.warning("Could not commit pending-skill dismissal: %s", slug)
+                    return False
+                consumed = True
+            logger.info("Dismissed pending skill: %s", slug)
+            _emit_pending_consumed(
+                {"slug": slug, "outcome": "dismissed", "consumed_at": consumed_at}
+            )
+            return True
+        finally:
+            try:
+                if not consumed and (
+                    os.path.lexists(claim)
+                    or os.path.lexists(quarantine)
+                    or is_link_or_junction(claim)
+                    or is_link_or_junction(quarantine)
+                ):
+                    self._restore_claimed_update(claim, claim_fd, slug, claim_snapshot)
+            except OSError:
+                logger.error("Could not restore failed dismissal claim %s", claim, exc_info=True)
+            finally:
+                platform_compat.release_lock(claim_fd)
+                os.close(claim_fd)
+                if (
+                    not os.path.lexists(claim)
+                    and not os.path.lexists(quarantine)
+                    and not os.path.lexists(self._evidence_root() / claim.name)
+                ):
+                    self._cleanup_claim_lock(claim.name)
+
+    # ── Claimed promotion: ``kiro_crew.skills_auto_promotion`` ──
+    _approve_claimed_update_locked = _auto_promotion._approve_claimed_update_locked
+    auto_apply_pending_update = _auto_promotion.auto_apply_pending_update
+    _promote_pending_skill = _auto_promotion._promote_pending_skill
+    dismiss_pending_skill_checked = _auto_promotion.dismiss_pending_skill_checked
 
     def dismiss_all_pending(self) -> int:
         """Delete all pending candidates. Returns count dismissed.
@@ -1146,8 +1500,17 @@ class SkillsLoader:
     def prune_pending(self, ttl_days: int, *, now: float | None = None) -> int:
         """Remove pending candidates older than ``ttl_days``. Returns count pruned.
 
-        Contract and rationale: ``skill_runtime.auto_skills.prune_pending``.
+        Prunes nothing while auto-skill staging and promotion are off
+        (:func:`auto_skill_promotion_disabled_reason`): a candidate queued before
+        then cannot be approved on this host, so an automatic TTL removal would
+        destroy reviewable work instead of leaving it for a supervised migration.
+        An explicit dismissal still removes it. Contract and rationale:
+        ``skill_runtime.auto_skills.prune_pending``.
         """
+        disabled = auto_skill_promotion_disabled_reason()
+        if disabled is not None:
+            logger.info("Pending-skill TTL prune skipped: %s", disabled)
+            return 0
         return _auto_skills.prune_pending(self, ttl_days, now=now)
 
     # ── Skill selection: ``kiro_crew.skills_selection`` ──
@@ -1433,14 +1796,20 @@ class SkillsLoader:
         return content
 
 
+# The authority owner's module-level checks build a bare loader, and an owner never
+# imports its facade, so the class is handed to it here, once it exists.
+_auto_authority._bind_loader_type(SkillsLoader)
+
+
 # ── Facade mirror ──
 # The ``skills_*`` owner modules hold the ``SkillsLoader`` member bodies the class binds
 # and the module-level names re-imported above, which this module keeps binding.
 # ``_facade_mirror`` keeps the patch surface whole: a write of a name this module binds
 # reaches every owner that binds the same object, so a patch through this module reaches
-# every reader of that name. ``surface`` is this module's own namespace plus the two
-# pending-queue hooks, which live in ``skills_auto_model`` alone because their setters
-# rebind them there; a read of either is served from that owner.
+# every reader of that name. ``surface`` is this module's own namespace plus
+# ``_SERVED_GLOBALS``, the globals one owner alone rebinds (the pending-queue and
+# update-applied hooks and the authority certificate and refusal); a read of any of
+# them is served from that owner.
 #: The owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS: tuple[str, ...] = (
     "kiro_crew.skills_auto_model",
@@ -1450,10 +1819,27 @@ _OWNERS: tuple[str, ...] = (
     "kiro_crew.skills_body_reads",
     "kiro_crew.skills_selection",
     "kiro_crew.skills_candidate_tree",
+    "kiro_crew.skills_auto_pinning",
+    "kiro_crew.skills_auto_authority",
+    "kiro_crew.skills_auto_locks",
+    "kiro_crew.skills_auto_snapshot",
+    "kiro_crew.skills_auto_claims",
     "kiro_crew.skills_review",
+    "kiro_crew.skills_auto_promotion",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
+#: The globals an owner rebinds at run time (``global name; name = ...``), so the facade
+#: serves each from that owner instead of binding a copy that would go stale.
+_SERVED_GLOBALS = frozenset(
+    {
+        "_PENDING_CONSUMED_HOOK",
+        "_PENDING_STAGED_HOOK",
+        "_STARTUP_AUTHORITY_BINDING",
+        "_STARTUP_AUTHORITY_REFUSAL",
+        "_UPDATE_AUTO_APPLIED_HOOK",
+    }
+)
 #: Name the facade serves but does not bind -> the owner that answers a read of it.
 _EXPORTS: dict[str, str] = {}
 _EXPORTS.update(
@@ -1461,14 +1847,19 @@ _EXPORTS.update(
         _sys.modules[__name__],
         _OWNERS,
         excluded=(),
-        surface=frozenset(globals()) | {"_PENDING_CONSUMED_HOOK", "_PENDING_STAGED_HOOK"},
+        surface=frozenset(globals()) | _SERVED_GLOBALS,
     ).served
 )
 _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # the names the mirror serves, for type checkers and IDEs
+    from kiro_crew.skills_auto_authority import (  # noqa: F401
+        _STARTUP_AUTHORITY_BINDING,
+        _STARTUP_AUTHORITY_REFUSAL,
+    )
     from kiro_crew.skills_auto_model import (  # noqa: F401
         _PENDING_CONSUMED_HOOK,
         _PENDING_STAGED_HOOK,
+        _UPDATE_AUTO_APPLIED_HOOK,
     )

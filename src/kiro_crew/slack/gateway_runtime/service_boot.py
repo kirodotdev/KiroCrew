@@ -341,6 +341,7 @@ async def _init_services(self: GatewayOrchestrator) -> None:
         auto_min_tool_calls=self._cfg.skills.auto_min_tool_calls,
         auto_similarity_threshold=self._cfg.skills.auto_similarity_threshold,
         approval_required=self._cfg.skills.approval_required,
+        auto_apply_updates=self._cfg.skills.auto_apply_updates,
         max_auto_skills=self._cfg.skills.max_auto_skills,
         stale_after_days=self._cfg.skills.stale_after_days,
         archive_after_days=self._cfg.skills.archive_after_days,

@@ -403,6 +403,18 @@ Examples:
     )
 
 
+def register_skills_parser(sub: _Commands) -> None:
+    skills_parser = cli_help.add_command(sub, "skills")
+    skills_sub = skills_parser.add_subparsers(dest="skills_action")
+    skills_sub.add_parser(
+        "authority-retire",
+        help=(
+            "Move an idle auto-skill authority aside after stopping every "
+            "gateway and agent on this data home"
+        ),
+    )
+
+
 def register_knowledge_parser(sub: _Commands) -> None:
     kn_parser = cli_help.add_command(sub, "knowledge")
     kn_sub = kn_parser.add_subparsers(dest="knowledge_action")
