@@ -5504,9 +5504,17 @@
     },
     "warmBriefCard": {
       "asked": "你让我做的",
+      "done": "已做完",
       "label": "进展摘要",
       "needs_you": "需要你处理",
-      "next": "下一步"
+      "next": "下一步",
+      "progress": "进度",
+      "progress_count": "{{total}} 项中已完成 {{accepted}} 项",
+      "remaining": "还剩",
+      "status_blocked": "卡住了",
+      "status_done": "已完成",
+      "status_needs_you": "等你处理",
+      "status_on_track": "进展顺利"
     },
     "voicePlaybackNotice": {
       "failed": "{{speak}}失败。请检查文字转语音设置后重试。",

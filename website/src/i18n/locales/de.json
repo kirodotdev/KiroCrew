@@ -5606,9 +5606,17 @@
     },
     "warmBriefCard": {
       "asked": "Deine Anfrage",
+      "done": "Erledigt",
       "label": "Zwischenstand",
       "needs_you": "Braucht dich",
-      "next": "Als Nächstes"
+      "next": "Als Nächstes",
+      "progress": "Fortschritt",
+      "progress_count": "{{accepted}} von {{total}} erledigt",
+      "remaining": "Offen",
+      "status_blocked": "Blockiert",
+      "status_done": "Fertig",
+      "status_needs_you": "Wartet auf dich",
+      "status_on_track": "Läuft nach Plan"
     },
     "voicePlaybackNotice": {
       "failed": "„{{speak}}“ ist fehlgeschlagen. Prüfe die Text-zu-Sprache-Einstellungen und versuche es erneut.",

@@ -5606,9 +5606,17 @@
     },
     "warmBriefCard": {
       "asked": "তুমি বলেছিলে",
+      "done": "যা হয়েছে",
       "label": "সারসংক্ষেপ",
       "needs_you": "তোমার কাছে দরকার",
-      "next": "এরপর"
+      "next": "এরপর",
+      "progress": "অগ্রগতি",
+      "progress_count": "{{total}}টির মধ্যে {{accepted}}টি শেষ",
+      "remaining": "বাকি",
+      "status_blocked": "আটকে আছে",
+      "status_done": "শেষ",
+      "status_needs_you": "তোমার অপেক্ষায়",
+      "status_on_track": "ঠিকঠাক চলছে"
     },
     "voicePlaybackNotice": {
       "failed": "“{{speak}}” চালানো যায়নি। টেক্সট-টু-স্পিচ সেটিংস পরীক্ষা করে আবার চেষ্টা করো।",

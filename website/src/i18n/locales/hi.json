@@ -5606,9 +5606,17 @@
     },
     "warmBriefCard": {
       "asked": "तुमने कहा था",
+      "done": "हो चुका",
       "label": "सारांश",
       "needs_you": "तुमसे चाहिए",
-      "next": "आगे"
+      "next": "आगे",
+      "progress": "प्रगति",
+      "progress_count": "{{total}} में से {{accepted}} पूरे",
+      "remaining": "बाकी",
+      "status_blocked": "अटका है",
+      "status_done": "पूरा हुआ",
+      "status_needs_you": "तुम्हारा इंतज़ार",
+      "status_on_track": "ठीक चल रहा है"
     },
     "voicePlaybackNotice": {
       "failed": "“{{speak}}” नहीं चल सका। टेक्स्ट-टू-स्पीच सेटिंग जाँचो और फिर कोशिश करो।",

@@ -5708,9 +5708,17 @@
     },
     "warmBriefCard": {
       "asked": "Você pediu",
+      "done": "Feito",
       "label": "Resumo",
       "needs_you": "Precisa de você",
-      "next": "Próximos passos"
+      "next": "Próximos passos",
+      "progress": "Progresso",
+      "progress_count": "{{accepted}} de {{total}} concluídas",
+      "remaining": "Falta",
+      "status_blocked": "Travado",
+      "status_done": "Concluído",
+      "status_needs_you": "Esperando você",
+      "status_on_track": "No caminho certo"
     },
     "voicePlaybackNotice": {
       "failed": "Não foi possível usar “{{speak}}”. Verifique as configurações de texto para fala e tente novamente.",

@@ -5708,9 +5708,17 @@
     },
     "warmBriefCard": {
       "asked": "Pediste",
+      "done": "Hecho",
       "label": "Puesta al día",
       "needs_you": "Te necesita",
-      "next": "Siguiente"
+      "next": "Siguiente",
+      "progress": "Progreso",
+      "progress_count": "{{accepted}} de {{total}} hechas",
+      "remaining": "Falta",
+      "status_blocked": "Bloqueado",
+      "status_done": "Terminado",
+      "status_needs_you": "Te espera",
+      "status_on_track": "Va bien"
     },
     "voicePlaybackNotice": {
       "failed": "No se pudo usar «{{speak}}». Revisa los ajustes de texto a voz e inténtalo de nuevo.",

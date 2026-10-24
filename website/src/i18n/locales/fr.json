@@ -5708,9 +5708,17 @@
     },
     "warmBriefCard": {
       "asked": "Ta demande",
+      "done": "Déjà fait",
       "label": "Point d'étape",
       "needs_you": "À toi de jouer",
-      "next": "Ensuite"
+      "next": "Ensuite",
+      "progress": "Avancement",
+      "progress_count": "{{accepted}} sur {{total}} terminées",
+      "remaining": "Reste",
+      "status_blocked": "Bloqué",
+      "status_done": "Terminé",
+      "status_needs_you": "Attend ton retour",
+      "status_on_track": "Dans les temps"
     },
     "voicePlaybackNotice": {
       "failed": "« {{speak}} » a échoué. Vérifie les paramètres de synthèse vocale et réessaie.",

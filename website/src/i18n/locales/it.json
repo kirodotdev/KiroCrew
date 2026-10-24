@@ -5708,9 +5708,17 @@
     },
     "warmBriefCard": {
       "asked": "Hai chiesto",
+      "done": "Fatto",
       "label": "Riepilogo",
       "needs_you": "Serve a te",
-      "next": "Prossimi passi"
+      "next": "Prossimi passi",
+      "progress": "Avanzamento",
+      "progress_count": "{{accepted}} di {{total}} completate",
+      "remaining": "Manca",
+      "status_blocked": "Bloccato",
+      "status_done": "Completato",
+      "status_needs_you": "Aspetta te",
+      "status_on_track": "Procede bene"
     },
     "voicePlaybackNotice": {
       "failed": "«{{speak}}» non riuscito. Controlla le impostazioni «Da testo a voce» e riprova.",

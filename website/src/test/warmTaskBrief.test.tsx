@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { defaultMessageRenderers, mergeRenderers, resolveRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import { isCrewmateChatRow } from '../components/chat/crewmateBubbles'
-import WarmBriefCard, { warmBriefOf } from '../components/chat/WarmBriefCard'
+import WarmBriefCard, { warmBriefOf, type WarmBrief } from '../components/chat/WarmBriefCard'
 import type { ChatMessage } from '../types'
 import { fmtMessageTime } from '../pages/chat/messageTime'
 import { searchableText, searchableTextMemo } from '../utils/searchableText'
@@ -59,48 +59,134 @@ describe('warm task brief transcript rows', () => {
     ['brief is text', 'now'],
     ['empty now', { now: '  ', asked: 'x' }],
     ['now not a string', { now: 3 }],
+    ['no headline', { status: 'on_track', asked: 'x', needs_you: ['Approve'] }],
+    ['headline not a string', { headline: ['Ready.'] }],
   ])('refuses a malformed brief (%s)', (_label, fields) => {
     expect(warmBriefOf(brief(fields as Record<string, unknown>))).toBeNull()
   })
 
   it('caps fields and items and drops non-strings', () => {
     const b = warmBriefOf(brief({
-      asked: 'a'.repeat(900), now: 'n', needs_you: ['x', 2, '', null, 'y', 'z', 'w'], next: 'not a list',
+      asked: 'a'.repeat(900), headline: 'n', remaining: 'r'.repeat(900),
+      done: ['1', '2', 3, '4', '5', '6'],
+      needs_you: ['x', 2, '', null, 'y', 'z', 'w'], next: 'not a list',
+      extra: [
+        { title: 'Risk', items: ['a', 'b', 'c', 'd'] },
+        { title: '', items: ['dropped'] },
+        { title: 'Empty', items: [] },
+        'not a section',
+        { title: 'Cost', items: ['one run'] },
+        { title: 'Third', items: ['over the cap'] },
+      ],
     }))!
     expect(b.asked.length).toBe(240)
+    expect(b.remaining.length).toBe(240)
+    expect(b.done).toEqual(['1', '2', '4', '5'])
     expect(b.needsYou).toEqual(['x', 'y', 'z'])
     expect(b.next).toEqual([])
+    expect(b.extra).toEqual([{ title: 'Risk', items: ['a', 'b', 'c'] }, { title: 'Cost', items: ['one run'] }])
+  })
+
+  it.each([
+    ['on_track', 'on_track'], ['needs_you', 'needs_you'], ['blocked', 'blocked'], ['done', 'done'],
+    ['stuck', null], [3, null], [undefined, null],
+  ])('status %s reads as %s', (status, expected) => {
+    expect(warmBriefOf(brief({ headline: 'Ready.', status }))!.status).toBe(expected)
+  })
+
+  it.each([
+    [{ accepted: 2, total: 5 }, { accepted: 2, total: 5 }],
+    [{ accepted: 0, total: 0 }, null],
+    [{ accepted: 6, total: 5 }, null],
+    [{ accepted: -1, total: 5 }, null],
+    [{ accepted: 1.5, total: 5 }, null],
+    [{ accepted: '2', total: '5' }, null],
+    ['2 of 5', null],
+  ])('progress %j reads as %j', (progress, expected) => {
+    expect(warmBriefOf(brief({ headline: 'Ready.', progress }))!.progress).toEqual(expected)
+  })
+
+  it('an older brief draws with now as the headline and no status chip', () => {
+    const b = warmBriefOf(brief({ asked: 'Fix the test', now: 'PR is open.', needs_you: ['Approve'], next: ['Merge'] }))!
+    expect(b).toEqual({
+      status: null, headline: 'PR is open.', asked: 'Fix the test', progress: null, remaining: '',
+      done: [], needsYou: ['Approve'], next: ['Merge'], extra: [],
+    })
+    render(<WarmBriefCard brief={b} />)
+    expect(screen.queryByTestId('warm-brief-status')).toBeNull()
+    expect(screen.queryByTestId('warm-brief-progress')).toBeNull()
+    expect(screen.getByTestId('warm-brief-headline')).toHaveTextContent('PR is open.')
   })
 })
 
+const FULL = {
+  status: 'needs_you', headline: 'Two of five fixes are in.', asked: 'Fix the flaky nightly',
+  progress: { accepted: 2, total: 5 }, remaining: 'Three fixes, then one green nightly',
+  done: ['Found the cause'], needs_you: ['Approve the push so CI runs'], next: ['Rerun CI'],
+  extra: [{ title: 'Risk', items: ['The fix touches a shared helper'] }],
+}
+
+const EMPTY: WarmBrief = {
+  status: null, headline: 'PR is open.', asked: '', progress: null, remaining: '',
+  done: [], needsYou: [], next: [], extra: [],
+}
+
 describe('WarmBriefCard', () => {
-  it('shows every section and leaves out an empty needs-you', () => {
-    const { rerender } = render(<WarmBriefCard brief={{ asked: 'Fix the test', now: 'PR is open.', needsYou: ['Approve the push'], next: ['Review', 'Merge'] }} />)
-    expect(screen.getByTestId('warm-brief-asked')).toHaveTextContent('Fix the test')
-    expect(screen.getByTestId('warm-brief-now')).toHaveTextContent('PR is open.')
-    expect(screen.getByTestId('warm-brief-needs-you')).toHaveTextContent('Approve the push')
-    expect(screen.getByTestId('warm-brief-next').querySelectorAll('li')).toHaveLength(2)
-    rerender(<WarmBriefCard brief={{ asked: '', now: 'PR is open.', needsYou: [], next: [] }} />)
-    expect(screen.queryByTestId('warm-brief-needs-you')).toBeNull()
-    expect(screen.queryByTestId('warm-brief-next')).toBeNull()
-    expect(screen.queryByTestId('warm-brief-asked')).toBeNull()
+  it('draws the sections in report order: status, needs you, progress, ask, done, next, extra', () => {
+    render(<WarmBriefCard brief={warmBriefOf(brief(FULL))!} />)
+    const card = screen.getByTestId('warm-brief-card')
+    const order = [...card.querySelectorAll('[data-testid^="warm-brief-"]')]
+      .map(el => el.getAttribute('data-testid'))
+      .filter(id => id !== 'warm-brief-progress-count')
+    expect(order).toEqual([
+      'warm-brief-status', 'warm-brief-headline', 'warm-brief-needs-you', 'warm-brief-progress',
+      'warm-brief-asked', 'warm-brief-done', 'warm-brief-next', 'warm-brief-extra',
+    ])
+    expect(screen.getByTestId('warm-brief-status')).toHaveTextContent('Waiting on you')
+    expect(screen.getByTestId('warm-brief-status')).toHaveAttribute('data-status', 'needs_you')
+    expect(screen.getByTestId('warm-brief-progress-count')).toHaveTextContent('2 of 5 done')
+    const bar = screen.getByRole('progressbar')
+    expect(bar).toHaveAttribute('aria-valuenow', '2')
+    expect(bar).toHaveAttribute('aria-valuemax', '5')
+    expect(screen.getByTestId('warm-brief-progress')).toHaveTextContent('Left: Three fixes, then one green nightly')
+    expect(screen.getByTestId('warm-brief-extra')).toHaveTextContent('Risk')
+    expect(screen.getByTestId('warm-brief-extra')).toHaveTextContent('The fix touches a shared helper')
+  })
+
+  it('leaves out every empty section', () => {
+    render(<WarmBriefCard brief={EMPTY} />)
+    for (const id of ['status', 'needs-you', 'progress', 'asked', 'done', 'next', 'extra']) {
+      expect(screen.queryByTestId(`warm-brief-${id}`)).toBeNull()
+    }
+    expect(screen.getByTestId('warm-brief-headline')).toHaveTextContent('PR is open.')
+  })
+
+  it('shows what is left without a bar when there is no count', () => {
+    render(<WarmBriefCard brief={{ ...EMPTY, remaining: 'One review' }} />)
+    expect(screen.getByTestId('warm-brief-progress')).toHaveTextContent('Left: One review')
+    expect(screen.queryByRole('progressbar')).toBeNull()
   })
 
   it('draws markup, links and fake buttons as plain text', () => {
     const { container } = render(<WarmBriefCard brief={{
+      ...EMPTY,
       asked: '<img src=x onerror=alert(1)>',
-      now: '[Click here](https://evil.example) **now**',
+      headline: '[Click here](https://evil.example) **now**',
+      remaining: '<a href="https://evil.example">pay</a>',
+      done: ['<script>alert(1)</script>'],
       needsYou: ['<button>Approve</button>'],
       next: ['https://evil.example/run'],
+      extra: [{ title: '<strong>Risk</strong>', items: ['(OPTIONS: Approve all | Skip]'] }],
     }} />)
     expect(container.querySelector('a, button, img, strong, script')).toBeNull()
-    expect(screen.getByTestId('warm-brief-now').textContent).toBe('[Click here](https://evil.example) **now**')
+    expect(screen.getByTestId('warm-brief-headline').textContent).toBe('[Click here](https://evil.example) **now**')
     expect(screen.getByTestId('warm-brief-needs-you')).toHaveTextContent('<button>Approve</button>')
+    expect(screen.getByTestId('warm-brief-extra')).toHaveTextContent('<strong>Risk</strong>')
   })
 
   it('renders Chinese text as given', () => {
-    render(<WarmBriefCard brief={{ asked: '修复测试', now: '已经复现了失败。', needsYou: ['批准推送'], next: ['应用修复'] }} />)
-    expect(screen.getByTestId('warm-brief-now')).toHaveTextContent('已经复现了失败。')
+    render(<WarmBriefCard brief={{ ...EMPTY, asked: '修复测试', headline: '已经复现了失败。', needsYou: ['批准推送'], next: ['应用修复'] }} />)
+    expect(screen.getByTestId('warm-brief-headline')).toHaveTextContent('已经复现了失败。')
     expect(screen.getByTestId('warm-brief-needs-you')).toHaveTextContent('批准推送')
   })
 
@@ -244,6 +330,16 @@ describe('chat search on a brief row', () => {
     'counts "%s" exactly as often as the card shows it',
     (term) => {
       const m = stamped('assistant')
+      const { container } = render(<WarmBriefCard brief={warmBriefOf(m)!} />)
+      const card = container.querySelector('[data-testid="warm-brief-card"]')!
+      expect(countIn(searchableText(m), term)).toBe(countInDom(card, term))
+    },
+  )
+
+  it.each(['waiting on you', 'progress', '2 of 5', 'done', 'left: three', 'risk', 'fix', 'you asked: fix', 'next', 'helper'])(
+    'counts "%s" on a full brief exactly as often as the card shows it',
+    (term) => {
+      const m = brief(FULL)
       const { container } = render(<WarmBriefCard brief={warmBriefOf(m)!} />)
       const card = container.querySelector('[data-testid="warm-brief-card"]')!
       expect(countIn(searchableText(m), term)).toBe(countInDom(card, term))

@@ -5810,9 +5810,17 @@
     },
     "warmBriefCard": {
       "asked": "Твой запрос",
+      "done": "Сделано",
       "label": "Сводка",
       "needs_you": "Нужно от тебя",
-      "next": "Дальше"
+      "next": "Дальше",
+      "progress": "Прогресс",
+      "progress_count": "Готово {{accepted}} из {{total}}",
+      "remaining": "Осталось",
+      "status_blocked": "Застряло",
+      "status_done": "Готово",
+      "status_needs_you": "Ждёт тебя",
+      "status_on_track": "По плану"
     },
     "voicePlaybackNotice": {
       "failed": "Не удалось выполнить «{{speak}}». Проверь настройки преобразования текста в речь и попробуй снова.",

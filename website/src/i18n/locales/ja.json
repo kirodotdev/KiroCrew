@@ -5504,9 +5504,17 @@
     },
     "warmBriefCard": {
       "asked": "ご依頼",
+      "done": "済んだこと",
       "label": "進捗のまとめ",
       "needs_you": "あなたの対応が必要",
-      "next": "次に"
+      "next": "次に",
+      "progress": "進み具合",
+      "progress_count": "{{total}} 件中 {{accepted}} 件完了",
+      "remaining": "残り",
+      "status_blocked": "止まっています",
+      "status_done": "完了",
+      "status_needs_you": "あなた待ち",
+      "status_on_track": "順調"
     },
     "voicePlaybackNotice": {
       "failed": "「{{speak}}」に失敗しました。テキスト音声変換の設定を確認して、もう一度お試しください。",
