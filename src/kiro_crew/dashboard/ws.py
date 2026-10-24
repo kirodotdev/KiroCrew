@@ -107,6 +107,8 @@ SIDE_RESULT_EVENT = "chat.side_result"
 #: A reply landing in a thread on a crewmate chat message (``chat_threads``).
 THREAD_REPLY_EVENT = "chat.thread_reply"
 SIDE_QUEUE_EVENT = "chat.side_queue"
+#: The slot's side conversation was closed, so every tab clears it (``api_side_close``).
+SIDE_CLOSED_EVENT = "chat.side_closed"
 SIDE_KIND = "side"
 
 
@@ -753,6 +755,20 @@ def broadcast_side_queue(
     # does not own, and queue entries are the user's own prose. An unscoped broadcast
     # would hand that text to app sockets the HTTP layer keeps out.
     state.broadcast_ws_owners(SIDE_QUEUE_EVENT, payload)
+
+
+def broadcast_side_closed(state: DashboardState, *, slot_key: str, origin_client: str = "") -> None:
+    """Tell every tab that the slot's side conversation is closed.
+
+    Without it only the tab that closed it clears its panel. Another tab keeps
+    rows the model has dropped, and its next question opens a fresh
+    conversation under them. ``origin_client`` names the tab that closed it,
+    which has already cleared its own panel. Owner-only, like every side frame.
+    """
+    payload: dict[str, object] = {"kind": SIDE_KIND, "slot": slot_key}
+    if origin_client:
+        payload["origin_client"] = origin_client
+    state.broadcast_ws_owners(SIDE_CLOSED_EVENT, payload)
 
 
 def _handle_slot_read(

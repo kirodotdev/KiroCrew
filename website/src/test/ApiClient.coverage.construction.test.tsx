@@ -465,7 +465,7 @@ describe('request bodies with conditionally-omitted keys', () => {
     expect(call(1).body).toEqual({ content: 'ctx', source: 'artifact', ephemeral: false })
   })
 
-  it('sideTurn flags a steer, and sideQueueCancel names the owning tab', async () => {
+  it('sideTurn flags a steer, and sideQueueCancel and sideClose name the owning tab', async () => {
     await api.sideTurn('chat-1', 'why?')
     expect(call().body).toEqual({ question: 'why?' })
     await api.sideTurn('chat-1', 'why?', { steer: true })
@@ -473,6 +473,8 @@ describe('request bodies with conditionally-omitted keys', () => {
     await api.sideQueueCancel('chat-1', 'q1')
     expect(call(2).method).toBe('DELETE')
     expect(call(2).body).toHaveProperty('client')
+    await api.sideClose('chat-1')
+    expect(call(3).body).toHaveProperty('client')
   })
 
   it('cancelTaskRunner and installDiscoveredSkill keep their optional fields optional', async () => {

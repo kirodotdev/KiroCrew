@@ -163,7 +163,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     sideTurn: (slot: string, question: string, opts?: { steer?: boolean }) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/turn', { question, ...(opts?.steer ? { steer: true } : {}) }).then(jAccepted) as Promise<{ ok: boolean; run_id?: string; messages?: number; steered?: boolean; pending?: boolean; queued?: boolean; demoted?: boolean; queue_id?: string; still_queued?: boolean; depth?: number; steer_id?: string }>,
     sideQueueCancel: (slot: string, queueId: string) => del('/api/chat/slots/' + encodeURIComponent(slot) + '/side/queue/' + encodeURIComponent(queueId), { client: TAB_ID }).then(j) as Promise<{ ok: boolean; content: string; depth: number }>,
     sideQueueEdit: (slot: string, queueId: string, content: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/side/queue/' + encodeURIComponent(queueId), { content }).then(j) as Promise<{ ok: boolean; depth: number }>,
-    sideClose: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/close', {}).then(j) as Promise<{ ok: boolean; was_open: boolean }>,
+    sideClose: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/close', { client: TAB_ID }).then(j) as Promise<{ ok: boolean; was_open: boolean }>,
     sideStop: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/stop', {}).then(j) as Promise<{ ok: boolean }>,
     chatMode: (mode: string, slot?: string) => post('/api/chat/mode', { mode, slot: slot || '' }).then(j),
     generateTitle: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/generate-title').then(j),

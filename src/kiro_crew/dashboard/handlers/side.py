@@ -45,7 +45,11 @@ from kiro_crew.dashboard.side_state import (
 )
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.dashboard.ws import broadcast_side_queue, broadcast_side_result
+from kiro_crew.dashboard.ws import (
+    broadcast_side_closed,
+    broadcast_side_queue,
+    broadcast_side_result,
+)
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import HookManager
 from kiro_crew.llm_helpers import (
@@ -369,17 +373,22 @@ async def _run_side_turn(
     # chat_runner._wsred so /side has the same protection as the main chat.
     _wsred = StreamRedactor()
 
+    def _broadcast(**frame: Any) -> None:
+        """Broadcast one of this run's frames while its sidecar is still the slot's.
+
+        A close tells every tab to clear the conversation (``chat.side_closed``),
+        and after a reopen the conversation on screen is a newer one, so a later
+        frame of this run would land in a conversation it does not belong to: it
+        would clear that conversation's busy state and become its last run.
+        """
+        if slot._side is side_at_start:
+            broadcast_side_result(state, slot_key=slot.key, run_id=run_id, **frame)
+
     def _on_chunk(text: str) -> None:
         chunks.append(text)
         safe = _wsred.feed(text)
         if safe:
-            broadcast_side_result(
-                state,
-                slot_key=slot.key,
-                run_id=run_id,
-                role="assistant",
-                content=safe,
-            )
+            _broadcast(role="assistant", content=safe)
 
     def _on_steer_consumed(snapshot: str) -> None:
         """Settle the steers this echo proves the backend injected.
@@ -725,19 +734,13 @@ async def _run_side_turn(
                     partial_message_id = slot._side.append_assistant(response_text, run_id=run_id)
                 message_id = slot._side.append_assistant(notice, run_id=run_id, is_error=True)
             if partial_message_id:
-                broadcast_side_result(
-                    state,
-                    slot_key=slot.key,
-                    run_id=run_id,
+                _broadcast(
                     role="assistant",
                     content=response_text,
                     final=True,
                     message_id=partial_message_id,
                 )
-            broadcast_side_result(
-                state,
-                slot_key=slot.key,
-                run_id=run_id,
+            _broadcast(
                 role="assistant",
                 content=notice,
                 is_error=True,
@@ -775,10 +778,7 @@ async def _run_side_turn(
         if slot._side is not None and slot._side.open and slot._side.last_run_id == run_id:
             message_id = slot._side.append_assistant(response_text, run_id=run_id)
 
-        broadcast_side_result(
-            state,
-            slot_key=slot.key,
-            run_id=run_id,
+        _broadcast(
             role="assistant",
             content=response_text,
             ts=time.time(),
@@ -809,15 +809,7 @@ async def _run_side_turn(
         from kiro_crew.dashboard.chat_runner import _mark_kiro_signed_out
 
         _mark_kiro_signed_out(state)
-        broadcast_side_result(
-            state,
-            slot_key=slot.key,
-            run_id=run_id,
-            role="assistant",
-            content=str(exc),
-            is_error=True,
-            final=True,
-        )
+        _broadcast(role="assistant", content=str(exc), is_error=True, final=True)
     except _AppAgentNotLoaded as exc:
         # Terminal for this turn and deliberately not a generic failure: the
         # message names the agent and says what to do, which the catch-all below
@@ -831,15 +823,7 @@ async def _run_side_turn(
             run_id,
             exc,
         )
-        broadcast_side_result(
-            state,
-            slot_key=slot.key,
-            run_id=run_id,
-            role="assistant",
-            content=str(exc),
-            is_error=True,
-            final=True,
-        )
+        _broadcast(role="assistant", content=str(exc), is_error=True, final=True)
     except ReadOnlySpecError as exc:
         # Terminal for this turn, and never a fallback to the base agent: without
         # the derived spec the READ_ONLY gate would not see the base agent's
@@ -866,10 +850,7 @@ async def _run_side_turn(
             )
         except Exception:  # noqa: BLE001 — the refusal must reach the panel regardless
             logger.debug("SEL audit unavailable for side-turn refusal", exc_info=True)
-        broadcast_side_result(
-            state,
-            slot_key=slot.key,
-            run_id=run_id,
+        _broadcast(
             role="assistant",
             content="Side Chat couldn't start. Try again, or use the main chat.",
             is_error=True,
@@ -881,10 +862,7 @@ async def _run_side_turn(
             slot.key,
             run_id,
         )
-        broadcast_side_result(
-            state,
-            slot_key=slot.key,
-            run_id=run_id,
+        _broadcast(
             role="assistant",
             content="(side conversation failed — see server logs)",
             is_error=True,
@@ -1790,8 +1768,21 @@ async def api_side_queue_edit(request: web.Request) -> web.Response:
 
 
 async def api_side_close(request: web.Request) -> web.Response:
-    """POST /api/chat/slots/{slot}/side/close — drop sidecar + destroy session."""
+    """POST /api/chat/slots/{slot}/side/close — drop sidecar + destroy session.
+
+    Every tab learns of it (``chat.side_closed``): the body's ``client`` names the
+    tab that asked, which clears its own panel when it sends the close.
+    """
     state: DashboardState = request.app["state"]
+    # Read before the sidecar is touched, as the queue cancel does: this is an
+    # await, and nothing below may run against a sidecar it has already dropped.
+    origin_client = ""
+    try:
+        body = await request.json()
+        if isinstance(body, dict) and isinstance(body.get("client"), str):
+            origin_client = body["client"][:128]
+    except Exception:
+        origin_client = ""
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
@@ -1807,6 +1798,9 @@ async def api_side_close(request: web.Request) -> web.Response:
     # lands while the destroy below is in flight is never the one destroyed.
     closing_gen = slot._side.gen if slot._side is not None else ""
     slot._side = None
+    # Sent whether or not one was open: a tab can still show a conversation the
+    # gateway lost in a restart, and this is the moment to clear it.
+    broadcast_side_closed(state, slot_key=slot.key, origin_client=origin_client)
 
     side_key = _side_session_key(slot.key, closing_gen)
     try:

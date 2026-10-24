@@ -6,10 +6,13 @@ import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, fetchS
 import { addNotification, ackNotificationByTs, unackNotificationByTs, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
-  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, sseContextUsage, clearMessages, clearSlotCache, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, queueEntryAttachments, isTerminalWorkflowStatus,
+  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, sseContextUsage, clearMessages, clearSlotCache, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, queueEntryAttachments, isTerminalWorkflowStatus,
+  takeSideQueueEditForClose,
 } from '../store/chatSlice'
 import { store } from '../store'
 import { TAB_ID } from '../api/tabId'
+import { readSideChatDraft, writeSideChatDraft } from '../chat-core/composer/sideChatDrafts'
+import { mergeIntoDraft } from '../utils/chatDrafts'
 import { applyGuideUpdate } from '../api/guide'
 import { handleGuideObserveFrame } from '../guide/liveObservation'
 import { applyCardUpdate } from '../api/cards'
@@ -742,6 +745,40 @@ export function useWebSocket() {
           case 'chat.side_result':
             dispatch(sseSideResult(data as { slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; final?: boolean; is_error?: boolean; steer?: boolean; message_id?: string }))
             break
+          case 'chat.side_closed': {
+            // The slot's side conversation was closed (Refresh context in another
+            // tab, or an app), so this tab clears it too: its next question would
+            // otherwise open a fresh conversation under rows the model has
+            // dropped. The tab that closed it cleared its panel when it sent the close.
+            const closed = data as { slot?: unknown; origin_client?: unknown }
+            if (typeof closed.slot !== 'string') break
+            const closing = store.getState().chat.slotSide[closed.slot]
+            // This tab clears before sending the request. Rows, a run id, or a queue
+            // card present on its echo therefore came back from the gateway after that
+            // clear and still belong to the conversation the close dropped. A lone
+            // optimistic row, accepted or not, has no frame ahead of the echo, so its
+            // send belongs to the conversation that follows the close.
+            const hasGatewayState = !!closing && (
+              closing.messages.some(message => !message.optimistic)
+              || typeof closing.lastRunId === 'string'
+              || !!closing.queue?.length
+            )
+            if (closed.origin_client === TAB_ID && !hasGatewayState) break
+            // The gateway dropped the queue with the conversation. A question this tab
+            // typed into it has no other copy, so it goes back to this tab's composer,
+            // after one already cancelled here that still waits for this slot's panel.
+            if (closing?.releasedText) {
+              writeSideChatDraft(closed.slot, mergeIntoDraft(readSideChatDraft(closed.slot), closing.releasedText))
+            }
+            for (const entry of closing?.queue ?? []) {
+              if (entry.raw) {
+                const content = takeSideQueueEditForClose(closed.slot, entry.id) ?? entry.content
+                writeSideChatDraft(closed.slot, mergeIntoDraft(readSideChatDraft(closed.slot), content))
+              }
+            }
+            dispatch(sideClose(closed.slot))
+            break
+          }
           case 'chat.thread_reply':
             handleThreadReply(queryClient, data)
             break
