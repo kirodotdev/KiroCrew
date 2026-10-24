@@ -19,6 +19,7 @@ from kiro_crew.dashboard.chat_fork import (
     resolve_fork_source,
 )
 from kiro_crew.dashboard.create_rate_limit import SESSION_CREATE, allow_create
+from kiro_crew.dashboard.session_control_parts import session_create
 from kiro_crew.dashboard.session_control_parts.caller_access import (
     UNATTENDED_SLOT_PREFIXES,
     SessionControlError,
@@ -1122,6 +1123,15 @@ def _note_pending_edge(child: str, parent: str, future: "asyncio.Future[bool]") 
             del _tree_pending_edges[child]
 
     future.add_done_callback(_drop)
+
+
+# Hand ``_note_pending_edge`` to ``session_create._record_spawn`` so a spawn can make its
+# queued reparent edge visible to this module's loop guard. The registrar lives here (the
+# edge store and the guard are this module's), and this module already imports from
+# ``session_create`` (a lower owner layer), so the injection runs the allowed direction --
+# ``session_create`` never imports upward into this one. Set once at import, before any
+# spawn can run.
+session_create._register_spawn_pending_edge = _note_pending_edge
 
 
 def _reaches_through_pending(target: str, start: str, nodes: "dict[str, Any]") -> bool:
