@@ -549,7 +549,11 @@ def _read_pinned(path: Path) -> bytes | None:
 
 
 def _read_raw(slug: str) -> dict[str, Any] | None:
-    path = member_goals_path(slug)
+    try:
+        path = member_goals_path(slug)
+    except member_records.RecordsNotMoved as exc:
+        # Not moved yet is not "no goal": a write here would bury the real record.
+        raise GoalsUnreadable(f"goal record for {slug!r} has not been moved yet") from exc
     try:
         if _PINNED:
             raw = _read_pinned(path)

@@ -25,7 +25,7 @@ import sys as _sys
 from typing import TYPE_CHECKING
 
 import kiro_crew._facade_mirror as _facade_mirror
-from kiro_crew import context_omissions, platform_compat  # noqa: F401
+from kiro_crew import context_omissions, member_records, platform_compat  # noqa: F401
 from kiro_crew.artifacts import slugify  # noqa: F401
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry  # noqa: F401
 from kiro_crew.config.paths import data_home  # noqa: F401

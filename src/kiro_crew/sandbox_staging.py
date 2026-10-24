@@ -1102,11 +1102,31 @@ def _member_records_move() -> bool:
 
     Spawn prep runs it so the move and its marker land before an agent of this build gets a
     shell on a fresh upgrade; after that it is one ``stat``. The move lives in
-    :mod:`kiro_crew.member_records`, which every gateway-side reader also calls, so a spawn
-    is never its only chance. Never raises: a failed move keeps the old copies and is
-    retried by the next caller.
+    :mod:`kiro_crew.member_records`, which every gateway-side reader also calls.
+
+    **A move that did not finish refuses the spawn** (:class:`SandboxCeilingUnsealable`)
+    whether or not the old layout holds a record now.
+    ``trust/`` is writable inside every sandbox, so a process launched before the seal
+    could write or replace a record there, and the next pass would promote it into the
+    directory the gateway trusts. The refusal names the cause so the
+    operator can fix it (disk space, permissions, a link at ``trust/<kind>``); the next
+    spawn retries the move. Inside a sandbox it is a no-op: the gateway's own spawn already
+    decided.
     """
     # Local, not top-level, for the reason the Notes move above gives.
     from kiro_crew import member_records
 
-    return member_records.ensure_migrated()
+    if member_records._inside_sandbox() or member_records.ensure_migrated():
+        return True
+    # Unsealed refuses whatever the old layout holds now: a sandbox launched before the
+    # seal could write a record there for the next pass to promote. A fresh data home is
+    # not an exception that needs carving out, because the move seals one at once.
+    pending = member_records.outstanding_kinds()
+    what = f"crewmate {', '.join(pending)} records" if pending else "crewmate records"
+    raise SandboxCeilingUnsealable(
+        f"not launching a sandbox: the one-time move of {what} out of "
+        f"{config_dir() / 'trust'} into {config_dir() / member_records.MEMBER_RECORDS_LEAF} "
+        f"did not finish ({member_records.last_failure or 'unknown cause'}). Until it does, a "
+        "sandboxed process could change records the gateway is about to trust. Fix the cause "
+        "and start the session again; the move is retried first."
+    )

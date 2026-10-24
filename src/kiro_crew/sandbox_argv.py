@@ -570,7 +570,8 @@ def namespace_argv(
     # the launcher masks at any bare name left absent. A failed move is logged, not raised.
     _migrate_md_notebook_legacy_state()
     # The crewmate records' one-time move out of ``trust/`` runs here too, so it is
-    # done before an agent of this build starts; a failed move is logged, not raised.
+    # done before an agent of this build starts. Unlike the Notes move, one that did not
+    # finish while old records remain REFUSES the spawn (``SandboxCeilingUnsealable``).
     _member_records_move()
     # And the ``sensitive_files`` loop is guarded on ``isfile``, so md-notebook's state
     # leaves — creatable on a sandboxed host now that the backend carve-out exists —

@@ -10,6 +10,7 @@ once, never lost, never promoted again after the move is sealed.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -182,27 +183,159 @@ def test_a_failed_copy_removes_nothing_and_leaves_the_move_unsealed(home, monkey
             raise OSError(28, "No space left on device")
         return real(path, data, **kwargs)
 
+    def flaky_always():
+        raise OSError(28, "No space left on device")
+
     monkeypatch.setattr(member_records, "atomic_write", flaky)
     assert member_records.ensure_migrated() is False
     for kind in contents:
         assert (home / "trust" / kind / f"{_SLUG}.json").exists(), kind
     assert not (home / "member-records" / member_records.MIGRATION_MARKER).exists()
 
+    # While the move is unfinished, a record still in the old layout never reads as
+    # absent: the rules refuse the turn, the goal refuses the read, the binding
+    # reads as unbound and cannot be rewritten over the old one.
+    monkeypatch.setattr(member_records, "atomic_write", lambda *a, **k: flaky_always())
+    with pytest.raises(members.MemberRulesUnreadable):
+        members.read_member_rules(_SLUG, _MEMBER)
+    with pytest.raises(member_goals.GoalsUnreadable):
+        member_goals.read_goals(_SLUG, _MEMBER)
+    assert members.read_dm_binding(_SLUG) is None
+    with pytest.raises(OSError):
+        members.write_dm_binding(_SLUG, member=_MEMBER, slot_key=members.member_slot_key(_SLUG, ""))
+
     monkeypatch.setattr(member_records, "atomic_write", real)
     assert _reads()[0] == "never push to main"
     assert not (home / "trust" / "member-rules").exists()
 
 
-def test_nothing_reached_through_a_link_is_promoted(home, tmp_path) -> None:
+def test_no_old_record_is_removed_until_the_data_home_entry_is_synced(home, monkeypatch) -> None:
+    """A pass that just made the records directory syncs the data home before removing."""
+    contents = _write_all_three()
+    _as_old_layout(home, contents)
+    real = member_records.fsync_dir
+    synced: list[Path] = []
+
+    def refuse_home(path, *args, **kwargs):
+        if Path(path) == home:
+            raise OSError(5, "Input/output error")
+        synced.append(Path(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(member_records, "fsync_dir", refuse_home)
+    assert member_records.ensure_migrated() is False
+    for kind in contents:
+        assert (home / "trust" / kind / f"{_SLUG}.json").exists(), kind
+    assert not (home / "member-records" / member_records.MIGRATION_MARKER).exists()
+
+    monkeypatch.setattr(member_records, "fsync_dir", real)
+    assert member_records.ensure_migrated()
+    assert not (home / "trust" / "member-rules").exists()
+
+
+def test_records_behind_a_link_are_neither_promoted_nor_read_as_absent(home, tmp_path) -> None:
+    """The old build read through a link at ``trust/<kind>``; the move must not seal over it."""
     contents = _write_all_three()
     _as_old_layout(home, contents)
     elsewhere = tmp_path / "elsewhere"
     (home / "trust" / "member-rules").rename(elsewhere)
     (home / "trust" / "member-rules").symlink_to(elsewhere, target_is_directory=True)
 
-    assert member_records.ensure_migrated()
-    assert members.read_member_rules(_SLUG, _MEMBER) == ""
+    assert member_records.ensure_migrated() is False
+    assert "reached through a link" in member_records.last_failure
+    assert not (home / "member-records" / member_records.MIGRATION_MARKER).exists()
+    with pytest.raises(members.MemberRulesUnreadable):
+        members.read_member_rules(_SLUG, _MEMBER)
+    with pytest.raises(sandbox.SandboxCeilingUnsealable, match="member-rules"):
+        sandbox._member_records_move()
     assert (elsewhere / f"{_SLUG}.json").read_bytes() == contents["member-rules"]
+    assert not (home / "member-records" / "member-rules" / f"{_SLUG}.json").exists()
+
+    # The operator replaces the link with the directory it points to; the move finishes.
+    (home / "trust" / "member-rules").unlink()
+    elsewhere.rename(home / "trust" / "member-rules")
+    assert sandbox._member_records_move() is True
+    assert members.read_member_rules(_SLUG, _MEMBER) == "never push to main"
+
+
+def test_a_link_that_leads_to_no_records_does_not_hold_the_move(home, tmp_path) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    (home / "trust").mkdir()
+    (home / "trust" / "member-goals").symlink_to(empty, target_is_directory=True)
+
+    assert member_records.ensure_migrated()
+
+
+def test_an_old_record_that_is_not_a_regular_file_holds_the_move(home, tmp_path) -> None:
+    contents = _write_all_three()
+    _as_old_layout(home, contents)
+    old = home / "trust" / "member-rules" / f"{_SLUG}.json"
+    target = tmp_path / "rules.json"
+    target.write_bytes(old.read_bytes())
+    old.unlink()
+    old.symlink_to(target)
+
+    assert member_records.ensure_migrated() is False
+    assert "not a regular file" in member_records.last_failure
+    with pytest.raises(members.MemberRulesUnreadable):
+        members.read_member_rules(_SLUG, _MEMBER)
+    assert old.is_symlink(), "nothing is removed while the move is held"
+
+
+def test_a_spawn_is_refused_while_old_records_could_still_be_changed(home, monkeypatch) -> None:
+    """A sandboxed process can write ``trust/``, so no sandbox launches mid-move."""
+    contents = _write_all_three()
+    _as_old_layout(home, contents)
+
+    def full_disk(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(member_records, "atomic_write", full_disk)
+    with pytest.raises(sandbox.SandboxCeilingUnsealable, match="No space left on device"):
+        sandbox._member_records_move()
+    if sys.platform.startswith("linux"):
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox.namespace_argv(["/bin/true"], "standard")
+    for kind in contents:
+        assert (home / "trust" / kind / f"{_SLUG}.json").exists(), kind
+
+
+def test_a_spawn_is_refused_while_unsealed_even_with_no_old_records(home, monkeypatch) -> None:
+    """An empty old layout is no excuse: a sandbox launched before the seal could fill it."""
+    real = member_records.atomic_write
+
+    def no_marker(path, data, **kwargs):
+        if Path(path).name == member_records.MIGRATION_MARKER:
+            raise OSError(28, "No space left on device")
+        return real(path, data, **kwargs)
+
+    monkeypatch.setattr(member_records, "atomic_write", no_marker)
+    assert member_records.outstanding_kinds() == []
+    with pytest.raises(sandbox.SandboxCeilingUnsealable, match="No space left on device"):
+        sandbox._member_records_move()
+    if sys.platform.startswith("linux"):
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox.namespace_argv(["/bin/true"], "standard")
+
+    monkeypatch.setattr(member_records, "atomic_write", real)
+    assert sandbox._member_records_move() is True
+
+
+def test_a_fresh_data_home_seals_on_the_first_spawn(tmp_path, monkeypatch) -> None:
+    """No carve-out is needed for a new install: the move seals it at once."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "not-created"))
+    monkeypatch.delenv(member_records._IN_SANDBOX_MARKER, raising=False)
+    assert sandbox._member_records_move() is True
+    assert (tmp_path / "not-created" / "member-records" / member_records.MIGRATION_MARKER).is_file()
+
+
+def test_a_spawn_inside_a_sandbox_is_never_refused_by_the_move(home, monkeypatch) -> None:
+    contents = _write_all_three()
+    _as_old_layout(home, contents)
+    monkeypatch.setenv(member_records._IN_SANDBOX_MARKER, "1")
+
+    assert sandbox._member_records_move() is True
 
 
 def test_the_move_never_runs_inside_a_sandbox(home, monkeypatch) -> None:
