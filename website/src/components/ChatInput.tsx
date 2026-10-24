@@ -390,11 +390,12 @@ function ChatInput({
   // Style Markdown While Typing setting also opts this user into the Lexical
   // composer. With the setting off (the default) the textarea path is unchanged.
   const lexicalComposer = lexicalComposerProp || inlineMarkdown
-  // Same for the send-key mode: the stored preference is the fallback, not a
-  // hardcoded 'enter'. A host omitting the prop (session-grid pane, side panel)
-  // would otherwise send on plain Enter for a user who chose Ctrl/Cmd+Enter.
-  const storedSendMode = useComposerSendMode()
-  const sendOnEnter = sendOnEnterProp ?? storedSendMode
+  // Same for the send-key mode: the stored preference, with Return as a new
+  // line on a phone, is the fallback, not a hardcoded 'enter'. A host omitting
+  // the prop (session-grid pane, side panel, a crewmate's chat) would otherwise
+  // send on plain Enter for a user who chose Ctrl/Cmd+Enter, or on any phone.
+  const defaultSendMode = useComposerSendMode()
+  const sendOnEnter = sendOnEnterProp ?? defaultSendMode
 
   // Stop button: killing-state escape hatch (re-enable after 15s)
   const { escaped: killingEscaped } = useStopEscapeHatch(stopState)

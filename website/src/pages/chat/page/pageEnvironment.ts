@@ -2,7 +2,6 @@ import { useRef, useMemo, useState, type MutableRefObject, type Dispatch, type S
 import { useNavigate, useNavigationType, useLocation, useSearchParams } from 'react-router-dom'
 import { useQueryClient, useQuery } from '@tanstack/react-query'
 import { useIsMobile } from '../../../hooks/useIsMobile'
-import { useIsTouchDevice } from '../../../hooks/useIsTouchDevice'
 import { useShellSlot } from '../../../hooks/useShellSlot'
 import { useMobileNavRail } from '../../../components/MobileNavRailContext'
 import { useVisualViewport } from '../../../hooks/useVisualViewport'
@@ -64,9 +63,6 @@ export function useChatPageEnvironment({
   // effect reads it (mobile replaces rather than pushes a session switch), and
   // ChatPage defines that effect well before the layout hooks start.
   const isMobile = useIsMobile()
-  // Width alone cannot tell a phone from a narrow desktop pane, which still has
-  // Enter: only a narrow TOUCH device forces Ctrl+Enter over the saved choice.
-  const isTouch = useIsTouchDevice()
   /**
    * Phone: the App shell's top bar is the ONE bar, and this page's title row
    * lives in it. The shell renders `#mobile-topbar-slot` (centre cell) and
@@ -219,7 +215,7 @@ export function useChatPageEnvironment({
   // counts.
   const sidePanelAlwaysOpenKnown = appPanelCfg !== undefined
   return {
-    dispatch, moveSlotToFolder, navigate, navigationType, location, queryClient, provider, deleteTerminalSessionRef, searchParams, setSearchParams, isMobile, isTouch, topbarSlot, topbarTrailSlot,
+    dispatch, moveSlotToFolder, navigate, navigationType, location, queryClient, provider, deleteTerminalSessionRef, searchParams, setSearchParams, isMobile, topbarSlot, topbarTrailSlot,
     mobileNavRail, titleInTopbar, langGen, vv, keyboardInset, slots, switchSlotGone, filteredSlots, filteredSlotsRef, surfaceUnreadSlots, refreshTrigger, connected, creatingSlot, foregroundCreateId,
     foregroundCreateIdRef, lastCreatedActivationRef, unresumableResume, undeletableHistory, activeSlot, boundStore, voiceRecoverySlot, setVoiceRecoverySlot, appToolCallIds, mcpAppPanel,
     autoOpenGitPanel, autoOpenGitPanelKnown, sidePanelAlwaysOpen, sidePanelAlwaysOpenKnown, sidePanelPinSummary,

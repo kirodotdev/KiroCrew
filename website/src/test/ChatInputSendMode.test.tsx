@@ -13,6 +13,8 @@ import { stubStripHeights } from './stripHeights'
 
 const mobileEnv = vi.hoisted(() => ({ mobile: false }))
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => mobileEnv.mobile }))
+const touchEnv = vi.hoisted(() => ({ touch: false }))
+vi.mock('../hooks/useIsTouchDevice', () => ({ useIsTouchDevice: () => touchEnv.touch }))
 
 const baseProps = { value: 'half-written draft', onChange: vi.fn() }
 
@@ -32,6 +34,7 @@ beforeEach(() => {
   stubStripHeights()
   localStorage.clear()
   mobileEnv.mobile = false
+  touchEnv.touch = false
 })
 
 describe('composer send mode comes from the stored preference', () => {
@@ -130,5 +133,45 @@ describe('composer send mode comes from the stored preference', () => {
     fireEvent(window, new Event('mc-config-changed'))
     expect(fireEvent.keyDown(ta, { key: 'Enter' })).toBe(true)
     expect(onSend).not.toHaveBeenCalled()
+  })
+})
+
+// A phone's on-screen keyboard has no Shift+Return, so a Return that sends would
+// leave no way to start a new line. The composer applies the rule itself, so a
+// crewmate's chat, the side panel and the split panes behave like the main chat.
+describe('send key by viewport and pointer', () => {
+  it('on a phone, plain Enter inserts a newline even when Enter-sends is stored', () => {
+    mobileEnv.mobile = true
+    touchEnv.touch = true
+    const onSend = vi.fn()
+    const ta = mountWithStoredMode('enter', onSend)
+    expect(fireEvent.keyDown(ta, { key: 'Enter' })).toBe(true)
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('on a phone, an explicit prop still overrides the rule', () => {
+    mobileEnv.mobile = true
+    touchEnv.touch = true
+    const onSend = vi.fn()
+    seedSendMode('ctrl-enter')
+    renderWithProviders(<ChatInput {...baseProps} onSend={onSend} sendOnEnter="enter" />)
+    fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
+    expect(onSend).toHaveBeenCalledOnce()
+  })
+
+  it('a narrow desktop window keeps the stored Enter-sends choice', () => {
+    mobileEnv.mobile = true
+    const onSend = vi.fn()
+    const ta = mountWithStoredMode('enter', onSend)
+    fireEvent.keyDown(ta, { key: 'Enter' })
+    expect(onSend).toHaveBeenCalledOnce()
+  })
+
+  it('a wide touch screen keeps the stored Enter-sends choice', () => {
+    touchEnv.touch = true
+    const onSend = vi.fn()
+    const ta = mountWithStoredMode('enter', onSend)
+    fireEvent.keyDown(ta, { key: 'Enter' })
+    expect(onSend).toHaveBeenCalledOnce()
   })
 })
