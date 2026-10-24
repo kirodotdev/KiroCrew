@@ -1,3 +1,4 @@
+import { RetryControl } from './RetryControl'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { OverlayPortal } from './overlayRoot'
 import { useQuery } from '@tanstack/react-query'
@@ -5,6 +6,7 @@ import { FileText, Folder, Eye } from 'lucide-react'
 import { usePickerSource } from './dashboardPickerSource'
 import { pickerQueryKey, type FileKind, type FileResult, type FileSearchResponse } from '../chat-core/composer/pickerSource'
 import ErrorNotice from './ErrorNotice'
+import { RETRYABLE_SEARCH_CAUSES, SEARCH_FAILURE_KEYS, searchErrorCause, type SearchErrorCause } from '../lib/searchErrorCause'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { splitPathToken } from './composerTokens'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
@@ -60,6 +62,20 @@ export function rowFolder(path: string, root: string): string {
 }
 
 const formatSize = (bytes: number): string => fmtBytes(bytes)
+
+/** Cause copy with NO send-key suffix: where rows survive the failure Enter PICKS the
+ *  highlighted row, so any "Enter sends the message" claim would be the opposite of the key. */
+// `denied` and `root_missing` override the shared map: those two name a root, and the folder
+// tab's own cwd is a different directory from the chat project this menu searches.
+const SEARCH_CAUSE_KEYS = {
+  ...SEARCH_FAILURE_KEYS,
+  denied: 'components.filePickerMenu.search_denied',
+  root_missing: 'components.filePickerMenu.search_root_missing',
+} as const satisfies Record<SearchErrorCause, string>
+
+// A refusal in `pathMode` can be one blocked subpath while the project folder is fine.
+const SEARCH_DENIED_PATH_KEY = 'components.filePickerMenu.search_denied_path'
+
 
 function formatAge(mtime: number): string {
   const diff = Date.now() / 1000 - mtime
@@ -117,6 +133,9 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // (via the queryFn `signal`), caching, and dedup; this just throttles how often
   // the query key changes while the user types.
   const [debounced, setDebounced] = useState(query)
+  const [retrying, setRetrying] = useState(false)
+  const retryRef = useRef<HTMLButtonElement | null>(null)
+  const lastCauseRef = useRef<SearchErrorCause>('failed')
   useEffect(() => {
     const t = setTimeout(() => setDebounced(query), 200)
     return () => clearTimeout(t)
@@ -140,7 +159,7 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // to empty.
   const source = usePickerSource()
   const load = pathMode ? source.pathComplete : source.fileSearch
-  const { data, isFetching, isError } = useQuery<FileSearchResponse>({
+  const { data, isFetching, isError, error, refetch } = useQuery<FileSearchResponse>({
     queryKey: pickerQueryKey(source, pathMode
       ? ['path-complete', project, scope.dir, scope.partial]
       : ['file-search', debounced, project]),
@@ -153,6 +172,7 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     // the tick right after the menu opens. Fetching there would ask for the
     // project root under a token that names something else.
     enabled: open && !!load && (pathMode ? scope.dir !== '' : debounced.length >= 2),
+    // The one bounded read that keeps the shared throttle ladder: a 429 here must recover.
     placeholderData: prev => prev,
     staleTime: 10_000,
   })
@@ -166,6 +186,8 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // immediately when the user drops below 2 chars; `data` is keyed on
   // `debounced`, so it lags by up to one debounce tick — the intended debounce
   // behavior.
+  // NOT gated on `isError`: a refetch failing on the same key leaves the last good page in
+  // `data`, and dropping it swaps a list the user was about to click for a retype.
   const { ordered: results, initialIndex } = useMemo(() => {
     const raw = (open && ready ? data?.results : []) || []
     const above = anchorRef.current ? menuGeometry(anchorRef.current, raw.length, 48).above : false
@@ -202,20 +224,39 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // query) or an in-flight fetch the results are transiently [] or stale, and
   // releasing Enter there would irreversibly send a draft whose mention the
   // user was still completing. A settled ERROR counts as settled-empty too —
-  // the menu shows the same empty state and has nothing to offer, so keeping
-  // the swallow there would recreate the trap on the error path.
+  // Enter must still reach the composer there, so keeping the swallow would
+  // recreate the trap on the error path; Tab goes to Retry instead of closing.
   const releaseKeysWhenEmpty = ready && debounced === query && !isFetching && (data !== undefined || isError)
 
-  // Shared Arrow/Enter/Tab/Escape + scroll-into-view (see useListKeyboardNav).
-  // When the release gate is armed, Enter/Tab pass through and the menu closes
-  // so the composer can still send the message (the #5029 prompt-mention trap).
+  // Release hands Enter to the composer (the #5029 trap); Tab goes first to the notice's
+  // Retry, which nothing else can focus -- the empty branch swallows Tab or closes on it.
+  // Escape reaches `onClose` through the hook, which unmounts the Retry without moving focus,
+  // so the anchor has to be claimed before the button goes away.
+  const closeReturningFocus = useCallback(() => {
+    if (document.activeElement === retryRef.current) anchorRef.current?.focus()
+    onClose()
+  }, [onClose, anchorRef])
+
   const { selected, setSelected, selectedRef, itemRefs } = useListKeyboardNav({
     open,
     count: results.length,
     onChoose: choose,
-    onClose,
+    onClose: closeReturningFocus,
     onAltEnter: openInViewer,
     releaseKeysWhenEmpty,
+    onTabToControl: () => {
+      const btn = retryRef.current
+      // Already on the control: decline, and the hook's release path is the exit.
+      if (!btn || btn.disabled || document.activeElement === btn) return false
+      btn.focus()
+      return true
+    },
+    onEnterToControl: () => {
+      const btn = retryRef.current
+      if (!btn || btn.disabled || document.activeElement !== btn) return false
+      btn.click()
+      return true
+    },
   })
 
   // Mirror the ordered results into the ref that choose()/openInViewer read at
@@ -253,6 +294,16 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // disagree with the answer on screen.
   const outsideProject = pathMode && data?.outside === true
 
+  // A failed search is not an empty one, and each arm names its own cause so a refusal
+  // does not read as transient and invite a pointless retry.
+  const cause = searchErrorCause(error)
+  if (isError) lastCauseRef.current = cause
+  // A retry re-enters `pending` because this query has never succeeded, dropping `error`, so the
+  // cause is remembered: otherwise the notice would rewrite itself to the generic copy mid-press.
+  const shownCause = isError ? cause : lastCauseRef.current
+  const pathDenied = pathMode && shownCause === 'denied'
+  const causeKey = pathDenied ? SEARCH_DENIED_PATH_KEY : SEARCH_CAUSE_KEYS[shownCause]
+
   // Enter AND Tab are swallowed while the gate is closed, so Send is not
   // keyboard-reachable — the copy names Escape, whose branch runs before them.
   const emptyKey = !ready
@@ -275,15 +326,86 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     ? 'components.filePickerMenu.no_matches_ctrl_enter_sends'
     : 'components.filePickerMenu.no_matches_enter_sends'
 
+  // A SETTLED failure, or a retry in flight: `refetch()` unmounted the very button being
+  // pressed, and the plain "no matches" copy would claim the search found nothing.
+  const searchFailed = ready && debounced === query
+    && (retrying || (isError && !isFetching))
+
+  // Withheld from a refusal, where re-asking a 403 or a 404 returns the same answer, and from a
+  // list with rows, where retyping already re-queries and Tab stays the row pick.
+  const retryButton = results.length > 0 || !RETRYABLE_SEARCH_CAUSES.has(shownCause) ? null : (
+    <RetryControl
+      busy={retrying}
+      controlRef={retryRef}
+      cause={i18nT(causeKey)}
+      onRetry={() => {
+        setRetrying(true)
+        // A retry that SUCCEEDS unmounts this button, so focus is handed back to the anchor --
+        // the composer's editable root, already this surface's focus-return target.
+        return refetch().then(r => !r.isError, () => false).then(ok => {
+          setRetrying(false)
+          if (ok) anchorRef.current?.focus()
+        })
+      }}
+    />
+  )
+
+  const searchHintKeys: string[] = []
+  if (retrying) {
+    searchHintKeys.push(ctrl
+      ? 'components.filePickerMenu.searching_ctrl_enter_held'
+      : 'components.filePickerMenu.searching_enter_held')
+  }
+  if (!RETRYABLE_SEARCH_CAUSES.has(shownCause)) {
+    searchHintKeys.push(pathDenied
+      ? 'components.filePickerMenu.check_path_inside_project'
+      : 'components.filePickerMenu.check_project_folder')
+  }
+  // Only where Enter SENDS: with rows on screen it picks the highlighted one instead, and
+  // `releaseKeysWhenEmpty` is already false for the whole retry window.
+  if (results.length === 0 && releaseKeysWhenEmpty) {
+    searchHintKeys.push(ctrl
+      ? 'components.filePickerMenu.ctrl_enter_sends'
+      : 'components.filePickerMenu.enter_sends')
+  }
+
+  const searchHints = (
+    <div
+      aria-live="polite"
+      data-testid="file-picker-search-hint-region"
+      className={`flex flex-col gap-0.5 text-[11px] text-muted whitespace-normal${
+        searchHintKeys.length > 0 ? ' mt-1.5' : ''
+      }`}
+    >
+      {searchHintKeys.map(k => (
+        <div key={k} data-testid="file-picker-search-hint">{i18nT(k)}</div>
+      ))}
+    </div>
+  )
+
+  const failureNotice = (
+    <div className="px-3 py-3">
+      <div className="flex items-start gap-2">
+        {/* No hand-off: the composer's unsent message lives in this tree, so a
+            navigation would discard the draft this picker was opened to complete. */}
+        <ErrorNotice
+          variant="inline"
+          className="whitespace-normal"
+          message={i18nT(causeKey)}
+          testId="file-picker-search-error"
+        />
+        {retryButton}
+      </div>
+      {searchHints}
+    </div>
+  )
+
   // One region for every empty state, so a transition is a text change inside a
   // live region rather than a mount — what screen readers announce least well.
-  const empty = <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(emptyKey)}</div>
-
-  // A SETTLED search failure gets its own surface: the ordinary "no matches"
-  // copy would claim the search ran and found nothing, when it did not run at
-  // all. Rendered above whatever (stale, placeholder) results are still on
-  // screen so the keyboard gate above keeps working unchanged.
-  const searchFailed = isError && ready && debounced === query && !isFetching
+  // A failure leaves that region: an empty result is not an error.
+  const empty = searchFailed
+    ? failureNotice
+    : <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(emptyKey)}</div>
 
   return <OverlayPortal>
     <div
@@ -291,20 +413,8 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
       role="listbox"
       style={{ ...(above ? { bottom } : { top }), left, width: Math.min(width, 420), maxHeight }}
     >
-      {searchFailed && (
-        <div className="px-3 py-2">
-          {/* No hand-off: the composer draft this picker is completing an
-              @-mention inside is unsaved — the hand-off would navigate away
-              from it. */}
-          <ErrorNotice
-            variant="inline"
-            className="whitespace-normal"
-            message={i18nT('components.filePickerMenu.search_failed')}
-            testId="file-picker-search-error"
-          />
-        </div>
-      )}
-      {results.length === 0 ? (searchFailed ? null : empty) : results.map((f, i) => {
+      {searchFailed && results.length > 0 && failureNotice}
+      {results.length === 0 ? empty : results.map((f, i) => {
         const kind = resultKind(f)
         const isDir = kind === 'dir'
         return (
