@@ -774,7 +774,7 @@ def is_denied(
     if rm_enabled and _rm._can_fire(tool_name):
         note = _rm._RM_FLOOR_NOTE
         try:
-            rm_targets = _rm._rm_wipe_targets(tool_name)
+            rm_targets = _rm._rm_wipe_targets_nested(tool_name)
         except Exception as exc:  # incl. RecursionError and the depth cap
             # Fail closed for a command naming rm as a word; letters inside
             # another word (``--format``) are not a command the floor reads.

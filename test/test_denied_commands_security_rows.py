@@ -628,3 +628,110 @@ class TestRecursiveForceRmFloor:
 
         monkeypatch.setattr(rm_floor, "_rm_wipe_targets", _boom)
         assert is_denied(command) is None
+
+
+class TestRmFloorReadsNestedShellPayloads:
+    """The rm floor reads every nested-shell payload, and a redirect hides none of them."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash -c 'RM -fr /'",
+            "busybox sh -c 'RM -fr /'",
+            'bash -c $" RM -fr ~"',
+            'bash -c "RM -fr "$"~"',
+            "bash -c 'cd x && RM -fr ~'",
+            'bash -c "RM -fr \\$HOME"',
+            # A redirect is no operand: bash runs the script after it.
+            "bash -c 2>/dev/null 'RM -fr ~'",
+            "sh -c >/tmp/o 'RM -fr /'",
+            "sh -c > /tmp/o 'RM -fr /'",
+            "bash -c 2>&1 -- 'RM -fr ~'",
+            "eval bash -c 'RM -fr /'",  # the shell's own -c payload is still read
+            "bash -c > eval 'RM -fr /'",  # a redirect target named eval is a file
+            "bash -c 2> source 'RM -fr ~'",
+            "bash -c 2>$(printf /dev/null) 'RM -fr ~'",  # a target spanning words
+            "env -S 2>/dev/null 'RM -fr /'",
+            # A quoted ``(`` is a file name; the target's end cannot be told, so fail closed.
+            "bash -c 2>'(' 'RM -fr ~'",
+            "bash -c 2>\\( 'RM -fr /'",
+            "bash -c 2> $(printf /dev/null) 'RM -fr ~'",
+            "bash -c 2>/dev/null 2>'(' 'RM -fr /'",
+            "env -S 2>'(' 'RM -fr ~'",
+            # An inert echo argument equal to a glued payload exempts nothing.
+            "echo 'RM -r -f /' ; bash<<<'RM -r -f /'",
+            "echo 'RM -r -f /' ; bash -c'RM -r -f /'",
+            "source 'RM -fr ~' || bash<<<'RM -fr ~'",  # nor does a source argument
+            "bash -c -c 2>/dev/null 'RM -fr ~'",  # a later -c carrier behind a redirect
+            "echo benign\nbash -c 'RM -fr ~'",  # a newline ends the echo
+            "echo hi # it's\nbash -c 'RM -fr ~'",  # a comment's quote opens nothing
+            "bash -c 'RM -fr ~' # it's",  # nor on the payload's own line
+            "echo hi # x \\\nbash -c 'RM -fr ~'",  # a comment's backslash continues nothing
+            "bash -c 2> ';' 'RM -fr ~'",  # a quoted ``;`` target ends nothing
+            # bash folds a backslash-newline in the payload it runs.
+            "bash -c 'RM -fr \\\n~'",
+            "RM -fr \\\n~",
+            # A substitution body runs as its own command; its outer echo / cat exempts nothing.
+            "echo $( bash -c 'RM -fr ~' )",
+            "cat <( bash -c 'RM -fr ~' )",
+            "cat >( bash -c 'RM -fr /' )",
+            "echo `bash -c 'RM -fr ~'`",
+            # Known fail-closed: the tokenizer keeps ``\\$`` here, read as ``$``.
+            "bash -c 'RM -fr \\$HOME'",
+        ],
+    )
+    def test_a_nested_wipe_is_refused_by_the_floor(self, command):
+        reason = is_denied(command.replace("RM", "rm"))
+        assert reason is not None and "component=argv-floor" in reason
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash -c 'RM -rf /tmp/x'",
+            "bash -c 'RM -fr /tmp/x'",
+            "echo bash -c 'RM -fr /'",
+            "bash -c 2>/dev/null 'ls'",
+            "bash -c 'echo hi > /tmp/o'",
+            "echo 'RM -fr \\\n~'",  # a single-quoted continuation is printed, not run
+            "bash -c 'RM -fr \\\n/tmp/x'",
+            "echo $( bash -c 'ls' )",
+            "cat <( bash -c 'RM -fr /tmp/x' )",
+        ],
+    )
+    def test_a_nested_harmless_command_keeps_its_verdict(self, command):
+        command = command.replace("RM", "rm")
+        reason = is_denied(command)
+        assert reason is None or "component=argv-floor" not in reason
+
+    def test_the_regex_rows_keep_their_verdicts(self):
+        for command in ("rm -rf /tmp/x", "rm -rf ~/.cache/foo"):
+            assert is_denied(command) is not None, command
+
+    @pytest.mark.parametrize("wrapper", ["bash -c 2>/dev/null {}", "sh -c >/tmp/o {}"])
+    def test_a_redirect_hides_no_payload_from_the_self_protection_floor(self, wrapper):
+        verb = "to" + "ken"
+        assert is_denied(wrapper.format(f"'{_NAME} {verb}'")) is not None
+
+    def test_an_eval_argument_is_left_to_the_rows(self, monkeypatch):
+        """``eval`` re-joins its words under each level; the floor does not model that."""
+        from kiro_crew.security import rm_floor
+
+        frames: list[str] = []
+        real = rm_floor._rm_wipe_targets
+        monkeypatch.setattr(
+            rm_floor, "_rm_wipe_targets", lambda text: frames.append(text) or real(text)
+        )
+        command = "eval " * 1200 + "echo " + "r" + "m"
+        assert rm_floor._rm_wipe_targets_nested(command) == set()
+        # No eval argument is walked: only the command itself reaches its tail.
+        assert [frame for frame in frames if "echo" in frame] == [command]
+
+    def test_repeated_redirect_carriers_yield_each_word_once(self):
+        from kiro_crew.security import shell_normalizer
+
+        def payload_count(carriers: int) -> int:
+            tokens = shell_normalizer._shell_tokens("bash -c >x " * carriers + "ls")
+            return len(shell_normalizer._nested_shell_payloads(tokens))
+
+        # Linear: doubling the carriers at most doubles the payloads (plus a constant).
+        assert payload_count(320) <= 2 * payload_count(160) + 8

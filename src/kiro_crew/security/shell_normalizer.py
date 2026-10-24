@@ -690,6 +690,30 @@ def _is_not_double_dash(token: str) -> bool:
     return token != "--"
 
 
+def _operands_past_redirect(tokens: "list[str]", start: int, memo: "set[int]") -> "list[str]":
+    """Every word after a redirect at *start*, to the end of the token list.
+
+    A shell removes a redirection from argv wherever it sits, so ``sh -c 2>/dev/null
+    '<script>'`` runs ``<script>``; reading the redirect word as the ``-c`` operand hid the
+    payload from every gate. Where the redirect's target ends cannot be told from
+    dequoted words (``2>$(printf x)`` spans several, ``2>'('`` is one), so every later
+    word is a candidate, even past a ``;`` (a dequoted ``';'`` target looks the same):
+    fail closed. *memo* holds the word indexes already yielded; every run ends at the
+    list's end, so a later start stops at the first index seen: linear.
+    """
+    if not _REDIRECT_START_RE.match(tokens[start]):
+        return []
+    out: list[str] = []
+    for index in range(start + 1, len(tokens)):
+        word = tokens[index]
+        if index in memo:
+            break
+        memo.add(index)
+        if word != "--":
+            out.append(word)
+    return out
+
+
 def _next_stop_indexes(tokens: "list[str]", is_stop: "Callable[[str], bool]") -> "list[int]":
     """For each index, the first index at or after it where *is_stop* holds.
 
@@ -1220,6 +1244,7 @@ def _nested_shell_payloads(
     # command flag is walked once per program token otherwise, which is quadratic even
     # though the two scans above are not.
     past_dashes = _next_stop_indexes(tokens, _is_not_double_dash)
+    redirect_memo: "set[int]" = set()
     # ``eval``'s argument join is bounded to one per walk; see the verb branch.
     joined_eval = False
     first_shell: "int | None" = None
@@ -1241,6 +1266,8 @@ def _nested_shell_payloads(
                 k = past_dashes[j + 1]
                 if k < limit:
                     payloads.append(tokens[k])
+                    # Kept above as well: a quoted script may itself start with ``>``.
+                    payloads.extend(_operands_past_redirect(tokens, k, redirect_memo))
             # A HERESTRING feeds the script on stdin instead of as an argument
             # (``bash <<< '<script>'``), so its text is a command just the same.
             # Both the spaced and glued spellings arrive here.
@@ -1271,6 +1298,7 @@ def _nested_shell_payloads(
                 if flag in {"-s", "--split-string"}:
                     if j + 1 < limit:
                         payloads.append(tokens[j + 1])
+                        payloads.extend(_operands_past_redirect(tokens, j + 1, redirect_memo))
                 elif flag.startswith("-s") and len(tokens[j]) > 2:
                     payloads.append(tokens[j][2:])
                 elif flag.startswith("--split-string="):
@@ -1355,6 +1383,11 @@ def _nested_shell_payloads(
                 if bare_next and bare_next not in collected:
                     collected.add(bare_next)
                     payloads.append(bare_next)
+                if k < limit:  # a redirect here hides the script as it does above
+                    for word in _operands_past_redirect(tokens, k, redirect_memo):
+                        if word not in collected:
+                            collected.add(word)
+                            payloads.append(word)
     # ``a=(<name> <verb>); "${a[@]}"`` runs the array's elements AS a command line.  The
     # expansion is one token, so the argv checks have no adjacent operands to compare --
     # the joined elements are handed to the payload walk instead, which re-tokenizes them.
