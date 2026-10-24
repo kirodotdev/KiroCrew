@@ -192,7 +192,7 @@ export const resumeFromHistory = createAsyncThunk(
   async ({ key, title }: { key: string; title: string }, { dispatch }) => {
     const d = await api.resumeChatSlot(key, title)
     if (d.ok) {
-      dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }))
+      dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined, ...(d.history_key ? { history_key: d.history_key } : {}) }))
       dispatch(updateSlot({ key: d.key, mode: d.mode, surface: d.surface ?? d.mode }))
     }
     // Without a cursor this response cannot be paged, so do not advertise more:

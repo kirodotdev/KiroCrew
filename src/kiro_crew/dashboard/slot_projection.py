@@ -39,6 +39,25 @@ def stop_declined_armed(slot: Any, now: float | None = None) -> bool:
     return current - at < STOP_DECLINED_ESCALATION_SECS
 
 
+def _history_key(slot: Any) -> str:
+    """The transcript key for *slot*, unfolded, as resume accepts it.
+
+    ``slot_history_key`` is the one rule for which transcript a slot writes.
+    It is passed through as the session key, NOT folded to a filename stem:
+    ``ConversationLog._path`` only finds a pre-migration Slack thread's bare
+    ``<ts>.jsonl`` from the ``slack:<ts>`` spelling, so the folded
+    ``slack_<ts>`` would resume an empty transcript. ``""`` for a duck-typed
+    slot the rule cannot read.
+    """
+    # Local import: chat_utils imports state, which imports this module.
+    from kiro_crew.dashboard.chat_utils import slot_history_key
+
+    try:
+        return str(slot_history_key(slot) or "")
+    except (AttributeError, TypeError):
+        return ""
+
+
 def resolved_row_identity(slot: Any) -> str:
     """The identity the sidebar renders this slot under: its own local key.
 
@@ -533,6 +552,13 @@ class SlotProjection:
             "memory_mode": slot.memory_mode,
             "forked_from": slot.forked_from,
             "linked_session_key": slot.linked_session_key,
+            # The transcript's session key, the one ``/api/chat/resume`` reads.
+            # Derived here, by the one rule (``slot_history_key``), because the
+            # client cannot rebuild it: an unbound channel-born slot has no
+            # ``linked_session_key`` and no origin link, yet its transcript is
+            # the channel's, not ``dashboard:<key>``. Reopen-closed-session
+            # resumes by this key.
+            "history_key": _history_key(slot),
             "app": slot._app,
             "origin": slot._origin,
             # Creator attribution: the slot key of the session that asked for

@@ -101,7 +101,7 @@ describe('store/chat owners', () => {
 
 /** Reducers the facade wires inline next to the families: small UI flags and the live frame reducer. */
 const INLINE_REDUCERS = [
-  'setPendingInput', 'stageToMainComposer', 'setAgentSwitchNotice', 'setVoicePlaying', 'setVoicePreparing', 'setVoiceAudio',
+  'setPendingInput', 'stageToMainComposer', 'setAgentSwitchNotice', 'setReopenNotice', 'setVoicePlaying', 'setVoicePreparing', 'setVoiceAudio',
   'requestSlotReveal', 'requestSlotFolderOpen', 'clearSlotReveal', 'requestFolderReveal', 'sseChatMessage', 'setCloseRefused',
 ]
 

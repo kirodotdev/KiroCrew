@@ -413,7 +413,9 @@ export default function FileExplorerPage() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (isShortcut(e) && e.key.toLowerCase() === 'f') { e.preventDefault(); toggleSearch() }
-      else if (isShortcut(e) && e.key.toLowerCase() === 't') { e.preventDefault(); newFolderTabAction() }
+      // Cmd/Ctrl+Shift+T is the shell's reopen-last-chat chord; the same keydown
+      // reaches this window listener, so it must not also open a folder tab.
+      else if (isShortcut(e) && !e.shiftKey && e.key.toLowerCase() === 't') { e.preventDefault(); newFolderTabAction() }
       else if (isShortcut(e) && e.key.toLowerCase() === 'w') { e.preventDefault(); if (activeFile) closeFileTab(activeFile.id); else if (activeFolder) closeFolderTab(activeFolder.id) }
       else if (e.key === 'Escape' && activeFolder?.showSearch) { e.preventDefault(); toggleSearch() }
     }

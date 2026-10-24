@@ -374,6 +374,10 @@ export interface ChatState {
    *  global cycle shortcuts, and for a new chat that could not get its own
    *  session folder. The App shell owns rendering and expiry. */
   agentSwitchNotice: { message: string } | null
+  /** Neutral note from the reopen-closed-session shortcut when there is
+   *  nothing to reopen. Separate from `agentSwitchNotice`, which carries
+   *  failures. The App shell owns rendering and expiry. */
+  reopenNotice: { message: string } | null
   // True while a createSlot POST is in flight. Lets every New Chat entry
   // point show a pending state so the UI never looks dead on click.
   creatingSlot: boolean
@@ -714,6 +718,7 @@ export const initialState: ChatState = {
   pendingInput: null,
   mainComposerAppend: null,
   agentSwitchNotice: null,
+  reopenNotice: null,
   creatingSlot: false,
   foregroundCreateId: null,
   pendingForkOpens: 0,

@@ -5,7 +5,7 @@
  * links, the send wire, and the composer autocomplete read.
  */
 
-import type { ChatSlot, ChatSlotDetailResponse, SideSnapshot } from '../../types'
+import type { ChatMessage, ChatSlot, ChatSlotDetailResponse, SideSnapshot } from '../../types'
 import type { SessionSummary } from '../../types/sessionSummary'
 import type { DynamicDashboardCard } from '../../types/dynamicDashboard'
 import { getStoredConsent } from '../../utils/themeConsent'
@@ -17,6 +17,20 @@ import { TAB_ID } from '../tabId'
 import { takeSessionFolderNotice } from '../../lib/sessionFolderNotice'
 import { activeLocale } from '../../i18n/format'
 import type { ClientTransport } from './transport'
+
+interface ResumeChatSlotResponse {
+  ok: boolean
+  key: string
+  history_key?: string
+  messages?: ChatMessage[]
+  queue?: unknown[]
+  total?: number
+  has_more?: boolean
+  next_before?: number
+  memory_mode?: ChatSlot['memory_mode']
+  mode?: string
+  surface?: string
+}
 
 /**
  * Resolve the theme-consent token to transmit for an installed pack's chat.
@@ -155,7 +169,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
      *  a click on a leftover countdown is rejected rather than ending a later wait. */
     endWait: (slot: string, waitId: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/end-wait', { wait_id: waitId }).then(j),
     approveChatSlot: (slot: string, action: string, extra?: Record<string, string | number>) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/approve', { action, ...extra }).then(j),
-    resumeChatSlot: (key: string, title?: string) => post('/api/chat/slots/' + encodeURIComponent(key) + '/resume', { name: key, key, title: title || key }).then(j),
+    resumeChatSlot: (key: string, title?: string) => post('/api/chat/slots/' + encodeURIComponent(key) + '/resume', { name: key, key, title: title || key }).then(j) as Promise<ResumeChatSlotResponse>,
     forkChatSlot: (slot: string, atIndex?: number, prompt?: string, mode?: string, direction?: string, messageId?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/fork', { ...(atIndex !== undefined ? { at_message_index: atIndex } : {}), ...(messageId ? { at_message_id: messageId } : {}), ...(prompt ? { prompt } : {}), ...(mode ? { mode } : {}), ...(direction ? { direction } : {}) }).then(j),
     sideTools: () => fetch('/api/chat/side/tools').then(j) as Promise<{ read_only_tools: boolean; claude_adapter_outdated: boolean; claude_adapter_min_version: string; claude_adapter_update_command: string; config_unavailable: boolean }>,
     sideState: (slot: string) => fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/side').then(j) as Promise<SideSnapshot>,

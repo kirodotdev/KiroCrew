@@ -6,7 +6,7 @@ import { setUpdateProgress } from './store/dashboardSlice'
 // module below that reads it (`shell/nav/navItems.ts` computes `NAV_ITEMS`).
 import './surfaces/builtins'
 import { surfaceLabel } from './surfaces/registry'
-import { setAgentSwitchNotice } from './store/chatSlice'
+import { setAgentSwitchNotice, setReopenNotice } from './store/chatSlice'
 import { GuideProvider } from './guide/GuideContext'
 import { metricColor } from './utils/metricColor'
 import { railWidthFor } from './hooks/useRailWidth'
@@ -295,6 +295,26 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
  *  harnesses that import them from the app root. */
 export { MobileNavGlyph } from './shell/topbar/shellHeader'
 export { NavItem, NavBadge }
+
+/** The reopen shortcut's "nothing to reopen" note: neutral status text, not a
+ *  failure, so it has its own state and element apart from the amber
+ *  agent-switch notice. Expires like that notice does. */
+function ReopenNotice() {
+  const dispatch = useAppDispatch()
+  const notice = useAppSelector(s => s.chat.reopenNotice)
+  useEffect(() => {
+    if (!notice) return
+    const timer = window.setTimeout(() => dispatch(setReopenNotice(null)), 6000)
+    return () => window.clearTimeout(timer)
+  }, [notice, dispatch])
+  if (!notice) return null
+  return (
+    <div role="status" className="fixed z-[70] top-safe-offset-14 left-safe-offset-4 right-safe-offset-4 sm:left-auto sm:w-[440px] bg-bg-elevated border border-border rounded-lg p-3 flex items-center gap-3 shadow-xl animate-rise">
+      <span className="text-sm text-text flex-1">{notice.message}</span>
+      <button onClick={() => dispatch(setReopenNotice(null))} aria-label={i18nT('app.dismiss')} className="text-muted hover:text-text leading-none p-0.5"><X className="lucide-inline w-4 h-4" /></button>
+    </div>
+  )
+}
 
 export default function App() {
   const shell = useAppShell()
@@ -699,6 +719,8 @@ export default function App() {
       )}
 
       <ShellHeader shell={shell} />
+
+      <ReopenNotice />
 
       {agentSwitchNotice && (
         <div role="status" className="fixed z-[70] top-safe-offset-14 left-safe-offset-4 right-safe-offset-4 sm:left-auto sm:w-[440px] bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 shadow-xl animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>

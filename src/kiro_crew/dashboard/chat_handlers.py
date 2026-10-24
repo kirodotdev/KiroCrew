@@ -459,6 +459,7 @@ from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
     transcript_acquisition_reason,
 )
 from kiro_crew.dashboard.slot_projection import (  # noqa: F401
+    _history_key,
     resolved_row_identity,
     stop_declined_armed,
 )
