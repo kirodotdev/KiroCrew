@@ -10644,6 +10644,7 @@
       "removes_kirocrew_metadata_only_the_app_itself_is": "Supprime uniquement les métadonnées {{productName}} — l'application elle-même est gérée en externe",
       "removing": "Suppression…",
       "repository": "Dépôt :",
+      "report_issue": "Signaler un problème",
       "requires_local_install": "Nécessite une installation locale",
       "resources": "Ressources",
       "resources_2": "| Ressources :",

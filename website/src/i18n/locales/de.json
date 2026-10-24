@@ -10498,6 +10498,7 @@
       "removes_kirocrew_metadata_only_the_app_itself_is": "Entfernt nur die {{productName}}-Metadaten — die App selbst wird extern verwaltet",
       "removing": "Wird entfernt…",
       "repository": "Repository:",
+      "report_issue": "Problem melden",
       "requires_local_install": "Erfordert lokale Installation",
       "resources": "Ressourcen",
       "resources_2": "| Ressourcen:",

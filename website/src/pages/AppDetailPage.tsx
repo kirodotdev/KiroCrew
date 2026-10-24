@@ -12,7 +12,7 @@ import {
   ArrowLeft, Download, Check, Loader2, Power, PowerOff,
   Trash2, RefreshCw, Bot, Zap, ArrowUp,
   Clock, X, Monitor, Copy, Terminal,
-  Target, Settings2, Star, ShieldAlert,
+  Target, Settings2, Star, ShieldAlert, ExternalLink,
 } from 'lucide-react'
 import { needsDesktopApp } from '../lib/electron'
 import { api } from '../api/client'
@@ -33,6 +33,7 @@ import ErrorNotice from '../components/ErrorNotice'
 import { useConfirm } from '../components/ConfirmDialog'
 import { findReport, recordError } from '../utils/errorReport'
 import { copyCode } from '../utils/clipboard'
+import { safeHttpUrl } from '../lib/safeUrl'
 
 import { i18nT } from '../i18n/t'
 import type { AppContributor } from '../types'
@@ -775,6 +776,34 @@ export default function AppDetailPage() {
   const agents = app.manifest?.agents || []
   const skills = app.manifest?.skills || []
   const crons = app.manifest?.crons || []
+  // Source-repo and issue-tracker links for the Details card (#9912). The repo
+  // Source-repo and issue-tracker links for the Details card (#9912). The repo
+  // string is third-party manifest/registry input, so it becomes a link ONLY
+  // when it parses as an http(s) URL with no userinfo (safeHttpUrl rejects
+  // javascript:/data: and credential-smuggling forms); anything else falls back
+  // to plain text. `app.repo` is the value the card already DISPLAYS, so the
+  // link's text and its href are built from the SAME string — otherwise the
+  // text could name one repo while the click opened another (`repoUrl` may be
+  // resolved from manifest.repo/trustRepository/source, not app.repo).
+  // `typeof` guard first: `app.repo` is third-party registry data typed as a
+  // string, but an entry can ship `"repo": ["…"]`; safeHttpUrl would URL-coerce
+  // the array to validate yet return the array itself, and `.replace` on it
+  // would throw and blank the whole detail page. A non-string repo stays plain
+  // text, exactly as it rendered before this change.
+  const sourceRepoUrl = typeof app.repo === 'string' && app.repo ? safeHttpUrl(app.repo) : null
+  const sourceRepoHost = (() => {
+    try { return sourceRepoUrl ? new URL(sourceRepoUrl).hostname : '' } catch { return '' }
+  })()
+  // Issue tracker: a GitHub repo's /issues page, built from the same displayed
+  // repo so the link cannot point somewhere the row does not name. Scoped to
+  // GitHub (the only host whose tracker path this knows) and deliberately a
+  // plain outbound LINK, never an in-app flow that files on the user's behalf —
+  // that needs new manifest metadata and a credential/product decision the
+  // maintainer owns (#9912).
+  const issuesUrl =
+    sourceRepoUrl && sourceRepoHost === 'github.com'
+      ? `${sourceRepoUrl.replace(/\/+$/, '').replace(/\.git$/, '')}/issues`
+      : ''
   // Theme-aware hero banner source (mirrors the Browse card resolution).
   // Prefer the wide detail-ratio banner (heroImageDetail*); fall back to the
   // Browse hero, then the opposite theme.
@@ -1501,7 +1530,37 @@ export default function AppDetailPage() {
           <Card>
             <CardTitle>{i18nT('pages.appDetailPage.details')}</CardTitle>
             <div className="grid gap-1.5 mt-2 text-[13px] text-muted">
-              {app.repo && <div>{i18nT('pages.appDetailPage.repository')} {app.repo}</div>}
+              {app.repo && (
+                sourceRepoUrl ? (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="shrink-0">{i18nT('pages.appDetailPage.repository')}</span>
+                    <a
+                      href={sourceRepoUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-accent no-underline hover:underline break-all"
+                    >
+                      {app.repo}
+                      <ExternalLink size={12} className="shrink-0" aria-hidden="true" />
+                    </a>
+                  </div>
+                ) : (
+                  <div>{i18nT('pages.appDetailPage.repository')} {app.repo}</div>
+                )
+              )}
+              {issuesUrl && (
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <a
+                    href={issuesUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-accent no-underline hover:underline"
+                  >
+                    {i18nT('pages.appDetailPage.report_issue')}
+                    <ExternalLink size={12} className="shrink-0" aria-hidden="true" />
+                  </a>
+                </div>
+              )}
               {typeof app.stargazersCount === 'number' && <div>{i18nT('pages.appDetailPage.github_stars_2', { value: fmtNumber(app.stargazersCount) })}</div>}
               {app.author && <div>{i18nT('pages.appDetailPage.author')} {app.author}</div>}
               {repoUrl && (contribLoading || contributors.length > 0 || contribError) && (

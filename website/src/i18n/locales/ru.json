@@ -10790,6 +10790,7 @@
       "removes_kirocrew_metadata_only_the_app_itself_is": "Удаляются только метаданные {{productName}} — само приложение управляется извне",
       "removing": "Удаление…",
       "repository": "Репозиторий:",
+      "report_issue": "Сообщить о проблеме",
       "requires_local_install": "Требуется локальная установка",
       "resources": "Ресурсы",
       "resources_2": "| Ресурсы:",
