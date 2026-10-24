@@ -170,7 +170,7 @@ class _Host:
         mp.setattr(cli_doctor, "_mc_version", "9.9.9")
         mp.setattr(cli_doctor, "MIN_NODE_VERSION", (20, 0, 0))
         mp.setattr(KiroCrewConfig, "load", classmethod(lambda cls: self.cfg))
-        mp.setattr(KiroCrewConfig, "load_credentials", lambda cfg: dict(self.creds))
+        mp.setattr(KiroCrewConfig, "load_credentials", lambda cfg, **kw: dict(self.creds))
         mp.setattr(cli_doctor, "resolve_kiro_cli", lambda: self.kiro)
         mp.setattr(cli_doctor.shutil, "which", lambda name, **_kw: self.which.get(name))
         mp.setattr(cli_doctor.subprocess, "run", self._run)

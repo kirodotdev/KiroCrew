@@ -33,8 +33,13 @@ from kiro_crew.config.loader_credentials import (
     EnvFileWideEncodingError,
     _shadow_checked_env_keys,
     _warned_env_keys,
+    adopt_env_owned_keys_from_reexec,
+    enforce_env_permissions,
     env_path,
+    note_env_owned_key,
+    parse_env_lines,
     read_env_text,
+    record_boot_raw_env,
     resolve_env_credentials,
     warn_undecodable_env,
 )
@@ -1158,35 +1163,17 @@ class KiroCrewConfig:
         creds: dict[str, str] = {}
         ep = env_path()
         if ep.exists():
-            # Enforce restrictive permissions on the credential file. POSIX
-            # only: on Windows mode bits are meaningless (a chmod there
-            # toggles the read-only attribute and succeeds without narrowing
-            # who can read), and the real owner-only lockdown --
-            # ``platform_compat.restrict_to_owner`` -- is not applied on this
-            # READ path. The reason is not cost: it is that a reader has no
-            # business rewriting a
-            # descriptor it did not create, and doing so here would apply the
-            # DACL of whichever process happened to read the file next.
-            # Windows enforcement therefore lives where the file is WRITTEN --
-            # the setup wizard and the dashboard credential writers all apply
-            # ``restrict_to_owner`` at write time.
-            try:
-                if platform_compat.IS_POSIX and ep.stat().st_mode & 0o077:
-                    ep.chmod(0o600)
-            except OSError:
-                logger.warning("Cannot enforce permissions on %s", ep)
+            # Narrow the credential file to owner-only on POSIX, then parse it
+            # with the one shared line parser the live watcher also uses, so the
+            # boot read and the hot-reload read agree on both the lockdown and
+            # what the file says.
+            enforce_env_permissions(ep)
             try:
                 env_text = read_env_text(ep)
             except EnvFileWideEncodingError as exc:
                 warn_undecodable_env(ep, exc)
                 env_text = ""
-            for line in env_text.splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" in line:
-                    k, v = line.split("=", 1)
-                    creds[k.strip()] = v.strip()
+            creds.update(parse_env_lines(env_text))
 
             # Warn once per boot about keys not in the recognised allowlist.
             # These keys still propagate (operators use them for proxy/feature
@@ -1253,6 +1240,18 @@ class KiroCrewConfig:
                         sk,
                     )
 
+        # Record the raw ``.env`` map this boot read, as the live watcher's diff
+        # baseline -- BEFORE the environment-wins loop below overwrites a key with
+        # its os.environ value, so the recorded map is exactly what
+        # ``read_env_credentials_raw`` returns (literal line values, no override,
+        # no vault resolution). Only the first load of the process is kept (the
+        # gateway boot); later dashboard/doctor loads are ignored. This seeds the
+        # watcher with what ``.env`` actually propagated at boot, so a rotation in
+        # the window before the watcher starts is diffed in rather than adopted as
+        # an already-applied baseline it never was. An absent file records the
+        # empty map, matching an absent-file raw read.
+        record_boot_raw_env(dict(creds), path=ep)
+
         for key in CREDENTIAL_KEYS:
             val = os.environ.get(key)
             if val:
@@ -1275,6 +1274,14 @@ class KiroCrewConfig:
         # .env read or via an explicit env= kwarg on Popen (the sandbox and ACP
         # spawners already do this).
         if propagate:
+            # An in-app restart keeps os.environ across os.execv but resets this
+            # process's Python state, so the .env ownership record would be empty
+            # on the successor and every .env key would read as inherited. Adopt
+            # the record the re-exec seam serialised into the environment (and
+            # delete the marker) BEFORE the propagate loop, so a later .env
+            # removal still pops what .env owned before the restart. A no-op on a
+            # fresh boot (no marker).
+            adopt_env_owned_keys_from_reexec()
             scrubbed = bool(os.environ.get("_KIROCREW_CREDS_SCRUBBED"))
             for k, v in creds.items():
                 if not v:
@@ -1289,6 +1296,17 @@ class KiroCrewConfig:
 
                     extend_process_path(v)
                     continue
+                # Record ownership by whether setdefault actually writes: only
+                # when the name is ABSENT does .env put the value in os.environ
+                # and own it. A key the process already holds (a service/shell
+                # value, or this process's own earlier propagation) is a
+                # setdefault no-op and is NOT noted -- so the live remover never
+                # pops an inherited value .env merely matched. Recording is
+                # additive: a later load_credentials re-run finds every key
+                # already present and notes nothing, so boot's ownership record
+                # is never erased by a subsequent dashboard/doctor load.
+                if k not in os.environ:
+                    note_env_owned_key(k)
                 os.environ.setdefault(k, v)
 
         # Resolve AFTER propagating: a child inherits the ``.env`` line as

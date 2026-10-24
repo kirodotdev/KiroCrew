@@ -25,6 +25,24 @@ from kiro_crew.config.loader import KiroCrewConfig
 SEP = os.pathsep
 
 
+@pytest.fixture(autouse=True)
+def _reset_boot_env_state():
+    """Clear the once-per-process boot ``.env`` record and ownership set.
+
+    Each test here drives the real ``load_credentials``, which records the raw
+    ``.env`` map it read (the live watcher's boot baseline) and which keys it
+    owns. Left behind, a later test's ``ConfigWatch`` in the same worker diffs
+    against this file's ``PATH`` line and replays ``credentials.PATH``.
+    """
+    from kiro_crew.config.loader_credentials import reset_boot_raw_env, reset_env_owned_keys
+
+    reset_boot_raw_env()
+    reset_env_owned_keys()
+    yield
+    reset_boot_raw_env()
+    reset_env_owned_keys()
+
+
 def _dirs(root: Path, *names: str) -> list[str]:
     return [str(root / name) for name in names]
 
@@ -129,6 +147,36 @@ class TestOnlyAbsoluteDirectoriesPass:
         added = [entry for entry in _path() if entry != base]
         assert added == [os.path.expanduser("~/bin")]
         assert os.path.isabs(added[0])
+
+    def test_a_tilde_account_entry_still_expands_via_expanduser(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``~otheruser`` entry keeps resolving through ``os.path.expanduser``.
+
+        The event-loop stall this guards against is removed by expanding the
+        PATH additions OFF the loop (``ConfigWatch._prepare_path_additions`` ->
+        :func:`env.prepare_env_path_additions`), NOT by narrowing what expands.
+        So a ``~someaccount/bin`` line that resolved to an absolute dir before
+        still does -- here ``expanduser`` is patched to a deterministic absolute
+        path, standing in for the ``pwd.getpwnam`` result.
+        """
+        account_home = tmp_path / "accounts" / "someaccount"
+        real_expanduser = os.path.expanduser
+
+        def _fake(p: str) -> str:
+            if p.startswith("~someaccount"):
+                return str(account_home) + p[len("~someaccount") :]
+            return real_expanduser(p)
+
+        monkeypatch.setattr(os.path, "expanduser", _fake)
+        base = _dirs(tmp_path, "sys")[0]
+        _setup(monkeypatch, tmp_path, ["PATH=~someaccount/bin"], base)
+        _load()
+        added = [entry for entry in _path() if entry != base]
+        # The fake keeps the ``/bin`` suffix as written, so build the expected
+        # value the same way rather than with ``Path`` joining, which would use
+        # ``\`` on Windows and never match.
+        assert added == [str(account_home) + "/bin"]
 
 
 class TestPathIsASupportedKey:

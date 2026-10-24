@@ -238,11 +238,20 @@ def _register_config_appliers(self: GatewayOrchestrator) -> None:
         ),
         live.subscribe(
             *channel_prefixes,
+            # ``credentials`` carries the watcher's synthetic ``.env`` credential
+            # changes, so a token edited in ``.env`` restarts its channel through
+            # the same applier a ``config.json`` connection-parameter edit does.
+            live.CREDENTIAL_CHANGE_PREFIX,
             callback=self._on_channel_config_change,
             name="GatewayOrchestrator.channel_restart",
         ),
         live.subscribe(
             *self._SLACK_APPLIER_PREFIXES,
+            # ``credentials`` too: a Slack token changed in ``.env`` cannot be
+            # applied to the host-managed socket in process, so the applier logs
+            # a restart-needed notice for it (the honest fallback, like
+            # ``slack.command``) rather than silently ignoring the edit.
+            live.CREDENTIAL_CHANGE_PREFIX,
             callback=self._on_slack_config_change,
             name="GatewayOrchestrator.slack",
         ),
@@ -395,6 +404,10 @@ async def _start_channel_transports(
         permitted,
         before_start=lambda desc: self._adopt_channel_section_from_watcher(desc, creds),
     )
+    # The Teams webhook handler is bound only now that the client is the
+    # stored handle (``maybe_start_teams`` leaves it unbound; see
+    # ``channel_lifecycle._publish_teams_webhook``).
+    self._publish_teams_webhook(self._channel_handles)
     # A connection-parameter edit that landed while the channels were still
     # starting was deferred by the applier and sits in the watcher's stale
     # table; its next tick re-runs the applier against the current snapshot,

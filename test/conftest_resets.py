@@ -149,6 +149,38 @@ def _drop_live_config_snapshot():
 
 
 @pytest.fixture(autouse=True)
+def _reset_env_boot_record_and_ownership():
+    """Give every test an empty boot ``.env`` record and ``.env`` ownership set.
+
+    Both are process-global: any test that drives ``load_credentials()`` records
+    the raw ``.env`` map it read as the live watcher's boot baseline, and notes
+    the keys ``.env`` propagated as owned. Left behind, a later test's
+    ``ConfigWatch.start()`` adopts that map as its baseline and its first cycle
+    dispatches spurious ``credentials.*`` changes, and a later removal test sees
+    ownership it never recorded -- failures that depend on which tests share an
+    xdist worker. Reset on both sides, the same shape as the live watcher reset.
+    """
+    from kiro_crew.config import loader_credentials
+
+    # Looked up, not imported by name: the root floor must not take every test
+    # down with it on a tree where these helpers do not exist (an older owner
+    # module, or a proof run that reverts the production change).
+    resets = [
+        fn
+        for fn in (
+            getattr(loader_credentials, "reset_boot_raw_env", None),
+            getattr(loader_credentials, "reset_env_owned_keys", None),
+        )
+        if fn is not None
+    ]
+    for reset in resets:
+        reset()
+    yield
+    for reset in resets:
+        reset()
+
+
+@pytest.fixture(autouse=True)
 def _inline_taskq_pump(_floor_monkeypatch):
     """Run the subagent pump and the store open inline for the suite.
 

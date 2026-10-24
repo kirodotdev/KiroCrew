@@ -1123,6 +1123,7 @@ class GatewayOrchestrator:
     channel_restarts_settled = _channel_lifecycle.channel_restarts_settled
     restart_channel = _channel_lifecycle.restart_channel
     _forget_superseded_start = _channel_lifecycle._forget_superseded_start
+    _publish_teams_webhook = _channel_lifecycle._publish_teams_webhook
     _close_channel_locked = _channel_lifecycle._close_channel_locked
     _on_slack_config_change = _channel_lifecycle._on_slack_config_change
     _on_default_agent_config_change = _channel_lifecycle._on_default_agent_config_change

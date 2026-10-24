@@ -170,6 +170,36 @@ def test_successful_commit_replaces_the_credential_boot_propagated(tmp_path, mon
     assert KiroCrewConfig().load_credentials(propagate=False)["WEIXIN_TOKEN"] == "brand-new"
 
 
+def test_first_sign_in_owns_the_token_so_removing_the_line_revokes_it(tmp_path, monkeypatch):
+    """A first sign-in (no token at boot) writes the token into ``os.environ``.
+    That write must record ``.env`` ownership like every other live write: the
+    watcher's next tick then sees ``prior == value`` and leaves ownership alone,
+    and when the operator later deletes the ``.env`` line the live applier pops
+    the token instead of leaving the revoked credential in force until a full
+    restart. (Fixes the Opus Weixin ownership finding.)"""
+    from kiro_crew.config import loader
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    monkeypatch.setenv("WEIXIN_TOKEN", "x")
+    monkeypatch.delenv("WEIXIN_TOKEN")
+    monkeypatch.delenv("_KIROCREW_CREDS_SCRUBBED", raising=False)
+    loader.discard_env_owned_key("WEIXIN_TOKEN")
+    try:
+        qr._commit_credential_and_config(tmp_path / "config.json", '{"weixin": {}}', "brand-new")
+        assert os.environ["WEIXIN_TOKEN"] == "brand-new"
+        assert loader.env_owns_key("WEIXIN_TOKEN")
+
+        # The watcher's tick after the sign-in: same value, ownership kept.
+        loader.apply_env_credential_changes({"WEIXIN_TOKEN"}, {"WEIXIN_TOKEN": "brand-new"}, {})
+        assert loader.env_owns_key("WEIXIN_TOKEN")
+
+        # The operator deletes the line: the token is revoked in-process.
+        loader.apply_env_credential_changes({"WEIXIN_TOKEN"}, {}, {"WEIXIN_TOKEN": "brand-new"})
+        assert "WEIXIN_TOKEN" not in os.environ
+    finally:
+        loader.discard_env_owned_key("WEIXIN_TOKEN")
+
+
 def test_successful_commit_keeps_a_scrubbed_environ_free_of_the_credential(tmp_path, monkeypatch):
     """The Docker entrypoint scrubs credentials out of ``os.environ`` so they stay
     off ``/proc/<pid>/environ``; the sign-in must not put one back."""
@@ -527,3 +557,161 @@ def test_config_save_answers_only_after_the_watcher_applied_it(tmp_path, monkeyp
     assert status == 200 and body["ok"] is True
     applied.assert_awaited_once()
     assert json.loads(cp.read_text(encoding="utf-8"))["weixin"]["allowed_user_ids"] == ["u-1"]
+
+
+# ── the confirmed sign-in persists under a live-config hold ────────────────
+
+
+class _ConfirmedClient:
+    """A QR session whose poll reports a confirmed sign-in with credentials."""
+
+    closed = False
+
+    async def get_qrcode_status(self, qrcode):
+        return {"status": "confirmed", "bot_token": "tok", "ilink_bot_id": "acct-new"}
+
+    async def close(self):
+        self.closed = True
+
+
+def _confirmed_session(monkeypatch):
+    import time
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(qr, "is_direct_local_request", lambda request: True)
+    client = _ConfirmedClient()
+    monkeypatch.setattr(
+        qr, "_SESSIONS", {"s1": {"client": client, "qrcode": "q", "created_at": time.time()}}
+    )
+    monkeypatch.setattr(qr, "_stage_weixin_config", lambda **kw: (Path("config.json"), "{}"))
+    return SimpleNamespace(query={"session_id": "s1"}), client
+
+
+def test_a_confirmed_sign_in_persists_while_the_config_watcher_is_held(monkeypatch):
+    """``.env`` and ``config.json`` commit separately, so a watcher poll between
+    them could restart Weixin with the new token and the previous account id.
+    The whole persistence runs under ``live.hold()``, like every sibling channel
+    saver, and the hold is released afterwards. (Fixes the GPT Weixin-relink
+    finding.)"""
+    import asyncio
+
+    from kiro_crew.config import live
+
+    request, client = _confirmed_session(monkeypatch)
+    depths: list[int] = []
+    monkeypatch.setattr(
+        qr,
+        "_commit_credential_and_config",
+        lambda cp, serialized, token: depths.append(live.watch()._hold_depth),
+    )
+
+    resp = asyncio.run(qr.weixin_qr_status(request))
+
+    assert resp.status == 200
+    assert depths == [1], "the credential+config commit must run under the hold"
+    assert live.watch()._hold_depth == 0
+    assert client.closed
+
+
+def test_a_cancelled_sign_in_keeps_the_hold_until_the_write_finishes(monkeypatch):
+    """A cancelled request must not release the hold while the worker thread is
+    still writing: the watcher would then apply a half-committed pair. The hold
+    stays until the write finishes, and the cancellation is still raised."""
+    import asyncio
+    import threading
+
+    from kiro_crew.config import live
+
+    request, _client = _confirmed_session(monkeypatch)
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def slow_commit(cp, serialized, token):
+        started.set()
+        release.wait(timeout=10)
+        finished.set()
+
+    monkeypatch.setattr(qr, "_commit_credential_and_config", slow_commit)
+
+    async def run():
+        from kiro_crew.testing.wait import async_wait_until
+
+        task = asyncio.ensure_future(qr.weixin_qr_status(request))
+        # Wait on the state, not the clock: the worker is inside the write.
+        await async_wait_until(started.is_set, describe=lambda: "commit never started")
+        task.cancel()
+        # ``cancel()`` schedules the task's next step; one zero-length yield runs
+        # exactly that step, which delivers the CancelledError to the handler.
+        await asyncio.sleep(0)
+        # Cancelled, but the write is still in flight: the hold must stand.
+        assert not task.done()
+        assert live.watch()._hold_depth == 1
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished.is_set()
+        assert live.watch()._hold_depth == 0
+
+    asyncio.run(run())
+
+
+def test_a_boot_record_from_another_env_file_is_not_adopted(tmp_path):
+    """The boot ``.env`` record is tied to the file it was read from: a watcher
+    resolving a different data home refuses it (and it is consumed either way),
+    while the same file adopts it. (Fixes the Opus boot-record leak finding.)"""
+    from kiro_crew.config import loader_credentials as lc
+
+    here, elsewhere = tmp_path / "a" / ".env", tmp_path / "b" / ".env"
+
+    lc.record_boot_raw_env({"TELEGRAM_BOT_TOKEN": "x"}, path=here)
+    assert lc.take_boot_raw_env(path=elsewhere) is None
+    assert lc.take_boot_raw_env(path=here) is None, "a refused record is still consumed"
+
+    lc.record_boot_raw_env({"TELEGRAM_BOT_TOKEN": "x"}, path=here)
+    assert lc.take_boot_raw_env(path=here) == {"TELEGRAM_BOT_TOKEN": "x"}
+
+
+# ── case-equivalent .env spellings (Windows os.environ is case-insensitive) ──
+
+
+@pytest.mark.parametrize("windows", [True, False])
+def test_the_sign_in_writer_handles_a_lowercase_spelling_per_platform(
+    tmp_path, monkeypatch, windows
+):
+    """On Windows ``weixin_token`` and ``WEIXIN_TOKEN`` are one os.environ entry:
+    a sign-in must replace the hand-typed lowercase line, or boot's / the
+    watcher's first-spelling rule would keep the OLD token in force. On POSIX the
+    lowercase name is a different variable and is left alone. (Fixes the GPT
+    Windows case-spelling finding, same class as the dashboard writer.)"""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows, raising=False)
+    ep = tmp_path / ".env"
+    ep.write_text("weixin_token=old\nOTHER=keep\n", encoding="utf-8")
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+
+    qr._write_env_secret("WEIXIN_TOKEN", "new")
+
+    lines = ep.read_text(encoding="utf-8").splitlines()
+    if windows:
+        assert lines == ["WEIXIN_TOKEN=new", "OTHER=keep"]
+    else:
+        assert lines == ["weixin_token=old", "OTHER=keep", "WEIXIN_TOKEN=new"]
+
+
+@pytest.mark.parametrize("windows", [True, False])
+def test_the_rollback_delete_removes_case_spellings_per_platform(tmp_path, monkeypatch, windows):
+    """Rolling back a first-time sign-in removes the key; on Windows that means
+    every case-equivalent spelling, on POSIX only the exact name."""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows, raising=False)
+    ep = tmp_path / ".env"
+    ep.write_text("weixin_token=a\nOTHER=keep\nWEIXIN_TOKEN=b\n", encoding="utf-8")
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+
+    assert qr._read_env_value("WEIXIN_TOKEN") == ("a" if windows else "b")
+    qr._delete_env_key("WEIXIN_TOKEN")
+
+    lines = ep.read_text(encoding="utf-8").splitlines()
+    assert lines == (["OTHER=keep"] if windows else ["weixin_token=a", "OTHER=keep"])

@@ -644,6 +644,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _WHEEL_APPLY_MODULE,
         _WINDOWS_ARM_MACHINES,
         BUNDLED_BACKEND_DIST_DIRNAME,
+        _carry_env_ownership_across_reexec,
         _disarm_process_alarm_before_exec,
         _drain_event_log_for_exit,
         _ensure_utf8_process_environment,

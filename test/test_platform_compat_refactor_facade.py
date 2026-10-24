@@ -170,7 +170,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _parse_cpu_jiffies _proc_cpu_jiffies
         """.split()),
     "kiro_crew.platform_compat_runtime": tuple("""
-        _UTF8_PROCESS_ENV _ensure_utf8_process_environment _KEPT_FOR_REEXEC keep_for_reexec
+        _UTF8_PROCESS_ENV _ensure_utf8_process_environment _carry_env_ownership_across_reexec
+        _KEPT_FOR_REEXEC keep_for_reexec
         kept_for_reexec _WHEEL_APPLY_MODULE cancel_wheel_applies_in_flight hard_exit
         _disarm_process_alarm_before_exec reexec_launcher reexec_python_module
         execv_target_available _POST_DRAIN_EXEC_FAILURE_EXIT _EXIT_FLUSH_DEADLINE_SECS

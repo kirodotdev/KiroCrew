@@ -2536,8 +2536,12 @@ Three parts, each deliberately singular:
 **One poll.** `ConfigWatch` runs one background task that compares
 `loader._config_fingerprint()` (mtime_ns + size + mode of `config.json` and
 `config.local.json`) every `DEFAULT_POLL_INTERVAL_SECS` (2s, floored at 0.05).
-The two `stat` calls run in `asyncio.to_thread`, never on the loop. Nothing else
-in the gateway polls `config.json`.
+The same cycle also compares `loader.env_fingerprint()`, the credential twin of
+the document fingerprint over `.env`, tracked separately on purpose: the document
+fingerprint is the parsed-config cache key, so folding `.env` into it would bust
+that cache on every unrelated credential edit. The `stat` calls run in
+`asyncio.to_thread`, never on the loop. Nothing else in the gateway polls either
+file.
 
 **One kick.** An in-process writer does not wait for the tick: it calls
 `live.notify_config_written()`, which sets a force flag and wakes the poll
@@ -2556,6 +2560,224 @@ from the full list) and diffed (`diff_config_docs`). The new config is adopted
 PRE-load fingerprint is recorded so a write landing mid-read leaves it unequal to
 the file and the next tick reloads. Cycles are serialized by a lock, so the diff
 is always old-vs-newer and an applier never sees an out-of-order pair.
+
+### `.env` credential hot-reload
+
+Before, `.env` was read once at gateway boot and nothing re-read it, so a
+credential added or rotated in `$KIROCREW_HOME/.env` took effect only after a
+full gateway restart — inconsistent with `config.json`, whose settings the
+watcher already hot-applies ([#22450](https://github.com/kirodotdev/KiroCrew/issues/22450)).
+The dashboard's own credential writer applied its `.env` changes live (direct
+`os.environ` set/pop plus a channel restart off the config half of its
+transaction), but a hand edit or any non-dashboard writer did not.
+
+Now the same cycle that reloads `config.json` also reconciles `.env`. When the
+`.env` fingerprint moves, the watcher re-reads the raw credential map
+(`loader.read_env_credentials_raw()`, off the loop — literal line values, so a
+`secret://NAME` reference stays the reference) and diffs it against the last one
+(`loader.changed_env_keys`). The changed keys are pushed into `os.environ`
+(`loader.apply_env_credential_changes`, which the watcher hands the previous
+baseline so it can tell a value `.env` itself propagated from one the process
+inherited): a key present in the new file is set, and a key gone from it is
+popped ONLY when the current process value still equals what `.env` last set.
+This uses `os.environ[k] = v` / `pop`, not boot's `setdefault` — boot lets an
+inherited shell value win (the separate precedence concern of
+[#22449](https://github.com/kirodotdev/KiroCrew/issues/22449)), but an operator
+editing `.env` on a running gateway *means* the edit, so a live change
+overrides. Only keys the operator actually changed are touched; the two boot
+carve-outs are kept for every caller (the Docker `_KIROCREW_CREDS_SCRUBBED` skip
+for credential keys, and `PATH` extension rather than replacement). Values are
+never logged, only key names. A read that could not be decoded — UTF-16/UTF-32,
+or a plain invalid byte under the active encoding (both raise
+`UnicodeDecodeError`; `read_env_credentials_raw` catches both and marks the
+read non-definitive rather than letting either propagate out of the poll
+cycle) — is never diffed: an empty map from it would otherwise read as every
+credential cleared. Its `.env` fingerprint is also **not advanced**, so a tick
+that hit a one-off transient failure (an `OSError`, e.g. a Windows sharing
+violation mid-rotation) is retried on the very next cycle instead of being
+silently dropped the moment the file's mtime stops moving; a persistently bad
+file just pays a harmless repeated re-read (the undecodable warning still
+fires only once).
+
+The apply itself is the other way the cycle can fail, and it is treated the
+same way. `apply_env_credential_changes` is best-effort — a bad apply must not
+kill the poll — so it is wrapped and a raise is logged, not propagated. But the
+baseline and the `.env` fingerprint advance **only after the apply succeeds**:
+on a raise, both are left exactly as they were and nothing is dispatched. If
+either advanced on failure, a rotation that never reached `os.environ` would be
+recorded as in force, so a later repair that reverts the offending edit would
+diff only that edit and never re-apply the rotation — stranding the channel
+after the fix. The failing case is a malformed line saved in the same write as
+a rotation (an empty-name `=value` parses to the key `""`, which `os.environ`
+rejects); left unadvanced, the next tick re-reads and retries the whole diff,
+and because nothing dispatched, no channel restart runs against a credential the
+apply did not install. That retry means the same bad file re-fails every tick,
+so the failure WARNING (with its traceback) fires ONCE per distinct failing
+`.env` fingerprint and the retries log at DEBUG — the same warn-once shape the
+undecodable path uses — rather than spewing a traceback every poll interval
+while a malformed line sits in the file; a successful apply clears the
+remembered failure signature so a later failure warns afresh.
+
+The apply is also **atomic across the batch**, not just at the cycle level.
+`apply_env_credential_changes` validates every key it would WRITE (a changed key
+with a non-empty new value, not one the Docker scrub skips) BEFORE mutating
+anything — the key must be a legal environment name (`is_legal_env_name`: not
+empty, no `=` or NUL) and the value must carry no embedded NUL, the two things
+`os.environ[k] = v` rejects — and raises `ValueError` touching nothing if any is
+illegal. Without that, a diff is applied key by key, so a
+malformed key midway (the empty name again) would raise only after the keys
+iterated before it — in hash order — were already written to `os.environ`. The
+caller keeping its baseline does not undo those writes: a later restore of the
+old file would then diff to nothing, leave the stray value in the process, and a
+subsequent `restart_channel` → `load_credentials()` would prefer that process
+value over the restored `.env` line and reconnect with the wrong credential. A
+pop is never validated — removing a key cannot raise — but an illegal key in the
+diff at all means the file is malformed, so the whole apply is refused and
+retried once the operator fixes it.
+
+The watcher's diff baseline must be what `.env` **actually propagated into
+`os.environ` at boot**, not a disk read taken when the watcher starts. The
+gateway loads credentials (`load_credentials`) well before the watcher's
+post-bind `start()`, so a rotation made in that window would, if the baseline
+were a fresh disk read at `start()`, be adopted as the baseline the first cycle
+re-reads unchanged — no diff, so the new value is never applied and the channel
+stays on the revoked credential until the next full restart. To close that, the
+FIRST `load_credentials()` of the process records the raw `.env` map it read
+(`loader.record_boot_raw_env`, before its own environment-wins override, so the
+record equals what `read_env_credentials_raw` returns) and the watcher's
+`start(initial=...)` seeds `_creds` from it (`loader.take_boot_raw_env`,
+consume-once) rather than reading disk. A window rotation is then a real diff
+the first cycle applies; a boot with no window edit sees the baseline equal the
+current file and dispatches nothing, so channels do not bounce on every boot.
+Only the first load wins — a later dashboard/doctor `load_credentials()` whose
+disk read already reflects a window edit cannot overwrite the record and hide
+the change. With no record (a test driving the watcher directly), `start()`
+falls back to the off-loop `_prime_creds_baseline` read.
+
+The first read on a watcher whose baseline was *properly primed*
+(seeded from the boot record, or read `.env` definitively) establishes the same
+map again and dispatches nothing, because the process already booted on those
+values. But `_creds` is `None` on a watcher whose boot read was **not**
+definitive (the file was undecodable or unreadable at boot, so `load_credentials`
+also never propagated anything from it) — there, the first later definitive
+read diffs against an *empty* baseline and applies/dispatches every key, since
+none of them was actually in force yet. Adopting an unprimed first read as a
+silent baseline would otherwise drop an `.env` repair on the floor: the
+operator fixes a UTF-16 save to UTF-8, and the credential it now holds never
+reaches `os.environ` because nothing diffs it in.
+
+A live **removal does not unset an inherited value**, and ownership is decided
+by a RECORD of what `.env` propagation actually wrote, not by value equality. A
+set `_env_owned_keys` holds the keys `.env` genuinely put in `os.environ`: boot's
+propagate loop adds a key only when its `setdefault` finds the name ABSENT and
+writes it, and a live apply adds a key when it sets one. A key the process
+already holds from its service/shell environment is never recorded, because
+`setdefault` was a no-op for it — even when `.env` carried the identical value.
+On removal, the key is popped only when `.env` owns it in that record (and the
+record drops it); an unowned inherited value is left in place rather than
+stranding the channel uncredentialed until the next restart. Value equality is
+deliberately NOT the test: an inherited credential that merely equals the `.env`
+line would otherwise be deleted when the `.env` line goes away, disabling a
+channel whose service-supplied credential should remain. The ownership record is
+home-derived boot state, so the integration second-boot harness resets it
+between boots, the same as the boot `.env` baseline. Ownership and removal are
+keyed by the canonical `os.environ` ENTRY — the name case-folded on Windows,
+where `os.environ` is case-insensitive, and the name itself on POSIX. So a
+case-only `.env` rename (`https_proxy` -> `HTTPS_PROXY`), which the diff sees as
+one key added and one removed, does not let the removal pop the entry the
+addition just wrote: a removed key is skipped when another key in the same batch
+writes its entry, and ownership follows the entry rather than the exact case. Because an in-app restart
+(`os.execv`) keeps `os.environ` but resets this process's Python state, the
+record would be empty on the successor and every `.env` key would read as
+inherited — so the `reexec_*` seams serialise it into an environment marker
+(`serialize_env_owned_keys_for_reexec`) that the successor's first
+`load_credentials` reads back and deletes (`adopt_env_owned_keys_from_reexec`),
+keeping removal correct across a restart. Post-boot credential reads are also
+NON-propagating: EVERY gateway-process reader after the one boot seed — the
+channel-start section adoption, the channel reconnect, the readiness badge, and
+every dashboard settings panel (Slack, Telegram, Discord, WeCom, Teams, Webex,
+Weixin, Feishu, Jira, the upload destination) — calls
+`load_credentials(propagate=False)`, because a concurrent worker-thread read that
+re-ran the `setdefault` propagate loop could restore a credential the live
+watcher just popped and silently undo an external `.env` removal. After boot,
+`os.environ` credential mutation belongs to the live applier alone. An
+AST-based contract test
+(`test_only_the_boot_seed_propagates_credentials_into_os_environ`) scans the
+WHOLE source tree and fails if any `load_credentials` call omits
+`propagate=False`, with a four-entry allowlist for the reads that legitimately
+propagate: the gateway boot seed (`process_entry`), the orchestrator-init
+fallback, and the standalone `kirocrew` CLI and `doctor` processes (separate
+short-lived processes that race no watcher and seed their own children). The key list
+is COMMA-joined, not
+NUL-joined: `os.environ` rejects a NUL in a value (the same reject the batch
+validation enforces), so a NUL separator would raise and silently lose the whole
+record the moment two keys are owned; a comma is legal in an env value and never
+appears in an env var name. A degraded channel section is handled too: a
+`credentials.<KEY>` path for a channel whose section the loader discarded is
+DEFERRED alongside that section's own paths (the credential path is in its own
+namespace, so it must be added to the deferral explicitly), and the watcher
+retries it once the section validates — rather than being dropped and leaving
+the transport on the old token. The overwrite **warning fires only on a genuine
+collision** — when the
+current process value matches neither the new nor the last-propagated `.env`
+value, i.e. a foreign/inherited value is being overwritten. A routine rotation
+does not warn (boot propagated the old `.env` value, so the environment held
+exactly what `.env` last set). In that collision case the warning notes that the
+live value will not survive a restart, because boot's `setdefault` rebuilds the
+inherited value — the one remaining live-vs-restart divergence, the
+[#22449](https://github.com/kirodotdev/KiroCrew/issues/22449) precedence
+interaction this change does not otherwise alter.
+`test_env_credential_hot_reload.py` pins each of these.
+
+The dashboard's channel-credential writer applies its own `.env` changes to
+`os.environ` the same way, through `apply_env_credential_changes` (with no
+baseline, so a cleared key is popped unconditionally — the dashboard owns no
+diff baseline, the watcher does), which is how it inherits the
+`_KIROCREW_CREDS_SCRUBBED` skip rather than re-exposing a scrubbed credential in
+`/proc/<pid>/environ` through a hand-rolled set/pop loop.
+
+The credential change rides the SAME dispatch as a synthetic `credentials.<KEY>`
+path — a namespace no config section owns, so it cannot collide with a real
+leaf. The channel-restart applier (`_on_channel_config_change`) maps it onto the
+channels whose descriptor names that key in its `credentials` tuple OR its
+`restart_credentials` tuple (`registry.changed_credential_keys`, the credential
+twin of `changed_boot_keys`) and restarts each one through `restart_channel`,
+which re-reads `cfg.load_credentials()` on the way back up — so a rotated
+Telegram/Discord/WeCom/… token reconnects that channel with the new value,
+exactly as a changed `config.json` connection parameter does. The two tuples are
+disjoint by intent: `credentials` names what the channel needs ALL of to connect
+(so `channel_readiness` reports a missing one), while `restart_credentials` names
+a key that is restart-relevant but not required — Teams' `MICROSOFT_APP_TENANT_ID`
+is the case, since a live `TeamsClient` authenticates against a fixed tenant and
+cannot adopt a corrected one, yet an unset tenant is the supported multi-tenant
+mode and must not read as a missing credential. Folding the tenant into
+`credentials` would restart on a tenant edit but wrongly mark Teams un-ready when
+no tenant is set; leaving it out of both would leave a tenant-only edit undetected
+and the client stuck on the wrong tenant. Slack is the one exception to the
+restart: its socket client is host-managed (`_connect_slack`) with no in-process
+restart path, so a Slack token changed in `.env` logs a restart-needed notice to
+the operator (the same honest fallback as `slack.command`) rather than being
+silently ignored.
+
+`changed_credential_keys` matches by the canonical environment-entry name, the
+same case-fold the apply side uses: on Windows a `.env` key whose case differs
+from the declared credential constant addresses the same token, so matching the
+literal case would miss a rotation and restart nothing; the match canonicalizes
+both sides and returns the declared constant the restart path expects. On POSIX
+the canonical form is the name itself, so matching is unchanged.
+
+Closing a channel clears what outlives its client. Teams is the case: its
+inbound webhook ROUTE is pre-registered once and survives every client close,
+dispatching to the late-bound `state.teams_on_activity`. So `_close_channel_locked`
+clears that handler when it closes Teams — otherwise a credential removal that
+closed the client would leave the route running turns for authenticated,
+allow-listed senders; the route handler already answers 503 when the handler is
+unset. As defence in depth the `TeamsClient` itself answers 503 from
+`on_activity` once closed — both at entry AND rechecked after the
+request-processing awaits (JWT verify, body read), immediately before the turn
+task is created and registered, since a request already past the entry guard is
+not yet in the cancel sweep's `_handler_tasks` and would otherwise start a turn
+on a just-closed channel.
 
 ### The applier registry
 

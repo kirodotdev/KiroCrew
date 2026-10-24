@@ -734,7 +734,7 @@ class TestProjectSectionAndAuthRow:
             return cfg
 
         monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _pristine()))
-        monkeypatch.setattr(KiroCrewConfig, "load_credentials", lambda self: {})
+        monkeypatch.setattr(KiroCrewConfig, "load_credentials", lambda self, **kw: {})
 
         async def _probe(server):
             server.status = "ok"

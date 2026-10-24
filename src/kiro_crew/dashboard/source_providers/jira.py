@@ -62,8 +62,11 @@ def _get_jira_auth(host: str) -> tuple[str, str] | None:
         _env_global_override = os.environ.get("JIRA_API_TOKEN")
         cfg = KiroCrewConfig.load()
         entries = cfg.dashboard.jira_auth
-        # Token is resolved from .env / environment, not config.json
-        creds = cfg.load_credentials()
+        # Token is resolved from .env / environment, not config.json.
+        # propagate=False: a post-boot dashboard read must not re-seed
+        # os.environ (a worker-thread setdefault could restore a credential the
+        # live watcher just popped); boot owns the one propagation.
+        creds = cfg.load_credentials(propagate=False)
     except Exception as exc:
         raise ValueError(f"jira_config_error: Could not load Jira configuration: {exc}") from exc
     normalized = normalize_jira_host(host)

@@ -174,7 +174,7 @@ class TestUnreadyChannelBadge:
             section = getattr(orch._cfg, name)
             for key, value in values.items():
                 object.__setattr__(section, key, value)
-        orch._cfg.load_credentials = lambda: {}
+        orch._cfg.load_credentials = lambda **kw: {}
         boot = tuple(ChannelDescriptor(channel_type=name, start=AsyncMock()) for name in sections)
         return orch, boot
 

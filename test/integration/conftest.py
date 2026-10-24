@@ -181,6 +181,16 @@ cross-home flake three tests later.
      Grant writers and gate checks fill it whenever no live snapshot is up,
      so whether a boot leaves one, and from which home, depends on timing; a
      fresh process has none.
+   * ``config.loader_credentials._boot_raw_env`` -- the raw ``.env`` map the
+     first ``load_credentials`` of the process recorded, which the live watcher
+     seeds its credential diff baseline from. It is home-derived and
+     recorded-once, so a fresh boot in a different home must start without the
+     prior home's map; a fresh process has none.
+   * ``config.loader_credentials._env_owned_keys`` -- the keys ``.env``
+     propagation actually wrote into ``os.environ`` (so a live removal pops only
+     what ``.env`` owns, never an inherited value it merely matched). A boot's
+     credential propagation grows it, so a fresh boot in a different home must
+     start with none of the prior home's keys; a fresh process has none.
 
 2. **Snapshot and restore** around the boot by ``booted_gateway``, on every
    exit: the SIGINT/SIGTERM handlers ``run()`` installs; the event loop's
@@ -769,6 +779,16 @@ def _reset_home_bound_globals() -> None:
     revocation_gen._gen = None
     crash_guard._CRASH_LOG = None
     config_live.reset_for_tests()
+    # The once-per-process boot ``.env`` record: a fresh boot in a different
+    # home must not keep the prior home's credential map as its diff baseline,
+    # so the harness forgets it between boots. ``config_live.reset_for_tests``
+    # deliberately leaves it alone (its own docstring explains why), so it is
+    # cleared explicitly here, like every other home-derived boot global.
+    config_loader.reset_boot_raw_env()
+    # The ``.env`` ownership set (which keys .env propagation actually wrote into
+    # os.environ) is grown by every boot's credential propagation, so a fresh
+    # boot in a different home must start with none of the prior home's keys.
+    config_loader.reset_env_owned_keys()
     embeddings.reset_shared_embedder()
     embeddings.reset_download_manager()
     crew_log_emit.reset_caches()
@@ -831,6 +851,8 @@ def home_bound_globals_are_clear() -> bool:
         and not config_loader._MATERIALIZED_COMPLETE
         and not config_loader._MATERIALIZED_AGENTS_READY
         and governance._CONFIRM_PATTERNS_MEMO is None
+        and config_loader._boot_raw_env is None
+        and not config_loader._env_owned_keys
         and dashboard_updates._auto_effect is None
         and not browser_launch._warned_lifecycle_losses
     )

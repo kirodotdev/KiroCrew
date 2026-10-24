@@ -155,12 +155,23 @@ def _warn_rejected_bin_dir(raw: object, source: str) -> None:
 def _validated_bin_dirs(values: object, source: str) -> list[str]:
     """Validate an operator-supplied LIST of bin directories, dropping bad ones.
 
-    ``~`` is expanded first (a config file is where a human writes
-    ``~/.pixi/bin``), then each entry passes the same
-    :func:`_validated_bin_dir` gate as this module's own well-known dirs — one
-    absolute directory, no path separator, no NUL. A rejected entry is dropped
-    rather than failing the whole list: one typo must not cost an operator every
-    other directory they declared, nor abort PATH construction for every spawn.
+    ``~`` is expanded first (:func:`os.path.expanduser`, so ``~/.pixi/bin`` and a
+    ``~otheruser/bin`` both resolve the way an operator expects), then each entry
+    passes the same :func:`_validated_bin_dir` gate as this module's own
+    well-known dirs — one absolute directory, no path separator, no NUL. A
+    rejected entry is dropped rather than failing the whole list: one typo must
+    not cost an operator every other directory they declared, nor abort PATH
+    construction for every spawn.
+
+    A ``~otheruser`` prefix makes :func:`os.path.expanduser` call
+    ``pwd.getpwnam`` (POSIX) / the SAM database (Windows) SYNCHRONOUSLY, which on
+    an LDAP/SSSD/AD-backed host can block for as long as the directory service
+    takes to answer. That is tolerable on the paths that reach this at startup or
+    off the event loop, but NOT on the gateway's live ``.env`` PATH hot-reload,
+    which runs on the loop -- so that one caller expands and validates its
+    additions OFF the loop first (see :func:`extend_process_path` and
+    ``config.live.ConfigWatch._cycle``), and nothing on the loop reaches this
+    with an unexpanded ``~otheruser`` entry.
 
     *values* is typed ``object`` because both sources are hand-editable and can
     legally parse as something other than a list of strings.
@@ -241,27 +252,57 @@ def _extra_mcp_path_dirs() -> list[str]:
     ]
 
 
-def extend_process_path(value: str) -> None:
+def prepare_env_path_additions(value: str) -> tuple[str, ...]:
+    """Expand and validate a ``.env`` ``PATH`` line into absolute dirs to ADD.
+
+    The part of :func:`extend_process_path` that does NOT touch ``os.environ``,
+    split out so a caller on the event loop can run it OFF the loop. Each entry
+    goes through the absolute-directory gate the other operator lists use
+    (:func:`_validated_bin_dirs`, so ``~``/``~otheruser`` expands via
+    :func:`os.path.expanduser` and a relative or unexpanded entry such as
+    ``$HOME/bin`` is dropped with a warning), then is deduped in declared order.
+
+    This is where the only call that can BLOCK lives: a ``~otheruser`` entry
+    makes ``os.path.expanduser`` call ``pwd.getpwnam`` / the SAM database
+    synchronously, which an LDAP/SSSD/AD lookup can stall. The gateway's live
+    ``.env`` hot-reload (``config.live.ConfigWatch._cycle``) therefore calls THIS
+    off the loop and hands the result to :func:`extend_process_path`, so the only
+    work left on the loop is the ``os.environ`` mutation. Pure: no ``os.environ``
+    write, so it is safe to run in a worker thread.
+    """
+    wanted = [entry for entry in value.split(os.pathsep) if entry.strip()]
+    return tuple(_dedup_dirs(_validated_bin_dirs(wanted, ".env PATH")))
+
+
+def extend_process_path(value: str, *, prepared: tuple[str, ...] | None = None) -> None:
     """Append the directories of a data-home ``.env`` ``PATH`` line to this process's ``PATH``.
 
     The ``.env`` loader seeds the environment with ``setdefault``, and a process
     always has a ``PATH``, so this key cannot be applied the way every other one
-    is. The line is read as directories to ADD, never as a replacement: each entry
-    goes through the absolute-directory gate the other operator lists use
-    (:func:`_validated_bin_dirs`, so ``~`` expands and a relative or unexpanded
-    entry such as ``$HOME/bin`` is dropped with a warning), and lands behind the
-    ``PATH`` the process already has, so it can add a launcher but never shadow a
-    system tool. The existing string is kept byte for byte and an entry it
-    already holds is skipped, so the repeated loads of the file do not grow it.
+    is. The line is read as directories to ADD, never as a replacement: each
+    entry goes through :func:`prepare_env_path_additions` (``~``/``~otheruser``
+    expands, a relative or unexpanded entry such as ``$HOME/bin`` is dropped with
+    a warning), and lands behind the ``PATH`` the process already has, so it can
+    add a launcher but never shadow a system tool. The existing string is kept
+    byte for byte and an entry it already holds is skipped, so the repeated loads
+    of the file do not grow it.
+
+    *prepared* lets a caller that already ran :func:`prepare_env_path_additions`
+    OFF the event loop pass its result in, so the expand/validate step -- the one
+    that can block on a ``~otheruser`` directory-service lookup -- is not repeated
+    on the loop; only the ``os.environ`` mutation here runs on it. When omitted,
+    the expansion runs inline, which is what the boot and off-loop dashboard
+    callers want. A *prepared* value must be the result of
+    :func:`prepare_env_path_additions` over this same *value*.
 
     Nothing else about the environment widens. An agent child still receives its
     environment through the launch tail's scrub, and the terminal completion
     probe still filters this ``PATH`` through its ownership check.
     """
+    additions = prepare_env_path_additions(value) if prepared is None else prepared
     current = os.environ.get("PATH") or os.defpath
     held = _dedup_dirs(current.split(os.pathsep))
-    wanted = [entry for entry in value.split(os.pathsep) if entry.strip()]
-    merged = _dedup_dirs([*held, *_validated_bin_dirs(wanted, ".env PATH")])
+    merged = _dedup_dirs([*held, *additions])
     if len(merged) > len(held):
         os.environ["PATH"] = os.pathsep.join([current, *merged[len(held) :]])
 

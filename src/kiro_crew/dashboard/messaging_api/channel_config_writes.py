@@ -286,14 +286,28 @@ async def _write_env_or_roll_back(
         if rollback is not None:
             await rollback()
         raise
+    # Applied HERE, synchronously, so this save's own response -- and the channel
+    # restart its config half triggers under the same ``live.hold()`` -- sees the
+    # new credential at once, rather than waiting up to a poll interval for the
+    # config watcher to notice the ``.env`` move. The watcher re-applies the same
+    # key on its next tick after the hold releases; that is idempotent (identical
+    # line values), not a second, conflicting write.
+    #
+    # Routed through the one shared applier (``apply_env_credential_changes``)
+    # rather than a hand-rolled set/pop loop, so this path inherits the Docker
+    # ``_KIROCREW_CREDS_SCRUBBED`` guard and the PATH carve-out instead of
+    # re-exposing a scrubbed credential in /proc/<pid>/environ. The value each
+    # ``.env`` line now holds is what a restart would propagate: a new channel
+    # token reads back as its ``secret://`` reference; a cleared key becomes
+    # absent from the map and is popped. No baseline (``old``) is tracked here --
+    # the watcher owns that -- so the applier pops a cleared key unconditionally,
+    # the behaviour this path already had.
+    new_env: dict[str, str] = {}
     for key, new_val in env_updates.items():
-        # The value the .env line now holds: a new channel token reads back as
-        # its secret:// reference, the same value a restart propagates.
         line_val = _loader.vault_channel_env_value(key, new_val)
-        if line_val is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = line_val
+        if line_val is not None:
+            new_env[key] = line_val
+    _loader.apply_env_credential_changes(set(env_updates), new_env)
 
 
 def _wide_env_refusal(exc: _loader.EnvFileWideEncodingError) -> web.HTTPConflict:
@@ -382,18 +396,32 @@ def _write_env_updates_locked(ep: "Path", updates: dict[str, str | None]) -> Non
     the caller (:func:`_write_env_updates`)."""
 
     lines = _loader.read_env_text(ep, encoding="utf-8").splitlines() if ep.exists() else []
+    # Lines are matched to an update by canonical ``os.environ`` entry name, not
+    # literal spelling. On Windows ``os.environ`` is case-insensitive, so a
+    # hand-typed ``telegram_bot_token=`` line and the ``TELEGRAM_BOT_TOKEN`` this
+    # writer saves are ONE entry; matched literally, the lowercase line would be
+    # left in place with the new uppercase line appended after it, and the
+    # watcher's first-non-empty-spelling rule (boot's ``setdefault`` precedence)
+    # would then re-install the OLD token while the save reported success. So
+    # every case-equivalent spelling of an updated key is replaced: the first is
+    # rewritten under the declared spelling, the rest are dropped. On POSIX the
+    # canonical name is the name itself, so matching stays case-sensitive and
+    # nothing changes there.
+    canon_updates = {_loader._env_name_key(k): k for k in updates}
     seen: set[str] = set()
     out: list[str] = []
     for line in lines:
         s = line.strip()
         if s and not s.startswith("#") and "=" in s:
-            k = s.split("=", 1)[0].strip()
-            if k in updates:
-                seen.add(k)
-                new_val = updates[k]
+            key = canon_updates.get(_loader._env_name_key(s.split("=", 1)[0].strip()))
+            if key is not None:
+                if key in seen:
+                    continue
+                seen.add(key)
+                new_val = updates[key]
                 if new_val is None:
                     continue
-                out.append(f"{k}={new_val}")
+                out.append(f"{key}={new_val}")
                 continue
         out.append(line)
     for k, new_val in updates.items():

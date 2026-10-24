@@ -915,8 +915,9 @@ async def api_teams_activity(request: web.Request) -> web.Response:
 
     The route is registered at app-build time (aiohttp freezes routes at
     startup), but the handler that validates the JWT + drives the turn is the
-    ``TeamsClient.on_activity`` built by ``maybe_start_teams`` once credentials
-    are present. Until then (channel disabled/uncredentialed) we return 503.
+    ``TeamsClient.on_activity`` of the client the gateway host accepted as the
+    live Teams handle (``channel_lifecycle._publish_teams_webhook``). Until then
+    (channel disabled, uncredentialed, or still connecting) we return 503.
 
     This route is exempt from the dashboard cookie gate and from the CSRF Origin
     check, for POST only (``token_auth._BYPASS_EXACT_METHODS`` /
