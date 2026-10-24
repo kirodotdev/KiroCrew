@@ -1,7 +1,8 @@
-import { safeSetItem, safeSetSessionItem } from '../../utils/safeStorage'
+import { safeRemoveItem, safeSetItem, safeSetSessionItem } from '../../utils/safeStorage'
 import { newerTs } from '../../lib/slotReadRelay'
 import { slotListHoldTest } from '../../utils/slotListHold'
 import type { DashboardState } from '../dashboardSlice'
+import { clearUnreadArrival } from '../unreadArrivalMarker'
 
 /** The unread record behind the session badges: its Web Storage persistence,
  *  the count relayed to the Instances hub, and the drain and held-orphan
@@ -24,6 +25,22 @@ export const readCovers = (read: string | undefined, since: string): boolean => 
   const s = Date.parse(since)
   return Number.isFinite(r) && Number.isFinite(s) && r >= s
 }
+const UNREAD_ORPHAN_KEY_PREFIX = 'mc-unread-orphaned:'
+
+/** Read the exact shared watermark the gateway proved names no row. */
+export const readUnreadOrphan = (slot: string): string | undefined => {
+  try { return localStorage.getItem(UNREAD_ORPHAN_KEY_PREFIX + slot) ?? undefined } catch { return undefined }
+}
+
+/** A tombstone has its own slot key, so windows retiring different slots never
+ *  overwrite each other. Windows retiring the same slot write the same proven
+ *  value. A tombstone whose slot holds another value matches nothing and stays
+ *  as one short key. */
+export const recordUnreadOrphan = (slot: string, watermark: string): boolean =>
+  safeSetItem(UNREAD_ORPHAN_KEY_PREFIX + slot, watermark)
+
+export const clearUnreadOrphan = (slot: string): void =>
+  safeRemoveItem(UNREAD_ORPHAN_KEY_PREFIX + slot)
 
 
 /** THE shared unread record ('mc-unread-shared' in localStorage): slot ->
@@ -43,7 +60,9 @@ export const readCovers = (read: string | undefined, since: string): boolean => 
  *  sentinels persist to per-tab sessionStorage via persistManualSentinels.
  *  'mc-unread-slots' is kept as a write-only PROJECTION of the record's
  *  keys — the pre-existing hub relay (safeSet) and tabs still running
- *  older code read it; nothing in this file does. */
+ *  older code read it; nothing in this file does. A value equal to its
+ *  per-slot tombstone is one the gateway disproved, and every reader here
+ *  treats it as absent. */
 export const persistSharedUnread = (add: Record<string, string>, remove: readonly string[]): void => {
   try {
     let stored: Record<string, string>
@@ -51,7 +70,7 @@ export const persistSharedUnread = (add: Record<string, string>, remove: readonl
     for (const k of remove) delete stored[k]
     for (const [k, v] of Object.entries(add)) {
       if (v === MANUAL_UNREAD) continue  // sentinels never publish
-      const prev = stored[k]
+      const prev = stored[k] === readUnreadOrphan(k) ? undefined : stored[k]
       if (prev === undefined) { stored[k] = v; continue }
       if (v === '') continue  // presence already recorded; never demote a watermark
       stored[k] = prev === '' ? v : (newerTs(prev, v) ?? prev)
@@ -126,7 +145,9 @@ export const restoreUnreadSince = (): Record<string, string> => {
       if (legacy.length > 0) safeSetItem('mc-unread-shared', JSON.stringify(record))
     }
     const since: Record<string, string> = {}
-    for (const [k, v] of Object.entries(record)) if (v !== '') since[k] = v
+    for (const [k, v] of Object.entries(record)) {
+      if (v !== '' && v !== readUnreadOrphan(k)) since[k] = v
+    }
     let manual: Record<string, string>
     try { manual = JSON.parse(sessionStorage.getItem('mc-unread-since') ?? '{}') as Record<string, string> } catch { manual = {} }
     for (const [k, v] of Object.entries(manual)) if (v === MANUAL_UNREAD) since[k] = MANUAL_UNREAD
@@ -139,7 +160,10 @@ export const restoreUnreadSince = (): Record<string, string> => {
  *  without writing shared state. */
 export const restoreUnreadBadges = (since: Record<string, string>): string[] => {
   let badges: string[]
-  try { badges = Object.keys(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>) } catch { badges = [] }
+  try {
+    const record = JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>
+    badges = Object.keys(record).filter(k => record[k] !== readUnreadOrphan(k))
+  } catch { badges = [] }
   for (const [k, v] of Object.entries(since)) {
     if (v === MANUAL_UNREAD && !badges.includes(k)) badges.push(k)
   }
@@ -175,6 +199,14 @@ export const drainUnreadKeys = (state: DashboardState, keys: Set<string>): void 
   state.unreadSlots = unread.filter(key => !keys.has(key))
   persistSharedUnread({}, dropped)
   _relayUnreadToParent(JSON.stringify(relayedUnreadKeys(state)))
+}
+
+/** Forget slots that are gone for good: their shared entries, tombstones and
+ *  arrival markers. Slot keys are never reused, so nothing can need them again. */
+export const forgetUnreadSlots = (keys: readonly string[]): void => {
+  if (keys.length === 0) return
+  persistSharedUnread({}, keys)
+  for (const key of keys) { clearUnreadOrphan(key); clearUnreadArrival(key) }
 }
 
 /** True for an unread key whose slot is absent and that the next list will not
@@ -217,3 +249,39 @@ export const relayUnreadIfHolding = (
 ): void => {
   if (holding) _relayUnreadToParent(JSON.stringify(relayedUnreadKeys(state)))
 }
+
+/** Newest parseable timestamp in a gateway transcript page. */
+export const newestRowTs = (messages: ReadonlyArray<{ ts?: string }>): string | undefined => {
+  let newest: string | undefined
+  for (const message of messages) {
+    if (!message.ts || !Number.isFinite(Date.parse(message.ts))) continue
+    newest = newerTs(newest, message.ts)
+  }
+  return newest
+}
+
+/** A saved message watermark the gateway response cannot account for.
+ *  The response was built after the gesture captured `held`, so it includes
+ *  every gateway row that watermark can name. Manual and empty marks are not
+ *  message watermarks and are never retired. */
+export const orphanedWatermark = (
+  held: string | undefined,
+  newestTs: string | undefined,
+): string | undefined =>
+  held && held !== MANUAL_UNREAD && !readCovers(newestTs, held) ? held : undefined
+
+/** The saved watermark a gateway page disproves. A page whose rows carry no
+ *  time, such as a turn still streaming, proves nothing, and neither does a
+ *  reply without a rows array. */
+export const watermarkDisprovedBy = (
+  held: string | undefined,
+  rows: ReadonlyArray<{ ts?: string }> | undefined,
+): string | undefined => {
+  if (!Array.isArray(rows)) return undefined
+  const newest = newestRowTs(rows)
+  if (newest === undefined && rows.length > 0) return undefined
+  return orphanedWatermark(held, newest)
+}
+
+/** How long a read waits for the gateway's proof before it relays anyway. */
+export const UNREAD_PROOF_TIMEOUT_MS = 10_000
