@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         slot_history_key,
         slot_not_found,
     )
+    from kiro_crew.dashboard.slot_color import write_slot_color
 
 
 def _autocompact_txn_lock(history_key: str) -> asyncio.Lock:
@@ -520,16 +521,16 @@ async def api_chat_slot_color(request: web.Request) -> web.Response:
             {"error": "color_hex must be #RRGGBB or null", "code": "invalid_color_hex"},
             status=400,
         )
+    new_index, new_hex = slot.color_index, slot.color_hex
     if has_ci:
-        slot.color_index = ci
+        new_index = ci
         if ci is not None:
-            slot.color_hex = None
+            new_hex = None
     if has_ch:
-        slot.color_hex = ch.lower() if isinstance(ch, str) else None
+        new_hex = ch.lower() if isinstance(ch, str) else None
         if ch is not None:
-            slot.color_index = None
-    slot._dirty = True
-    state.push_slots_update()
+            new_index = None
+    write_slot_color(state, slot, color_index=new_index, color_hex=new_hex)
     return web.json_response(
         {"ok": True, "color_index": slot.color_index, "color_hex": slot.color_hex}
     )

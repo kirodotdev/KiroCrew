@@ -494,6 +494,21 @@ def _run_session_reload(args: dict[str, Any], ctx: ToolContext) -> str:
     )
 
 
+def _run_session_set_color(args: dict[str, Any], ctx: ToolContext) -> str:
+    try:
+        resp = ctx.client.post(
+            "/api/session-control/set-color",
+            {"target": args["target"], "color": args["color"]},
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        return f"Error: could not set that session's color: {refused.error}"
+    target = resp.get("target", args["target"])
+    if resp.get("color_index") is None:
+        return redact(f"Cleared the color of `{target}`.")
+    return redact(f"Set the color of `{target}` to palette swatch {resp['color_index']}.")
+
+
 def _run_session_close(args: dict[str, Any], ctx: ToolContext) -> str:
     try:
         resp = ctx.client.post(

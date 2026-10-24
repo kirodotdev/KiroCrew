@@ -111,6 +111,7 @@
     "session_retry": "Retry session turn",
     "session_continue": "Continue session",
     "session_set_model": "Set session model",
+    "session_set_color": "Set session color",
     "session_reload": "Reload session",
     "session_rename": "Rename session",
     "session_generate_title": "Regenerate session title",

@@ -30,6 +30,7 @@ from kiro_crew.mcp_dashboard_session_runs import (
     _run_session_retry,
     _run_session_revive,
     _run_session_send,
+    _run_session_set_color,
     _run_session_set_model,
     _run_session_status,
     _run_session_stop,
@@ -410,6 +411,38 @@ def _session_tools() -> tuple[Tool, ...]:
             run=_run_session_reload,
             identity="strict",
             routes=("POST /api/session-control/reload",),
+        ),
+        Tool(
+            name="session_set_color",
+            description=(
+                "Set the sidebar color of a session you created, so a "
+                'conductor can group its workers at a glance. ``color`` is one of: "0" to '
+                '"6", the seven palette swatches the sidebar color menu shows (they follow '
+                'the viewer\'s theme), or "none" to clear the color. Custom hex colors and '
+                "anything else are refused. Metadata only: the transcript, model and any "
+                "running turn are untouched. This session itself and sessions you did not "
+                "create are refused, including the person's own tabs."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": (
+                            "Session key from list_sessions or session_status, or its "
+                            "exact title."
+                        ),
+                    },
+                    "color": {
+                        "type": "string",
+                        "description": '"0"-"6" palette swatch, or "none" to clear.',
+                    },
+                },
+                "required": ["target", "color"],
+            },
+            run=_run_session_set_color,
+            identity="strict",
+            routes=("POST /api/session-control/set-color",),
         ),
         Tool(
             name="session_rename",

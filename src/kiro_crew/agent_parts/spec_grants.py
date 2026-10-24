@@ -236,6 +236,9 @@ _MATE_AUTO_GRANTS = (
 #:   session's turn forward (the target's ``wait`` returns early), which is a
 #:   change to state that is not the caller's own, and no conductor step needs it
 #:   unattended.
+#: * ``session_set_color`` — WITHHELD. Writes a session other than the
+#:   caller's (its sidebar tint). The route confines it to sessions the
+#:   caller created and refuses the caller's own, but no conductor step needs it.
 #: * ``session_reload`` — WITHHELD. Tears down another session's agent process
 #:   and relaunches it. The conversation survives, but a reload is still a
 #:   process-level action on a session a person may be watching, and no

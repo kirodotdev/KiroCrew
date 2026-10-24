@@ -441,6 +441,7 @@ from kiro_crew.dashboard.slot_buffers import (  # noqa: F401
     note_hold_durable,
     persist_deferred_notes_sync,
 )
+from kiro_crew.dashboard.slot_color import write_slot_color  # noqa: F401
 from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
     SESSION_CONTROL_DENIED,
     app_may_control_session,
