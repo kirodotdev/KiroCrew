@@ -148,7 +148,7 @@ if TYPE_CHECKING:
         _UNREADABLE_SPEC_WARNED,
         _UNREADABLE_SPEC_WARNED_MAX,
         HONOUR_TOOL_REFS_KEY,
-        INCLUDE_LIST_SERVER,
+        INCLUDE_LIST_SERVERS,
         POLICY_INCLUDE_KEY,
         ManagedToolPolicyUnreadable,
         _ambiguous_spec_reason,
@@ -209,6 +209,7 @@ if TYPE_CHECKING:
     from kiro_crew.label_guard import is_verdict_reply  # noqa: F401
     from kiro_crew.label_guard import looks_like_prose  # noqa: F401
     from kiro_crew.llm_helpers import run_bg_oneliner  # noqa: F401
+    from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS  # noqa: F401
     from kiro_crew.mcp_discovery import sync_discovered_servers  # noqa: F401
     from kiro_crew.messaging.link import _in_namespace  # noqa: F401
     from kiro_crew.messaging.link import canonical_key  # noqa: F401

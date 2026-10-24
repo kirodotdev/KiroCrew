@@ -37,6 +37,7 @@ from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard.handlers._shared import guard_owner_surface_routes, internal_memory_scope
 from kiro_crew.dashboard.handlers.sessions_parts.app_scope import _sel
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.platform import redact_log_via_context
 
 # The family logs under the facade's name, which log filters and caplog assertions key on.
@@ -253,8 +254,10 @@ HONOUR_TOOL_REFS_KEY = "honourToolRefs"
 #: spec's ``tools`` and never copied from the spec itself.
 POLICY_INCLUDE_KEY = "include"
 
-#: The managed server an opted-in spec's per-tool refs narrow.
-INCLUDE_LIST_SERVER = "kirocrew-core"
+#: The managed servers an opted-in spec's per-tool refs narrow: every server Kiro
+#: Crew ships, since each serves through the shared dispatcher that enforces an
+#: include list by its own server name.
+INCLUDE_LIST_SERVERS: tuple[str, ...] = KIROCREW_BIN_MCP_SERVERS
 
 
 def _policy_answer(
@@ -267,11 +270,11 @@ def _policy_answer(
     ``tools`` here, and an ``include`` written by hand is not a field the
     managed servers read from a spec.
 
-    With the opt-in set and the spec granting :data:`INCLUDE_LIST_SERVER` ONLY
-    through ``@<server>/<tool>`` refs, its set of tool names goes under
-    ``include``; the server lists those and refuses any other call.
+    With the opt-in set, each server in :data:`INCLUDE_LIST_SERVERS` that the spec
+    grants ONLY through ``@<server>/<tool>`` refs gets its set of tool names under
+    ``include``; that server lists those and refuses any other call.
     A whole-server grant -- ``*``, a bare ``@<server>``, a glob tool part --
-    yields no entry, so the server answers exactly as it does without the opt-in.
+    yields no entry, so that server answers exactly as it does without the opt-in.
 
     Raises :class:`ManagedToolPolicyUnreadable` for an opt-in that is present
     but not a bool: the operator wrote something there and whether it narrows
@@ -292,9 +295,13 @@ def _policy_answer(
         )
     if not opt_in:
         return answer
-    granted = per_tool_grants(config.get("tools"), INCLUDE_LIST_SERVER)
-    if granted is not None:
-        answer[POLICY_INCLUDE_KEY] = {INCLUDE_LIST_SERVER: sorted(granted)}
+    include: dict[str, list[str]] = {}
+    for server in INCLUDE_LIST_SERVERS:
+        granted = per_tool_grants(config.get("tools"), server)
+        if granted is not None:
+            include[server] = sorted(granted)
+    if include:
+        answer[POLICY_INCLUDE_KEY] = include
     return answer
 
 

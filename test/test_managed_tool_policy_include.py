@@ -32,6 +32,7 @@ from kiro_crew.testing.wait import wait_until
 
 AGENT = "narrow-agent"
 CORE = "kirocrew-core"
+DASHBOARD = "kirocrew-dashboard"
 
 
 # --------------------------------------------------------------------------- #
@@ -92,6 +93,45 @@ class TestGatewayPolicyAnswer:
             "exclude": ["cron_add"],
             "include": {CORE: ["skill_search", "spawn_run"]},
         }
+
+    def test_per_tool_refs_to_an_opt_in_managed_server_answer_its_include(
+        self, tmp_path: Path
+    ) -> None:
+        """Every managed server is narrowed the same way, not only kirocrew-core: a
+        spec granting the dashboard server tool by tool lists only those tools."""
+        policy = _policy_for(
+            tmp_path,
+            {
+                "tools": [f"@{DASHBOARD}/session_send", f"@{DASHBOARD}/chat_folder_tree"],
+                "managedToolPolicy": {"honourToolRefs": True},
+            },
+        )
+        assert policy == {
+            "honourToolRefs": True,
+            "include": {DASHBOARD: ["chat_folder_tree", "session_send"]},
+        }
+
+    def test_each_managed_server_is_read_on_its_own(self, tmp_path: Path) -> None:
+        """A whole-server grant on one managed server does not stop another from
+        being narrowed, and a server Kiro Crew does not ship is never narrowed."""
+        policy = _policy_for(
+            tmp_path,
+            {
+                "tools": [
+                    f"@{CORE}",
+                    f"@{DASHBOARD}/session_send",
+                    "@third-party/one_tool",
+                ],
+                "managedToolPolicy": {"honourToolRefs": True},
+            },
+        )
+        assert policy == {"honourToolRefs": True, "include": {DASHBOARD: ["session_send"]}}
+
+    def test_every_managed_server_is_eligible(self) -> None:
+        from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+
+        assert set(sessions_mod.INCLUDE_LIST_SERVERS) == set(KIROCREW_BIN_MCP_SERVERS)
+        assert {CORE, DASHBOARD} <= set(sessions_mod.INCLUDE_LIST_SERVERS)
 
     @pytest.mark.parametrize(
         "managed",
