@@ -19983,8 +19983,7 @@
     "publicIpHint": "默认关闭。私有子网需要出站连接以供运行时和集成使用。此设置不会创建网络路由或开放入站端口。",
     "profilesFargateHint": "配置文件是可重复使用、已命名的远程会话环境。每个 Fargate 配置文件记录要使用的集群、任务定义、网络和工作目录。其中的 AWS CLI 配置文件字段是 {{productName}} 所在机器上已配置凭据配置文件的名称。在聊天输入框中选择一个配置文件，即可让该会话在其上运行。",
     "verifyHintFargate": "检查每个配置文件的任务定义是否就绪、运行 {{productName}} 的机器上是否已安装 AWS Session Manager 插件，以及 {{productName}} 可以登录哪些 Git 托管平台。不会启动任何任务。",
-    "checkTaskDefinitionOk": "{{name}}：任务定义 {{taskDefinition}} 可用",
-    "workspaceFargateTask": "Fargate 会话任务"
+    "checkTaskDefinitionOk": "{{name}}：任务定义 {{taskDefinition}} 可用"
   },
   "crewEditorNext": {
     "section_general": "常规",

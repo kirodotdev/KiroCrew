@@ -130,8 +130,11 @@ async def prepare_vm_session(
     if provider == FARGATE_PROVIDER_ID:
         from kiro_crew.fargate_session.launch import FargateSessionEnvironments
 
-        # Keyed by the owner like Coder's, so a subagent shares the parent's task.
-        return await FargateSessionEnvironments(section, home).prepare(owner_key, profile_id)
+        # Keyed by the owner like Coder's, so a subagent shares the parent's task;
+        # the start stage stays on the starting session, which clears it.
+        return await FargateSessionEnvironments(section, home).prepare(
+            owner_key, profile_id, progress_key=session_key
+        )
     vm_environments = _vm_environments().get(provider)
     if vm_environments is None:
         return None

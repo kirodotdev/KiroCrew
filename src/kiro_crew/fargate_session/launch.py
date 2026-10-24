@@ -31,6 +31,7 @@ import hmac
 import json
 import logging
 import os
+import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional, TypeVar
@@ -58,6 +59,11 @@ _FORWARDS: dict[str, PortForward] = {}
 #: row's task, no keepalive renews it, no resume adopts it, and the sweeper
 #: retries the stop, which writes the marker once the disk can take it.
 _UNRECORDED_STOPS: dict[str, tuple[str, str]] = {}
+#: A failed keepalive asks ECS whether the task is gone at most this often per
+#: task, so an unreachable but live task costs one DescribeTasks per window.
+_RECONCILE_GAP_SECS = 300.0
+#: task ARN -> monotonic time of its last reconcile; pruned to live rows each pass.
+_RECONCILED_AT: dict[str, float] = {}
 _T = TypeVar("_T")
 
 
@@ -318,8 +324,10 @@ class FargateSessionEnvironments:
             return None
         return secret
 
-    async def _launch(self, session_key: str, profile: dict[str, Any]) -> tuple[SessionTask, bytes]:
-        report_start_stage(session_key, "provisioning")
+    async def _launch(
+        self, session_key: str, profile: dict[str, Any], progress_key: str
+    ) -> tuple[SessionTask, bytes]:
+        report_start_stage(progress_key, "provisioning")
         container = await tasks.task_container(profile)
         # Committed before the task exists: its bootstrap enrols only this
         # secret, so a local process that reaches the forward first cannot.
@@ -346,7 +354,7 @@ class FargateSessionEnvironments:
             raise
         try:
             running = await tasks.wait_running(profile, task)
-            report_start_stage(session_key, "connecting")
+            report_start_stage(progress_key, "connecting")
             await self._enroll(self.forward(profile, running), secret)
             await asyncio.to_thread(self._save_secret, running.task_id, secret)
             row = await asyncio.to_thread(
@@ -434,7 +442,8 @@ class FargateSessionEnvironments:
             info = None
         await self._drop_forward(row.task_id)
         # Failed or cancelled stops keep the durable intent for the sweeper.
-        if info is not None:
+        # A task ECS already reports STOPPED needs no StopTask, only forgetting.
+        if info is not None and tasks.sighting(info).last_status != "STOPPED":
             try:
                 await tasks.stop_task(profile, row.task, reason)
             except SessionEnvironmentUnavailable:
@@ -446,8 +455,14 @@ class FargateSessionEnvironments:
         if _UNRECORDED_STOPS.get(row.session_key, ("",))[0] == row.arn:
             del _UNRECORDED_STOPS[row.session_key]
 
-    async def prepare(self, session_key: str, profile_id: str) -> PreparedRemoteSession:
-        """Reuse this session's running task, or launch, enrol and record a new one."""
+    async def prepare(
+        self, session_key: str, profile_id: str, *, progress_key: str | None = None
+    ) -> PreparedRemoteSession:
+        """Reuse this session's running task, or launch, enrol and record a new one.
+
+        ``progress_key`` is the starting session the start stages are shown on
+        (a subagent's own key); the task stays keyed by ``session_key``.
+        """
         from kiro_crew.coder.retention import session_lifecycle
 
         lifecycle = session_lifecycle(session_key)
@@ -455,9 +470,11 @@ class FargateSessionEnvironments:
         # task: a resume must never adopt a task an archive is about to stop.
         lifecycle.generation += 1
         async with lifecycle.lock:
-            return await self._prepare(session_key, profile_id)
+            return await self._prepare(session_key, profile_id, progress_key or session_key)
 
-    async def _prepare(self, session_key: str, profile_id: str) -> PreparedRemoteSession:
+    async def _prepare(
+        self, session_key: str, profile_id: str, progress_key: str
+    ) -> PreparedRemoteSession:
         profile = self.profile(profile_id)
         row = await asyncio.to_thread(self.registry.get, session_key)
         secret: Optional[bytes] = None
@@ -470,7 +487,7 @@ class FargateSessionEnvironments:
         created = False
         if row is None or secret is None:
             created = True
-            row, secret = await self._launch(session_key, profile)
+            row, secret = await self._launch(session_key, profile, progress_key)
         forward = self.forward(self._task_profile(profile, row), row.task)
         shell = FargateShell(forward.connect, secret, forward.verify_peer)
         shell.workspace = f"task {row.task_id[:12]}"
@@ -523,12 +540,17 @@ class FargateSessionEnvironments:
         The bootstrap's idle exit bounds orphan billing, not session retention:
         a live gateway must keep unarchived task files alive between turns. No
         probe waits for another, so however many tasks are unreachable, a pass
-        ends within one probe timeout and a reachable task is touched in every
-        pass, well inside its 900 s idle deadline.
+        ends within two probe timeouts and a reachable task is touched in every
+        pass, well inside its 900 s idle deadline. A failed probe asks ECS (at
+        most once per ``_RECONCILE_GAP_SECS``) whether the task is gone, and
+        forgets a stopped or purged one.
         """
         from kiro_crew.coder.retention import session_lifecycle
 
         rows = [row for row in await asyncio.to_thread(self.registry.all) if row.runtime_id]
+        live_arns = {row.arn for row in rows}
+        for arn in [arn for arn in _RECONCILED_AT if arn not in live_arns]:
+            del _RECONCILED_AT[arn]
 
         async def touch(row: SessionTask) -> bool:
             lifecycle = session_lifecycle(row.session_key)
@@ -539,12 +561,37 @@ class FargateSessionEnvironments:
                 await shell.run("true")
                 return True
 
+        async def reconcile(row: SessionTask) -> None:
+            # A task that stopped on its own (the gateway was down past its idle
+            # exit) would otherwise be re-dialled every pass and listed as running.
+            now = time.monotonic()
+            if now - _RECONCILED_AT.get(row.arn, -_RECONCILE_GAP_SECS) < _RECONCILE_GAP_SECS:
+                return
+            _RECONCILED_AT[row.arn] = now
+            lifecycle = session_lifecycle(row.session_key)
+            async with lifecycle.lock:
+                current = await asyncio.to_thread(self.registry.get, row.session_key)
+                if current is None or current.arn != row.arn:
+                    return  # replaced or stopped meanwhile
+                # A forged row never reaches AWS: its describe would use its own fields.
+                await asyncio.to_thread(self._verify_binding, current)
+                info = await tasks.describe(self._task_profile({}, current), current.task)
+                if info is not None and tasks.sighting(info).last_status != "STOPPED":
+                    return  # still up, just unreachable: keep it and keep trying
+                # ``_stop`` verifies the row's binding before it writes anything,
+                # skips StopTask for a purged task, and drops the forward and row.
+                await self._stop({}, current, "the task stopped on its own")
+
         async def probe(row: SessionTask) -> bool:
             try:
                 return await asyncio.wait_for(touch(row), _KEEPALIVE_TIMEOUT_SECS)
             except Exception:  # noqa: BLE001 -- one unreachable task cannot starve the others
                 logger.warning("Fargate keepalive failed for %s", row.session_key, exc_info=True)
-                return False
+            try:
+                await asyncio.wait_for(reconcile(row), _KEEPALIVE_TIMEOUT_SECS)
+            except Exception:  # noqa: BLE001 -- retried after the next gap
+                logger.warning("Fargate task check failed for %s", row.session_key, exc_info=True)
+            return False
 
         return sum(await asyncio.gather(*(probe(row) for row in rows)))
 

@@ -1788,6 +1788,19 @@ describe('Session Environments AWS Fargate profiles', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('This version of Kiro Crew does not support Session Environments settings.')
   })
 
+  it('opens the Fargate tab and row a settings deep link points into', async () => {
+    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [{ ...profile }], fargate_profiles: [{ ...fargate }] } }
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expect(screen.getByRole('radio', { name: 'Coder' })).toBeChecked()
+    const cluster = 'ECS cluster name or ARN'
+    expect(screen.getByLabelText(cluster)).not.toBeVisible()
+    act(() => setSettingsDeepLinkTarget(`[data-setting-label="${cluster}"]`))
+    await waitFor(() => expect(screen.getByLabelText(cluster)).toBeVisible())
+    expect(screen.getByRole('radio', { name: 'AWS Fargate' })).toBeChecked()
+    act(() => setSettingsDeepLinkTarget(null))
+  })
+
   it('opens on Fargate when only Fargate is saved, and checks it without a Coder URL', async () => {
     stored = { session_environments: { coder_url: '', profiles: [], fargate_profiles: [{ ...fargate }] } }
     server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
@@ -1884,17 +1897,21 @@ describe('Session Environments AWS Fargate profiles', () => {
     server.use(http.get('*/api/session-environments/workspaces', () => HttpResponse.json({
       workspaces: [
         { workspace: 'crewenv-devuser-aaaa', slot: 'chat-1', state: 'running', template: 't', created_at: '2026-10-09T10:00:00Z', deletion_due_at: '' },
-        { workspace: 'abc123def456', provider: 'fargate', slot: 'chat-2', state: 'running', template: 'aws-dev', created_at: '', deletion_due_at: '' },
+        { workspace: 'abc123def456', provider: 'fargate', slot: 'chat-2', profile: 'aws-dev', state: 'running', template: 'aws-dev', created_at: '', deletion_due_at: '' },
       ],
     })))
-    mount()
+    const base = createTestStore().getState().dashboard
+    mount(createTestStore({ dashboard: { ...base, slots: [{ key: 'chat-2', title: 'Load test the API' } as never] } }))
     const coderList = await screen.findByRole('list', { name: 'Workspaces' })
     expect(coderList).toHaveTextContent('crewenv-devuser-aaaa')
     expect(coderList).not.toHaveTextContent('abc123def456')
     fireEvent.click(screen.getByRole('radio', { name: 'AWS Fargate' }))
     const fargateList = await screen.findByRole('list', { name: 'Workspaces' })
     expect(fargateList).toHaveTextContent('abc123def456')
-    expect(fargateList).toHaveTextContent('Fargate session task')
+    // A task bills until its chat is archived, so its row names that chat and
+    // the saved profile's name, as every other provider's row does.
+    expect(fargateList).toHaveTextContent('In use by Load test the API')
+    expect(fargateList).toHaveTextContent('Profile: AWS development')
     expect(screen.queryByRole('link', { name: 'Open Coder' })).toBeNull()
   })
 

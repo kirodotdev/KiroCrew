@@ -26,6 +26,15 @@ def _developer_flag_on(_floor_monkeypatch):
     _floor_monkeypatch.setenv("KIROCREW_DEV_MODE", "1")
 
 
+@pytest.fixture(autouse=True)
+def _ecs_reports_tasks_running(_floor_monkeypatch):
+    # A failed probe asks ECS whether the task is gone; no test reaches real AWS.
+    from kiro_crew.fargate_session import tasks
+
+    _floor_monkeypatch.setattr(launch, "_RECONCILED_AT", {}, raising=False)
+    _floor_monkeypatch.setattr(tasks, "describe", AsyncMock(return_value={"lastStatus": "RUNNING"}))
+
+
 @pytest.fixture
 def environments(tmp_path, monkeypatch):
     envs = launch.FargateSessionEnvironments(SimpleNamespace(fargate_profiles=[PROFILE]), tmp_path)
@@ -182,6 +191,69 @@ async def test_keepalive_failure_does_not_stop_other_tasks_or_coder_sweep(
     assert any(call.args == (good_connect, SECRET, "true", b"") for call in run.await_args_list)
     sweep.assert_awaited_once_with(coder)
     assert envs.registry.get(good.session_key) == good
+    assert envs.registry.get(bad.session_key) is not None  # unreachable, not gone
+
+
+@pytest.mark.parametrize("ecs_state", ["STOPPED", "purged", "RUNNING"])
+@sync
+async def test_a_task_that_stopped_on_its_own_is_forgotten_after_one_failed_probe(
+    environments, monkeypatch, ecs_state
+):
+    """The gateway was down past the idle exit: ECS stopped the task meanwhile."""
+    from kiro_crew.fargate_session import tasks
+
+    envs = environments
+    row = record(envs, "gone123")
+    monkeypatch.setattr(launch, "_RECONCILED_AT", {}, raising=False)
+
+    def forward(profile, task):
+        async def connect():
+            raise OSError("ssm: target not connected")
+
+        return SimpleNamespace(connect=connect, verify_peer=AsyncMock())
+
+    info = {
+        "taskArn": row.arn,
+        "lastStatus": ecs_state,
+        "tags": [{"key": tasks.SESSION_TAG, "value": tasks.session_tag(row.session_key)}],
+    }
+    describe = AsyncMock(return_value=None if ecs_state == "purged" else info)
+    stop_task = AsyncMock()
+    dropped = AsyncMock()
+    monkeypatch.setattr(envs, "forward", forward)
+    monkeypatch.setattr(envs, "_drop_forward", dropped)
+    monkeypatch.setattr(tasks, "describe", describe)
+    monkeypatch.setattr(tasks, "stop_task", stop_task)
+
+    assert await envs.keep_alive() == 0
+    stop_task.assert_not_awaited()  # a stopped or purged task needs no StopTask
+    if ecs_state == "RUNNING":
+        # Up but unreachable: kept, and asked about again only after the gap.
+        assert envs.registry.get(row.session_key) == row
+        assert envs.load_secret(row.task_id) == SECRET
+        assert await envs.keep_alive() == 0
+        assert describe.await_count == 1
+    else:
+        assert envs.registry.get(row.session_key) is None
+        assert envs.load_secret(row.task_id) is None
+        dropped.assert_awaited_with(row.task_id)
+        assert await envs.keep_alive() == 0  # nothing left to re-dial
+        assert describe.await_count == 2  # the reconcile read plus _stop's own
+
+
+@sync
+async def test_a_forged_row_never_reaches_ecs_from_a_failed_probe(environments, monkeypatch):
+    from kiro_crew.fargate_session import tasks
+
+    envs = environments
+    row = record(envs, "forged123")
+    envs.registry.put(replace(row, cluster="injected"))
+    monkeypatch.setattr(launch, "_RECONCILED_AT", {}, raising=False)
+    describe = AsyncMock(return_value=None)
+    monkeypatch.setattr(tasks, "describe", describe)
+    assert await envs.keep_alive() == 0
+    describe.assert_not_awaited()
+    assert envs.registry.get(row.session_key) is not None
 
 
 @sync

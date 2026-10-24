@@ -662,6 +662,21 @@ def provider(tmp_path, ecs, monkeypatch):
     yield envs, state
 
 
+@pytest.fixture
+def gateway_only(tmp_path, ecs, monkeypatch):
+    """FargateSessionEnvironments against the fake ECS, with no guest bootstrap.
+
+    For gateway-side paths that end before any task is reached (a failed first
+    registry write, say), so they run on every platform the gateway runs on.
+    """
+    monkeypatch.setattr(fargate_launch, "_FORWARDS", {})
+    monkeypatch.setattr(retention, "_LIFECYCLES", WeakValueDictionary())
+    (tmp_path / "home").mkdir(exist_ok=True)
+    return fargate_launch.FargateSessionEnvironments(
+        SimpleNamespace(fargate_profiles=[PROFILE]), tmp_path / "home"
+    )
+
+
 @posix_guest
 @sync
 async def test_a_session_gets_a_task_and_keeps_it_while_it_lives(provider, ecs, tmp_path):
@@ -683,6 +698,27 @@ async def test_a_session_gets_a_task_and_keeps_it_while_it_lives(provider, ecs, 
     assert await again.launch.shell.run("echo still") == b"still\n"
     assert await envs.shell_for("dashboard:chat-1", "aws-dev") is not None
     assert await envs.shell_for("dashboard:other", "aws-dev") is None
+
+
+@posix_guest
+@sync
+async def test_a_subagent_start_reports_its_stages_on_itself_not_its_parent(provider, ecs):
+    # The task is keyed by the parent; the start stages go on the starting
+    # session, the only one whose runtime start clears them.
+    from kiro_crew import session_environment as se
+
+    envs, _state = provider
+    root, child = "dashboard:chat-root", "subagent:child-1"
+    se.clear_start_stage(root)
+    se.clear_start_stage(child)
+    try:
+        await envs.prepare(root, "aws-dev", progress_key=child)
+        assert envs.registry.get(root) is not None and envs.registry.get(child) is None
+        assert se.start_progress(root) is None
+        assert se.start_progress(child)["stage"] == "connecting"
+    finally:
+        se.clear_start_stage(root)
+        se.clear_start_stage(child)
 
 
 @posix_guest
@@ -767,9 +803,9 @@ async def test_a_task_someone_else_enrolled_first_is_stopped(provider, ecs, monk
 
 
 @sync
-async def test_a_task_whose_first_record_fails_is_stopped_at_once(provider, ecs, monkeypatch):
+async def test_a_task_whose_first_record_fails_is_stopped_at_once(gateway_only, ecs, monkeypatch):
     """No row names the task, so nothing could stop it later: stop it now."""
-    envs, _state = provider
+    envs = gateway_only
 
     def full(_row):
         raise OSError(28, "No space left on device")
@@ -783,20 +819,24 @@ async def test_a_task_whose_first_record_fails_is_stopped_at_once(provider, ecs,
 
 @sync
 async def test_a_failed_stop_after_a_failed_record_keeps_the_record_error(
-    provider, ecs, monkeypatch
+    gateway_only, ecs, monkeypatch
 ):
-    envs, _state = provider
+    envs = gateway_only
+    stops = []
 
     def full(_row):
         raise OSError(28, "No space left on device")
 
-    async def refused(*_args, **_kwargs):
+    async def refused(*args, **_kwargs):
+        stops.append(args[1].arn)
         raise SessionEnvironmentUnavailable("AWS refused ecs:StopTask")
 
     monkeypatch.setattr(envs.registry, "put", full)
     monkeypatch.setattr(tasks, "stop_task", refused)
     with pytest.raises(OSError, match="No space left"):
         await envs.prepare("dashboard:chat-full", "aws-dev")
+    # The stop was tried on the task RunTask returned; its refusal hid nothing.
+    assert stops == [task["taskArn"] for task in ecs.tasks.values()]
 
 
 @posix_guest
@@ -1065,13 +1105,18 @@ async def test_a_fargate_choice_is_prepared_by_the_fargate_provider(monkeypatch,
     )
     seen = []
 
-    async def prepare(self, key, profile_id):
-        seen.append((key, profile_id))
+    async def prepare(self, key, profile_id, *, progress_key=None):
+        seen.append((key, profile_id, progress_key))
         return "prepared"
 
     monkeypatch.setattr(fargate_launch.FargateSessionEnvironments, "prepare", prepare)
     assert await session_launch.prepare_for_session("dashboard:chat-5") == "prepared"
-    assert seen == [("dashboard:chat-5", "aws-dev")]
+    assert seen == [("dashboard:chat-5", "aws-dev", "dashboard:chat-5")]
+    # A subagent reuses its root's task, but its start is reported on itself.
+    choices = session_launch.SessionEnvironmentChoices(tmp_path / "coder" / "session-choices.json")
+    assert choices.inherit("subagent:child-5", "dashboard:chat-5") == "aws-dev"
+    assert await session_launch.prepare_for_session("subagent:child-5") == "prepared"
+    assert seen[-1] == ("dashboard:chat-5", "aws-dev", "subagent:child-5")
 
 
 @posix_guest

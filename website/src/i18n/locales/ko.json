@@ -19983,8 +19983,7 @@
     "publicIpHint": "기본값은 꺼짐입니다. 프라이빗 서브넷에는 런타임과 통합을 위한 아웃바운드 연결이 필요합니다. 이 설정은 네트워크 경로를 만들거나 인바운드 포트를 열지 않습니다.",
     "profilesFargateHint": "프로필은 원격 세션을 위한 이름 있는 재사용 가능한 환경입니다. 각 Fargate 프로필은 사용할 클러스터, 작업 정의, 네트워크, 작업 디렉터리를 기록합니다. 그 안의 AWS CLI 프로필 필드는 {{productName}}을(를) 실행하는 머신에 이미 구성된 자격 증명 프로필의 이름입니다. 채팅 입력창에서 프로필을 선택하면 해당 세션이 그 프로필에서 실행됩니다.",
     "verifyHintFargate": "각 프로필의 작업 정의가 준비되었는지, {{productName}}을(를) 실행하는 머신에 AWS Session Manager 플러그인이 설치되어 있는지, {{productName}}이(가) 어떤 Git 호스트에 로그인할 수 있는지 확인합니다. 작업을 시작하지 않습니다.",
-    "checkTaskDefinitionOk": "{{name}}: 작업 정의 {{taskDefinition}}을(를) 사용할 수 있음",
-    "workspaceFargateTask": "Fargate 세션 작업"
+    "checkTaskDefinitionOk": "{{name}}: 작업 정의 {{taskDefinition}}을(를) 사용할 수 있음"
   },
   "crewEditorNext": {
     "section_general": "일반",
