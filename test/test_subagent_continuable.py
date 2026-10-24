@@ -468,7 +468,9 @@ class TestContinuationAgentInheritance:
                 await await_until(manager._tasks[followup.id], what="the follow-up run finishing")
                 assert not followup.error
                 call = sessions.get_or_create.call_args
-                assert call.args[0] == f"subagent:{target.id}"
+                assert (
+                    call.args[0] == f"subagent:{original.id}"
+                )  # a chained continue keys on the founder
                 assert call.kwargs["agent"] == (override or original_agent or None)
                 state = await asyncio.to_thread(sp.read_state, followup.id)
                 assert state is not None and state["agent"] == (override or original_agent)

@@ -30,6 +30,148 @@ if TYPE_CHECKING:
 _NEUTRAL_REAP_REASONS = frozenset({"user_stop", "parent_end"})
 
 
+# A conversation continued from a chat other than the one that founded it has
+# no single owner. Its resolved root is this marker over the conversation key
+# rather than the key itself: the key IS a session in the store when the run
+# was started as a dedicated process (registered with the founding chat's
+# policy), so answering with the key would hand that trust straight back.
+# The marker is no session key, so trust and tab lookups find nothing under
+# it, and it is stamped into every run admitted beneath the conversation, so
+# the refusal does not depend on the contested records still being retained.
+_CONTESTED_ROOT_PREFIX = "contested:"
+
+
+def contested_root(conversation_key: str) -> str:
+    """The root a contested conversation resolves to; see ``_CONTESTED_ROOT_PREFIX``."""
+    return _CONTESTED_ROOT_PREFIX + conversation_key
+
+
+def is_contested_root(root_session_key: str) -> bool:
+    """True for a root produced by :func:`contested_root`."""
+    return root_session_key.startswith(_CONTESTED_ROOT_PREFIX)
+
+
+# The words a contested conversation's prompts carry. Its prompts reach only the
+# global approvals feed (the marker names no tab), whose card prefixes a title
+# with "Tool approval:", shows two lines of body, and offers one control, Review;
+# the Review panel shows everything and offers Approve/Reject. So the title is
+# the ASK, as on every other card (``spawn_run(...)`` / ``shell(...)``), and the
+# body is written in the words of what the USER did, not the system's model: a
+# person who pressed "continue" on an old run from a second chat never did a
+# thing called "a run in 2+ chats", and the input box is labelled "Message ...",
+# never "composer". Both prompts lead with the STATE and its why, so the card's
+# two lines say what this prompt is before anything else; the spawn prompt
+# then names the remedy, and a tool prompt the
+# tool's own purpose and then the remedy, so what the tool is for is not
+# buried under boilerplate on every prompt the run raises. The remedy is whole
+# in the Review panel either way, where the decision is made.
+# One state sentence, true in every case the marker covers: a conversation two
+# chats have a claim on, one whose founding record cannot be read, one founded
+# by no chat (a cron's or the CLI's run a chat later continued). "Continued
+# from more than one chat" would be false for the last two, and the marker does
+# not record which case minted it -- every refusal reads only ``is_contested_root``.
+# The why is held to the same bar: it states only what every one of those cases
+# established -- that the chat which started the task was NOT confirmed to be
+# the chat continuing it -- and not a claim about the user's act that some cases
+# never measured. Active voice, with the product as the actor that failed to
+# confirm: the reader deciding must see at a glance whether THEY caused the
+# contest, and a passive sentence stacked with relative clauses made them reread. Two chats: the founder was read and differs. Unreadable or
+# pre-stamp founder, or a resumed admission arriving without its stamp: nothing
+# could be confirmed. A cron's or the CLI's run: no chat started it, so none
+# can be confirmed as continuing it. In each, "continued from a chat that did
+# not start it" would assert a comparison that, in the unmeasured cases, the
+# code never made -- and the reader may be the very chat that started the task.
+CONTESTED_PROMPT_STATE = "This run has no single owning chat"
+CONTESTED_PROMPT_WHY = (
+    "Kiro Crew could not confirm that the chat continuing this task is the one that started it"
+)
+# The SAFE action leads: this prompt exists because no chat's trust vouches for
+# the run, and a habituated approver reads the first verb of a card. The object
+# is named -- "this task", the work the run was started for -- so "it" cannot be
+# read as the request in the card's title. The closing clause says the approval
+# is not a fix: the contest is durable, so every later request asks again, and
+# a reader should not approve expecting the prompts to stop.
+CONTESTED_PROMPT_REMEDY = (
+    "Start this task again from a single chat, or approve this request "
+    "(each request will ask again)"
+)
+# The words that mark the tool's purpose on a contested prompt as the RUN's own
+# claim. The quote styling that sets it apart survives only in the Review panel;
+# the feed card's excerpt is plain text, and that is the surface a habituated
+# approver reads, so the attribution is spelled out where styling cannot reach.
+CONTESTED_RUN_ATTRIBUTION = "The run says:"
+
+
+def contested_spawn_note() -> str:
+    """The body of a contested spawn prompt: the state, the remedy, then the why.
+
+    The feed card shows two lines of body and offers one control, Review. The
+    state opens, so the card says what this prompt is; the remedy follows so
+    the card's excerpt reaches the SAFE verb ("Start this task again...") before
+    it is cut, and a user who dismisses the banner has still seen the way out;
+    the why -- the explanation a user reads once they are deciding -- comes
+    last, whole in Review. A spawn prompt has no purpose of its own to show, so
+    unlike :func:`contested_tool_note` nothing stands between state and remedy.
+    """
+    return (
+        f"{CONTESTED_PROMPT_STATE}. {CONTESTED_PROMPT_REMEDY}. "
+        f"{_capitalize_first(CONTESTED_PROMPT_WHY)}."
+    )
+
+
+def contested_tool_note(purpose: str = "") -> str:
+    """The body of a contested tool prompt: the state, the purpose, then the why and remedy, as paragraphs.
+
+    The feed card shows the body's first two lines, and those must carry the
+    state AND what the tool is for -- the card's reason to exist on every
+    contested tool prompt the run raises. The why does not fit there beside
+    them, so on a tool prompt it moves to Review with the remedy, one sentence:
+    a user who meets only tool prompts still reads, where they decide, why the
+    run has no chat and what to do; the spawn prompt, which has no purpose to
+    show, keeps the why on its card.
+    """
+    # The three parts are three PARAGRAPHS, and the middle one is SET APART:
+    # it is the untrusted run's own claim about what the tool is for, raised on
+    # the one surface that exists because the run is not trusted, so it must
+    # not read with the authority of the system's sentences on either side.
+    # The body is markdown (the command already gets its own fenced block):
+    # the claim is a quote, which the Review panel renders as a distinct muted
+    # block -- and it is attributed in WORDS too (``CONTESTED_RUN_ATTRIBUTION``),
+    # because the feed card's plain two-line excerpt strips the quote marker,
+    # and a skimming approver reads that card, not Review: without the words,
+    # the run's sentence sits beside the system's as prose of equal standing.
+    # The card has room for the state and the attributed purpose, nothing else.
+    head = f"{CONTESTED_PROMPT_STATE}."
+    body = purpose.strip()
+    if body and not body.endswith((".", "!", "?")):
+        body += "."
+    if body:
+        first, *rest = body.splitlines()
+        lines = [f"> {CONTESTED_RUN_ATTRIBUTION} {first}"]
+        lines.extend(f"> {line}" if line else ">" for line in rest)
+        body = "\n".join(lines)
+    tail = f"{_capitalize_first(CONTESTED_PROMPT_WHY)}. {CONTESTED_PROMPT_REMEDY}."
+    return "\n\n".join(part for part in (head, body, tail) if part)
+
+
+def _capitalize_first(sentence: str) -> str:
+    return sentence[:1].upper() + sentence[1:]
+
+
+def _label_contested_prompt(event: Any, root_session_key: str) -> None:
+    """Lead a contested run's tool prompt with the state its spawn prompt names.
+
+    A bare ``shell(...)`` on the global feed with no chat provenance reads as a
+    routing bug; the spawn gate labels its own prompt, and a tool prompt raised
+    mid-run must say the same. The label goes in ``tool_purpose`` (the card's
+    body) ahead of the tool's own purpose, so the tool title stays intact for
+    anything that reads it and the purpose still shows.
+    """
+    if not is_contested_root(root_session_key):
+        return
+    event.tool_purpose = contested_tool_note(event.tool_purpose)
+
+
 class _BareStateView(MutableMapping[str, Any]):
     """Live ``{toolCallId: ToolCallState}`` view over an :class:`InFlightToolTracker`.
 
@@ -102,6 +244,30 @@ class SubagentInfo:
     # record, and the handler answers 429 from that absence.
     error_code: str = ""
     parent_session_key: str = ""
+    # The chat, cron or channel key at the root of this run's spawn tree,
+    # resolved once at admission while every ancestor record is still live.
+    # Per-chat trust and the owning dashboard tab are keyed on it: a nested
+    # run's ``parent_session_key`` is a ``subagent:<id>`` that no store or tab
+    # knows, and an ancestor can be deleted or cancelled before this run's
+    # first tool prompt, so re-walking the tree at check time is not enough.
+    # Equal to ``parent_session_key`` for a depth-one run, so empty for a run
+    # admitted without a parent (a cron's or the CLI's spawn) and for a record
+    # built outside admission; either way ``root_session_key_for`` falls back
+    # to walking from the parent link. For the parentless run itself that is
+    # ``""`` (no owner, no trust); its children resolve to the run's own
+    # ``subagent:<id>`` key, where its effective policy is registered.
+    root_session_key: str = ""
+    # The root that governs every request keyed by this run's CONVERSATION
+    # (``conversation_key or subagent:<id>``), fixed when the conversation's
+    # first run is admitted and inherited unchanged by each continuation. A run
+    # and its continuation share one session key, so a request under that key
+    # cannot say which of them sent it; giving both the same answer makes the
+    # question moot, and means continuing another chat's conversation never
+    # lends it the continuing chat's trust. Equal to ``root_session_key`` for
+    # the run that starts a conversation -- or, for a parentless one, its own
+    # ``subagent:<id>`` key, so a chat's continuation contests it rather than
+    # founding it. Empty only outside admission.
+    conversation_root_session_key: str = ""
     memory_mode: str = field(default="persistent", kw_only=True)
     _memory_mode_ready: bool = field(default=True, init=False, repr=False)
     agent: str = ""

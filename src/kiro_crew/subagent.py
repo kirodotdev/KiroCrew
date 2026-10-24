@@ -402,12 +402,23 @@ from kiro_crew.subagent_parts.run_output import (  # noqa: F401
     format_subagent_usage,
 )
 from kiro_crew.subagent_parts.run_record import (  # noqa: F401
+    _CONTESTED_ROOT_PREFIX,
     _NEUTRAL_REAP_REASONS,
+    CONTESTED_PROMPT_REMEDY,
+    CONTESTED_PROMPT_STATE,
+    CONTESTED_PROMPT_WHY,
+    CONTESTED_RUN_ATTRIBUTION,
     AnnounceCallback,
     SubagentInfo,
     _BareStateView,
+    _capitalize_first,
     _context_groups_field,
     _context_groups_of,
+    _label_contested_prompt,
+    contested_root,
+    contested_spawn_note,
+    contested_tool_note,
+    is_contested_root,
 )
 from kiro_crew.subagent_parts.start_pricing import (  # noqa: F401
     _SETTLED_PROJECTION_CEILING_GB,

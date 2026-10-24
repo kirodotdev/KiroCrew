@@ -451,6 +451,9 @@ class _SettlingManager:
     def running_agents_for(self, parent_key: str) -> list[dict]:
         return []
 
+    def live_root_session_keys(self) -> set[str]:
+        return set()
+
     def published_queued_depths(self) -> dict[str, int]:
         return {}
 

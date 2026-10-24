@@ -153,6 +153,19 @@ class ContinuationCoordinator(ManagerComponent):
                     task="",
                     queued=True,
                 )
+        # A continuation whose START is in flight: claimed before its first
+        # await (``_claim_continuation``) and released when it has registered,
+        # queued or been refused. In between it is in neither ``_agents`` nor
+        # ``_queue``, so without this a rival continuation could be admitted
+        # during its awaits, contest the conversation, finish and be evicted
+        # before it commits -- and the gate's commit-point check, which reads
+        # retained records, would find no contest to adopt. Keyed on the
+        # conversation, so it holds with the founder's record evicted. Answered
+        # under the id the start will run as, which is how the gate tells the
+        # holder's own commit from a rival's.
+        starting = self._manager._continuation_starts.get(conv_key)
+        if starting:
+            return SubagentInfo(id=starting, task="", queued=True)
         # Checked last: a live or queued run gives the caller a better message.
         # Same synthetic-marker shape as the queued branch above — the run may
         # already have been evicted from _agents, which is exactly why this record
@@ -357,6 +370,66 @@ class ContinuationCoordinator(ManagerComponent):
                 return str(reason)
         return None
 
+    def founder_conversation_id_impl(self, conv_id: str, state: dict | None = None) -> str:
+        """The id of the run that FOUNDED the conversation *conv_id* belongs to.
+
+        A continuation is a run of its own (``subagent:<id>``, its own
+        ``state.json``) resumed on the FOUNDER's native session, and its record
+        -- in memory, or on disk -- names that conversation
+        (``conversation_key``); the founder's own record names none. A caller
+        that continues a continuation (``POST /api/spawn/<A2>/continue``) must
+        be resolved to the founder BEFORE anything is keyed on the id: the
+        busy check, the founding-root comparison and the durable contest write
+        all address the conversation, and keyed on ``subagent:<A2>`` they would
+        address a second, parallel conversation over the same native session --
+        a contest written onto A2's record alone leaves A's founding root
+        unchanged, so after a restart the founding chat reads it back and its
+        trust approves a session another chat has already written into.
+
+        *state* is the id's ``state.json`` when the caller has already read it
+        (off the event loop); without it, and with no retained record, the file
+        is read here -- a blocking read, for sync callers; an async caller runs
+        the whole resolution in a thread.
+
+        The record is FOLLOWED, not read once: a continuation admitted before
+        this resolution existed was keyed on the id it continued, so a
+        pre-upgrade chain reads A3 -> A2 -> A on disk, and stopping at A2 would
+        hand A3's continuation A2's own stamp as the founding root -- a chat
+        that continued A2 with trust would then approve a session A's untrusted
+        founder still owns, with no contest written. Each hop reads a retained
+        record or a cold ``state.json``; a record that names no conversation, or
+        its own (a kept founder's record does), is the founder, and one that
+        cannot be read ends the walk at that id, which downstream reads as an
+        unknown founder and contests. A cycle through another id is a corrupt
+        ancestry and raises ``ValueError``, which
+        both entries answer as a ``memory_unavailable`` refusal: there is no
+        founder to key the conversation on.
+        """
+        seen = {conv_id}
+        current, row = conv_id, state
+        while True:
+            record = self._manager._agents.get(current)
+            key = ""
+            if record is not None:
+                key = record.conversation_key or ""
+            else:
+                if row is None:
+                    row = read_state(current) or {}
+                if isinstance(row, dict):
+                    key = str(row.get("conversation_key") or "")
+            parent = self._persistence.subagent_id_from_conversation_key(key) if key else None
+            if parent is None or parent == current:
+                # No conversation named, or its own: a kept founder's record
+                # names ``subagent:<its own id>`` (``_publish_identity``).
+                return current
+            if parent in seen:
+                raise ValueError(
+                    f"cyclic conversation ancestry on subagent:{conv_id}; "
+                    "refusing to continue a conversation with no founder"
+                )
+            seen.add(parent)
+            current, row = parent, None
+
     def continue_conversation_impl(
         self,
         conv_id: str,
@@ -389,6 +462,16 @@ class ContinuationCoordinator(ManagerComponent):
         spawn, so its value has to be awaited -- which is exactly what the async
         entry does.
         """
+        try:
+            conv_id = self.founder_conversation_id_impl(conv_id)
+        except (OSError, ValueError) as exc:
+            return SubagentInfo(
+                id=_preassigned_id or self._manager._mint_agent_id(),
+                task=_redact(task),
+                done=True,
+                parent_session_key=parent_session_key,
+                error=f"memory_unavailable: {exc}",
+            )
         prelude = self._manager._continue_prelude(
             conv_id,
             task,
@@ -417,6 +500,7 @@ class ContinuationCoordinator(ManagerComponent):
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
         _crew_log_asked: "tuple[str, int] | None" = None,
+        _root_session_key: str = "",
     ) -> SubagentInfo | None:
         """:meth:`continue_conversation_impl` for event-loop callers: the same
         prelude, then ``spawn_async`` (write-before-ack with the store write on
@@ -425,6 +509,37 @@ class ContinuationCoordinator(ManagerComponent):
         # immutable record is read by the worker, then the prelude rechecks busy.
         from kiro_crew.execution_context import stricter_memory_mode
 
+        # Resolve a continuation's id to its founder FIRST: every step below is
+        # keyed on the conversation (busy check, prelude, the gate's root
+        # comparison, the run's durable contest write). A retained record
+        # answers in memory; otherwise the id's own ``state.json`` is read off
+        # the loop -- ONE read, reused as the execution snapshot below when the
+        # id turns out to be the founder's, so a cold continuation still costs a
+        # single read and the busy recheck still follows it. The walk to the
+        # founder may read cold ancestors (a pre-upgrade chain), so it runs in
+        # the same thread.
+        own_row: dict | None = None
+        own_row_read = False
+
+        def resolve_founder() -> tuple[dict | None, bool, str]:
+            if self._manager._agents.get(conv_id) is None:
+                row = self._persistence.read_state(conv_id)
+                return row, True, self.founder_conversation_id_impl(conv_id, state=row or {})
+            return None, False, self.founder_conversation_id_impl(conv_id)
+
+        try:
+            own_row, own_row_read, founder_id = await asyncio.to_thread(resolve_founder)
+        except (OSError, ValueError) as exc:
+            return SubagentInfo(
+                id=_preassigned_id or self._manager._mint_agent_id(),
+                task=_redact(task),
+                done=True,
+                parent_session_key=parent_session_key,
+                error=f"memory_unavailable: {exc}",
+            )
+        if founder_id != conv_id:
+            conv_id = founder_id
+            own_row, own_row_read = None, False  # the founder's record is read below
         conv_key = f"subagent:{conv_id}"
         if self._manager._conversation_busy(conv_key) is not None:
             busy_result = self._manager._continue_prelude(
@@ -440,60 +555,91 @@ class ContinuationCoordinator(ManagerComponent):
             )
             assert not isinstance(busy_result, dict)
             return busy_result
-        original = self._manager._agents.get(conv_id)
-        execution = original.execution_context if original is not None else None
-        state = ...
+        # The conversation is free: claim it for THIS start, before the awaits
+        # below, under the id the run will carry (``_conversation_busy``
+        # answers the claim with that id, which is how the gate's commit-point
+        # check tells this start's own commit from a rival's). Keyed on the
+        # conversation rather than the founder's record, which may be evicted:
+        # between here and the gate's commit this start is in neither
+        # ``_agents`` nor ``_queue``, and a rival continuation admitted in that
+        # window could contest the conversation, finish and be evicted before
+        # this one commits, leaving the commit-point check no retained record
+        # to adopt the contest from and the founder's root, read below, to
+        # grant a chat trust another chat has written past. Released once the
+        # start has landed (then the run itself holds the conversation) or
+        # been refused.
+        starting = self._manager._continuation_starts
+        agent_id = _preassigned_id or self._manager._mint_agent_id()
+        starting[conv_key] = agent_id
+        _preassigned_id = agent_id
         try:
-            if _memory_mode is None:
-                resolver = self._manager._memory_mode_for_session
-                _memory_mode = (
-                    resolver(parent_session_key) if resolver is not None else "persistent"
-                )
-            if execution is None or not self._manager._sessions.resumable_sid(conv_key):
-
-                def read_snapshot():
-                    row = self._persistence.read_state(conv_id)
-                    captured = (
-                        self._persistence.read_run_execution(conv_id, state=row)
-                        if row is not None
-                        else None
+            original = self._manager._agents.get(conv_id)
+            execution = original.execution_context if original is not None else None
+            state = ...
+            try:
+                if _memory_mode is None:
+                    resolver = self._manager._memory_mode_for_session
+                    _memory_mode = (
+                        resolver(parent_session_key) if resolver is not None else "persistent"
                     )
-                    return row or {}, captured
+                if execution is None or not self._manager._sessions.resumable_sid(conv_key):
 
-                state, restored = await asyncio.to_thread(read_snapshot)
-                execution = execution or restored
-            if execution is not None:
-                execution = self._manager._admission.resolve_spawn_execution(
-                    conversation_key=conv_key,
-                    agent=agent,
-                    _memory_mode=stricter_memory_mode(execution.memory_mode, _memory_mode),
-                    _record=execution,
+                    def read_snapshot():
+                        row = own_row if own_row_read else self._persistence.read_state(conv_id)
+                        captured = (
+                            self._persistence.read_run_execution(conv_id, state=row)
+                            if row is not None
+                            else None
+                        )
+                        return row or {}, captured
+
+                    state, restored = await asyncio.to_thread(read_snapshot)
+                    execution = execution or restored
+                if execution is not None:
+                    execution = self._manager._admission.resolve_spawn_execution(
+                        conversation_key=conv_key,
+                        agent=agent,
+                        _memory_mode=stricter_memory_mode(execution.memory_mode, _memory_mode),
+                        _record=execution,
+                    )
+            except (OSError, ValueError) as exc:
+                return SubagentInfo(
+                    id=_preassigned_id or self._manager._mint_agent_id(),
+                    task=_redact(task),
+                    done=True,
+                    parent_session_key=parent_session_key,
+                    error=f"memory_unavailable: {exc}",
                 )
-        except (OSError, ValueError) as exc:
-            return SubagentInfo(
-                id=_preassigned_id or self._manager._mint_agent_id(),
-                task=_redact(task),
-                done=True,
-                parent_session_key=parent_session_key,
-                error=f"memory_unavailable: {exc}",
+            prelude = self._manager._continue_prelude(
+                conv_id,
+                task,
+                parent_session_key,
+                agent,
+                model,
+                max_turns,
+                cwd,
+                _preassigned_id,
+                _memory_mode,
+                _crew_log_asked,
+                _execution_context=execution,
+                _captured_state=state,
+                _root_session_key=_root_session_key,
             )
-        prelude = self._manager._continue_prelude(
-            conv_id,
-            task,
-            parent_session_key,
-            agent,
-            model,
-            max_turns,
-            cwd,
-            _preassigned_id,
-            _memory_mode,
-            _crew_log_asked,
-            _execution_context=execution,
-            _captured_state=state,
-        )
-        if not isinstance(prelude, dict):
-            return prelude
-        return await self._manager.spawn_async(**prelude)
+            if not isinstance(prelude, dict):
+                return prelude
+            return await self._manager.spawn_async(**prelude)
+        finally:
+            # Every exit releases the conversation -- except while a retained
+            # claim owns it: ``claim_and_start`` keeps a start whose row write
+            # failed for retry, and that retry re-enters the gate with the same
+            # cached founding root, so the hold must outlive this call or a
+            # rival could contest and dismiss in the gap. ``retry_retained_claims``
+            # releases it once the retry settles (same idiom as the pump's
+            # ``_dispatch_async_impl``).
+            if agent_id not in self._manager._retained_claims and (
+                starting.get(conv_key) == agent_id
+            ):
+                del starting[conv_key]
 
     def _continue_prelude_impl(
         self,
@@ -510,8 +656,22 @@ class ContinuationCoordinator(ManagerComponent):
         *,
         _execution_context=None,
         _captured_state=...,
+        _root_session_key: str = "",
     ) -> "SubagentInfo | dict[str, Any] | None":
         """Dispatch a follow-up *task* into conversation *conv_id*.
+
+        ``_root_session_key`` is the trust root of the run whose OWN next turn
+        this is -- set only by the runtime's automatic follow-up
+        (``spawn_steer`` ``mode="follow_up"``), which holds that run's record
+        and its admission stamp. Admission then keeps the stamp instead of
+        re-walking ``parent_session_key``: by the time a follow-up dispatches,
+        the run's parent may have finished and been evicted, and a walk from a
+        key with no record answers the key itself -- no chat's trust, and a
+        founding root the conversation's durable record contradicts -- which
+        would mark the run's own conversation contested and persist that
+        false contest onto its founder. A caller that is not the run itself
+        (a chat continuing it, another run) passes nothing and is resolved
+        as before.
 
         ``_preassigned_id`` mirrors ``spawn``: a caller that must persist the
         dispatch identity BEFORE the side effect (so a crash in between is
@@ -536,6 +696,10 @@ class ContinuationCoordinator(ManagerComponent):
         """
         conv_key = f"subagent:{conv_id}"
         busy = self._manager._conversation_busy(conv_key)
+        # The claim this very start took (``continue_conversation_async_impl``)
+        # answers under its own id: not a rival.
+        if busy is not None and busy.id == _preassigned_id:
+            busy = None
         if busy is not None:
             info = SubagentInfo(
                 id=self._manager._mint_agent_id(),
@@ -753,6 +917,7 @@ class ContinuationCoordinator(ManagerComponent):
             memory_store=memory_store,
             _memory_mode=_memory_mode,
             app=app,
+            **({"_root_session_key": _root_session_key} if _root_session_key else {}),
             **(
                 {"_execution_context": _execution_context.to_record()}
                 if _execution_context is not None
@@ -1126,6 +1291,13 @@ class ContinuationCoordinator(ManagerComponent):
                     # a merged dispatch this is the turn that asked LAST; each
                     # individual ask is recorded at its own turn as `subagent/steered`.
                     _crew_log_asked=getattr(info, "_crew_log_followup_asked", None),
+                    # This is the run's OWN next turn: its trust root is the stamp
+                    # it was admitted with, not a re-walk of a parent key whose
+                    # record may be gone by now (see ``_continue_prelude_impl``).
+                    # A parentless run (a cron's or the CLI's) has no chat root and
+                    # founded its conversation in its own name, so that founding
+                    # stamp is what its follow-up must present to inherit it.
+                    _root_session_key=info.root_session_key or info.conversation_root_session_key,
                 )
                 raised = False
                 err = "spawn_failed" if child is None else str(getattr(child, "error", "") or "")
@@ -1204,7 +1376,16 @@ class ContinuationCoordinator(ManagerComponent):
         except Exception:
             logger.debug("follow_up audit failed", exc_info=True)
 
-    def _release_prefix(self, conv_id: str) -> Any:
+    def _release_founder(self, conv_id: str) -> str:
+        """The founder a release of *conv_id* addresses, or the id itself when
+        its ancestry cannot be followed (the release then stays keyed on the id,
+        as before founder resolution existed)."""
+        try:
+            return self.founder_conversation_id_impl(conv_id)
+        except (OSError, ValueError):
+            return conv_id
+
+    def _release_prefix(self, conv_id: str, founder_id: str) -> Any:
         """The on-loop half of a release, shared by both entry points.
 
         Returns ``(False, detail)`` when the release is refused, otherwise
@@ -1212,12 +1393,32 @@ class ContinuationCoordinator(ManagerComponent):
         registry have forgotten the conversation. No await happens inside it, so
         the busy check and ``forget_conversation`` commit together, BEFORE the disk
         demote (the ``SessionMap`` must only be touched on the loop).
+
+        *founder_id* is the conversation the release ADDRESSES (see
+        :meth:`founder_conversation_id_impl`): the busy check and the file
+        deletion are keyed on it, not on the id named. A continuation admitted
+        before continuations were keyed on their founder left a mapping of its
+        own (``subagent:<A2>``) to the founder's native session, and a restart's
+        registry rebuild re-seeds it; keyed on that alias, the busy check sees
+        no run -- continuations now register under the founder -- and the
+        release would delete the native session's files under the founder's
+        live continuation. The alias is a second pointer to the same
+        conversation, so it is RETIRED here either way (its mapping and TTL
+        entry forgotten, no file touched); the files go only with the founder's
+        own mapping, and only when the founder's conversation is free.
         """
         # Not an ``_impl``, so it keeps this module's globals: import here.
         from ..subagent import PROVIDER_LABEL_DEFAULT
 
-        conv_key = f"subagent:{conv_id}"
+        alias_key = f"subagent:{conv_id}"
+        conv_key = f"subagent:{founder_id}"
         busy = self._manager._conversation_busy(conv_key)
+        if busy is None and founder_id != conv_id:
+            busy = self._manager._conversation_busy(alias_key)
+        alias_sid = None
+        if founder_id != conv_id:
+            alias_sid = self._manager._sessions.forget_conversation(alias_key)
+            self._manager._conversations.pop(alias_key, None)
         if busy is not None:
             if busy._state_writer_abandoned:
                 return (
@@ -1228,12 +1429,12 @@ class ContinuationCoordinator(ManagerComponent):
         provider_label = (
             self._manager._sessions.conversation_provider(conv_key) or PROVIDER_LABEL_DEFAULT
         )
-        sid = self._manager._sessions.forget_conversation(conv_key)
+        sid = self._manager._sessions.forget_conversation(conv_key) or alias_sid
         self._manager._conversations.pop(conv_key, None)
-        original = self._manager._agents.get(conv_id)
+        original = self._manager._agents.get(founder_id)
         if original is None:
             original = next(
-                (info for info in self._manager._report_owners.values() if info.id == conv_id),
+                (info for info in self._manager._report_owners.values() if info.id == founder_id),
                 None,
             )
         return sid or "", provider_label, original
@@ -1304,7 +1505,8 @@ class ContinuationCoordinator(ManagerComponent):
         ``(ok, detail)``. Runs its disk I/O on the CALLING thread, so event-loop
         callers use :meth:`release_conversation_async_impl` instead.
         """
-        prefix = self._release_prefix(conv_id)
+        conv_id = self._release_founder(conv_id)
+        prefix = self._release_prefix(conv_id, conv_id)
         if prefix[0] is False:
             return prefix
         sid, provider_label, original = prefix
@@ -1328,9 +1530,13 @@ class ContinuationCoordinator(ManagerComponent):
         un-holds it: the release already committed on the loop, it finishes, and
         the worker's own done-callback releases the hold.
         """
-        prefix = self._release_prefix(conv_id)
+        # Resolved off the loop (the walk may read cold ancestors), then the
+        # on-loop half is keyed on the founder it answered.
+        founder_id = await asyncio.to_thread(self._release_founder, conv_id)
+        prefix = self._release_prefix(conv_id, founder_id)
         if prefix[0] is False:
             return prefix
+        conv_id = founder_id
         sid, provider_label, original = prefix
         worker: asyncio.Future[Any] = asyncio.ensure_future(
             asyncio.to_thread(self._release_disk_sync, conv_id, sid, provider_label)

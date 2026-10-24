@@ -603,6 +603,7 @@ from kiro_crew.subagent import (
     ToolApprovalCallback,
     _injection_notice_outcome,
     format_subagent_usage,
+    is_contested_root,
     resolve_max_subagents,
 )
 from kiro_crew.subagent_completion_meta import (
@@ -840,6 +841,38 @@ class GatewayOrchestrator:
     _dashboard_client_attached = _approvals._dashboard_client_attached
     _interactive_approval = _approvals._interactive_approval
     _heartbeat_approval = _approvals._heartbeat_approval
+
+    def _spawn_approval_slot(self, request_id: str) -> str:
+        """The dashboard slot that shows a spawn approval, from its ``spawn:<id>`` id.
+
+        The prompt belongs to the tab of the chat at the ROOT of the spawn tree
+        (the run's admission-stamped ``root_session_key``), never to its literal
+        parent: a nested spawn's parent is a ``subagent:<id>`` key that no tab
+        shows. ``""`` when the run is unknown, has no parent, or no manager is
+        attached -- and for a run in a contested conversation, whose trust root
+        is a marker that is no session key at all and must not be turned into a
+        phantom slot: resolved through ``trust_root_for`` rather than the card's
+        routing root, because the slot named here is the one whose Trust setting
+        answers the prompt (``approval_slot`` -> ``_ps._trust``), and a contested
+        continuation's card lives in a tab whose trust must not approve it. The
+        caller then surfaces the prompt on the global feed rather than guessing a
+        tab.
+
+        A root that is itself a workflow step's session (``wf:<run_id>:...``) is
+        shown by no tab either; :func:`_spawn_parent_slot` maps it through the
+        workflow registry to the chat that started the run, at every depth below
+        the step.
+        """
+        mgr = getattr(self, "subagent_mgr", None)
+        if mgr is None:
+            return ""
+        info = mgr.get(request_id.removeprefix("spawn:"))
+        if info is None or not info.parent_session_key:
+            return ""
+        root = mgr.trust_root_for(info)
+        if is_contested_root(root):
+            return ""
+        return _spawn_parent_slot(root, getattr(self.dashboard_state, "workflow_service", None))
 
     # Required packages that must be importable (import_name, pip_spec).
     # pip_spec may include version constraints matching setup.cfg.

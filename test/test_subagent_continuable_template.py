@@ -488,7 +488,7 @@ class TestContinuationTemplateNamespace:
                     if restart:
                         await _close_all(sessions)
                         sessions, manager = world.new_manager()
-                    key = f"subagent:{target.id}"
+                    key = f"subagent:{original.id}"  # a chained continue keys on the founder
                     followup = manager.continue_conversation(
                         target.id,
                         "member follow-up",

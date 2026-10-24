@@ -86,7 +86,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     ),
     "_write_state_off_loop_impl": (
         "coroutine",
-        "(self, info: 'SubagentInfo', what: 'str', **fields: 'object') -> 'bool'",
+        "(self, info: 'SubagentInfo', what: 'str', record_id: 'str' = '', /, **fields: 'object') -> 'bool'",
         "run_records",
     ),
     "_write_finished_result_off_loop_impl": (
@@ -101,12 +101,12 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     ),
     "_drain_state_writer_impl": (
         "coroutine",
-        "(self, info: 'SubagentInfo', what: 'str', writer: \"'asyncio.Future[Any]'\", *, bound: 'float | None' = None) -> 'bool'",
+        "(self, info: 'SubagentInfo', what: 'str', writer: \"'asyncio.Future[Any]'\", *, bound: 'float | None' = None, record_id: 'str' = '') -> 'bool'",
         "run_records",
     ),
     "_hold_for_detached_writer_impl": (
         "function",
-        "(self, info: 'SubagentInfo', what: 'str', writer: \"'asyncio.Future[Any]'\") -> 'None'",
+        "(self, info: 'SubagentInfo', what: 'str', writer: \"'asyncio.Future[Any]'\", *, record_id: 'str' = '') -> 'None'",
         "run_records",
     ),
     "_cap_unclaimed_result_impl": (
@@ -130,6 +130,12 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
         "run_lifecycle",
     ),
     "running_agents_for_impl": ("function", "(self, parent_key: 'str') -> 'list[dict]'", "run"),
+    "running_agents_rooted_at_impl": ("function", "(self, root_key: 'str') -> 'list[dict]'", "run"),
+    "_running_summaries": (
+        "function",
+        "(self, keep: \"'Callable[[SubagentInfo], bool]'\") -> 'list[dict]'",
+        "run",
+    ),
     "get_impl": ("function", "(self, agent_id: 'str') -> 'SubagentInfo | None'", "run"),
     "is_queued_impl": ("function", "(self, agent_id: 'str') -> 'bool'", "run"),
     "_teardown_run_session_impl": (
@@ -250,7 +256,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     ),
     "_permission_policy": (
         "function",
-        "(self, info: 'SubagentInfo', *, spec: 'Any', parent_policy: 'str', consult: 'Callable[[LLMEvent], object]', sel: 'Callable[[], Any]', log: '_logging.Logger') -> 'Policy'",
+        "(self, info: 'SubagentInfo', *, spec: 'Any', parent_policy: 'str', consult: 'Callable[[LLMEvent], object]', sel: 'Callable[[], Any]', log: '_logging.Logger', root_session_key: 'str' = '') -> 'Policy'",
         "run",
     ),
     "_run_inner_impl": (

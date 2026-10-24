@@ -110,6 +110,15 @@ class _Done:
         mgr = MagicMock(name="subagent_mgr")
         mgr.running = []
         mgr.running_agents_for = MagicMock(return_value=[])
+        # Frames and the spawn-approval slot are keyed by the run's ROOT chat;
+        # with no admission stamp the real accessors answer the parent.
+        mgr.root_session_key_for = MagicMock(
+            side_effect=lambda info: info.root_session_key or info.parent_session_key
+        )
+        mgr.trust_root_for = MagicMock(
+            side_effect=lambda info: info.root_session_key or info.parent_session_key
+        )
+        mgr.running_agents_rooted_at = MagicMock(return_value=[])
         mgr.has_in_memory_pending_work_for = MagicMock(return_value=False)
         mgr.batch_reports_in_flight = MagicMock(return_value=False)
         mgr.wave_has_live_nested_spawns = MagicMock(return_value=False)

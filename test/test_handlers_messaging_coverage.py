@@ -86,6 +86,11 @@ def _info(**kw: Any) -> Any:
         "include_project": True,
     }
     base.update(kw)
+    # Stamped at admission on every real record; a depth-one run's root is its
+    # parent. Set after the update so an explicit parent is what it defaults to.
+    base.setdefault("root_session_key", base["parent_session_key"])
+    # The conversation root a depth-one run founds is its own root.
+    base.setdefault("conversation_root_session_key", base["root_session_key"])
     return SimpleNamespace(**base)
 
 
@@ -97,6 +102,11 @@ def _mgr(**kw: Any) -> Any:
     mgr._tasks = {}
     mgr.get.return_value = None
     mgr.settle_before_delete = AsyncMock(return_value="delivered")
+    # What the real manager answers for a record admission stamped: the stamp,
+    # else the parent (a depth-one run's root).
+    mgr.root_session_key_for = MagicMock(
+        side_effect=lambda info: getattr(info, "root_session_key", "") or info.parent_session_key
+    )
     for key, val in kw.items():
         setattr(mgr, key, val)
     return mgr
@@ -865,6 +875,12 @@ class TestApiSpawnRetry:
             old.execution_context = ExecutionContext(
                 None, MemoryStoreRef("default"), "template", "kirocrew"
             )
+            # Stamped at admission on every real record; a depth-one run's root
+            # is its parent.
+            if not hasattr(old, "root_session_key"):
+                old.root_session_key = old.parent_session_key
+            if not hasattr(old, "conversation_root_session_key"):
+                old.conversation_root_session_key = old.root_session_key
         return _Req(_state(subagents=mgr), None, match_info={"agent_id": agent_id})
 
     def test_503_without_manager(self) -> None:
