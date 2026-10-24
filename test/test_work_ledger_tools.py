@@ -1233,57 +1233,6 @@ async def test_an_unreadable_parent_ledger_refuses_the_bootstrap_rather_than_res
 
 
 @pytest.mark.asyncio
-async def test_a_worker_session_is_bound_once_and_never_rebound():
-    """The store permits replacing a binding whose item is terminal, so a session
-    COULD be reused — but a report already in flight from the old work resolves its
-    binding when it LANDS, and there is no unbind path to undo the overwrite. An idle
-    check cannot close that: a turn can start during the awaits before the commit.
-    So the route refuses reuse outright, which makes the race unrepresentable."""
-    ids = await two_by_two()
-    # Close A's item, so the STORE would now allow the binding to be replaced.
-    status, _ = await _record(
-        CONDUCTOR_A, {"action": "close", "item_id": ids["item_a"], "state": "accepted"}
-    )
-    assert status == 200
-    status, body = await _record(
-        CONDUCTOR_A,
-        {"action": "create", "title": "second", "acceptance": {"kind": "human_approval"}},
-    )
-    assert status == 200
-    second = body["item"]["item_id"]
-
-    status, body = await _record(
-        CONDUCTOR_A,
-        {"action": "bind", "item_id": second, "worker_session_key": WORKER_A},
-    )
-    assert status == 409
-    assert body["code"] == "worker_already_dispatched"
-    item = wl.read_work_item(CONDUCTOR_A, second)
-    assert item is not None and item.worker_session_key is None
-    # The original binding is untouched, so no report can be misrouted.
-    assert wl.read_binding(WORKER_A) == (CONDUCTOR_A, ids["item_a"])
-
-    # A FRESH session for the new item is the supported path.
-    _dispatched("chat-a-worker-2", CONDUCTOR_A)
-    status, body = await _record(
-        CONDUCTOR_A,
-        {"action": "bind", "item_id": second, "worker_session_key": "chat-a-worker-2"},
-    )
-    assert status == 200, body
-
-
-def test_the_binding_presence_check_fails_closed(monkeypatch):
-    """An unreadable store must not admit a rebind: the alternative is deciding the
-    one question the refusal exists for on a store that could not answer."""
-
-    def _boom(_key: str):
-        raise OSError("store unreadable")
-
-    monkeypatch.setattr(routes.work_ledger, "binding_path", _boom)
-    assert routes._has_binding("chat-whoever") is True
-
-
-@pytest.mark.asyncio
 async def test_a_read_refuses_when_a_mirror_appears_during_the_read(monkeypatch):
     """Containment decided on ENTRY says nothing about containment after an await.
     The same reason ``session_control`` applies ``_refuse_ineligible_creator``

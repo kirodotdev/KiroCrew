@@ -517,7 +517,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "call, because the field sets are disjoint: 'goal' sets the goal and "
                 "round (and opens the ledger); 'create' mints an item from title + "
                 "acceptance; 'bind' attaches a worker session key to an item — do this "
-                "BEFORE seeding that session, so the worker never starts unbound. When "
+                "BEFORE seeding that session, so the worker never starts unbound. A "
+                "session holds one OPEN item at a time: binding a session whose item is "
+                "still open is refused worker_already_dispatched, while a session whose "
+                "items are all closed can be bound to a new one, and its work_brief and "
+                "work_report then resolve to that new item. When "
                 "your session has no active loop (none, or one the system stopped), a "
                 "bind also arms a default work-ledger patrol on it; a loop a person "
                 "stopped is kept. The reply always ends 'patrol=<armed|existing|"
@@ -526,7 +530,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "'decide' records what you decided and why (the one field a worker reads "
                 "as an instruction); 'verdict' records accept_eval.py's verdict and the "
                 "fail count; 'accept' promotes a worker's claimed pr into the item's "
-                "acceptance once you have checked it; 'close' stamps a terminal state. "
+                "acceptance once you have checked it; 'close' stamps a terminal state, "
+                "and when the item's worker session is still open the reply warns that "
+                "its report channel is now cut (bind a new item to it to restore it). "
                 "Caps refuse rather than truncate, naming the field. The whole write is "
                 "one 64 KB crew-log line as JSON (a non-ASCII character can count up to twelve "
                 "bytes), so a write at every field cap with non-ASCII text can be "
@@ -764,6 +770,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 from kiro_crew.conductor_patrol import reply_line
 
                 line += reply_line(resp)
+            warning = str(resp.get("warning") or "")
+            if warning:
+                line += f"\nWarning: {warning}"
             return line
         conductor = resp.get("conductor") or {}
         return f"Recorded {action}. round={conductor.get('round', '(unset)')}"

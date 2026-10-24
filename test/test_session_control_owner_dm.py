@@ -1455,7 +1455,6 @@ def test_a_channel_conductor_owns_the_worker_it_created_at_bind(tmp_path, monkey
     request = make_mocked_request(
         "POST", "/api/work-ledger/record", app=app, headers={"X-Session-Key": DISCORD_DM}
     )
-    monkeypatch.setattr(ledger_routes, "_has_binding", lambda folded: False)
     assert ledger_routes._refuse_unowned_worker(request, DISCORD_DM, worker_key) is None
 
     stranger = state.get_or_create_slot("chat-stranger")

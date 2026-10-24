@@ -536,6 +536,28 @@ def test_an_item_write_reports_the_committed_item(monkeypatch):
     assert out == "Recorded decide. item=it_00000002 state=closed verdict=pass"
 
 
+def test_a_close_reply_carries_the_routes_warning(monkeypatch):
+    """A close that cut a live worker's report channel says so in the reply."""
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-x")
+    monkeypatch.setattr(
+        mcp_work,
+        "_post",
+        lambda *a, **k: {
+            "ok": True,
+            "action": "close",
+            "item": {"item_id": "it_00000002", "state": "accepted", "verdict": "pass"},
+            "warning": "Worker session chat-w is still open.",
+        },
+    )
+    out = mcp_work._call_tool_inner(
+        "work_ledger_record", {"action": "close", "item_id": "it_00000002", "state": "accepted"}
+    )
+    assert out == (
+        "Recorded close. item=it_00000002 state=accepted verdict=pass\n"
+        "Warning: Worker session chat-w is still open."
+    )
+
+
 def test_an_item_write_with_unset_fields_says_so(monkeypatch):
     monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-x")
     monkeypatch.setattr(mcp_work, "_post", lambda *a, **k: {"ok": True, "item": {}})

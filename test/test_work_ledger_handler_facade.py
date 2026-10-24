@@ -65,7 +65,6 @@ _NOT_AN_OWNER = "work_ledger_board"
 _KNOWN_SEAMS = frozenset(
     {
         "_audit",
-        "_has_binding",
         "_is_restricted_session",
         "_mark_goal_recorded",
         "_recognize_session",

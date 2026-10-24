@@ -737,8 +737,15 @@ def _reconcile_bindings(
     binding is kept where it points and never claimed back. Items in *legacy* --
     legacy records and kept forgotten ones, which the fold does not hold -- keep
     theirs.
+
+    One board can name the same worker on several items, because a conductor may
+    bind a new item to a worker whose item it closed: the terminal ones it finished
+    and at most one open one. The open one is the item the worker is routed to,
+    whatever order the items were created in, and a binding pointing at any item
+    the record binds to that worker is not removed.
     """
     wanted: dict[str, str] = {}
+    named: dict[str, set[str]] = {}
     live: set[str] = set()
     for raw in folded_items:
         if not isinstance(raw, dict):
@@ -746,9 +753,12 @@ def _reconcile_bindings(
         worker = raw.get("worker_session_key")
         item_id = raw.get("item_id")
         if isinstance(worker, str) and worker and isinstance(item_id, str) and item_id in kept:
-            wanted[worker] = item_id
+            named.setdefault(worker, set()).add(item_id)
             if raw.get("state") not in TERMINAL_ITEM_STATES:
+                wanted[worker] = item_id
                 live.add(worker)
+            elif worker not in live:
+                wanted[worker] = item_id
     for worker, item_id in wanted.items():
         if worker not in live:
             # A terminal item names the worker that finished it, but it does not
@@ -777,7 +787,7 @@ def _reconcile_bindings(
         bound_item = _as_str(raw.get("item_id"))
         if not worker or bound_conductor != slot_key:
             continue
-        if bound_item in legacy or wanted.get(worker) == bound_item:
+        if bound_item in legacy or bound_item in named.get(worker, ()):
             continue
         with binding_lock(worker):
             # Re-read under the lock: another board may have rebound this worker

@@ -25,6 +25,7 @@ from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.dashboard import session_control
 from kiro_crew.dashboard.handlers.work_ledger_caller import _caller_key, _own_ledger
+from kiro_crew.dashboard.handlers.work_ledger_read import worker_holds_open_item
 from kiro_crew.dashboard.handlers.work_ledger_recording import (
     _WIDEST_COUNTER,
     _WIDEST_EVENT_TEXT,
@@ -374,6 +375,10 @@ async def _record_conductor_write(
             note = conductor_patrol.patrol_note(state, key, reason)
             if note:
                 payload["patrol_note"] = note
+        if action == "close" and item is not None:
+            warning = _close_warning(state, item.worker_session_key or "")
+            if warning:
+                payload["warning"] = warning
         conductor = result.get("conductor")
         if conductor is not None:
             payload["conductor"] = conductor.to_dict()
@@ -434,6 +439,8 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
 
     if action == "bind":
         refusal = _refuse_unowned_worker(request, key, cleaned.get("worker_session_key"))
+        if refusal is None:
+            refusal = await _refuse_dispatched_worker(key, cleaned.get("worker_session_key"))
         if refusal is not None:
             return refusal
 
@@ -497,17 +504,36 @@ async def api_work_ledger_rebuild(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, **counts})
 
 
-def _has_binding(worker_key: str) -> bool:
-    """Whether this worker session has EVER been bound. Fails closed.
+def _worker_slot(state: DashboardState, worker_session_key: str) -> Any:
+    """The open slot for *worker_session_key* under any spelling it is filed as."""
+    folded = session_ledger.ledger_key(worker_session_key)
+    for candidate in dict.fromkeys((worker_session_key, folded, f"dashboard_{folded}")):
+        try:
+            slot = state.get_slot(candidate)
+        except Exception:  # pragma: no cover - a slot-table read must not 500
+            logger.debug("slot lookup failed for %s", candidate, exc_info=True)
+            slot = None
+        if slot is not None:
+            return slot
+    return None
 
-    An unreadable binding counts as present: the alternative is admitting a rebind
-    on a store that could not answer, which is the case the refusal exists for.
+
+def _close_warning(state: DashboardState, worker_session_key: str) -> str:
+    """The note a ``close`` reply carries when its worker session is still open.
+
+    Closing the item cuts that worker's only upward channel: its ``work_report``
+    is refused ``item_closed``, and a session cannot ``session_send`` to the
+    session that created it. Said at close time because nothing else tells the
+    conductor, and a worker cut off this way goes silent rather than failing loudly.
     """
-    try:
-        return work_ledger.binding_path(worker_key).exists()
-    except Exception:  # pragma: no cover - a path/store error must not admit a bind
-        logger.debug("binding presence check failed for %s", worker_key, exc_info=True)
-        return True
+    if not worker_session_key or _worker_slot(state, worker_session_key) is None:
+        return ""
+    return (
+        f"Worker session {worker_session_key} is still open, and closing its item cut "
+        "its report channel: its work_report is now refused item_closed. If it still "
+        "has work, create a new item and bind it to that same session; otherwise "
+        "session_close it."
+    )
 
 
 def _refuse_unowned_worker(
@@ -535,16 +561,7 @@ def _refuse_unowned_worker(
     if not isinstance(worker_session_key, str) or not worker_session_key:
         return None  # the store's own invalid_value refusal is the better message
     state: DashboardState = request.app["state"]
-    folded = session_ledger.ledger_key(worker_session_key)
-    slot = None
-    for candidate in (worker_session_key, folded, f"dashboard_{folded}"):
-        try:
-            slot = state.get_slot(candidate)
-        except Exception:  # pragma: no cover - a slot-table read must not 500
-            logger.debug("slot lookup failed for %s", candidate, exc_info=True)
-            slot = None
-        if slot is not None:
-            break
+    slot = _worker_slot(state, worker_session_key)
     if slot is None:
         _audit(
             conductor_key,
@@ -558,33 +575,6 @@ def _refuse_unowned_worker(
             "That worker session is not open, so it cannot be bound. Create the "
             "session first and bind the key session_create returned — binding "
             "before the session exists is what leaves a worker running unbound.",
-        )
-    if _has_binding(folded):
-        # ONE binding per worker session, ever. The store permits replacing a
-        # binding whose item is terminal, which is how a session could be reused —
-        # but a report already in flight from the old work resolves its binding when
-        # it LANDS, so it would write the new item's status, summary, artifacts and
-        # pr, and there is no unbind path to undo it.
-        #
-        # An idle check on the worker slot does not guard that: it is a TOCTOU,
-        # since a turn can start during the awaits between it and the commit, and
-        # closing THAT would mean making turn admission and binding replacement
-        # atomic — a coordination mechanism across two subsystems, for a
-        # capability nothing needs. The RFC's lifecycle dispatches one session per
-        # item, so refusing reuse costs a conductor one ``session_create`` and makes
-        # the race UNREPRESENTABLE rather than guarded. The store keeps its
-        # staleness allowance for a future explicit unbind.
-        _audit(
-            conductor_key,
-            "work_ledger_record",
-            "denied",
-            resources="bind",
-            error="worker_already_dispatched",
-        )
-        return _refuse_409(
-            "worker_already_dispatched",
-            "That worker session has already been bound to a work item. A session "
-            "is dispatched for one item; create a new session for this one.",
         )
     # ``session_create`` stamps ``_created_by`` with the creator's SLOT key, while
     # this route addresses the conductor by its SESSION key. For a dashboard
@@ -635,6 +625,48 @@ def _refuse_unowned_worker(
                 "That worker session is in a different workspace. Workspace is the "
                 "memory boundary, and a conductor cannot bind across it.",
             )
+    return None
+
+
+async def _refuse_dispatched_worker(
+    conductor_key: str, worker_session_key: Any
+) -> web.Response | None:
+    """Refuse a ``bind`` whose worker session is still bound to an OPEN item.
+
+    Asked after :func:`_refuse_unowned_worker`, so another conductor's session is
+    refused as not-owned whatever its binding says. The binding and item reads run
+    in a worker thread: they are store reads, and on the loop thread the store's
+    retry on a transient read error is skipped, so a valid rebind would be refused.
+    """
+    if not isinstance(worker_session_key, str) or not worker_session_key:
+        return None
+    folded = session_ledger.ledger_key(worker_session_key)
+    if await asyncio.to_thread(worker_holds_open_item, folded):
+        # ONE OPEN item per worker session. A worker has a single binding file, so a
+        # second bind would repoint its only report channel away from an item that
+        # is still waiting on it. Once that item is terminal its channel is already
+        # dead (reports are refused ``item_closed``), so a rebind loses nothing and
+        # is the only way to give a still-running worker its channel back. The
+        # predicate is the one slot retention asks, and it fails closed: an
+        # unreadable binding or item counts as open. The store re-checks under the
+        # worker's binding lock.
+        #
+        # A report the worker composed before the rebind lands on the new item, because a report
+        # resolves its binding when it lands; that is the point of a rebind -- the
+        # conductor is handing this worker's next words to the new item.
+        _audit(
+            conductor_key,
+            "work_ledger_record",
+            "denied",
+            resources="bind",
+            error="worker_already_dispatched",
+        )
+        return _refuse_409(
+            "worker_already_dispatched",
+            "That worker session is still bound to an open item. A session holds one "
+            "open item at a time: close that item first (the session can then be bound "
+            "to this one), or create a new session for this item.",
+        )
     return None
 
 
