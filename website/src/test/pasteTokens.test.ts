@@ -215,6 +215,16 @@ describe('pasteTokens', () => {
   })
 
   describe('recollapsePastes', () => {
+    it('keeps the prefix verbatim and searches only at or after from', () => {
+      const b = block({ content: 'A\nB\nC\n' })
+      const prefix = `context ${b.content}\n`
+      expect(recollapsePastes(prefix + b.content, [b], prefix.length))
+        .toBe(prefix + formatToken(b))
+      expect(recollapsePastes(prefix + b.content.trimEnd(), [b], prefix.length))
+        .toBe(prefix + formatToken(b))
+      expect(recollapsePastes(prefix, [b], prefix.length)).toBe(prefix)
+    })
+
     it('folds a whole-message paste back to its token', () => {
       const b = block({ id: 'a', seq: 1, lines: 3, content: 'l1\nl2\nl3' })
       expect(recollapsePastes('l1\nl2\nl3', [b])).toBe(formatToken(b))

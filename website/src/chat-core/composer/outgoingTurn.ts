@@ -54,6 +54,7 @@ import { prepareSendPayload, serializeDirTokens } from '../../utils/fileTokens'
 import { appendSessionRefLinks, type SessionRef } from '../../utils/sessionRefs'
 import { expandAll, pruneBlocks, type PasteBlock } from '../../utils/pasteTokens'
 import { expandKnowledgeBlock, type KnowledgeBlock } from '../../pages/chat/useKnowledgeFetch'
+import { knowledgeEnvelopeMark, type KnowledgeEnvelopeMark } from '../../utils/knowledgeEnvelope'
 import { prependQuote, type MessageQuote } from './messageQuote'
 
 export type OutgoingTurnMode = 'send' | 'steer'
@@ -86,6 +87,9 @@ export interface KnowledgeMeta {
   tokens: number
   titles: string[]
   content: Array<{ title: string; text: string }>
+  /** The injected block's length and hash, so a bubble served back as wire
+   *  text can remove exactly that block (`stripKnowledgeEnvelope`). */
+  envelope: KnowledgeEnvelopeMark
 }
 
 /** The fields this module contributes to the message's `meta`, in wire order. */
@@ -138,6 +142,7 @@ export function knowledgeMeta(block: KnowledgeBlock): KnowledgeMeta {
     tokens: block.totalTokens,
     titles: block.items.map(i => i.title),
     content: block.items.map(i => ({ title: i.title, text: i.content.slice(0, 2000) })),
+    envelope: knowledgeEnvelopeMark(expandKnowledgeBlock(block)),
   }
 }
 

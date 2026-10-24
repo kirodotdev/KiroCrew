@@ -25,6 +25,7 @@ import {
   restoreUnreferencedImages,
 } from '../../utils/fileTokens'
 import { findTokenRanges, recollapsePastes, type PasteBlock } from '../../utils/pasteTokens'
+import { stripKnowledgeEnvelope } from '../../utils/knowledgeEnvelope'
 
 /** Per-message identity key with row-id tie-break. `msgKey` alone is NOT
  *  unique — a coarse OS clock can stamp two rows appended in one tick with the
@@ -157,9 +158,13 @@ function renderUserContentInner(opts: UserContentRenderOpts) {
   // written before the pane serialized attachments the way the main chat
   // does) is re-emitted as its `![image](dest)` line FIRST, so everything
   // below sees the one content shape every surface has always produced.
-  let content = restoreUnreferencedImages(opts.content, meta)
+  const knowledge = meta?.knowledge as { items: number; tokens: number; titles: string[]; content?: { title: string; text: string }[]; envelope?: unknown } | undefined
+  // A row sent with knowledge comes back from history as its wire text, which
+  // opens with the injected block (#18075). The send recorded that block's
+  // length and hash, so exactly that block comes off; the chip shows it.
+  const typed = knowledge ? stripKnowledgeEnvelope(opts.content, knowledge.envelope) : opts.content
+  let content = restoreUnreferencedImages(typed, meta)
   const pastes = (meta?.pastes as PasteBlock[] | undefined) || []
-  const knowledge = meta?.knowledge as { items: number; tokens: number; titles: string[]; content?: { title: string; text: string }[] } | undefined
 
   // Folder references resolve FIRST, on the whole message: `[attached_dir N]
   // /path` markers (history replay / steer echo) rewrite to `@label/` display
