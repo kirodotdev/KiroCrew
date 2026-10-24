@@ -58,7 +58,7 @@ interface SessionsSidebarChromeProps {
   canStageSessionRef: boolean
   chatPaneEl: HTMLDivElement | null
   stageSessionRef: (ref: SessionRef) => void
-  openSlotInNewTab: (key: string, opts?: { background?: boolean; }) => void
+  openSlotInNewTab: (key: string, opts?: { background?: boolean; requestSeq?: number }) => void
   ownsSessionTabs: boolean
   activePoppedOut: boolean
   focusActivePopout: (id: string) => void

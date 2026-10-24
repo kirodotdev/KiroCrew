@@ -203,6 +203,22 @@ export interface ChatState {
    *  `automatic` auto-select). Kept apart from `activeSlotMoves`, which then
    *  counts only moves the user asked for. */
   activeSlotAutoMoves?: number
+  /** Moves made by a create, fork or resume opening its session when it
+   *  answered. Also kept apart from `activeSlotMoves`: such a move is a
+   *  request the user made earlier, so it does not undo a later click. */
+  activeSlotRequestMoves?: number
+  /** Counts the creates, forks and resumes started in this window, so each
+   *  request's origin (`captureForkOrigin`) records how many started before
+   *  it. */
+  requestSeq?: number
+  /** The `requestSeq` origin of the newest request that has opened its
+   *  session. A request whose origin is older does not take the view back
+   *  from it (`forkMayOpen`): the click made later wins. */
+  activatedRequestSeq?: number
+  /** The resume that opened its session last, and the session that was
+   *  active when it did, so the swap in `handleResumeSession` retires only
+   *  the tab that resume replaced. */
+  lastResumeActivation?: { requestId: string; replaced: string | null } | null
   /** Forks started in this window that will open their child when they
    *  succeed and `forkMayOpen` allows it. Creates are tracked by
    *  `foregroundCreateId`. While either is pending, the chat page does not
@@ -351,6 +367,16 @@ export interface ChatState {
    *  sequence ref, which could only order ITS OWN clicks -- a palette resume
    *  racing a sidebar resume was unordered before. */
   lastResumeRequestId: string | null
+  /** Every resume still on its way, by requestId: the history key it asked
+   *  for and when it started. A second resume of a key with an entry younger
+   *  than PENDING_OPEN_LEASE_MS is dropped (a double click on a slow resume),
+   *  whichever resumes ran in between; an older entry is treated as hung and
+   *  no longer blocks the row. The chat page counts a non-empty map like a
+   *  pending create or fork. Ordering stays with `lastResumeRequestId`.
+   *  `origin` is where the user stood at the last click that asked for this
+   *  resume, re-taken when a repeat is dropped; the fulfilled reducer asks
+   *  `forkMayOpen` against it. */
+  pendingResumes?: Record<string, { key: string; startedAt: number; origin: { activeSlot: string | null; moves: number; autoMoves: number; requestMoves: number; seq: number } }>
   /** A history delete the gateway REFUSED (409 with a `code`), sibling of
    *  `unresumableResume` above and rendered at the same site. The row is still
    *  in `history` -- nothing was deleted -- so without this the click looked
@@ -386,7 +412,7 @@ export interface ChatState {
    *  cleared when the next foreground create starts. ChatPage carries text
    *  typed during a create only on this activation, and only when the
    *  requestId matches its snapshot (see ChatPage's create-carry note). */
-  lastCreatedActivation: { slot: string; requestId: string } | null
+  lastCreatedActivation: { slot: string; requestId: string; seq?: number } | null
   slotContextPct: Record<string, number>
   // Real token counts behind the context ring (from the adapter usage_update),
   // keyed by slot. Used for the ring tooltip so "44%" shows its absolute
@@ -684,6 +710,10 @@ export const initialState: ChatState = {
   activeSlot: null,
   activeSlotMoves: 0,
   activeSlotAutoMoves: 0,
+  activeSlotRequestMoves: 0,
+  requestSeq: 0,
+  activatedRequestSeq: 0,
+  lastResumeActivation: null,
   messages: [],
   slotRunning: false,
   slotStopping: false,
@@ -710,6 +740,7 @@ export const initialState: ChatState = {
   historyOffset: 0,
   unresumableResume: null,
   lastResumeRequestId: null,
+  pendingResumes: {},
   undeletableHistory: null,
   pendingInput: null,
   mainComposerAppend: null,

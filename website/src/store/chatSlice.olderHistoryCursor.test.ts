@@ -50,6 +50,7 @@ import chatReducer, {
   switchSlot,
 } from './chatSlice'
 import { api } from '../api/client'
+import { landResume } from '../test/resumeLanded'
 
 // Pin the NARROW walk page size (100): loadOlderMessages sizes its page by
 // viewport (narrow 100 / desktop 300), and these fixtures hold only 300 rows
@@ -74,13 +75,7 @@ function makeStore() {
 function resumed(store: ReturnType<typeof makeStore>) {
   store.dispatch(setActiveSlot('active'))
   const recent = HISTORY.slice(TOTAL - PAGE)
-  store.dispatch(
-    resumeFromHistory.fulfilled(
-      { ok: true, key: 'active', nextBefore: TOTAL - PAGE, messages: recent, hasMore: true, total: TOTAL },
-      'req-resume',
-      { key: 'active', title: 'active' },
-    ),
-  )
+  landResume(store, { ok: true, key: 'active', nextBefore: TOTAL - PAGE, messages: recent, hasMore: true, total: TOTAL }, 'req-resume', { key: 'active', title: 'active' })
 }
 
 const detail = () => api.chatSlotDetail as unknown as { mock: { calls: unknown[][] } }
@@ -244,13 +239,7 @@ describe('slotOlderError is scoped to the slot that failed', () => {
   it('clears the flag when resumeFromHistory re-bases history for another slot', () => {
     const store = afterFailedOlderFetch()
 
-    store.dispatch(
-      resumeFromHistory.fulfilled(
-        { ok: true, key: 'other', nextBefore: TOTAL - PAGE, messages: HISTORY.slice(TOTAL - PAGE), hasMore: true, total: TOTAL },
-        'req-resume-other',
-        { key: 'other', title: 'other' },
-      ),
-    )
+    landResume(store, { ok: true, key: 'other', nextBefore: TOTAL - PAGE, messages: HISTORY.slice(TOTAL - PAGE), hasMore: true, total: TOTAL }, 'req-resume-other', { key: 'other', title: 'other' })
 
     expect(store.getState().chat.slotHasMore).toBe(true)
     expect(store.getState().chat.slotOlderError).toBe(false)

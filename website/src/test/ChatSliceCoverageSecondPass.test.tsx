@@ -71,6 +71,7 @@ import { SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
 import { ASK_ANSWERED_HEADER, ASK_QUESTION_SERVER, MAX_TOOL_RESULT_CHARS } from '../utils/askQuestionTool'
 import type { ChatMessage, ChatSlot } from '../types'
 import type { RootState } from '../store'
+import { reduceResume } from './resumeLanded'
 import { __resetErrorJournalForTests, recordError } from '../utils/errorReport'
 
 const apiMock = vi.hoisted(() => ({
@@ -1749,14 +1750,14 @@ describe('chatSlice thunks', () => {
     let s = chatReducer(initial, setActiveSlot('A'))
     // Arm the cursor the way a resume does: one resident message out of ten, so
     // nine remain above it. Each page then carries the next cursor itself.
-    s = chatReducer(s, lifecycle('chat/resumeFromHistory/fulfilled', 'A', {
+    s = reduceResume(chatReducer, s, {
       ok: true,
       key: 'A',
       nextBefore: 9,
       messages: [msg({ role: 'user', content: 'newest', ts: '9' })],
       hasMore: true,
       total: 10,
-    }))
+    }, 'req-1', { key: 'A', title: 'A' })
     expect(s.slotOldestIndex).toBe(9)
     s = chatReducer(s, lifecycle('chat/loadOlder/pending', 'A', undefined))
     expect(s.loadingOlder).toBe(true)

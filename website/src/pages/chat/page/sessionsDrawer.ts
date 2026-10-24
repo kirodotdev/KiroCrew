@@ -347,12 +347,15 @@ export function useSessionsDrawer({
   // null and the slot-state reset that follows leaves it undefined.
   const reduxStore = useStore<RootState>()
   const prevActiveSlotRef = useRef(activeSlot ?? null)
-  const userMovesRef = useRef(reduxStore.getState().chat.activeSlotMoves ?? 0)
+  // A create, fork or resume the user clicked opens in `activeSlotRequestMoves`,
+  // and that is their pick too.
+  const userPicks = (s: RootState) => (s.chat.activeSlotMoves ?? 0) + (s.chat.activeSlotRequestMoves ?? 0)
+  const userMovesRef = useRef(userPicks(reduxStore.getState()))
   useEffect(() => {
     const left = prevActiveSlotRef.current
     const now = activeSlot ?? null
     const state = reduxStore.getState()
-    const userMoves = state.chat.activeSlotMoves ?? 0
+    const userMoves = userPicks(state)
     const userMoved = userMoves !== userMovesRef.current
     prevActiveSlotRef.current = now
     userMovesRef.current = userMoves

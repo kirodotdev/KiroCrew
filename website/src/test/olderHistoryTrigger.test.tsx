@@ -18,10 +18,11 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { createTestStore } from './helpers'
+import { landResume } from './resumeLanded'
 // The walk's page size is asserted through its CONSTANT, never a spelled-out
 // number: what these tests own is "the walk asks for a walk-sized page", and a
 // literal turns a deliberate retune of that size into two unrelated red tests.
-import { loadOlderMessages, resumeFromHistory, OLDER_WALK_PAGE_LIMIT } from '../store/chatSlice'
+import { loadOlderMessages, OLDER_WALK_PAGE_LIMIT } from '../store/chatSlice'
 import { shouldPaginateOlder } from '../pages/chat/pagination'
 import { shouldAutoFillOlder } from '../pages/ChatPage'
 import { api } from '../api/client'
@@ -229,11 +230,7 @@ describe('older-history trigger — fetch through the gate', () => {
   /** Seed a resumed session through the real reducer path that reads `has_more`. */
   function resumedStore(hasMore: boolean) {
     const store = createTestStore()
-    store.dispatch(resumeFromHistory.fulfilled(
-      { ok: true, key: 'slot-1', messages: [], hasMore, nextBefore: OLDEST, rawCount: RESUME_RAW, total: TOTAL },
-      'req-1',
-      { key: 'slot-1', title: 'slot-1' },
-    ))
+    landResume(store, { ok: true, key: 'slot-1', messages: [], hasMore, nextBefore: OLDEST, rawCount: RESUME_RAW, total: TOTAL }, 'req-1', { key: 'slot-1', title: 'slot-1' })
     return store
   }
 

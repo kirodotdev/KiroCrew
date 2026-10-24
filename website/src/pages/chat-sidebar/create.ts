@@ -64,7 +64,10 @@ function plainCreateKey(folderId: string, columnId?: string, memoryMode?: string
  */
 async function createSlotWithOrigin(dispatch: AppDispatch, args: Parameters<typeof createSlot>[0]): Promise<{ slot: Slot; origin: ForkOrigin }> {
   const action = await dispatch(createSlot(args))
-  if (createSlot.fulfilled.match(action)) return { slot: action.payload, origin: { activeSlot: action.meta.originActiveSlot ?? null, moves: action.meta.originActiveSlotMoves, autoMoves: action.meta.originActiveSlotAutoMoves } }
+  if (createSlot.fulfilled.match(action)) {
+    const m = action.meta
+    return { slot: action.payload, origin: { activeSlot: m.originActiveSlot ?? null, moves: m.originActiveSlotMoves, autoMoves: m.originActiveSlotAutoMoves, requestMoves: m.originActiveSlotRequestMoves, seq: m.originRequestSeq } }
+  }
   unwrapResult(action)
   throw new Error('createSlot settled without fulfilling or rejecting')
 }
@@ -77,7 +80,7 @@ export function useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation,
   mode: string | undefined
   dispatch: AppDispatch
   dropSlotMutation: BoardColumnMutations['dropSlotMutation']
-  onOpenSlotInNewTab: ((key: string, opts?: { background?: boolean | undefined; } | undefined) => void) | undefined
+  onOpenSlotInNewTab: ((key: string, opts?: { background?: boolean | undefined; requestSeq?: number } | undefined) => void) | undefined
   // A plain create ACTIVATES the new session, so the host must leave Split View
   // and show it — the same callback a row click fires (ChatSidebar's
   // `onSelectSlot`). Without it the grid keeps drawing the old split over a
@@ -174,7 +177,7 @@ export function useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation,
       if (inNewTab && onOpenSlotInNewTab && slot?.key) {
         // Adds a tab beside the active one; `foreground` also switches to it,
         // same as the header New button's gestures (see createChatMutation).
-        onOpenSlotInNewTab(slot.key, { background: inNewTab === 'background' })
+        onOpenSlotInNewTab(slot.key, { background: inNewTab === 'background', ...(inNewTab === 'foreground' ? { requestSeq: origin.seq } : {}) })
         // A foreground tab switches the view onto the new session, so leave
         // Split View too — the same guarded callback the header New fires
         // after its own foreground switch (createChatMutation). The plain
@@ -278,7 +281,7 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
   setNewChatError: Dispatch<SetStateAction<string>>
   dispatch: AppDispatch
   mode: string | undefined
-  onOpenSlotInNewTab: ((key: string, opts?: { background?: boolean | undefined; } | undefined) => void) | undefined
+  onOpenSlotInNewTab: ((key: string, opts?: { background?: boolean | undefined; requestSeq?: number } | undefined) => void) | undefined
   // Leave Split View on a plain create so the new, now-active session shows
   // instead of the old split (#21935). Same callback a row click fires; the
   // background-tab gesture does not fire it (the split is kept on purpose).
@@ -344,7 +347,7 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
     onSuccess: ({ slot, origin }, { inNewTab: requested }) => {
       const inNewTab = settledTabMode(store, requested, origin)
       if (inNewTab && onOpenSlotInNewTab) {
-        onOpenSlotInNewTab(slot.key, { background: inNewTab === 'background' })
+        onOpenSlotInNewTab(slot.key, { background: inNewTab === 'background', ...(inNewTab === 'foreground' ? { requestSeq: origin.seq } : {}) })
         // Background: the user stays on their transcript, so its composer keeps
         // whatever focus it had — no `focusComposer`, same as the row gesture.
         if (inNewTab === 'background') return

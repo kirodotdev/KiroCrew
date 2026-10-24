@@ -659,6 +659,54 @@ describe('ChatPage ?sid= URL parameter', () => {
       await waitFor(() => expect(currentUrl).toContain('sid=chat-2-200'))
     })
 
+    // The resume answers ok on a chat surface, but the reducer leaves the view
+    // where the user moved while it ran. Nothing is on `?sid=` then, so URL
+    // sync must not stay held for it, and "Opened" must not name it.
+    it('keeps URL sync alive when the user opened another session while the resume ran', async () => {
+      vi.mocked(api.sessionsNamed).mockResolvedValueOnce({
+        sessions: [{ key: 'dashboard_chat-7-50', title: 'Old' }, { key: 'dashboard_chat-7-300', title: 'Newer open' }],
+      })
+      let answer: (v: unknown) => void = () => {}
+      vi.mocked(api.resumeChatSlot).mockReturnValueOnce(new Promise(r => { answer = r }) as never)
+      const { store } = renderChatPage({ route: '/chat?sid=chat-7', slots: [...slots, slot('chat-7-300', 'Newer open')] })
+      await waitFor(() => expect(api.resumeChatSlot).toHaveBeenCalledWith('dashboard_chat-7-50', 'Old'))
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-7-50'))
+      await waitFor(() => expect(notice()).toBeTruthy())
+
+      await act(async () => { store.dispatch(switchSlot('chat-2-200')) })
+      await act(async () => { answer({ ok: true, key: 'chat-7-50', mode: '', messages: [] }) })
+
+      expect(store.getState().chat.activeSlot).toBe('chat-2-200')
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-2-200'))
+      await waitFor(() => expect(notice()).toBeNull())
+      await act(async () => { store.dispatch(switchSlot('chat-1-100')) })
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-1-100'))
+      // The entry was amended in place, so Back reaches the session the user
+      // was on, not the one that never showed.
+      await act(async () => { navBack() })
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-2-200'))
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))
+    })
+
+    // The user moved off the link's session and then off ChatPage while the
+    // resume ran. Its answer must not route them back to chat.
+    it('leaves the page the user went to when the resume answers after ChatPage unmounts', async () => {
+      vi.mocked(api.sessionsNamed).mockResolvedValueOnce({ sessions: [{ key: 'dashboard_chat-7-50', title: 'Old' }] })
+      let answer: (v: unknown) => void = () => {}
+      vi.mocked(api.resumeChatSlot).mockReturnValueOnce(new Promise(r => { answer = r }) as never)
+      const { store } = renderChatPage({ route: '/chat?sid=chat-7', slots })
+      await waitFor(() => expect(api.resumeChatSlot).toHaveBeenCalledWith('dashboard_chat-7-50', 'Old'))
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-7-50'))
+
+      await act(async () => { store.dispatch(switchSlot('chat-2-200')) })
+      await act(async () => { navTo('/developer') })
+      await waitFor(() => expect(currentUrl).toBe('/developer'))
+      await act(async () => { answer({ ok: true, key: 'chat-7-50', mode: '', messages: [] }) })
+
+      expect(currentUrl).toBe('/developer')
+      expect(screen.getByText('developer')).toBeTruthy()
+    })
+
     it('opens the oldest of several matches and lists the others', async () => {
       const many = [...slots, slot('chat-7-300', 'Newer open'), slot('chat-7-100', 'Older open')]
       vi.mocked(api.sessionsNamed).mockResolvedValueOnce({

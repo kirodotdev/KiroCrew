@@ -79,7 +79,7 @@ const FUNCTIONS = [
   'abortActiveOlderFetch', 'batchedTextAboveFloor', 'capturePendingAskId', 'clampToolOutput',
   'countMatchedFetchLimit', 'floorForGen', 'hasUnidentifiedDurableRow', 'hydrateQueuedBubbles', 'isActiveSubagent', 'isAnsweredQuestionEnding', 'isAwaitingSpawnApproval', 'isSpawnApprovalGone', 'isSpawnApprovalRetired',
   'captureForkOrigin', 'forkMayOpen', 'isSupersededPagingRejection', 'isTerminalWorkflowStatus', 'listForkedSlot', 'mcpAppKey', 'missedChunkMarker', 'normalizeQueueEntries',
-  'openCreatedSlot', 'pendingQuestionFor', 'queueEditBroadcastAt', 'queueEntryAttachments', 'queueEntryQuote', 'raiseChunkSeq',
+  'openCreatedSlot', 'pendingQuestionFor', 'queueEditBroadcastAt', 'queueEntryAttachments', 'queueEntryQuote', 'raiseChunkSeq', 'resumeStillOpening',
   'selectActiveSlotProject', 'selectAutomationForSlot', 'selectComposerBusy', 'selectContinuable',
   'selectProjectChipLocked', 'selectSendAccepted', 'selectSendConfirmed', 'selectSidebarApprovalCounts', 'selectSidebarAutomationRunningKeys',
   'selectSidebarStartedSubagentCounts', 'selectSidebarSubagentCounts', 'selectSidebarWorkflowActive', 'selectSidebarWorkflowActiveKeys',
@@ -96,6 +96,7 @@ const CONSTANTS: Record<string, unknown> = {
   OLDER_PAGE_LIMIT: 100,
   OLDER_WALK_PAGE_LIMIT: 100,
   PANE_HYDRATE_LIMIT: 50,
+  PENDING_OPEN_LEASE_MS: 10_000,
   QUIET_END_SERVER: 'kirocrew-core',
   QUIET_END_TOOL: 'nothing_to_do',
   REFRESH_LIMIT_CEILING: 500,
@@ -108,12 +109,12 @@ const CONSTANTS: Record<string, unknown> = {
 /** The initial state in its declared key order. `lastChunkSeq` and
  *  `lastChunkGen` are present as `undefined`, which JSON would hide. */
 const INITIAL_STATE = {
-  activeSlot: null, activeSlotMoves: 0, activeSlotAutoMoves: 0, messages: [], slotRunning: false, slotStopping: false, slotState: 'idle',
+  activeSlot: null, activeSlotMoves: 0, activeSlotAutoMoves: 0, activeSlotRequestMoves: 0, requestSeq: 0, activatedRequestSeq: 0, lastResumeActivation: null, messages: [], slotRunning: false, slotStopping: false, slotState: 'idle',
   slotStatusDetail: {}, slotHasMore: false, slotOldestIndex: 0, slotCursorKey: null,
   slotSwitchRequestId: null, slotSwitchTarget: null, slotSwitchLatestRequestId: null, slotSwitchOrigin: null, switchSlotGone: null,
   loadingOlder: false, slotOlderError: false, lastChunkSeq: undefined, lastChunkGen: undefined,
   _wsChunkedDuringFetch: false, liveFrameSeq: 0, refreshAppliedSeq: {}, _redeliveredFramesDropped: 0, history: [], historyHasMore: false,
-  historyOffset: 0, unresumableResume: null, lastResumeRequestId: null, undeletableHistory: null,
+  historyOffset: 0, unresumableResume: null, lastResumeRequestId: null, pendingResumes: {}, undeletableHistory: null,
   pendingInput: null, mainComposerAppend: null, agentSwitchNotice: null, creatingSlot: false, foregroundCreateId: null, pendingForkOpens: 0,
   lastCreatedActivation: null, slotContextPct: {}, slotContextTokens: {}, voicePlaying: false,
   voicePreparing: false, voiceAudio: null, subagents: {}, subagentQueued: {}, subagentQueuedReason: {}, automations: {},

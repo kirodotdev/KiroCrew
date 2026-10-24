@@ -405,6 +405,7 @@ export function useRecentsProvider(): ResourceProvider {
               // the resume has entered the session, nothing on failure (#15732).
               focusComposerForResumedSession(
                 dispatch(resumeFromHistory({ key: s.key, title: s.title || s.key })).unwrap(),
+                store,
               )
               navigate('/chat')
             },

@@ -187,7 +187,7 @@ describe('ChatSidebar - list-view folder create open-as-tab gestures', () => {
     const store = renderSidebar(onOpen)
     fireEvent.click(plusButton(), { ctrlKey: true, shiftKey: true })
     await created()
-    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false, requestSeq: expect.any(Number) }))
     // The create did not activate: the switch is the tab opener's job, after
     // the tab exists, so the tab the user was on is kept rather than replaced.
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
@@ -206,7 +206,7 @@ describe('ChatSidebar - list-view folder create open-as-tab gestures', () => {
     store.dispatch({ type: 'chat/setActiveSlot', payload: 'elsewhere' })
     resolveCreate({ key: NEW_KEY, folder_id: FOLDER_ID })
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: true }))
-    expect(onOpen).not.toHaveBeenCalledWith(NEW_KEY, { background: false })
+    expect(onOpen).not.toHaveBeenCalledWith(NEW_KEY, { background: false, requestSeq: expect.any(Number) })
   })
 
   it('on mac, Cmd+Shift-click on the folder "+" opens a foreground tab', async () => {
@@ -215,7 +215,7 @@ describe('ChatSidebar - list-view folder create open-as-tab gestures', () => {
     const store = renderSidebar(onOpen)
     fireEvent.click(plusButton(), { metaKey: true, shiftKey: true })
     await created()
-    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false, requestSeq: expect.any(Number) }))
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
   })
 
@@ -224,7 +224,7 @@ describe('ChatSidebar - list-view folder create open-as-tab gestures', () => {
     const store = renderSidebar(onOpen)
     fireEvent.click(emptyRow(), { ctrlKey: true, shiftKey: true })
     await created()
-    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false, requestSeq: expect.any(Number) }))
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
   })
 

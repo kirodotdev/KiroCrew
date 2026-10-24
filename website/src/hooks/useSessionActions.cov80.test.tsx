@@ -85,7 +85,8 @@ describe('duplicate', () => {
     const { result } = harness()
     act(() => result.current.duplicate(KEY))
     await waitFor(() => expect(apiMock.forkChatSlot).toHaveBeenCalledWith(KEY))
-    await waitFor(() => expect(switchSlot).toHaveBeenCalledWith('zzq-forked'))
+    // The switch names the fork's request number, so a later click still wins (`forkMayOpen`).
+    await waitFor(() => expect(switchSlot).toHaveBeenCalledWith({ key: 'zzq-forked', requestSeq: expect.any(Number) }))
   })
 
   it('switches nowhere when the fork is refused', async () => {

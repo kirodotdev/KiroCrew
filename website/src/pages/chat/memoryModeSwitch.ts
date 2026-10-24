@@ -79,8 +79,11 @@ export async function runMemorySwitch(
   // draft, which for a fresh slot is empty, and the old slot (where the
   // draft lives) is deleted afterwards.
   let created: { key?: string } | undefined
+  // The pending action numbers this create (`requestSeq`) synchronously, so
+  // the origin read right after it carries the create's own number.
+  const creating = c.dispatch(createSlot({ ...opts, activate: false }))
   const origin = captureForkOrigin(c.store.getState())
-  try { created = await c.dispatch(createSlot({ ...opts, activate: false })).unwrap() } catch (error) {
+  try { created = await creating.unwrap() } catch (error) {
     c.showActionError(errMessage(error) || unknownError())
     return false
   }
@@ -133,7 +136,7 @@ export async function runMemorySwitch(
     else if (left) revisited = true
   })
   try {
-    await c.dispatch(switchSlot(next)).unwrap()
+    await c.dispatch(switchSlot({ key: next, requestSeq: origin.seq })).unwrap()
   } catch (error) {
     // The rejected switch moves the view back to the old slot, and the
     // slot-change effect clears any error not marked to survive a switch --

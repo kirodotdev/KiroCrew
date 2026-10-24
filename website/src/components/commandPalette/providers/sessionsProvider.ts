@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '../../../api/client'
-import { useAppDispatch, useAppSelector } from '../../../store'
+import { useAppDispatch, useAppSelector, useAppStore } from '../../../store'
 import { resumeFromHistory } from '../../../store/chatSlice'
 import { useSelectInstance } from '../../../hooks/useSelectInstance'
 import { focusComposerForResumedSession } from '../../../pages/chat/composerFocus'
@@ -293,6 +293,9 @@ export function useSessionsProvider(opts?: {
   active?: boolean
 }): ResourceProvider {
   const dispatch = useAppDispatch()
+  // Read on the focus frame after a resume: only a resume that took the view
+  // moves the caret.
+  const store = useAppStore()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const openInSplit = opts?.openInSplit
@@ -369,7 +372,7 @@ export function useSessionsProvider(opts?: {
           // already active, and declines while this surface's input still holds
           // focus. Unwrapped, so a failed resume focuses nothing; the slice records
           // the failure either way (see resumeFromHistory.rejected).
-          focusComposerForResumedSession(dispatch(resumeFromHistory(ref)).unwrap())
+          focusComposerForResumedSession(dispatch(resumeFromHistory(ref)).unwrap(), store)
           // The palette can be opened from ANY page (artifacts, settings, …);
           // resumeFromHistory only activates the slot in the store, so land
           // the user on the chat surface where that slot renders.
@@ -377,6 +380,6 @@ export function useSessionsProvider(opts?: {
         },
         openInSplit,
       }),
-    [dispatch, navigate, queryClient, openInSplit, selectInstance],
+    [dispatch, store, navigate, queryClient, openInSplit, selectInstance],
   )
 }

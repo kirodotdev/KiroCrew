@@ -35,9 +35,6 @@ export function useForkSession({
   const forkDirectionChoice = forkCfg?.tail_fork_enabled === true
   const handleFork = useCallback(async (visibleIndex: number, messageId?: string, explicitDirection?: 'head') => {
     if (!activeSlot) return
-    // Read before the config fetch and the fork request: the user can open
-    // another session while either runs, and the fork then must not take the view.
-    const origin = captureForkOrigin(store.getState())
     let direction: 'head' | 'tail' = 'head' // hoisted so the catch advises the same way
     let control: string | undefined
     // Pending until the child is active or the fork failed (the `finally`), so
@@ -47,6 +44,10 @@ export function useForkSession({
     let released = false
     const release = () => { if (!released) { released = true; dispatch(forkOpenSettled()) } }
     dispatch(forkOpenStarted())
+    // Read after the start, which numbers this fork (`requestSeq`), and before
+    // the config fetch and the fork request: the user can open another
+    // session while either runs, and the fork then must not take the view.
+    const origin = captureForkOrigin(store.getState())
     try {
       // Fork WITHOUT a prompt: an unsent composer draft must never be
       // auto-submitted into the freshly forked session. The
@@ -68,7 +69,7 @@ export function useForkSession({
       const result = await dispatch(forkSlot({ slot: activeSlot, atIndex: visibleIndex, messageId, direction })).unwrap()
       if (result.ok) {
         if (forkMayOpen(store.getState(), origin)) {
-          const switching = dispatch(switchSlot(result.key))
+          const switching = dispatch(switchSlot({ key: result.key, requestSeq: origin.seq }))
           // The child inherits this session's folder, which can be collapsed when
           // the session was opened from the command bar, a tab or a link: open
           // that path so the child's row shows. switchSlot.pending has already

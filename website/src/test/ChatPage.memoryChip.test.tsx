@@ -104,7 +104,10 @@ const settledSwitches: string[] = []
 /** Replacement slots whose `createSlot` has fulfilled. */
 const createdSlots: string[] = []
 const recordSettledSwitch: Middleware = () => next => action => {
-  if (switchSlot.fulfilled.match(action) || switchSlot.rejected.match(action)) settledSwitches.push(action.meta.arg)
+  if (switchSlot.fulfilled.match(action) || switchSlot.rejected.match(action)) {
+    const arg = action.meta.arg
+    settledSwitches.push(typeof arg === 'string' ? arg : arg.key)
+  }
   if (createSlot.fulfilled.match(action) && action.payload?.key) createdSlots.push(action.payload.key)
   return next(action)
 }

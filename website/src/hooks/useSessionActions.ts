@@ -259,7 +259,7 @@ export function useSessionActions(mode?: string, opts?: {
         // The user opened another session while the fork ran: the fork stays
         // listed, and the view and its chrome (Split View) stay as they are.
         if (!forkMayOpen(store.getState(), started.origin)) return
-        dispatch(switchSlot(data.key))
+        dispatch(switchSlot({ key: data.key, requestSeq: started.origin.seq }))
         // The child inherits the source's folder, which can be collapsed (the
         // source row sits in the pinned group or a board lane, or another tab
         // collapsed the folder meanwhile): open that path so the active row shows.

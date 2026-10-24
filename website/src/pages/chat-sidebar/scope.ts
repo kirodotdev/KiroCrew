@@ -98,7 +98,7 @@ export interface ChatSidebarProps {
    *  window), and an omitted callback leaves the gestures unbound rather than
    *  falling back to a plain switch — a middle-click that quietly navigated
    *  would be indistinguishable from a misfire. */
-  onOpenSlotInNewTab?: (key: string, opts?: { background?: boolean }) => void
+  onOpenSlotInNewTab?: (key: string, opts?: { background?: boolean; requestSeq?: number }) => void
   /** Reveal a session's pull request / issue in the side panel instead of
    *  leaving for the provider's website.
    *

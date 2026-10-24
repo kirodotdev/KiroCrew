@@ -17,7 +17,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import type { ChatSlot } from '../types'
 
-const mocks = vi.hoisted(() => ({ forkChatSlot: vi.fn(), dashboardConfig: vi.fn() }))
+const mocks = vi.hoisted(() => ({ forkChatSlot: vi.fn(), dashboardConfig: vi.fn(), resumeChatSlot: vi.fn() }))
 vi.mock('../api/client', async () => {
   const { ApiError } = await import('../api/apiError')
   return {
@@ -31,7 +31,7 @@ vi.mock('../api/client', async () => {
 
 import { store } from '../store'
 import { sseSlots } from '../store/dashboardSlice'
-import { dropActiveSlot, setActiveSlot, switchSlot } from '../store/chatSlice'
+import { dropActiveSlot, resumeFromHistory, setActiveSlot, switchSlot } from '../store/chatSlice'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useForkSession } from '../pages/useChatPageSlotSwitches'
 
@@ -171,6 +171,27 @@ describe('transcript Fork from here', () => {
     )
     return { result, showActionError }
   }
+
+  // A resume clicked before the fork answers after the fork opened its
+  // child: the fork is the later click, so the child keeps the view.
+  it('keeps the child when a resume clicked before the fork answers after it', async () => {
+    const land = deferredFork()
+    let landResume!: (v: unknown) => void
+    mocks.resumeChatSlot.mockReturnValue(new Promise(r => { landResume = r }))
+    const { result } = renderFork()
+
+    let resumed!: Promise<unknown>
+    act(() => { resumed = store.dispatch(resumeFromHistory({ key: 'chat-fork-old', title: 'Old' })) })
+    await waitFor(() => expect(mocks.resumeChatSlot).toHaveBeenCalled())
+    let forked!: Promise<void>
+    act(() => { forked = result.current.handleFork(1) })
+    await waitFor(() => expect(mocks.forkChatSlot).toHaveBeenCalled())
+    await act(async () => { land(); await forked })
+    await waitFor(() => expect(activeSlot()).toBe(CHILD))
+    await act(async () => { landResume({ ok: true, key: 'chat-fork-old', mode: '', messages: [] }); await resumed })
+
+    expect(activeSlot()).toBe(CHILD)
+  })
 
   it('leaves the user on the session they opened while the fork ran', async () => {
     const land = deferredFork()
