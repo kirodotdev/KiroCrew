@@ -29,7 +29,7 @@ import asyncio
 import json
 import logging
 import re
-import time
+import threading
 from typing import Any
 
 from kiro_crew.agent_sdk.kas_tool_names import (
@@ -116,9 +116,7 @@ def undelivered_work_tool(
     return called if called is not None and called == _worker_tool(wire_title) else None
 
 
-async def record_undelivered_call(
-    worker_session_key: str, tool: str, *, observed_ns: int | None = None
-) -> dict[str, Any] | None:
+async def record_undelivered_call(worker_session_key: str, tool: str) -> dict[str, Any] | None:
     """Record the call on the worker's item off the event loop, then pull the
     conductor forward.
 
@@ -129,10 +127,32 @@ async def record_undelivered_call(
     """
     from kiro_crew import conductor_wake, work_ledger
 
-    seen = time.time_ns() if observed_ns is None else observed_ns
-    noted = await asyncio.to_thread(
-        work_ledger.note_undelivered, worker_session_key, tool, observed_ns=seen
-    )
+    # The failure's place in the order is taken here, on the event loop, in the same
+    # step that judged the result frame: a clear that runs while the note is off the
+    # loop then orders after it. The note settles it. A cancelled turn settles it
+    # only when the note never started: one already running settles itself, and
+    # settling it early would leave a clear in the meantime with nothing to fence.
+    seen = work_ledger.undelivered_seen(worker_session_key)
+    gate = threading.Lock()
+    claimed: list[str] = []
+
+    def _note() -> dict[str, Any] | None:
+        with gate:
+            if claimed:
+                return None
+            claimed.append("note")
+        return work_ledger.note_undelivered(worker_session_key, tool, seen=seen)
+
+    try:
+        noted = await asyncio.to_thread(_note)
+    except BaseException:
+        with gate:
+            abandoned = not claimed
+            if abandoned:
+                claimed.append("abandoned")
+        if abandoned:
+            work_ledger.settle_undelivered(worker_session_key, seen)
+        raise
     if noted is not None:
         conductor_wake.wake_for_undelivered_report(noted["conductor_slot_key"], noted["item_id"])
     return noted
@@ -196,12 +216,12 @@ class UndeliveredCallWatch:
         if not self._active:
             return None
         try:
-            return await self._judge(event, time.time_ns())
+            return await self._judge(event)
         except Exception:  # noqa: BLE001 - bookkeeping must not cost the turn
             logger.warning("undelivered-call watch failed on a result frame", exc_info=True)
             return None
 
-    async def _judge(self, event: Any, seen: int) -> dict[str, Any] | None:
+    async def _judge(self, event: Any) -> dict[str, Any] | None:
         call_id = getattr(event, "tool_call_id", "") or ""
         status = getattr(event, "tool_status", "") or ""
         named = self._frames.get(call_id)
@@ -216,4 +236,4 @@ class UndeliveredCallWatch:
         )
         if tool is None:
             return None
-        return await record_undelivered_call(self._session_key, tool, observed_ns=seen)
+        return await record_undelivered_call(self._session_key, tool)

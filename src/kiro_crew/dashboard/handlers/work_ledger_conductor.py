@@ -323,6 +323,16 @@ async def _record_conductor_write(
             )
         if item is not None:
             await asyncio.to_thread(_mark_recorded, key, item.item_id)
+        if action == "close" and item is not None and item.worker_session_key:
+            # A closed item reads no undelivered flag, so its record is dead. Dropped
+            # only now the close is recorded: an unrecorded close is undone above and
+            # its item, still open, keeps its flag.
+            await asyncio.to_thread(
+                work_ledger.forget_undelivered_for_item,
+                item.worker_session_key,
+                key,
+                item.item_id,
+            )
         if action == "goal":
             await asyncio.to_thread(_mark_goal_recorded, key)
         # Counted here and not a line earlier: every refusal above returns, and a

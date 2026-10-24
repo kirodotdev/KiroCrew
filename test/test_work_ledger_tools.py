@@ -1801,6 +1801,36 @@ async def test_a_report_the_harness_never_delivered_shows_on_both_reads():
 
 
 @pytest.mark.asyncio
+async def test_a_recorded_close_deletes_the_items_undelivered_record():
+    """A closed item reads no flag, so its record must not stay behind forever."""
+
+    ids = await two_by_two()
+    wl.note_undelivered(WORKER_A, "work_report")
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "close", "item_id": ids["item_a"], "state": "abandoned"}
+    )
+    assert status == 200
+    assert not wl.undelivered_path(WORKER_A).exists()
+
+
+@pytest.mark.asyncio
+async def test_an_unrecorded_close_keeps_the_items_undelivered_flag(monkeypatch):
+    """The close is undone when the crew log does not confirm it, and the item it
+    leaves open still says its worker's report never arrived."""
+
+    ids = await two_by_two()
+    wl.note_undelivered(WORKER_A, "work_report")
+    monkeypatch.setattr(routes.crew_log_emit, "on_work_recorded", lambda unit, data: False)
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "close", "item_id": ids["item_a"], "state": "abandoned"}
+    )
+    assert status == 503
+    item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert not item.is_terminal
+    assert wl.read_undelivered(CONDUCTOR_A, item)["tool"] == "work_report"
+
+
+@pytest.mark.asyncio
 async def test_a_brief_that_gets_through_clears_a_failed_brief():
     """The block tells a worker to retry with the qualified name at once, so a
     retried ``work_brief`` clears the flag without waiting for a report."""

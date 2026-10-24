@@ -20,8 +20,18 @@ is withheld from agent file tools, so a model cannot write the record itself.
 CLEARED BY THE CALL GETTING THROUGH. Every ``work_brief`` or ``work_report`` that
 reaches the ledger deletes its worker's record (:func:`clear_undelivered`, called by
 the two route handlers), so the flag lasts exactly as long as the worker has not
-got through since. Ordering is by when each operation ran, never by comparing
-stamps, so a failure a moment after a success still shows.
+got through since. A recorded close of the item deletes it too, and a worker
+that never failed never gets a file.
+
+ORDERED BY WHEN EACH OPERATION RAN, NEVER BY A CLOCK. A failure takes a number from
+one in-process counter at the moment the watch sees it (:func:`undelivered_seen`),
+before the note goes off the event loop. A clear that runs while such a note is
+still in flight takes the next number. The note is dropped only when a clear's
+number is higher than its own, so a slow note cannot bring back a failure the
+worker already recovered from, and a failure seen after a clear always shows.
+The numbers are unique, so there are no ties. The counter is per process, which
+covers every call: a worker's MCP tools post to the gateway that runs its turn,
+and a note still in flight when that gateway stops is lost with it.
 
 STRUCTURAL ONLY. The record holds the item it was bound to, which worker tool
 failed, and when. Never the harness's error text or the call's arguments: the flag
@@ -34,7 +44,8 @@ imports and patches as ``kiro_crew.work_ledger.<name>``.
 
 from __future__ import annotations
 
-import time
+import itertools
+import threading
 from datetime import datetime
 from typing import Any
 
@@ -55,40 +66,78 @@ from kiro_crew.work_ledger_writes import read_binding
 #: would read the flag, and it already saw its own call fail.
 WORKER_TOOLS: frozenset[str] = frozenset({"work_brief", "work_report"})
 
+#: The operation order. ``_pending`` holds, per worker, the numbers of failures seen
+#: whose note has not finished; ``_cleared_at`` holds the number of the newest clear
+#: that ran while one was pending. Both drop a worker as soon as nothing is pending,
+#: so they hold only notes in flight.
+_order_lock = threading.Lock()
+_order = itertools.count(1)
+_pending: dict[str, set[int]] = {}
+_cleared_at: dict[str, int] = {}
 
-def _undelivered_now_ns() -> int:
-    """The ordering clock for a note and a clear: one seam, so tests pin it."""
-    return time.time_ns()
+
+def undelivered_seen(worker_slot_key: str) -> int:
+    """Take a failed call's place in the order, at the moment it is seen.
+
+    Pair every call with :func:`note_undelivered` (``seen=``), which settles it, or
+    with :func:`settle_undelivered` when that note will never run.
+    """
+    key = ledger_key(worker_slot_key)
+    with _order_lock:
+        seq = next(_order)
+        _pending.setdefault(key, set()).add(seq)
+    return seq
+
+
+def settle_undelivered(worker_slot_key: str, seen: int) -> None:
+    """Forget that the failure numbered *seen* is in flight. Idempotent."""
+    try:
+        key = ledger_key(worker_slot_key)
+    except Exception:  # noqa: BLE001 - a key undelivered_seen refused has nothing pending
+        return
+    with _order_lock:
+        waiting = _pending.get(key)
+        if waiting is None:
+            return
+        waiting.discard(seen)
+        if not waiting:
+            del _pending[key]
+            _cleared_at.pop(key, None)
 
 
 def _undelivered_stamp() -> str:
-    """Microsecond precision, so two failures in one second are two wakes, not one."""
+    """Microsecond precision, so two failures in one second are two wakes, not one.
+
+    Display and wake dedupe only: ordering never reads it.
+    """
     return datetime.now().astimezone().isoformat(timespec="microseconds")
 
 
 def note_undelivered(
-    worker_slot_key: str, tool: str, *, observed_ns: int | None = None
+    worker_slot_key: str, tool: str, *, seen: int | None = None
 ) -> dict[str, Any] | None:
     """Record that *worker_slot_key*'s *tool* call never reached its item.
 
     Only for a session bound to an OPEN item that names it back, which is what makes
     it a dispatched worker; any other session's failed call records nothing.
 
-    *observed_ns* is when the failed result was SEEN (``time.time_ns()``, taken by
-    the watch before this runs off the event loop). The write is fenced against
-    :func:`clear_undelivered` under the worker's binding lock: when a worker-tool
-    call got through after the failure was seen, the clear's stamp is newer and this
-    note is dropped, so a slow note cannot bring back a failure the worker already
-    recovered from.
+    *seen* is the failure's number from :func:`undelivered_seen`, taken by the watch
+    when it saw the failed result, before this runs off the event loop; ``None``
+    takes one now. The write is dropped when a :func:`clear_undelivered` ran after
+    that number was taken: the worker got through since, so the failure is over.
+    Settles *seen* whatever happens.
 
     Returns ``{"conductor_slot_key", "item_id", "tool", "at"}`` for what was
     written, ``None`` when nothing was. Never raises (cancellation aside): this runs
     inside a worker's turn, and a bookkeeping failure must not cost that turn.
     """
     if tool not in WORKER_TOOLS:
+        if seen is not None:
+            settle_undelivered(worker_slot_key, seen)
         return None
-    seen = _undelivered_now_ns() if observed_ns is None else observed_ns
     try:
+        if seen is None:
+            seen = undelivered_seen(worker_slot_key)
         key = ledger_key(worker_slot_key)
         with binding_lock(key):
             binding = read_binding(key)
@@ -98,10 +147,9 @@ def note_undelivered(
             item = read_work_item(conductor_slot_key, item_id)
             if item is None or item.is_terminal or item.worker_session_key != key:
                 return None
-            path = undelivered_path(key)
-            prior = _read_json_record(path)
-            cleared = prior.get("cleared_ns") if isinstance(prior, dict) else None
-            if isinstance(cleared, int) and cleared >= seen:
+            with _order_lock:
+                cleared = _cleared_at.get(key)
+            if cleared is not None and cleared > seen:
                 return None
             record = {
                 "schema": SCHEMA_VERSION,
@@ -109,33 +157,40 @@ def note_undelivered(
                 "item_id": item_id,
                 "tool": tool,
                 "at": _undelivered_stamp(),
-                "observed_ns": seen,
             }
-            _write_record(path, record)
+            _write_record(undelivered_path(key), record)
     except Exception:  # noqa: BLE001 - best effort inside a worker's turn
         logger.warning("could not record an undelivered %s call", tool, exc_info=True)
         return None
+    finally:
+        if seen is not None:
+            settle_undelivered(worker_slot_key, seen)
     return {k: record[k] for k in ("conductor_slot_key", "item_id", "tool", "at")}
 
 
 def clear_undelivered(worker_slot_key: str) -> None:
-    """Forget *worker_slot_key*'s record: one of its worker-tool calls got through.
+    """Delete *worker_slot_key*'s record: one of its worker-tool calls got through.
 
     Called by the ``work_brief`` and ``work_report`` route handlers once the call has
     reached the ledger, which is the one place that knows it did, whichever surface
-    the worker's turn ran on. Leaves a ``cleared_ns`` stamp rather than nothing, so a
-    note of an EARLIER failure still in flight is fenced off (see
-    :func:`note_undelivered`). Never raises (cancellation aside).
+    the worker's turn ran on. While a note of an earlier failure is still in flight,
+    the clear also takes a number, which fences that note off (see
+    :func:`note_undelivered`). With no record and no note in flight, which is every
+    session that never failed and every harness but KAS, it writes nothing and
+    takes no file lock. Never raises (cancellation aside).
     """
     try:
         key = ledger_key(worker_slot_key)
+        path = undelivered_path(key)
+        with _order_lock:
+            in_flight = key in _pending
+        if not in_flight and not path.exists():
+            return
         with binding_lock(key):
-            # Written even when no record exists: a note of an earlier failure may
-            # still be on its way, and the stamp is what fences it off.
-            _write_record(
-                undelivered_path(key),
-                {"schema": SCHEMA_VERSION, "cleared_ns": _undelivered_now_ns()},
-            )
+            path.unlink(missing_ok=True)
+            with _order_lock:
+                if key in _pending:
+                    _cleared_at[key] = next(_order)
     except Exception:  # noqa: BLE001 - best effort beside a delivered call
         logger.debug("could not clear an undelivered-call record", exc_info=True)
 

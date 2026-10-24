@@ -54,30 +54,46 @@ def _isolated_home(tmp_path, _floor_monkeypatch):
     _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
 
 
+@pytest.fixture(autouse=True)
+def _fresh_order():
+    """No test inherits a note another test left in flight."""
+    from kiro_crew import work_ledger_undelivered as wlu
+
+    wlu._pending.clear()
+    wlu._cleared_at.clear()
+    yield
+    wlu._pending.clear()
+    wlu._cleared_at.clear()
+
+
 class _ManualClock:
-    """Every read advances one microsecond, so ordering never rides the host's tick."""
+    """Every stamp advances one microsecond, so the display stamp never rides the
+    host's tick. Ordering reads no clock at all."""
 
     def __init__(self) -> None:
         self.ns = 1_790_000_000_000_000_000
 
-    def now_ns(self) -> int:
-        self.ns += 1_000
-        return self.ns
-
     def stamp(self) -> str:
         from datetime import datetime, timezone
 
-        moment = datetime.fromtimestamp(self.now_ns() // 1_000 / 1_000_000, tz=timezone.utc)
+        self.ns += 1_000
+        moment = datetime.fromtimestamp(self.ns // 1_000 / 1_000_000, tz=timezone.utc)
         return moment.isoformat(timespec="microseconds")
 
 
 @pytest.fixture
 def clock(monkeypatch) -> _ManualClock:
-    """The store's own clock seams, pinned through the facade."""
+    """The store's display stamp, pinned through the facade."""
     manual = _ManualClock()
-    monkeypatch.setattr(work_ledger, "_undelivered_now_ns", manual.now_ns)
     monkeypatch.setattr(work_ledger, "_undelivered_stamp", manual.stamp)
     return manual
+
+
+@pytest.fixture
+def frozen_clock(monkeypatch) -> None:
+    """The one clock the record reads, its display stamp, returns the same value
+    every time, as on a coarse host clock. Ordering must not need it."""
+    monkeypatch.setattr(work_ledger, "_undelivered_stamp", lambda: "2026-10-24T00:00:00+00:00")
 
 
 def _parsed(*updates: dict) -> list:
@@ -195,7 +211,7 @@ class TestTheRecord:
         assert work_ledger.note_undelivered("chat-not-a-worker", "work_report") is None
 
     def test_a_call_that_gets_through_clears_it_and_a_later_failure_shows_again(self, clock):
-        """Ordered by when each ran, never by comparing second-precision stamps."""
+        """Ordered by when each ran, never by comparing stamps."""
         item_id = _bound_item()
         work_ledger.note_undelivered(WORKER, "work_brief")
         work_ledger.clear_undelivered(WORKER)
@@ -204,20 +220,82 @@ class TestTheRecord:
         work_ledger.note_undelivered(WORKER, "work_report")
         assert work_ledger.read_undelivered(CONDUCTOR, _item(item_id))["tool"] == "work_report"
 
-    def test_a_slow_note_of_a_failure_seen_before_a_clear_is_dropped(self, clock):
+    def test_a_slow_note_of_a_failure_seen_before_a_clear_is_dropped(self, frozen_clock):
         """The failure was seen, the worker retried and got through (clear), and only
-        then did the note run: it must not bring the recovered failure back."""
+        then did the note run: it must not bring the recovered failure back. Every
+        clock read is equal, so only the operation order can tell."""
         item_id = _bound_item()
-        seen = clock.now_ns()
+        seen = work_ledger.undelivered_seen(WORKER)
         work_ledger.clear_undelivered(WORKER)
-        assert work_ledger.note_undelivered(WORKER, "work_report", observed_ns=seen) is None
+        assert work_ledger.note_undelivered(WORKER, "work_report", seen=seen) is None
         assert work_ledger.read_undelivered(CONDUCTOR, _item(item_id)) is None
 
-    def test_a_failure_seen_after_a_clear_is_recorded(self, clock):
+    def test_a_failure_seen_after_a_clear_is_recorded(self, frozen_clock):
+        """The other race order on the same equal clock: the clear ran first, so the
+        failure seen after it shows."""
         item_id = _bound_item()
+        work_ledger.note_undelivered(WORKER, "work_brief")
         work_ledger.clear_undelivered(WORKER)
-        seen = clock.now_ns()
-        assert work_ledger.note_undelivered(WORKER, "work_report", observed_ns=seen) is not None
+        seen = work_ledger.undelivered_seen(WORKER)
+        assert work_ledger.note_undelivered(WORKER, "work_report", seen=seen) is not None
+        assert work_ledger.read_undelivered(CONDUCTOR, _item(item_id))["tool"] == "work_report"
+
+    def test_a_clear_fences_only_the_notes_seen_before_it(self, frozen_clock):
+        """Two failures in flight around one clear: the earlier is dropped, the
+        later is kept, whichever note finishes first."""
+        item_id = _bound_item()
+        before = work_ledger.undelivered_seen(WORKER)
+        work_ledger.clear_undelivered(WORKER)
+        after = work_ledger.undelivered_seen(WORKER)
+        assert work_ledger.note_undelivered(WORKER, "work_report", seen=after) is not None
+        assert work_ledger.note_undelivered(WORKER, "work_brief", seen=before) is None
+        assert work_ledger.read_undelivered(CONDUCTOR, _item(item_id))["tool"] == "work_report"
+
+    def test_the_order_holds_only_notes_in_flight(self):
+        """Once every seen failure is settled, nothing about the worker stays in memory."""
+        from kiro_crew import work_ledger_undelivered as wlu
+
+        _bound_item()
+        work_ledger.note_undelivered(WORKER, "work_report")
+        work_ledger.clear_undelivered(WORKER)
+        assert WORKER not in wlu._cleared_at, "a clear with nothing in flight keeps nothing"
+        seen = work_ledger.undelivered_seen(WORKER)
+        work_ledger.clear_undelivered(WORKER)
+        assert WORKER in wlu._pending and WORKER in wlu._cleared_at
+        work_ledger.note_undelivered(WORKER, "work_report", seen=seen)
+        work_ledger.note_undelivered(WORKER, "work_report")
+        work_ledger.note_undelivered(
+            WORKER, "not_a_worker_tool", seen=work_ledger.undelivered_seen(WORKER)
+        )
+        assert WORKER not in wlu._pending and WORKER not in wlu._cleared_at
+
+    def test_a_delivered_call_with_nothing_recorded_writes_no_file(self):
+        """Every session that never failed, which is every harness but KAS."""
+        _bound_item()
+        work_ledger.clear_undelivered(WORKER)
+        assert not work_ledger.undelivered_path(WORKER).exists()
+        assert not work_ledger.undelivered_dir().exists() or not any(
+            work_ledger.undelivered_dir().iterdir()
+        )
+
+    def test_a_delivered_call_deletes_the_record(self):
+        _bound_item()
+        work_ledger.note_undelivered(WORKER, "work_report")
+        assert work_ledger.undelivered_path(WORKER).exists()
+        work_ledger.clear_undelivered(WORKER)
+        assert not work_ledger.undelivered_path(WORKER).exists()
+
+    def test_forgetting_the_closed_item_deletes_its_record(self):
+        item_id = _bound_item()
+        work_ledger.note_undelivered(WORKER, "work_report")
+        work_ledger.forget_undelivered_for_item(WORKER, CONDUCTOR, item_id)
+        assert not work_ledger.undelivered_path(WORKER).exists()
+
+    def test_forgetting_another_item_keeps_this_ones_record(self):
+        item_id = _bound_item()
+        work_ledger.note_undelivered(WORKER, "work_report")
+        work_ledger.forget_undelivered_for_item(WORKER, CONDUCTOR, "it_00000000")
+        work_ledger.forget_undelivered_for_item(WORKER, "chat-other-conductor", item_id)
         assert work_ledger.read_undelivered(CONDUCTOR, _item(item_id))["tool"] == "work_report"
 
     def test_a_malformed_binding_key_never_raises(self, monkeypatch):
@@ -261,7 +339,7 @@ class TestTheRecord:
         _bound_item()
         work_ledger.note_undelivered(WORKER, "work_report")
         raw = json.loads(work_ledger.undelivered_path(WORKER).read_text(encoding="utf-8"))
-        assert set(raw) == {"schema", "conductor_slot_key", "item_id", "tool", "at", "observed_ns"}
+        assert set(raw) == {"schema", "conductor_slot_key", "item_id", "tool", "at"}
 
     def test_it_lives_outside_every_conductor_directory_and_the_sweep_skips_it(self):
         """A rebuild prunes item files the crew log does not know, and the sweep
@@ -386,6 +464,56 @@ class TestTheConductorHearsOfIt:
         )
         again = probe.observe(_Ctx())
         assert not any("report_undelivered" in obs.brief for obs in again.observations)
+
+    def test_a_note_stopped_before_its_thread_starts_is_settled(self, monkeypatch):
+        """A turn cancelled while the note waits for a thread leaves nothing pending."""
+        from kiro_crew import work_ledger_undelivered as wlu
+
+        _bound_item()
+
+        async def _cancelled(*_a, **_kw):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(asyncio, "to_thread", _cancelled)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(ucw.record_undelivered_call(WORKER, "work_report"))
+        assert WORKER not in wlu._pending
+
+    def test_a_note_already_running_when_the_turn_is_cancelled_is_still_fenced(self, monkeypatch):
+        """Cancelling the turn does not stop a note whose thread has started, so the
+        note must stay in flight: a clear that lands meanwhile still fences it."""
+        import threading
+
+        from kiro_crew import work_ledger_undelivered as wlu
+
+        item_id = _bound_item()
+        real = wlu.note_undelivered
+        go = threading.Event()
+
+        async def _go():
+            loop = asyncio.get_running_loop()
+            started, finished = loop.create_future(), loop.create_future()
+
+            def _slow(*args, **kwargs):
+                loop.call_soon_threadsafe(started.set_result, None)
+                go.wait(10)
+                noted = real(*args, **kwargs)
+                loop.call_soon_threadsafe(finished.set_result, noted)
+                return noted
+
+            monkeypatch.setattr(work_ledger, "note_undelivered", _slow)
+            task = asyncio.create_task(ucw.record_undelivered_call(WORKER, "work_report"))
+            await started
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            work_ledger.clear_undelivered(WORKER)
+            go.set()
+            return await finished
+
+        assert asyncio.run(_go()) is None
+        assert work_ledger.read_undelivered(CONDUCTOR, _item(item_id)) is None
+        assert WORKER not in wlu._pending
 
     def test_recording_pulls_the_conductor_forward(self, monkeypatch):
         from kiro_crew import conductor_wake

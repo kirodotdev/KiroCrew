@@ -342,6 +342,29 @@ def binding_lock(worker_slot_key: str) -> Iterator[None]:
         yield
 
 
+def forget_undelivered_for_item(
+    worker_slot_key: str, conductor_slot_key: str, item_id: str
+) -> None:
+    """Delete *worker_slot_key*'s undelivered-call record when it names this item,
+    which has closed. A record for another item is left alone. Never raises.
+
+    Read under the binding lock, the lock a note writes under, so a note that read
+    the item as open just before it closed cannot write after this looked."""
+    try:
+        path = undelivered_path(worker_slot_key)
+        with binding_lock(worker_slot_key):
+            raw = _read_json_record(path)
+            if (
+                not isinstance(raw, dict)
+                or raw.get("item_id") != item_id
+                or raw.get("conductor_slot_key") != conductor_slot_key
+            ):
+                return
+            path.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001 - a record left behind reads as absent once closed
+        logger.debug("could not drop an undelivered-call record", exc_info=True)
+
+
 # --------------------------------------------------------------------------- #
 # Whole-file reads. A corrupt record reads as absent.
 # --------------------------------------------------------------------------- #

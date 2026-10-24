@@ -418,9 +418,7 @@ def test_an_undelivered_report_moves_the_person_wait_fingerprint(monkeypatch):
     keep its wake from the conductor for as long as the worker stays bound. Each new
     failure moves the fingerprint once; an unchanged one lets the patrol hold again."""
     stamps = iter(f"2026-10-08T07:00:00.{n:06d}+00:00" for n in range(10))
-    ticks = iter(range(1_790_000_000_000_000_000, 1_790_000_000_000_001_000, 10))
     monkeypatch.setattr(wl, "_undelivered_stamp", lambda: next(stamps))
-    monkeypatch.setattr(wl, "_undelivered_now_ns", lambda: next(ticks))
     worker = "chat-9-998"
     item_id = _item("a")
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=item_id, worker_session_key=worker)
