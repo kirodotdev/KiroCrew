@@ -423,7 +423,7 @@ has:
 docker exec kirocrew ls /home/kirocrew/.kiro/crew/skills
 ```
 
-For a registry skill, use **Settings → Skills → Discover**; installation is a
+For a registry skill, use **Customize → Skills → Add Skill**; installation is a
 human-only dashboard action. For your own local skill, copy its directory into
 the global skill tree and restore uid 1000 ownership:
 
