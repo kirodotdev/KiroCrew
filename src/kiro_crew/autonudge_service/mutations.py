@@ -1375,6 +1375,7 @@ def remove_sync(
     self._pushed_running.discard(loop_id)
     self._ledger_wake_streak.pop(loop_id, None)
     self._ledger_tick_fp.pop(loop_id, None)
+    self._subject_wake_fp.pop(loop_id, None)
     self._pull_forward_counts.pop(loop_id, None)
     self._pull_forward_capped = {pair for pair in self._pull_forward_capped if pair[0] != loop_id}
     self._accepted_monitor_turns.pop(loop_id, None)

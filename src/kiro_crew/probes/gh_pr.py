@@ -402,6 +402,25 @@ class PrObservation:
         """
         return bool(self.merged_at) or self.state == "MERGED"
 
+    @property
+    def is_conflicting(self) -> bool:
+        """Whether an open, read head conflicts with its base.
+
+        ``mergeable`` is computed lazily by the forge, so ``UNKNOWN`` right after
+        the base moves reads as not conflicting here: the next read settles it.
+        ``BEHIND`` is deliberately not a conflict: where protection requires an
+        up-to-date head, every sync is BEHIND again at the next base commit, so
+        waking on it would re-sync a busy base's loop every read interval.
+        """
+        if not self.reached or self.is_terminal:
+            return False
+        # The structured monitor's normalizer, so one predicate says what conflicts.
+        # Imported here: that module pulls in the apps and cron graphs, which the
+        # autonudge facade (imported by every MCP server process) must not load.
+        from kiro_crew.monitoring.github_pull_request import _normalize_mergeability
+
+        return _normalize_mergeability(self.mergeability, self.merge_state) == "conflicting"
+
     def bucket(self, name: str) -> tuple[str, ...]:
         """The check identities in one bucket, sorted for a stable reading."""
         return tuple(sorted(row.name for row in self.checks if row.bucket == name))
@@ -1256,6 +1275,41 @@ def fetch(message: object, *, budget_secs: float = _TICK_BUDGET_SECS) -> PrObser
         checks_read=folded,
         checks_complete=complete and statuses_ok and workflows_whole,
         **common,
+    )
+
+
+def fetch_state(message: object) -> PrObservation:
+    """The pull request's own state, mergeability and head: one ``gh`` call, no board.
+
+    For readers that only ask "has it ended?" or "does the head need a re-sync?" --
+    a held loop and an ungated loop's between-cycle read -- where :func:`fetch`'s
+    paginated check board would cost several calls a tick to answer nothing they
+    use. The observation carries no checks and no remarks, so it must never be
+    published as a monitor's reading. Never raises for a forge failure; a
+    ``ValueError`` still escapes for a message that can never be valid.
+    """
+    repo, pr, host = _parse_config(message)
+    data = _fetch_core(_Transport(host, budget_secs=_GH_TIMEOUT_SECS), repo, pr)
+    if data is None:
+        return PrObservation(
+            repo=repo,
+            pr=pr,
+            host=host,
+            status=STATUS_UNAVAILABLE,
+            observed_at=time.time(),
+            incomplete=("pull request unread",),
+        )
+    return PrObservation(
+        repo=repo,
+        pr=pr,
+        host=host,
+        status=STATUS_OK,
+        observed_at=time.time(),
+        state=str(data.get("state") or "").upper(),
+        mergeability=str(data.get("mergeable") or "").upper(),
+        merge_state=str(data.get("mergeStateStatus") or "").upper(),
+        head=str(data.get("headRefOid") or ""),
+        merged_at=str(data.get("mergedAt") or ""),
     )
 
 

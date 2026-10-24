@@ -396,7 +396,17 @@ stays active, fires nothing and spends neither bound, and it resumes on its own
 once a person answers an approval, types into the dashboard session or presses
 fire (`release_approval_hold`); a Slack or Discord message alone does not
 release it. `monitor_inspect` reports the hold as
-`paused_for_approval` on the loop reading.
+`paused_for_approval` on the loop reading. A held gated loop is not blind: when
+it names one pull request, each held tick reads it (`subject_reads.hold_tick`,
+one `gh pr view`, no model turn) and re-arms one read interval out, so the
+reconciler rescues such a held loop whose timer died like any other. Any other
+held loop, ungated or naming none, reads nothing: its held tick re-arms
+nothing, a turn's end arms it toward its deadline, and the reconciler skips it.
+A pull request that merged or closed during a gated loop's hold settles the
+loop as `monitor_terminal`, records the outcome on its monitor and sends the
+expiry notice. An ungated loop is never settled by a held read, because
+`gate=False` promises a terminal reading never ends it. A channel loop settles
+there too, because a held loop delivers no turn to carry the news.
 
 A tool's “requested” response proves receipt only. The gateway's applied notice
 and a subsequent `monitor_inspect` prove activation. Unmatched directive delivery
@@ -433,6 +443,18 @@ carry state with `gate=False`. So one class takes three shapes:
 present and `gate` is false, and it is the guard that keeps the populations
 apart everywhere they meet: the dashboard handlers, the session directive
 application path, and the Slack gateway all branch on it.
+
+The first shape still reads its subject between cycles, without becoming the
+other two. A plain prompt loop with `gate=False` that names one pull request
+sleeps in read-interval chunks (`subject_reads.sleep_until_cycle`) and reads
+the pull request's state between them. A head that newly conflicts with its
+base ends the sleep early, once per head, and the cycle runs through the normal
+ladder. `BEHIND` does not wake it: where protection requires an up-to-date head,
+every sync is behind again at the next base commit. That is the read's only effect: it never suppresses a cycle and never
+acts on a terminal reading, which remains the opt-out's promise. It keeps no
+`MonitorState`, because a monitor on an ungated row would make it the third
+shape; its one fingerprint lives in memory, so a restart wakes a standing
+conflict once more.
 
 What follows for this spec is that the substrate is not a new subsystem to build
 beside the loop. It is a change to what that one field holds and to which
@@ -904,7 +926,9 @@ session, and in-session injection is the only path that can act.
 The in-session timer counts its interval from the end of its own last cycle
 toward a fixed deadline, so a user message defers a due fire without restarting
 the countdown. The real cadence is therefore the interval plus each cycle's own
-duration, which callers must size for.
+duration, which callers must size for. An ungated loop naming one pull request
+can run sooner: a head that newly needs a re-sync ends its sleep early (see
+*A monitor is a field, not a system*).
 
 ### 7. Delivery and turn injection
 
