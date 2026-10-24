@@ -108,6 +108,23 @@ class TestApiTerminalDelete:
         assert "abc123" not in registry
 
     @pytest.mark.asyncio
+    async def test_deletes_existing_session_when_panel_disabled(self):
+        sess = _make_session()
+        registry = {"abc123": sess}
+        req = _make_request(registry=registry)
+        with (
+            patch.object(terminal, "_is_enabled", return_value=False),
+            patch.object(terminal, "_kill_session", new_callable=AsyncMock) as mock_kill,
+            patch.object(terminal, "_sel") as mock_sel,
+        ):
+            mock_sel.return_value.log_api_access = MagicMock()
+            resp = await terminal.api_terminal_delete(req)
+        assert resp.status == 200
+        assert json.loads(resp.body)["deleted"] == "abc123"
+        mock_kill.assert_awaited_once_with(sess)
+        assert "abc123" not in registry
+
+    @pytest.mark.asyncio
     async def test_closes_ws_before_kill(self):
         ws = AsyncMock()
         ws.closed = False
