@@ -633,6 +633,7 @@ async def send_message_stream(
 
     req_id = await self._send_prompt(message)
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
+    self._reset_native_child_turn()
     # Credits held between turns (see ``_track_metadata``): billed here, once.
     self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)
     self._between_turn_credits = 0.0
@@ -677,6 +678,10 @@ async def send_message_stream(
             elif action == "server_request_unknown":
                 await self._reject_unknown_server_request(msg)
             elif action == "update":
+                # A native child's lifecycle, text and side frames are not this
+                # turn's answer; this API yields str, so their events are dropped.
+                if self._native_child_events(msg)[1]:
+                    continue
                 self._track_usage_update(msg)
                 self._note_background_launch(msg)
                 # Apply the codex compaction state change; this API yields
@@ -768,6 +773,7 @@ async def _dispatch_events(
 ) -> AsyncGenerator[AcpEvent, None]:
     """Shared event dispatch loop for prompts and commands."""
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
+    self._reset_native_child_turn()
     # Credits held between turns (see ``_track_metadata``): billed here, once.
     self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)
     self._between_turn_credits = 0.0
@@ -928,6 +934,14 @@ async def _dispatch_events(
             # Answered before the turn's own terminal: kept for the settle.
             self._steer_turn.answers[msg.id] = (msg, False)
         elif action == "update":
+            # A native child's roster and activity come first: a child's tool
+            # frame continues below after its activity prefix, while its
+            # lifecycle, text and side frames are never this turn's own.
+            _child_events, _child_consumed = self._native_child_events(msg)
+            for _child_event in _child_events:
+                yield _child_event
+            if _child_consumed:
+                continue
             self._track_usage_update(msg)
             self._note_background_launch(msg)
             # pi's consumed notification for a steer is the gate extension's own
@@ -1274,6 +1288,7 @@ async def _send_prompt(self: AcpClient, message: str, *, allow_image: bool = Tru
 async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) -> str:
     output: list[str] = []
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
+    self._reset_native_child_turn()
     # Credits held between turns (see ``_track_metadata``): billed here, once.
     self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)
     self._between_turn_credits = 0.0
@@ -1314,6 +1329,9 @@ async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) ->
         elif action == "server_request_unknown":
             await self._reject_unknown_server_request(msg)
         elif action == "update":
+            # See send_message_stream: a native child's own frames are not the answer.
+            if self._native_child_events(msg)[1]:
+                continue
             self._track_usage_update(msg)
             self._note_background_launch(msg)
             # See send_message_stream: settle the codex compaction for the
