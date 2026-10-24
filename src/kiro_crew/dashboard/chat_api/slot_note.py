@@ -74,7 +74,10 @@ def _note_delivered_live(slot: _ChatSlot, note: dict[str, object]) -> bool:
         return False
     for row in slot.messages:
         row_meta = row.get("meta")
-        if isinstance(row_meta, dict) and row_meta.get("noteId") == note_id:
+        if isinstance(row_meta, dict) and note_id in (
+            row_meta.get("noteId"),
+            row_meta.get("noteRowFor"),
+        ):
             return True
     return False
 
