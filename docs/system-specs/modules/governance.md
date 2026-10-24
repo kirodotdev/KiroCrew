@@ -133,7 +133,9 @@ document is the **authority**; every tier below it may only **tighten** it:
 1. **the centrally distributed document** — fetched from `KIROCREW_POLICY_URL` or
    from the `distribution.source` a lower tier declares, served from the
    last-known-good cache when the endpoint is unreachable. See
-   [Central distribution](#central-distribution-distribution--policy-only).
+   [Central distribution](#central-distribution-distribution--policy-only). An
+   enterprise build fetches from its build-time source only, and requires it
+   ([Enterprise build](#enterprise-build-one-source-fixed-at-build-time)).
 2. `KIROCREW_SECURITY_POLICY` env path — the local operator channel.
 3. companion-bundled resource (the `amazon` edition packages it; the public core
    passes `None`).
@@ -408,6 +410,33 @@ enforcement document, which is the widest escalation the model has.
 The env channel wins **per setting**, so a host can be redirected to a canary
 endpoint or have its interval lengthened during an incident without editing — and
 re-signing — the published document.
+
+### Enterprise build: one source, fixed at build time
+
+Decision D2 of the
+[Crew Enterprise Edition RFC](../../request-for-change/rfc-crew-enterprise-edition.md).
+When `kiro_crew.edition.is_enterprise()` is true, neither channel above applies:
+
+- The source is `ENTERPRISE_POLICY_URL` in `policy_distribution_source.py`.
+  `resolve_distribution` ignores `KIROCREW_POLICY_URL`, every other
+  `KIROCREW_POLICY_*` distribution setting, and the `source` of whatever block it is
+  handed. `host_pinned_source()` answers the constant, so a fetched document whose
+  `distribution.source` names another address is neither followed nor refused as a
+  migration.
+- `load_security_policy` skips the lower-tier peek and always enters the central tier.
+  `compose_tier_ladder` never lets a lower tier's `distribution` block fill a gap the
+  central one left. The cadence, timeout and staleness bound therefore come from the
+  fetched document alone.
+- The central policy is required. `on_unavailable` is `fail_closed` whatever any
+  document says, so a cold cache and a fetch that cannot complete abort boot. A
+  last-known-good cache from the same source within its staleness bound is still served.
+- A cache-only child refuses a cache recorded against any other source.
+- `KIROCREW_POLICY_HEADERS` (the request credential) is still read: it cannot change
+  the address.
+
+The constant is a placeholder on a reserved `.invalid` domain until the real endpoint
+is chosen, so an enterprise build fails closed at boot until then. A test address needs
+its own build.
 
 **No credentials in the document, and no provenance flag either.** `distribution`
 has no `headers` field on purpose: a document published to the whole fleet must not

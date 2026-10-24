@@ -282,6 +282,17 @@ DEFAULT_FETCH_TIMEOUT_SECS = 10.0
 MAX_POLICY_BYTES = 1 << 20  # 1 MiB
 
 
+def _is_enterprise() -> bool:
+    """``kiro_crew.edition.is_enterprise()``, read at call time.
+
+    Imported here rather than at module scope so the facade family binds no new project
+    module name (``test_governance_parts_facade`` keeps that set closed).
+    """
+    from kiro_crew.edition import is_enterprise
+
+    return is_enterprise()
+
+
 @dataclass(frozen=True)
 class PolicyDistribution:
     """Policy-only central-distribution pins: WHERE the ceiling itself comes from.
@@ -533,6 +544,9 @@ class PolicyDistribution:
         if (
             not source
             and not os.environ.get(_POLICY_DISTRIBUTION_URL_ENV, "").strip()
+            # An enterprise build supplies the source itself (RFC D2), so a block that
+            # only tunes the cadence or staleness bound is not inert there.
+            and not _is_enterprise()
             and any(
                 (
                     numbers["refresh_interval_secs"],

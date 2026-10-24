@@ -55,6 +55,14 @@ POLICY_UNAVAILABLE_ENV = "KIROCREW_POLICY_ON_UNAVAILABLE"
 #: handed the means to fetch it — see :func:`cache_only`.
 POLICY_CACHE_ONLY_ENV = "KIROCREW_POLICY_CACHE_ONLY"
 
+#: The enterprise build's policy source (RFC rfc-crew-enterprise-edition, D2). In an
+#: enterprise build this is the ONLY source: :data:`POLICY_URL_ENV`, the other
+#: ``KIROCREW_POLICY_*`` settings and any ``distribution.source`` in a local or fetched
+#: document are ignored. PLACEHOLDER on a reserved domain that never resolves, so an
+#: enterprise build fails closed at boot until it is replaced with the real endpoint
+#: before the enable step (the RFC's Migration plan, phase 2). An oss build never reads it.
+ENTERPRISE_POLICY_URL = "https://governance.example.invalid/crew/policy"
+
 #: Every environment variable this tier reads, owned in one place.
 #:
 #: The set exists so the AGENT-DENY list cannot drift from it: every name here must be
@@ -511,8 +519,18 @@ def resolve_distribution(declared: Optional[PolicyDistribution] = None) -> Polic
     Per-setting rather than all-or-nothing, so a fleet can retune one value —
     redirect a host to a canary endpoint, lengthen an interval during an incident —
     without editing (and re-signing) the published document.
+
+    **Enterprise build (RFC D2): no local channel.** The source is
+    :data:`ENTERPRISE_POLICY_URL`, every ``KIROCREW_POLICY_*`` setting is ignored, and
+    ``on_unavailable`` is ``fail_closed`` whatever *declared* says. The cadence, timeout
+    and staleness bound come from *declared* alone, and every caller hands an
+    enterprise build only the FETCHED document's block: ``load_security_policy`` passes
+    no local declaration, and ``compose_tier_ladder`` keeps the central block.
     """
     base = declared or PolicyDistribution()
+
+    if _is_enterprise():
+        return replace(base, source=ENTERPRISE_POLICY_URL, on_unavailable=UNAVAILABLE_FAIL_CLOSED)
 
     source = os.environ.get(POLICY_URL_ENV, "").strip() or base.source
     refresh = _env_number(POLICY_REFRESH_ENV, whole=True)
@@ -536,6 +554,18 @@ def resolve_distribution(declared: Optional[PolicyDistribution] = None) -> Polic
     )
 
 
+def host_pinned_source() -> str:
+    """The source this host names outside any document, or ``""``.
+
+    The build-time :data:`ENTERPRISE_POLICY_URL` in an enterprise build, otherwise
+    :data:`POLICY_URL_ENV`. A non-empty answer means a document's own
+    ``distribution.source`` is not followed.
+    """
+    if _is_enterprise():
+        return ENTERPRISE_POLICY_URL
+    return os.environ.get(POLICY_URL_ENV, "").strip()
+
+
 def _body_digest(body: bytes) -> str:
     """A stable digest of a policy document's bytes.
 
@@ -544,3 +574,14 @@ def _body_digest(body: bytes) -> str:
     signing. That is what ``identity.signature`` is for.
     """
     return hashlib.sha256(body).hexdigest()
+
+
+def _is_enterprise() -> bool:
+    """``kiro_crew.edition.is_enterprise()``, read at call time.
+
+    Imported here rather than at module scope so the facade family binds no new project
+    module name (``test_policy_distribution_facade`` keeps that set closed).
+    """
+    from kiro_crew.edition import is_enterprise
+
+    return is_enterprise()
