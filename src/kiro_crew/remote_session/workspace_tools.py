@@ -284,9 +284,14 @@ def _run_grouped(
     which is how an unwind or a stdout cutoff stops it. Without ``timeout`` only
     the leader is signalled. An expiry raises ``TimeoutExpired``. A stdout limit
     keeps only that prefix and stops the read when reached; this intentional
-    cutoff reports success. Stderr keeps a bounded tail.
+    cutoff reports success. Stderr keeps a bounded tail. On Windows the read
+    runs unwrapped: a ``timeout`` there may be System32's unrelated wait
+    command, and none can signal a Windows process tree, so the deadline is
+    this function's own.
     """
-    wrapped, wait_secs = _under_timeout(argv, timeout)
+    wrapped, wait_secs = (
+        (argv, timeout) if sys.platform == "win32" else _under_timeout(argv, timeout)
+    )
     timer = wrapped is not argv
     # timeout would report a missing program as exit 127; keep the error.
     if timer and shutil.which(argv[0], path=env.get("PATH", os.defpath)) is None:
@@ -339,6 +344,14 @@ def _run_grouped(
                     raise subprocess.TimeoutExpired(argv, timeout)
                 if index == 0 and len(prefix) == stdout_limit:
                     cutoff = True
+                    # Close our end first: git's next write then fails with a
+                    # broken pipe, which ends it and any child holding the pipe
+                    # on every platform. Windows has no group signal, and its
+                    # git.exe is a launcher, so stopping the leader alone would
+                    # leave the real git writing until the deadline.
+                    assert proc.stdout is not None
+                    with contextlib.suppress(OSError):
+                        proc.stdout.close()
                     _stop_read(proc)
             if errors:
                 raise errors[0]
@@ -378,13 +391,53 @@ def _stop_read(proc: Any) -> None:
 
 
 def _unwind(proc: Any) -> None:
-    """Stop and reap a still-running command; without ``timeout``, the leader only."""
-    _stop_read(proc)
+    """Stop and reap a still-running command; without ``timeout``, the leader only.
+
+    On Windows the whole tree is ended instead: there is no group signal, and
+    git.exe is a launcher, so stopping the leader would orphan the real git.
+    """
+    if sys.platform == "win32":
+        _stop_tree(proc)
+    else:
+        _stop_read(proc)
     try:
         proc.wait(timeout=2 * _KILL_GRACE_SECS)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait(timeout=10)
+
+
+def _windows_system_dir() -> str:
+    """The Windows system directory, from ``GetSystemDirectoryW``.
+
+    Not from ``%SystemRoot%``: the environment is the caller's to set, so a
+    planted ``taskkill.exe`` would run in its place (the rule
+    ``platform_compat_trust`` follows; this guest file ships without it).
+    """
+    try:
+        import ctypes
+
+        buf = ctypes.create_unicode_buffer(260)
+        written = ctypes.windll.kernel32.GetSystemDirectoryW(buf, len(buf))  # type: ignore[attr-defined]
+        if 0 < written < len(buf):
+            return str(buf.value)
+    except (AttributeError, ImportError, OSError):
+        pass
+    return "C:\\Windows\\System32"
+
+
+def _stop_tree(proc: Any) -> None:
+    """Windows: end ``proc`` and every process under it (``taskkill /T``)."""
+    taskkill = os.path.join(_windows_system_dir(), "taskkill.exe")
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(
+            [taskkill, "/T", "/F", "/PID", str(proc.pid)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2 * _KILL_GRACE_SECS,
+            check=False,
+        )
 
 
 class ToolError(Exception):
@@ -1080,6 +1133,29 @@ def _worktree_mode(st_mode: int) -> str:
     return "100755" if st_mode & 0o111 else "100644"
 
 
+# Control bytes git's gather_stats counts as non-printable: below 32 except
+# BS, TAB, ESC and FF (CR and LF are counted apart), and DEL.
+_GIT_NONPRINTABLE = tuple(bytes([c]) for c in (*range(32), 127) if c not in (8, 9, 10, 12, 13, 27))
+
+
+def _git_auto_text(body: bytes) -> bool:
+    """Whether git's automatic conversion would treat ``body`` as text.
+
+    Mirrors convert.c's ``convert_is_binary``: a lone CR, a NUL, or more than
+    one non-printable byte per 128 printable ones makes git leave the bytes as
+    they are, so their CRLFs must not be folded either. A trailing Ctrl-Z
+    (DOS end of file) is not counted as non-printable.
+    """
+    lone_cr = body.count(b"\r") - body.count(b"\r\n")
+    nonprintable = sum(body.count(c) for c in _GIT_NONPRINTABLE)
+    if body.endswith(b"\x1a"):
+        nonprintable -= 1
+    printable = len(body) - nonprintable - body.count(b"\r") - body.count(b"\n")
+    if body.endswith(b"\x1a"):
+        printable -= 1
+    return not lone_cr and b"\0" not in body and (printable >> 7) >= nonprintable
+
+
 def _git_bodies(
     ws: Workspace, path: str, run: Callable, source: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -1232,7 +1308,7 @@ def _git_bodies(
         crlf_in_head = old is not None and b"\r\n" in old
         if text != b"unset":
             if text == b"auto":
-                convert = b"\0" not in new and not crlf_in_head
+                convert = _git_auto_text(new) and not crlf_in_head
             elif eol in (b"lf", b"crlf"):
                 convert = True
             elif not convert:
@@ -1242,7 +1318,9 @@ def _git_bodies(
                     if exc.returncode != 1:
                         raise
                     autocrlf = b"false"
-                convert = autocrlf in (b"true", b"input") and b"\0" not in new and not crlf_in_head
+                convert = (
+                    autocrlf in (b"true", b"input") and _git_auto_text(new) and not crlf_in_head
+                )
         if convert:
             new = new.replace(b"\r\n", b"\n")
     return {

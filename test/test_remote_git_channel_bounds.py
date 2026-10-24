@@ -268,7 +268,7 @@ def test_unborn_diff_includes_staged_files(tmp_path, monkeypatch, object_format)
         check=True,
         capture_output=True,
     )
-    (tmp_path / "new.txt").write_text("first content\n")
+    (tmp_path / "new.txt").write_text("first content\n", newline="\n")
     subprocess.run([git, "add", "new.txt"], cwd=tmp_path, check=True)
     ws = workspace_tools.Workspace(str(tmp_path))
     assert workspace_tools.browse(ws, {"op": "git_log"})["output"] == ""

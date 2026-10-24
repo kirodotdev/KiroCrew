@@ -92,6 +92,7 @@ export default function AskAgentButton({
   onHandoff,
   label,
   gate,
+  onStage,
   className = '',
   tone = 'danger',
 }: {
@@ -147,6 +148,16 @@ export default function AskAgentButton({
    * the first had already accepted.
    */
   gate?: (proceed: () => void) => void
+  /**
+   * Stages `prompt` in a composer the caller owns, in place of the hand-off.
+   *
+   * The hand-off always lands in a FRESH chat (`sendErrorToChat`), which is
+   * right for an error report but wrong for a request about the chat on screen:
+   * a surface bound to this chat's own workspace (the remote Git panel) needs the
+   * draft in THIS chat, where the agent can reach that workspace. Only used with
+   * `prompt`; nothing navigates.
+   */
+  onStage?: (prompt: string) => void
   className?: string
   /**
    * Link tint. `danger` (default) for placement inside an error surface;
@@ -178,6 +189,10 @@ export default function AskAgentButton({
   if (!gatewayConnected) return null
 
   const onClick = () => {
+    if (prompt && onStage) {
+      onStage(prompt)
+      return
+    }
     // The gate goes in FRONT of the whole hand-off, staging included: a vetoed
     // hand-off that had already queued its prompt would deliver it to the next
     // chat the user opens, long after the crash it describes.
