@@ -54,7 +54,7 @@ async def test_disk_half_runs_off_loop_after_the_session_map_forget() -> None:
         patch.object(
             sa,
             "_cleanup_session_files_sync",
-            side_effect=lambda *a: order.append(("unlink", _on_loop())),
+            side_effect=lambda *a: order.append(("unlink", _on_loop())) or True,
         ),
     ):
         ok, detail = await mgr.release_conversation_async("c1")

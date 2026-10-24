@@ -689,6 +689,12 @@ def spawn_release(name: str, args: dict[str, Any]) -> str:
             "arrives as a [Subagent completion event]; do not spawn it again unless "
             "you still need the work."
         )
+    if d.get("status") == "not_disposed":
+        return (
+            f"Not disposed: conversation {conv} was dropped from Crew's list, but its "
+            "backend keeps its own session store and that session was not deleted. "
+            "A later spawn_continue may still resume it."
+        )
     return f"Released conversation {conv} — it can no longer be continued."
 
 

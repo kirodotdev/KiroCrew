@@ -313,7 +313,9 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
 async def api_spawn_release(request: web.Request) -> web.Response:
     """POST /api/spawn/{agent_id}/release — end a continuable conversation.
 
-    Deletes the persisted session mapping and the on-disk session files.
+    Deletes the persisted session mapping and the on-disk session files. A
+    backend that owns its own session store answers ``not_disposed``: Crew
+    forgot the conversation, but nothing deleted that backend's session.
     Refuses while a run is in flight on the conversation.
 
     A spawn that was accepted and has not started is cancelled instead: it
@@ -349,6 +351,12 @@ async def api_spawn_release(request: web.Request) -> web.Response:
         if detail.startswith("conversation_busy"):
             return web.json_response({"error": detail, "code": "conversation_busy"}, status=409)
         return web.json_response({"error": detail, "code": "conversation_gone"}, status=404)
+    if detail.startswith("not_disposed"):
+        # Crew forgot it, but the backend's own session store still holds it,
+        # so a later continue may resume it: the status says exactly that.
+        return web.json_response(
+            {"conversation": conv_id, "status": "not_disposed", "detail": detail}
+        )
     return web.json_response({"conversation": conv_id, "status": "released"})
 
 

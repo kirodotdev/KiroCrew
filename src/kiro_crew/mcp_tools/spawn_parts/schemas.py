@@ -491,6 +491,8 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
             "description": (
                 "End a continuable subagent conversation (spawn_run keep=true): "
                 "deletes its persisted session so it can no longer be continued. "
+                "A backend that keeps its own session store answers 'Not "
+                "disposed': that session may still resume. "
                 "Call when the delegated workstream is finished. Idle "
                 "conversations also expire automatically after several hours. "
                 "On a run of yours that is still queued (accepted, not started) "
