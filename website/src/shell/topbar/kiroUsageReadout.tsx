@@ -191,7 +191,9 @@ export function kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUs
       const totalLimit = kiroUsageState.limit + bonusLimit
       const usedStr = fmtCompact(totalUsed)
       const limitStr = fmtCompact(totalLimit)
-      const title = i18nT('components.kiroAccountModal.kiro_credit_usage')
+      // Names the account and subscription, not just the balance: this pill
+      // is the desktop's way to the plan page behind the modal (#23812).
+      const title = i18nT('app.kiro_account_credits')
       node = (<button key="usage" className={kiroUsageState.stale ? `${seg} opacity-60` : seg} onClick={() => setKiroUsageOpen(true)} title={title} aria-label={title}>
         <Coins size={12} /> {!isMobile && <span className="tb-drop-usage font-mono text-[11px] whitespace-nowrap tabular-nums">{usedStr}<span className="text-muted">/{limitStr}</span></span>}
       </button>)

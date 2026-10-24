@@ -110,6 +110,14 @@ describe('KiroAccountModal', () => {
     expect(manage).toHaveAttribute('rel', 'noopener noreferrer')
   })
 
+  it('names the subscription on the link to the Kiro plan page (#23812)', () => {
+    // Someone looking to cancel or change a plan scans for "subscription"; the
+    // link is the only way from Kiro Crew to that page, so it must say so.
+    renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage={BASE_USAGE} />)
+    const manage = screen.getByRole('link', { name: 'Manage account & subscription' })
+    expect(manage).toHaveAttribute('href', 'https://app.kiro.dev/settings/account')
+  })
+
   describe('run-out forecast', () => {
     beforeEach(() => {
       // Only Date is faked: React Query and testing-library keep real timers.

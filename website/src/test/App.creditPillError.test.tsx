@@ -111,7 +111,7 @@ describe('top-bar credit segment — failed vs loading', () => {
     })
     renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
 
-    expect(await screen.findByLabelText(i18nT('components.kiroAccountModal.kiro_credit_usage'))).toBeTruthy()
+    expect(await screen.findByLabelText(i18nT('app.kiro_account_credits'))).toBeTruthy()
     expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_unavailable'))).toBeNull()
     expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_checking_2'))).toBeNull()
   })
