@@ -93,6 +93,7 @@ _NAMESPACE_HANDLERS = [
     (("cron", "list"), "kiro_crew.cli_commands", "_cron"),
     (("spawn", "list"), "kiro_crew.cli_commands", "_spawn"),
     (("learn", "list"), "kiro_crew.cli_commands", "_learn"),
+    (("skills", "list"), "kiro_crew.cli_skills", "_skills"),
     (("artifact", "list"), "kiro_crew.cli_commands", "_artifact"),
     (("memory", "list"), "kiro_crew.cli_commands", "_memory_cmd"),
     (("security", "audit"), "kiro_crew.cli_commands", "_security"),
@@ -134,6 +135,26 @@ def test_a_command_hands_its_namespace_to_its_handler(
         "boot_platform",
         "repair_legacy_member_stores",
     ]
+
+
+def test_skills_does_not_fall_through_into_artifact(
+    booted: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`skills` and `artifact` are separate branches: each runs only its own handler."""
+    skills_calls: list[Call] = []
+    artifact_calls: list[Call] = []
+    monkeypatch.setattr(
+        importlib.import_module("kiro_crew.cli_skills"), "_skills", _recorder(skills_calls)
+    )
+    monkeypatch.setattr(
+        importlib.import_module("kiro_crew.cli_commands"), "_artifact", _recorder(artifact_calls)
+    )
+    _run(monkeypatch, "skills", "list")
+    assert [_command_of(call) for call in skills_calls] == ["skills"]
+    assert artifact_calls == []
+    _run(monkeypatch, "artifact", "list")
+    assert [_command_of(call) for call in artifact_calls] == ["artifact"]
+    assert len(skills_calls) == 1
 
 
 # Commands whose handler the facade binds, and which take the parsed namespace.

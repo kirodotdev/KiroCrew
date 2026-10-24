@@ -126,7 +126,7 @@ _LOADER_MEMBERS = {
         _pending_scripts_verdict _pending_scripts_verdict_at _prune_versions _rank_key
         _read_candidate_pinned _read_enumerated_skill_bytes _read_exact_key
         _read_global_skill_text
-        _read_pending_meta _readable_frontmatter _recency_boost _record_use _redact_deep
+        _read_pending_meta _read_pending_meta_for_listing _readable_frontmatter _recency_boost _record_use _redact_deep
         _redact_file_in_place
         _redact_validation_report _request_catalog_refresh _resolve_path
         _resolve_path_and_root _resolve_snapshot_version _run_catalog_build
@@ -216,6 +216,7 @@ _LOADER_SIGNATURES = {
     "_read_global_skill_text": "(self, path: 'Path', max_bytes: 'int | None', *, canonical_root: 'str | None' = None, refusal_reasons: 'list[str] | None' = None) -> 'str | None'",
     "_readable_frontmatter": "(self, path: 'Path', *, within: 'str | None', mtime: 'float | None' = None, canonical_root: 'str | None' = None) -> 'dict[str, str] | None'",
     "_read_pending_meta": "(self, slug: 'str') -> 'dict'",
+    "_read_pending_meta_for_listing": "(self, slug: 'str') -> 'dict'",
     "_recency_boost": "(self, path_str: 'str', fingerprint: 'str' = '') -> 'float'",
     "_record_use": "(self, key: 'str') -> 'None'",
     "_redact_deep": "(self, obj: 'object') -> 'object'",
