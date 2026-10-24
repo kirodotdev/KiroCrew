@@ -421,7 +421,27 @@ def _update(force: bool = False) -> None:
     # an agent-writable directory, and a `which` probe's answer is not what exec
     # would run. No pin -> skip the step; a PATH-only install is reported so the
     # operator knows why it was skipped and which override puts it back.
-    kiro_cli_bin, unpinned_kiro_cli = pin_kiro_cli()
+    # On the KAS bundle route kiro-cli -- present or not -- is not part of what
+    # runs: the engine is Crew's own install, laid down separately by
+    # `kirocrew kas install` for the pin the installed release carries
+    # (``acp/kas_pin.py``). This update does not install it, so the printed line
+    # names that command for a changed pin; it does not print a version, because
+    # the pin this process holds is the pre-update release's. Decided before the
+    # kiro-cli pin so a host without kiro-cli prints the reason, not a PATH note.
+    # Local import: this body runs on the ``cli_server`` facade's globals.
+    from kiro_crew.agent_sdk import kas_bundle
+
+    if kas_bundle.kas_bundle_route():
+        print(
+            "  ℹ️  kiro-cli update skipped: KAS runs Kiro Crew's own engine bundle, not kiro-cli."
+        )
+        print(
+            "               If this update changes the pinned engine version, run: "
+            "kirocrew kas install   (kirocrew kas status shows it)"
+        )
+        kiro_cli_bin, unpinned_kiro_cli = None, False
+    else:
+        kiro_cli_bin, unpinned_kiro_cli = pin_kiro_cli()
     if kiro_cli_bin is None and unpinned_kiro_cli:
         print(f"  ⚠️  kiro-cli update skipped: {PATH_ONLY_INSTALL_NOTE}")
     if kiro_cli_bin is not None and is_bundled_kiro_cli(kiro_cli_bin, os.environ):

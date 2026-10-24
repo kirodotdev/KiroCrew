@@ -706,7 +706,25 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # path would let `PATH` answer. `None` means do not spawn it,
         # skipped like any absent backend, which this step already treats as
         # non-fatal.
-        kiro_cli_bin = await _pinned_kiro_cli("the optional kiro-cli backend update")
+        # On the KAS bundle route kiro-cli is not part of what runs, so its
+        # self-update is skipped with the reason in the log (the only place an
+        # unattended apply reports). The engine is Crew's own install, laid
+        # down separately by `kirocrew kas install` for the pin the installed
+        # release carries; this apply does not install it, so the log names
+        # that command for a changed pin. Local import: this body runs on the
+        # gateway facade's globals, and the config read goes off the loop like
+        # every other blocking read in this apply.
+        from kiro_crew.agent_sdk import kas_bundle
+
+        if await asyncio.to_thread(kas_bundle.kas_bundle_route):
+            logger.info(
+                "Auto-update: kiro-cli update skipped; KAS runs Kiro Crew's own engine "
+                "bundle, not kiro-cli. A changed engine pin needs `kirocrew kas install` "
+                "after the restart."
+            )
+            kiro_cli_bin = None
+        else:
+            kiro_cli_bin = await _pinned_kiro_cli("the optional kiro-cli backend update")
         # The desktop app's bundled copy is skipped too: it sits inside the
         # signed app bundle, where an in-place self-update would break the
         # codesign seal, and the app update is what replaces it. Checked

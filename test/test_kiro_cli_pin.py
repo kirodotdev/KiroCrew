@@ -23,6 +23,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -392,6 +393,70 @@ class TestDiagnosticsKiroCliPin:
 
         monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", _resolve)
         assert diagnostics._kiro_cli_version() == "unavailable"
+
+    @staticmethod
+    def _route(monkeypatch, *, backend: str, bundle: bool) -> None:
+        from kiro_crew.config import KiroCrewConfig
+
+        agent = SimpleNamespace(acp_backend=backend, kas_bundle=bundle)
+        monkeypatch.setattr(
+            KiroCrewConfig, "load", classmethod(lambda cls: SimpleNamespace(agent=agent))
+        )
+
+    def test_absent_backend_on_the_bundle_route_says_it_is_not_used(self, monkeypatch) -> None:
+        """A maintainer reading ``versions.txt`` from a bundle-route host must not
+        read ``unavailable`` as the gap it is on the relay route: nothing on that
+        route spawns kiro-cli, and the engine line beside it names what runs."""
+        argvs = self._capture(monkeypatch)
+        monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: None)
+        self._route(monkeypatch, backend="kas", bundle=True)
+        line = diagnostics._kiro_cli_version()
+        assert argvs == []
+        assert line.startswith("unavailable")
+        assert "not used" in line and "engine bundle" in line
+
+    def test_the_bundle_flag_alone_is_not_the_bundle_route(self, monkeypatch) -> None:
+        """Positive on both halves: with another harness selected the flag says
+        nothing about kiro-cli, so the plain answer stands."""
+        self._capture(monkeypatch)
+        monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: None)
+        self._route(monkeypatch, backend="", bundle=True)
+        assert diagnostics._kiro_cli_version() == "unavailable"
+
+    def test_the_engine_line_names_the_installed_engine_and_the_pin(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        from kiro_crew.agent_sdk import kas_bundle
+
+        self._route(monkeypatch, backend="kas", bundle=True)
+        monkeypatch.setattr(
+            kas_bundle,
+            "installed_bundle",
+            lambda: kas_bundle.InstalledKasBundle(
+                version=kas_bundle.KAS_PIN_VERSION,
+                node_version="22.23.3",
+                root=tmp_path,
+                node_bin=tmp_path / "node",
+                acp_server=tmp_path / "acp-server.js",
+            ),
+        )
+        assert diagnostics._kas_engine_version() == (
+            f"KAS {kas_bundle.KAS_PIN_VERSION}, Node 22.23.3 "
+            f"(release pins KAS {kas_bundle.KAS_PIN_VERSION})"
+        )
+
+    def test_the_engine_line_without_an_install_names_the_command(self, monkeypatch) -> None:
+        from kiro_crew.agent_sdk import kas_bundle
+
+        self._route(monkeypatch, backend="kas", bundle=True)
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
+        line = diagnostics._kas_engine_version()
+        assert line.startswith("not installed")
+        assert "kirocrew kas install" in line
+
+    def test_the_engine_line_is_not_selected_on_the_relay_route(self, monkeypatch) -> None:
+        self._route(monkeypatch, backend="kas", bundle=False)
+        assert diagnostics._kas_engine_version() == "not selected"
 
     @posix_only
     def test_probe_never_runs_a_path_shadowed_shim(self, shadowed_path, monkeypatch) -> None:

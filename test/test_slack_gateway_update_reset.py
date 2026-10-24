@@ -14,6 +14,7 @@ import contextlib
 import logging
 import os
 import threading
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -209,6 +210,49 @@ class TestAutoApplyUpdateResetPath:
         mock_build.assert_awaited()
         ds.push_update_progress.assert_any_call("building", "Building frontend…")
         ds.push_update_progress.assert_any_call("building", "Rebuilding package…")
+
+    @pytest.mark.asyncio
+    async def test_the_kas_bundle_route_skips_the_kiro_cli_update_and_says_why(self, caplog):
+        """KAS selected and ``agent.kas_bundle`` on: kiro-cli is not part of what
+        runs, so ``kiro-cli update`` is neither pinned nor spawned, and the log
+        -- the only place an unattended apply reports -- names the reason and
+        ``kirocrew kas install``, since this apply does not install the engine.
+        The rest of the flow (reset, frontend, pip) is unchanged.
+        """
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+        _fake_exec = _git_exec_fake(status_out=b"")
+        # A real config with only the route set, so every other read this apply
+        # makes (the memory snapshot's backup_keep among them) answers as before.
+        base = KiroCrewConfig()
+        cfg = replace(base, agent=replace(base.agent, acp_backend="kas", kas_bundle=True))
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec) as spawn:
+                with patch("kiro_crew.dep_sync.sync_or_reinstall", return_value=0):
+                    with patch(
+                        "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
+                    ) as mock_build:
+                        with patch("os.execv"):
+                            with patch.object(KiroCrewConfig, "load", classmethod(lambda cls: cfg)):
+                                with patch(
+                                    "kiro_crew.slack.gateway._pinned_kiro_cli", AsyncMock()
+                                ) as pinned:
+                                    with caplog.at_level(logging.INFO, logger="kiro_crew"):
+                                        await orch._auto_apply_update()
+
+        pinned.assert_not_awaited()
+        assert not any("update" in call.args for call in spawn.call_args_list)
+        mock_build.assert_awaited()
+        skipped = [
+            r.getMessage() for r in caplog.records if "kiro-cli update skipped" in r.getMessage()
+        ]
+        assert len(skipped) == 1
+        assert "kirocrew kas install" in skipped[0]
 
     @staticmethod
     async def _run_git_apply(orch, *, sync=None, build=None, reset_rc=0, reset_spawn_error=None):

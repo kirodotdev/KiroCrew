@@ -96,6 +96,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "KAS_BUNDLE_ENGINES_LEAF",
+    "KAS_BUNDLE_INSTALL_RECORD_NAME",
     "KAS_BUNDLE_MANIFEST_NAME",
     "ArtifactRef",
     "InstalledKasBundle",
@@ -151,7 +152,9 @@ _VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$")
 #: join could carry out of the manifest's directory.
 _FILE_NAME_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$")
 
-_INSTALL_RECORD_NAME = "install.json"
+#: The per-version record naming what was installed and where its two entry points
+#: (the engine's ACP server and the Node binary) are; ``kirocrew doctor`` prints its path.
+KAS_BUNDLE_INSTALL_RECORD_NAME = "install.json"
 _STAGING_PREFIX = ".staging-"
 
 
@@ -706,7 +709,7 @@ def install_bundle(
         node_bin = _locate_node(node_dir)
         _probe_node(node_bin, manifest.node_version)
         _write_json(
-            staging / _INSTALL_RECORD_NAME,
+            staging / KAS_BUNDLE_INSTALL_RECORD_NAME,
             {
                 "version": manifest.version,
                 "package": manifest.package,
@@ -816,11 +819,13 @@ _ENGINE_DROP_DIRS = frozenset({("web-tree-sitter", "debug")})
 
 def _read_record(home: Path) -> dict[str, Any]:
     try:
-        record = json.loads((home / _INSTALL_RECORD_NAME).read_text(encoding="utf-8"))
+        record = json.loads((home / KAS_BUNDLE_INSTALL_RECORD_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise KasBundleError(f"no readable {_INSTALL_RECORD_NAME} under {home}: {exc}") from exc
+        raise KasBundleError(
+            f"no readable {KAS_BUNDLE_INSTALL_RECORD_NAME} under {home}: {exc}"
+        ) from exc
     if not isinstance(record, dict):
-        raise KasBundleError(f"{home / _INSTALL_RECORD_NAME} is not an object")
+        raise KasBundleError(f"{home / KAS_BUNDLE_INSTALL_RECORD_NAME} is not an object")
     return record
 
 
@@ -1022,7 +1027,7 @@ def _stays_inside(rel: str) -> bool:
 def _read_installed(root: Path, version: str, *, bundled: bool) -> InstalledKasBundle | None:
     try:
         home = root / version
-        record = json.loads((home / _INSTALL_RECORD_NAME).read_text(encoding="utf-8"))
+        record = json.loads((home / KAS_BUNDLE_INSTALL_RECORD_NAME).read_text(encoding="utf-8"))
         if not isinstance(record, Mapping):
             logger.warning("KAS bundle record for %s is not an object; ignoring it", version)
             return None

@@ -318,7 +318,8 @@ class TestDoctorKasBundle:
             "auto-approve: ✅ spec `permissions` block written"
             f" (the bundled engine KAS {kas_bundle.KAS_PIN_VERSION} reads it)"
         ) in out
-        assert "kiro-cli" not in out
+        # The vault remedy names kiro-cli only to say the route never runs it.
+        assert "kiro-cli" not in out.replace(kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY, "")
         assert issues == []
 
     def test_an_engine_below_the_floor_reports_the_block_withheld(
@@ -379,6 +380,160 @@ class TestDoctorKasBundle:
             cli_doctor._report_kas_bundle_spec_permissions(version, issues)
             written = auto_approve._spec_permissions_accepted()
             assert (issues == []) is (written or version is None)
+
+    def test_the_engine_rows_name_the_pin_and_the_install_record(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """The rows a bundle host gets where the relay host gets kiro-cli's: the
+        installed version against this release's pin, the ``install.json`` path and
+        the two entry points it records, and the vault remedy that never names
+        ``kiro-cli login``."""
+        from kiro_crew.agent_sdk import kas_bundle
+
+        installed = self._installed(tmp_path, kas_bundle.KAS_PIN_VERSION)
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: installed)
+        monkeypatch.setattr(kas_bundle, "installed_versions", lambda: [installed.version])
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert f"pin:         ✅ KAS {kas_bundle.KAS_PIN_VERSION} is this release's pin" in out
+        assert str(installed.root / kas_bundle.KAS_BUNDLE_INSTALL_RECORD_NAME) in out
+        assert f"engine:      {installed.acp_server}" in out
+        assert f"node:        {installed.node_bin}" in out
+        assert kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY in out
+        assert "kiro-cli login" not in out
+        assert "also installed" not in out
+        assert issues == []
+
+    def test_an_overridden_engine_is_a_warning_naming_the_variable(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """``installed_bundle()`` resolves the version ``pinned_version()`` names, so a
+        version other than the pin can only come from ``KIROCREW_KAS_VERSION``: the
+        row says so, and lists the other engines kept on disk without judging them."""
+        from kiro_crew.agent_sdk import kas_bundle
+
+        installed = self._installed(tmp_path, "0.99.0-other")
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: installed)
+        monkeypatch.setattr(
+            kas_bundle,
+            "installed_versions",
+            lambda: ["0.99.0-other", kas_bundle.KAS_PIN_VERSION],
+        )
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert f"running KAS 0.99.0-other; this release pins {kas_bundle.KAS_PIN_VERSION}" in out
+        assert kas_bundle.KAS_VERSION_OVERRIDE_ENV in out
+        assert f"also installed: {kas_bundle.KAS_PIN_VERSION}" in out
+        # Advisory: a developer's override is not a broken installation.
+        assert issues == []
+
+    def test_a_signed_in_vault_is_the_green_row(self, monkeypatch, capsys, tmp_path):
+        from kiro_crew.agent_sdk import kas_bundle
+
+        installed = self._installed(tmp_path, kas_bundle.KAS_PIN_VERSION)
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: installed)
+        monkeypatch.setattr(kas_bundle, "installed_versions", lambda: [installed.version])
+        monkeypatch.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: True)
+        monkeypatch.setattr(
+            "kiro_crew.auth.bridge.describe_vault_identity", lambda: "builder-id -> usable"
+        )
+        cli_doctor._doctor_kas([])
+        out = capsys.readouterr().out
+        assert "crew vault:  builder-id -> usable" in out
+        assert "crew vault:  ✅ signed in through Kiro Crew" in out
+        assert "not signed in" not in out
+
+    def test_a_rejected_refresh_vault_is_not_a_green_row(self, monkeypatch, capsys, tmp_path):
+        from kiro_crew.agent_sdk import kas_bundle
+
+        installed = self._installed(tmp_path, kas_bundle.KAS_PIN_VERSION)
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: installed)
+        monkeypatch.setattr(kas_bundle, "installed_versions", lambda: [installed.version])
+        monkeypatch.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: True)
+        detail = "social/Google, expired, refresh token rejected -> not usable"
+        monkeypatch.setattr("kiro_crew.auth.bridge.describe_vault_identity", lambda: detail)
+        cli_doctor._doctor_kas([])
+        out = capsys.readouterr().out
+        assert "✅ signed in through Kiro Crew" not in out
+        assert "may not be usable" in out
+        assert f"crew vault:  {detail}" in out
+        assert kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY in out
+        assert "auth owner:  Kiro Crew vault" in out
+
+
+class TestDoctorAgentAuthOnTheBundleRoute:
+    """The ``kas auth:`` row when KAS runs Crew's own engine.
+
+    The vault is the route's only owner, so the row never falls through to the
+    kiro-cli store: on a host with no kiro-cli that fallback printed ``could not
+    check`` for a store the route never reads, and its remedy named ``kiro-cli
+    login`` for a binary nothing would spawn.
+    """
+
+    class _Cfg:
+        def __init__(self, backend: str, kas_bundle: bool) -> None:
+            self.agent = type("A", (), {"acp_backend": backend, "kas_bundle": kas_bundle})()
+
+    def _run(self, monkeypatch, capsys, *, backend="kas", bundle=True, vault_holds, detail=None):
+        from kiro_crew import acp_backends
+
+        cfg = self._Cfg(backend, bundle)
+        monkeypatch.setattr(cli_doctor.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+        monkeypatch.setattr(acp_backends, "selectable_backend_values", lambda: ["kas"])
+        monkeypatch.setattr(
+            cli_doctor,
+            "_kiro_cli_signed_in",
+            lambda: pytest.fail("kiro-cli store probed on the bundle route"),
+        )
+        monkeypatch.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: vault_holds)
+        monkeypatch.setattr("kiro_crew.auth.bridge.describe_vault_identity", lambda: detail)
+        cli_doctor._doctor_agent_auth()
+        return capsys.readouterr().out
+
+    def test_an_empty_vault_is_the_signed_out_row_with_crews_remedy(self, monkeypatch, capsys):
+        from kiro_crew.agent_sdk import kas_bundle
+
+        out = self._run(monkeypatch, capsys, vault_holds=False)
+        assert "kas auth:" in out
+        assert "Kiro Crew vault; not signed in" in out
+        for word in kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY.split():
+            assert word in out, word
+        assert "could not check" not in out
+        assert "kiro-cli login" not in out
+
+    def test_a_signed_in_vault_mentions_no_second_store(self, monkeypatch, capsys):
+        detail = "social/Google, expires in 42m, refresh token present -> usable"
+        out = self._run(monkeypatch, capsys, vault_holds=True, detail=detail)
+        assert "✅ Kiro Crew vault (signed in through Kiro Crew)" in out
+        assert detail in out
+        assert "also present" not in out
+
+    def test_a_stored_but_unusable_identity_is_still_printed(self, monkeypatch, capsys):
+        """The one line that explains a failing first prompt on a host the operator
+        signed into through Crew: the vault holds an entry the probe rejected."""
+        detail = "social/Google, expired, refresh token rejected -> not usable"
+        out = self._run(monkeypatch, capsys, vault_holds=False, detail=detail)
+        assert "Kiro Crew vault; not signed in" in out
+        assert detail in out
+
+    def test_the_relay_route_still_falls_through_to_the_kiro_cli_store(self, monkeypatch, capsys):
+        """Parity: with the bundle off, the row is the kiro-cli store's, exactly as
+        before -- the predicate is positive on BOTH halves."""
+        from kiro_crew import acp_backends
+
+        cfg = self._Cfg("kas", False)
+        monkeypatch.setattr(cli_doctor.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+        monkeypatch.setattr(acp_backends, "selectable_backend_values", lambda: ["kas"])
+        monkeypatch.setattr(cli_doctor, "_kiro_cli_signed_in", lambda: None)
+        monkeypatch.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: False)
+        monkeypatch.setattr("kiro_crew.auth.bridge.describe_vault_identity", lambda: None)
+        cli_doctor._doctor_agent_auth()
+        out = capsys.readouterr().out
+        assert "kas auth:" in out
+        assert "kiro-cli's own sign-in; could not check" in out
+        assert "Kiro Crew vault; not signed in" not in out
 
 
 class TestDoctorKas:
