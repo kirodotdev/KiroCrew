@@ -425,6 +425,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "_own_host_names",
     "_own_host_seed",
     "_own_interface_addresses",
+    "_own_line_fix_applies",
     "_partial_jwt_tail",
     "_path_in_home_dirs",
     "_path_resolve_clock",
