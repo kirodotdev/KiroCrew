@@ -7,6 +7,7 @@ import { isTerminalApprovalRefusal } from '../../api/apiError'
 import { LogViewer } from '../LogsPage'
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
+import StatusNotice from '../../components/StatusNotice'
 import type { SubagentActivity, ToolActivity, Artifact } from '../../types'
 import { countDiffStats } from '../../utils/diffLineCounts'
 import { toApiDecision } from '../../utils/approvalDecision'
@@ -189,8 +190,13 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   const dispatch = useAppDispatch()
   // Outcome of the last approve / reject / cancel round-trip that FAILED. The
   // Redux flags only roll back the busy state, which left a refused decision
-  // indistinguishable from one that never happened.
-  const [actionError, setActionError] = useState<string | null>(null)
+  // indistinguishable from one that never happened. `terminal` marks a gone
+  // approval (expired / decided elsewhere / replaced) — status, not an error —
+  // the same split `ApprovalCard` and `CollapsibleToolGroup` carry, so a card
+  // decides status-vs-error on this ONE signal. A non-terminal failure (a
+  // failed Cancel, an unrecorded decision) is an error even while `goneFor` is
+  // set from an earlier gone press.
+  const [failure, setFailure] = useState<{ terminal: boolean; message: string } | null>(null)
   // WHICH approval is gone, not merely that one was: the id scopes the
   // withdrawal, so a later live approval here is never suppressed by it.
   // Kept beside the store marker because this card renders the `a` its PROPS
@@ -221,7 +227,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   const onApprove = useCallback((e: React.MouseEvent, action: 'approve' | 'reject') => {
     e.stopPropagation()
     if (!a.approval_id) return
-    setActionError(null)
+    setFailure(null)
     dispatch(markSubagentApproving({ id: a.id, approving: true }))
     api.resolveApproval(a.approval_id, action).then(() => {
       // See the matching note in ChatInput's resolveOneSpawn: the backend's
@@ -242,11 +248,14 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
         checkLiveness(a.approval_id)
       }
       const reason = e instanceof Error ? e.message : ''
-      setActionError(gone
-        ? i18nT('components.approvalCard.approval_no_longer_pending')
-        : reason
-          ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
-          : i18nT('components.approvalCard.decision_failed'))
+      setFailure({
+        terminal: gone,
+        message: gone
+          ? i18nT('components.approvalCard.approval_no_longer_pending')
+          : reason
+            ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
+            : i18nT('components.approvalCard.decision_failed'),
+      })
     })
   }, [a.approval_id, a.id, slot, dispatch, checkLiveness])
 
@@ -257,7 +266,15 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   // here is superseded by that verdict, and its retry advice is now false.
   const retired = isSpawnApprovalRetired(a)
   const storeGone = isSpawnApprovalGone(a) || retired
-  const shownError = storeGone && goneFor !== a.approval_id ? null : actionError
+  // A refusal the composer banner found (store marker set) but THIS card did
+  // not send (`goneFor` does not match) is reported once by the surface that
+  // sent it, so suppress a stale local failure here. Otherwise a terminal
+  // failure is status (`StatusNotice`) and any other failure is an error
+  // (`ErrorNotice`) — one signal, `failure.terminal`, the same split the other
+  // three surfaces carry. A failed Cancel sets `terminal: false`, so it stays
+  // an error even when `goneFor` is still set from an earlier gone press.
+  const suppressed = storeGone && goneFor !== a.approval_id
+  const shownFailure = suppressed ? null : failure
   // SubagentProgressBar owns the periodic re-read of a gone approval's
   // liveness, but it is unmounted while this tab is open. This card keeps that
   // retry going on the same cadence until the inventory settles the card.
@@ -293,10 +310,12 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
 
   const onCancel = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
-    setActionError(null)
+    setFailure(null)
     // The card converges through the spawn/done stream on success; a refused
     // delete leaves it running, so say so instead of letting the press vanish.
-    api.spawnDelete(a.id).catch(() => setActionError(i18nT('pages.chat.activityViewer.cancel_failed')))
+    // `terminal: false` — a failed Cancel is an error, never dressed as the
+    // gone-approval status even when `goneFor` is still set from an earlier press.
+    api.spawnDelete(a.id).catch(() => setFailure({ terminal: false, message: i18nT('pages.chat.activityViewer.cancel_failed') }))
   }, [a.id])
 
   const displayElapsed = isRunning ? elapsed : Math.round(a.elapsed || 0)
@@ -460,13 +479,19 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
         </div>
       )}
       {isPending && a.approving && <div className="px-3 pb-2 text-[12px] text-muted/50">{i18nT('pages.chat.activityViewer.resolving')}</div>}
-      {/* Activity panel, no draft to lose → hand-off on. Also covers a refused
-          Cancel on a running card. */}
-      {shownError && (
+      {/* A gone approval is status (terminal); any other failure — including a
+          failed Cancel — is an error. One signal, `failure.terminal`. */}
+      {shownFailure && (shownFailure.terminal ? (
         <div className="px-3 pb-2">
-          <ErrorNotice variant="inline" message={shownError} askAgent />
+          <StatusNotice variant="inline" message={shownFailure.message} />
         </div>
-      )}
+      ) : (
+        /* Activity panel, no draft to lose → hand-off on. Also covers a refused
+           Cancel on a running card. */
+        <div className="px-3 pb-2">
+          <ErrorNotice variant="inline" message={shownFailure.message} askAgent />
+        </div>
+      ))}
       {shownLivenessError && (
         <div className="px-3 pb-2">
           <ErrorNotice variant="inline" message={shownLivenessError} askAgent />
@@ -513,13 +538,15 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
   const [localDecision, setLocalDecision] = useState<string | null>(null)
   const isResolved = resolved || !!localDecision
   const [acting, setActing] = useState(false)
-  const [actionError, setActionError] = useState<string | null>(null)
+  // Terminal (gone) vs non-terminal failure, one signal — the same split the
+  // other three surfaces carry. See the sibling card's `failure` note.
+  const [failure, setFailure] = useState<{ terminal: boolean; message: string } | null>(null)
   // WHICH approval is gone, not merely that one was: the id scopes the
   // withdrawal, so a later live approval here is never suppressed by it.
   const [goneFor, setGoneFor] = useState<string | null>(null)
   const onAction = useCallback(async (action: string) => {
     setActing(true)
-    setActionError(null)
+    setFailure(null)
     setLocalDecision(action)
     try {
       await api.resolveApproval(entry.approval_id!, toApiDecision(action))
@@ -528,11 +555,14 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
       const gone = isTerminalApprovalRefusal(e)
       setGoneFor(gone ? entry.approval_id ?? null : null)
       const reason = e instanceof Error ? e.message : ''
-      setActionError(gone
-        ? i18nT('components.approvalCard.approval_no_longer_pending')
-        : reason
+      setFailure({
+        terminal: gone,
+        message: gone
+          ? i18nT('components.approvalCard.approval_no_longer_pending')
+          : reason
           ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
-          : i18nT('components.approvalCard.decision_failed'))
+          : i18nT('components.approvalCard.decision_failed'),
+      })
     }
   }, [entry.approval_id])
 
@@ -567,12 +597,17 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
         </div>
       )}
       {acting && <div className="px-3 pb-2 text-[12px] text-muted/50">{i18nT('pages.chat.activityViewer.resolving')}</div>}
-      {/* Approval card in the activity panel: no draft → hand-off on. */}
-      {actionError && (
+      {/* A gone approval is status; any other failure is an error — one signal. */}
+      {failure && (failure.terminal ? (
         <div className="px-3 pb-2">
-          <ErrorNotice variant="inline" message={actionError} askAgent />
+          <StatusNotice variant="inline" message={failure.message} />
         </div>
-      )}
+      ) : (
+        /* Approval card in the activity panel: no draft → hand-off on. */
+        <div className="px-3 pb-2">
+          <ErrorNotice variant="inline" message={failure.message} askAgent />
+        </div>
+      ))}
     </div>
   )
 }
