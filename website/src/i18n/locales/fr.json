@@ -8749,6 +8749,8 @@
       "title": "Dossiers de projet approuvés"
     },
     "skillPickerMenu": {
+      "retry": "Réessayer",
+      "retrying": "Nouvelle tentative…",
       "loading_skills_ctrl_enter_held": "Chargement des compétences… — Ctrl+Enter n’envoie pas encore ; appuyez sur Esc, puis Ctrl+Enter envoie le message",
       "loading_skills_enter_held": "Chargement des compétences… — Enter n’envoie pas encore ; appuyez sur Esc, puis Enter envoie le message",
       "no_matching_skills": "Aucune compétence correspondante",
@@ -8765,6 +8767,9 @@
       "trust_needed_hint": "De ce projet. Sélectionne-la pour l’examiner et approuver le dossier."
     },
     "slashCommandMenu": {
+      "commands_load_failed": "Impossible de charger les commandes",
+      "retry": "Réessayer",
+      "retrying": "Nouvelle tentative…",
       "commands_load_failed_ctrl_enter_sends": "Impossible de charger les commandes — Ctrl+Enter envoie le message",
       "commands_load_failed_enter_sends": "Impossible de charger les commandes — Enter envoie le message",
       "desc_agent": "Changer ou gérer l’agent actif",

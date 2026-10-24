@@ -8885,6 +8885,8 @@
       "title": "Доверенные папки проектов"
     },
     "skillPickerMenu": {
+      "retry": "Повторить",
+      "retrying": "Повторная попытка…",
       "loading_skills_ctrl_enter_held": "Загрузка навыков… — Ctrl+Enter пока не отправляет; нажмите Esc, затем Ctrl+Enter отправит сообщение",
       "loading_skills_enter_held": "Загрузка навыков… — Enter пока не отправляет; нажмите Esc, затем Enter отправит сообщение",
       "no_matching_skills": "Нет подходящих навыков",
@@ -8901,6 +8903,9 @@
       "trust_needed_hint": "Из этого проекта. Выбери его, чтобы просмотреть и доверять папке."
     },
     "slashCommandMenu": {
+      "commands_load_failed": "Не удалось загрузить команды",
+      "retry": "Повторить",
+      "retrying": "Повторная попытка…",
       "commands_load_failed_ctrl_enter_sends": "Не удалось загрузить команды — Ctrl+Enter отправит сообщение",
       "commands_load_failed_enter_sends": "Не удалось загрузить команды — Enter отправит сообщение",
       "desc_agent": "Переключить активного агента или управлять им",

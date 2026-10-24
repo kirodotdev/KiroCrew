@@ -8613,6 +8613,8 @@
       "title": "Vertraute Projektordner"
     },
     "skillPickerMenu": {
+      "retry": "Erneut versuchen",
+      "retrying": "Wird wiederholt…",
       "loading_skills_ctrl_enter_held": "Skills werden geladen… — Ctrl+Enter sendet noch nicht; drücken Sie Esc, dann sendet Ctrl+Enter die Nachricht",
       "loading_skills_enter_held": "Skills werden geladen… — Enter sendet noch nicht; drücken Sie Esc, dann sendet Enter die Nachricht",
       "no_matching_skills": "Keine passenden Skills",
@@ -8629,6 +8631,9 @@
       "trust_needed_hint": "Aus diesem Projekt. Auswählen, um zu prüfen und dem Ordner zu vertrauen."
     },
     "slashCommandMenu": {
+      "commands_load_failed": "Befehle konnten nicht geladen werden",
+      "retry": "Erneut versuchen",
+      "retrying": "Wird wiederholt…",
       "commands_load_failed_ctrl_enter_sends": "Befehle konnten nicht geladen werden — Ctrl+Enter sendet die Nachricht",
       "commands_load_failed_enter_sends": "Befehle konnten nicht geladen werden — Enter sendet die Nachricht",
       "desc_agent": "Aktiven Agenten wechseln oder verwalten",

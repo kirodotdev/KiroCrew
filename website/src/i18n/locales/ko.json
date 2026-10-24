@@ -8477,6 +8477,8 @@
       "title": "신뢰하는 프로젝트 폴더"
     },
     "skillPickerMenu": {
+      "retry": "다시 시도",
+      "retrying": "다시 시도 중…",
       "loading_skills_ctrl_enter_held": "스킬을 불러오는 중… — Ctrl+Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
       "loading_skills_enter_held": "스킬을 불러오는 중… — Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Enter 키를 누르면 메시지가 전송됩니다",
       "no_matching_skills": "일치하는 스킬 없음",
@@ -8493,6 +8495,9 @@
       "trust_needed_hint": "이 프로젝트의 스킬입니다. 선택하면 내용을 확인하고 폴더를 신뢰할 수 있습니다."
     },
     "slashCommandMenu": {
+      "commands_load_failed": "명령을 불러올 수 없습니다",
+      "retry": "다시 시도",
+      "retrying": "다시 시도 중…",
       "commands_load_failed_ctrl_enter_sends": "명령을 불러올 수 없습니다 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
       "commands_load_failed_enter_sends": "명령을 불러올 수 없습니다 — Enter 키를 누르면 메시지가 전송됩니다",
       "desc_agent": "활성 에이전트를 전환하거나 관리합니다",
