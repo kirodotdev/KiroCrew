@@ -1034,8 +1034,6 @@ def _import_after_is_written(
     while later steps ran would otherwise become the Undo's baseline, and the
     Undo would then delete that edit.
     """
-    import hashlib
-
     roles = catalog.import_step_roles(params)
     seen = after.get("crons")
     crons: dict[str, Any] = seen if isinstance(seen, dict) else {}
@@ -1052,8 +1050,6 @@ def _import_after_is_written(
 
 
 def _import_rules_digest(ev0: dict[str, Any]) -> str | None:
-    import hashlib
-
     from kiro_crew import members as members_mod
 
     slug, name = ev0.get("member_id"), ev0.get("name")
