@@ -432,6 +432,9 @@ class AcpRuntime:
 
         # Process state
         self._process: asyncio.subprocess.Process | None = None
+        # The Crew sign-in generation the process launched under (``None`` until
+        # a launch); read by the KAS catalog recorder, see runtime_spawn_launch.
+        self.sign_in_generation: int | None = None
         self._pid: int | None = None
         # The root's process-start identity, read once at spawn. It is what lets
         # an OBSERVED death retire the registry lines that name this process and

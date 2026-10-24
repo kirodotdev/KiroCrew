@@ -173,7 +173,10 @@ from a sha256-pinned manifest (`agent.kas_bundle_url`) into
 engine version; after a Kiro Crew update run `kirocrew kas install` again. And
 `agent.kas_bundle: true` makes the `kas` backend spawn that engine directly. On
 this route Kiro Crew is always the credential owner: sign in from the dashboard
-(Sign in) — kiro-cli's login is not consulted. `kirocrew kas status` shows what is
+(Sign in) — kiro-cli's login is not consulted. The chat model picker lists the
+models the engine serves, with their credit multipliers, once a chat has started
+on this route (the engine reports them when a session opens; before that the
+picker offers `auto`). `kirocrew kas status` shows what is
 installed and whether the route is on; `kirocrew doctor` reports it under
 "KAS backend". The engine directory is read-only inside the agent sandbox and
 fenced from the agent's file tools, so a session cannot rewrite the code its next

@@ -56,6 +56,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_sdk.backends import effort_config_option_levels
 from kiro_crew.agent_sdk.drivers.acp import EntitlementRevalidating
+from kiro_crew.agent_sdk.kas_model_catalog import record_catalog
 from kiro_crew.platform.context import redact_log_via_context
 
 if TYPE_CHECKING:
@@ -616,6 +617,17 @@ def store_session_config(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
         self._kas_auto_fallback = (
             pick_served_default("auto", ids) if select.get("currentModelId") == "auto" else ""
         )
+    # The same select is the KAS engine's CATALOG (its served models with their
+    # credit multipliers), kept for the bundle-route picker, which has no
+    # ``--list-models`` to read. A catalog, not this session's advertised list:
+    # ``_available_models`` below is untouched by it. Positive KAS gate inside;
+    # stamped with the sign-in generation this process launched under, so a
+    # response that lands after an account switch is refused.
+    record_catalog(
+        resp,
+        self._runtime.acp_backend,
+        generation=getattr(self._runtime, "sign_in_generation", None),
+    )
     # Where this host's model list lives is asked in ONE place
     # (``session_models_envelope``): a host in
     # ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` advertises no ``models`` object

@@ -376,7 +376,20 @@ access token.
 - A Crew sign-out deletes the vault entry under the identity's refresh lock and
   retires running identity-store processes (`dashboard/handlers/kas_login.py`), so
   neither a refresh in flight nor a process holding the old access token in memory
-  outlives the logout.
+  outlives the logout. `KasLoginService` also runs its `on_identity_change`
+  hook -- the dashboard hands in `agent_sdk/kas_model_catalog.forget_catalog`
+  -- under its lock right after a sign-out's deletes and right after every
+  saved credential, with no await between the write and the hook: that
+  recording is what ONE account is served, and the bundle-route picker must not
+  offer it to the next account before that account's first session records its
+  own; the forget also moves the sign-in generation that every `AcpRuntime`
+  notes at launch, so a session opened under the previous account that answers
+  after the switch is refused as well
+  ([model-selection.md](../common/model-selection.md)). The dashboard does the
+  same on its side: the sign-out button (`pages/developer/KiroSignInCard.tsx`)
+  and the authorized sign-in (`components/KasLoginGate.tsx`) drop the browser's
+  model-list caches (`clearCachedModels`, a reset of `['available-models']`),
+  because that query is otherwise refetched only when a session spawns.
 - Known limit, by decision: the spawn-time probe (`auth/bridge.vault_holds_identity`)
   accepts a stored identity whose access token is live or which carries a refresh
   token; it cannot know without a network call that an issuer will reject that

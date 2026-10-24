@@ -163,6 +163,22 @@ exists, it uses the factory's member-aware `select_provider_backend` authority.
 default `agent.acp_backend` capability only; a member session routed to a
 different harness is still judged by the gate above when the command is sent.
 
+A **route** is not a harness, and is not expressed as one. KAS runs either
+through kiro-cli's relay or from Crew's own engine bundle (`agent.kas_bundle`),
+and the dashboard model picker answers differently on the two: from
+`kiro-cli chat --list-models` on the relay, from the engine's recorded `model`
+select on the bundle (`dashboard/handlers/models_kas_bundle.py`,
+[model-selection.md](../common/model-selection.md)). That is a decision over two
+facts -- `acp_backend == ACP_BACKEND_KAS` AND the switch -- so it is the positive
+two-fact predicate `kas_bundle_route(cfg)`, placed BEFORE the kiro-cli path in
+`api_models` and never a capability set: a set keyed on the backend alone would
+put the relay route (kiro-cli present, catalog printable) and the bundle route
+(no kiro-cli) in one bucket, and widening the kiro-cli path to read the select
+would change the Kiro path's own machinery (Group C). What is per HARNESS stays in
+a set: the fact that KAS's `model` select is its catalog is recorded on positive
+KAS identity in `agent_sdk/kas_model_catalog.py`, whichever route the session runs
+on; only the bundle route's picker reads the recording.
+
 ### Where the vocabulary is defined
 
 The vocabulary H8 names is one import path, `kiro_crew.agent_sdk.backends`, over a

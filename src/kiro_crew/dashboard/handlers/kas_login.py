@@ -9,6 +9,7 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
+from kiro_crew.agent_sdk.kas_model_catalog import forget_catalog
 from kiro_crew.auth.login.builder_id import BuilderIdAuthError
 from kiro_crew.auth.login.device import DeviceAuthError
 from kiro_crew.auth.service import (
@@ -41,7 +42,9 @@ def _service(request: web.Request) -> KasLoginService | None:
     if isinstance(service, KasLoginService):
         return service
     try:
-        service = KasLoginService(TokenStore(data_home()))
+        # The KAS model catalog is what ONE account is served: the service drops
+        # it the moment the vault's identity changes (see kas_model_catalog).
+        service = KasLoginService(TokenStore(data_home()), on_identity_change=forget_catalog)
     except Exception:
         logger.warning("could not construct KasLoginService", exc_info=True)
         return None

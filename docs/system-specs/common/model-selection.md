@@ -131,8 +131,41 @@ KAS sends no `models` object; its list is only the `configOptions` `model`
 select, and it defaults a new session to `auto`. The pooled check asks that select
 one question: is the session on an `auto` the select does not list? If so it moves
 to a listed id. The select never becomes the session's advertised list, so the
-picker and the explicit-pick guard are unchanged for KAS, and a concrete current
-model is never judged against a list that may be incomplete.
+picker's entitlement narrowing and the explicit-pick guard are unchanged for KAS,
+and a concrete current model is never judged against a list that may be incomplete.
+
+The same select IS the engine's catalog, and the shared-runtime driver records it
+as one (`agent_sdk/kas_model_catalog.py`, `record_catalog`, on a positive KAS
+identity, from `AcpSessionHandle.store_session_config`; KAS runs on `AcpRuntime`
+only):
+rows in the `chat --list-models` shape — `model_id` / `model_name` / `display_name`
+/ `description`, and `rate_multiplier` from each option's `_meta.kiro.rateMultiplier`
+— measured on the bundled engine
+(`test/fixtures/acp_frames/kas/bundle-session-live.jsonl`: no `models` object, the
+select alone, no structured context-window field on any option). The recording is
+process-wide and in memory, like the catalog's prices; a response with no select
+clears nothing, while a Crew sign-out or an authorized sign-in forgets it
+(`forget_catalog`, handed to `KasLoginService` as its `on_identity_change` hook
+by `dashboard/handlers/kas_login.py`; the service, the vault's only writer, runs
+it under its lock right after a credential is saved and right after a sign-out's
+deletes, with no await between the write and the hook), because a select is what
+ONE account is served and the next account must see `auto` alone until its own
+first session. The forget
+also moves a sign-in generation on; every `AcpRuntime` notes the generation it
+launched under (`sign_in_generation`, set with the process), and `record_catalog`
+refuses a response stamped with any other -- the engine took its credential at
+launch, so a session that opened under the previous account and answers after
+the switch cannot restore that account's catalog. Only the **bundle route** reads
+it — `agent.acp_backend == "kas"`
+AND `agent.kas_bundle`, the positive two-fact test `models_kas_bundle.kas_bundle_route`
+— because that route has no kiro-cli to print a catalog; the relay route's picker
+keeps reading `--list-models` exactly as below. The bundle route runs no
+entitlement narrowing on the recording: the select already lists what the
+signed-in account is served, and `_entitled_kiro_models` reads the newest live
+`acp`-namespace provider, which can be a retained kiro-cli session after a
+backend switch. A route is not a harness, which is
+why this is not a capability-set branch: the same `kas` backend answers from
+kiro-cli's catalog on one route and from the engine's select on the other.
 
 The claude backend has a different gap on the same exits: the model it reports is
 not always the model Claude Code runs. claude-agent-acp resolves an inheriting
@@ -197,8 +230,11 @@ own:
   sometimes the only source; the wire sites pass theirs for exactly that reason.
 - the cross-session advertised cache for that namespace. `kiro` and `kas` are NOT
   members of `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`, so no `session/new` payload
-  fills the `acp` bucket; `GET /api/models` fills it from the `chat --list-models`
-  catalog instead, the same rows that seed the window authority.
+  fills the `acp` bucket as an advertised list; `GET /api/models` fills it from the
+  `chat --list-models` catalog instead, the same rows that seed the window
+  authority — or, on the KAS bundle route, from the engine's recorded `model`
+  select through the same `refresh_kiro_catalog` admission (ids and prices; no
+  windows, the select carries none).
 - the static index, but ONLY where the id round-trips through `to_provider_id` to
   itself. An entry can be an ALIAS folding onto a different model — kiro serves
   `claude-haiku-4.5` while the `claude_code` index maps that spelling to Sonnet —
@@ -250,7 +286,9 @@ backend in `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION` the client captures the
 `GET /api/models` from the `chat --list-models` catalog — the UNFILTERED rows,
 before the deprecation and entitlement narrowing, because a deprecated or
 unentitled id is still a kiro id and dropping it would make a native pin read as
-foreign. That source is kiro's own ground truth and is deliberately NOT a
+foreign. On the KAS bundle route the same endpoint fills it from the engine's
+recorded `model` select (`dashboard/handlers/models_kas_bundle.py`), the rows
+`kas_model_catalog` shaped like that catalog, through the same admission. That source is kiro's own ground truth and is deliberately NOT a
 `session/new` payload: the registry attributes that payload to `claude-agent-acp`,
 and a kiro session's list is scoped to the agent that session started. With the
 bucket warm, the chip and the provider factory reach the same foreign-pin verdict

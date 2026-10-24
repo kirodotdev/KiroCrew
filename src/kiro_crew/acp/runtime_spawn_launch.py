@@ -18,7 +18,8 @@ Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``
 ``_pid``, ``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_prompt_capabilities``, ``_reader_task``, ``_sandbox_cleanup``, ``_scope_unit``,
 ``_skill_projection_generation``, ``_spawn_monotonic``, ``_spawn_skill_projection``,
-``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_tool_search_wire``.
+``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_tool_search_wire``,
+``sign_in_generation``.
 
 ``_with_mcp_sign_in_storage`` (a plain function handed the runtime) also writes
 ``_mcp_secret_server``.
@@ -60,6 +61,7 @@ from kiro_crew.acp.session_handle import AcpRequestTimeout, AcpRuntimeError, Acp
 from kiro_crew.acp.types import ACP_BACKEND_KIRO
 from kiro_crew.agent import ensure_agent_materialized
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
+from kiro_crew.agent_sdk.kas_model_catalog import sign_in_generation
 from kiro_crew.agent_sdk.tool_search import (
     kas_client_meta_settings,
     spec_grants_tool_search,
@@ -723,6 +725,11 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
     )
     self._process = launched.process
     self._pid = self._process.pid
+    # The Crew sign-in generation this process launched under. The KAS engine
+    # takes its credential at start, so the catalog a session on this process
+    # advertises belongs to this generation's account; the catalog recorder
+    # refuses it once a sign-out or sign-in has moved the generation on.
+    self.sign_in_generation = sign_in_generation()
     # The same token the child carries in its environment (minted above, so
     # it could be passed in); random, not pid-derived, so it cannot
     # false-match a later spawn that the OS handed a recycled pid.

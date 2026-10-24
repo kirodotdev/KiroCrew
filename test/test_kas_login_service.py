@@ -23,7 +23,7 @@ from kiro_crew.auth.service import (
     UnknownLoginError,
     _parse_provider,
 )
-from kiro_crew.auth.store import KasToken, SocialProvider, TokenStore
+from kiro_crew.auth.store import KasToken, SocialProvider, TokenStore, TokenStoreError
 
 
 class _FakeResp:
@@ -353,6 +353,83 @@ async def test_switching_account_removes_the_replaced_slot_after_the_new_one_lan
     assert store.load("identity_center") is None
     assert store.resolve().identity == "social"
     assert store.resolve().access_token == "at-new"
+
+
+@pytest.mark.asyncio
+async def test_an_account_switch_announces_the_identity_change_twice(tmp_path, monkeypatch):
+    """The hook fires wherever ``resolve()``'s answer changes: once right after the
+    new credential is saved, and once more after the outranking replaced slot is
+    deleted -- between the two, the vault still resolved the OLD account, so a
+    process that took its credential in that window is attributed to it."""
+    store = _stored_idc(tmp_path)
+    seen: list[str] = []
+    service = KasLoginService(
+        store,
+        session=_FakeSession([_authorized_google()]),
+        on_identity_change=lambda: seen.append(store.resolve().identity),
+    )
+
+    async def _fake_initiate(provider, *, session):
+        return _device_auth()
+
+    monkeypatch.setattr(device, "initiate_device_authorization", _fake_initiate)
+    login_id = (await service.begin_device("google", replaces="identity_center"))["login_id"]
+    assert seen == []  # a begin changes nothing
+    result = await service.poll_device(login_id)
+    assert result["status"] == "authorized"
+    # First call: the save landed but identity_center still outranked social.
+    # Second call: the replaced slot is gone and social is what resolves.
+    assert seen == ["identity_center", "social"]
+
+
+@pytest.mark.asyncio
+async def test_a_plain_sign_in_and_a_sign_out_announce_once_each(tmp_path, monkeypatch):
+    store = TokenStore(tmp_path)
+    calls: list[str] = []
+    service = KasLoginService(
+        store,
+        session=_FakeSession([_authorized_google()]),
+        on_identity_change=lambda: calls.append("change"),
+    )
+
+    async def _fake_initiate(provider, *, session):
+        return _device_auth()
+
+    monkeypatch.setattr(device, "initiate_device_authorization", _fake_initiate)
+    login_id = (await service.begin_device("google"))["login_id"]
+    assert (await service.poll_device(login_id))["status"] == "authorized"
+    assert calls == ["change"]
+    await service.logout("social")
+    assert calls == ["change", "change"]
+    assert store.resolve() is None
+
+
+@pytest.mark.asyncio
+async def test_a_sign_out_whose_later_delete_fails_still_announces_the_change(tmp_path):
+    """The named slot is gone before the failing delete, so ``resolve`` already
+    answers differently; the hook runs, and the error still reaches the handler."""
+
+    class _SecondDeleteFails(TokenStore):
+        def delete(self, identity):
+            if identity == "social":
+                raise TokenStoreError("could not take the refresh lock")
+            super().delete(identity)
+
+    store = _SecondDeleteFails(tmp_path)
+    store.save(
+        KasToken(
+            access_token="at-idc",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            provider="Enterprise",
+            identity="identity_center",
+        )
+    )
+    calls: list[str] = []
+    service = KasLoginService(store, on_identity_change=lambda: calls.append("change"))
+    with pytest.raises(TokenStoreError):
+        await service.logout("identity_center")
+    assert calls == ["change"]
+    assert store.load("identity_center") is None
 
 
 @pytest.mark.asyncio
