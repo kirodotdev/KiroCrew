@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -53,8 +52,10 @@ from kiro_crew.platform.policy_distribution_source import (
     FetchRequest,
     _body_digest,
     _fetcher_for,
+    _is_enterprise,
     _split_url,
     cache_only,
+    host_pinned_source,
     request_headers,
     resolve_distribution,
 )
@@ -252,6 +253,15 @@ def _load_cache_only(dist: PolicyDistribution) -> GovernanceCeiling:
     the failure is a disabled app rather than an unbounded one.
     """
     cached = read_cache()
+    if (
+        cached is not None
+        and _is_enterprise()
+        and cached.source_digest != _source_digest(dist.source)
+    ):
+        # An enterprise build has exactly one source (RFC D2), so a cache recorded
+        # against any other address is not the fleet's ceiling, even for a child.
+        logger.info("the cached ceiling came from a different source; ignoring it")
+        cached = None
     if cached is None:
         raise PlatformCompositionError(
             "cache-only policy resolution found no cached ceiling. The gateway is "
@@ -323,16 +333,17 @@ def central_ceiling_installed() -> bool:
 
 
 def _env_pins_the_source() -> bool:
-    """Is the address coming from the environment rather than from a document?
+    """Is the address coming from the host (env, or an enterprise build) rather than a document?
 
     When it is, a document's own ``distribution.source`` is already ignored:
     :func:`resolve_distribution` lets the environment win per setting, precisely so
     whatever provisions the host owns the address. So a declaration that differs is not a
     migration this host would follow, and refusing the document over it would break the
     ordinary canary — one host pinned elsewhere by env while the fleet publishes its
-    canonical address.
+    canonical address. An enterprise build always pins: its source is a build-time
+    constant (RFC D2), so no document can move it.
     """
-    return bool(os.environ.get(POLICY_URL_ENV, "").strip())
+    return bool(host_pinned_source())
 
 
 def _declared_source(body: bytes) -> str:
@@ -714,6 +725,12 @@ def _unavailable(dist: PolicyDistribution, reason: str) -> None:
         )
         return None
     mark_governance_incident("failed_closed", "policy_distribution:unavailable")
+    if _is_enterprise():
+        # No local lever to suggest: an enterprise build requires its central policy.
+        raise PlatformCompositionError(
+            f"this enterprise build requires its central policy, and no ceiling could be "
+            f"established ({detail}). Refusing to start."
+        )
     raise PlatformCompositionError(
         f"central policy distribution is configured but no ceiling could be "
         f"established ({detail}). Refusing to run ungoverned. Set "

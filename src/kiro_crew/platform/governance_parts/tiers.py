@@ -28,6 +28,7 @@ from kiro_crew.platform.governance_parts.carriers import (
     GovernanceCeiling,
     PolicyDistribution,
     UpdatePins,
+    _is_enterprise,
     _version_tuple,
 )
 from kiro_crew.platform.governance_parts.parsing import (
@@ -410,9 +411,14 @@ def compose_tier_ladder(
     # authority chose.  When nothing above expressed a choice there is no choice to
     # redirect away from -- the "absence means no choice" class in
     # :func:`_intersect_ceilings`.
+    #
+    # An enterprise build never takes them from a lower tier (RFC D2): its source is a
+    # build-time constant and its cadence and staleness bound come from the fetched
+    # document alone, so a local block must not fill the gap a central one left.
     distribution = ceiling.distribution
+    adopt_lower = not _is_enterprise()
     for lower in present[1:]:
-        if not distribution.declared and lower.distribution.declared:
+        if adopt_lower and not distribution.declared and lower.distribution.declared:
             distribution = lower.distribution
         if lower.tier == TIER_ENV and ceiling.tier == TIER_CENTRAL:
             _warn_env_beneath_central_once(ceiling.tier)
@@ -675,7 +681,14 @@ def load_security_policy(
     # in the chain: it is the tier directly beneath central, above bundled and home.
     # Leaving it out meant an env-declared ``distribution.source`` was silently
     # ignored and the central tier never loaded from it.
-    declared = _declared_distribution(env_data) or _declared_distribution(bundled)
+    #
+    # An enterprise build skips the peek and always enters the tier (RFC D2): its source
+    # is the build-time constant, no local block may tune it, and a missing or
+    # unreachable central policy aborts boot.
+    enterprise = _is_enterprise()
+    declared = (
+        None if enterprise else _declared_distribution(env_data) or _declared_distribution(bundled)
+    )
     # The home peek is a LOOKUP for a declared source, not a ruling on the home file:
     # a malformed home ``distribution`` block declares no source, so the peek moves on.
     # Whether that file is then skipped or fatal is decided once, by
@@ -688,13 +701,14 @@ def load_security_policy(
     # where its ceiling lives must find out from a log line, not from nothing. Same
     # once-per-process warning as the skip in ``_subordinate_ceiling`` (it latches, so
     # a home file that is then also skipped there warns once, not twice).
-    if declared is None:
+    if declared is None and not enterprise:
         try:
             declared = _declared_distribution(home_data)
         except PlatformCompositionError as exc:
             _warn_home_unreadable_beneath_authority_once(home_path, exc)
     if (
-        declared is not None
+        enterprise
+        or declared is not None
         or os.environ.get(_POLICY_DISTRIBUTION_URL_ENV, "").strip()
         or os.environ.get(_POLICY_DISTRIBUTION_CACHE_ONLY_ENV, "").strip()
     ):

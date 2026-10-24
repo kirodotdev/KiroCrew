@@ -1125,6 +1125,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _apply_agentcore_workload_name,
         _capability_raw_for_gate,
         _command_deny_patterns,
+        _is_enterprise,
         _version_tuple,
         active_policy_distribution,
         active_update_pins,
