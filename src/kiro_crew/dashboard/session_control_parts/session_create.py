@@ -330,6 +330,16 @@ async def create_session(
     own_worker = agent_kind in ("", "template") and await asyncio.to_thread(
         _hands_off_to_own_worker, caller_slot, caller_execution, agent.strip(), agent_kind
     )
+    if own_worker and caller_execution is None:
+        # A conductor slot with no execution record (one from before records)
+        # names its crewmate by slot agent only. The worker's identity and store
+        # come from the record, so without one the child would be the worker on
+        # the shared store with no crewmate, which no turn of it can run.
+        raise SessionControlError(
+            "this chat has no memory record, so its crewmate's worker cannot be "
+            "opened from it; open a new chat with the crewmate",
+            code="caller_record_missing",
+        )
     if own_worker:
         agent, agent_kind = MATE_WORKER_AGENT, "template"
     agent_name = sanitize_outbound(agent.strip() or (getattr(caller_slot, "agent", "") or ""))
