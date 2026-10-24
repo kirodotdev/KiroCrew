@@ -240,20 +240,27 @@ def _git_extended_header(result: dict[str, Any], old_name: str, new_name: str) -
     return "".join(line + "\n" for line in lines)
 
 
+#: A PEM opener or footer anywhere in a line, so a field-prefixed one
+#: (``key: -----BEGIN ...-----``, ``"pem": "-----BEGIN ...``) counts too.
+_PEM_MARKER_RE = re.compile(r"-----(BEGIN|END) (.+?)-----")
+
+
 def _withhold_unclosed_pem(body: str) -> str:
     """Mask an unmatched PEM opener through EOF, preserving LF counts and final LF."""
     parts = body.split("\n")
     closed: set[str] = set()
     cut = len(parts)
-    # A backwards pass finds matching footers without rescanning each suffix.
+    # A backwards pass finds matching footers without rescanning each suffix;
+    # markers within a line are read right to left for the same reason.
     for i in range(len(parts) - 1, -1, -1):
-        marker = parts[i].strip()
-        if not marker.endswith("-----"):
+        if "-----" not in parts[i]:
             continue
-        if marker.startswith("-----END "):
-            closed.add(marker[9:-5])
-        elif marker.startswith("-----BEGIN ") and marker[11:-5] not in closed:
-            cut = i
+        for marker in reversed(list(_PEM_MARKER_RE.finditer(parts[i]))):
+            kind, label = marker.group(1), marker.group(2).strip()
+            if kind == "END":
+                closed.add(label)
+            elif label not in closed:
+                cut = i
     if cut == len(parts):
         return body
     # The empty split field after a final LF is not an extra source line.
