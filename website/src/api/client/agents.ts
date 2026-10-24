@@ -151,16 +151,6 @@ export interface MemberActivityEntry {
 /** One team of crewmates (GET /api/teams). `members` are exact crew NAMES in
  *  the user's order; a crewmate is on at most one team, which the store
  *  enforces on every write. */
-/** GET /api/members/{slug}/recap: the work a crewmate holds, for its cold-start
- *  welcome. Goals still open (in its thread or a recent session), then the
- *  newest other sessions that ran as it. */
-export interface MemberRecap {
-  slug: string
-  member: string
-  paused: { goal: string; next: string }[]
-  recent: { title: string; ts: number }[]
-}
-
 /** One key result: how the crewmate will know its goal is reached. */
 export interface GoalKeyResult {
   id: string
@@ -523,12 +513,6 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
         } | null
         truncated: boolean
       }>,
-    // The work a crewmate holds (open goals, recent sessions), read for its
-    // cold-start welcome. `member` is the exact crew name (slugs are lossy).
-    memberRecap: (slug: string, member: string) =>
-      fetch(
-        '/api/members/' + encodeURIComponent(slug) + '/recap?member=' + encodeURIComponent(member),
-      ).then(j) as Promise<MemberRecap>,
     // A crewmate's goals (the Goals tab). Every write is an owner action and
     // answers the whole record; `member` is the exact crew name (slugs are lossy).
     memberGoals: (() => {

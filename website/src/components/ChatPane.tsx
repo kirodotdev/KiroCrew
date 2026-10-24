@@ -12,7 +12,6 @@ import { busySteerFlag } from './chat-input/busySend'
 import { filterCrewmateChat, withQueuedAsBubbles } from './chat/crewmateBubbles'
 import { AWAITING_REPLY_ACTIVITY, useCrewmateAwaitingReply } from './chat/useCrewmateAwaitingReply'
 import CrewmateLiveActivity from './chat/CrewmateLiveActivity'
-import { useCrewmateGreetingShown } from './chat/useCrewmateGreetingShown'
 import { useUnreadLanding } from './chat/useUnreadLanding'
 import ErrorNotice from './ErrorNotice'
 import StatusNotice from './StatusNotice'
@@ -108,7 +107,6 @@ export default function ChatPane({
   onArtifactOpen,
   busyMode = 'split',
   crewmate,
-  crewmateGreeting,
   crewmateShown = true,
   onOpenCrewWorkLog,
   threads,
@@ -312,9 +310,6 @@ export default function ChatPane({
   // cron run is read against that, and a closed pane drops out (#23564).
   // The scroller is what the on-screen backstop probes.
   useMarkTranscriptShown(slotKey, messages.length > 0, () => scrollerRef.current)
-  // The host's greeting is drawn while it is still the newest word: a reply
-  // landing after it (a patrol / wake turn keeps it up) takes it down.
-  const greetingShown = useCrewmateGreetingShown(!!crewmate && !!crewmateGreeting, messages)
   // A crewmate's thread re-opens on the last message the reader saw, with the
   // unseen run below a divider; the pill carries the count. Only the crewmate
   // thread: a split pane keeps the transcript's default entry placement.
@@ -852,7 +847,6 @@ export default function ChatPane({
                  carousel, theme-swappable via themeBranding): a running turn
                  was otherwise invisible between tool steps. */
               <>
-              {greetingShown && crewmateGreeting}
               {crewmate
                 ? crewmateTyping && (
                   <CrewmateLiveActivity

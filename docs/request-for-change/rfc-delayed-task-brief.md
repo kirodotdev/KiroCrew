@@ -47,6 +47,8 @@ Before this RFC changed anything, focused tests passed on the audited base: 62 b
 
 Replace only the immediate warm resume. A crewmate chat with an active task no longer draws fixed task status merely because the thread opened.
 
+> 2026-10-24: the cold Recap is removed; the warm task brief is the only return greeting.
+
 Every cold-welcome path remains exactly as it is on the audited base:
 
 - `useMateGreeting` still takes the cold branch only when no work-ledger goal is in flight.

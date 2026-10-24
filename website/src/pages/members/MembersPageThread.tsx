@@ -35,9 +35,9 @@ import { useFirstGreeting } from './useFirstGreeting'
 import { MEMBERS_ROSTER_QUERY_KEY, memberThreadQueryKey, type MemberThreadOutcome } from '../../api/membersQuery'
 import { useMutation, type QueryClient } from '@tanstack/react-query'
 import { timeAgo } from '../../utils/timeAgo'
-import { findReport, reportForError, type ErrorReport } from '../../utils/errorReport'
+import { findReport, type ErrorReport } from '../../utils/errorReport'
 import { useAppDispatch, useAppSelector } from '../../store'
-import { selectSlotMessages, selectSlotStreamState, selectSlotTurnFromWake } from '../../store/chatSlice'
+import { selectSlotStreamState } from '../../store/chatSlice'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { markSlotRead } from '../../store/dashboardSlice'
 import { selectSlotLastTs } from '../../store/slotLastTs'
@@ -48,10 +48,8 @@ import { PILL_ACTIVITY_KEY, type PillActivityKind } from './pillActivity'
 import { useSlotActivity } from './useSlotActivity'
 import { AWAITING_REPLY_ACTIVITY } from '../../components/chat/useCrewmateAwaitingReply'
 import ChatPane from '../../components/ChatPane'
-import MateWelcomeCard from './MateWelcomeCard'
 import MateEntrance from './MateEntrance'
 import CrewmateImportDialog from './CrewmateImportDialog'
-import { useMateGreeting } from './mateGreeting'
 import CrewComposer from './CrewComposer'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -381,7 +379,7 @@ export function useMembersPageThreadView({
 }: MembersPageThreadViewOptions) {
   const { isMobile, rosterBar } = layout
   const { isRunning, activeView } = rosterView
-  const { activeSlot, confirmedSlot } = thread
+  const { activeSlot } = thread
   // Mounting a member thread IS reading it, but nothing on this page moves
   // `chat.activeSlot` (that transition belongs to the Sessions page's
   // switchSlot, the only other markSlotRead caller). Two things follow:
@@ -455,23 +453,6 @@ export function useMembersPageThreadView({
   // busy (the busy line carries no age). A separate clock from the Schedules card, because it runs under a different
   // condition.
   const pillResting = !!active && !isRunning(active) && pillStreamState === 'idle'
-  // The greeting the open chat starts on (cold welcome or warm resume), read
-  // once per open of a confirmed thread. Mid-turn means the crewmate's OWN
-  // turn: workers it runs do not count, since a goal in flight is the very case
-  // the resume speaks to. Nor does a background wake (a monitor loop's cycle,
-  // a worker's completion): a conductor is woken every few minutes, so
-  // counting those turns took the card down within a minute and skipped every
-  // open that met one.
-  // Who opened a running turn is read off the transcript, so a busy slot's
-  // open waits for it: the thread confirms before the transcript lands.
-  const pillLoopTurn = useAppSelector((s) => (pillSlotKey ? selectSlotTurnFromWake(s, pillSlotKey) : false))
-  const pillTranscriptKnown = useAppSelector((s) => (pillSlotKey ? selectSlotMessages(s, pillSlotKey).length > 0 : false))
-  const greetingIdle = pillLoopTurn || (pillStreamState === 'idle' && !pillLiveSlot?.running)
-  const { greeting: mateGreeting, failure: mateGreetingFailure, dismiss: dismissMateGreeting } = useMateGreeting(
-    greetingIdle || pillTranscriptKnown ? confirmedSlot : '',
-    greetingIdle,
-    activeView ? { slug: activeView.slug, member: activeView.name, lastActiveTs: activeView.last_active_ts ?? 0 } : null,
-  )
   const pillLastActive = (activeView ?? active)?.last_active_ts
   const [pillIdleAge, setPillIdleAge] = useState('')
   useEffect(() => {
@@ -560,7 +541,7 @@ export function useMembersPageThreadView({
 
   return {
     threadHeaderRef, setSwitcherOpenRequest, switcherOpenRequest, topbarSlot, headerInBar, headerInset,
-    betweenHeaderH, betweenHeaderRef, dismissMateGreeting, mateGreeting, mateGreetingFailure, pillActivity,
+    betweenHeaderH, betweenHeaderRef, pillActivity,
     // The same "a person can see the thread" the read marking above uses; the
     // pane's unread landing marks a message read under the same condition.
     threadShown,
@@ -646,9 +627,7 @@ export function MembersPageThreadColumn({
     threadsFlagRetrying, threadsOn, threadsQuery, threadHooks, actionError, setActionError, actionInfo,
     openFileGuarded, openSessionGuarded,
   } = sidePanel
-  const {
-    headerInset, betweenHeaderH, betweenHeaderRef, dismissMateGreeting, mateGreeting, mateGreetingFailure,
-  } = threadView
+  const { headerInset, betweenHeaderH, betweenHeaderRef } = threadView
   const { patrol } = rosterSignals
   const { openMember, openArtifactInThread } = navigation
   const { closeTeamView, teamMembers } = teamView
@@ -1070,21 +1049,6 @@ export function MembersPageThreadColumn({
                     )}
                   </div>
                 )}
-                {mateGreetingFailure && crewmateIdentity && (
-                  /* The status read failed (not "no ledger", which is no greeting).
-                     No hand-off, for the reason the notices above give: the DM
-                     composer below may hold an unsaved draft. */
-                  <div className="px-4 pt-3">
-                    <ErrorNotice
-                      message={t('pages.membersPage.welcome_failed', { name: crewmateIdentity.label || crewmateIdentity.name })}
-                      report={reportForError(mateGreetingFailure.error)}
-                      variant="inline"
-                      askAgent={false}
-                      onDismiss={dismissMateGreeting}
-                      testId="member-resume-error"
-                    />
-                  </div>
-                )}
                 </div>
                 </div>
                 {entrance && crewmateIdentity && (
@@ -1134,17 +1098,14 @@ export function MembersPageThreadColumn({
                         // The failure notice above owns the verdict on this thread
                         // while a repair has failed; the pane's own "Session
                         // ready" would contradict it one line down.
-                        // The crewmate's greeting already speaks for the empty chat.
-                        hideEmptyHint={activeThreadFailed || !!mateGreeting || !!entrance}
+                        // The entrance already speaks for the empty chat.
+                        hideEmptyHint={activeThreadFailed || !!entrance}
                         foldBefore={freshStarts[activeSlot] ?? activeRoster?.reset_at}
                         // Under the floating header only when nothing sits between
                         // them (see the block above); a card between already paid.
                         topInset={betweenHeaderH > 0 ? 0 : headerInset}
                         crewmate={crewmateIdentity}
                         crewmateShown={threadView.chatUncovered}
-                        crewmateGreeting={mateGreeting && crewmateIdentity
-                          ? <MateWelcomeCard recap={mateGreeting.recap} crewmate={crewmateIdentity} onDismiss={dismissMateGreeting} />
-                          : null}
                         onOpenCrewWorkLog={openCrewWorkLog}
                         openSideChat={openMemberSideChat}
                         threads={threadHooks}

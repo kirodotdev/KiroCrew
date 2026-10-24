@@ -33,7 +33,7 @@ from kiro_crew import _facade_mirror
 #   ``members_roster`` -- the roster list and the member-log attribution it is served under
 #   ``members_thread`` -- opening, binding and pinning a crewmate's DM thread
 #   ``members_thread_turns`` -- the first welcome and fresh start on that thread
-#   ``members_drawer`` -- one member's projections, activity, notes and recap
+#   ``members_drawer`` -- one member's projections, activity and notes
 #   ``members_rules`` -- reading and writing a crewmate's permanent rules
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
@@ -68,7 +68,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_member_activity,
         api_member_briefing,
         api_member_projections,
-        api_member_recap,
     )
     from kiro_crew.dashboard.handlers.members_roster import (  # noqa: F401
         _SEQ_NO_LOG,

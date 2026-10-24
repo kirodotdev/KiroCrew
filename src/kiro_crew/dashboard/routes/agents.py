@@ -81,7 +81,6 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/members/{slug}/activity", handlers.api_member_activity)
     app.router.add_get("/api/members/{slug}/projections", handlers.api_member_projections)
     app.router.add_get("/api/members/{slug}/briefing", handlers.api_member_briefing)
-    app.router.add_get("/api/members/{slug}/recap", handlers.api_member_recap)
     app.router.add_get("/api/members/{slug}/rules", handlers.api_member_rules_get)
     app.router.add_put("/api/members/{slug}/rules", handlers.api_member_rules_put)
     # Export one crewmate as a .crewmate file (rfc-crewmate-share.md §5.3): owner-only.
