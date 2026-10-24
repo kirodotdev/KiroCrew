@@ -162,6 +162,34 @@ def test_the_conductor_hands_off_to_its_worker(crewmate, named, kind):
     assert actual.template_id == MATE_WORKER_AGENT
 
 
+def test_a_conductor_slot_with_no_record_opens_no_worker(crewmate, tmp_path):
+    """A slot from before records names its crewmate by slot agent only; the
+    worker it would open has no crewmate and runs on the shared store."""
+    from kiro_crew.execution_context import clear_session_execution, read_session_execution
+    from kiro_crew.history import ConversationLog
+
+    state, caller, _execution = crewmate
+    # On the default workspace, so no workspace check refuses it first.
+    path = tmp_path / "config.json"
+    config = json.loads(path.read_text(encoding="utf-8"))
+    config["agents"]["pixel"].pop("workspace", None)
+    path.write_text(json.dumps(config), encoding="utf-8")
+    loader._invalidate_config_cache()
+    caller.workspace = "default"
+    before = set(state._slots)
+    key = slot_history_key(caller)
+    clear_session_execution(key)
+    ConversationLog()._path(key).unlink()  # the transcript that holds the record
+    caller.memory_store = ""
+    assert read_session_execution(key) is None
+
+    with pytest.raises(sc.SessionControlError) as refused:
+        _create(state, caller)
+
+    assert refused.value.code == "conductor_record_missing"
+    assert set(state._slots) == before  # nothing was allocated
+
+
 def test_the_conductor_naming_another_crewmate_stays_refused(crewmate):
     state, caller, _execution = crewmate
     with pytest.raises(sc.SessionControlError) as refused:

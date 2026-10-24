@@ -388,3 +388,35 @@ class TestAdvertisedSet:
             "session_adopt",
             "session_release",
         }
+
+
+def test_a_record_less_conductor_refusal_reaches_the_model_with_its_own_remedy() -> None:
+    """The loopback decoder (``mcp_core._http_error_body``) rewrites some auth codes'
+    messages; this refusal's code is its own, so its remedy survives to the tool reply."""
+    import io
+    import json
+    import urllib.error
+
+    from kiro_crew.mcp_core_parts.gateway import _http_error_body
+
+    refusal = {
+        "error": (
+            "this chat has no memory record, so its crewmate's worker cannot be "
+            "opened from it; open a new chat with the crewmate"
+        ),
+        "code": "conductor_record_missing",
+    }
+    exc = urllib.error.HTTPError(
+        "http://127.0.0.1/api/session-control/create",
+        400,
+        "Bad Request",
+        {},
+        io.BytesIO(json.dumps(refusal).encode()),
+    )
+    decoded = _http_error_body(exc)
+    assert decoded["code"] == "conductor_record_missing"
+
+    out, _ = _call("session_create", {"title": "w"}, {"POST /api/session-control/create": decoded})
+
+    assert out.startswith("Error: could not create a session:")
+    assert "open a new chat with the crewmate" in out
