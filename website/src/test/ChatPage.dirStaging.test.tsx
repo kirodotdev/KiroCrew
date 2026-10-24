@@ -43,22 +43,18 @@ vi.mock('../api/client', () => ({
     // slot carries none) -- FilePickerMenu relativizes against the search
     // response's own `root`, not the `project` prop directly, so a mock that
     // ignored the query would give every slot the same root regardless of its
-    // actual project. Queries against '/repo/src' include a sentinel 'config.ts'
-    // row absent from the '/repo' set, giving tests a real DOM signal that
-    // rootRef.current has advanced to '/repo/src' before a click fires.
+    // actual project. The SAME rows come back for every root: whether the
+    // picker has moved to the new root is read off the listbox's own busy
+    // state (`pickerSettledFor`), never off a row only one root returns.
     fileSearch: vi.fn().mockImplementation((_q: string, project?: string) => {
-      const root = project || '/repo'
       const mtime = Math.floor(Date.now() / 1000) - 60
-      const results = root === '/repo/src'
-        ? [
-            { path: '/repo/src/main.ts', name: 'main.ts', size: 10, mtime, kind: 'file' },
-            { path: '/repo/src/config.ts', name: 'config.ts', size: 5, mtime, kind: 'file' },
-          ]
-        : [
-            { path: '/repo/src/widgets', name: 'widgets', size: 0, mtime, kind: 'dir' },
-            { path: '/repo/src/main.ts', name: 'main.ts', size: 10, mtime, kind: 'file' },
-          ]
-      return Promise.resolve({ root, results })
+      return Promise.resolve({
+        root: project || '/repo',
+        results: [
+          { path: '/repo/src/widgets', name: 'widgets', size: 0, mtime, kind: 'dir' },
+          { path: '/repo/src/main.ts', name: 'main.ts', size: 10, mtime, kind: 'file' },
+        ],
+      })
     }),
   },
   SEARCH_MIN_CHARS: 2,
@@ -196,9 +192,31 @@ async function stageFolder() {
   return ta
 }
 
+/**
+ * The picker's rows answer `project`'s OWN search, not a placeholder. The menu's
+ * `placeholderData` keeps the previous root's rows on screen while a re-rooted
+ * query is in flight, and a row's rendered name is root-independent, so neither
+ * the row's presence nor the call having been ISSUED tells placeholder from
+ * real data apart; a click on a placeholder row relativizes against the OLD
+ * root. The listbox is `aria-busy` exactly while that fetch is in flight.
+ *
+ * `since` is the mock's call count captured right before the re-rooted search
+ * is triggered: only a call made AFTER that point counts. Mock call history is
+ * per file, not per test, and the busy flag is low while the re-rooted query is
+ * still debounce-gated (`enabled: false`, nothing fetching), so a barrier that
+ * accepts any historical call to `project` can pass on both waits before this
+ * test's own request exists and hand the click to the old root's rows.
+ */
+async function pickerSettledFor(project: string, since: number) {
+  await waitFor(() => expect(vi.mocked(api.fileSearch).mock.calls.slice(since).some(c => c[1] === project)).toBe(true))
+  await waitFor(() => expect(screen.getByRole('listbox')).not.toHaveAttribute('aria-busy', 'true'))
+}
+
 beforeEach(() => {
   sessionStorage.clear()
   localStorage.clear()
+  // Call history is file-scoped; a test's barrier reads only its own calls.
+  vi.mocked(api.fileSearch).mockClear()
 })
 
 describe('ChatPage staged folder references', { timeout: 15_000 }, () => {
@@ -421,18 +439,13 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
 
     const taB = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const searchesBeforeB = vi.mocked(api.fileSearch).mock.calls.length
     fireEvent.change(taB, { target: { value: '@mai' } })
-    // `placeholderData` keeps slot-a's results on screen while slot-b's query
-    // is in flight; 'main.ts' appears in both sets so row presence is not a
-    // reliable signal. 'config.ts' exists only in '/repo/src' results, so its
-    // appearance in [role="option"] proves rootRef.current has advanced to
-    // '/repo/src' and selectionFor() will compute '@main.ts', not '@src/main.ts'.
-    await screen.findByText('config.ts', undefined, { timeout: 3000 })
-    await waitFor(() => {
-      const opt = [...document.querySelectorAll('[role="option"]')].find(el => el.textContent?.includes('main.ts'))
-      if (!opt) throw new Error('main.ts option row not found yet')
-      fireEvent.mouseDown(opt)
-    }, { timeout: 3000 })
+    // "main.ts" can satisfy findByText from slot-a's placeholder rows alone;
+    // a click there relativizes against slot-a's root.
+    await pickerSettledFor('/repo/src', searchesBeforeB)
+    const rowB = await screen.findByText('main.ts', undefined, { timeout: 3000 })
+    fireEvent.mouseDown(rowB)
     // Under slot-b's project the SAME absolute file relativizes to a bare
     // `@main.ts`, overwriting pickedFileTokens' shared entry for this path.
     await waitFor(() => expect(taB.value).toContain('@main.ts'))
@@ -671,11 +684,11 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     // Same file, now relative to a project one level down -- a fresh pick
     // computes a DIFFERENT rel for the identical absolute path.
     act(() => { store.dispatch(updateSlot({ key: 'slot-a', project: '/repo/src' })) })
+    const searchesBeforeRepick = vi.mocked(api.fileSearch).mock.calls.length
     fireEvent.change(ta, { target: { value: ta.value + ' and @mai' } })
-    // 'config.ts' exists only in '/repo/src' results; waiting for it in
-    // [role="option"] is a real DOM signal that rootRef.current has advanced
-    // to '/repo/src', so selectionFor() computes '@main.ts' on the click.
-    await screen.findByText('config.ts', undefined, { timeout: 3000 })
+    // As in the cross-slot test above: the FIRST query's (project '/repo')
+    // rows stay on screen as a placeholder until the re-rooted one lands.
+    await pickerSettledFor('/repo/src', searchesBeforeRepick)
     // The file is already staged (its chip shows "main.ts" too), so the
     // dropdown's OWN "main.ts" row is now ambiguous against the chip's text
     // -- scope to an actual [role="option"] row, re-queried on every retry
