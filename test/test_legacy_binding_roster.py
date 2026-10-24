@@ -26,6 +26,8 @@ CONFIG = {
         "helper": {"kiro_agent": "kirocrew", "source": "builtin", "member_id": ""},
         "ada": {"kiro_agent": "ada", "source": "kirocrew", "member_id": "ada"},
         "shared-v1": {"kiro_agent": "kirocrew", "source": "kirocrew"},
+        "kirocrew-conductor": {"kiro_agent": "kirocrew-conductor", "source": "builtin"},
+        "kirocrew-worker": {"kiro_agent": "kirocrew-worker", "source": "builtin"},
     },
     "default_agent": "default",
 }
@@ -36,6 +38,13 @@ def test_only_a_builtin_binding_without_an_id_is_legacy():
     assert not is_legacy_binding("default", SimpleNamespace(source="builtin", member_id=""))
     assert not is_legacy_binding("mate", SimpleNamespace(source="builtin", member_id="mate"))
     assert not is_legacy_binding("shared-v1", SimpleNamespace(source="kirocrew", member_id=""))
+
+
+def test_the_builtin_conductor_stays_listed_without_an_id():
+    """An existing install's conductor thread must not vanish from the Mate list."""
+    conductor = SimpleNamespace(source="builtin", member_id="")
+    assert not is_legacy_binding("kirocrew-conductor", conductor)
+    assert is_legacy_binding("kirocrew-worker", SimpleNamespace(source="builtin", member_id=""))
 
 
 @pytest.mark.asyncio
@@ -50,5 +59,5 @@ async def test_the_agents_roster_leaves_the_legacy_binding_out(tmp_path: Path) -
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/api/agents")
             names = {a["name"] for a in (await resp.json())["agents"]}
-    assert "helper" not in names
-    assert {"default", "ada", "shared-v1"} <= names
+    assert not {"helper", "kirocrew-worker"} & names
+    assert {"default", "ada", "shared-v1", "kirocrew-conductor"} <= names
