@@ -503,7 +503,32 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 8, from 32,518, for one ``_WRITE_PROTECTED_HOME_PATHS`` entry in
 #: ``paths_lists``: the crewmate agent folder, write-denied to the agent file tools
 #: like ``~/.kiro/agents``. Data, not rule logic: the matcher is unchanged.
-_PACKAGE_LINE_BUDGET = 32_526
+#:
+#: Raised again, from 32,526, for the bounded Mermaid pako branch and its stream
+#: state: canonical decoding, one decoded-byte budget and one budget of distinct
+#: views across top-level states, and
+#: pako-only streaming under the existing payload ceiling. Each streamed payload
+#: byte is classified once; a credential-class lead or tail glued to the link, the
+#: tail also in the delta that ends the payload, is held with it up to the
+#: ordinary holdback, and only a byte outside that class
+#: rejoins the candidate before the ordinary credential-safe scan. The partial-JWT
+#: tail search starts where a match can begin, so a held run stays linear, and a
+#: partial JWT that starts inside the pako payload rides the hold rather than the
+#: JWT ceiling, ending in the payload or its bounded held tail (every other STRONG
+#: anchor keeps its own). A batch credential match crossing the hold's cut
+#: declines the hold, so a Bearer header never commits apart from its value, and
+#: the partial JWT rides only a run that opens at the route. Each decoded view is
+#: judged by the composed URL-and-credential pass, so a percent-encoded credential
+#: in a URL inside the diagram voids the link. A check-only variant of each view,
+#: never emitted, decodes escapes to a fixpoint within three rounds, lowercases
+#: each HTTP(S) scheme and reads a fragment after a host as a query, so a
+#: credential the URL pass would miss in either spelling voids it too. Strict decoding
+#: and the pass-3-only exemption remain unchanged. Fourteen of the lines are
+#: owner-split glue: the redaction facade's owner imports and ``TYPE_CHECKING`` rows
+#: for the branch's names, ``redaction_entropy``'s ``json`` import, and
+#: ``pass_compose`` importing its two passes by module path, so the display battery's
+#: import guard sees them. The measured package total is 32,900 lines.
+_PACKAGE_LINE_BUDGET = 32_900
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
