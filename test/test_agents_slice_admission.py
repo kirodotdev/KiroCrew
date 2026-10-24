@@ -161,25 +161,20 @@ class TestAgentsSliceHeadroom:
 
 
 class TestCompositeProbePicksTheBindingCeiling:
-    def test_slice_tighter_than_container(self, monkeypatch):
-        monkeypatch.setattr(sa, "_container_cgroup_available_gb", lambda: 12.0)
-        monkeypatch.setattr(sa, "_agents_slice_available_gb", lambda: 3.0)
-        assert sa._cgroup_available_gb() == 3.0
-
-    def test_container_tighter_than_slice(self, monkeypatch):
-        monkeypatch.setattr(sa, "_container_cgroup_available_gb", lambda: 2.0)
-        monkeypatch.setattr(sa, "_agents_slice_available_gb", lambda: 9.0)
-        assert sa._cgroup_available_gb() == 2.0
-
-    def test_only_the_slice_constrains(self, monkeypatch):
-        monkeypatch.setattr(sa, "_container_cgroup_available_gb", lambda: -1.0)
-        monkeypatch.setattr(sa, "_agents_slice_available_gb", lambda: 5.5)
-        assert sa._cgroup_available_gb() == 5.5
-
-    def test_neither_constrains(self, monkeypatch):
-        monkeypatch.setattr(sa, "_container_cgroup_available_gb", lambda: -1.0)
-        monkeypatch.setattr(sa, "_agents_slice_available_gb", lambda: -1.0)
-        assert sa._cgroup_available_gb() == -1.0
+    @pytest.mark.parametrize(
+        ("container", "slice_gb", "want"),
+        [
+            pytest.param(12.0, 3.0, 3.0, id="test_slice_tighter_than_container"),
+            pytest.param(2.0, 9.0, 2.0, id="test_container_tighter_than_slice"),
+            # -1.0 is the probes' "no limit found" answer.
+            pytest.param(-1.0, 5.5, 5.5, id="test_only_the_slice_constrains"),
+            pytest.param(-1.0, -1.0, -1.0, id="test_neither_constrains"),
+        ],
+    )
+    def test_the_tighter_ceiling_wins(self, monkeypatch, container, slice_gb, want):
+        monkeypatch.setattr(sa, "_container_cgroup_available_gb", lambda: container)
+        monkeypatch.setattr(sa, "_agents_slice_available_gb", lambda: slice_gb)
+        assert sa._cgroup_available_gb() == want
 
 
 class TestAdmissionSeesTheSlice:

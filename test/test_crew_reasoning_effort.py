@@ -35,7 +35,6 @@ def _owner_caller(monkeypatch):
         "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
         lambda request: True,
     )
-    pass  # Member routing does not depend on OS isolation.
 
 
 class TestCoerceEffort:
@@ -66,9 +65,17 @@ class TestCrewPinnedEffort:
             cfg.agents[name] = KiroCrewAgentConfig(kiro_agent="kirocrew", reasoning_effort=effort)
         return cfg
 
-    def test_reads_the_crew_named_by_crew_agent(self):
-        cfg = self._cfg(reviewer="max")
-        assert cfg.crew_pinned_effort(None, "reviewer") == "max"
+    @pytest.mark.parametrize(
+        "stored, crew_agent, expected",
+        [
+            pytest.param("max", "reviewer", "max", id="test_reads_the_crew_named_by_crew_agent"),
+            pytest.param("max", "ghost", "", id="test_an_unknown_crew_pins_nothing"),
+            pytest.param("", "reviewer", "", id="test_a_crew_with_no_pin_returns_empty"),
+        ],
+    )
+    def test_crew_agent_lookup(self, stored, crew_agent, expected):
+        cfg = self._cfg(reviewer=stored)
+        assert cfg.crew_pinned_effort(None, crew_agent) == expected
 
     def test_reads_a_crew_named_by_agent_alone(self):
         """Slack threads, cron jobs and spawned agents pass a CREW name as
@@ -84,12 +91,6 @@ class TestCrewPinnedEffort:
         key must not inherit that crew's pin."""
         cfg = self._cfg(reviewer="max")
         assert cfg.crew_pinned_effort("reviewer", "") == ""
-
-    def test_an_unknown_crew_pins_nothing(self):
-        assert self._cfg(reviewer="max").crew_pinned_effort(None, "ghost") == ""
-
-    def test_a_crew_with_no_pin_returns_empty(self):
-        assert self._cfg(reviewer="").crew_pinned_effort(None, "reviewer") == ""
 
     def test_a_junk_stored_value_is_not_returned(self):
         """Defence in depth: the load path coerces, but a config object built in
@@ -118,9 +119,35 @@ class TestResolveSessionEffort:
         )
         return cfg
 
-    def test_a_background_agent_takes_the_role_effort_not_the_chat_default(self):
-        cfg = self._cfg(chat="low", background="high")
-        assert cfg.resolve_session_effort("kirocrew-lite", "worker") == "high"
+    @pytest.mark.parametrize(
+        "tiers, agent, crew_agent, expected",
+        [
+            pytest.param(
+                {"chat": "low", "background": "high"},
+                "kirocrew-lite",
+                "worker",
+                "high",
+                id="test_a_background_agent_takes_the_role_effort_not_the_chat_default",
+            ),
+            pytest.param(
+                {"chat": "low", "background": "high"},
+                "kirocrew",
+                "",
+                "low",
+                id="test_a_normal_agent_takes_the_chat_default",
+            ),
+            pytest.param(
+                {"chat": "low", "background": "high", "crew_pin": "max"},
+                "kirocrew-lite",
+                "worker",
+                "max",
+                id="test_a_crew_pin_outranks_the_role_effort",
+            ),
+            pytest.param({}, "kirocrew", "", "", id="test_empty_when_no_tier_pins_anything"),
+        ],
+    )
+    def test_tier_order(self, tiers, agent, crew_agent, expected):
+        assert self._cfg(**tiers).resolve_session_effort(agent, crew_agent) == expected
 
     def test_the_role_check_follows_the_bound_template_not_the_passed_name(self):
         """Slack threads, cron jobs and spawned agents pass a CREW name as
@@ -146,17 +173,6 @@ class TestResolveSessionEffort:
         cfg = self._cfg(chat="low", background="high")
         assert cfg.resolve_session_effort("kirocrew-heartbeat", "") == "high"
 
-    def test_a_normal_agent_takes_the_chat_default(self):
-        cfg = self._cfg(chat="low", background="high")
-        assert cfg.resolve_session_effort("kirocrew", "") == "low"
-
-    def test_a_crew_pin_outranks_the_role_effort(self):
-        cfg = self._cfg(chat="low", background="high", crew_pin="max")
-        assert cfg.resolve_session_effort("kirocrew-lite", "worker") == "max"
-
-    def test_empty_when_no_tier_pins_anything(self):
-        assert self._cfg().resolve_session_effort("kirocrew", "") == ""
-
     def test_the_factory_and_the_resolver_cannot_disagree(self):
         """Pins the sharing itself: the factory must not re-derive the chain.
 
@@ -169,7 +185,7 @@ class TestResolveSessionEffort:
 
         src = inspect.getsource(loader.KiroCrewConfig.create_provider_factory)
         assert "resolve_session_effort" in src
-        # The background-agent pair lives in ONE place now.
+        # The background-agent pair is named in ONE place, outside the factory.
         assert '"kirocrew-lite"' not in src
 
 
@@ -218,24 +234,26 @@ class TestFactoryAppliesTheCrewPin:
             assert mock_provider.called, "factory did not construct AcpProvider"
             return mock_provider.call_args.kwargs
 
-    def test_crew_pin_reaches_the_provider_with_no_override_present(self):
+    @pytest.mark.parametrize(
+        "pin, config_effort, expected",
+        [
+            pytest.param(
+                "max", "", "max", id="test_crew_pin_reaches_the_provider_with_no_override_present"
+            ),
+            pytest.param("max", "low", "max", id="test_crew_pin_beats_the_global_default"),
+            # With no pin the global default reaches the provider unchanged.
+            pytest.param("", "high", "high", id="test_an_unpinned_crew_changes_nothing"),
+        ],
+    )
+    def test_crew_pin_against_the_global_default(self, pin, config_effort, expected):
         kwargs = self._capture(
-            crews={"reviewer": "max"},
+            crews={"reviewer": pin},
+            config_effort=config_effort,
             session_key="cron:nightly",
             crew_agent="reviewer",
             model_override="claude-opus-4.7",
         )
-        assert kwargs.get("effort_per_model") == {"claude-opus-4.7": "max"}
-
-    def test_crew_pin_beats_the_global_default(self):
-        kwargs = self._capture(
-            crews={"reviewer": "max"},
-            config_effort="low",
-            session_key="cron:nightly",
-            crew_agent="reviewer",
-            model_override="claude-opus-4.7",
-        )
-        assert kwargs.get("effort_per_model") == {"claude-opus-4.7": "max"}
+        assert kwargs.get("effort_per_model") == {"claude-opus-4.7": expected}
 
     def test_an_explicit_override_still_beats_the_crew_pin(self):
         """A per-session pick outranks the crew, exactly as it does for model."""
@@ -270,17 +288,6 @@ class TestFactoryAppliesTheCrewPin:
             kwargs = mock_provider.call_args.kwargs
         assert kwargs.get("effort_per_model") == {"claude-opus-4.7": "high"}
 
-    def test_an_unpinned_crew_changes_nothing(self):
-        """The no-pin path must be byte-identical to the pre-field behaviour."""
-        kwargs = self._capture(
-            crews={"reviewer": ""},
-            config_effort="high",
-            session_key="cron:nightly",
-            crew_agent="reviewer",
-            model_override="claude-opus-4.7",
-        )
-        assert kwargs.get("effort_per_model") == {"claude-opus-4.7": "high"}
-
     def test_crew_pin_is_dropped_on_a_model_that_cannot_use_it(self):
         """Same rule as the global default: a level is never forced onto a model
         that rejects effort, because kiro-cli refuses the whole overlay."""
@@ -312,19 +319,17 @@ class TestWarmPoolBypassesACrewPin:
         return cfg
 
     @pytest.mark.asyncio
-    async def test_true_for_a_pinned_crew(self):
-        service = self._service(self._cfg("max"))
-        assert await service._crew_pins_effort(None, "reviewer") is True
-
-    @pytest.mark.asyncio
-    async def test_false_for_an_unpinned_crew(self):
-        service = self._service(self._cfg(""))
-        assert await service._crew_pins_effort(None, "reviewer") is False
-
-    @pytest.mark.asyncio
-    async def test_false_when_no_crew_resolves(self):
-        service = self._service(self._cfg("max"))
-        assert await service._crew_pins_effort(None, "") is False
+    @pytest.mark.parametrize(
+        "effort, crew_agent, expected",
+        [
+            pytest.param("max", "reviewer", True, id="test_true_for_a_pinned_crew"),
+            pytest.param("", "reviewer", False, id="test_false_for_an_unpinned_crew"),
+            pytest.param("max", "", False, id="test_false_when_no_crew_resolves"),
+        ],
+    )
+    async def test_the_probe_answer(self, effort, crew_agent, expected):
+        service = self._service(self._cfg(effort))
+        assert await service._crew_pins_effort(None, crew_agent) is expected
 
     @pytest.mark.asyncio
     async def test_a_non_string_crew_agent_is_not_passed_through(self):
@@ -365,13 +370,12 @@ class TestWarmPoolBypassesACrewPin:
 class TestConcurrentRefreshesInstallInOrder:
     """Two overlapping refreshes must leave the NEWEST config installed.
 
-    Lives with this feature's tests because this PR is what made the window
-    reachable: taking the config load off the event loop (so a crew save does not
-    stall the gateway) introduced an await point between READING the config and
+    The config load runs off the event loop (so a crew save does not stall the
+    gateway), which puts an await point between READING the config and
     INSTALLING it. Two refreshes could then complete their loads out of order and
-    let the older one install last, pinning every new session to stale defaults
-    until the next restart -- silently, and specifically for the effort settings
-    this PR added. Holding the pool-fill lock across load AND install closes it.
+    let the older one install last, pinning every new session to stale effort
+    defaults until the next restart. Holding the pool-fill lock across load AND
+    install closes it.
     """
 
     @pytest.mark.asyncio
@@ -604,8 +608,8 @@ class TestSavingAPinRefreshesSessionDefaults:
 
     The chain reads two fields -- the pin, and the bound ``kiro_agent`` the role
     default keys on -- so the trigger is a change to `_effort_inputs`, not a list
-    of conditions per handler. Three review rounds found the per-condition version
-    incomplete one case at a time; these tests pin the invariant instead.
+    of conditions per handler, which is easy to leave one case short; these tests
+    pin the invariant instead.
     """
 
     def _app(self, refreshed: list[str]) -> web.Application:

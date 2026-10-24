@@ -288,6 +288,7 @@ async def _press(dispatcher, session_key: str, request_id: str, flag: str) -> No
 
 
 class TestTelegramDeliveryHook:
+    """The prompt lands in the originating conversation and the press resolves it."""
 
     def test_a_credential_split_by_invisible_characters_is_not_displayed(self) -> None:
         """The preview is cleared in the form Telegram renders, as Discord's twin is.
@@ -320,9 +321,14 @@ class TestTelegramDeliveryHook:
         assert secret not in canonicalize_display(text), "the rendered preview carries the secret"
         assert "REDACTED" in text, text
 
-    """The prompt lands in the originating conversation and the press resolves it."""
-
-    def test_approve_resolves_true(self) -> None:
+    @pytest.mark.parametrize(
+        "button, expected",
+        [
+            pytest.param("1", True, id="test_approve_resolves_true"),
+            pytest.param("0", False, id="test_deny_resolves_false"),
+        ],
+    )
+    def test_a_press_resolves_the_decision(self, button: str, expected: bool) -> None:
         d, cli, _sess = _dispatcher({7})
         session_key = d._session_key(("direct", "7"))
 
@@ -331,24 +337,10 @@ class TestTelegramDeliveryHook:
                 d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
             )
             await asyncio.sleep(0)  # let the prompt post and the future register
-            await _press(d, session_key, "spawn:abc", "1")
+            await _press(d, session_key, "spawn:abc", button)
             return await task
 
-        assert asyncio.run(_go()) is True
-
-    def test_deny_resolves_false(self) -> None:
-        d, cli, _sess = _dispatcher({7})
-        session_key = d._session_key(("direct", "7"))
-
-        async def _go() -> bool:
-            task = asyncio.ensure_future(
-                d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
-            )
-            await asyncio.sleep(0)
-            await _press(d, session_key, "spawn:abc", "0")
-            return await task
-
-        assert asyncio.run(_go()) is False
+        assert asyncio.run(_go()) is expected
 
     def test_trust_grants_session_trust_and_resolves_true(self) -> None:
         d, cli, sess = _dispatcher({7})

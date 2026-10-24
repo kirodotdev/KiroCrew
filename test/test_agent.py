@@ -449,11 +449,9 @@ class TestResolveKirocrewBin:
         kirocrew_bin.write_text("#!/bin/bash\necho kirocrew")
         kirocrew_bin.chmod(0o755)
 
-        # Mock kiro_crew.__file__ to point to our fake package
         mock_mc = unittest.mock.MagicMock()
         mock_mc.__file__ = str(pkg_dir / "__init__.py")
 
-        # Reset global and mock the import
         old_val = agent_mod._KIROCREW_BIN
         try:
             agent_mod._KIROCREW_BIN = None
@@ -769,7 +767,6 @@ class TestResolveKirocrewBin:
             agent_mod._KIROCREW_BIN = None
             with patch.dict("sys.modules", {"kiro_crew": mock_mc}):
                 result = _resolve_kirocrew_bin()
-            # Should accept — .envroot exists in parent of bin/
             assert result == str(kirocrew_bin)
         finally:
             agent_mod._KIROCREW_BIN = old_val
@@ -866,7 +863,6 @@ class TestResolveKirocrewBin:
             agent_mod._KIROCREW_BIN = None
             with patch.dict("sys.modules", {"kiro_crew": mock_mc}):
                 result = _resolve_kirocrew_bin()
-            # Should prefer .venv/bin/kirocrew over bin/kirocrew
             assert result == str(venv_bin)
         finally:
             agent_mod._KIROCREW_BIN = old_val

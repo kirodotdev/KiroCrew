@@ -169,45 +169,85 @@ class TestMemoryIsTheOnlyHostTerm:
         assert "agent.subagent_cpu_cost_cores" not in SubagentManager.LIVE_CONFIG_PATHS
 
 
-# --- Worked examples from dynamic-subagent-sizing.md §3.3 -------------------
+# --- Worked examples from dynamic-subagent-sizing.md §3.3, then clamp edges --
 
 
-def test_example_a_hard_cap_binds(patch_host) -> None:
+_SIZING_CASES = [
     # 174.7 GB: mem_term=443, clamp(443,3,16) = 16
-    patch_host(174.7, 48)
-    cfg = _cfg(mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
-    assert compute_memory_sized_parallel_cap(cfg) == 16
-
-
-def test_example_b_floor(patch_host) -> None:
+    pytest.param(
+        174.7,
+        48,
+        {"mem_cost": 0.315, "cpu_cost": 0.8, "hard_cap": 16},
+        16,
+        id="test_example_a_hard_cap_binds",
+    ),
     # 2 GB, fallback cost: mem_term = floor(2*0.8/0.5) = 3, floor = 3
-    patch_host(2.0, 4)
-    cfg = _cfg(mem_cost=0.5, cpu_cost=1.0, hard_cap=16)
-    assert compute_memory_sized_parallel_cap(cfg) == 3
-
-
-def test_example_c_pool_reservation_binds(patch_host) -> None:
+    pytest.param(
+        2.0,
+        4,
+        {"mem_cost": 0.5, "cpu_cost": 1.0, "hard_cap": 16},
+        3,
+        id="test_example_b_floor",
+    ),
     # 8 GB, pool=5: mem_term = floor((8*0.8 - 5*0.4)/0.4) = 11, clamp(11,3,16) = 11
-    patch_host(8.0, 12)
-    cfg = _cfg(mem_cost=0.4, cpu_cost=0.8, hard_cap=16, pool_size=5)
-    assert compute_memory_sized_parallel_cap(cfg) == 11
-
-
-def test_example_d_memory_binds(patch_host) -> None:
+    pytest.param(
+        8.0,
+        12,
+        {"mem_cost": 0.4, "cpu_cost": 0.8, "hard_cap": 16, "pool_size": 5},
+        11,
+        id="test_example_c_pool_reservation_binds",
+    ),
     # Effective 4 GB (cgroup headroom fed directly): mem_term=10
-    patch_host(4.0, 48)
-    cfg = _cfg(mem_cost=0.315, cpu_cost=0.8, hard_cap=16)
-    assert compute_memory_sized_parallel_cap(cfg) == 10
-
-
-def test_shared_marginal_cost_binds_on_provider_ceiling(patch_host) -> None:
-    # Stage 1: with the session-shared marginal memory cost (≈0.05 GB), even a
-    # modest 8 GB host is not RAM-bound — the cap rises to the provider ceiling
-    # (hard_cap) instead of the legacy floor of 3.
+    pytest.param(
+        4.0,
+        48,
+        {"mem_cost": 0.315, "cpu_cost": 0.8, "hard_cap": 16},
+        10,
+        id="test_example_d_memory_binds",
+    ),
+    # With the session-shared marginal memory cost (≈0.05 GB), even a modest
+    # 8 GB host is not RAM-bound: the cap rises to the provider ceiling
+    # (hard_cap) instead of the floor of 3.
     # mem_term = floor((8*0.8)/0.05) = 128; clamp(128, 3, 16) = 16.
-    patch_host(8.0, 4)
-    cfg = _cfg(mem_cost=0.05, cpu_cost=0.25, hard_cap=16)
-    assert compute_memory_sized_parallel_cap(cfg) == 16
+    pytest.param(
+        8.0,
+        4,
+        {"mem_cost": 0.05, "cpu_cost": 0.25, "hard_cap": 16},
+        16,
+        id="test_shared_marginal_cost_binds_on_provider_ceiling",
+    ),
+    pytest.param(
+        174.7,
+        48,
+        {"mem_cost": 0.315, "cpu_cost": 0.8, "hard_cap": 8},
+        8,
+        id="test_hard_cap_clamps_high",
+    ),
+    # Tiny host.
+    pytest.param(
+        1.0,
+        1,
+        {"mem_cost": 0.5, "cpu_cost": 1.0, "hard_cap": 16},
+        3,
+        id="test_floor_never_below_three",
+    ),
+    # A misconfigured subagent_auto_max < 3 does not drop the cap below 3:
+    # compute_max_subagents enforces a hard floor of 3 (the loader also clamps
+    # subagent_auto_max up to 3, but compute defends independently).
+    pytest.param(
+        174.7,
+        48,
+        {"hard_cap": 2},
+        3,
+        id="test_hard_cap_below_floor_is_raised_to_three",
+    ),
+]
+
+
+@pytest.mark.parametrize(("avail_gb", "cpu_count", "cfg_kwargs", "expected"), _SIZING_CASES)
+def test_memory_sized_parallel_cap(patch_host, avail_gb, cpu_count, cfg_kwargs, expected) -> None:
+    patch_host(avail_gb, cpu_count)
+    assert compute_memory_sized_parallel_cap(_cfg(**cfg_kwargs)) == expected
 
 
 # --- Edge cases ------------------------------------------------------------
@@ -225,27 +265,6 @@ def test_pool_reservation_reduces_memory_budget(patch_host) -> None:
     # no_pool: floor(20*0.8/0.5)=32 ; with_pool: floor((16-5)/0.5)=22
     assert no_pool == 32
     assert with_pool == 22
-
-
-def test_hard_cap_clamps_high(patch_host) -> None:
-    patch_host(174.7, 48)
-    cfg = _cfg(mem_cost=0.315, cpu_cost=0.8, hard_cap=8)
-    assert compute_memory_sized_parallel_cap(cfg) == 8
-
-
-def test_floor_never_below_three(patch_host) -> None:
-    patch_host(1.0, 1)  # tiny host
-    cfg = _cfg(mem_cost=0.5, cpu_cost=1.0, hard_cap=16)
-    assert compute_memory_sized_parallel_cap(cfg) == 3
-
-
-def test_hard_cap_below_floor_is_raised_to_three(patch_host) -> None:
-    # A misconfigured subagent_auto_max < 3 does not drop the cap below 3:
-    # compute_max_subagents enforces a hard floor of 3 (the loader also clamps
-    # subagent_auto_max up to 3, but compute defends independently).
-    patch_host(174.7, 48)
-    cfg = _cfg(hard_cap=2)
-    assert compute_memory_sized_parallel_cap(cfg) == 3
 
 
 def test_unreadable_memory_fails_open_to_legacy_default(patch_host) -> None:
@@ -1683,24 +1702,21 @@ class TestMacosMemoryProbe:
         expected = round(200000 * 16384 / (1024**3), 2)
         assert sub._macos_available_memory_gb() == pytest.approx(expected, abs=0.01)
 
-    def test_none_page_count_fails_open(self, monkeypatch) -> None:
+    @pytest.mark.parametrize(
+        "pages",
+        [
+            pytest.param(None, id="test_none_page_count_fails_open"),
+            pytest.param(0, id="test_zero_page_count_fails_open"),
+        ],
+    )
+    def test_missing_page_count_fails_open(self, monkeypatch, pages) -> None:
         import kiro_crew.subagent as sub
 
         real_sysconf = getattr(sub.os, "sysconf", absent_sysconf)
         monkeypatch.setattr(
             sub.os, "sysconf", lambda n: 16384 if n == "SC_PAGE_SIZE" else real_sysconf(n)
         )
-        monkeypatch.setattr(sub, "_macos_vm_reclaimable_pages", lambda: None)
-        assert sub._macos_available_memory_gb() == -1.0
-
-    def test_zero_page_count_fails_open(self, monkeypatch) -> None:
-        import kiro_crew.subagent as sub
-
-        real_sysconf = getattr(sub.os, "sysconf", absent_sysconf)
-        monkeypatch.setattr(
-            sub.os, "sysconf", lambda n: 16384 if n == "SC_PAGE_SIZE" else real_sysconf(n)
-        )
-        monkeypatch.setattr(sub, "_macos_vm_reclaimable_pages", lambda: 0)
+        monkeypatch.setattr(sub, "_macos_vm_reclaimable_pages", lambda: pages)
         assert sub._macos_available_memory_gb() == -1.0
 
     def test_sysconf_error_fails_open(self, monkeypatch) -> None:

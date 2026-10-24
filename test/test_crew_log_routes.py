@@ -1016,14 +1016,23 @@ def test_notify_from_a_writer_thread_does_no_work_of_its_own():
     loop = MagicMock()
     publisher.bind(loop)
     publisher.notify(SESSION)
-    loop.call_soon_threadsafe.assert_called_once()
+    loop.call_soon_threadsafe.assert_called_once_with(publisher._mark, SESSION)
     assert state.frames == []
+    assert publisher._dirty == set()
 
 
 def test_notify_before_the_publisher_is_bound_is_a_no_op():
     publisher = routes.CrewLogPublisher(_Sockets())
     publisher.notify(SESSION)
+    assert publisher._dirty == set()
+    assert publisher._scheduled is False
+    # Once bound, an empty id still hands nothing over, while a real one does.
+    loop = MagicMock()
+    publisher.bind(loop)
     publisher.notify("")
+    loop.call_soon_threadsafe.assert_not_called()
+    publisher.notify(SESSION)
+    loop.call_soon_threadsafe.assert_called_once_with(publisher._mark, SESSION)
 
 
 @pytest.mark.asyncio
@@ -1126,10 +1135,21 @@ def test_run_does_not_start_an_overlapping_flush_while_one_is_in_flight():
     publisher = routes.CrewLogPublisher(_Sockets())
     loop = MagicMock()
     publisher.bind(loop)
+    # A stand-in pass, so the positive half below hands the loop no real coroutine.
+    flush = MagicMock(return_value="the-flush-pass")
+    publisher._flush = flush
     publisher._flushing = True
     publisher._scheduled = True
     publisher._run()
     loop.create_task.assert_not_called()
+    flush.assert_not_called()
+    assert publisher._flushing is True
+    assert publisher._scheduled is False
+    # With no pass in flight the same call does start one.
+    publisher._flushing = False
+    publisher._run()
+    loop.create_task.assert_called_once_with("the-flush-pass")
+    loop.create_task.return_value.add_done_callback.assert_called_once_with(publisher._finished)
 
 
 def test_finished_reschedules_when_work_arrived_mid_flush():
@@ -1146,7 +1166,7 @@ def test_finished_reschedules_when_work_arrived_mid_flush():
     publisher._finished(done)
     assert publisher._flushing is False
     assert publisher._scheduled is True
-    loop.call_later.assert_called_once()
+    loop.call_later.assert_called_once_with(routes.COALESCE_SECONDS, publisher._run)
 
 
 def test_a_page_reports_the_tail_it_observed_not_a_stale_cached_one():

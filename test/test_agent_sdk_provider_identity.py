@@ -247,28 +247,32 @@ def test_converted_files_ask_the_predicate(rel: str) -> None:
     assert "is_claude_code" in body, f"{rel} no longer asks is_claude_code()"
 
 
-def test_onboarding_import_source_id_is_left_alone() -> None:
-    """``onboarding_import`` keeps its own ``"claude_code"``, on purpose.
-
-    There it identifies the Claude Code desktop app whose settings are being
-    imported (``~/.claude``, ``CLAUDE_CONFIG_DIR``) -- a foreign config tree on
-    disk, not the provider this process runs on. Routing it through the
-    predicate would assert a provider identity that has nothing to do with the
-    question being asked.
-    """
-    body = (SRC / "onboarding_import.py").read_text(encoding="utf-8")
-    assert '"claude_code"' in body
-    assert "is_claude_code" not in body
-
-
-def test_model_registry_keeps_its_index_key() -> None:
-    """``model_registry`` keeps the string as a namespace key, on purpose.
-
-    The module states the reason where the constant is defined: *"Named for the
-    registry key, NOT because windows are claude_code-only."* A model's context
-    window belongs to the model, not to the provider serving it, so these are
-    not provider checks and must not become any.
-    """
-    body = (SRC / "model_registry.py").read_text(encoding="utf-8")
-    assert '_WINDOW_INDEX = "claude_code"' in body
+@pytest.mark.parametrize(
+    ("module", "literal"),
+    [
+        # There ``"claude_code"`` identifies the Claude Code desktop app whose
+        # settings are being imported (``~/.claude``, ``CLAUDE_CONFIG_DIR``) -- a
+        # foreign config tree on disk, not the provider this process runs on.
+        # Routing it through the predicate would assert a provider identity that
+        # has nothing to do with the question being asked.
+        pytest.param(
+            "onboarding_import.py",
+            '"claude_code"',
+            id="test_onboarding_import_source_id_is_left_alone",
+        ),
+        # The module states the reason where the constant is defined: *"Named for
+        # the registry key, NOT because windows are claude_code-only."* A model's
+        # context window belongs to the model, not to the provider serving it, so
+        # these are not provider checks and must not become any.
+        pytest.param(
+            "model_registry.py",
+            '_WINDOW_INDEX = "claude_code"',
+            id="test_model_registry_keeps_its_index_key",
+        ),
+    ],
+)
+def test_a_non_provider_claude_code_string_is_left_alone(module: str, literal: str) -> None:
+    """These modules keep their own ``"claude_code"`` string, on purpose."""
+    body = (SRC / module).read_text(encoding="utf-8")
+    assert literal in body
     assert "is_claude_code" not in body

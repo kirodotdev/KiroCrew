@@ -668,12 +668,40 @@ def _spy_on_prefix_digests(monkeypatch) -> list[int]:
     return calls
 
 
-def test_a_savepoint_past_the_end_of_the_log_is_ignored():
-    """The short-store fallback: a log that does not reach the savepoint."""
+@pytest.mark.parametrize(
+    ("field", "planted"),
+    [
+        # The short-store fallback: a log that does not reach the savepoint.
+        pytest.param(
+            "seq",
+            lambda handle: handle.last_seq + 500,
+            id="test_a_savepoint_past_the_end_of_the_log_is_ignored",
+        ),
+        # Retention drops segments off the front, so the two folds would differ.
+        pytest.param(
+            "first_seq", lambda handle: 2, id="test_a_savepoint_whose_front_moved_is_ignored"
+        ),
+        # A renamed or copied file says what it is, and it is checked.
+        pytest.param(
+            "fold", lambda handle: "usage", id="test_a_savepoint_naming_another_fold_is_ignored"
+        ),
+        pytest.param(
+            "unit",
+            lambda handle: "s-somebody-else",
+            id="test_a_savepoint_naming_another_unit_is_ignored",
+        ),
+        pytest.param(
+            "v",
+            lambda handle: crew_log.fold_state_version("status") + 1,
+            id="test_a_savepoint_from_a_future_build_is_ignored",
+        ),
+    ],
+)
+def test_a_savepoint_that_does_not_match_its_log_is_ignored(field, planted):
     handle = _long_log()
     crew_log.fold_session(SESSION)
     payload = _payload("status")
-    payload["seq"] = handle.last_seq + 500
+    payload[field] = planted(handle)
     payload["state"]["turns_completed"] = 99999
     _write_payload("status", payload)
 
@@ -809,21 +837,6 @@ def test_a_savepoint_from_before_the_kernel_is_discarded_rather_than_migrated():
     assert _payload("status")["state"]["turns_completed"] == _LONG_TURNS
 
 
-def test_a_savepoint_whose_front_moved_is_ignored():
-    """Retention drops segments off the front, so the two folds would differ."""
-    _long_log()
-    crew_log.fold_session(SESSION)
-    payload = _payload("status")
-    payload["first_seq"] = 2
-    payload["state"]["turns_completed"] = 99999
-    _write_payload("status", payload)
-
-    cold = _cold_bundle()
-    resumed = crew_log.fold_session(SESSION)
-
-    assert resumed.projection("status").value == cold.projection("status").value
-
-
 def test_a_savepoint_from_a_recreated_log_is_ignored():
     """Same id, different file: its seqs start again and mean something else.
 
@@ -846,47 +859,6 @@ def test_a_savepoint_from_a_recreated_log_is_ignored():
 
     assert resumed.projection("status").value == cold.projection("status").value
     assert resumed.projection("status").value["turns_completed"] == _LONG_TURNS + 8
-
-
-def test_a_savepoint_naming_another_fold_is_ignored():
-    """A renamed or copied file says what it is, and it is checked."""
-    _long_log()
-    crew_log.fold_session(SESSION)
-    payload = _payload("status")
-    payload["fold"] = "usage"
-    payload["state"]["turns_completed"] = 99999
-    _write_payload("status", payload)
-
-    cold = _cold_bundle()
-    resumed = crew_log.fold_session(SESSION)
-
-    assert resumed.projection("status").value == cold.projection("status").value
-
-
-def test_a_savepoint_naming_another_unit_is_ignored():
-    _long_log()
-    crew_log.fold_session(SESSION)
-    payload = _payload("status")
-    payload["unit"] = "s-somebody-else"
-    payload["state"]["turns_completed"] = 99999
-    _write_payload("status", payload)
-
-    resumed = crew_log.fold_session(SESSION)
-
-    assert resumed.projection("status").value["turns_completed"] == _LONG_TURNS
-
-
-def test_a_savepoint_from_a_future_build_is_ignored():
-    _long_log()
-    crew_log.fold_session(SESSION)
-    payload = _payload("status")
-    payload["v"] = crew_log.fold_state_version("status") + 1
-    payload["state"]["turns_completed"] = 99999
-    _write_payload("status", payload)
-
-    resumed = crew_log.fold_session(SESSION)
-
-    assert resumed.projection("status").value["turns_completed"] == _LONG_TURNS
 
 
 def test_a_savepoint_from_an_older_build_is_refused_and_folded_cold():

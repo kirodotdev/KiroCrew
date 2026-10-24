@@ -115,18 +115,26 @@ def test_another_thread_keeps_the_real_sleep_and_clock(monkeypatch):
 
 
 class TestShimArgvContract:
-    def test_missing_separator_is_refused(self, capsys):
-        assert shim.main(["--rlimits=RLIMIT_NOFILE:1024"]) == 127
-        assert "argv separator" in capsys.readouterr().err
-
-    def test_unknown_option_is_refused_rather_than_guessed(self, capsys):
-        # Guessing where the command starts could exec the wrong thing.
-        assert shim.main(["--surprise", "--", "/bin/true"]) == 127
-        assert "unknown option" in capsys.readouterr().err
-
-    def test_empty_command_is_refused(self, capsys):
-        assert shim.main(["--"]) == 127
-        assert "no command" in capsys.readouterr().err
+    @pytest.mark.parametrize(
+        "argv, message",
+        [
+            pytest.param(
+                ["--rlimits=RLIMIT_NOFILE:1024"],
+                "argv separator",
+                id="test_missing_separator_is_refused",
+            ),
+            # Guessing where the command starts could exec the wrong thing.
+            pytest.param(
+                ["--surprise", "--", "/bin/true"],
+                "unknown option",
+                id="test_unknown_option_is_refused_rather_than_guessed",
+            ),
+            pytest.param(["--"], "no command", id="test_empty_command_is_refused"),
+        ],
+    )
+    def test_a_malformed_argv_is_refused(self, capsys, argv, message):
+        assert shim.main(argv) == 127
+        assert message in capsys.readouterr().err
 
     def test_exec_failure_reports_127_not_a_traceback(self, capsys, monkeypatch):
         clock = _pin_clock(monkeypatch)

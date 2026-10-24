@@ -200,9 +200,13 @@ async def test_agent_subcommands_still_reach_the_harness(tmp_path, monkeypatch):
     state, slot = await _chat_with_worker(tmp_path, monkeypatch)
     switch = AsyncMock()
     monkeypatch.setattr(chat_runner, "_handle_agent_command", switch)
+    done_before = sum(row["role"] == "done" for row in slot.messages)
     for text in ("/agent list", "/agent", "/agent create mine"):
         await _run_command(state, slot, text)
     switch.assert_not_awaited()
+    # Each command ran a turn of its own, and none was answered as a switch.
+    assert sum(row["role"] == "done" for row in slot.messages) == done_before + 3
+    assert not any("Switched to agent" in row for row in _assistant_rows(slot))
 
 
 # ── The route's `announce` flag: the main composer's switch line ──

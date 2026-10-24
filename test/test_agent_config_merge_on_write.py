@@ -672,7 +672,24 @@ async def test_a_managed_server_whose_gate_raises_is_deleted(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_an_edition_contributed_server_is_preserved(tmp_path):
+@pytest.mark.parametrize(
+    ("name", "command"),
+    [
+        pytest.param("internal-mcp", "i", id="test_an_edition_contributed_server_is_preserved"),
+        # The one shape that is BOTH host-set and namespaced: an edition may
+        # contribute a name containing ``:``, the only way a host-owned entry also
+        # looks app-owned (a managed name never contains one). Host ownership is
+        # proven from the contributed map alone, so ``vendor:tools`` survives
+        # although the installed app ``demo`` declares nothing of the sort -- the
+        # app-declared set being empty for this name cannot veto it.
+        pytest.param(
+            "vendor:tools",
+            "v",
+            id="test_a_namespaced_edition_extra_is_preserved_by_host_ownership",
+        ),
+    ],
+)
+async def test_an_edition_extra_is_preserved(tmp_path, name, command):
     """An edition extra is host-owned and always emitted, so it is preserved.
 
     ``build_agent_config`` merges every ``_extra_mcp_servers`` entry with no gate
@@ -684,35 +701,13 @@ async def test_an_edition_contributed_server_is_preserved(tmp_path):
     """
     response, written = await _put(
         tmp_path,
-        on_disk={"name": "kirocrew", "mcpServers": {"internal-mcp": {"command": "i"}}},
+        on_disk={"name": "kirocrew", "mcpServers": {name: {"command": command}}},
         submitted={"name": "kirocrew", "mcpServers": {}},
-        extra_managed={"internal-mcp": {"command": "i", "args": []}},
+        extra_managed={name: {"command": command, "args": []}},
     )
 
     assert response.status == 200
-    assert written["mcpServers"] == {"internal-mcp": {"command": "i"}}
-
-
-@pytest.mark.asyncio
-async def test_a_namespaced_edition_extra_is_preserved_by_host_ownership(tmp_path):
-    """The one shape that is BOTH host-set and namespaced: host ownership decides.
-
-    An edition may contribute a name containing ``:``, which is the only way a
-    host-owned entry also looks app-owned (a managed name never contains one).
-    Host ownership is proven from the contributed map alone, so ``vendor:tools``
-    survives although the installed app ``demo`` declares nothing of the sort --
-    the union does not require both sources to agree, and the app-declared set
-    being empty for this name cannot veto it.
-    """
-    response, written = await _put(
-        tmp_path,
-        on_disk={"name": "kirocrew", "mcpServers": {"vendor:tools": {"command": "v"}}},
-        submitted={"name": "kirocrew", "mcpServers": {}},
-        extra_managed={"vendor:tools": {"command": "v", "args": []}},
-    )
-
-    assert response.status == 200
-    assert written["mcpServers"] == {"vendor:tools": {"command": "v"}}
+    assert written["mcpServers"] == {name: {"command": command}}
 
 
 @pytest.mark.asyncio
@@ -1027,7 +1022,19 @@ async def test_an_unstattable_apps_root_child_fails_the_put(tmp_path):
 
 @requires_symlinks
 @pytest.mark.asyncio
-async def test_a_dangling_app_root_link_fails_the_put(tmp_path):
+@pytest.mark.parametrize(
+    "shape",
+    [
+        pytest.param("broken_symlink", id="test_a_dangling_app_root_link_fails_the_put"),
+        # The sibling the dangling-link screen cannot reach. Here ``lstat`` succeeds
+        # AND ``stat`` succeeds -- the target is a real file -- so nothing raises and
+        # the only thing that is False is ``S_ISDIR``. A screen that skips every
+        # non-directory therefore reports the name as free, so the link-ish half
+        # must refuse too.
+        pytest.param("link_to_file", id="test_an_app_root_link_to_a_file_fails_the_put"),
+    ],
+)
+async def test_a_link_ish_app_root_fails_the_put(tmp_path, shape):
     """A DANGLING app-root link OCCUPIES the name, so it is unreadable, not absent.
 
     The child screen reached its skip through a single ``child.stat()``, which
@@ -1040,7 +1047,7 @@ async def test_a_dangling_app_root_link_fails_the_put(tmp_path):
     exists to refuse -- and it already refuses exactly this shape one position out,
     for ``installed.json``, via ``_require_present_shape``.
     """
-    await _assert_refused_and_intact(tmp_path, app_root_shape="broken_symlink")
+    await _assert_refused_and_intact(tmp_path, app_root_shape=shape)
 
 
 @pytest.mark.asyncio
@@ -1092,20 +1099,6 @@ def test_a_dangling_app_root_link_is_not_absence(tmp_path):
     ):
         _app_declared_server_names()
     assert "demo" in str(caught.value), "the refusal must name the entry it could not read"
-
-
-@requires_symlinks
-@pytest.mark.asyncio
-async def test_an_app_root_link_to_a_file_fails_the_put(tmp_path):
-    """A link-ish app root whose target RESOLVES to a file is still not absence.
-
-    The sibling the dangling-link screen cannot reach. Here ``lstat`` succeeds AND
-    ``stat`` succeeds -- the target is a real file -- so nothing raises and the only
-    thing that is False is ``S_ISDIR``. A screen that skips every non-directory
-    therefore reports the name as free. That is the cannot-read-becomes-not-owned
-    defect one shape over, so the link-ish half must refuse.
-    """
-    await _assert_refused_and_intact(tmp_path, app_root_shape="link_to_file")
 
 
 @pytest.mark.asyncio

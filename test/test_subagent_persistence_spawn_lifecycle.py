@@ -75,7 +75,6 @@ class TestSpawnCreatesFolder:
             # flake-ok: the spawned run task ends on its own once the stubbed empty stream completes; the test never has to unblock it; moved verbatim
             await manager._tasks[info.id]
 
-        # Agent folder should exist with state.json
         state_path = agent_root / info.id / "state.json"
         assert state_path.exists(), f"Expected {state_path} to exist"
         state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -99,7 +98,6 @@ class TestSpawnCreatesFolder:
 
         assert info is not None
         assert info.done
-        # No folder should exist for rejected agents
         assert not (agent_root / info.id).exists()
 
     @pytest.mark.asyncio
@@ -220,7 +218,6 @@ class TestResultStreamingToAgentFolder:
             # flake-ok: the spawned run task ends on its own once the stubbed chunk stream completes; the test never has to unblock it; moved verbatim
             await manager._tasks[info.id]
 
-        # Result should be in agent folder
         result_path = agent_root / info.id / "result.txt"
         assert result_path.exists()
         assert result_path.read_text(encoding="utf-8") == "hello world"
@@ -428,12 +425,10 @@ class TestTombstoneOnAbnormalExit:
             # flake-ok: _run returns on its patched 10 ms timeout over the hanging stub; that timeout path is under test; moved verbatim
             await manager._run(info)
 
-        # Tombstone should still say "reaped", not "timeout"
         ts = json.loads(
             (agent_root / "reaped_timeout" / "tombstone.json").read_text(encoding="utf-8")
         )
         assert ts["cause"] == "reaped"
-        # Error should not be overwritten
         assert info.error == "reaped by reaper"
 
     @pytest.mark.asyncio
@@ -669,5 +664,4 @@ class TestFolderCleanupOnSuccess:
             # flake-ok: the run task returns once the patched 10 ms delivery timeout cuts the hanging on_done; that path is under test; moved verbatim
             await manager._tasks[info.id]
 
-        # Folder must survive when delivery times out
         assert (agent_root / info.id).exists()

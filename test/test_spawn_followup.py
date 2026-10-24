@@ -462,11 +462,11 @@ class TestFollowUpDelivery:
     async def test_shutdown_during_busy_retry_still_announces_the_message(
         self, monkeypatch
     ) -> None:
-        """SHUTDOWN-MID-RETRY RACE (GPT review): the watcher must not DRAIN the
-        queue before the outcome settles — shutdown landing during a
-        conversation_busy retry sleep must not find an empty queue, cancel the
-        watcher, and lose the message with no event. Messages now stay queued
-        until dispatched-or-announced, so cancel_all()'s sweep announces them."""
+        """The watcher must not DRAIN the queue before the outcome settles:
+        shutdown landing during a conversation_busy retry sleep must not find an
+        empty queue, cancel the watcher, and lose the message with no event.
+        Messages stay queued until dispatched-or-announced, so cancel_all()'s
+        sweep announces them."""
         mgr = _manager()
         _fast(mgr, monkeypatch)
         announced: list = []
@@ -498,7 +498,7 @@ class TestFollowUpDelivery:
 
     @pytest.mark.asyncio
     async def test_watcher_latch_resets_when_the_watcher_exits(self, monkeypatch) -> None:
-        """GPT P1: a watcher that dies at its deadline (run still alive) must
+        """A watcher that dies at its deadline (run still alive) must
         reset the one-watcher latch — otherwise every later follow_up_run
         answers 'queued' while nothing will ever deliver. A fresh follow-up
         after the reset arms a NEW watcher that can dispatch."""
@@ -542,7 +542,7 @@ class TestFollowUpDelivery:
     async def test_message_queued_during_expiry_announce_gets_a_new_watcher(
         self, monkeypatch
     ) -> None:
-        """EXPIRY RACE (GPT review): a follow-up accepted while the previous
+        """A follow-up accepted while the previous
         watcher is inside its final awaits (latch still true, so no new
         watcher is armed) must be picked up by the done-callback's re-arm —
         never stranded as 'queued' with no watcher."""

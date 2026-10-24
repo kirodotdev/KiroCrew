@@ -1238,11 +1238,21 @@ def test_a_conductor_board_naming_none_of_its_fields_is_refused():
     assert agent_panel.read(CREW) is None, "a refused publish still wrote a record"
 
 
-def test_a_conductor_board_with_one_known_field_is_stored_whole():
-    _publish(template="kirocrew-conductor", data={"done": "1 of 2", "cycle": 47})
-    assert agent_panel.read(CREW)["data"] == {"done": "1 of 2", "cycle": 47}
-
-
-def test_a_template_with_no_contract_accepts_any_keys():
-    _publish(template="default", data={"anything": 1, "at": "all"})
-    assert agent_panel.read(CREW)["data"] == {"anything": 1, "at": "all"}
+@pytest.mark.parametrize(
+    ("template", "data"),
+    [
+        pytest.param(
+            "kirocrew-conductor",
+            {"done": "1 of 2", "cycle": 47},
+            id="test_a_conductor_board_with_one_known_field_is_stored_whole",
+        ),
+        pytest.param(
+            "default",
+            {"anything": 1, "at": "all"},
+            id="test_a_template_with_no_contract_accepts_any_keys",
+        ),
+    ],
+)
+def test_a_publish_the_contract_does_not_refuse_is_stored_whole(template, data):
+    _publish(template=template, data=data)
+    assert agent_panel.read(CREW)["data"] == data

@@ -327,13 +327,23 @@ class TestDelegationCarriesTheCrewsStore:
         memory_store_dir_for("legacy").mkdir(parents=True)
 
         class Raises:
-            def ensure_store(self, _name):
+            def __init__(self):
+                self.names = []
+
+            def ensure_store(self, name):
+                self.names.append(name)
                 raise RuntimeError("boom")
 
         await prepare_store_vectors(object(), "legacy")  # no ensure_store at all
-        await prepare_store_vectors(MagicMock(), "legacy")  # not awaitable
-        await prepare_store_vectors(Raises(), "legacy")  # raises
-        await prepare_store_vectors(MagicMock(), "")  # no store named
+        not_awaitable = MagicMock()
+        await prepare_store_vectors(not_awaitable, "legacy")
+        not_awaitable.ensure_store.assert_called_once_with("legacy")
+        raises = Raises()
+        await prepare_store_vectors(raises, "legacy")
+        assert raises.names == ["legacy"]
+        unnamed = MagicMock()
+        await prepare_store_vectors(unnamed, "")
+        assert unnamed.ensure_store.call_count == 0
 
     @pytest.mark.asyncio
     async def test_a_named_store_is_actually_stood_up(self, crew_config, monkeypatch):

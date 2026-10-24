@@ -234,13 +234,22 @@ class TestAgentSkillGlobs:
 
 
 class TestSkillKeyRoundTrip:
-    def test_kiro_user_key_round_trips(self, fake_home):
-        _make_skill(fake_home / ".kiro" / "skills", "babysit")
+    @pytest.mark.parametrize(
+        "skill",
+        [
+            pytest.param("babysit", id="test_kiro_user_key_round_trips"),
+            # Skills may live under a category dir (``utils/tiny-url``); the
+            # enumeration walk must key them by their full relative path.
+            pytest.param("utils/tiny-url", id="test_nested_category_key_round_trips"),
+        ],
+    )
+    def test_a_kiro_user_key_round_trips(self, fake_home, skill):
+        _make_skill(fake_home / ".kiro" / "skills", skill)
         state = _State()
-        uri = skill_uri_for_key("kiro-user/babysit", state)
-        assert uri == "skill://~/.kiro/skills/babysit/SKILL.md"
+        uri = skill_uri_for_key(f"kiro-user/{skill}", state)
+        assert uri == f"skill://~/.kiro/skills/{skill}/SKILL.md"
         assert skill_key_for_uri(uri, _agents_dir(fake_home) / "a.json", state) == (
-            "kiro-user/babysit"
+            f"kiro-user/{skill}"
         )
 
     def test_unknown_key_is_none(self, fake_home):
@@ -251,27 +260,17 @@ class TestSkillKeyRoundTrip:
         assert skill_uri_for_key("kiro-user/../../.ssh", _State()) is None
         assert skill_uri_for_key("/etc/passwd", _State()) is None
 
-    def test_wildcard_uri_has_no_key(self, fake_home):
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            pytest.param("skill://~/.kiro/skills/*/SKILL.md", id="test_wildcard_uri_has_no_key"),
+            pytest.param("skill:///opt/elsewhere/foo/SKILL.md", id="test_foreign_path_has_no_key"),
+        ],
+    )
+    def test_a_uri_naming_no_single_kiro_user_skill_has_no_key(self, fake_home, uri):
         state = _State()
         agent = _agents_dir(fake_home) / "a.json"
-        assert skill_key_for_uri("skill://~/.kiro/skills/*/SKILL.md", agent, state) is None
-
-    def test_foreign_path_has_no_key(self, fake_home):
-        state = _State()
-        agent = _agents_dir(fake_home) / "a.json"
-        assert skill_key_for_uri("skill:///opt/elsewhere/foo/SKILL.md", agent, state) is None
-
-    def test_nested_category_key_round_trips(self, fake_home):
-        """Skills may live under a category dir (``utils/tiny-url``); the
-        enumeration walk must key them by their full relative path."""
-        _make_skill(fake_home / ".kiro" / "skills", "utils/tiny-url")
-        state = _State()
-        uri = skill_uri_for_key("kiro-user/utils/tiny-url", state)
-        assert uri == "skill://~/.kiro/skills/utils/tiny-url/SKILL.md"
-        assert (
-            skill_key_for_uri(uri, _agents_dir(fake_home) / "a.json", state)
-            == "kiro-user/utils/tiny-url"
-        )
+        assert skill_key_for_uri(uri, agent, state) is None
 
     @requires_symlinks
     def test_symlinked_skill_dir_inverts_to_the_same_key(self, fake_home):
@@ -976,17 +975,26 @@ class TestSessionContextGate:
             lessons=LessonStore(base_dir=tmp_path),
         )
 
-    def test_mapped_custom_agent_gets_its_skills_on_cc(self, fake_home):
-        """A custom agent with a mapping gets exactly the mapped set on the CC
-        backend (which does not read agent ``resources``)."""
+    @pytest.mark.parametrize(
+        "agent",
+        [
+            pytest.param("specialist", id="test_mapped_custom_agent_gets_its_skills_on_cc"),
+            # The mapping bounds the kirocrew agent too: it does not receive the
+            # entire catalog.
+            pytest.param("kirocrew", id="test_mapped_kirocrew_is_scoped_not_full_catalog"),
+        ],
+    )
+    def test_a_mapped_agent_gets_exactly_its_skills_on_cc(self, fake_home, agent):
+        """An agent with a mapping gets exactly the mapped set on the CC backend
+        (which does not read agent ``resources``)."""
         skills_root = fake_home / "skills"
         _make_skill(skills_root, "alpha")
         _make_skill(skills_root, "beta")
         d = _agents_dir(fake_home)
-        (d / "specialist.json").write_text(
+        (d / f"{agent}.json").write_text(
             json.dumps(
                 {
-                    "name": "specialist",
+                    "name": agent,
                     "resources": [f"skill://{(skills_root / 'alpha' / 'SKILL.md').as_posix()}"],
                 }
             ),
@@ -994,7 +1002,7 @@ class TestSessionContextGate:
         )
 
         ctx = self._builder(fake_home, skills_root).build_session_context(
-            agent="specialist", provider_type="claude_code"
+            agent=agent, provider_type="claude_code"
         )
         assert "alpha" in ctx
         assert "beta" not in ctx
@@ -1035,29 +1043,6 @@ class TestSessionContextGate:
 
         assert session_skill_globs("", "plain") == []
         assert session_skill_globs("", "kirocrew") is None
-
-    def test_mapped_kirocrew_is_scoped_not_full_catalog(self, fake_home):
-        """The mapping bounds the kirocrew agent too: before this feature it
-        always received the entire catalog."""
-        skills_root = fake_home / "skills"
-        _make_skill(skills_root, "alpha")
-        _make_skill(skills_root, "beta")
-        d = _agents_dir(fake_home)
-        (d / "kirocrew.json").write_text(
-            json.dumps(
-                {
-                    "name": "kirocrew",
-                    "resources": [f"skill://{(skills_root / 'alpha' / 'SKILL.md').as_posix()}"],
-                }
-            ),
-            encoding="utf-8",
-        )
-
-        ctx = self._builder(fake_home, skills_root).build_session_context(
-            agent="kirocrew", provider_type="claude_code"
-        )
-        assert "alpha" in ctx
-        assert "beta" not in ctx
 
     def test_mapped_kirocrew_on_kiro_gets_scoped_discovery(self, fake_home):
         """A mapped default agent gets only its scoped discovery directory."""

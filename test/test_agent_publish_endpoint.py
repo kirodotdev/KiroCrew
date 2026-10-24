@@ -250,16 +250,32 @@ async def test_publish_rejects_invalid_names(tmp_path, name):
 
 
 @pytest.mark.asyncio
-async def test_publish_rejects_reserved_name(tmp_path):
+@pytest.mark.parametrize(
+    ("crew", "name", "code"),
+    [
+        pytest.param(
+            "c", "kirocrew", "template_name_reserved", id="test_publish_rejects_reserved_name"
+        ),
+        # CON/NUL/COM1... are filesystem-reserved on Windows: creating CON.json
+        # raises there, so the name is refused up front.
+        pytest.param(
+            "design-crew",
+            "CON",
+            "invalid_template_name",
+            id="test_publish_rejects_reserved_windows_name",
+        ),
+    ],
+)
+async def test_publish_rejects_a_reserved_template_name(tmp_path, crew, name, code):
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
-    _seed_private_copy(agents_dir, "c", "c", "kirocrew")
+    _seed_private_copy(agents_dir, crew, crew, "kirocrew")
 
     with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir):
-        resp = await api_agent_publish(_publish_request("c", {"crew": "c", "name": "kirocrew"}))
+        resp = await api_agent_publish(_publish_request(crew, {"crew": crew, "name": name}))
 
     assert resp.status == 400
-    assert json.loads(resp.text)["code"] == "template_name_reserved"
+    assert json.loads(resp.text)["code"] == code
 
 
 @pytest.mark.asyncio
@@ -474,72 +490,45 @@ async def test_publish_sanitizes_governance_before_write(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_publish_generic_rebind_failure_compensates(tmp_path):
-    """A rebind failure that is NOT a stale binding (e.g. the config write
-    itself fails) must undo the published file and lineage, then 500 with a
-    code — a leaked orphan would block every retry with name_taken."""
+@pytest.mark.parametrize(
+    ("failing", "code"),
+    [
+        # A rebind failure that is NOT a stale binding (e.g. the config write
+        # itself fails): a leaked orphan would block every retry with name_taken.
+        pytest.param(
+            "kiro_crew.dashboard.handlers.agents._rebind_crew_locked",
+            "rebind_failed",
+            id="test_publish_generic_rebind_failure_compensates",
+        ),
+        # A sidecar failure AFTER the spec is created: an unbound published spec
+        # would surface as a shared template.
+        pytest.param(
+            "kiro_crew.dashboard.handlers.agents.agent_state.get_model_managed",
+            "bookkeeping_failed",
+            id="test_publish_bookkeeping_failure_compensates",
+        ),
+    ],
+)
+async def test_publish_failure_after_the_create_compensates(tmp_path, failing, code):
+    """A failure after the published file is created undoes the file and its
+    lineage, then answers 500 with a code."""
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
     _seed_private_copy(agents_dir, "design-crew", "design-crew", "kirocrew")
 
     with (
         patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir),
-        patch(
-            "kiro_crew.dashboard.handlers.agents._rebind_crew_locked",
-            side_effect=RuntimeError("disk full"),
-        ),
+        patch(failing, side_effect=RuntimeError("write failed")),
     ):
         resp = await api_agent_publish(
             _publish_request("design-crew", {"crew": "design-crew", "name": "published"})
         )
 
     assert resp.status == 500
-    assert json.loads(resp.text)["code"] == "rebind_failed"
+    assert json.loads(resp.text)["code"] == code
     # Compensated: no orphan file, no lineage for the never-bound name.
     assert not (agents_dir / "published.json").exists()
     assert agent_state.get_fork_info("published") is None
-
-
-@pytest.mark.asyncio
-async def test_publish_bookkeeping_failure_compensates(tmp_path):
-    """A sidecar failure AFTER the spec is created must undo the file too —
-    an unbound published spec would surface as a shared template."""
-    agents_dir = tmp_path / "agents"
-    agents_dir.mkdir()
-    _seed_private_copy(agents_dir, "design-crew", "design-crew", "kirocrew")
-
-    with (
-        patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir),
-        patch(
-            "kiro_crew.dashboard.handlers.agents.agent_state.get_model_managed",
-            side_effect=RuntimeError("sidecar unavailable"),
-        ),
-    ):
-        resp = await api_agent_publish(
-            _publish_request("design-crew", {"crew": "design-crew", "name": "published"})
-        )
-
-    assert resp.status == 500
-    assert json.loads(resp.text)["code"] == "bookkeeping_failed"
-    assert not (agents_dir / "published.json").exists()
-    assert agent_state.get_fork_info("published") is None
-
-
-@pytest.mark.asyncio
-async def test_publish_rejects_reserved_windows_name(tmp_path):
-    """CON/NUL/COM1… are filesystem-reserved on Windows: creating CON.json
-    raises there, so the name is refused up front."""
-    agents_dir = tmp_path / "agents"
-    agents_dir.mkdir()
-    _seed_private_copy(agents_dir, "design-crew", "design-crew", "kirocrew")
-
-    with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir):
-        resp = await api_agent_publish(
-            _publish_request("design-crew", {"crew": "design-crew", "name": "CON"})
-        )
-
-    assert resp.status == 400
-    assert json.loads(resp.text)["code"] == "invalid_template_name"
 
 
 @pytest.mark.asyncio

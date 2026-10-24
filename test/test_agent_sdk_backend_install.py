@@ -1118,8 +1118,13 @@ class TestForgetProbe:
         assert probe._cached(ACP_BACKEND_KIRO) is None
         assert probe._cached(ACP_BACKEND_KAS) is None
 
-    def test_forgetting_an_unprobed_backend_is_silent(self):
+    def test_forgetting_an_unprobed_backend_is_silent(self, monkeypatch):
+        _stub_resolvers(monkeypatch)
+        cached = probe.probe_backend(ACP_BACKEND_KIRO)
+
         probe.forget_probe("never-probed")
+
+        assert probe._cached(ACP_BACKEND_KIRO) == cached
 
 
 class TestEvictionOutranksAProbeAlreadyRunning:
@@ -1321,9 +1326,16 @@ class TestForgetCachedResolution:
         from kiro_crew.acp import client
         from kiro_crew.agent_sdk.drivers import acp as driver
 
-        monkeypatch.setattr(client, "_self_served_bin_caches", {})
+        caches = {other: _ABSENT for other in ACP_BACKENDS_SELF_SERVED_ACP}
+        monkeypatch.setattr(client, "_self_served_bin_caches", caches)
+        kept = (None, "/usr/bin")
+        monkeypatch.setattr(client, "_claude_acp_argv_cache", kept, raising=False)
+        monkeypatch.setattr(client, "_codex_acp_argv_cache", kept, raising=False)
         driver.forget_cached_resolution(ACP_BACKEND_KIRO)
         driver.forget_cached_resolution(ACP_BACKEND_KAS)
+        assert caches == {other: _ABSENT for other in ACP_BACKENDS_SELF_SERVED_ACP}
+        assert client._claude_acp_argv_cache is kept
+        assert client._codex_acp_argv_cache is kept
 
     def test_the_GET_still_never_clears_anything(self, monkeypatch):
         """The seams' own rule, unchanged by the POST existing.

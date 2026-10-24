@@ -46,15 +46,21 @@ class TestSafeFire:
         assert seen == ["ran"]
 
     @pytest.mark.asyncio
-    async def test_swallows_exception(self) -> None:
+    async def test_swallows_exception(self, caplog: pytest.LogCaptureFixture) -> None:
+        reached: list[str] = []
+
         async def _boom() -> None:
+            reached.append("raised")
             raise RuntimeError("nope")
 
-        sa._safe_fire(_boom())
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        # Reaching here without an unretrieved-exception crash is the assertion.
-        assert True
+        with caplog.at_level("WARNING", logger="kiro_crew.subagent"):
+            sa._safe_fire(_boom())
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        assert reached == ["raised"]
+        warnings = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.subagent"]
+        assert "Subagent callback failed" in warnings
 
 
 # ── _validate_agent ───────────────────────────────────────────────────────
@@ -236,17 +242,18 @@ class TestSubagentRolePins:
         ):
             assert sa._subagent_default_model() == ""
 
-    def test_effort_pin_returns_string(self) -> None:
+    @pytest.mark.parametrize(
+        "pinned, expected",
+        [
+            pytest.param("high", "high", id="test_effort_pin_returns_string"),
+            pytest.param(3, "", id="test_effort_pin_rejects_non_string"),
+        ],
+    )
+    def test_effort_pin(self, pinned: object, expected: str) -> None:
         cfg = MagicMock()
-        cfg.agent.role_efforts = {"subagent": "high"}
+        cfg.agent.role_efforts = {"subagent": pinned}
         with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=cfg):
-            assert sa._subagent_default_effort() == "high"
-
-    def test_effort_pin_rejects_non_string(self) -> None:
-        cfg = MagicMock()
-        cfg.agent.role_efforts = {"subagent": 3}
-        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=cfg):
-            assert sa._subagent_default_effort() == ""
+            assert sa._subagent_default_effort() == expected
 
     def test_effort_pin_never_raises(self) -> None:
         with patch(
@@ -294,14 +301,16 @@ class TestCheckMemoryAvailable:
         ):
             assert sa.check_memory_available(min_gb=4.0, path=str(f)) == (True, 8.0)
 
-    def test_malformed_line_fails_open(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "meminfo",
+        [
+            pytest.param("MemAvailable:  notanumber kB\n", id="test_malformed_line_fails_open"),
+            pytest.param("MemTotal: 12 kB\n", id="test_missing_key_fails_open"),
+        ],
+    )
+    def test_unreadable_meminfo_fails_open(self, tmp_path: Path, meminfo: str) -> None:
         f = tmp_path / "meminfo"
-        f.write_text("MemAvailable:  notanumber kB\n")
-        assert sa.check_memory_available(path=str(f)) == (True, -1.0)
-
-    def test_missing_key_fails_open(self, tmp_path: Path) -> None:
-        f = tmp_path / "meminfo"
-        f.write_text("MemTotal: 12 kB\n")
+        f.write_text(meminfo)
         assert sa.check_memory_available(path=str(f)) == (True, -1.0)
 
 
@@ -388,7 +397,16 @@ class TestMacosAvailableMemory:
         )
         assert sa._macos_available_memory_gb() == -1.0
 
-    def test_no_reclaimable_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(
+        "pages",
+        [
+            pytest.param(None, id="test_no_reclaimable_pages"),
+            pytest.param(0, id="test_zero_pages_fails_open"),
+        ],
+    )
+    def test_no_usable_pages_fails_open(
+        self, monkeypatch: pytest.MonkeyPatch, pages: int | None
+    ) -> None:
         real_sysconf = getattr(os, "sysconf", absent_sysconf)
         monkeypatch.setattr(
             os,
@@ -396,18 +414,7 @@ class TestMacosAvailableMemory:
             lambda n: 4096 if n == "SC_PAGE_SIZE" else real_sysconf(n),
             raising=False,
         )
-        monkeypatch.setattr(sa, "_macos_vm_reclaimable_pages", lambda: None)
-        assert sa._macos_available_memory_gb() == -1.0
-
-    def test_zero_pages_fails_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        real_sysconf = getattr(os, "sysconf", absent_sysconf)
-        monkeypatch.setattr(
-            os,
-            "sysconf",
-            lambda n: 4096 if n == "SC_PAGE_SIZE" else real_sysconf(n),
-            raising=False,
-        )
-        monkeypatch.setattr(sa, "_macos_vm_reclaimable_pages", lambda: 0)
+        monkeypatch.setattr(sa, "_macos_vm_reclaimable_pages", lambda: pages)
         assert sa._macos_available_memory_gb() == -1.0
 
     def test_computes_gb_from_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -502,9 +509,6 @@ class TestContextGroups:
         assert sa._context_groups_field(info) == ""
 
 
-# ── Manager: slot + finalize tokens ───────────────────────────────────────
-
-
 # ── Manager: orphan / pid helpers ─────────────────────────────────────────
 
 
@@ -528,8 +532,10 @@ class TestPidHelpers:
 
     @pytest.mark.asyncio
     async def test_kill_orphan_swallows_missing_process(self) -> None:
-        with patch.object(sa.platform_compat, "kill_pid", side_effect=ProcessLookupError):
-            await SubagentManager._kill_orphan_pid(4242)  # must not raise
+        with patch.object(sa.platform_compat, "kill_pid", side_effect=ProcessLookupError) as kill:
+            # An already-gone process is not a kill failure.
+            assert await SubagentManager._kill_orphan_pid(4242) is None
+        assert kill.call_args[0][0] == 4242
 
     @pytest.mark.asyncio
     async def test_kill_orphan_calls_platform_kill(self) -> None:
@@ -724,9 +730,15 @@ class TestReaperOffloadsTheSweep:
 class TestRecordCost:
     def test_unsampled_run_records_nothing(self) -> None:
         mgr = _manager()
+        info = _info()
         with patch.object(sa, "append_cost_sample") as append:
-            mgr._record_cost(_info())
-        append.assert_not_called()
+            mgr._record_cost(info)
+            append.assert_not_called()
+            # The same run records once a sweep has sampled it, so the skip
+            # above was the never-sampled gate and not a dead path.
+            info.peak_cpu_cores = 0.5
+            mgr._record_cost(info)
+        assert append.call_count == 1
 
     def test_sampled_run_appends(self) -> None:
         mgr = _manager()
@@ -741,8 +753,13 @@ class TestRecordCost:
         mgr = _manager()
         info = _info()
         info.peak_rss_gb = 1.0
-        with patch.object(sa, "append_cost_sample", side_effect=OSError):
-            mgr._record_cost(info)  # must not raise
+        info.settled_rss_gb = 0.5
+        mgr._learned_settled_dirty = False
+        with patch.object(sa, "append_cost_sample", side_effect=OSError) as append:
+            mgr._record_cost(info)
+        assert append.call_count == 1
+        # A failed append does not mark the learned map for a re-read.
+        assert mgr._learned_settled_dirty is False
 
 
 class TestSlowCommandRecord:
@@ -753,14 +770,22 @@ class TestSlowCommandRecord:
         assert rec.call_args.kwargs["idle_secs"] == 300
 
     def test_write_failure_is_swallowed(self) -> None:
-        with patch.object(sa, "record_slow_command", side_effect=OSError):
-            SubagentManager._record_slow_command(_info(), 1.0)  # must not raise
+        with patch.object(sa, "record_slow_command", side_effect=OSError) as rec:
+            SubagentManager._record_slow_command(_info("slow1"), 1.0)
+        assert rec.call_args.args == ("slow1",)
+        assert rec.call_args.kwargs["idle_secs"] == 1
 
 
 class TestWriteTombstone:
     def test_failure_is_swallowed(self) -> None:
-        with patch.object(sa, "write_tombstone", side_effect=OSError):
-            SubagentManager._write_tombstone(_info(), "reaped")  # must not raise
+        info = _info("ts1")
+        info.started -= 5
+        with patch.object(sa, "write_tombstone", side_effect=OSError) as write:
+            SubagentManager._write_tombstone(info, "reaped")
+        assert write.call_args.args == ("ts1",)
+        assert write.call_args.kwargs["cause"] == "reaped"
+        # The elapsed time is finalized before the write is attempted.
+        assert info.elapsed >= 5
 
     def test_passes_outcome_through(self) -> None:
         with patch.object(sa, "write_tombstone") as write:
@@ -976,8 +1001,17 @@ class TestQueueDepth:
         assert _manager().has_pending_work_for("dash:1") is False
 
     def test_emit_queue_depth_without_loop_is_a_noop(self) -> None:
-        mgr = _manager(on_event=AsyncMock())
-        mgr._emit_queue_depth("dash:1")  # no running loop — advisory event skipped
+        on_event = AsyncMock()
+        mgr = _manager(on_event=on_event)
+        mgr._emit_queue_depth("dash:1", wait={"reason": "capacity"})
+        # The wait label is still recorded, but with no running loop no burst
+        # is started and nothing is published.
+        assert mgr._queue_wait["dash:1"] == {"reason": "capacity"}
+        assert "dash:1" not in mgr._queue_depth_emits
+        # A request without a label records none.
+        mgr._emit_queue_depth("dash:2")
+        assert "dash:2" not in mgr._queue_wait
+        on_event.assert_not_called()
 
 
 class TestStaggerGate:
@@ -987,14 +1021,19 @@ class TestStaggerGate:
         should_queue, slot_free = mgr._should_stagger_queue(now=1e9)
         assert (should_queue, slot_free) == (True, False)
 
-    def test_slot_free_but_too_soon_queues(self) -> None:
+    @pytest.mark.parametrize(
+        "stagger_secs, now, expected",
+        [
+            pytest.param(100.0, 1001.0, (True, True), id="test_slot_free_but_too_soon_queues"),
+            pytest.param(
+                1.0, 2000.0, (False, True), id="test_slot_free_and_interval_elapsed_starts"
+            ),
+        ],
+    )
+    def test_slot_free_waits_out_the_stagger_interval(
+        self, stagger_secs: float, now: float, expected: tuple[bool, bool]
+    ) -> None:
         mgr = _manager(max_concurrent=3)
-        mgr._spawn_stagger_secs = 100.0
+        mgr._spawn_stagger_secs = stagger_secs
         mgr._last_spawn_ts = 1000.0
-        assert mgr._should_stagger_queue(now=1001.0) == (True, True)
-
-    def test_slot_free_and_interval_elapsed_starts(self) -> None:
-        mgr = _manager(max_concurrent=3)
-        mgr._spawn_stagger_secs = 1.0
-        mgr._last_spawn_ts = 1000.0
-        assert mgr._should_stagger_queue(now=2000.0) == (False, True)
+        assert mgr._should_stagger_queue(now=now) == expected

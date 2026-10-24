@@ -619,11 +619,10 @@ class TestEffortDropReason:
         assert "deepseek-3.2" in reason
 
     def test_explicit_auto_beats_a_capable_role_pin(self):
-        """Regression (round-4 GPT finding): an explicit ``model="auto"`` is a
-        truthy override — ``_run_inner`` forwards it verbatim and the factory
-        collapses it to unpinned. The old verdict normalized it away and
-        reported the role pin as applied — an inverted receipt. The receipt is
-        the unpinned one, never the pin's."""
+        """An explicit ``model="auto"`` is a truthy override: ``_run_inner``
+        forwards it verbatim and the factory collapses it to unpinned. A verdict
+        that normalized it away would report the role pin as applied, an
+        inverted receipt. The receipt is the unpinned one, never the pin's."""
         from kiro_crew.subagent import effort_applied_note, effort_pending_note
 
         role_models = {"subagent": "sonnet-test-model"}
@@ -887,15 +886,24 @@ class TestEffortAppliedNote:
         with _hermetic_cfg(role_models=role_models, agent_pins=agent_pins):
             return effort_drop_reason(model, effort, agent)
 
-    def test_claude_family_names_output_config(self):
-        note = self._note("sonnet-test-model", "high")
-        assert "sonnet-test-model" in note
-        assert "output_config.effort" in note
-
-    def test_gpt_family_names_reasoning(self):
-        note = self._note("gpt-5.6-sol", "medium")
-        assert "gpt-5.6-sol" in note
-        assert "reasoning.effort" in note
+    @pytest.mark.parametrize(
+        "model, effort, field",
+        [
+            pytest.param(
+                "sonnet-test-model",
+                "high",
+                "output_config.effort",
+                id="test_claude_family_names_output_config",
+            ),
+            pytest.param(
+                "gpt-5.6-sol", "medium", "reasoning.effort", id="test_gpt_family_names_reasoning"
+            ),
+        ],
+    )
+    def test_the_note_names_the_model_and_its_field(self, model, effort, field):
+        note = self._note(model, effort)
+        assert model in note
+        assert field in note
 
     def test_no_effort_requested_means_no_note(self):
         assert self._note("sonnet-test-model", "") == ""
@@ -1313,9 +1321,18 @@ class TestSessionChainResolution:
         assert self._reason("", "high", "mycrew", cfg=cfg) == ""
         assert "sonnet-test-model" in self._note("", "high", "mycrew", cfg=cfg)
 
-    def test_non_capable_crew_pin_is_named(self):
-        cfg = self._cfg_with_crew("deepseek-3.2")
-        assert "deepseek-3.2" in self._reason("", "high", "mycrew", cfg=cfg)
+    @pytest.mark.parametrize(
+        "crew_model, explicit_model",
+        [
+            pytest.param("deepseek-3.2", "", id="test_non_capable_crew_pin_is_named"),
+            pytest.param(
+                "sonnet-test-model", "deepseek-3.2", id="test_explicit_model_beats_the_crew_pin"
+            ),
+        ],
+    )
+    def test_the_drop_names_the_winning_non_capable_model(self, crew_model, explicit_model):
+        cfg = self._cfg_with_crew(crew_model)
+        assert "deepseek-3.2" in self._reason(explicit_model, "high", "mycrew", cfg=cfg)
 
     def test_concrete_global_model_carries_the_effort(self):
         from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
@@ -1333,10 +1350,6 @@ class TestSessionChainResolution:
         assert self._note("", "high", cfg=cfg) == ""
         with patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)):
             assert effort_pending_note("", "high", "").startswith("no model is pinned")
-
-    def test_explicit_model_beats_the_crew_pin(self):
-        cfg = self._cfg_with_crew("sonnet-test-model")
-        assert "deepseek-3.2" in self._reason("deepseek-3.2", "high", "mycrew", cfg=cfg)
 
     def test_api_spawn_uses_the_inherited_parent_agent(self):
         """No agent in the request: the verdict judges the agent the session

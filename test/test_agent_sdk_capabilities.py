@@ -622,17 +622,26 @@ class TestTheKiroConstructionPathIsUnconditional:
             f"lookup must not move a kiro-family backend off to_acp_id"
         )
 
-    def test_the_claude_backend_still_reaches_its_own_namespace(self, monkeypatch) -> None:
-        """The other half: the one backend that DID take the other arm still does."""
-        calls = self._translations(monkeypatch, "claude")
-        assert calls == [("to_provider_id", "opus-4.8-1m", "claude_code")]
-
-    def test_the_codex_backend_reaches_its_own_namespace(self, monkeypatch) -> None:
-        """codex ids are the adapter's own vocabulary: translated into the ``codex``
-        namespace (a passthrough, the registry has no such provider), never folded
-        onto a kiro id codex would refuse."""
-        calls = self._translations(monkeypatch, "codex")
-        assert calls == [("to_provider_id", "opus-4.8-1m", "codex")]
+    @pytest.mark.parametrize(
+        ("backend", "namespace"),
+        [
+            # The other half: the one backend that DID take the other arm still does.
+            pytest.param(
+                "claude",
+                "claude_code",
+                id="test_the_claude_backend_still_reaches_its_own_namespace",
+            ),
+            # codex ids are the adapter's own vocabulary: translated into the
+            # ``codex`` namespace (a passthrough, the registry has no such
+            # provider), never folded onto a kiro id codex would refuse.
+            pytest.param("codex", "codex", id="test_the_codex_backend_reaches_its_own_namespace"),
+        ],
+    )
+    def test_a_non_kiro_backend_reaches_its_own_namespace(
+        self, monkeypatch, backend: str, namespace: str
+    ) -> None:
+        calls = self._translations(monkeypatch, backend)
+        assert calls == [("to_provider_id", "opus-4.8-1m", namespace)]
 
     def test_the_namespace_table_cannot_move_kiro_off_the_acp_arm(self) -> None:
         """The drift the reviewer named, pinned at the table rather than the branch.

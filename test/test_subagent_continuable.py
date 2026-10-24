@@ -127,22 +127,26 @@ class TestSessionManagerContinuable:
         session.provider.session_id = "sid-1"
         mgr._sessions["subagent:abc"] = session
         mgr.mark_continuable("subagent:abc")
+        mgr._safe_cleanup = MagicMock()  # type: ignore[method-assign]
         with patch("kiro_crew.session.asyncio.ensure_future") as ensure:
             mgr.release("subagent:abc", cleanup=True)
         ensure.assert_not_called()
-        session.semaphore.release.assert_called_once()
+        mgr._safe_cleanup.assert_not_called()
+        session.semaphore.release.assert_called_once_with()
+        assert session.turn_owner is None
 
     def test_release_cleanup_runs_for_plain_subagent(self) -> None:
         mgr = self._sessions()
         session = MagicMock()
         session.provider.session_id = "sid-1"
         mgr._sessions["subagent:abc"] = session
-        with patch(
-            "kiro_crew.session.asyncio.ensure_future",
-            side_effect=lambda coro: coro.close(),
-        ) as ensure:
+        cleanup = object()
+        mgr._safe_cleanup = MagicMock(return_value=cleanup)  # type: ignore[method-assign]
+        with patch("kiro_crew.session.asyncio.ensure_future") as ensure:
             mgr.release("subagent:abc", cleanup=True)
-        ensure.assert_called_once()
+        mgr._safe_cleanup.assert_called_once_with(session.provider, "sid-1")
+        ensure.assert_called_once_with(cleanup)
+        session.semaphore.release.assert_called_once_with()
 
     def test_forget_conversation_returns_sid_and_unmarks(self) -> None:
         mgr = self._sessions()

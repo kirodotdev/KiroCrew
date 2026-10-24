@@ -393,15 +393,17 @@ class TestDashboardUserSocketCount:
 class TestDashboardClientProbe:
     """What counts as a client that could answer the prompt."""
 
-    def test_no_attached_client_is_no_surface(self) -> None:
+    @pytest.mark.parametrize(
+        "clients, expected",
+        [
+            pytest.param(0, False, id="test_no_attached_client_is_no_surface"),
+            pytest.param(1, True, id="test_an_attached_client_is_a_surface"),
+        ],
+    )
+    def test_the_client_count_decides(self, clients: int, expected: bool) -> None:
         state = MagicMock()
-        state.dashboard_user_ws_count = MagicMock(return_value=0)
-        assert _probe(state) is False
-
-    def test_an_attached_client_is_a_surface(self) -> None:
-        state = MagicMock()
-        state.dashboard_user_ws_count = MagicMock(return_value=1)
-        assert _probe(state) is True
+        state.dashboard_user_ws_count = MagicMock(return_value=clients)
+        assert _probe(state) is expected
 
     def test_the_probe_asks_for_dashboard_users_not_every_socket(self) -> None:
         """A raw ``ws_client_count`` would count an app token as a human."""
@@ -486,8 +488,21 @@ class TestOnlyTheSpawnGateRaises:
         state.request_approval.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_spawn_gate_still_prompts_an_attached_dashboard(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-        cb, state = _callback(monkeypatch, clients=1, raise_when_unreachable=True)
+    @pytest.mark.parametrize(
+        "clients, raise_when_unreachable",
+        [
+            pytest.param(1, True, id="test_spawn_gate_still_prompts_an_attached_dashboard"),
+            # A mid-run tool prompt has no terminal path, so it must keep parking
+            # under the same zero-client posture that makes the spawn gate raise.
+            pytest.param(0, False, id="test_a_tool_approval_never_raises"),
+        ],
+    )
+    async def test_the_prompt_is_parked_on_the_dashboard(  # type: ignore[no-untyped-def]
+        self, monkeypatch, clients: int, raise_when_unreachable: bool
+    ) -> None:
+        cb, state = _callback(
+            monkeypatch, clients=clients, raise_when_unreachable=raise_when_unreachable
+        )
         assert await cb(_event()) is True
         state.request_approval.assert_awaited_once()
 
@@ -507,16 +522,6 @@ class TestOnlyTheSpawnGateRaises:
         with pytest.raises(SpawnApprovalUnreachable):
             await cb(_event())
         state.request_approval.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_a_tool_approval_never_raises(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-        """A mid-run tool prompt has no terminal path, so it must keep parking.
-
-        Same zero-client posture that makes the spawn gate raise above.
-        """
-        cb, state = _callback(monkeypatch, clients=0, raise_when_unreachable=False)
-        assert await cb(_event()) is True
-        state.request_approval.assert_awaited_once()
 
     def test_tool_approvals_stay_wired_to_the_non_raising_instance(self) -> None:
         """Source ratchet: the two callbacks must not collapse back into one.

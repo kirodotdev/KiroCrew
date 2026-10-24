@@ -172,8 +172,9 @@ class TestUpdateState:
         assert update_state("u-corrupt", pid=1) is False
 
     def test_missing_folder_logs_no_crash(self, agent_root):
-        # Should not raise
-        update_state("nonexistent", pid=1)
+        # The skip is reported, and no folder is fabricated for the unknown id.
+        assert update_state("nonexistent", pid=1) is False
+        assert not (agent_root / "nonexistent").exists()
 
     @pytest.mark.parametrize("contended", ["read", "rename"])
     def test_a_windows_sharing_violation_is_ridden_out(self, agent_root, monkeypatch, contended):
@@ -608,7 +609,10 @@ class TestDeleteAgentFolder:
         assert not (agent_root / "d1").exists()
 
     def test_missing_folder_no_crash(self, agent_root):
+        create_agent_folder("kept", task="t")
         delete_agent_folder("ghost")
+        assert not (agent_root / "ghost").exists()
+        assert read_state("kept")["task"] == "t"
 
 
 # ── list_orphans ─────────────────────────────────────────────────────
@@ -952,23 +956,19 @@ class TestMarkDelivered:
 
 
 class TestPathTraversal:
-    def test_dot_agent_id_rejected(self, agent_root):
+    @pytest.mark.parametrize(
+        "agent_id",
+        [
+            pytest.param(".", id="test_dot_agent_id_rejected"),
+            pytest.param("..", id="test_dotdot_agent_id_rejected"),
+            pytest.param("../etc", id="test_slash_agent_id_rejected"),
+        ],
+    )
+    def test_traversing_agent_id_rejected(self, agent_root, agent_id):
         from kiro_crew.subagent_persistence import _agent_dir
 
         with pytest.raises(ValueError, match="Invalid agent_id"):
-            _agent_dir(".")
-
-    def test_dotdot_agent_id_rejected(self, agent_root):
-        from kiro_crew.subagent_persistence import _agent_dir
-
-        with pytest.raises(ValueError, match="Invalid agent_id"):
-            _agent_dir("..")
-
-    def test_slash_agent_id_rejected(self, agent_root):
-        from kiro_crew.subagent_persistence import _agent_dir
-
-        with pytest.raises(ValueError, match="Invalid agent_id"):
-            _agent_dir("../etc")
+            _agent_dir(agent_id)
 
 
 # ── record_slow_command ──────────────────────────────────────────────

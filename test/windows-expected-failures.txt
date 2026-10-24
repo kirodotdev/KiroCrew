@@ -152,10 +152,9 @@ test/test_slack_gateway_run.py::TestRunSignalAndBgSession::test_run_with_ollama_
 test/test_subagent_cwd.py::TestValidateCwd::test_tilde_expanded_in_allowed_roots
 test/test_subagent_cwd.py::TestValidateCwd::test_tilde_expanded_in_cwd
 test/test_subagent_sizing.py::TestMacosMemoryProbe::test_computes_available_gb_from_pages
-test/test_subagent_sizing.py::TestMacosMemoryProbe::test_none_page_count_fails_open
+test/test_subagent_sizing.py::TestMacosMemoryProbe::test_missing_page_count_fails_open
 test/test_subagent_sizing.py::TestMacosMemoryProbe::test_nonpositive_page_size_fails_open
 test/test_subagent_sizing.py::TestMacosMemoryProbe::test_sysconf_error_fails_open
-test/test_subagent_sizing.py::TestMacosMemoryProbe::test_zero_page_count_fails_open
 test/test_telegram_config_handlers.py::test_save_persists_token_and_config
 test/test_wecom_config_handlers.py::test_save_persists_credentials_and_config
 test/test_write_secret_file.py::TestWriteSecretFile::test_happy_path

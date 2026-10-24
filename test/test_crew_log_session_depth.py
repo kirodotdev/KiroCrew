@@ -62,16 +62,18 @@ def _opened_data(session_id: str = SESSION) -> dict:
 # --- what the writer stores ------------------------------------------------
 
 
-def test_a_valid_depth_is_stored():
-    emit.on_session_opened(SESSION, slot="chat-7", depth=2)
-    assert _opened_data()["depth"] == 2
-
-
-def test_depth_zero_is_stored_as_a_fact():
-    # A root a caller KNOWS is a root says 0 on purpose. Zero is a real depth, not
-    # the absence of one, so it must land in the entry.
-    emit.on_session_opened(SESSION, slot="chat-7", depth=0)
-    assert _opened_data()["depth"] == 0
+@pytest.mark.parametrize(
+    "depth",
+    [
+        pytest.param(2, id="test_a_valid_depth_is_stored"),
+        # A root a caller KNOWS is a root says 0 on purpose. Zero is a real depth, not
+        # the absence of one, so it must land in the entry.
+        pytest.param(0, id="test_depth_zero_is_stored_as_a_fact"),
+    ],
+)
+def test_a_known_depth_is_stored(depth):
+    emit.on_session_opened(SESSION, slot="chat-7", depth=depth)
+    assert _opened_data()["depth"] == depth
 
 
 def test_no_depth_argument_writes_no_key():

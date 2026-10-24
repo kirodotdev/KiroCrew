@@ -15,6 +15,7 @@ import json
 import time
 from types import SimpleNamespace
 
+import pytest
 from subagent_panel_durable_replay_helpers import (  # noqa: F401 -- the fixture is requested by name
     DAY,
     TRUNC,
@@ -177,39 +178,48 @@ class TestThePreCapDecisionIsBothBounds:
     def key(self, record: dict) -> str:
         return subagent_event_slot(str(record["parent_session"]))
 
-    def test_both_bounds_satisfied_admits(self):
-        rec = self.record("appA")
+    @pytest.mark.parametrize(
+        ("app", "parent", "visible", "reason"),
+        [
+            pytest.param(
+                "appA", "dashboard:chat-1", {"chat-1"}, "", id="test_both_bounds_satisfied_admits"
+            ),
+            pytest.param(
+                "appA",
+                "dashboard:chat-1",
+                set(),
+                "persisted_not_visible",
+                id="test_invisible_is_refused_even_when_the_owner_matches",
+            ),
+            pytest.param(
+                "appB",
+                "dashboard:chat-1",
+                {"chat-1"},
+                "persisted_owner_mismatch",
+                id="test_a_foreign_owner_is_refused_even_when_visible",
+            ),
+            # A declaration gap must not enter the stream as a cross-app breach.
+            pytest.param(
+                "appB",
+                "dashboard:chat-1",
+                set(),
+                "persisted_not_visible",
+                id="test_visibility_is_reported_first_when_both_fail",
+            ),
+            pytest.param(
+                "appA",
+                "dashboard:chat-9",
+                {"chat-9"},
+                "slot_missing",
+                id="test_a_slot_no_snapshot_holds_is_slot_missing_when_visible",
+            ),
+        ],
+    )
+    def test_precap_denial_reason(self, app, parent, visible, reason):
+        rec = self.record(app, parent=parent)
         assert (
-            persisted_precap_denial_reason({"chat-1": "appA"}, {"chat-1"}, self.key(rec), rec) == ""
-        )
-
-    def test_invisible_is_refused_even_when_the_owner_matches(self):
-        rec = self.record("appA")
-        assert (
-            persisted_precap_denial_reason({"chat-1": "appA"}, set(), self.key(rec), rec)
-            == "persisted_not_visible"
-        )
-
-    def test_a_foreign_owner_is_refused_even_when_visible(self):
-        rec = self.record("appB")
-        assert (
-            persisted_precap_denial_reason({"chat-1": "appA"}, {"chat-1"}, self.key(rec), rec)
-            == "persisted_owner_mismatch"
-        )
-
-    def test_visibility_is_reported_first_when_both_fail(self):
-        """A declaration gap must not enter the stream as a cross-app breach."""
-        rec = self.record("appB")
-        assert (
-            persisted_precap_denial_reason({"chat-1": "appA"}, set(), self.key(rec), rec)
-            == "persisted_not_visible"
-        )
-
-    def test_a_slot_no_snapshot_holds_is_slot_missing_when_visible(self):
-        rec = self.record("appA", parent="dashboard:chat-9")
-        assert (
-            persisted_precap_denial_reason({"chat-1": "appA"}, {"chat-9"}, self.key(rec), rec)
-            == "slot_missing"
+            persisted_precap_denial_reason({"chat-1": "appA"}, visible, self.key(rec), rec)
+            == reason
         )
 
 
@@ -770,59 +780,73 @@ class TestAnAppTokenCannotReadAnotherAppsRuns:
         )
         return calls, json.loads(payload.text or "{}")
 
-    def test_an_app_token_is_refused_another_apps_record(self, agent_root, monkeypatch):
-        write_record(agent_root, "own111", app="theirs", parent_session="dashboard:chat-1")
-        calls, body = self.listing(monkeypatch, internal=True, app="mine")
+    @pytest.mark.parametrize(
+        ("agent_id", "internal"),
+        [
+            pytest.param("own111", True, id="test_an_app_token_is_refused_another_apps_record"),
+            # The transport an installed app actually arrives over. The cookie and
+            # token arms publish a validated app claim and set no internal flag, so
+            # a bound keyed to the flag never runs here and every record is
+            # admitted through ``scope is None`` -- another app's task, result and
+            # error text, to a caller holding only its own app's token.
+            pytest.param("own444", False, id="test_an_app_on_the_cookie_transport_is_refused_too"),
+        ],
+    )
+    def test_another_apps_record_is_refused(self, agent_root, monkeypatch, agent_id, internal):
+        write_record(agent_root, agent_id, app="theirs", parent_session="dashboard:chat-1")
+        calls, body = self.listing(monkeypatch, internal=internal, app="mine")
         assert body["agents"] == []
         assert [reason for _app, _event, reason in calls] == ["persisted_app_mismatch"]
 
-    def test_an_app_on_the_cookie_transport_is_refused_too(self, agent_root, monkeypatch):
-        """The transport an installed app actually arrives over.
-
-        The cookie and token arms publish a validated app claim and set no
-        internal flag, so a bound keyed to the flag never runs here and every
-        record is admitted through ``scope is None`` -- another app's task, result
-        and error text, to a caller holding only its own app's token.
-        """
-        write_record(agent_root, "own444", app="theirs", parent_session="dashboard:chat-1")
-        calls, body = self.listing(monkeypatch, internal=False, app="mine")
-        assert body["agents"] == []
-        assert [reason for _app, _event, reason in calls] == ["persisted_app_mismatch"]
-
-    def test_an_app_on_the_cookie_transport_still_sees_its_own_record(
-        self, agent_root, monkeypatch
+    @pytest.mark.parametrize(
+        ("agent_id", "record_app", "internal", "caller_app", "slot_app"),
+        [
+            # The bound narrows to the caller's own app, it does not deny the app.
+            pytest.param(
+                "own555",
+                "mine",
+                False,
+                "mine",
+                "",
+                id="test_an_app_on_the_cookie_transport_still_sees_its_own_record",
+            ),
+            # The slot is owned by the same app here because an internal caller
+            # takes the session and slot-ownership bounds too, exactly as the live
+            # half does. A record whose app differs from its slot's present owner
+            # is the reused-key case those bounds exist for, not an app reading
+            # its own run.
+            pytest.param(
+                "own222",
+                "mine",
+                True,
+                "mine",
+                "mine",
+                id="test_an_app_token_still_sees_its_own_record",
+            ),
+            # The owner is not app-authenticated, so the bound does not apply.
+            # Narrowing the owner here would empty the panel on a cold start: a
+            # record's app is whatever spawned the run, which need not match the
+            # app of the tab now reading it. An ABSENT claim is what marks the
+            # person, which is why the bound reads the claim's presence rather
+            # than treating an empty claim as an app named "".
+            pytest.param(
+                "own333",
+                "theirs",
+                False,
+                "",
+                "",
+                id="test_the_owner_is_not_narrowed_by_the_app_bound",
+            ),
+        ],
+    )
+    def test_the_record_is_listed(
+        self, agent_root, monkeypatch, agent_id, record_app, internal, caller_app, slot_app
     ):
-        """The bound narrows to the caller's own app, it does not deny the app."""
-        write_record(agent_root, "own555", app="mine", parent_session="dashboard:chat-1")
-        calls, body = self.listing(monkeypatch, internal=False, app="mine")
-        assert [entry["id"] for entry in body["agents"]] == ["own555"]
-        assert calls == []
-
-    def test_an_app_token_still_sees_its_own_record(self, agent_root, monkeypatch):
-        """The bound narrows to the caller's own app, it does not deny the app.
-
-        The slot is owned by the same app here because an internal caller takes
-        the session and slot-ownership bounds too, exactly as the live half does.
-        A record whose app differs from its slot's present owner is the reused-key
-        case those bounds exist for, not an app reading its own run.
-        """
-        write_record(agent_root, "own222", app="mine", parent_session="dashboard:chat-1")
-        calls, body = self.listing(monkeypatch, internal=True, app="mine", slot_app="mine")
-        assert [entry["id"] for entry in body["agents"]] == ["own222"]
-        assert calls == []
-
-    def test_the_owner_is_not_narrowed_by_the_app_bound(self, agent_root, monkeypatch):
-        """The owner is not app-authenticated, so the bound does not apply.
-
-        Narrowing the owner here would empty the panel on the cold start this
-        whole change exists to fix: a record's app is whatever spawned the run,
-        which need not match the app of the tab now reading it. An ABSENT claim
-        is what marks the person, which is why the bound reads the claim's
-        presence rather than treating an empty claim as an app named "".
-        """
-        write_record(agent_root, "own333", app="theirs", parent_session="dashboard:chat-1")
-        calls, body = self.listing(monkeypatch, internal=False, app="")
-        assert [entry["id"] for entry in body["agents"]] == ["own333"]
+        write_record(agent_root, agent_id, app=record_app, parent_session="dashboard:chat-1")
+        calls, body = self.listing(
+            monkeypatch, internal=internal, app=caller_app, slot_app=slot_app
+        )
+        assert [entry["id"] for entry in body["agents"]] == [agent_id]
         assert calls == []
 
 

@@ -700,29 +700,35 @@ def _fresh(code: str) -> list[str]:
     return out.stdout.splitlines()
 
 
-def test_importing_the_facade_loads_every_owner_and_nothing_heavier() -> None:
-    """Every owner is bound when the facade finishes importing, so a by-name import in
-    an owner takes its value then, never inside a later test's patch of its source;
-    and the connections registry stays off the import path, as it was."""
-    out = _fresh(
-        "import sys\n"
-        "import kiro_crew.agent as agent\n"
-        "owners = sorted(agent._EXPORTS_BY_OWNER)\n"
-        "print(','.join(m for m in owners if m not in sys.modules))\n"
-        "print('kiro_crew.connections.registry' in sys.modules)\n"
-    )
-    assert out == ["", "False"]
-
-
-def test_importing_an_owner_first_loads_the_whole_facade() -> None:
-    out = _fresh(
-        "import sys\n"
-        "import kiro_crew.agent_materialization.worker_agent as worker\n"
-        "import kiro_crew.agent as agent\n"
-        "print(agent.rederive_worker_agent is worker.rederive_worker_agent)\n"
-        "print(sorted(set(agent._EXPORTS_BY_OWNER) - set(sys.modules)))\n"
-    )
-    assert out == ["True", "[]"]
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        # The connections registry stays off the import path, as it was.
+        pytest.param(
+            "import sys\n"
+            "import kiro_crew.agent as agent\n"
+            "owners = sorted(agent._EXPORTS_BY_OWNER)\n"
+            "print(','.join(m for m in owners if m not in sys.modules))\n"
+            "print('kiro_crew.connections.registry' in sys.modules)\n",
+            ["", "False"],
+            id="test_importing_the_facade_loads_every_owner_and_nothing_heavier",
+        ),
+        pytest.param(
+            "import sys\n"
+            "import kiro_crew.agent_materialization.worker_agent as worker\n"
+            "import kiro_crew.agent as agent\n"
+            "print(agent.rederive_worker_agent is worker.rederive_worker_agent)\n"
+            "print(sorted(set(agent._EXPORTS_BY_OWNER) - set(sys.modules)))\n",
+            ["True", "[]"],
+            id="test_importing_an_owner_first_loads_the_whole_facade",
+        ),
+    ],
+)
+def test_every_owner_is_bound_once_the_facade_imports(script: str, expected: list[str]) -> None:
+    """Every owner is bound when the facade finishes importing, in either load
+    order, so a by-name import in an owner takes its value then, never inside a
+    later test's patch of its source."""
+    assert _fresh(script) == expected
 
 
 # --------------------------------------------------------------------------- #

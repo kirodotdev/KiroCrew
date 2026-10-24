@@ -162,11 +162,6 @@ def _set_fallback_attrs(slot, monkeypatch):
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 1: Same-model retry succeeds — no fallback model/selected.
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_same_model_retry_success_no_fallback_logged(tmp_path, monkeypatch):
     """A throttle that retries on the SAME model and succeeds.
@@ -204,11 +199,6 @@ async def test_same_model_retry_success_no_fallback_logged(tmp_path, monkeypatch
     # The turn must close, confirming the retry path ran.
     closers = _entries_of("turn/completed")
     assert len(closers) >= 1, f"no turn closer: {[e['type'] for e in entries]}"
-
-
-# ---------------------------------------------------------------------------
-# Test 2: Fallback swap — model/selected written with source=fallback.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -266,11 +256,6 @@ async def test_fallback_swap_records_model_selected(tmp_path, monkeypatch):
     assert isinstance(fb["turn"], int) and fb["turn"] > 0
 
 
-# ---------------------------------------------------------------------------
-# Test 3: Empty fallback chain — turn fails, tokens/credits absent.
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_empty_fallback_chain_fails_with_no_cost(tmp_path, monkeypatch):
     """Throttle exhausts budget with NO fallback candidates.
@@ -303,11 +288,6 @@ async def test_empty_fallback_chain_fails_with_no_cost(tmp_path, monkeypatch):
         assert "credits" not in data, f"failed turn carried credits: {data}"
 
 
-# ---------------------------------------------------------------------------
-# Test 4: Withheld model pin — _crew_log_model returns the session fact.
-# ---------------------------------------------------------------------------
-
-
 def test_withheld_pin_names_served_model_not_configured_pin():
     """_crew_log_model returns the model the session RUNS on, not the pin."""
 
@@ -330,11 +310,6 @@ def test_withheld_pin_names_served_model_not_configured_pin():
     assert _crew_log_model(_PinnedSlot()) == "some-model"
     assert _crew_log_model(_FallbackSlot()) == "fallback-model"
     assert _crew_log_model(_MinimalDouble(), "fb") == "fb"
-
-
-# ---------------------------------------------------------------------------
-# Test 5: Repeated fallback swaps — each produces a model/selected.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

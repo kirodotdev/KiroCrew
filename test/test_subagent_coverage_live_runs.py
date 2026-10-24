@@ -25,12 +25,19 @@ from kiro_crew.testing.wait import async_wait_until
 
 
 class TestShouldUseSessionSharing:
-    def test_disabled_by_config(self) -> None:
+    @pytest.mark.parametrize(
+        "enabled",
+        [
+            pytest.param(False, id="test_disabled_by_config"),
+            pytest.param(True, id="test_eligible_parent_accepted"),
+        ],
+    )
+    def test_config_flag_decides_for_an_eligible_parent(self, enabled: bool) -> None:
         mgr = _manager()
         cfg = MagicMock()
-        cfg.agent.session_sharing = False
+        cfg.agent.session_sharing = enabled
         with patch("kiro_crew.subagent.KiroCrewConfig.load", return_value=cfg):
-            assert mgr._should_use_session_sharing(_info(parent_session_key="dash:1")) is False
+            assert mgr._should_use_session_sharing(_info(parent_session_key="dash:1")) is enabled
 
     def test_config_failure_fails_closed(self) -> None:
         mgr = _manager()
@@ -55,13 +62,6 @@ class TestShouldUseSessionSharing:
         cfg.agent.session_sharing = True
         with patch("kiro_crew.subagent.KiroCrewConfig.load", return_value=cfg):
             assert mgr._should_use_session_sharing(_info()) is False
-
-    def test_eligible_parent_accepted(self) -> None:
-        mgr = _manager()
-        cfg = MagicMock()
-        cfg.agent.session_sharing = True
-        with patch("kiro_crew.subagent.KiroCrewConfig.load", return_value=cfg):
-            assert mgr._should_use_session_sharing(_info(parent_session_key="dash:1")) is True
 
 
 class TestGetParentRuntime:
@@ -273,8 +273,16 @@ class TestFollowUpRun:
 
     def test_audit_helper_swallows_failure(self) -> None:
         mgr = _manager()
-        with patch.object(sa, "sel", side_effect=RuntimeError("sel down")):
-            mgr._audit_followup(_info(), "followup_expired")  # must not raise
+        with patch.object(sa, "sel") as sel:
+            sel.return_value.log_tool_invocation.side_effect = RuntimeError("sel down")
+            mgr._audit_followup(_info("a", parent_session_key="dash:1"), "followup_expired")
+        sel.return_value.log_tool_invocation.assert_called_once_with(
+            session_key="dash:1",
+            source="subagent",
+            tool_name="spawn_steer",
+            outcome="followup_expired",
+            metadata={"subagent_id": "a"},
+        )
 
 
 # ── Cross-platform constants ──────────────────────────────────────────────

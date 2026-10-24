@@ -182,20 +182,21 @@ def _request(body: dict) -> tuple[Any, MagicMock]:
 
 class TestSpawnEndpoint:
     @pytest.mark.asyncio
-    async def test_a_selectable_backend_reaches_spawn(self, selectable):
+    @pytest.mark.parametrize(
+        "name, reaches",
+        [
+            pytest.param("claude", "claude", id="test_a_selectable_backend_reaches_spawn"),
+            pytest.param("kiro", "", id="test_kiro_is_spelled_by_name_and_reaches_spawn_as_its_id"),
+            # The fixture's install probe cannot decide for codex; that must not block.
+            pytest.param("codex", "codex", id="test_a_probe_that_could_not_decide_does_not_block"),
+        ],
+    )
+    async def test_an_admitted_backend_reaches_spawn(self, selectable, name, reaches):
         from kiro_crew.dashboard.handlers.messaging import api_spawn
 
-        request, mgr = _request({"task": "x", "backend": "claude"})
+        request, mgr = _request({"task": "x", "backend": name})
         await api_spawn(request)
-        assert mgr.spawn.call_args.kwargs["backend"] == "claude"
-
-    @pytest.mark.asyncio
-    async def test_kiro_is_spelled_by_name_and_reaches_spawn_as_its_id(self, selectable):
-        from kiro_crew.dashboard.handlers.messaging import api_spawn
-
-        request, mgr = _request({"task": "x", "backend": "kiro"})
-        await api_spawn(request)
-        assert mgr.spawn.call_args.kwargs["backend"] == ""
+        assert mgr.spawn.call_args.kwargs["backend"] == reaches
 
     @pytest.mark.asyncio
     async def test_no_backend_reaches_spawn_as_none(self, selectable):
@@ -255,14 +256,6 @@ class TestSpawnEndpoint:
         payload = json.loads(resp.body)
         assert payload["code"] == "backend_restart_required"
         assert "kas" not in payload["backends"]
-
-    @pytest.mark.asyncio
-    async def test_a_probe_that_could_not_decide_does_not_block(self, selectable):
-        from kiro_crew.dashboard.handlers.messaging import api_spawn
-
-        request, mgr = _request({"task": "x", "backend": "codex"})
-        await api_spawn(request)
-        assert mgr.spawn.call_args.kwargs["backend"] == "codex"
 
 
 # ── The manager ───────────────────────────────────────────────────────────────

@@ -144,9 +144,19 @@ class TestParentAllowlistResolution:
     def test_declared_parent_resolves_to_its_list(self, triage_fixture: Path) -> None:
         assert sa.parent_spawn_allowlists("orchestrator") == (("agent1", "agent2", "agent3"),)
 
-    def test_undeclared_parent_resolves_to_nothing(self, triage_fixture: Path) -> None:
-        assert sa.parent_spawn_allowlists("plain") == ()
-        assert sa.parent_spawn_allowlists("trust-only") == ()
+    @pytest.mark.parametrize(
+        "parents",
+        [
+            pytest.param(("plain", "trust-only"), id="test_undeclared_parent_resolves_to_nothing"),
+            # No spec for the parent means no declaration to honour.
+            pytest.param(("no-such-agent", ""), id="test_unknown_parent_resolves_to_nothing"),
+        ],
+    )
+    def test_a_parent_without_a_declaration_resolves_to_nothing(
+        self, triage_fixture: Path, parents: tuple[str, ...]
+    ) -> None:
+        for parent in parents:
+            assert sa.parent_spawn_allowlists(parent) == (), parent
 
     def test_unreadable_parent_record_is_unknown_not_parentless(self, triage_fixture: Path) -> None:
         """A record that exists but cannot be read is UNKNOWN (refuse); a caller
@@ -190,11 +200,6 @@ class TestParentAllowlistResolution:
         monkeypatch.setattr(agent_discovery, "_KIRO_AGENTS_DIR", tmp_path / "agents")
         agent_discovery.clear_list_agents_cache()
         assert sa.parent_spawn_allowlists("orchestrator") is None
-
-    def test_unknown_parent_resolves_to_nothing(self, triage_fixture: Path) -> None:
-        # No spec for the parent means no declaration to honour: unchanged behaviour.
-        assert sa.parent_spawn_allowlists("no-such-agent") == ()
-        assert sa.parent_spawn_allowlists("") == ()
 
     def test_unreadable_parent_spec_is_unknown_not_allow_all(self, triage_fixture: Path) -> None:
         """The hardened reader folds an unparseable file into "no spec"; for the

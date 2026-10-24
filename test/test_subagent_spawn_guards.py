@@ -127,19 +127,19 @@ class TestEffectiveTurnLimit:
         assert manager._effective_turn_limit(SubagentInfo(id="long", task="test")) == 1000
         assert manager._default_timeout == 10800
 
-    def test_per_spawn_override_wins(self) -> None:
+    @pytest.mark.parametrize(
+        ("max_turns", "expected"),
+        [
+            pytest.param(30, 30, id="test_per_spawn_override_wins"),
+            pytest.param(0, 50, id="test_falls_back_to_manager_default"),
+        ],
+    )
+    def test_turn_limit_resolution(self, max_turns: int, expected: int) -> None:
         from kiro_crew.subagent import SubagentInfo
 
         manager = self._manager(default_turn_limit=50)
-        info = SubagentInfo(id="t1", task="test", max_turns=30)
-        assert manager._effective_turn_limit(info) == 30
-
-    def test_falls_back_to_manager_default(self) -> None:
-        from kiro_crew.subagent import SubagentInfo
-
-        manager = self._manager(default_turn_limit=50)
-        info = SubagentInfo(id="t1", task="test", max_turns=0)
-        assert manager._effective_turn_limit(info) == 50
+        info = SubagentInfo(id="t1", task="test", max_turns=max_turns)
+        assert manager._effective_turn_limit(info) == expected
 
     def test_falls_back_to_hardcoded_limit(self) -> None:
         from kiro_crew.subagent import _TURN_LIMIT, SubagentInfo
@@ -267,25 +267,29 @@ class TestParentTrustedSpawnApproval:
 class TestCheckMemoryAvailable:
     """Tests for the memory guard function."""
 
-    def test_sufficient_memory(self, tmp_path):
-        """Returns (True, gb) when MemAvailable exceeds threshold."""
+    @pytest.mark.parametrize(
+        ("meminfo", "expected_ok", "expected_gb"),
+        [
+            pytest.param(
+                "MemTotal:       32768000 kB\nMemAvailable:    8388608 kB\n",
+                True,
+                8.0,
+                id="test_sufficient_memory",
+            ),
+            pytest.param(
+                "MemAvailable:    3145728 kB\n", False, 3.0, id="test_insufficient_memory"
+            ),
+        ],
+    )
+    def test_threshold_against_mem_available(self, tmp_path, meminfo, expected_ok, expected_gb):
+        """Returns (MemAvailable >= threshold, MemAvailable in GB)."""
         from kiro_crew.subagent import check_memory_available
 
         f = tmp_path / "meminfo"
-        f.write_text("MemTotal:       32768000 kB\nMemAvailable:    8388608 kB\n")
+        f.write_text(meminfo)
         ok, avail = check_memory_available(min_gb=4.0, path=str(f))
-        assert ok is True
-        assert avail == 8.0
-
-    def test_insufficient_memory(self, tmp_path):
-        """Returns (False, gb) when MemAvailable is below threshold."""
-        from kiro_crew.subagent import check_memory_available
-
-        f = tmp_path / "meminfo"
-        f.write_text("MemAvailable:    3145728 kB\n")
-        ok, avail = check_memory_available(min_gb=4.0, path=str(f))
-        assert ok is False
-        assert avail == 3.0
+        assert ok is expected_ok
+        assert avail == expected_gb
 
     def test_file_not_found_fails_open(self):
         """Returns (True, -1.0) when /proc/meminfo is unreadable — fails open."""
@@ -450,29 +454,21 @@ class TestSpawnEmptyTaskGuard:
             max_concurrent=3,
         )
 
-    def test_spawn_rejected_empty_task(self):
-        """Empty string task returns done SubagentInfo with error + SEL audit."""
+    @pytest.mark.parametrize(
+        "task",
+        [
+            pytest.param("", id="test_spawn_rejected_empty_task"),
+            pytest.param("   \n\t ", id="test_spawn_rejected_whitespace_task"),
+        ],
+    )
+    def test_spawn_rejected_blank_task(self, task):
+        """A blank task returns a done SubagentInfo with an error + SEL audit."""
         from unittest.mock import MagicMock, patch
 
         mgr = self._mgr()
         with patch("kiro_crew.subagent.sel") as mock_sel:
             mock_sel.return_value.log_tool_invocation = MagicMock()
-            info = mgr.spawn(task="", parent_session_key="sess-1")
-
-        assert info is not None
-        assert info.done is True
-        assert "non-empty" in info.error
-        call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
-        assert call_kwargs["outcome"] == "rejected_empty_task"
-
-    def test_spawn_rejected_whitespace_task(self):
-        """Whitespace-only task is rejected the same way."""
-        from unittest.mock import MagicMock, patch
-
-        mgr = self._mgr()
-        with patch("kiro_crew.subagent.sel") as mock_sel:
-            mock_sel.return_value.log_tool_invocation = MagicMock()
-            info = mgr.spawn(task="   \n\t ", parent_session_key="sess-1")
+            info = mgr.spawn(task=task, parent_session_key="sess-1")
 
         assert info is not None
         assert info.done is True
@@ -552,11 +548,8 @@ class TestCompletionKeepHelper:
         # Use a text where head and tail are distinguishable.
         text = "H" * 5000 + "T" * 5000  # 10000 chars
         result = apply_completion_keep(text, "both", 200)
-        # Total length should be at most max_chars.
         assert len(result) <= 200
-        # Should contain a middle marker.
         assert "[...middle elided...]" in result
-        # Should start with H's (from the head) and end with T's (from the tail).
         assert result.startswith("H")
         assert result.endswith("T")
 

@@ -384,8 +384,30 @@ def test_two_charges_a_running_total_could_not_hold_both_land_on_their_own_rows(
     assert "credits" not in value["totals"]
 
 
-@pytest.mark.parametrize("planted", [float("nan"), float("inf"), float("-inf"), -1.0])
-def test_an_unusable_charge_shape_never_reaches_a_row(planted):
+_UNUSABLE = "test_an_unusable_charge_shape_never_reaches_a_row"
+#: Driven at the FOLD, because the writer's declaration already refuses these. A
+#: declaration binds the writer; a damaged or planted line is exactly the input that
+#: ignores it, so the coercion has to hold on the read side too. ``True`` is the one
+#: that matters most: it is an ``int`` in Python, so a check that forgot to exclude
+#: ``bool`` would bill a boolean as one credit.
+_NOT_A_NUMBER = "test_a_credit_charge_that_is_not_a_number_is_refused_rather_than_coerced"
+
+
+@pytest.mark.parametrize(
+    "planted",
+    [
+        pytest.param(float("nan"), id=f"{_UNUSABLE}-nan"),
+        pytest.param(float("inf"), id=f"{_UNUSABLE}-inf"),
+        pytest.param(float("-inf"), id=f"{_UNUSABLE}--inf"),
+        pytest.param(-1.0, id=f"{_UNUSABLE}--1.0"),
+        pytest.param(True, id=f"{_NOT_A_NUMBER}-True"),
+        pytest.param("2.0", id=f"{_NOT_A_NUMBER}-2.0"),
+        pytest.param(None, id=f"{_NOT_A_NUMBER}-None"),
+        pytest.param({"n": 1}, id=f"{_NOT_A_NUMBER}-planted3"),
+        pytest.param([2.0], id=f"{_NOT_A_NUMBER}-planted4"),
+    ],
+)
+def test_a_charge_that_is_not_a_usable_number_never_reaches_a_row(planted):
     fold = crew_log._FOLDS["subagents"]
     state = fold.start()
     fold.step(
@@ -602,39 +624,6 @@ def test_a_row_retains_only_fields_something_reads():
         "omitted",
         "totals",
     }
-
-
-@pytest.mark.parametrize("planted", [True, "2.0", None, {"n": 1}, [2.0]])
-def test_a_credit_charge_that_is_not_a_number_is_refused_rather_than_coerced(planted):
-    """Driven at the FOLD, because the writer's declaration already refuses these.
-
-    A declaration binds the writer; a damaged or planted line is exactly the input
-    that ignores it, so the coercion has to hold on the read side too. ``True`` is the
-    one that matters most: it is an ``int`` in Python, so a check that forgot to exclude
-    ``bool`` would bill a boolean as one credit.
-    """
-    fold = crew_log._FOLDS["subagents"]
-    state = fold.start()
-    fold.step(
-        state,
-        crew_log.Entry(
-            type="subagent/spawned", seq=1, time=1, src=GATEWAY, data={"agent_id": "a-1"}
-        ),
-    )
-    fold.step(
-        state,
-        crew_log.Entry(
-            type="subagent/completed",
-            seq=2,
-            time=2,
-            src=GATEWAY,
-            data={"agent_id": "a-1", "ms": 10, "credits": planted},
-        ),
-    )
-
-    value = fold.render(state)
-    assert value["by_id"]["a-1"]["credits"] is None
-    assert "credits" not in value["totals"]
 
 
 # --- registration ---------------------------------------------------------- #

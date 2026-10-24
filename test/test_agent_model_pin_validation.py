@@ -26,31 +26,40 @@ def _owner_caller(monkeypatch):
         "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
         lambda request: True,
     )
-    pass  # Member routing does not depend on OS isolation.
 
 
 class TestAcpIdCorrection:
-    def test_corrects_a_bedrock_flavoured_spelling(self):
-        """The registry lists each model's prefix-stripped Bedrock id as an alias.
-
-        ``claude-opus-4-8`` therefore resolves to a canonical key while being
-        nothing kiro-cli serves, and the registry already knows the id that is.
-        """
-        assert acp_id_correction("claude-opus-4-8") == "claude-opus-4.5"
-
-    def test_corrects_a_registered_full_bedrock_id(self):
-        """The id the alias was stripped FROM must correct too.
-
-        ``_build_indices`` puts aliases into every provider's index but each
-        provider's own id only into its own, so an ``acp``-only lookup silently
-        passed these through — the likelier spelling for someone copying from
-        Bedrock, and the one that actually reaches the child and kills it.
-        """
-        assert acp_id_correction("global.anthropic.claude-opus-4-8") == "claude-opus-4.5"
-
-    def test_corrects_the_1m_bedrock_variant_to_its_own_kiro_id(self):
-        """The 1M entry is a DISTINCT model, so it must not collapse onto the other."""
-        assert acp_id_correction("global.anthropic.claude-opus-4-8[1m]") == "claude-opus-4.8"
+    @pytest.mark.parametrize(
+        ("pin", "want"),
+        [
+            # The registry lists each model's prefix-stripped Bedrock id as an
+            # alias, so ``claude-opus-4-8`` resolves to a canonical key while being
+            # nothing kiro-cli serves, and the registry already knows the id that is.
+            pytest.param(
+                "claude-opus-4-8",
+                "claude-opus-4.5",
+                id="test_corrects_a_bedrock_flavoured_spelling",
+            ),
+            # The id the alias was stripped FROM must correct too. ``_build_indices``
+            # puts aliases into every provider's index but each provider's own id
+            # only into its own, so an ``acp``-only lookup silently passed these
+            # through -- the likelier spelling for someone copying from Bedrock,
+            # and the one that actually reaches the child and kills it.
+            pytest.param(
+                "global.anthropic.claude-opus-4-8",
+                "claude-opus-4.5",
+                id="test_corrects_a_registered_full_bedrock_id",
+            ),
+            # The 1M entry is a DISTINCT model, so it must not collapse onto the other.
+            pytest.param(
+                "global.anthropic.claude-opus-4-8[1m]",
+                "claude-opus-4.8",
+                id="test_corrects_the_1m_bedrock_variant_to_its_own_kiro_id",
+            ),
+        ],
+    )
+    def test_corrects_a_bedrock_id_to_its_kiro_id(self, pin: str, want: str):
+        assert acp_id_correction(pin) == want
 
     def test_every_registered_claude_code_id_is_correctable(self):
         """Class-level guard: every unserved id is either corrected or known to lack a kiro id.

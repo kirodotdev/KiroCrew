@@ -79,27 +79,37 @@ class TestManagedPinFollowsTheGlobal:
         # clean install writes, and the resolver reads the two identically.
         assert _refresh(_PINNED)["model"] == DEFAULT_MODEL
 
-    def test_a_concrete_global_still_propagates(self, shipped) -> None:
-        """The forward direction is unchanged: an explicit global reaches the spec."""
-        shipped(None)
+    @pytest.mark.parametrize(
+        ("shipped_default", "global_model", "want"),
+        [
+            # The forward direction is unchanged: an explicit global reaches the spec.
+            pytest.param(
+                None,
+                "claude-haiku-4.5",
+                "claude-haiku-4.5",
+                id="test_a_concrete_global_still_propagates",
+            ),
+            # Clearing must not fight the re-sync branch it sits next to. A managed
+            # spec under a global of "auto" resolves to the SHIPPED default, not to
+            # the sentinel -- otherwise a shipped default bump would stop reaching
+            # existing installs, and the two branches would disagree about what a
+            # managed spec holds.
+            pytest.param(
+                "claude-sonnet-4.6",
+                "auto",
+                "claude-sonnet-4.6",
+                id="test_managed_spec_still_tracks_a_concrete_shipped_default",
+            ),
+        ],
+    )
+    def test_a_managed_spec_takes_a_concrete_model(
+        self, shipped, shipped_default: str | None, global_model: str, want: str
+    ) -> None:
+        shipped(shipped_default)
         agent_state.set_model_managed(_AGENT, True)
-        _set_global("claude-haiku-4.5")
+        _set_global(global_model)
 
-        assert _refresh(_PINNED)["model"] == "claude-haiku-4.5"
-
-    def test_managed_spec_still_tracks_a_concrete_shipped_default(self, shipped) -> None:
-        """Clearing must not fight the re-sync branch it sits next to.
-
-        A managed spec under a global of "auto" resolves to the SHIPPED default,
-        not to the sentinel — otherwise a shipped default bump would stop
-        reaching existing installs, and the two branches would disagree about
-        what a managed spec holds.
-        """
-        shipped("claude-sonnet-4.6")
-        agent_state.set_model_managed(_AGENT, True)
-        _set_global("auto")
-
-        assert _refresh(_PINNED)["model"] == "claude-sonnet-4.6"
+        assert _refresh(_PINNED)["model"] == want
 
     def test_an_absent_global_is_treated_as_auto(self, shipped) -> None:
         """No ``agent.model`` key at all is the same deferral as "auto"."""

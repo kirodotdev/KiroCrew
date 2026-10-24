@@ -895,27 +895,28 @@ def test_the_token_count_says_that_it_is_an_estimate():
     assert _body()[-1]["data"]["tokens_estimated"] is True
 
 
-def test_the_named_remainder_keeps_its_own_label():
-    # Steering, tool specs and injected ledger context have no marker, so their
-    # characters are genuinely a remainder -- and `unclassified` is what the splitter
-    # calls it. The label passes through: its readers carry a translated string for
-    # that name and none for a catch-all, so renaming it here makes a named remainder
-    # render as an untranslated word in every shipped locale.
+@pytest.mark.parametrize(
+    ("label", "recorded"),
+    [
+        # Steering, tool specs and injected ledger context have no marker, so their
+        # characters are genuinely a remainder -- and `unclassified` is what the
+        # splitter calls it. The label passes through: its readers carry a translated
+        # string for that name and none for a catch-all, so renaming it here makes a
+        # named remainder render as an untranslated word in every shipped locale.
+        pytest.param(
+            "unclassified", "unclassified", id="test_the_named_remainder_keeps_its_own_label"
+        ),
+        # An empty label names nothing, so no reader can be given a translation for
+        # it. This is the ONLY label the emitter renames.
+        pytest.param("", "other", id="test_a_source_with_no_label_at_all_is_reported_as_other"),
+    ],
+)
+def test_a_remainder_source_keeps_a_label_a_reader_can_translate(label, recorded):
     _open_session()
-    emit.on_context_composed(SESSION, 1, blocks={"unclassified": 100, "lessons": 40})
+    emit.on_context_composed(SESSION, 1, blocks={label: 100, "lessons": 40})
     assert emit.flush()
     kinds = [s["kind"] for s in _body()[-1]["data"]["sources"]]
-    assert kinds == ["unclassified", "lessons"]
-
-
-def test_a_source_with_no_label_at_all_is_reported_as_other():
-    # An empty label names nothing, so no reader can be given a translation for it.
-    # This is the ONLY label the emitter renames.
-    _open_session()
-    emit.on_context_composed(SESSION, 1, blocks={"": 100, "lessons": 40})
-    assert emit.flush()
-    kinds = [s["kind"] for s in _body()[-1]["data"]["sources"]]
-    assert kinds == ["other", "lessons"]
+    assert kinds == [recorded, "lessons"]
 
 
 def test_empty_and_negative_blocks_are_dropped_rather_than_recorded():

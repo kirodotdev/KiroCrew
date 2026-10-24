@@ -201,8 +201,9 @@ class TestSubagentPostToolUseHook:
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             await manager._run_inner(info, "subagent:t03")
 
-        # Reaching here without exception is the assertion.
-        assert info is not None
+        # The stream ran through the tool result and the run ended clean.
+        assert info.done is True
+        assert not info.error
 
     @pytest.mark.asyncio
     async def test_post_tool_use_hook_exception_is_swallowed(self) -> None:
@@ -243,10 +244,16 @@ class TestSubagentPostToolUseHook:
         manager._log_spawned(info)
 
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
-            # Should not raise even though hook_store.fire raises.
             await manager._run_inner(info, "subagent:t04")
 
+        post_calls = [
+            c
+            for c in manager.hook_store.fire.await_args_list
+            if c.args and c.args[0] == "PostToolUse"
+        ]
+        assert [c.kwargs["tool_name"] for c in post_calls] == ["X"]
         assert info.done is True
+        assert not info.error
 
 
 class TestSubagentParallelToolAttribution:

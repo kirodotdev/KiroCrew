@@ -24,6 +24,7 @@ are in ``subagent_turn_resilience_helpers.py``.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -399,10 +400,19 @@ async def test_orphan_dm_delegates_to_callback():
 
 
 @pytest.mark.asyncio
-async def test_orphan_dm_callback_error_is_swallowed():
+async def test_orphan_dm_callback_error_is_swallowed(caplog):
     dm = AsyncMock(side_effect=RuntimeError("slack down"))
     mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None, on_orphan_dm=dm)
-    await mgr._send_orphan_slack_dm("orphan msg")  # must not raise
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
+        await mgr._send_orphan_slack_dm("orphan msg")  # must not raise
+    dm.assert_awaited_once_with("orphan msg")
+    # The failed delivery falls through to the log line, so the notice is not lost.
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "kiro_crew.subagent" and r.levelno == logging.WARNING
+    ]
+    assert warnings == ["Orphan notification (no delivery channel wired): orphan msg"]
 
 
 @pytest.mark.asyncio

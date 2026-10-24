@@ -118,10 +118,18 @@ class TestAgentSyncPrune:
         assert cfg.agents["omni-reviewer"].starred is False
 
     @pytest.mark.asyncio
-    async def test_prune_skips_kirocrew_owned_agents(self):
-        """Agents with source='kirocrew' are never pruned."""
+    @pytest.mark.parametrize(
+        ("name", "source"),
+        [
+            pytest.param("kirocrew", "kirocrew", id="test_prune_skips_kirocrew_owned_agents"),
+            # source='builtin' is a user-created agent.
+            pytest.param("my-custom", "builtin", id="test_prune_skips_user_created_agents"),
+        ],
+    )
+    async def test_prune_skips_agents_aim_does_not_own(self, name: str, source: str):
+        """Only AIM-sourced agents are pruned; kirocrew-owned and user-created ones never are."""
         agents = {
-            "kirocrew": KiroCrewAgentConfig(kiro_agent="kirocrew", source="kirocrew"),
+            name: KiroCrewAgentConfig(kiro_agent=name, source=source),
             "stale-aim": KiroCrewAgentConfig(kiro_agent="stale-aim", source="aim"),
         }
         cfg = _make_config(agents)
@@ -130,24 +138,8 @@ class TestAgentSyncPrune:
         body = await _run_sync(cfg, aim_list)
 
         assert "stale-aim" in body["pruned"]
-        assert "kirocrew" not in body["pruned"]
-        assert "kirocrew" in cfg.agents
-
-    @pytest.mark.asyncio
-    async def test_prune_skips_user_created_agents(self):
-        """Agents with source='builtin' (user-created) are never pruned."""
-        agents = {
-            "my-custom": KiroCrewAgentConfig(kiro_agent="my-custom", source="builtin"),
-            "stale-aim": KiroCrewAgentConfig(kiro_agent="stale-aim", source="aim"),
-        }
-        cfg = _make_config(agents)
-        aim_list = [_make_aim_agent("gpu-dev")]
-
-        body = await _run_sync(cfg, aim_list)
-
-        assert "stale-aim" in body["pruned"]
-        assert "my-custom" not in body["pruned"]
-        assert "my-custom" in cfg.agents
+        assert name not in body["pruned"]
+        assert name in cfg.agents
 
     @pytest.mark.asyncio
     async def test_no_prune_when_scan_returns_empty(self):

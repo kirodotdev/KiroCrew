@@ -375,11 +375,20 @@ class TestNoSecondGate:
         abg.narrow_selectable_backends()
         assert acp_backends.resolve_selected_backend("claude") == FLOOR
 
-    def test_the_default_falls_back_to_the_kiro_floor_when_kas_is_denied(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "choice",
+        [
+            pytest.param(
+                None, id="test_the_default_falls_back_to_the_kiro_floor_when_kas_is_denied"
+            ),
+            pytest.param("kas", id="test_an_explicit_denied_kas_choice_takes_the_floor"),
+        ],
+    )
+    def test_a_denied_kas_takes_the_floor_whether_defaulted_or_chosen(self, monkeypatch, choice):
         _registered(monkeypatch, FLOOR, "kas")
         _install(_policy({"mode": "deny", "deny": ["kas"]}))
         abg.narrow_selectable_backends()
-        assert acp_backends.resolve_selected_backend(None) == FLOOR
+        assert acp_backends.resolve_selected_backend(choice) == FLOOR
 
     def test_only_an_absent_value_selects_kas(self, monkeypatch):
         # H1/H3: KAS is the default for "no choice made", never the landing spot
@@ -388,12 +397,6 @@ class TestNoSecondGate:
         assert acp_backends.resolve_selected_backend(None) == "kas"
         assert acp_backends.resolve_selected_backend("not-a-backend") == FLOOR
         assert acp_backends.resolve_selected_backend(7) == FLOOR
-
-    def test_an_explicit_denied_kas_choice_takes_the_floor(self, monkeypatch):
-        _registered(monkeypatch, FLOOR, "kas")
-        _install(_policy({"mode": "deny", "deny": ["kas"]}))
-        abg.narrow_selectable_backends()
-        assert acp_backends.resolve_selected_backend("kas") == FLOOR
 
     def test_a_host_unservable_explicit_choice_takes_the_floor(self, monkeypatch):
         _registered(monkeypatch, FLOOR, "kas", "claude")

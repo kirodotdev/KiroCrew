@@ -14,29 +14,31 @@ def test_unset_is_on(monkeypatch):
     assert crew_log_enabled() is True
 
 
-@pytest.mark.parametrize("value", ["", "   "])
-def test_empty_is_on(monkeypatch, value):
+def _spellings(name: str, values: list[str], expected: bool) -> list:
+    return [pytest.param(value, expected, id=f"{name}-{value}") for value in values]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        *_spellings("test_empty_is_on", ["", "   "], True),
+        *_spellings(
+            "test_a_falsy_spelling_is_off",
+            ["0", "false", "no", "off", "OFF", " False ", "No"],
+            False,
+        ),
+        *_spellings("test_a_truthy_spelling_is_on", ["1", "true", "yes", "on", " TRUE "], True),
+        # Setting a default-on flag at all means opting out, so a typo turns it off.
+        *_spellings(
+            "test_an_unrecognised_value_fails_closed",
+            ["2", "disable", "fasle", " Disabled ", "nope"],
+            False,
+        ),
+    ],
+)
+def test_a_set_value_switches_the_log(monkeypatch, value, expected):
     monkeypatch.setenv(_NAME, value)
-    assert crew_log_enabled() is True
-
-
-@pytest.mark.parametrize("value", ["0", "false", "no", "off", "OFF", " False ", "No"])
-def test_a_falsy_spelling_is_off(monkeypatch, value):
-    monkeypatch.setenv(_NAME, value)
-    assert crew_log_enabled() is False
-
-
-@pytest.mark.parametrize("value", ["1", "true", "yes", "on", " TRUE "])
-def test_a_truthy_spelling_is_on(monkeypatch, value):
-    monkeypatch.setenv(_NAME, value)
-    assert crew_log_enabled() is True
-
-
-@pytest.mark.parametrize("value", ["2", "disable", "fasle", " Disabled ", "nope"])
-def test_an_unrecognised_value_fails_closed(monkeypatch, value):
-    """Setting a default-on flag at all means opting out, so a typo turns it off."""
-    monkeypatch.setenv(_NAME, value)
-    assert crew_log_enabled() is False
+    assert crew_log_enabled() is expected
 
 
 def test_an_unrecognised_value_is_warned_about_once(monkeypatch, caplog):
