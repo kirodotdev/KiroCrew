@@ -315,6 +315,7 @@ from kiro_crew.dashboard.server_runtime.mcp_routes import (  # noqa: F401
 )
 from kiro_crew.dashboard.server_runtime.middleware_chain import (  # noqa: F401
     _dashboard_canonical_redirect,
+    _insert_enterprise_gate,
     _install_api_middlewares,
     _install_dashboard_middlewares,
     _resolve_tailnet_trust,
@@ -816,6 +817,11 @@ async def start_dashboard(
         assume_ready=assume_kiro_ready,
     )
     state.kiro_prerequisite_service = app["kiro_prerequisite_service"]
+    # Enterprise build only: start CLOSED until a probe sees a kiro login. The
+    # middleware chain installed below reads the gate this puts on the app.
+    from kiro_crew.dashboard.enterprise_gate_middleware import install_enterprise_gate
+
+    install_enterprise_gate(app, app["kiro_prerequisite_service"])
     # A signed-out bundled kiro-cli-chat fails a prompt as a bare connection
     # error; the ACP layer asks this service's whoami verdict to tell it apart.
     from kiro_crew.kiro_prerequisite import register_turn_auth_service

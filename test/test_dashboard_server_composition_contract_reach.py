@@ -788,7 +788,7 @@ _DASHBOARD_BOOT = tuple("""
     _make_deny_audit_middleware resolve_dashboard_host build_host_canonical_redirect
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
-    _register_prevent_sleep_shutdown _register_listener_guard_shutdown
+    _insert_enterprise_gate _register_prevent_sleep_shutdown _register_listener_guard_shutdown
     _register_stt_hooks _register_own_host_warm _register_config_watch
     _register_instances_hooks _register_browser_install_cleanup
     _register_browser_view_cleanup _register_connections_warm_lifecycle
@@ -833,7 +833,7 @@ _API_BOOT = tuple("""
     _make_host_validation_middleware _make_csrf_middleware _make_deny_audit_middleware
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
-    _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
+    _insert_enterprise_gate _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred

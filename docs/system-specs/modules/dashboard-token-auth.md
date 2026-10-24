@@ -146,6 +146,12 @@ rather than raises, so the boundary never sees them: the per-slot checkpoint (a
 404, plus its own `app_isolation` row for a slot that exists) and the two appended
 gates (`_workflow_ready`, `_crewmate_prune_gate`, each a 503).
 
+An enterprise build adds one layer to both chains, right after `token_auth`: the
+enterprise gate middleware (`dashboard/enterprise_gate_middleware.py`), which
+while the gate is closed denies everything but the login routes. It RAISES its
+403, so `deny_audit` records it. An `oss` build installs nothing. Contract:
+[platform-context § Enterprise gate](platform-context.md#enterprise-gate-login-half).
+
 ## Components
 
 ### 1. `token_auth.py` — Token Generator, Validator & Middleware

@@ -806,6 +806,15 @@ def _run_stdio_dispatch_loop(
                     )
                     if _caller_ctx is None and spawned_without_gateway_identity():
                         _refusal += external_client_identity_note(server_name)
+                elif _policy.unresolved == "gateway_locked":
+                    _refusal = (
+                        f"Error: tool '{tool_name}' is unavailable because the "
+                        f"gateway is locked until Kiro is signed in (gateway_locked), "
+                        f"so session {_policy_session}'s tool policy could not be "
+                        f"read. Refusing the call rather than ignoring an operator's "
+                        f"exclusion list; sign in with kiro-cli on the gateway host "
+                        f"and the call succeeds once the gateway reopens."
+                    )
                 elif _policy.unresolved == "resolution_failed":
                     # The exception class only; its message stays in the audit log.
                     _cause = f" (cause: {_policy.detail})" if _policy.detail else ""

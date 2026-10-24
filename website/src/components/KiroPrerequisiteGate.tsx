@@ -47,7 +47,9 @@ const QUERY_KEY = ['kiro-prerequisite'] as const
 export function kiroPrerequisiteRefetchInterval(
   status: KiroPrerequisiteStatus | undefined,
 ): number | false {
-  if (status?.ready) return 30_000
+  // A closed enterprise login gate keeps the fast poll even with `ready`: the
+  // probe can latch ready a few seconds before the gate itself reopens.
+  if (status?.ready && status.enterprise_login_required !== true) return 30_000
   if (status && status.setup_allowed === false) return 3_000
   if (kiroPrerequisiteIsBlocking(status)) return 5_000
   return 30_000
@@ -67,6 +69,9 @@ export function kiroPrerequisiteRefetchInterval(
 export function kiroPrerequisiteIsBlocking(
   status: KiroPrerequisiteStatus | undefined,
 ): boolean {
+  // An enterprise gateway whose login gate is closed serves nothing else, so the
+  // sign-in screen blocks and its poll must probe to notice the new sign-in.
+  if (status?.enterprise_login_required === true) return true
   if (!status || status.ready) return false
   // A non-owner cannot probe and is shown the "owner must finish setup" screen.
   if (status.setup_allowed === false) return false
@@ -1506,7 +1511,10 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // check says "not ready": a ready Kiro install never needs it, and a returning
   // user's load stays exactly as cheap as before. A failed read falls back to
   // the Kiro checks — the behaviour this gate always had — never to a bypass.
-  const kiroNotReady = !!statusQuery.data && !statusQuery.data.ready
+  // The enterprise login gate refuses both reads below, and the sign-in screen
+  // needs neither, so they wait until it opens.
+  const enterpriseLocked = statusQuery.data?.enterprise_login_required === true
+  const kiroNotReady = !!statusQuery.data && !statusQuery.data.ready && !enterpriseLocked
   const configQuery = useQuery<{ agent?: { acp_backend?: string } }>({
     queryKey: CONFIG_QUERY_KEY,
     queryFn: () => api.kirocrewConfig(),
@@ -1540,7 +1548,8 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // The Kiro CLI checks below describe Kiro CLI. When the operator chose
   // another agent and it is usable, none of them is about the agent that will
   // actually run, so the dashboard opens.
-  const otherBackendReady = otherBackendConfigured
+  const otherBackendReady = !enterpriseLocked
+    && otherBackendConfigured
     && configuredBackendCanStart(statusQuery.data, configuredProbe)
 
   // The verdict above is read from a read-only poll, but the durable
@@ -1635,12 +1644,17 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
       <SetupStatusError message={message} retrying={retrying} onRetry={retryStatus} />
     )
   }
-  if (prerequisite.ready) {
+  // Enterprise login gate closed: the gateway refuses every API but sign-in, so
+  // none of the bypasses below may hand over the dashboard -- not `ready`, not an
+  // established install, not another harness. The first-run screens still run
+  // in order, so a missing CLI or a sandbox refusal shows its own remedy before
+  // the sign-in step.
+  if (prerequisite.ready && !enterpriseLocked) {
     return <>{children}</>
   }
   // Which agent will run is still unknown: same rule as the pending status
   // above — an unresolved check never paints setup chrome.
-  if (configQuery.isPending || (otherBackendConfigured && backendsQuery.isPending)) {
+  if (!enterpriseLocked && (configQuery.isPending || (otherBackendConfigured && backendsQuery.isPending))) {
     return <>{children}</>
   }
   if (otherBackendReady) {
@@ -1746,7 +1760,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // only when they actually try to use the agent. A persistent banner nagged
   // every surface (including ones that never start a session) for a state the
   // dashboard cannot even keep current.
-  if (status.initial_setup_complete) {
+  if (status.initial_setup_complete && !enterpriseLocked) {
     return <>{children}</>
   }
   if (prerequisite.setup_allowed === false) {
@@ -1903,6 +1917,9 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
             </div>
           </Card>
 
+          {/* Choosing another agent writes config, which a closed enterprise
+              login gate refuses; the Kiro card above is the only way through. */}
+          {!enterpriseLocked && (
           <OtherCodingAgents
             status={status}
             configured={configuredBackend ?? KIRO_BACKEND}
@@ -1911,6 +1928,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
             failed={backendsQuery.isError}
             onRetryBackends={() => { void backendsQuery.refetch() }}
           />
+          )}
         </>
     </SetupShell>
   )
