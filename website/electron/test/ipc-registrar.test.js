@@ -39,6 +39,7 @@ const SHELL_HANDLES = [
   "external-terminal:detect",
   "external-terminal:open",
   "global-hotkey:get",
+  "image:copy-at",
   "local-gateway:get",
   "local-gateway:set",
   "pane:clear-http-cache",
@@ -278,6 +279,7 @@ function harness({
       },
     },
     webContents: { getAllWebContents: () => [liveContents, destroyedContents] },
+    clipboard: { formats: [], availableFormats() { return this.formats; } },
   };
 
   const recordWindow = (name, result = { from: name }) => (...args) => {
@@ -384,6 +386,7 @@ function harness({
       secretReads.push(gatewayUrl);
       return gatewayUrl === backendUrl ? internalSecret : "";
     },
+    clipboardImageTimeoutMs: 20,
   });
 
   return {
@@ -480,13 +483,13 @@ test("registerShell owns the exact shell channel set and is idempotent", () => {
 
   assert.deepEqual([...h.handlers.keys()].sort(), SHELL_HANDLES);
   assert.deepEqual([...h.listeners.keys()].sort(), SHELL_LISTENERS);
-  assert.equal(h.handlers.size + h.listeners.size, 40);
+  assert.equal(h.handlers.size + h.listeners.size, 41);
 
   // boot-complete is a further non-update host channel, but it is deliberately
   // gateway-owned and scoped to a single connecting WebContents. Registering it
   // globally here would weaken its sender check and leak listeners.
   assert.match(GATEWAY_SOURCE, /ipcMain\.on\("boot-complete", onComplete\)/);
-  assert.equal(h.handlers.size + h.listeners.size + 1, 41);
+  assert.equal(h.handlers.size + h.listeners.size + 1, 42);
   assert.equal(h.handlers.has("boot-complete"), false);
   assert.equal(h.listeners.has("boot-complete"), false);
 
@@ -597,6 +600,39 @@ test("shell handlers preserve sender, argument, and return shapes", async () => 
     accelerator: "",
     default: "Test+Shift+K",
   });
+});
+
+test("image:copy-at copies at the zoomed point and reports whether an image landed", async () => {
+  const h = harness();
+  h.registrar.registerShell();
+  const copies = [];
+  const clipboard = h.electron.clipboard;
+  const mainFrame = { url: "http://localhost:5476/chat" };
+  const sender = {
+    mainFrame,
+    getZoomFactor: () => 1.5,
+    copyImageAt: (x, y) => {
+      copies.push([x, y]);
+      clipboard.formats = ["image/png"];
+    },
+  };
+  const copyAt = h.handlers.get("image:copy-at");
+
+  assert.equal(await copyAt({ sender, senderFrame: mainFrame }, 101, 40.4), true);
+  assert.deepEqual(copies, [[152, 61]]);
+
+  clipboard.formats = ["text/plain"];
+  assert.equal(await copyAt({ sender, senderFrame: { url: "http://localhost:5476/pane" } }, 10, 10), false);
+  for (const [x, y] of [[NaN, 1], [1, Infinity], [-1, 5], ["10", 10]]) {
+    assert.equal(await copyAt({ sender, senderFrame: mainFrame }, x, y), false);
+  }
+  assert.deepEqual(copies, [[152, 61]], "subframe and malformed points copy nothing");
+
+  const silent = { mainFrame, copyImageAt: () => {} };
+  assert.equal(await copyAt({ sender: silent, senderFrame: mainFrame }, 5, 5), false,
+    "a copy that leaves no image on the clipboard reports failure");
+  const throwing = { mainFrame, copyImageAt: () => { throw new Error("destroyed"); } };
+  assert.equal(await copyAt({ sender: throwing, senderFrame: mainFrame }, 5, 5), false);
 });
 
 // A completed scan, shaped like collectCrashReports' return value. Only

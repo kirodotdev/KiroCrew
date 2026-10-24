@@ -2,7 +2,7 @@ import React, { useCallback, useContext, useEffect, useRef, useState } from 'rea
 import { Check, Copy, Download, MoreHorizontal, Minus, Plus, Search, X } from 'lucide-react'
 import Clickable from '../Clickable'
 import { DOUBLE_TAP_MS, DOUBLE_TAP_SLOP, DOUBLE_TAP_ZOOM, usePinchZoom } from '../../hooks/usePinchZoom'
-import { copyImageToClipboard, imageBlobToPng } from '../../utils/clipboard'
+import { copyImageFromUrl, fetchImageBlob } from '../../utils/clipboard'
 import { isEditableTarget } from '../../utils/editableTarget'
 import { downloadBlob } from '../../utils/download'
 import ErrorNotice from '../ErrorNotice'
@@ -93,23 +93,10 @@ function lightboxFilename(image: LightboxImage): string {
 async function downloadLightboxImage(image: LightboxImage): Promise<void> {
   const name = lightboxFilename(image)
   try {
-    downloadBlob(await fetchLightboxBlob(image), name)
+    downloadBlob(await fetchImageBlob(image.src), name)
   } catch {
     window.open(image.src, '_blank', 'noopener,noreferrer')
   }
-}
-
-async function fetchLightboxBlob(image: LightboxImage): Promise<Blob> {
-  const res = await fetch(image.src)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return await res.blob()
-}
-
-/** Resolves whether the image reached the clipboard. The bytes are passed
- *  UNAWAITED: WebKit checks user activation when write() is called, so awaiting
- *  the fetch first would spend the click that asked for the copy. */
-function copyLightboxImage(image: LightboxImage): Promise<boolean> {
-  return copyImageToClipboard(fetchLightboxBlob(image).then(imageBlobToPng))
 }
 
 /** Build the lightbox payload for an image click. The set is "all images
@@ -184,7 +171,7 @@ export function Lightbox() {
     const cur = stateRef.current
     if (!cur) return
     const seq = ++copySeqRef.current
-    void copyLightboxImage(cur.images[cur.index]).then(ok => {
+    void copyImageFromUrl(cur.images[cur.index].src).then(ok => {
       // Superseded by a later press, a page/close reset, or unmount.
       if (seq !== copySeqRef.current) return
       setCopyState(ok ? 'ok' : 'failed')

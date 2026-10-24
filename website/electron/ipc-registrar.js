@@ -52,6 +52,7 @@ function createIpcRegistrar({
   // only to redeem an external-terminal grant at this shell's own gateway.
   readInternalSecret = () => "",
   fetchFn = (url, init) => fetch(url, init),
+  clipboardImageTimeoutMs = 1000,
 } = {}) {
   if (!electron) throw new Error("createIpcRegistrar: electron is required");
   if (!store) throw new Error("createIpcRegistrar: store is required");
@@ -70,8 +71,18 @@ function createIpcRegistrar({
     ipcMain,
     shell,
     webContents,
+    clipboard,
   } = electron;
   const log = typeof glog === "function" ? glog : (() => {});
+
+  async function clipboardHoldsImage() {
+    const deadline = Date.now() + clipboardImageTimeoutMs;
+    for (;;) {
+      if (clipboard.availableFormats().some((f) => f.startsWith("image/"))) return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
 
   let shellRegistered = false;
   let updaterRegistered = false;
@@ -167,6 +178,22 @@ function createIpcRegistrar({
       windows.chrome.watchFocusCursor(event.sender, watching));
     ipcMain.on("window-control", (event, action) =>
       windows.chrome.windowControl(event.sender, action, event.senderFrame));
+    // The chat bubble's Copy image for an image the page cannot fetch (another
+    // origin, or no async Clipboard API over plain HTTP). The renderer passes
+    // CSS pixels in its own main frame; copyImageAt takes zoomed ones.
+    // copyImageAt reports nothing, so success means an image reached the clipboard.
+    ipcMain.handle("image:copy-at", async (event, x, y) => {
+      const sender = event.sender;
+      if (!sender || event.senderFrame !== sender.mainFrame) return false;
+      if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) return false;
+      const zoom = typeof sender.getZoomFactor === "function" ? sender.getZoomFactor() : 1;
+      try {
+        sender.copyImageAt(Math.round(x * zoom), Math.round(y * zoom));
+      } catch {
+        return false;
+      }
+      return clipboardHoldsImage();
+    });
     ipcMain.on("theme-mode-changed", (_event, pref) =>
       windows.chrome.setThemeMode(pref));
     ipcMain.on("titlebar-overlay-theme", (_event, mode) =>
