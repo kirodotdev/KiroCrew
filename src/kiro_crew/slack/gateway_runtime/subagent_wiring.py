@@ -49,6 +49,7 @@ if TYPE_CHECKING:
         redact_and_truncate,
         redact_credentials,
         redact_exfiltration_urls,
+        redact_log_via_context,
         resolve_max_subagents,
         safety_override,
         single_completion_meta,
@@ -234,8 +235,8 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
         failures = slot._pending_subagent_failures[:]
         slot._pending_subagent_failures.clear()
         msg = "\n\n".join(failures)
-        msg, _ = redact_exfiltration_urls(msg)
-        msg, _ = redact_credentials(msg)
+        # The composed host's patterns, not the baseline pair: this row is an egress too.
+        msg = redact_log_via_context(msg)
         slot.append("user", msg, "msg msg-u auto-go")
         logger.info(
             "Re-triggering recovery _run_chat for %s (%d queued failures)",

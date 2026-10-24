@@ -52,8 +52,6 @@ if TYPE_CHECKING:
         logger,
         nudge_cycle_header,
         provider_last_turn_usage,
-        redact_credentials,
-        redact_exfiltration_urls,
         render_for_slack,
         run_in_embed_pool,
         save_conversation_turn_off_loop,
@@ -441,15 +439,11 @@ async def _fire_slack_inner_nudge(
     # Persist for dashboard replay (mirrors subagent Slack injection).
     if self.conv_log and not (is_thread_temporary(key) or is_thread_incognito(key)):
         try:
-            safe_nudge, _ = redact_exfiltration_urls(tagged)
-            safe_nudge, _ = redact_credentials(safe_nudge)
-            safe_response, _ = redact_exfiltration_urls(response or "")
-            safe_response, _ = redact_credentials(safe_response)
             await save_conversation_turn_off_loop(
                 self.conv_log,
                 key,
-                safe_nudge,
-                safe_response,
+                tagged,
+                response or "",
                 source_thread=key,
                 source_user="autonudge",
                 agent=_get_agent_for_session(key),

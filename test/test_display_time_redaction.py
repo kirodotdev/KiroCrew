@@ -295,8 +295,11 @@ def test_load_leaves_user_content_raw(tmp_path, monkeypatch) -> None:
     log = state.conversation_log
     assert log is not None
     key = _history_key_for("chat-1-userraw")
-    log.append(key, "user", f"my key is {SECRET}")
     log.append(key, "assistant", f"noted {SECRET}")
+    # A legacy row, written before the boundary scrubbed user rows.
+    row = {"role": "user", "content": f"my key is {SECRET}", "ts": "2026-01-01T00:00:00+00:00"}
+    with open(log._path(key), "a", encoding="utf-8") as f:
+        f.write(json.dumps(row) + "\n")
 
     state2 = _make_state(tmp_path / "sessions")
     slot = _rehydrate_slot_from_history(state2, "chat-1-userraw")

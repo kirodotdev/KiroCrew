@@ -558,22 +558,11 @@ async def _inject_subagent_into_channel_parent(
                 is_thread_temporary(parent_key) or is_thread_incognito(parent_key)
             ):
                 try:
-                    # Defense-in-depth: `announce` is composed from
-                    # already-redacted parts plus identifiers such as
-                    # `info.agent`; we re-redact before persisting to the
-                    # dashboard replay (an external surface), mirroring the
-                    # dashboard branch. `response` is fresh LLM output from
-                    # stream_and_collect and is NOT yet redacted, so its
-                    # redaction here is strictly required.
-                    safe_announce, _ = redact_exfiltration_urls(announce)
-                    safe_announce, _ = redact_credentials(safe_announce)
-                    safe_response, _ = redact_exfiltration_urls(response or "")
-                    safe_response, _ = redact_credentials(safe_response)
                     await save_conversation_turn_off_loop(
                         self.conv_log,
                         parent_key,
-                        safe_announce,
-                        safe_response,
+                        announce,
+                        response or "",
                         source_thread=parent_key,
                         source_user="subagent",
                         agent=_get_agent_for_session(parent_key),

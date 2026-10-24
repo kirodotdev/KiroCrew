@@ -121,6 +121,7 @@ from kiro_crew.messaging.queue_drain import (
 )
 from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface, receipt_address_key
 from kiro_crew.mirror_admission import sign_mirror_admission
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.sel import sel
 from kiro_crew.session_lifecycle import (
@@ -1268,7 +1269,8 @@ class WebexDispatcher:
                 session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
             )
         if is_new:
-            title = (user_text or "").strip().replace("\n", " ")[:40] or "Webex"
+            title = redact_log_via_context(user_text or "").strip().replace("\n", " ")[:40]
+            title = title or "Webex"
             self.conv_log.set_title(session_key, title)
 
     async def _maybe_notice(self, inbound: "WebexInbound", session_key: str, provider: Any) -> None:

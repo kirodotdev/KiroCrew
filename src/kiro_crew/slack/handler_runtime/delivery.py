@@ -801,7 +801,7 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
 
         # ── Bidirectional sync: mirror to dashboard if routed to a dashboard session ──
         if linked_session_key and _dashboard_state and answer.accumulated and not _skip_writes:
-            _mirror_to_dashboard(linked_session_key, text, answer.accumulated)
+            await _mirror_to_dashboard(linked_session_key, text, answer.accumulated)
         # ── Auto-title Slack thread (fire-and-forget) ──
         # Claim-early-unclaim-on-failure pattern: ``try_claim`` checks and marks in one
         # synchronous step, so concurrent messages (and the transport path, which

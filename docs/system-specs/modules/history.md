@@ -692,6 +692,46 @@ member. The facade grows only in the code listed above as staying there.
 
 Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line is metadata, subsequent lines are messages with `role`, `content`, `ts`, `tools`, `source_thread`, `source_user`. A writer can also supply `cls` (presentation class) and `mid` — persisted as `meta.mid`, the same field shape the dashboard slot save writes, so a dual-write injector's durable copy carries the SAME delivery identity as its in-memory window copy and a bounded slot-detail read reconciles the two as one message instead of re-appending the injection. A writer may also pass `extra_meta` (`append` / `append_if_absent`), a dict of display fields merged into the row's `meta` — e.g. `{"turn_stats": …}` for the usage footer; the merge never overrides `mid` (`{**extra_meta, **{"mid": …}}`). The multi-row off-loop writer `append_rows_if_absent_off_loop` takes `row_meta`, a sequence aligned with its `rows` by index, applying each entry as that row's `extra_meta`. A row appended with neither `mid` nor a non-empty `extra_meta` carries no `meta` at all (the pre-id shape readers keep an id-less fallback for; existing transcripts are never migrated); supplying `extra_meta` alone writes a `meta` dict even without a `mid`.
 
+**Write-boundary redaction, and its one-way door.** Every row, whatever its `role`, is
+scrubbed by `_redact_at_write_boundary` on its way into the transcript, so the rule lives
+where the bytes are written rather than in any caller -- a conversation's dashboard tab and
+its channel thread persist through different paths to the same file, and a new persister is
+covered without being registered. The dashboard slot save does not route through this
+boundary at all -- it builds its rows in `chat_persistence` and writes them itself -- so a
+row typed into the dashboard is unaffected.
+
+The redaction is NOT reversible: the original span is not retained, so a false positive
+rewrites a user's own text at rest permanently and a later pattern fix cannot restore it.
+That is the accepted cost of the sink-side rule.
+
+**Two copies bypass the boundary and are scrubbed where they are made.** A channel's
+session title is derived from the first inbound message and stored in metadata, so each
+transport scrubs it before the 40-character cut. Discord, Telegram and the Slack mirror
+project a turn into the live dashboard slot, which is not a `ConversationLog` write.
+
+**The `user` exemption was measured before it was removed.** An earlier revision kept it,
+citing four timeouts above 120 seconds in `test_history_consolidation_retry.py` and
+`test_history_locking_remediation.py` and attributing them to `_might_contain_credential`.
+That attribution was wrong: the pre-filter is flat on a long uniform run (0.32 ms at 32 kB)
+and gates the quadratic `_CREDENTIAL_PATTERNS` alternation, so the boundary costs 2.4 ms there
+and scales linearly. With the exemption removed both suites pass in under nine seconds, the
+slowest test 2.9 s, so nothing measured still needs it.
+
+**Serve-time scrubbing was evaluated as the alternative, and rejected.** Storing the row
+verbatim and scrubbing on the way out would keep the user's own words recoverable, the one
+real advantage and the reason it was considered. Rejected on three grounds, all properties
+of this file rather than preferences. First, the transcript at rest IS an egress: the JSONL
+sits on the host, is carried by whatever backs that directory up, and is read by the search
+index, so storing a credential verbatim defers the exposure instead of removing it, and the
+threat this rule exists for is the copy that outlives the conversation. Second, it moves the
+rule from a few writers to MANY more readers -- `read_messages`, `read_messages_chained`,
+`recent`, `recent_with_provenance`, `search_sessions`, the snippet builders, the archive
+endpoints -- which is the same "rule lives in each caller" weakness reviewers name against
+the write side, relocated to the side with more callers. Third, the memos above
+(`_folded_cache`, `_snippet_cache`, `_msg_cache`) are filled from the stored bytes and keyed
+by mtime, so a read-side scrub is bypassed by any warm entry. The residual cost of the write
+side is the irreversible false positive, which nothing undoes.
+
 - Append-only for LLM cache efficiency
 - Rotation at 10MB (keeps metadata + last 200 messages, atomic write), enforced
   by `ConversationLog.append`. The dashboard whole-file save
@@ -2888,7 +2928,7 @@ Contract:
   attachments directory) as corroboration alongside equal body or equal `ts`.
   Corroboration stays required, because `meta.mid` is caller-suppliable; body
   equality stays the rule for id-less callers.
-- **`role != "user"`**, the same gate the redaction boundary uses: an inline image
+- **`role != "user"`**: an inline image
   is agent output, and a path the user typed names a file of their own.
 - **Bounded scan.** A row with more than `MAX_IMAGE_OPENERS_PER_MESSAGE` (256)
   `![` openers is left as written without scanning: the reference scanner is

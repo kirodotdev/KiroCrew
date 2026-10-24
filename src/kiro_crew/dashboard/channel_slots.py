@@ -772,7 +772,7 @@ def _window_matches_disk(slot: "_ChatSlot", messages: list[dict[str, Any]]) -> b
 
     Matched on ``(role, ts, content)``: the window's ``cls`` and ``meta`` are
     presentation state that a persisted line need not carry, and content is
-    comparable because the write boundary already redacted non-user text before
+    comparable because the write boundary already redacted the text before
     it reached disk.
     """
     older = slot._disk_older_count

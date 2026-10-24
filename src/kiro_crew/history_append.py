@@ -22,30 +22,26 @@ from kiro_crew.atomic_write import append_line
 from kiro_crew.chat_attachments import persist_inline_images, same_text_modulo_images
 from kiro_crew.history_schema import metadata_now_iso, monotonic_transcript_ts
 from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.platform.context import redact_log_via_context
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
 
 
 def _redact_at_write_boundary(role: str, content: str) -> str:
-    """Redact model-authored *content* on its way into a transcript.
+    """Redact *content* on its way into a transcript, whatever its role.
 
     One transcript, one redaction rule. A conversation's dashboard tab and its
     channel thread persist to the same file through different code paths, so the
     rule has to live where the bytes are written rather than in either caller.
+    A user row is scrubbed too: a credential typed into a channel outlives the
+    conversation once it is at rest. The dashboard slot save does not route
+    through here, so a row typed into the dashboard is unaffected.
 
-    The gate is ``role != "user"``, matching the dashboard's own write-back
-    boundary: text the user typed is stored verbatim, and everything the model or
-    the system produced is scrubbed of credentials and exfiltration URLs.
     Idempotent, so a caller that already redacted loses nothing by passing
     through here.
     """
-    if role == "user":
-        return content
-    content, _ = redact_exfiltration_urls(content)
-    content, _ = redact_credentials(content)
-    return content
+    return redact_log_via_context(content)
 
 
 def _persist_inline_attachments(self: ConversationLog, key: str, role: str, content: str) -> str:
@@ -59,7 +55,7 @@ def _persist_inline_attachments(self: ConversationLog, key: str, role: str, cont
     this the transcript keeps the reference long after the bytes are gone.
     See :mod:`kiro_crew.chat_attachments` for the copy contract.
 
-    Gated on ``role != "user"``, the same gate the redaction boundary uses:
+    Gated on ``role != "user"``:
     an inline image is something the agent produced, and a path the user
     typed names a file of their own that this must not duplicate.
 
@@ -274,7 +270,7 @@ def append_if_absent(
         content = self._persist_inline_attachments(key, role, content)
         if self._path(key).exists():
             # Compare against the form ``append`` actually stores: the
-            # write boundary redacts non-user content, so matching on the
+            # write boundary redacts every row, so matching on the
             # raw text would never recognise an already-persisted message
             # that contained a credential and would append it twice.
             persisted = _redact_at_write_boundary(role, content)
