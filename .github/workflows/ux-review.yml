@@ -968,6 +968,29 @@ jobs:
                  in components/appstore/gradient.ts, the session 'gradient'
                  color mode) — the rule is documented in
                  website/docs/theming-contract.md.
+               - Scrollbars: none is visible at rest, on any surface, for any
+                 pointer (recorded maintainer decision,
+                 docs/decisions/2026-10-23-scrollbars-are-never-always-visible.md;
+                 the global rule lives in website/src/index.css). A scroll box
+                 either hides its scrollbar entirely (`scrollbar-none`) or shows
+                 a thin thumb only while it is being scrolled (`data-scrolling`,
+                 set by lib/scrollReveal.ts), in a column it reserves anyway so
+                 the reveal moves no content. A diff that paints one at rest is a
+                 finding: a coloured `::-webkit-scrollbar-thumb` or
+                 `scrollbar-color` whose selector lacks `[data-scrolling]`,
+                 `scrollbar-width: auto`, a hover-revealed thumb (the pointer
+                 lives over the chat transcript, so hover is "at rest" there), a
+                 revived `.scrollbar-overlay` / `.scroll-fade`, or a screenshot
+                 of a dashboard surface showing a scrollbar while nothing
+                 scrolls. A reveal that changes the box's width (a scrollbar
+                 that appears and pushes content) is a finding too. "The box
+                 needs a scroll affordance" is not an exception: the cue for a
+                 box whose edge does not show that it scrolls is an edge fade
+                 (`.edge-fade-x`, `useScrollEdges`) or a "more below"
+                 affordance (`MORE_BELOW_MASK`, `JumpToBottomButton`), never a
+                 resting thumb. Hiding one is never a regression to flag; the
+                 decision outranks the report (AUTOSDE
+                 `recorded-decisions-are-not-regressions`).
                - Habituation: flag diffs that MOVE or REORDER existing controls
                  without functional need (breaks muscle memory), and duplicate
                  new paths to an already-reachable action.
