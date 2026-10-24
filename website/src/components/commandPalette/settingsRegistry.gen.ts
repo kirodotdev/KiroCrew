@@ -1581,6 +1581,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.title-only-session-cards",
+    "label": "Title-only session cards",
+    "labelKey": "pages.settings.chatPanel.compact_session_cards",
+    "description": "Show only each session title in the sidebar. This hides metadata, activity previews, and linked source chips.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    }
+  },
+  {
     "id": "chat.tool-calls-start-expanded",
     "label": "Tool calls start expanded",
     "labelKey": "pages.settings.chatPanel.tool_calls_start_expanded",

@@ -7787,6 +7787,8 @@
         "failed_to_save_refusal_fallback_model": "Failed to save content-filter fallback model",
         "session_card_source_links": "PR and Issue Chips on Session Cards",
         "session_card_source_links_desc": "Show a chip on each session's sidebar card for every pull request, merge request and issue mentioned in that session. Turning it off also stops the periodic provider calls that keep those chips up to date.",
+        "compact_session_cards": "Title-only session cards",
+        "compact_session_cards_desc": "Show only each session title in the sidebar. This hides metadata, activity previews, and linked source chips.",
         "failed_to_load_tips_preference": "Failed to load tips preference.",
         "feature_videos": "Feature Videos",
         "feature_videos_cached": "Saved on this device: {{cached}} of {{total}} · release {{release}}",

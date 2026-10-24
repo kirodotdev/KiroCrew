@@ -16251,6 +16251,8 @@
         "your_role": "你的角色",
         "session_card_source_links": "会话卡片上的 PR 与 issue 标签",
         "session_card_source_links_desc": "在每个会话的侧边栏卡片上，为该会话中提到的每个拉取请求、合并请求和 issue 显示一个标签。关闭后，也会停止用于更新这些标签状态的定期服务商调用。",
+        "compact_session_cards": "仅标题会话卡片",
+        "compact_session_cards_desc": "仅在侧边栏中显示每个会话的标题。隐藏活动预览和关联来源标签。",
         "failed_to_load_tips_preference": "无法加载提示偏好设置。",
         "feature_videos": "功能视频",
         "feature_videos_cached": "已保存在本机：{{total}} 个中的 {{cached}} 个 · 版本 {{release}}",
