@@ -19,7 +19,7 @@ import type { ModelInfo } from '../providers/types'
 
 /** The /api/models rows these fixtures feed the adapter. The adapter's own
  *  RawModel is module-private, so mirror only the fields set here. */
-type ModelRow = { model_name: string; description?: string }
+type ModelRow = { model_name: string; display_name?: string; description?: string }
 
 /** `api.models` as replaced by vi.mock above. The resolved type is a union
  *  because the endpoint has both shapes: rows on success, and the error object
@@ -43,6 +43,17 @@ describe('AcpAdapter.fetchAvailableModels', () => {
     expect(models[0].name).toBe('auto')
     expect(models[1].name).toBe('claude-opus-4.8')
     expect(models[2].description).toBe('Everyday tasks')
+  })
+
+  it('keeps the catalog label for the auto row, never a backend display name', async () => {
+    ;(api.models as ModelsMock).mockResolvedValue([
+      { model_name: 'auto', display_name: 'Auto', description: 'Let the provider pick' },
+      { model_name: 'claude-opus-4.8', display_name: 'Opus 5.5', description: 'Most capable' },
+    ])
+    const models = await new AcpAdapter().fetchAvailableModels()
+    expect(models[0].name).toBe('auto')
+    expect(models[0].displayName).toBeUndefined()
+    expect(models[1].displayName).toBe('Opus 5.5')
   })
 
   it('falls back to AUTO-ONLY when API returns non-array (e.g. error object)', async () => {

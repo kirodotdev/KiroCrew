@@ -154,6 +154,8 @@ class AcpSessionHandle:
     _normalize_models = staticmethod(_sh_models._normalize_models)
     refresh_available_models = _sh_models.refresh_available_models
     _mark_available_models_captured = _sh_models._mark_available_models_captured
+    _feed_advertised_model_cache = _sh_models._feed_advertised_model_cache
+    _persist_advertised_models_if_changed = _sh_models._persist_advertised_models_if_changed
     maybe_refresh_available_models = _sh_models.maybe_refresh_available_models
     _sync_effort_levels = _sh_models._sync_effort_levels
     # Steering a live turn: ``kiro_crew.acp.session_handle_steering``.
@@ -653,6 +655,11 @@ class AcpSessionHandle:
         self.model_pin_partial: str = ""
         self._config_options: list[dict[str, Any]] = []
         self._available_models: list[dict[str, str]] = []
+        # Set by ``_feed_advertised_model_cache`` when the capture changed the
+        # cross-session advertised-model cache, so the async init caller can
+        # offload the disk persist off the event loop. Mirrors
+        # ``AcpClient._advertised_models_changed`` on the direct-spawn path.
+        self._advertised_models_changed: bool = False
         # Read by KAS only: the listed id a session born on an unlisted ``auto`` moves to,
         # or "". One answer read from the ``model`` select, never the list itself:
         # nobody has shown that list to be the account's complete served set, so

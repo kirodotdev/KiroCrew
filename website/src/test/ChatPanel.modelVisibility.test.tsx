@@ -361,4 +361,42 @@ describe('Settings selectable models', () => {
     await waitFor(() => expect(trigger).toHaveTextContent('Selected 1 / 3'))
     expect(trigger).toHaveTextContent('Selected 1 / 3')
   })
+
+  it('shows the backend native label but toggles by the model id (#21747)', async () => {
+    // An advertised-selection harness (Claude Code) sends a native name for the
+    // bare id `opus`. The row must READ "Opus 5.5" while the hidden-models save
+    // still carries the id `opus` -- the wire value, not the label.
+    modelsMock.mockReset().mockResolvedValue([
+      { model_name: 'auto', description: 'Default' },
+      { model_name: 'opus', display_name: 'Opus 5.5', description: 'For complex work' },
+    ])
+    mount()
+    const trigger = await screen.findByRole('button', { name: 'Selectable Models' })
+    await waitFor(() => expect(trigger).not.toBeDisabled())
+    fireEvent.click(trigger)
+    // The row's accessible name is the native label, not the raw id.
+    const opusRow = await screen.findByRole('checkbox', { name: 'Opus 5.5' })
+    expect(opusRow.closest('label')?.querySelector('[data-multi-select-hint]')?.textContent).toBe('opus')
+    expect(screen.queryByRole('checkbox', { name: 'opus' })).not.toBeInTheDocument()
+    // Toggling it off writes the ID to the hidden set, not the label.
+    fireEvent.click(opusRow.closest('label') as HTMLElement)
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({
+        model_picker_hidden_models_add: ['opus'],
+      }),
+    )
+  })
+
+  it('shows no id hint on a row without a backend name', async () => {
+    modelsMock.mockReset().mockResolvedValue([
+      { model_name: 'auto', description: 'Default' },
+      { model_name: 'claude-sonnet-5', description: 'x' },
+    ])
+    mount()
+    const trigger = await screen.findByRole('button', { name: 'Selectable Models' })
+    await waitFor(() => expect(trigger).not.toBeDisabled())
+    fireEvent.click(trigger)
+    const sonnetRow = await screen.findByRole('checkbox', { name: 'claude-sonnet-5' })
+    expect(sonnetRow.closest('label')?.querySelector('[data-multi-select-hint]')).toBeNull()
+  })
 })

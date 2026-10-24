@@ -802,6 +802,59 @@ class TestModelMatchesPoolDefault:
         pooled.client.set_model.assert_awaited_once_with("global.anthropic.claude-opus-4-8[1m]")
 
     @pytest.mark.asyncio
+    async def test_pool_claude_backend_switches_to_an_advertised_bare_alias(self, monkeypatch):
+        """On Claude Code a bare alias the backend advertised is sent unchanged, so a
+        pooled process on the versioned flagship id compares unequal and is switched
+        to the alias."""
+        from kiro_crew import model_registry
+        from kiro_crew.providers.acp import AcpProvider
+
+        monkeypatch.setattr(
+            model_registry,
+            "advertised_models",
+            lambda provider: ["opus"] if provider == "claude_code" else [],
+        )
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = _make_provider()
+        pooled.__class__ = AcpProvider
+        pooled.client = MagicMock()
+        pooled.client.backend = "claude"
+        pooled.client.set_model = AsyncMock()
+        pooled.client.resumed = False
+        pooled.client._session_id = "fake-sid"
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
+
+        with patch.object(type(mgr), "_resolve_agent_model", return_value="claude-opus-4.8"):
+            await mgr.get_or_create("test-key", agent="kirocrew", model="opus")
+
+        pooled.client.set_model.assert_awaited_once_with("opus")
+
+    @pytest.mark.asyncio
+    async def test_pool_claude_backend_folds_an_unadvertised_bare_alias(self, monkeypatch):
+        """With no advertised bare alias, 'opus' and the pool's versioned flagship id
+        fold to the same registry provider id, so no redundant switch is sent."""
+        from kiro_crew import model_registry
+        from kiro_crew.providers.acp import AcpProvider
+
+        monkeypatch.setattr(model_registry, "advertised_models", lambda provider: [])
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = _make_provider()
+        pooled.__class__ = AcpProvider
+        pooled.client = MagicMock()
+        pooled.client.backend = "claude"
+        pooled.client.set_model = AsyncMock()
+        pooled.client.resumed = False
+        pooled.client._session_id = "fake-sid"
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
+
+        with patch.object(type(mgr), "_resolve_agent_model", return_value="claude-opus-4.8"):
+            await mgr.get_or_create("test-key", agent="kirocrew", model="opus")
+
+        pooled.client.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_pool_claude_backend_skips_redundant_switch_cross_namespace(self):
         """The short-circuit must work ACROSS namespaces: a canonical wire key
         and the pool agent's kiro model slot that resolve to the SAME provider id

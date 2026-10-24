@@ -419,10 +419,11 @@ def _history_cleanup_throttle_closed(_floor_monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolate_advertised_model_cache(_floor_monkeypatch):
-    """Keep one session's advertised model spellings inside its own test."""
+    """Keep one session's advertised model spellings and labels inside its own test."""
     from kiro_crew import model_registry
 
     _floor_monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
+    _floor_monkeypatch.setattr(model_registry, "_ADVERTISED_META", {})
 
 
 @pytest.fixture(autouse=True)

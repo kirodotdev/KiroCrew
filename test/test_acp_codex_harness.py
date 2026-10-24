@@ -1486,6 +1486,28 @@ class TestTheRuntimeSendsCodexNoAgentMode:
         assert METHOD_SET_MODE in plane.methods
 
 
+class TestTheRuntimePersistsTheAdvertisedModelCacheForCodex:
+    @pytest.mark.asyncio
+    async def test_create_session_feeds_and_persists_once(self, monkeypatch):
+        """codex is in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION, so the shared runtime
+        feeds the advertised-model cache and then offloads its persist after
+        session/new; the kiro side of the same gate is pinned in
+        test_acp_runtime_load_session.py."""
+        feed = MagicMock()
+        monkeypatch.setattr(AcpSessionHandle, "_feed_advertised_model_cache", feed)
+        spy = AsyncMock()
+        monkeypatch.setattr(AcpSessionHandle, "_persist_advertised_models_if_changed", spy)
+        rt = _codex_runtime()
+        plane = _ControlPlane(_codex_session_new_response())
+
+        with ExitStack() as stack:
+            plane.install(rt, stack)
+            await rt.create_session(cwd="/w", agent="kirocrew")
+
+        feed.assert_called_once()
+        spy.assert_awaited_once()
+
+
 class TestTheRuntimeArmsCodexPermissionRouting:
     @pytest.mark.asyncio
     async def test_the_mode_write_goes_out_before_the_handle_is_returned(self):

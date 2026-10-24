@@ -114,8 +114,16 @@ class TestModelRegistry:
         assert mr.model_window("qwen3-coder-next") == 256_000
         assert mr.model_window("qwen3-coder-480b") == 256_000
         assert mr.model_window("glm-4.7-flash") == 128_000
-        for m in ("deepseek-3.2", "minimax-m2.5", "minimax-m3", "minimax-m2.7",
-                  "glm-5", "gpt-5.6-terra", "qwen3-coder-next", "glm-4.7-flash"):
+        for m in (
+            "deepseek-3.2",
+            "minimax-m2.5",
+            "minimax-m3",
+            "minimax-m2.7",
+            "glm-5",
+            "gpt-5.6-terra",
+            "qwen3-coder-next",
+            "glm-4.7-flash",
+        ):
             assert mr.has_known_window(m) is True
             assert mr.window_source(m) == "supplementary"
 
@@ -149,7 +157,9 @@ class TestModelRegistry:
         try:
             mr._KIRO_WINDOWS.clear()
             assert mr.model_window("auto") == 200_000  # stale registry literal
-            assert mr.model_window("unlisted-model-zzz") is None  # neither registry nor supplementary
+            assert (
+                mr.model_window("unlisted-model-zzz") is None
+            )  # neither registry nor supplementary
             # refresh does the in-memory update synchronously and returns True
             # when the cache changed (signalling the async caller to persist).
             changed = mr.refresh_kiro_windows(
@@ -176,10 +186,15 @@ class TestModelRegistry:
                 is False
             )
             # The catalog is ground truth: a model absent from it is evicted.
-            assert mr.refresh_kiro_windows([{"model_id": "auto", "context_window_tokens": 1000000}]) is True
+            assert (
+                mr.refresh_kiro_windows([{"model_id": "auto", "context_window_tokens": 1000000}])
+                is True
+            )
             assert mr.model_window("unlisted-model-zzz") is None
             # A snapshot with no usable window never wipes a good cache.
-            assert mr.refresh_kiro_windows([{"model_id": "bad", "context_window_tokens": 0}]) is False
+            assert (
+                mr.refresh_kiro_windows([{"model_id": "bad", "context_window_tokens": 0}]) is False
+            )
             assert mr.model_window("auto") == 1000000
             # persist is a separate step (offloaded to an executor by the caller).
             mr.persist_kiro_windows()
@@ -201,6 +216,48 @@ class TestModelRegistry:
         assert mr.released_at("claude-opus-4.6") == "2026-02-05"
         assert mr.released_at("auto") is None
         assert mr.released_at("nonexistent") is None
+
+    def test_claude_code_bare_family_aliases_pass_through(self, monkeypatch):
+        # A bare family alias the claude backend advertised is sent UNCHANGED so
+        # Claude Code resolves it to its own current model, rather than being
+        # folded onto the registry's fixed versioned id (which goes stale on each
+        # release).
+        monkeypatch.setattr(
+            mr,
+            "_ADVERTISED_MODELS",
+            {"claude_code": ["default", "opus", "fable", "sonnet", "haiku", "claude-opus-4-8"]},
+        )
+        for alias in ("sonnet", "opus", "haiku", "fable"):
+            assert mr.to_provider_id(alias, "claude_code") == alias, alias
+        # The pass-through is claude_code ONLY: the kiro-family path uses
+        # to_acp_id, and to_provider_id on the acp namespace still resolves the
+        # registry alias to kiro's own id (where it has one).
+        assert mr.to_provider_id("opus", "acp") == "claude-opus-4.8"
+        assert mr.to_provider_id("sonnet", "acp") == "claude-sonnet-4.6"
+        # An explicit versioned id is untouched by the pass-through.
+        assert (
+            mr.to_provider_id("claude-opus-4.8", "claude_code")
+            == "global.anthropic.claude-opus-4-8[1m]"
+        )
+
+    def test_claude_code_alias_folds_when_not_advertised(self, monkeypatch):
+        # Cold cache: nothing was advertised, so the alias folds onto the
+        # registry's versioned provider id.
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        assert mr.to_provider_id("opus", "claude_code") == "global.anthropic.claude-opus-4-8[1m]"
+        assert (
+            mr.to_provider_id("sonnet", "claude_code") == "global.anthropic.claude-sonnet-4-6[1m]"
+        )
+
+    def test_claude_code_alias_folds_when_backend_advertises_only_versioned_ids(self, monkeypatch):
+        # A backend that advertises only versioned ids (e.g. a Bedrock deployment)
+        # does not advertise the bare alias, so the registry fold applies.
+        monkeypatch.setattr(
+            mr,
+            "_ADVERTISED_MODELS",
+            {"claude_code": ["global.anthropic.claude-opus-4-8[1m]"]},
+        )
+        assert mr.to_provider_id("opus", "claude_code") == "global.anthropic.claude-opus-4-8[1m]"
 
     def test_kiro_dotted_aliases_resolve(self):
         # AIM-managed agents ship kiro dotted ids; they must map deterministically
@@ -248,8 +305,7 @@ class TestModelRegistry:
     def test_fable_5_canonical_round_trip(self):
         # Fable 5 entry: canonical -> provider id -> canonical.
         assert (
-            mr.to_provider_id("fable-5-1m", "claude_code")
-            == "global.anthropic.claude-fable-5[1m]"
+            mr.to_provider_id("fable-5-1m", "claude_code") == "global.anthropic.claude-fable-5[1m]"
         )
         assert (
             mr.from_provider_id("global.anthropic.claude-fable-5[1m]", "claude_code")
@@ -399,10 +455,10 @@ class TestAcpProviderIds:
         # index still folds them for claude-agent-acp dropdown dedup/downgrade.
         cases = {
             # kiro id            acp canonical    window   cc fold (downgrade)
-            "claude-haiku-4.5":  ("haiku-4.5",    200_000, "sonnet-4.6-1m"),
-            "claude-sonnet-4.5": ("sonnet-4.5",   200_000, "sonnet-4.6-1m"),
-            "claude-sonnet-4":   ("sonnet-4",     200_000, "sonnet-4.6-1m"),
-            "claude-opus-4.6":   ("opus-4.6-1m", 1_000_000, "opus-4.8-1m"),
+            "claude-haiku-4.5": ("haiku-4.5", 200_000, "sonnet-4.6-1m"),
+            "claude-sonnet-4.5": ("sonnet-4.5", 200_000, "sonnet-4.6-1m"),
+            "claude-sonnet-4": ("sonnet-4", 200_000, "sonnet-4.6-1m"),
+            "claude-opus-4.6": ("opus-4.6-1m", 1_000_000, "opus-4.8-1m"),
         }
         for kiro_id, (acp_canon, win, cc_canon) in cases.items():
             assert mr.from_provider_id(kiro_id, "acp") == acp_canon, kiro_id
@@ -604,7 +660,9 @@ class TestAdvertisedModelCache:
         assert too_long not in kept
         assert len(kept) == len(set(kept)) == mr.ADVERTISED_MODELS_MAX_IDS
         # 1 over-long + 2 past the cap; the duplicate "m0" is neither.
-        assert sum("sidecar for acp refused 3 model id(s)" in r.message for r in caplog.records) == 1
+        assert (
+            sum("sidecar for acp refused 3 model id(s)" in r.message for r in caplog.records) == 1
+        )
 
     def test_a_refused_window_row_is_not_readmitted_from_the_sidecar(
         self, monkeypatch, tmp_path, caplog
@@ -668,7 +726,9 @@ class TestAdvertisedModelCache:
         # window is still a kiro id. And a full cache never refuses a NEW
         # catalog id -- the snapshot replaces the cache, so the two stores
         # cannot disagree about whether the newest model exists.
-        monkeypatch.setattr(mr, "_KIRO_WINDOWS", {f"old{i}": 1 for i in range(mr.ADVERTISED_MODELS_MAX_IDS)})
+        monkeypatch.setattr(
+            mr, "_KIRO_WINDOWS", {f"old{i}": 1 for i in range(mr.ADVERTISED_MODELS_MAX_IDS)}
+        )
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
         rows = [
             {"model_id": "new-model", "model_name": "new-model", "context_window_tokens": 272000},
@@ -696,7 +756,10 @@ class TestAdvertisedModelCache:
         assert mr.registered_model_key("claude-opus-4-8") == "opus-4.8"
         assert mr.registered_model_key("openai.gpt-9-nova[high]") is None
         assert mr.same_registered_model("claude-opus-4.8", "claude-opus-4-8") is False
-        assert mr.same_registered_model("global.anthropic.claude-opus-4-8[1m]", "claude-opus-4.8") is True
+        assert (
+            mr.same_registered_model("global.anthropic.claude-opus-4-8[1m]", "claude-opus-4.8")
+            is True
+        )
         # Unknown is not different.
         assert mr.same_registered_model("openai.gpt-9-nova[high]", "claude-opus-4.8") is True
         # A hand-typed case variant is the same registered model, not an unknown

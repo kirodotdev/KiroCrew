@@ -7,7 +7,7 @@ The member-dispatch mount on both paths, ``load_session`` against
 import asyncio
 import json
 import sys
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from acp_runtime_helpers import _fast_no_report_ceiling  # noqa: F401
@@ -25,6 +25,7 @@ from acp_runtime_helpers import (
 from kiro_crew.acp.runtime import AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
@@ -1128,3 +1129,84 @@ async def test_failed_session_init_oauth_does_not_leak_to_reused_id():
             if task is not None and not task.done():
                 task.cancel()
         await _stop_reader(reader_task)
+
+
+@pytest.mark.asyncio
+async def test_kiro_create_session_never_feeds_or_persists_the_advertised_model_cache(
+    monkeypatch,
+):
+    """The kiro path gains no call for an adapter-only feature (harness-parity H13).
+
+    The advertised-model feed and persist are gated at the call site on the
+    backends whose served list is the authority. kiro is not one of them, so
+    creating a kiro session must never reach either, even though session/new
+    carries models.
+    """
+    rt, _, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KIRO
+    feed = MagicMock()
+    monkeypatch.setattr(AcpSessionHandle, "_feed_advertised_model_cache", feed)
+    spy = AsyncMock()
+    monkeypatch.setattr(AcpSessionHandle, "_persist_advertised_models_if_changed", spy)
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_NEW:
+            return {
+                "sessionId": "sid-kiro",
+                "models": {
+                    "availableModels": [{"modelId": "claude-opus-4.8", "name": "Opus"}],
+                    "currentModelId": "claude-opus-4.8",
+                },
+            }
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+    handle = await rt.create_session(cwd="/w", agent="kirocrew")
+
+    assert handle.session_id == "sid-kiro"
+    feed.assert_not_called()
+    spy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_kiro_load_session_never_feeds_or_persists_the_advertised_model_cache(
+    monkeypatch,
+):
+    """The resume path carries the same kiro gate as create (harness-parity H13).
+
+    session/load echoes the model list like session/new does, so the kiro resume
+    must skip both the feed and the persist for the same reason the kiro create
+    does.
+    """
+    rt, _, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KIRO
+    rt._can_load_session = True
+    feed = MagicMock()
+    monkeypatch.setattr(AcpSessionHandle, "_feed_advertised_model_cache", feed)
+    spy = AsyncMock()
+    monkeypatch.setattr(AcpSessionHandle, "_persist_advertised_models_if_changed", spy)
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_LOAD:
+            return {
+                "modes": {"currentModeId": "kirocrew"},
+                "models": {
+                    "availableModels": [{"modelId": "claude-opus-4.8", "name": "Opus"}],
+                    "currentModelId": "claude-opus-4.8",
+                },
+            }
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+    handle = await rt.load_session(
+        "/home/u/.kiro/sessions/cli/sid-123.json",
+        "sid-123",
+        cwd="/work",
+        agent="kirocrew",
+    )
+
+    assert handle.session_id == "sid-123"
+    feed.assert_not_called()
+    spy.assert_not_awaited()

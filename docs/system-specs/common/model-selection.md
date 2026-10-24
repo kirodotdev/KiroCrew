@@ -362,6 +362,12 @@ is accepted. Versioned aliases never qualify: an entry also lists substitution
 aliases (`claude-haiku-4.5` under Sonnet), and an adapter advertising one is
 serving that other model.
 
+On the `claude_code` provider, `to_provider_id` sends a bare family alias (`opus`,
+`sonnet`, `haiku`, `fable`; `_CLAUDE_CODE_PASSTHROUGH_ALIASES`) unchanged only when
+the claude backend advertised that alias, so the adapter resolves its own current
+model rather than the registry's versioned id. With a cold cache, or a backend that
+advertises only versioned ids, the registry fold applies.
+
 Three more sites apply the same rule on the wire, and one on the picker:
 `AcpClient._apply_startup_model`, the shared-runtime cold start in
 `providers/acp_runtime_start.py`, the warm-pool post-claim switch in `session_allocation.py`
@@ -425,12 +431,16 @@ its own once the cache refreshes with a list that carries it.
 - Backends with `resolves_model_from_advertised_list` use their own advertised
   model namespace: their live session's model ids, then their persisted
   namespace cache (`_advertised_cc_models`), so "no session is up" is never read
-  as "nothing advertised". Claude retains its registry display-name
-  reconciliation over that list, and shows the registry unfiltered only when
-  the cache is empty too. Other advertised-selection backends preserve exact
-  wire ids (including Pi provider/model ids) without substituting the Kiro CLI
-  catalog. A cold cache offers `auto` and a scoped configured default until
-  that backend advertises its choices.
+  as "nothing advertised". Claude labels each advertised row with the backend's
+  own name; a row the backend sent without a name of its own shows the
+  registry's display name or, for a bare family alias such as `opus`, its own
+  id. Live and cached rows pass the same admission: an id over 256 characters,
+  or past the 512th, is refused, and a label's name and description are cut to
+  400 characters (`ADVERTISED_LABEL_MAX_CHARS`). Claude shows the registry
+  unfiltered only when the cache is empty too. Other advertised-selection
+  backends preserve exact wire ids (including Pi provider/model ids) without
+  substituting the Kiro CLI catalog. A cold cache offers `auto` and a scoped
+  configured default until that backend advertises its choices.
 - Whether a canonical registry key is a display-only spelling is the backend's
   `model_id_namespace` question, the same field `_wire_model_id` translates
   through: a provider namespace whose registry row carries an id for the key

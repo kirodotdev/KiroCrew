@@ -49,7 +49,11 @@ from kiro_crew.acp.session_handle import (
     advertised_models_from_session,
 )
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
-from kiro_crew.acp.types import METHOD_SESSION_NEW, JsonRpcMessage
+from kiro_crew.acp.types import (
+    ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    METHOD_SESSION_NEW,
+    JsonRpcMessage,
+)
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.config import live
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
@@ -704,6 +708,14 @@ async def _finish_create_session(
 
     # Populate state from session/new response (configOptions, available models)
     handle.store_session_config(resp)
+    # A backend whose served list is the authority on what it accepts feeds
+    # that list into the cross-session advertised-model cache and persists it
+    # off the loop, so the picker keeps it after this session is gone. Gated
+    # HERE rather than inside the methods so the first-class kiro path gains no
+    # call and no failure point in service of an adapter (harness-parity H13).
+    if self.acp_backend in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION:
+        handle._feed_advertised_model_cache()
+        await handle._persist_advertised_models_if_changed()
     # Both halves of that snapshot are now known, which is what makes the
     # served-default check answerable: the model the backend picked for
     # this session can be one the account's partition does not serve.

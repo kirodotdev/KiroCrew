@@ -86,6 +86,12 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_emit_watchdog_metric": ("function", False, "8cf581201a27", "session_handle_watchdog"),
     "_end_human_wait": ("function", False, "b60c5fea256e", "session_handle_watchdog"),
     "_end_stalled_tool": ("function", "agen", "1fcba2664f9e", "session_handle_watchdog"),
+    "_feed_advertised_model_cache": (
+        "function",
+        False,
+        "b60c5fea256e",
+        "session_handle_model_selection",
+    ),
     "_handle_kas_session_info": ("function", False, "f3c17ef22460", "session_handle_kas"),
     "_handle_kas_subagent": ("function", False, "5f796c64544c", "session_handle_native_children"),
     "_handle_kas_subagent_chunk": (
@@ -132,6 +138,12 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_note_steering_denial": ("function", False, "b60c5fea256e", "session_handle_steering"),
     "_offer_mcp_sign_in": ("function", False, "b60c5fea256e", "session_handle_mcp"),
     "_owns_mcp_frame": ("function", False, "50405edf7b6a", "session_handle_mcp"),
+    "_persist_advertised_models_if_changed": (
+        "function",
+        True,
+        "b60c5fea256e",
+        "session_handle_model_selection",
+    ),
     "_push_model_config_option": (
         "function",
         True,

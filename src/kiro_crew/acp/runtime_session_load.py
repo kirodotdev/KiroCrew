@@ -44,7 +44,12 @@ from kiro_crew.acp.session_mcp import (
     session_mcp_server_is_disabled,
     settings_server_names,
 )
-from kiro_crew.acp.types import ACP_BACKEND_KAS, METHOD_SESSION_LOAD, JsonRpcMessage
+from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
+    ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    METHOD_SESSION_LOAD,
+    JsonRpcMessage,
+)
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.providers.mirrors.registry import has_mirror
@@ -377,6 +382,12 @@ async def load_session(
     if self._mirrored_spec_check_needed(mirrored_snapshot):
         await self._require_unchanged_mirrored_spec(resume_sid, mirrored_snapshot)
     handle.store_session_config(resp)
+    # Feed and persist the advertised-model cache from the resumed session's
+    # capture, same as the create path, and gated the same way so the kiro
+    # path gains no call (harness-parity H13).
+    if self.acp_backend in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION:
+        handle._feed_advertised_model_cache()
+        await handle._persist_advertised_models_if_changed()
     # session/load echoes ``currentModelId`` exactly like session/new, and a
     # session persisted before the account's served list changed can come
     # back on a default the account does not serve — so the resumed session gets
