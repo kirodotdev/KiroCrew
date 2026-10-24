@@ -2458,8 +2458,9 @@ finding**, and silence is the correct output. The verdict is PASS or BLOCK and o
 kind of item exists, **BLOCKING**: a defect that passes that bar, carrying a
 `Trigger:` line, an `Outcome:` line and an `Anchor:` (a rule id, one of the three
 `residual/` classes, or `defect`). A `[BLOCK-MERGE]` marker with no complete item
-is dropped by `.github/scripts/block-substantiation.sh` and the review reads as
-PASS. The budget in
+is dropped by the block-substantiation helper and the review reads as PASS. That
+helper is inline in every lane workflow, not a `.github/scripts/` file, and
+`test/test_block_substantiation.py` pins the copies byte-identical. The budget in
 [`gpt-review-core.md`](../../.github/review-prompts/gpt-review-core.md)
 asks for ALL defects that pass the BLOCK BAR in one review, never staged across
 rounds, and for candidates past five to be merged by shared root cause rather
