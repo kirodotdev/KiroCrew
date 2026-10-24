@@ -253,6 +253,19 @@ describe('messageRenderers — the assistant footer rule', () => {
     expect(screen.getByTestId('assistant').getAttribute('data-footer')).toBe('true')
   })
 
+  it('shows it once an auto-nudge cycle opens the next turn', () => {
+    const messages = [assistant, msg({ role: 'nudge', content: 'zzq-cycle' }), msg({ role: 'assistant', content: 'zzq-cycle-reply' })]
+    renderRow(assistant, { messages, running: true })
+    expect(screen.getByTestId('assistant').getAttribute('data-footer')).toBe('true')
+  })
+
+  it('keeps it on a reply carrying turn stats whatever follows', () => {
+    const stamped = msg({ role: 'assistant', content: 'zzq-partial', meta: { turn_stats: { elapsed_ms: 900 } } })
+    const messages = [stamped, msg({ role: 'error', content: 'zzq-retrying' }), msg({ role: 'assistant', content: 'zzq-recovered' })]
+    renderRow(stamped, { messages, running: true })
+    expect(screen.getByTestId('assistant').getAttribute('data-footer')).toBe('true')
+  })
+
   it('never shows it while the reply is still streaming', () => {
     const streaming = msg({ role: 'streaming', content: 'zzq-partial' })
     renderRow(streaming, { messages: [streaming], running: false })
