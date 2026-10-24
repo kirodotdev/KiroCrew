@@ -256,8 +256,7 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
     </button>
     {ctxPopoverOpen && (
       <div className="absolute bottom-full right-0 mb-1 z-[60] w-52 rounded-xl border border-border bg-bg-elevated shadow-xl p-3 animate-slide-up">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-semibold text-text">{i18nT('components.chatInput.context_window')}</span>
+                <div className="flex items-center justify-end mb-2">
                   <span className="text-[12px] font-mono font-bold" style={{ color: pctColor }}>{fmtPercent(contextPctClamped(contextPct) / 100)}</span>
                 </div>
                 <div className="flex flex-col gap-1 text-[11px] font-mono">

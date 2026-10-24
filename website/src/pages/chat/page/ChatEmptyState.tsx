@@ -55,7 +55,7 @@ export default function ChatEmptyState({
   }
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-4 px-8">
-      <EmptyState icon={<MessageSquare className="lucide-inline" />} title={i18nT('pages.chatPage.what_can_i_do_for_you')} subtitle={i18nT('pages.chatPage.start_a_new_chat_to_begin')} />
+      <EmptyState icon={<MessageSquare className="lucide-inline" />} title={i18nT('pages.chatPage.what_can_i_do_for_you')} />
       <Btn
         primary
         disabled={newSlotMutation.isPending}

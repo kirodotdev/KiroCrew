@@ -181,7 +181,6 @@ export function collapseMenuRowElement(onCollapse: () => void) {
       type="button"
       data-testid="composer-collapse-row"
       onClick={onCollapse}
-      title={i18nT('components.chatInput.collapse_composer')}
       className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
     >
       <ChevronsDownUp size={14} className="w-4 shrink-0 text-muted lucide-inline" />

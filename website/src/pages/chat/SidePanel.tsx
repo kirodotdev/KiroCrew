@@ -849,6 +849,7 @@ export default function SidePanel({
                   : item.kind === 'logs' && toolLog.length > 0
                     ? `${toolLog.length} calls`
                     : null
+                const descKey = NEW_MENU_DESC_KEY[item.kind]
                 return (
                   <button
                     key={item.kind}
@@ -862,7 +863,9 @@ export default function SidePanel({
                         <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-accent-subtle text-accent font-medium shrink-0">{badge}</span>
                       )}
                     </div>
-                    <div className="text-[11px] text-muted leading-snug">{i18nT(NEW_MENU_DESC_KEY[item.kind])}</div>
+                    {descKey && (
+                      <div className="text-[11px] text-muted leading-snug">{i18nT(descKey)}</div>
+                    )}
                   </button>
                 )
               })}

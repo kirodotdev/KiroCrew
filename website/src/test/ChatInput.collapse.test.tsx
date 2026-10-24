@@ -58,6 +58,10 @@ const openOverflow = () => fireEvent.keyDown(
   screen.getByTestId('composer-more-trigger'), { key: 'Enter' },
 )
 const collapse = () => { openPlusMenu(); fireEvent.click(screen.getByTestId('composer-collapse-row')) }
+// The Sketch ROW inside the overflow menu (the dedicated pencil is reached by
+// its title, "Sketch"). The row carries no title; its accessible name is its
+// visible label followed by the one-line description.
+const sketchRow = () => screen.getByRole('menuitem', { name: /^Sketch\b/ })
 const composer = () => screen.queryByLabelText('Message input')
 
 /** Owns `value` the way ChatPage does, so an unmount of ChatInput cannot be what
@@ -305,7 +309,7 @@ describe('composer collapse', () => {
     // The open is deferred one macrotask past the menu's close commit (see the
     // component: two focus traps otherwise fight), so the wait is the production
     // behaviour rather than a test workaround.
-    fireEvent.click(screen.getByTitle('Sketch'))
+    fireEvent.click(sketchRow())
     await waitFor(() => expect(screen.getByTestId('sketch-dialog')).toBeInTheDocument())
   })
 
@@ -398,7 +402,7 @@ describe('composer collapse', () => {
     flags.touch = true
     renderWithProviders(<ChatInput {...base} uploading />)
     openOverflow()
-    const item = screen.getByTitle('Sketch')
+    const item = sketchRow()
     expect(item).toHaveAttribute('data-disabled')
     // ... and the collapse stays reachable, because disabling the whole trigger
     // mid-upload would take the collapse away with it.

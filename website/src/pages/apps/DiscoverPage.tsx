@@ -19,7 +19,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { AlertTriangle, CheckCircle2, RefreshCw, ShoppingBag, X } from 'lucide-react'
-import { EmptyState, IconButton, PageHeader, SearchInput } from '../../components/ui'
+import { Btn, EmptyState, IconButton, PageHeader, SearchInput } from '../../components/ui'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import SimpleSelect from '../../components/SimpleSelect'
 import { Tabs, TabsContent, TabsCount, TabsList, TabsTrigger } from '../../components/ui/tabs'
@@ -530,7 +530,7 @@ function DiscoverPageBody() {
           <EmptyState
             icon={<ShoppingBag size={36} />}
             title={i18nT('pages.appsPage.no_apps_available')}
-            subtitle={i18nT('pages.appsPage.add_an_app_source_gear_icon_above_or_install_fro')}
+            action={<Btn onClick={() => setSourcesOpen(true)}>{i18nT('components.appstore.categoryRail.add_source')}</Btn>}
           />
         ) : (
           <>

@@ -549,7 +549,6 @@ function AddAgentForm({ onAdd, onCancel }: { onAdd: (role: string, task: string,
   return (
     <div className="p-2 space-y-2 border-t border-border">
       <div>
-        <span className="text-[11px] text-muted font-medium mb-1 block">{i18nT('pages.channelPage.agent')}</span>
         <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent || defaultAgent} onChange={setAgent} rosterFailure={rosterFailure} />
       </div>
       <Input value={role} onChange={e => setRole(e.target.value)} placeholder={i18nT('pages.channelPage.role_e_g_logs_agent')} aria-label={i18nT('pages.channelPage.role')} autoFocus
@@ -829,7 +828,7 @@ export default function ChannelPage() {
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {/* An empty list is only "no channels yet" when the read succeeded:
               under a load failure the onboarding copy would claim zero channels. */}
-          {channels.length === 0 && !listFailed && <EmptyState icon={<MessageSquare className="lucide-inline" />} title={i18nT('pages.channelPage.no_channels_yet')} subtitle={i18nT('pages.channelPage.click_new_to_create_one')} />}
+          {channels.length === 0 && !listFailed && <EmptyState icon={<MessageSquare className="lucide-inline" />} title={i18nT('pages.channelPage.no_channels_yet')} />}
           {channels.map(ch => (
             <ChannelListItem key={ch.id} ch={ch} active={ch.id === activeId} onClick={() => { setActiveId(ch.id); openDetail() }} />
           ))}

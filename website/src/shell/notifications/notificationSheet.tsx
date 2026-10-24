@@ -408,7 +408,6 @@ export function NotificationSheet({ sheet }: { sheet: ReturnType<typeof useNotif
                 gate={proceed => leave(proceed, '/chat')}
                 onHandoff={closePanel}
               />
-              <div className="text-[12px] text-muted">{i18nT('app.notifications_ask_agent_help')}</div>
               <button className="text-[12px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer" onClick={() => leave(() => { closePanel(); navigate('/notifications') }, '/notifications')}>{i18nT('app.open_the_full_inbox')}</button>
             </div>
           )}

@@ -514,11 +514,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
             <ErrorNotice variant="inline" className="mt-2" message={i18nT('pages.settings.aboutPanel.auto_download_unreadable')}
               askAgent={!required} onHandoff={required ? undefined : () => setHandedOffVersion(candidate.version)}
               testId="update-found-preference-error" />
-          ) : (
-            <p className="mt-2 text-[12px] text-muted">
-              {i18nT('components.updateFoundModal.nothing_downloads_until_you_choose_to')}
-            </p>
-          ))}
+          ) : null)}
           {candidate.source === 'gateway' && candidate.affordance === 'arm' && (
             <div className="mt-2">
               <InAppUpdateFlow

@@ -81,5 +81,5 @@ export default function AppPage() {
   // is non-null, so cast the nullable state through — behavior is unchanged.
   // Routed pages use the same dashboard-page identity as the core API client,
   // not whichever chat happens to be selected elsewhere in the dashboard.
-  return <AppHost app={app as AppData} sessionKey="dashboard:ui" />
+  return <AppHost app={app as AppData} sessionKey="dashboard:ui" requestedName={name} />
 }

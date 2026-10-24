@@ -167,35 +167,6 @@ describe('SessionTitleControl', () => {
   it.each([
     ['split-view pane header (compact)', true],
     ['single-session header', false],
-  ])('%s: the open editor says which keys save and cancel, and is described by it (#15808)', (_host, compact) => {
-    renderControl({ compact })
-    // The read-only title shows no key legend.
-    expect(screen.queryByText('Enter saves · Esc cancels')).toBeNull()
-    const input = openEditor()
-    const hint = screen.getByText('Enter saves · Esc cancels')
-    expect(hint.id).not.toBe('')
-    expect(input.getAttribute('aria-describedby')).toBe(hint.id)
-    expect(input).toHaveAccessibleDescription('Enter saves · Esc cancels')
-    // Beside the box, in the same row, never squeezing the box's own padding.
-    expect(hint.parentElement).toBe(input.parentElement)
-    // Touch-only devices have no Escape key, so the legend is hidden there.
-    expect(classes(hint)).toContain('[@media(hover:none)]:hidden')
-    // In a narrow pane the hint gives way instead of squeezing the box: the
-    // row it sits in is the container it hides against, and above that width
-    // it truncates.
-    // A pane's row fills the pane and is the container; the main header sizes
-    // to its content, so a container there would collapse it, and the hint
-    // keys off the viewport instead.
-    expect(classes(input.parentElement!).includes('@container')).toBe(compact)
-    expect(classes(hint)).toEqual(expect.arrayContaining(['min-w-0', 'truncate', compact ? '@max-[420px]:hidden' : 'md:block']))
-    expect(classes(hint)).not.toContain('shrink-0')
-    act(() => { fireEvent.keyDown(input, { key: 'Escape' }) })
-    expect(screen.queryByText('Enter saves · Esc cancels')).toBeNull()
-  })
-
-  it.each([
-    ['split-view pane header (compact)', true],
-    ['single-session header', false],
   ])('%s: the editor keeps the read-only title\'s type and box, so the header does not move when editing starts or ends', (_host, compact) => {
     renderControl({ compact })
     const pill = screen.getByRole('button', { name: RENAME }).parentElement!

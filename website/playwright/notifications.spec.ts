@@ -28,10 +28,9 @@ test.describe('Notifications Page', () => {
 
   test('shows empty state message when no notifications', async ({ page }) => {
     await expect(page.getByTestId('notification-feed-empty-title')).toHaveText('No notifications')
-    // The subtitle distinguishes WHICH empty state rendered (search miss vs
-    // genuinely empty), so the text is load-bearing -- but matched loosely and
-    // scoped to the element rather than searched for across the page.
-    await expect(page.getByTestId('notification-feed-empty-subtitle')).toHaveText(/activity will appear here/i)
+    // The subtitle distinguishes WHICH empty state rendered: a search miss
+    // carries one, a genuinely empty feed carries none.
+    await expect(page.getByTestId('notification-feed-empty-subtitle')).toHaveCount(0)
   })
 
   test('renders no per-kind filter controls', async ({ page }) => {
@@ -67,9 +66,9 @@ test.describe('Notifications Page', () => {
     await searchInput.fill('nonexistent')
     await expect(page.getByTestId('notification-feed-empty-subtitle')).toHaveText(/try a different search/i)
 
-    // Clear the search -- empty state should revert
+    // Clear the search -- empty state should revert to the subtitle-less one
     await searchInput.fill('')
-    await expect(page.getByTestId('notification-feed-empty-subtitle')).toHaveText(/activity will appear here/i)
+    await expect(page.getByTestId('notification-feed-empty-subtitle')).toHaveCount(0)
   })
 
   // /api/notifications/clear is global: it deletes EVERY notification, not just

@@ -465,7 +465,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
       <div ref={listRef} onKeyDown={stepSelectionWithArrowKeys} data-testid="notification-feed-list" className={`flex-1 overflow-y-auto ${mac ? 'px-4 -mx-4 pb-2' : 'scroll-shadow'}`}>
         {showsCrewmate && !detailReportsRoster && <CrewmateRosterError className="mb-2 px-1" />}
         {filtered.length === 0 ? (
-          <EmptyState testId="notification-feed-empty" icon={<Bell className="lucide-inline" />} title={i18nT('components.notifications.notificationFeed.no_notifications')} subtitle={filter ? i18nT('components.notifications.notificationFeed.try_a_different_search') : i18nT('components.notifications.notificationFeed.activity_will_appear_here')} />
+          <EmptyState testId="notification-feed-empty" icon={<Bell className="lucide-inline" />} title={i18nT('components.notifications.notificationFeed.no_notifications')} subtitle={filter ? i18nT('components.notifications.notificationFeed.try_a_different_search') : undefined} />
         ) : (
           Array.from(stackedGroups.entries()).map(([group, rows]) => {
             // A day's clear skips every approval: reading one does not resolve

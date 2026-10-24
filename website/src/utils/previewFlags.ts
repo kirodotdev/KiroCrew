@@ -74,17 +74,13 @@ export const PREVIEW_ARTIFACT_DEPLOY = `${PREVIEW_FLAG_PREFIX}artifact-deploy`
 /**
  * Crew Members: the Crew Members page (`/members`) and its rail item.
  *
- * This flag used to hold a second door too — the "New Crew Mode chat" entry in
- * the sidebar's create menu. Crew Mode retired in favour of the Members page,
- * and that menu entry is now "Crewmates": rendered whatever this flag says,
- * it opens `/members` when the flag is on and, when off, the Settings card that
- * turns it on (`ChatSidebar.openCrewMembers`). The flag therefore gates only the
- * page and where the entry lands, never whether the entry exists — a user who
- * has not opted in still finds the door and is walked to the switch.
+ * The rail item is the page's door; the sidebar's create menu carries no Mates
+ * entry, so a user who has not opted in reaches the page by turning this card on
+ * in Settings > Developer > Feature Previews.
  *
- * Gating the INGRESS only. Turning the flag off hides the rail item and reroutes
- * the menu entry; it does not orphan existing work — it stops advertising the
- * page to someone who has not opted in.
+ * Gating the INGRESS only. Turning the flag off hides the rail item; it does not
+ * orphan existing work — it stops advertising the page to someone who has not
+ * opted in.
  */
 export const PREVIEW_CREW = `${PREVIEW_FLAG_PREFIX}crew`
 

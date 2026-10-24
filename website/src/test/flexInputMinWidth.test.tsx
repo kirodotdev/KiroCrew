@@ -73,7 +73,7 @@ describe('flex-1 inputs shrink instead of clipping trailing controls (#3789)', (
       json: async () => ({ archives: [] }),
     })) as unknown as typeof fetch)
     renderWithClient(<SessionArchive />)
-    const input = await screen.findByLabelText('Fuzzy filter (substring match)')
+    const input = await screen.findByLabelText('Filter archives…')
     expect(input.className).toContain('flex-1')
     expect(input.className).toContain('min-w-0')
   })

@@ -507,8 +507,6 @@ export interface SidebarScope {
   refuseCreateOffline: ReturnType<typeof useFolderChatCreate>['refuseCreateOffline']
 
   // From `useSessionCreate`
-  crewPreview: ReturnType<typeof useSessionCreate>['crewPreview']
-  openCrewMembers: ReturnType<typeof useSessionCreate>['openCrewMembers']
   remoteCrewChatPreview: ReturnType<typeof useSessionCreate>['remoteCrewChatPreview']
   createChatMutation: ReturnType<typeof useSessionCreate>['createChatMutation']
   createRemoteChatMutation: ReturnType<typeof useSessionCreate>['createRemoteChatMutation']

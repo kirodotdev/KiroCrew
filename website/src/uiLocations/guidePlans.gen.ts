@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:380172f6b61dbdcd6235a0cc02058ca796dfd7a9b7e6b18f0eba078db304d001"
+export const GUIDE_BUILD_DIGEST = "sha256:843d87650280081db1e886b0625cf2cb48d2cfa8e37d06969a4bf4a590e093d2"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -1083,7 +1083,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
   },
   "composer.add-menu.reference-file": {
     "version": 2,
-    "label_key": "components.chatInput.file",
+    "label_key": "components.chatInput.reference_a_file",
     "placements": [
       {
         "id": "desktop",
@@ -1128,7 +1128,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
           {
             "id": "desktop:composer.add-menu.reference-file",
             "location": "composer.add-menu.reference-file",
-            "label_key": "components.chatInput.file"
+            "label_key": "components.chatInput.reference_a_file"
           }
         ]
       }
@@ -1189,7 +1189,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
   },
   "composer.add-menu.skill": {
     "version": 2,
-    "label_key": "components.chatInput.skill",
+    "label_key": "components.chatInput.use_a_skill",
     "placements": [
       {
         "id": "desktop",
@@ -1234,7 +1234,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
           {
             "id": "desktop:composer.add-menu.skill",
             "location": "composer.add-menu.skill",
-            "label_key": "components.chatInput.skill"
+            "label_key": "components.chatInput.use_a_skill"
           }
         ]
       }

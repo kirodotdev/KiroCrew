@@ -421,9 +421,8 @@ access token.
   kiro-cli login, because the card sits under a switch that also lists Kiro
   CLI. It is deliberately NOT on Settings > Overview and not indexed into
   Settings search: a provider chooser on the landing page read as a required
-  step to every user, first-run installs included. Overview carries only a
-  one-line signpost to the card (`KiroSignInMovedPointer`), rendered while
-  `agent.acp_backend` is `kas`, for the users who read token expiry there. The
+  step to every user, first-run installs included, and Overview carries no
+  signpost to it. The
   switch and card moved from the Developer page (whose sidebar entry is behind
   Developer Mode) to Settings once first-run setup began offering agents other
   than Kiro CLI, so a user who set up with one of those can switch agents later

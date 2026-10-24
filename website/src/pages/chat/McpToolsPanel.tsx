@@ -133,11 +133,6 @@ export default function McpToolsPanel({
       <div className="text-[11px] text-muted mb-2 leading-snug">
         {toolSearchOn ? i18nT('pages.chatPage.tool_search_deferred_hint') : i18nT('pages.chatPage.tool_search_full_hint')}
       </div>
-      {!loading && servers.length > 0 && hasSessionReport && (
-        <div className="text-[10px] text-muted mb-2 leading-snug">
-          {i18nT('pages.chatPage.mcp_session_source_note')}
-        </div>
-      )}
       {!loading && servers.length > 0 && (
         <div className="flex items-center gap-2.5 flex-wrap text-[10px] text-muted mb-2">
           <span className="inline-flex items-center gap-1">

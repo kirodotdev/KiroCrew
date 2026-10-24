@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { EyeOff, Loader, Pen, Pin, Sparkles, Undo2, VenetianMask } from 'lucide-react'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import useHeldWindow from '../../hooks/useHeldWindow'
@@ -496,7 +496,7 @@ export default function SessionTitleControl({
  * from the title the editor opened on and dies with it, so no stale draft can
  * survive a close and commit against a title that changed in the meantime.
  */
-function TitleEditor({ initial, className, compact, onCommit, onClose }: {
+function TitleEditor({ initial, className, onCommit, onClose }: {
   initial: string
   className: string
   /** The pane header's variant: decides when the key hint steps aside. */
@@ -535,12 +535,10 @@ function TitleEditor({ initial, className, compact, onCommit, onClose }: {
   // inline-size container would collapse to nothing, so there the hint shows
   // only from `md` up; below it the narrow-window header takes over. Above
   // either threshold it truncates and shrinks faster than the box.
-  const hintId = useId()
   return (
     <>
     <Input
       className={className}
-      aria-describedby={hintId}
       size={Math.min(Math.max(draft.length + 2, 6), 80)}
       autoFocus
       maxLength={TITLE_MAX_LENGTH}
@@ -587,9 +585,6 @@ function TitleEditor({ initial, className, compact, onCommit, onClose }: {
         if (e.key === 'Escape') { ime.reset(); cancelRef.current = true; onClose('escape') }
       }}
     />
-    <span id={hintId} className={`ml-1 min-w-0 shrink-[4] truncate text-[11px] leading-none text-muted ${compact ? '@max-[420px]:hidden' : 'hidden md:block'} [@media(hover:none)]:hidden`}>
-      {i18nT('pages.chatPage.rename_title_hint')}
-    </span>
     </>
   )
 }
