@@ -1359,15 +1359,28 @@ made; no gate reads it back. Two consumers:
   way the frames are: each entry lands on `subagent_event_slot(parent)`, and
   entries sharing a tab sum, so a cron tab (`cron-<job>`) reports the runs that
   publish under `cron:<job>:<run>` or `cron:<job>:<agent>`, not its linked
-  `cron:<job>` key alone. The gateway schedules its debounced slots push on
-  `subagent_queued` as it does on spawn/done. The dashboard applies the field on
-  every `slots` push (`reconcileSubagentQueuedFromSlots`, from
-  `hooks/websocket/slotList.ts`) to every row in the list, ahead of the
-  identical-frame skip (a push equal to the previous one still corrects a count
-  a frame moved in between), so a client holding a stale count — on screen or a
-  background session — is corrected by the next push. A row without the field (a
-  `slot_patch`, an older gateway) leaves its count alone, and the wait label is
-  kept while the count is non-zero. Only the pushed frame reconciles, never the
+  `cron:<job>` key alone. On `subagent_queued` as on spawn/done, the gateway
+  schedules its debounced sub-agent push, `DashboardState.push_subagent_patch`:
+  each lifecycle flush re-states `subagents_running`/`subagents_queued` for every
+  live slot not under construction in ONE `slot_patch` frame to patch-capable
+  tabs. It recomputes the counts the SAME way `serialize_slots` does, without a
+  diff cache. The flush runs only on lifecycle events, not idle ticks, so an idle
+  fleet costs no frame. Repeated counts are idempotent and self-healing: completion
+  corrects a tab whose connect snapshot caught an intermediate running state,
+  even when the counts match those sent before that tab connected. Legacy/SSE
+  consumers get the full list through `push_slots_update(legacy_only=True)` on
+  every lifecycle flush; if a full SSE queue dropped a list, the next flush
+  requests it again rather than treating the attempted broadcast as delivery.
+  No full list is serialized when there is no legacy audience. The dashboard
+  applies the field on every
+  `slots` push AND on a `slot_patch` row that carries it
+  (`reconcileSubagentQueuedFromSlots`, from `hooks/websocket/slotList.ts`) to every
+  row, ahead of the identical-frame skip (a push equal to the previous one still
+  corrects a count a frame moved in between), so a client holding a stale count —
+  on screen or a background session — is corrected by the next push or patch. A row
+  without the field (a metadata `slot_patch` for a pin/rename/folder/lineage, an
+  older gateway) leaves its count alone, and the wait label is kept while the count
+  is non-zero. Only the pushed frame or patch reconciles, never the
   `fetchSlots` GET: the push is ordered with the `subagent_queued` frames on the
   same socket, and a GET answer can land after a newer frame.
   **A queued child is never Working.** The board's Working lane and the row's

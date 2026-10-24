@@ -37,6 +37,7 @@ from kiro_crew.dashboard.state_parts.sidebar_stores import _safe_folder_tree
 from kiro_crew.dashboard.state_parts.slots_frame import (
     _SLOTS_BROADCAST_INTERVAL_S,
     _attach_slot_parents,
+    _published_queued_by_slot,
     _slots_broadcast_interval_for,
     _slots_serialization_note,
     _slots_ws_frame,
@@ -51,8 +52,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.dashboard.state")
 
 
-#: Fields whose dashboard-user projection is identical for every slot-patch
-#: audience. Per-audience fields such as ``source_links`` require a full frame.
+#: Fields a ``push_slot_patch`` row may carry. Each reads the same in a one-row
+#: patch as in the full frame because its dashboard-user projection is identical
+#: for every audience; per-audience fields such as ``source_links`` require a
+#: full frame. The sub-agent counts (``subagents_running`` / ``subagents_queued``)
+#: are deliberately NOT here: they are derived from the sub-agent manager rather
+#: than the slot row, so ``push_subagent_patch`` re-states them on lifecycle flushes.
 _SLOT_PATCH_FIELDS = frozenset({"pinned", "mutes_opened", "muted", "title", "folder_id"})
 
 
@@ -586,9 +591,10 @@ def push_slot_patch(self: DashboardState, key: str, fields: Iterable[str]) -> No
     The values come from the dashboard-user projection of the slot, so a
     patched field reads exactly as it would in the full frame (the title is
     redacted the same way). Only fields in :data:`_SLOT_PATCH_FIELDS` are
-    accepted because ``source_links`` and other per-audience fields require
-    a full frame. A slot that is gone or still under construction falls back
-    to an ordinary full push.
+    accepted because ``source_links`` and other per-audience fields require a
+    full frame, and the sub-agent counts are derived off the slot row
+    (``push_subagent_patch`` owns those). A slot that is gone or still under
+    construction falls back to an ordinary full push.
     """
     field_names = tuple(fields)
     unsupported = sorted(set(field_names) - _SLOT_PATCH_FIELDS)
@@ -649,6 +655,38 @@ def push_lineage_patch(self: DashboardState) -> None:
         self.push_slots_update(legacy_only=True)
     if self._has_slot_patch_clients():
         self._send_slot_patch({"slots": changed})
+
+
+def push_subagent_patch(self: DashboardState) -> None:
+    """Re-state every live slot's sub-agent counts in one ``slot_patch`` frame.
+
+    The debounced lifecycle flush is the only caller; idle ticks do not call
+    this method. Counts are derived exactly as in ``serialize_slots``: running
+    agents by effective session and published queued depths by slot.
+
+    Every flush sends all live rows, even when the counts have not moved.
+    Idempotent re-statements correct intermediate per-client snapshots without
+    assuming any earlier broadcast reached every tab. Legacy consumers receive
+    the full list on every flush, so a dropped SSE list is retried on the next
+    lifecycle event rather than remembered as delivered.
+    """
+    # circular import: chat_utils imports this module at load time.
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    subs = getattr(self, "subagents", None)
+    under_construction = getattr(self, "_slots_under_construction", None) or ()
+    queued_by_slot = _published_queued_by_slot(subs)
+    rows: list[dict[str, Any]] = []
+    for s in self._slots.values():
+        if s.key in under_construction:
+            continue
+        running = bool(subs and subs.running_agents_for(effective_session_key(s)))
+        queued = queued_by_slot.get(s.key, 0)
+        rows.append({"key": s.key, "subagents_running": running, "subagents_queued": queued})
+    if self._has_legacy_slots_audience():
+        self.push_slots_update(legacy_only=True)
+    if self._has_slot_patch_clients():
+        self._send_slot_patch({"slots": rows})
 
 
 def push_slot_removed(self: DashboardState, key: str) -> None:

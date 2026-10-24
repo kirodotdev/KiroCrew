@@ -74,10 +74,11 @@ class TestInitSubagents:
     @pytest.mark.asyncio
     async def test_subagent_spawn_and_done_push_slots_update_debounced(self):
         """subagents_running flips at spawn/done — the on_event handler schedules a
-        debounced push_slots_update so slots-stream consumers (composer busy
-        affordance, Board working lane) stay live. Multiple events inside the
-        debounce window coalesce into one push. Covers the reaper too, since
-        _force_reap fires subagent_done through the same on_event path."""
+        debounced push_subagent_patch so slots-stream consumers (composer busy
+        affordance, Board working lane) stay live without re-broadcasting the whole
+        slot list. Multiple events inside the debounce window coalesce into one push.
+        Covers the reaper too, since _force_reap fires subagent_done through the same
+        on_event path."""
         from kiro_crew.subagent import SubagentInfo
 
         orch = _make_orchestrator()
@@ -94,11 +95,15 @@ class TestInitSubagents:
             "subagent_spawn", SubagentInfo(id="a2", task="t", parent_session_key="dashboard:s1"), {}
         )
         await on_event("subagent_done", info, {"elapsed": 1.0})
-        assert orch.dashboard_state.push_slots_update.call_count == 0  # debounced, not yet flushed
+        assert (
+            orch.dashboard_state.push_subagent_patch.call_count == 0
+        )  # debounced, not yet flushed
         # flake-ok: pre-existing sleep past the 0.2 s debounce window, moved verbatim; tracked for a de-flake pass
         # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing debounce barrier, moved verbatim; tracked for a de-flake pass
         await asyncio.sleep(0.3)
-        assert orch.dashboard_state.push_slots_update.call_count == 1
+        assert orch.dashboard_state.push_subagent_patch.call_count == 1
+        # The sub-agent path sends a one-row patch, never the whole slot list.
+        assert orch.dashboard_state.push_slots_update.call_count == 0
 
         # A later lifecycle event schedules a fresh push.
         await on_event(
@@ -109,13 +114,14 @@ class TestInitSubagents:
         # flake-ok: pre-existing sleep past the 0.2 s debounce window, moved verbatim; tracked for a de-flake pass
         # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing debounce barrier, moved verbatim; tracked for a de-flake pass
         await asyncio.sleep(0.3)
-        assert orch.dashboard_state.push_slots_update.call_count == 2
+        assert orch.dashboard_state.push_subagent_patch.call_count == 2
+        assert orch.dashboard_state.push_slots_update.call_count == 0
 
     @pytest.mark.asyncio
     async def test_subagent_queued_pushes_slots_debounced(self):
         """A queued-depth frame changes slots[].subagents_queued, so it schedules
-        the same debounced push: the next slots frame reconciles a client that
-        missed the depth frame itself, including one not showing that session."""
+        the same debounced push_subagent_patch: the next patch reconciles a client
+        that missed the depth frame itself, without a whole-list rebroadcast."""
         from kiro_crew.subagent import SubagentInfo
 
         orch = _make_orchestrator()
@@ -128,11 +134,12 @@ class TestInitSubagents:
         info = SubagentInfo(id="_queue", task="", parent_session_key="dashboard:s1")
         await on_event("subagent_queued", info, {"queued": 1})
         await on_event("subagent_queued", info, {"queued": 0})
-        assert orch.dashboard_state.push_slots_update.call_count == 0  # debounced
+        assert orch.dashboard_state.push_subagent_patch.call_count == 0  # debounced
         # flake-ok: pre-existing sleep past the 0.2 s debounce window, moved verbatim; tracked for a de-flake pass
         # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing debounce barrier, moved verbatim; tracked for a de-flake pass
         await asyncio.sleep(0.3)
-        assert orch.dashboard_state.push_slots_update.call_count == 1
+        assert orch.dashboard_state.push_subagent_patch.call_count == 1
+        assert orch.dashboard_state.push_slots_update.call_count == 0
 
     @pytest.mark.asyncio
     async def test_queued_frame_carries_its_tabs_sum_across_parents(self):

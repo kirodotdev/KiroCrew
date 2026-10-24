@@ -408,12 +408,13 @@ export const subagentReducers = {
     if (reason) state.subagentQueuedReason[key] = reason
     else delete state.subagentQueuedReason[key]
   },
-  /** Reconcile the queued counts with a `slots` push. Each row carries the
-   *  depth the gateway last published for its session (`subagents_queued`), so
-   *  a count a missed or misapplied `subagent_queued` frame left behind is
-   *  corrected by the next push, for every slot in the list and not only the
-   *  one on screen. A row without the field (a `slot_patch`, an older gateway)
-   *  leaves its count alone. The wait label is kept while rows still wait: the
+  /** Reconcile the queued counts with a `slots` push or a `slot_patch`. Each
+   *  full-list row, and each sub-agent patch row, carries the depth the gateway
+   *  last published for its session (`subagents_queued`), so a count a missed or
+   *  misapplied `subagent_queued` frame left behind is corrected by the next
+   *  push, for every slot it names and not only the one on screen. A row without
+   *  the field (a metadata `slot_patch` row, an older gateway) leaves its count
+   *  alone. The wait label is kept while rows still wait: the
    *  push carries the count, and the label stays the one the frames gave it. */
   reconcileSubagentQueuedFromSlots(state: ChatState, action: PayloadAction<ReadonlyArray<{ key: string; subagents_queued?: unknown }>>) {
     state.subagentQueued ??= {}

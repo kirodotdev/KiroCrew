@@ -473,6 +473,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, *, legacy_only: 'bool' = False) -> 'None'",
     ),
     "push_source_status": ("function", False, False, "(self, delta: 'dict') -> 'None'"),
+    "push_subagent_patch": ("function", False, False, "(self) -> 'None'"),
     "push_update_progress": (
         "function",
         False,

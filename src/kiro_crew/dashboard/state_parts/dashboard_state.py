@@ -1160,6 +1160,7 @@ class DashboardState:
     push_slot_title = _slots_push.push_slot_title
     push_slot_patch = _slots_push.push_slot_patch
     push_lineage_patch = _slots_push.push_lineage_patch
+    push_subagent_patch = _slots_push.push_subagent_patch
     push_slot_removed = _slots_push.push_slot_removed
     _has_slot_patch_clients = _slots_push._has_slot_patch_clients
     _send_slot_patch = _slots_push._send_slot_patch

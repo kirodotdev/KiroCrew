@@ -258,6 +258,14 @@ export function useSlotListSync(
       // A stale list can remove a newly created row; its later patch cannot
       // restore that row, so the authoritative list repairs the omission.
       if (hasUnknownRow) dispatch(fetchSlots())
+      // A sub-agent patch row carries `subagents_queued` and is ordered with the
+      // `subagent_queued` frames on this socket, so it heals a missed depth frame
+      // exactly as a full `slots` push does (see onSlots). A metadata patch (pin,
+      // rename, folder, lineage) carries no depth and dispatches nothing.
+      const patchRows = frame.slots ?? []
+      if (patchRows.some(row => row && 'subagents_queued' in row)) {
+        dispatch(reconcileSubagentQueuedFromSlots(patchRows))
+      }
       dispatch(sseSlotPatch(frame))
       notifyAppsSlotsChanged()
     },
