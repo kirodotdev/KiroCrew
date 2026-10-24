@@ -144,7 +144,7 @@ const API_KEY_ORDER = [
   'retryTaskRun', 'renameTaskRun', 'updateTask', 'taskRunToChat',
   'revealPath', 'collectDiagnostics', 'workflowRuns', 'workflowDefinitions',
   'authorWorkflow', 'saveWorkflowDefinition', 'promoteWorkflowRun', 'updateWorkflowDefinition',
-  'runWorkflowDefinition', 'refineTaskInput', 'refineStatus', 'refineCancel',
+  'removeWorkflowDefinition', 'runWorkflowDefinition', 'refineTaskInput', 'refineStatus', 'refineCancel',
   'planTask', 'cancelPlan', 'updatePlan', 'executePlan',
   'planFromChat', 'planContext', 'exportPlanYaml', 'checkUpdate',
   'changelog', 'releases', 'applyUpdate', 'setAutoUpdate',

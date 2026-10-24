@@ -31,6 +31,7 @@ from kiro_crew.validation import (
     WORKFLOW_RUN_SCHEMA,
     validate_tool_args,
 )
+from kiro_crew.workflows.library import command_ref
 
 
 def schemas() -> list[dict[str, Any]]:
@@ -327,15 +328,25 @@ def workflow_library_list(name: str, args: dict[str, Any]) -> str:
         return _wf_return(
             "workflow_library_list", f"workflow_library_list: {d['error']}", outcome="error"
         )
-    definitions = d.get("definitions", [])
+    # A workflow whose id and slug removed records both hold has no command
+    # that runs it, so agents are never offered it.
+    definitions = [item for item in d.get("definitions", []) if command_ref(item)]
     if not definitions:
         return _wf_return("workflow_library_list", "No saved workflows yet.")
     lines = [
-        f"- `/workflow {item.get('slug')}` — {item.get('name') or item.get('slug')} "
-        f"(revision {item.get('revision')}, id `{item.get('id')}`)"
+        f"- `/workflow {command_ref(item)}` — {item.get('name') or item.get('slug')} "
+        f"(revision {item.get('revision')}{_listed_id(item)})"
         for item in definitions
     ]
     return _wf_return("workflow_library_list", "Saved workflows:\n" + "\n".join(lines))
+
+
+def _listed_id(item: dict[str, Any]) -> str:
+    """The id clause of a listed workflow, or none when a removed record holds
+    the id: an agent that ran by it would get not found."""
+    if item.get("id_reserved"):
+        return ""
+    return f", id `{item.get('id')}`"
 
 
 def workflow_status(name: str, args: dict[str, Any]) -> str:

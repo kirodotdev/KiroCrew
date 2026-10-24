@@ -11,6 +11,7 @@ from aiohttp.test_utils import TestClient, TestServer
 import kiro_crew.dashboard.handlers.workflows as workflow_handlers
 from kiro_crew.dashboard.handlers.workflows import (
     api_workflow_definition_get,
+    api_workflow_definition_remove,
     api_workflow_definition_run,
     api_workflow_definition_update,
     api_workflow_definitions,
@@ -25,6 +26,7 @@ class FakeService:
     def __init__(self) -> None:
         self.saved = None
         self.updated = None
+        self.removed = None
         self.started = None
         self.promoted = None
 
@@ -49,6 +51,19 @@ class FakeService:
     async def start_definition(self, workflow_ref, **kwargs):
         self.started = (workflow_ref, kwargs)
         return {"run_id": "wf_1", "workflow_id": "wfd_1", "revision": 2}
+
+    def remove_definition(self, workflow_ref, **kwargs):
+        self.removed = (workflow_ref, kwargs)
+        if workflow_ref == "missing":
+            return {"ok": False, "error": "no such saved workflow", "not_found": True}
+        return {
+            "ok": True,
+            "definition": {
+                "id": "wfd_1",
+                "slug": workflow_ref,
+                "removed_at": "2026-10-11T00:00:00Z",
+            },
+        }
 
     async def promote_run_definition(self, run_id, **kwargs):
         self.promoted = (run_id, kwargs)
@@ -79,8 +94,96 @@ def _app(service: FakeService, *, app_name: str | None = "") -> web.Application:
     app.router.add_patch(
         "/api/workflows/definitions/{workflow_ref}", api_workflow_definition_update
     )
+    app.router.add_delete(
+        "/api/workflows/definitions/{workflow_ref}", api_workflow_definition_remove
+    )
     app.router.add_post("/api/workflows/runs/{run_id}/promote", api_workflow_run_promote)
     return app
+
+
+async def test_definition_remove_tombstones_and_audits_the_stable_id(monkeypatch) -> None:
+    service = FakeService()
+    audit_calls: list[dict[str, object]] = []
+    audit = SimpleNamespace(log_api_access=lambda **kwargs: audit_calls.append(kwargs))
+    monkeypatch.setattr(workflow_handlers, "_sel", lambda: audit)
+
+    async with TestClient(TestServer(_app(service))) as client:
+        response = await client.delete("/api/workflows/definitions/debug")
+        body = await response.json()
+
+    assert response.status == 200
+    assert body == {"ok": True, "id": "wfd_1", "removed_at": "2026-10-11T00:00:00Z"}
+    assert service.removed == ("debug", {"expected_id": None})
+    removals = [
+        call
+        for call in audit_calls
+        if call["operation"] == "workflow_definition_remove" and call["outcome"] == "completed"
+    ]
+    assert len(removals) == 1
+    assert removals[0]["resources"] == "workflow_definition:wfd_1"
+
+
+async def test_definition_remove_passes_the_shown_id_and_maps_a_moved_ref_to_409(
+    monkeypatch,
+) -> None:
+    service = FakeService()
+    audit_calls: list[dict[str, object]] = []
+    audit = SimpleNamespace(log_api_access=lambda **kwargs: audit_calls.append(kwargs))
+    monkeypatch.setattr(workflow_handlers, "_sel", lambda: audit)
+
+    async with TestClient(TestServer(_app(service))) as client:
+        passed = await client.delete("/api/workflows/definitions/debug?expected_id=wfd_1")
+        passed_through = service.removed
+
+        def moved(workflow_ref, **kwargs):
+            service.removed = (workflow_ref, kwargs)
+            return {
+                "ok": False,
+                "error": "that name now reaches another workflow",
+                "conflict": True,
+            }
+
+        service.remove_definition = moved
+        refused = await client.delete("/api/workflows/definitions/debug?expected_id=wfd_9")
+        refused_body = await refused.json()
+
+    assert passed.status == 200
+    assert passed_through == ("debug", {"expected_id": "wfd_1"})
+    assert refused.status == 409
+    assert refused_body["code"] == "workflow_definition_conflict"
+    assert service.removed == ("debug", {"expected_id": "wfd_9"})
+    completed = [call for call in audit_calls if call["outcome"] == "completed"]
+    assert len(completed) == 1
+
+
+async def test_definition_remove_unknown_or_already_removed_is_not_found(monkeypatch) -> None:
+    service = FakeService()
+    audit_calls: list[dict[str, object]] = []
+    audit = SimpleNamespace(log_api_access=lambda **kwargs: audit_calls.append(kwargs))
+    monkeypatch.setattr(workflow_handlers, "_sel", lambda: audit)
+
+    async with TestClient(TestServer(_app(service))) as client:
+        response = await client.delete("/api/workflows/definitions/missing")
+        body = await response.json()
+
+    assert response.status == 404
+    assert body["code"] == "workflow_definition_not_found"
+    assert not [call for call in audit_calls if call["outcome"] == "completed"]
+
+
+async def test_definition_remove_write_failure_has_machine_readable_code() -> None:
+    service = FakeService()
+
+    def fail_remove(*args, **kwargs):
+        raise OSError("full")
+
+    service.remove_definition = fail_remove  # type: ignore[method-assign]
+    async with TestClient(TestServer(_app(service))) as client:
+        response = await client.delete("/api/workflows/definitions/debug")
+        body = await response.json()
+
+    assert response.status == 500
+    assert body["code"] == "workflow_definition_write_failed"
 
 
 async def test_definition_list_and_create_preserve_lineage() -> None:
@@ -129,6 +232,27 @@ async def test_definition_run_reports_executor_rejection_instead_of_not_found() 
         "error": "Too many concurrent tasks (3/3).",
         "code": "workflow_definition_start_rejected",
     }
+
+
+async def test_definition_update_passes_the_shown_id_and_refuses_a_malformed_one() -> None:
+    service = FakeService()
+    async with TestClient(TestServer(_app(service))) as client:
+        updated = await client.patch(
+            "/api/workflows/definitions/debug",
+            json={"source": "changed", "expected_revision": 2, "expected_id": "wfd_1"},
+        )
+        passed_through = service.updated
+        service.updated = None
+        malformed = await client.patch(
+            "/api/workflows/definitions/debug",
+            json={"source": "changed", "expected_revision": 2, "expected_id": ""},
+        )
+        malformed_body = await malformed.json()
+
+    assert updated.status == 200
+    assert passed_through is not None and passed_through[1]["expected_id"] == "wfd_1"
+    assert (malformed.status, malformed_body["code"]) == (400, "workflow_definition_invalid")
+    assert service.updated is None
 
 
 async def test_definition_update_returns_conflict_and_run_maps_input() -> None:
@@ -184,17 +308,21 @@ async def test_definition_mutations_require_dashboard_user_identity(
             "/api/workflows/runs/wf_1/promote",
             json={"name": "Promoted"},
         )
+        removed = await client.delete("/api/workflows/definitions/wfd_1")
 
     assert created.status == 403
     assert updated.status == 403
     assert promoted.status == 403
+    assert removed.status == 403
     assert service.saved is None
     assert service.updated is None
     assert service.promoted is None
+    assert service.removed is None
     assert [call["operation"] for call in audit_calls] == [
         "workflow_definition_create",
         "workflow_definition_update",
         "workflow_definition_promote",
+        "workflow_definition_remove",
     ]
 
 

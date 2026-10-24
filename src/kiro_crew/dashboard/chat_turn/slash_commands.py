@@ -30,6 +30,7 @@ from kiro_crew.dashboard.state import (
 )
 from kiro_crew.messaging.commands import compact_unsupported_backend, compact_unsupported_reply
 from kiro_crew.security import redact
+from kiro_crew.workflows.library import command_ref
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -157,7 +158,14 @@ async def _handle_workflow_command(
         text = "Saved workflows are not available in this runtime."
         outcome = "unavailable"
     elif not workflow_ref:
-        definitions = await asyncio.to_thread(workflow_service.list_definitions)
+        # A workflow whose id and slug removed records both hold has no
+        # command that runs it, so this list leaves it out; the library in
+        # Customize > Workflows still shows it.
+        definitions = [
+            definition
+            for definition in await asyncio.to_thread(workflow_service.list_definitions)
+            if command_ref(definition)
+        ]
         if not definitions:
             text = "No saved workflows yet. Create one under Customize > Workflows."
             outcome = "empty"
@@ -167,7 +175,7 @@ async def _handle_workflow_command(
                 description = definition.get("description") or ""
                 suffix = f" — {description}" if description else ""
                 lines.append(
-                    f"- `/workflow {definition.get('slug')}` "
+                    f"- `/workflow {command_ref(definition)}` "
                     f"(revision {definition.get('revision')}){suffix}"
                 )
             text = "\n".join(lines)
@@ -182,8 +190,11 @@ async def _handle_workflow_command(
             text = str(started.get("error") or "Could not start the saved workflow.")
             outcome = "error"
         else:
+            # A removed workflow holds this one's slug, so only the ref typed
+            # (its id) starts it; naming the slug would offer a dead command.
+            shown = workflow_ref if started.get("slug_reserved") else started.get("slug")
             text = (
-                f"Started `/workflow {started.get('slug') or workflow_ref}` as "
+                f"Started `/workflow {shown or workflow_ref}` as "
                 f"`{started.get('run_id')}` from revision {started.get('revision')}. "
                 "Its result will appear here when it finishes."
             )
