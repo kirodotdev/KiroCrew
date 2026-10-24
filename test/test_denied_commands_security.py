@@ -54,7 +54,9 @@ class TestCatalog:
         # Then: the sandbox-escape ssh-to-self row was added (111 -> 112). The
         # flagged-file delivery self-protection floor added no row: it is an
         # ungated argv-floor subcommand (see ``_UNGATED_TEMPLATES``), not a catalog rule.
-        assert len(BUILTIN_DENIED_RULES) == 113
+        # Then: the env-grep bracket-range row was added (113 -> 114) -- a separate
+        # row so the literal grep selector keeps its linear fragment path.
+        assert len(BUILTIN_DENIED_RULES) == 114
         ids = [r.id for r in BUILTIN_DENIED_RULES]
         assert len(set(ids)) == len(BUILTIN_DENIED_RULES)
 
@@ -1278,6 +1280,15 @@ class TestIsDeniedReDoSResistance:
         """CPU time of one ``is_denied`` scan — see ``_cpu_cost`` for the clock choice."""
         return self._cpu_cost(lambda: is_denied(command))
 
+    def _bracket_row_elapsed(self, command: str) -> float:
+        """CPU time of one ``is_denied`` scan with only the env-grep bracket row on."""
+        from kiro_crew.security.denied_rules_catalog import (
+            _ENV_DUMP_GREP_AWS_BRACKET_PATTERN,
+        )
+
+        regexes = [_ENV_DUMP_GREP_AWS_BRACKET_PATTERN]
+        return self._cpu_cost(lambda: is_denied(command, denied_regexes=regexes))
+
     def test_elapsed_routes_through_the_cpu_cost_chokepoint(self, monkeypatch):
         # Every timing sample in this class must go through ``_cpu_cost`` — a raw
         # clock read in ``_elapsed`` would silently re-open the burst-perturbation
@@ -1377,6 +1388,42 @@ class TestIsDeniedReDoSResistance:
         # linear-time rewrite, NOT merely by the length bound.
         assert self._elapsed("aws " + ("-x " * 5000)) < self._BUDGET_SECONDS
         assert self._elapsed("aws " + ("--foo=bar " * 5000)) < self._BUDGET_SECONDS
+
+    @pytest.mark.parametrize(
+        "tail",
+        ["[" * 8000, "x" * 8000, "[a]" * 3000, "[:" * 4000],
+        ids=["open-brackets", "plain", "closed-classes", "subexpr-openers"],
+    )
+    def test_env_grep_bracket_row_stays_linear(self, tail):
+        # The bracket-range row scans grep's operand to an opener and then to
+        # ``AWS``. Its content class excludes ``[`` and ``]``, so each opener's scan
+        # is disjoint and many grep positions over a long run of brackets stay
+        # linear -- the shape an earlier combined form took ~112s on. Pinned on
+        # both tiers, since the keystone applies no length cap. The catalog tier
+        # runs this row ALONE through ``is_denied``: the full catalog's cost on
+        # this input is the other rows' and is the same on main.
+        from kiro_crew.security import _check_env_credential_access
+
+        pathological = "env | grep " + ("grep " * 400) + tail
+        assert self._bracket_row_elapsed(pathological) < self._BUDGET_SECONDS
+        assert (
+            self._cpu_cost(lambda: _check_env_credential_access(pathological))
+            < self._BUDGET_SECONDS
+        )
+
+    @pytest.mark.parametrize("unit", ["grep[", "grep -F [", "grep [a"])
+    def test_env_grep_bracket_row_scales_with_grep_words(self, unit):
+        # Many grep STARTS, each followed by an opener, up to the 20 KB keystone
+        # ceiling: the operand scan stops at the next grep word, so no two starts
+        # scan the same text. Without that stop this shape is O(starts x length).
+        from kiro_crew.security import _check_env_credential_access
+
+        pathological = "env | " + unit * (20_000 // len(unit))
+        assert self._bracket_row_elapsed(pathological) < self._BUDGET_SECONDS
+        assert (
+            self._cpu_cost(lambda: _check_env_credential_access(pathological))
+            < self._BUDGET_SECONDS
+        )
 
     def test_mid_dotstar_chain_spam_stays_linear(self, monkeypatch):
         """``python.*boto3.*get_credentials`` is polynomial per pattern under a single

@@ -54,6 +54,12 @@
     "description": "Blocks piping an environment dump (`env`, `printenv`, `set`, `export -p`, `typeset`, `/proc/<pid>/environ`) through grep for the bare `AWS`/`AWS_` prefix, a secret-bearing AWS variable, or a truncation of one such as `AWS_S`, which leaks any credentials stored there. Selecting a named non-secret variable such as `AWS_REGION` or `AWS_SDK_LOAD_CONFIG` is allowed."
   },
   {
+    "id": "credential-exfil-env-grep-aws-bracket",
+    "pattern": "(?<![\\w-])(?:environ|printenv|typeset|export\\s+-p|env|set)(?!\\w).*\\|.*(?<![\\w-])(?!fgrep(?!\\w))[a-z0-9]{0,5}grep(?!\\w)(?!(?=(?:(?!(?<![\\w-])[a-z0-9]{0,5}grep(?!\\w)|--\\s)[^|&;\\n'\\\"\\\\])*\\s(?:-[a-z]*f|--fixed-strings|--file))(?!(?:(?!(?<![\\w-])[a-z0-9]{0,5}grep(?!\\w))[^|&;\\n])*\\s-[a-z]*[egp]))(?:(?!(?<![\\w-])[a-z0-9]{0,5}grep(?!\\w))[^|&;\\n])*(?:(?<!\\\\)\\[\\^?\\\\?\\]?|[:=.]\\])[^\\[\\]|&;\\n]*AWS",
+    "category": "credential-exfil",
+    "description": "Blocks piping an environment dump through grep when `AWS` sits inside an open bracket expression in grep's own pattern, such as `[AWS-x]`: there the `-` is a range, so the class selects the AWS credential variables. A closed class before a named non-secret variable (`^[A-Z_]*AWS_REGION=`) is allowed."
+  },
+  {
     "id": "credential-exfil-env-awk-sed-aws",
     "pattern": "(?<![\\w-])(?:environ|printenv|typeset|export\\s+-p|env|set)(?!\\w).*\\|.*(?<![\\w-])(?:[gmn]?awk|g?sed|ssed)(?!\\w).*AWS(?:(?![A-Za-z0-9_])|_(?![A-Za-z0-9])|_(?:SECRET|SESSION|SECURITY|ACCESS)|_(?:SECURIT|SECURI|SESSIO|ACCES|SECRE|SECUR|SESSI|ACCE|SECR|SECU|SESS|ACC|SEC|SES|AC|SE|A|S)(?![A-Za-z0-9_]))",
     "category": "credential-exfil",

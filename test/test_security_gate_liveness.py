@@ -503,7 +503,17 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 8, from 32,518, for one ``_WRITE_PROTECTED_HOME_PATHS`` entry in
 #: ``paths_lists``: the crewmate agent folder, write-denied to the agent file tools
 #: like ``~/.kiro/agents``. Data, not rule logic: the matcher is unchanged.
-_PACKAGE_LINE_BUDGET = 32_526
+#:
+#: Raised again, from 32,526, for the env-grep bracket-range row: inside ``[...]`` a
+#: ``-`` is a range, so ``[AWS-x]`` selects the AWS credentials while its text looks
+#: like the exempt hyphenated token. One selector regex, one pattern, one catalog row,
+#: its id in the keystone tuple, and the comment explaining the operand scope and why
+#: it is a separate row. The literal grep selector is unchanged. Nineteen more for
+#: its grep-word operand stop (linear at the 20 KB ceiling) and the escaped-bracket
+#: and fixed-string exemptions, with their comments, and the facade manifest entries.
+#: Seven more so a quoted, escaped or post-``--`` ``-f`` cannot switch on the
+#: fixed-string exemption: one helper class, its comment and its facade entry.
+_PACKAGE_LINE_BUDGET = 32_607
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -105,6 +105,57 @@ class TestEnvDumpGrepAwsNarrowing:
         # A hyphenated token beside a real selector does not excuse the selector.
         "env | grep -e aws-vault -e AWS_SECRET",
         "printenv | grep -E 'aws-cli|AWS_SESSION_TOKEN'",
+        # Inside a BRACKET EXPRESSION the ``-`` is a RANGE, not a literal hyphen, so
+        # ``[AWS-x]`` selects every variable holding a character in ``S``..``x`` --
+        # the credentials among them -- though its text reads like the exempt
+        # hyphenated token. ``AWS`` inside a still-open bracket is refused on every
+        # grep spelling, flag, quote and fd form.
+        "env | grep '[AWS-x]'",
+        'env | grep "[AWS-x]"',
+        "env|grep '[AWS-x]'",
+        "env | grep -E '[AWS-x]'",
+        "env | grep -P '[AWS-x]'",
+        "env | egrep '[AWS-x]'",
+        "printenv | grep '[AWS-z]'",
+        "env | grep '[0-9AWS-z]'",
+        "env | grep '[ AWS-x]'",
+        "env 2>&1 | grep '[AWS-z]'",
+        "set | grep '[AWS-s]'",
+        "env | grep -v PATH | grep '[AWS-z]'",
+        "env | grep -e '[a]' -e '[AWS-x]'",
+        # A regex prefix before the ``[`` (an anchor, a closed class) does not
+        # excuse a later open one.
+        "env | grep '^[AWS-x]'",
+        "env | grep '[a-z]x[AWS-x]'",
+        "env | grep '[.*AWS-x]'",
+        # A leading ``]`` right after ``[`` (or after ``^``) is a class MEMBER.
+        "env | grep '[]AWS-x]'",
+        "env | grep '[^AWS-x]'",
+        "env | grep '[^]AWS-x]'",
+        # A POSIX subexpression's ``]`` -- ``[:digit:]``, ``[=a=]``, ``[.ch.]`` --
+        # does not close the enclosing class, and neither does a leading ``\]``
+        # under -P.
+        "env | grep '[[:digit:]AWS-x]'",
+        "env | grep -E '[[:digit:]AWS-z]'",
+        "env | grep '[0-9[:punct:]AWS-z]'",
+        "env | grep '[^[:space:]AWS-x]'",
+        "env | grep '[[:digit:][:alpha:]AWS-x]'",
+        "env | grep '[[=a=]AWS-x]'",
+        "env | grep '[[.ch.]AWS-x]'",
+        "env | grep '[[.].]AWS-x]'",
+        "env | grep -P '[\\]AWS-x]'",
+        "env | grep -P '[^\\]AWS-x]'",
+        # Fixed-string mode is exempt only when no regex matcher flag is beside it.
+        "env | grep -E -F '[AWS-x]'",
+        "env | grep -F -P '[AWS-x]'",
+        # Option-like text that is NOT an option does not exempt: quoted or escaped
+        # inside the pattern, or after ``--``. A real flag after the quoted pattern
+        # is refused too, in the safe direction.
+        "env | grep -- '[AWS-x -f]'",
+        "env | grep '[AWS-x -f]'",
+        'env | grep "[AWS-x --fixed-strings]"',
+        "env | grep -- [AWS-x] -f -",
+        "env | grep '[AWS-x]' -F",
         # The selecting stage is not the first stage after the dump.
         "env | grep -v PATH | grep AWS_SECRET",
         "env | tr ' ' '\\n' | grep AWS_SECRET",
@@ -232,6 +283,50 @@ class TestEnvDumpGrepAwsNarrowing:
         "printenv | zgrep 'aws-account-id='",
         "printenv | grep aws-cli",
         "env | grep AWS-1",
+        # A CLOSED bracket before ``AWS`` is not a range over it: the name after the
+        # class is judged by the literal selector, and these name non-secrets.
+        "env | grep '^[A-Z_]*AWS_REGION='",
+        "env | grep -E '^[A-Z]+_AWS_PROFILE='",
+        "printenv | grep '[A-Z]AWS_DEFAULT_REGION'",
+        "env | grep -i '[_]aws_sdk_load_config'",
+        "env | grep -E '^(HOME|PATH)=' | grep '[0-9]aws-vault'",
+        "env | grep -E '^[A-Z]+_AWS_ENDPOINT_URL='",
+        "env | grep.exe '^[A-Z_]*AWS_REGION='",
+        'set | grep -E "^[A-Z_]*AWS_REGION="',
+        "env | grep '[[:alpha:]]AWS_REGION'",
+        "env | grep '[0-9]' | grep aws-vault",
+        "env | grep '[a-z]'",
+        # A ``[`` that is NOT grep's own operand -- a shell test, a jq or Terraform
+        # index, ``[tag]`` echo text after a separator or on the next line -- is not
+        # a grep range over the dump.
+        "env | grep KIRO\necho '[aws-vault]'",
+        # An UNCLOSED bracket in grep's operand does not reach an ``aws`` in a later
+        # command: the scan after the opener stops at a separator too.
+        "env | grep '^APP_CONFIG=\\['; echo 'aws-vault profile ready'",
+        "env | grep 'x[a' && echo aws-vault",
+        "env | grep 'x[a' | grep aws-vault",
+        # Escaped brackets OUTSIDE a class are literals, not a class: a later ``\]``
+        # is not an opener (Security Scope Review on 06d7267d9; ``set-context``
+        # reads as the ``set`` dump verb).
+        "kubectl config set-context --current --namespace=dev"
+        " && kubectl logs deploy/api | grep -n '\\[ERROR\\].*aws-sdk'",
+        "env | grep '\\[WARN\\] aws-vault'",
+        # An escaped ``\[`` is a literal too (reviews on ab824f70a).
+        "env | grep '\\[aws-vault\\]'",
+        "set -euo pipefail; git log --oneline | grep -i '\\[aws-sdk\\]'",
+        "set -e; cat config.ini | grep '^\\[aws-prod\\]'",
+        # Fixed-string mode reads ``[`` as a literal, so no range is formed.
+        "env | grep -F '[aws-vault]'",
+        "env | grep -iF '[aws-vault]'",
+        "env | grep --fixed-strings '[aws-vault]'",
+        "env | fgrep '[aws-vault]'",
+        "env | grep -q KIROCREW_ && [ -x /usr/local/bin/aws-vault ]",
+        "env | grep -q '^AWS_VAULT=' && [ -x \"$(command -v aws-vault)\" ]",
+        'printenv | grep -q AWS_PROFILE || [ -f "$HOME/.config/aws-sso-util/config" ]',
+        "env | grep -c KIRO; [[ -d ~/aws-cdk-app ]] && cd ~/aws-cdk-app",
+        'env | grep -q KIROCREW_HOME && echo "[aws-vault] profile ready"',
+        "env | grep TF_VAR_ && terraform state show 'module.vpc[\"aws-east\"]'",
+        "env | grep -q CI && jq '.profiles[\"aws-dev\"]' profiles.json",
         # No filter at all.
         "env | cut -d= -f1 | sort",
         "docker exec kirocrew printenv KIROCREW_PORT",
@@ -321,13 +416,18 @@ class TestEnvDumpGrepAwsNarrowing:
     def _catalog_matches(cls, cmd: str) -> bool:
         return any(
             cls._rule_matcher(rule_id).match(cmd)
-            for rule_id in ("credential-exfil-env-grep-aws", "credential-exfil-env-awk-sed-aws")
+            for rule_id in (
+                "credential-exfil-env-grep-aws",
+                "credential-exfil-env-grep-aws-bracket",
+                "credential-exfil-env-awk-sed-aws",
+            )
         )
 
     @pytest.mark.parametrize(
         "rule_id, pattern_name",
         [
             ("credential-exfil-env-grep-aws", "_ENV_DUMP_GREP_AWS_PATTERN"),
+            ("credential-exfil-env-grep-aws-bracket", "_ENV_DUMP_GREP_AWS_BRACKET_PATTERN"),
             ("credential-exfil-env-awk-sed-aws", "_ENV_DUMP_AWK_SED_AWS_PATTERN"),
         ],
     )
@@ -384,6 +484,7 @@ class TestEnvDumpGrepAwsNarrowing:
         "rule_id",
         [
             "credential-exfil-env-grep-aws",
+            "credential-exfil-env-grep-aws-bracket",
             "credential-exfil-env-awk-sed-aws",
             "credential-exfil-printenv-aws",
         ],
