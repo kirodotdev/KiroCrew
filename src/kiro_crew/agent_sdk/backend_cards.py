@@ -606,6 +606,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "still resets on a build below that floor, and two levels cannot say "
         "on a recent enough release"
     ),
+    "ACP_BACKENDS_MCP_WIRE_REINJECT": (
+        "the OTHER half of the same fact -- whether a freshly installed MCP server "
+        "reaches a RUNNING session, here by Crew re-sending the projection rather "
+        "than by the harness watching a file. Its membership is not version-gated, "
+        "but a card that stated this half for KAS beside an off-card hot-reload set "
+        "would read as kiro-cli lacking what it has; one fact needs one line, and "
+        "that line cannot be projected while the other half cannot"
+    ),
 }
 
 #: The set that is the membership floor rather than a capability.

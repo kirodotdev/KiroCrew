@@ -842,6 +842,31 @@ class LLMProvider(ABC):
         attribute never reads as a skip."""
         return False
 
+    @property
+    def mcp_config_wire_reinject(self) -> bool:
+        """True when this provider's LIVE session takes a changed MCP server set by
+        Crew re-sending its projected agent over the wire at the session's next
+        turn boundary, with the conversation kept -- the other way a dashboard MCP
+        write is applied without the all-sessions reset.
+
+        Default False, for the reason ``mcp_config_hot_reload`` defaults False:
+        a harness that has not demonstrated the re-injection must not inherit
+        the skip (harness-parity H6/H14). The ACP implementation answers from
+        ``ACP_BACKENDS_MCP_WIRE_REINJECT`` membership on a session that exists;
+        a provider whose session is still starting answers False and is reset
+        like one that cannot apply the change. Consumers act only on a literal
+        ``True``. A True answer is a promise the writer collects by calling
+        :meth:`mark_mcp_config_changed`."""
+        return False
+
+    def mark_mcp_config_changed(self) -> None:
+        """Note that the MCP config this session was projected from has changed.
+
+        A re-injecting provider applies the new set at its next turn boundary;
+        every other provider ignores the mark, because the reset the writer
+        would otherwise perform already covered it. Synchronous and never on
+        the wire, so a writer can mark every live provider under its own lock."""
+
     def available_models(self) -> list[dict[str, str]]:
         """Backend-advertised models (``[{modelId, name, ...}]``) for the model
         picker. Default empty for a provider that advertises none."""

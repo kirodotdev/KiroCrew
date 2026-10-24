@@ -23,6 +23,7 @@ from contextlib import aclosing
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.acp import session_provider_mcp_reinject as _sp_mcp_reinject
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpAuthRequired,
@@ -96,6 +97,16 @@ class AcpSessionProvider(LLMProvider):
 
     approval_withdrawable = True
 
+    # Applying a dashboard MCP config change to this live session by re-sending
+    # its projection: ``kiro_crew.acp.session_provider_mcp_reinject``.
+    mark_mcp_config_changed = _sp_mcp_reinject.mark_mcp_config_changed
+    apply_pending_mcp_reinjection = _sp_mcp_reinject.apply_pending_mcp_reinjection
+
+    @property
+    def mcp_config_wire_reinject(self) -> bool:
+        """Whether this LIVE session takes a re-sent MCP projection (H6 opt-in)."""
+        return _sp_mcp_reinject.mcp_config_wire_reinject(self)
+
     def __init__(
         self,
         handle: AcpSessionHandle,
@@ -138,6 +149,9 @@ class AcpSessionProvider(LLMProvider):
         # identity-less for the rest of its life.
         self._session_key: str = session_key
         self._channel_id: str | None = channel_id
+        # Set by a dashboard MCP write on a re-injecting host; applied at the
+        # next turn boundary (``apply_pending_mcp_reinjection``).
+        self._mcp_reinject_pending: bool = False
 
     # ── LLMProvider interface ──
 
@@ -618,6 +632,15 @@ class AcpSessionProvider(LLMProvider):
         except Exception:
             logger.debug("stream: stub re-claim failed", exc_info=True)
         claim = self._claim_shared_turn()
+        # A pending MCP config change is applied HERE, under the claim and before
+        # the prompt, so the turn runs on the new set and no turn is cut by the
+        # close. Replaces ``self._handle`` on success; read it after this.
+        try:
+            await self.apply_pending_mcp_reinjection()
+        except BaseException:
+            # Outside the turn's own try below, so its claim is released here.
+            await self._end_shared_turn(claim)
+            raise
         send = self._handle.prompt
         if not allow_image:
             send = functools.partial(send, allow_image=False)

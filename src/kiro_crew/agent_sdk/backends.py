@@ -185,6 +185,9 @@ with no row here.
      - driver-internal (whether ``initialize`` carries ``_meta.kiro.settings``)
    * - ``ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD``
      - pre-session registry query (whether the dashboard may skip a session reset)
+   * - ``ACP_BACKENDS_MCP_WIRE_REINJECT``
+     - pre-session registry query (whether the dashboard may skip a session reset
+       because Crew re-sends the projection at the next turn boundary)
    * - ``ACP_BACKENDS_STRUCTURED_REFUSAL``
      - driver-internal (whether the metadata refusal parser is consulted)
    * - ``ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR``
@@ -814,6 +817,7 @@ from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported 
     ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
+    ACP_BACKENDS_MCP_WIRE_REINJECT,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE,

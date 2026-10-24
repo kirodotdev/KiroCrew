@@ -164,6 +164,8 @@ class AcpRuntime:
     unregister_session = _rt_registry.unregister_session
     mark_turn_active = _rt_registry.mark_turn_active
     terminate_session = _rt_registry.terminate_session
+    evict_session = _rt_registry.evict_session
+    keep_record_on_teardown = _rt_registry.keep_record_on_teardown
     _session_teardown_method = _rt_registry._session_teardown_method
     _mcp_init_progress = _rt_registry._mcp_init_progress
     _session_start_stalled = _rt_registry._session_start_stalled
@@ -685,6 +687,9 @@ class AcpRuntime:
         # until the backend response arrives — either would make routing
         # believe a consumer exists and park a child request unread.
         self._turn_active_sessions: set[str] = set()
+        # Sessions whose teardown must keep the stored record while a re-injection
+        # load runs (``keep_record_on_teardown``).
+        self._record_keeping_sessions: set[str] = set()
         self._dropped_frames_flushed_at: float = 0.0
 
     def _pool_lookup(self, agent: str | None) -> tuple[str | None, dict[str, Any] | None]:

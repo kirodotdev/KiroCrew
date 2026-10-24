@@ -356,3 +356,8 @@ async def drain_warm_pool(self: SessionManager) -> list:
 def warm_providers(self: SessionManager) -> list[LLMProvider]:
     """Snapshot the queued warm providers without consuming them."""
     return self._pool.warm_providers()
+
+
+def mark_mcp_config_changed(self: SessionManager) -> None:
+    """Tell a warm-pool fill in flight that the MCP config changed (see the pool)."""
+    self._pool.mark_mcp_config_changed()

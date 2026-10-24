@@ -1,7 +1,7 @@
 """The sessions this runtime holds and how each one leaves.
 
 Init frames staged before a session id is known, the start-stall MCP diagnostics, turn-active
-marks, and terminate and unregister.
+marks, and terminate, evict and unregister.
 
 Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method: the class
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
@@ -11,7 +11,7 @@ Instance fields written: ``_pending_init_notifications``, ``_routed_requests``,
 ``_session_cwds``, ``_session_inits_in_flight``, ``_session_queues``,
 ``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``, ``_turn_active_sessions``.
 
-Instance fields read: ``_dead``, ``_process``, ``_start_collectors``.
+Instance fields read: ``_dead``, ``_process``, ``_record_keeping_sessions``, ``_start_collectors``.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from kiro_crew.acp.types import (
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_MCP_SERVER_INIT_FAILURE,
     METHOD_MCP_SERVER_INITIALIZED,
+    METHOD_SESSION_CLOSE,
     JsonRpcMessage,
 )
 
@@ -190,6 +191,13 @@ async def terminate_session(self: AcpRuntime, session_id: str) -> None:
     in the direction that looks like nothing is wrong — the eviction still happens,
     just a whole budget later, with a timeout logged against it.
     """
+    if session_id in getattr(self, "_record_keeping_sessions", ()):
+        # A load that re-injects a LIVE conversation's projection: every failure arm
+        # on that path ends the session through this method, and on KAS the
+        # teardown verb removes the stored record -- the very conversation the
+        # re-injection exists to keep. The eviction keeps the record instead.
+        await self.evict_session(session_id)
+        return
     try:
         if not self._dead and self._process is not None:
             policy = self._harness.teardown
@@ -210,6 +218,81 @@ async def terminate_session(self: AcpRuntime, session_id: str) -> None:
                 logger.debug(
                     "session teardown failed for %s (runtime dead/slow); "
                     "proceeding with local unregister",
+                    session_id,
+                    exc_info=True,
+                )
+    finally:
+        self.unregister_session(session_id)
+
+
+class _RecordKeepingScope:
+    """The scope :func:`keep_record_on_teardown` opens; see it for the why.
+
+    A class rather than a ``contextlib.contextmanager`` generator so the bound
+    member keeps its own code object and qualname (the owner-binding contract the
+    runtime's members are held to). Re-entrant for one id: the record is
+    released when the outermost scope ends.
+    """
+
+    def __init__(self, runtime: AcpRuntime, session_id: str) -> None:
+        self._runtime = runtime
+        self._session_id = session_id
+        self._already = False
+
+    def __enter__(self) -> None:
+        keeping = getattr(self._runtime, "_record_keeping_sessions", None)
+        if keeping is None:
+            keeping = set()
+            self._runtime._record_keeping_sessions = keeping
+        self._already = self._session_id in keeping
+        keeping.add(self._session_id)
+
+    def __exit__(self, *exc: Any) -> None:
+        if not self._already:
+            self._runtime._record_keeping_sessions.discard(self._session_id)
+
+
+def keep_record_on_teardown(self: AcpRuntime, session_id: str) -> _RecordKeepingScope:
+    """While the returned scope is open, a teardown of *session_id* through
+    :func:`terminate_session` evicts instead of deleting its stored record.
+
+    For the re-injection load (``acp/session_provider_mcp_reinject.py``): the
+    load path ends the session on an activation refusal, a stale spec or a
+    timed-out ``set_mode`` by calling :func:`terminate_session`, which on KAS is
+    ``_kiro/session/delete``. Inside this scope that call is
+    :func:`evict_session`, so a failed re-injection leaves the conversation
+    where the next attempt -- or a plain resume -- can load it.
+    """
+    return _RecordKeepingScope(self, session_id)
+
+
+async def evict_session(self: AcpRuntime, session_id: str) -> None:
+    """Make the host drop a RESIDENT session while keeping its stored record.
+
+    The standard ``session/close`` as a bounded request, then the local
+    unregister. Distinct from :func:`terminate_session`, whose verb on KAS is
+    ``_kiro/session/delete`` -- that frees the session AND removes the record a
+    later ``session/load`` would restore. This one frees only the resident
+    copy, which is the precondition for re-loading the same id with a changed
+    projection: the engine takes a new ``_meta.kiro.customAgents`` batch on
+    ``session/load`` only for a session it is not already holding
+    (``test/fixtures/acp_frames/kas/mcp-live-apply-live.jsonl``).
+
+    Best-effort on the wire for the reasons terminate is: a dead runtime took
+    the resident copy with it, and a close the host refuses (an id it does not
+    hold) is the state this call was reaching for. The local unregister always
+    runs, so the reader loop stops routing to the departing queue even when the
+    request could not be delivered.
+    """
+    try:
+        if not self._dead and self._process is not None:
+            try:
+                await self._send_and_await(
+                    METHOD_SESSION_CLOSE, {"sessionId": session_id}, timeout=_TERMINATE_TIMEOUT
+                )
+            except Exception:
+                logger.debug(
+                    "session/close failed for %s (runtime dead/slow); proceeding with local unregister",
                     session_id,
                     exc_info=True,
                 )
