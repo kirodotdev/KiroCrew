@@ -271,9 +271,9 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 "Stop the auto-nudge loop driving your current session. Call this "
                 "when you determine the loop should halt (e.g. goal complete, "
                 "blocked on user input, or a STOP sentinel file indicates shutdown). "
-                "Legacy loops are removed. For a structured monitor, this compatibility "
-                "alias records a durable user-stop outcome and retains the record for "
-                "inspection. Safe to call even if no loop is active."
+                "A legacy loop is kept, stopped, with your reason. For a structured "
+                "monitor, this compatibility alias records a durable user-stop outcome "
+                "and retains the record. Safe to call even if no loop is active."
             ),
             "inputSchema": {
                 "type": "object",
@@ -462,8 +462,8 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
             "description": (
                 "Durably stop the monitor on your current session. A structured "
                 "monitor is retained with its terminal outcome for inspection; a "
-                "legacy timer loop is stopped and leaves no record behind, so a "
-                "later monitor_inspect reports it as not armed."
+                "legacy timer loop is kept, stopped, with your reason, and the next "
+                "monitor_start on this session replaces it."
             ),
             "inputSchema": {
                 "type": "object",

@@ -6104,6 +6104,7 @@
       "loop_paused": "一時停止中",
       "paused_manual": "一時停止中 · あなたが一時停止しました",
       "paused_agent": "一時停止中 · エージェントが停止しました",
+      "stopped_agent_reason": "理由：{{reason}}",
       "paused_cycle_cap": "一時停止中 · サイクル上限に到達（{{cycles}}/{{max}}）。再開すると新しい予算で動きます。",
       "paused_runtime_budget": "一時停止中 · 時間上限に到達。再開すると新しい予算で動きます。",
       "paused_approval_stalled": "一時停止中 · あなたの承認を待っています",

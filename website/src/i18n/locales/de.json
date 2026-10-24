@@ -6210,6 +6210,7 @@
       "loop_paused": "Pausiert",
       "paused_manual": "Pausiert · du hast sie pausiert",
       "paused_agent": "Pausiert · der Agent hat sie gestoppt",
+      "stopped_agent_reason": "Begründung: {{reason}}",
       "paused_cycle_cap": "Pausiert · Zykluslimit erreicht ({{cycles}} von {{max}}). Fortsetzen startet ein neues Budget.",
       "paused_runtime_budget": "Pausiert · Zeitlimit erreicht. Fortsetzen startet ein neues Budget.",
       "paused_approval_stalled": "Pausiert · wartet auf deine Freigabe",

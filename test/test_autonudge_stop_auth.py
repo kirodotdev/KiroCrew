@@ -947,8 +947,11 @@ def test_applier_autonudge_stop_records_tombstone_for_loop_resolved_by_binding(m
     assert "done" in result
 
 
-def test_applier_autonudge_stop_removes_ordinary_monitor_loop(monkeypatch):
-    """Loops without a tombstone consumer retain the historical remove UX."""
+_AGENT_STOPPED = {"active": False, "stopped_reason": "agent_stop", "stopped_detail": "done"}
+
+
+def test_applier_autonudge_stop_keeps_an_ordinary_loop_as_agent_stop(monkeypatch):
+    """A loop with no tombstone consumer is kept, stopped, with the agent's reason."""
     svc = _FakeSvc(_FakeLoop("loop-ordinary"))
     _install_svc(monkeypatch, svc)
     result = asyncio.run(
@@ -957,10 +960,10 @@ def test_applier_autonudge_stop_removes_ordinary_monitor_loop(monkeypatch):
         )
     )
     assert svc.get_by_slot_keys == [binding_key_for(_SESSION)]
-    assert svc.removed == ["loop-ordinary"]
-    assert svc.updated == []
-    # The removal leaves no row, so the agent's reason must reach the stop record.
-    assert svc.notes == [("loop-ordinary", "autonudge_stop", "done")]
+    assert svc.removed == []
+    assert [(loop_id, {k: patch[k] for k in _AGENT_STOPPED}) for loop_id, patch in svc.updated] == [
+        ("loop-ordinary", _AGENT_STOPPED)
+    ]
     assert "stopped" in result.lower()
 
 
@@ -973,7 +976,9 @@ def test_applier_autonudge_stop_removes_ordinary_monitor_loop(monkeypatch):
         "dashboard:research-A1B2C3D4",
     ),
 )
-def test_applier_autonudge_stop_removes_research_prefix_lookalikes(monkeypatch, session_key):
+def test_applier_autonudge_stop_keeps_research_prefix_lookalikes_as_agent_stop(
+    monkeypatch, session_key
+):
     """App provenance cannot turn a non-canonical lookalike into a worker."""
     svc = _FakeSvc(_FakeLoop("loop-lookalike"))
     _install_svc(monkeypatch, svc)
@@ -989,12 +994,14 @@ def test_applier_autonudge_stop_removes_research_prefix_lookalikes(monkeypatch, 
     )
 
     assert svc.get_by_slot_keys == [binding_key_for(session_key)]
-    assert svc.removed == ["loop-lookalike"]
-    assert svc.updated == []
+    assert svc.removed == []
+    assert [(loop_id, {k: patch[k] for k in _AGENT_STOPPED}) for loop_id, patch in svc.updated] == [
+        ("loop-lookalike", _AGENT_STOPPED)
+    ]
     assert "stopped" in result.lower()
 
 
-def test_applier_autonudge_stop_removes_canonical_user_named_slot(monkeypatch):
+def test_applier_autonudge_stop_keeps_a_canonical_user_named_slot_as_agent_stop(monkeypatch):
     """A canonical-looking name is not proof of Research Lab ownership."""
     svc = _FakeSvc(_FakeLoop("loop-user-named"))
     _install_svc(monkeypatch, svc)
@@ -1010,8 +1017,10 @@ def test_applier_autonudge_stop_removes_canonical_user_named_slot(monkeypatch):
     )
 
     assert svc.get_by_slot_keys == [binding_key_for(_RESEARCH_SESSION)]
-    assert svc.removed == ["loop-user-named"]
-    assert svc.updated == []
+    assert svc.removed == []
+    assert [(loop_id, {k: patch[k] for k in _AGENT_STOPPED}) for loop_id, patch in svc.updated] == [
+        ("loop-user-named", _AGENT_STOPPED)
+    ]
     assert "stopped" in result.lower()
 
 

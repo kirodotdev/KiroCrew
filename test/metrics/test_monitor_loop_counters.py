@@ -719,6 +719,7 @@ class TestLoopsStopped:
             loop_model.STOP_SENTINEL_REASON,
             loop_model.MONITOR_TERMINAL_REASON,
             loop_model.AUTONUDGE_STOP_REASON,
+            loop_model.AGENT_STOP_REASON,
             loop_model.APPROVAL_STALL_REASON,
             loop_model.SESSION_START_FAILURE_REASON,
             loop_model.CONSECUTIVE_FAILURE_REASON,

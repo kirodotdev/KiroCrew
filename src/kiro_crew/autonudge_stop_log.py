@@ -32,8 +32,10 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from kiro_crew.jsonl_util import rotate_jsonl_at
+from kiro_crew.monitoring.models import MAX_MONITOR_STOP_REASON_CHARS
 from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
-from kiro_crew.platform import redact_log_via_context
+from kiro_crew.platform import redact_log_via_context, redact_via_context
+from kiro_crew.security import redact_and_truncate
 
 logger = logging.getLogger("kiro_crew.autonudge")
 
@@ -63,6 +65,19 @@ def safe_text(value: object, limit: int = FIELD_MAX_CHARS) -> str:
     raw prefix would reach the log.
     """
     return redact_log_via_context(str(value or ""))[:limit]
+
+
+def clean_stop_detail(value: object) -> str:
+    """The agent's stop words as a loop row holds them (``stopped_detail``), or ``""``.
+
+    Scrubbed under the active platform credential policy (which a companion can
+    extend), then by the baseline redactor, then clipped to its bound. The service
+    runs every write and every load of the field through here, so the state frame
+    that broadcasts the row only ever carries the cleaned text.
+    """
+    if not isinstance(value, str) or not value:
+        return ""
+    return redact_and_truncate(redact_via_context(value), max_chars=MAX_MONITOR_STOP_REASON_CHARS)
 
 
 def _number(value: object) -> int | None:
@@ -112,7 +127,7 @@ def _stored_reason(row: Mapping[str, Any]) -> tuple[str, str]:
         detail = str(monitor.get("user_stop_reason") or "")
         if reason:
             return reason, detail
-    return str(row.get("stopped_reason") or ""), ""
+    return str(row.get("stopped_reason") or ""), str(row.get("stopped_detail") or "")
 
 
 def stop_records(

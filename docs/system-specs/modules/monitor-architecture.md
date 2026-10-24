@@ -802,7 +802,12 @@ Each line carries `ts`, `loop_id`, `slot_key`, `kind`, `target`, `reason`,
 `detail`, `cycle_count`/`max_cycles` and `ran_secs`/`max_runtime_secs`.
 A removed legacy loop has no row to carry a reason, so `remove()` takes a
 `stop_reason` for that record alone. A new stop path needs nothing extra to be
-recorded; a new REMOVAL path should pass its reason.
+recorded; a new REMOVAL path should pass its reason. The agent's own stop is not
+a removal: `autonudge_stop` / `monitor_stop` keep an ordinary legacy row,
+deactivated as `agent_stop` with the agent's reason in `stopped_detail`, so the
+log line, the popover ("the agent stopped it") and `monitor_inspect` all read
+why it ended from the row. A Research Lab slot keeps its `autonudge_stop`
+tombstone instead.
 
 Streak counters do exist and are about something else: `quiet_streak` with
 `floor_ticks` counts consecutive quiet observations and the deliveries they
@@ -1073,6 +1078,10 @@ enforced nowhere:
   it fails open on an unreadable record and the turn boundary is what enforces.
   Two copies of the rule is what lets the ack and the applier disagree on the
   classification itself, which is the false-acknowledgement class of bug.
+  A legacy row follows the same split by reason: `agent_stop` (the agent's own
+  stop), a spent bound, a finished subject and a dropped kill switch are
+  displaceable by the agent's next arm; `manual` and the Research Lab
+  `autonudge_stop` tombstone are preserved.
 
 ## Adding a new monitored kind
 

@@ -78,8 +78,8 @@ _REVISION_DIRECTIVES = frozenset({"monitor_update"})
 # service lock by ``_StaleWakeStopGuard`` for the legacy writes). Identity: the wake's
 # loop must still be this session's monitor, or a stale wake would stop the
 # loop that REPLACED the one which delivered it. Retention: a row a person
-# paused or stopped is retained evidence, and a legacy stop removes its row, so
-# a wake may not delete it; a row the SYSTEM deactivated still passes and is
+# paused or stopped is retained evidence, and a legacy stop rewrites its row, so
+# a wake may not touch it; a row the SYSTEM deactivated still passes and is
 # the stop applier's business. The refusal is as unobservable as a refused arm
 # or revision (the tool has already answered over its own pipe), so it is
 # surfaced the same way, in stop wording: nothing here was armed or revised.

@@ -6316,6 +6316,7 @@
       "loop_paused": "En pause",
       "paused_manual": "En pause · tu l’as mise en pause",
       "paused_agent": "En pause · l’agent l’a arrêtée",
+      "stopped_agent_reason": "Raison : {{reason}}",
       "paused_cycle_cap": "En pause · limite de cycles atteinte ({{cycles}} sur {{max}}). Reprendre relance un nouveau budget.",
       "paused_runtime_budget": "En pause · limite de temps atteinte. Reprendre relance un nouveau budget.",
       "paused_approval_stalled": "En pause · en attente de ton approbation",

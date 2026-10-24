@@ -23,10 +23,36 @@ from slack_gateway_coverage_helpers import (
     _within_lost_run,
 )
 
-from kiro_crew.autonudge import MANUAL_STOP_REASON, MONITOR_TERMINAL_REASON, NudgeLoop
+from kiro_crew.autonudge import (
+    AGENT_STOP_REASON,
+    MANUAL_STOP_REASON,
+    MONITOR_TERMINAL_REASON,
+    NudgeLoop,
+)
 from kiro_crew.monitoring import models as monitor_models
 from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
 from kiro_crew.slack import gateway as gw
+
+
+def _closer_through(emit_ref, wake_ref):
+    """Stand in for ``append_closer_if_still_applies`` on a mocked event-log service.
+
+    The real predicate is asked against the wake view the test holds NOW, so a test
+    that moves the wake between the snapshot and the write sees the closer declined,
+    and the append itself goes through the test's own ``emit`` stub. A failed append
+    raises, as the real service does.
+    """
+    from kiro_crew.eventlog.types import PROJ_WAKE
+
+    def _append(slug, etype, data, *, still_applies, observed):
+        if not still_applies({PROJ_WAKE: dict(wake_ref())}, observed):
+            return None
+        if not emit_ref()(slug, None, etype, data):
+            raise RuntimeError("append failed")
+        return object()
+
+    return _append
+
 
 # ═════════════════════════════════════════════════════════════════════════
 # _init_autonudge closures: the _fire router and the _observer
@@ -236,6 +262,52 @@ class TestAutonudgeRouterAndObserver:
         assert "monitor" not in payload["loop"]
 
     @pytest.mark.asyncio
+    async def test_observer_frame_carries_the_agents_stop_words(self):
+        """The popover shows why the agent stopped a loop, and it renders from the
+        frame, so the words ride it beside the reason they explain."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+
+        observer("armed", _loop("chat-1-1721"))
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert payload["loop"]["stopped_detail"] == ""
+
+        stopped = _loop(
+            "chat-1-1721",
+            active=False,
+            stopped_reason=AGENT_STOP_REASON,
+            stopped_detail="PR merged, nothing left to do",
+        )
+        observer("updated", stopped)
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert payload["loop"]["stopped_reason"] == AGENT_STOP_REASON
+        assert payload["loop"]["stopped_detail"] == "PR merged, nothing left to do"
+
+    @pytest.mark.asyncio
+    async def test_observer_frame_redacts_the_stop_words_it_broadcasts(self, monkeypatch):
+        """The frame reaches every dashboard socket, so the agent's words go through
+        the frame's redaction like every other stored string it carries."""
+        from kiro_crew.slack import gateway as gateway_module
+
+        def _redactor(value):
+            return value.replace("ghp_stopword", "[redacted]") if isinstance(value, str) else value
+
+        monkeypatch.setattr(gateway_module, "_redact_monitor_value", _redactor)
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+        stopped = _loop(
+            "chat-1-1721",
+            active=False,
+            stopped_reason=AGENT_STOP_REASON,
+            stopped_detail="blocked on ghp_stopword",
+        )
+        observer("updated", stopped)
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert payload["loop"]["stopped_detail"] == "blocked on [redacted]"
+
+    @pytest.mark.asyncio
     async def test_observer_frame_redacts_the_watch_kind_it_broadcasts(self, monkeypatch):
         """The kind is a stored string a hand-edited state file reads back as
         written, and this frame reaches every dashboard socket, so the scalar
@@ -298,6 +370,429 @@ class TestAutonudgeRouterAndObserver:
         assert appended == [
             ("crew-x", PATROL_STOPPED, {"slot_key": "member-crew-x", "reason": "stop_sentinel"})
         ]
+
+    @pytest.mark.asyncio
+    async def test_observer_logs_a_member_patrol_its_agent_stopped_as_stopped(self):
+        """An agent stop keeps the row deactivated and arrives as ``updated``; the
+        member event log must close the patrol before the frame is broadcast, or
+        the member projection keeps reading ``armed``."""
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog.types import PATROL_STOPPED
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, inst = await self._wire(orch)
+        order: list[str] = []
+        appended: list[tuple[str, str, dict]] = []
+
+        def _emit(slug, _actor, etype, data):
+            order.append("append")
+            appended.append((slug, etype, data))
+            return True
+
+        orch.dashboard_state.broadcast_ws.side_effect = lambda *_a, **_k: order.append("publish")
+        with (
+            patch.object(eventlog_hooks, "member_slug_for_slot", lambda slot: "crew-x"),
+            patch.object(eventlog_hooks, "submit", lambda fn: (fn(), True)[1]),
+            patch.object(eventlog_hooks, "emit", _emit),
+        ):
+            stopped = _loop(
+                "member-crew-x",
+                active=False,
+                stopped_reason=AGENT_STOP_REASON,
+                stopped_detail="done",
+            )
+            inst._activity_transition_for_observer.side_effect = [
+                (True, False, ""),
+                (False, False, AGENT_STOP_REASON),
+            ]
+            observer("updated", stopped)
+            observer("updated", stopped)
+        assert appended == [
+            ("crew-x", PATROL_STOPPED, {"slot_key": "member-crew-x", "reason": AGENT_STOP_REASON})
+        ]
+        # The publish is scheduled back onto the loop after the append lands, so
+        # nothing may have been broadcast ahead of it.
+        assert order[0] == "append"
+
+    @pytest.mark.asyncio
+    async def test_stopped_row_edit_retries_failed_agent_stop_before_publishing(self):
+        """A later edit retries a failed edge and publishes only after it lands."""
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog.types import PATROL_STOPPED, PROJ_WAKE
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, inst = await self._wire(orch)
+        wake = {"patrol": "armed", "slot_key": "member-crew-x"}
+        projection = MagicMock()
+        projection.snapshot.side_effect = lambda _slug: {"values": {PROJ_WAKE: dict(wake)}}
+        projection.append_closer_if_still_applies.side_effect = _closer_through(
+            lambda: _emit, lambda: wake
+        )
+        outcomes = iter((False, True))
+        attempts: list[str] = []
+        landed: list[str] = []
+
+        def _emit(_slug, _actor, etype, _data):
+            attempts.append(etype)
+            if not next(outcomes):
+                return False
+            landed.append(etype)
+            wake.update({"patrol": "stopped", "stopped_reason": AGENT_STOP_REASON})
+            return True
+
+        with (
+            patch.object(eventlog_hooks, "member_slug_for_slot", lambda _slot: "crew-x"),
+            patch.object(eventlog_hooks, "submit", lambda fn: (fn(), True)[1]),
+            patch.object(eventlog_hooks, "emit", _emit),
+            patch("kiro_crew.eventlog.service.get_service", return_value=projection),
+        ):
+            stopped = _loop(
+                "member-crew-x",
+                active=False,
+                stopped_reason=AGENT_STOP_REASON,
+                stopped_detail="done",
+            )
+            inst._activity_transition_for_observer.side_effect = [
+                (True, False, ""),
+                (False, False, AGENT_STOP_REASON),
+            ]
+            observer("updated", stopped)
+            await asyncio.sleep(0)
+            orch.dashboard_state.broadcast_ws.assert_not_called()
+
+            stopped.stopped_detail = "edited after failed append"
+            observer("updated", stopped)
+            await asyncio.sleep(0)
+
+        assert attempts == [PATROL_STOPPED, PATROL_STOPPED]
+        assert landed == [PATROL_STOPPED]
+        orch.dashboard_state.broadcast_ws.assert_called_once()
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert payload["loop"]["stopped_detail"] == "edited after failed append"
+
+    @pytest.mark.asyncio
+    async def test_stopped_row_edit_deduplicates_landed_agent_stop(self):
+        """A later edit publishes without repeating an already durable stop."""
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog.types import PATROL_STOPPED, PROJ_WAKE
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, inst = await self._wire(orch)
+        wake = {"patrol": "armed", "slot_key": "member-crew-x"}
+        projection = MagicMock()
+        projection.snapshot.side_effect = lambda _slug: {"values": {PROJ_WAKE: dict(wake)}}
+        projection.append_closer_if_still_applies.side_effect = _closer_through(
+            lambda: _emit, lambda: wake
+        )
+        appended: list[str] = []
+
+        def _emit(_slug, _actor, etype, _data):
+            appended.append(etype)
+            wake.update({"patrol": "stopped", "stopped_reason": AGENT_STOP_REASON})
+            return True
+
+        with (
+            patch.object(eventlog_hooks, "member_slug_for_slot", lambda _slot: "crew-x"),
+            patch.object(eventlog_hooks, "submit", lambda fn: (fn(), True)[1]),
+            patch.object(eventlog_hooks, "emit", _emit),
+            patch("kiro_crew.eventlog.service.get_service", return_value=projection),
+        ):
+            stopped = _loop(
+                "member-crew-x",
+                active=False,
+                stopped_reason=AGENT_STOP_REASON,
+                stopped_detail="done",
+            )
+            inst._activity_transition_for_observer.side_effect = [
+                (True, False, ""),
+                (False, False, AGENT_STOP_REASON),
+            ]
+            observer("updated", stopped)
+            await asyncio.sleep(0)
+            stopped.stopped_detail = "edited after landed append"
+            observer("updated", stopped)
+            await asyncio.sleep(0)
+
+        assert appended == [PATROL_STOPPED]
+        assert orch.dashboard_state.broadcast_ws.call_count == 2
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert payload["loop"]["stopped_detail"] == "edited after landed append"
+
+    @pytest.mark.asyncio
+    async def test_queued_stopped_row_edit_retries_after_edge_failure(self):
+        """Ordered workers let a queued edit observe and repair an edge failure."""
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog.types import PATROL_STOPPED, PROJ_WAKE
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, inst = await self._wire(orch)
+        queued: list[Any] = []
+        wake = {"patrol": "armed", "slot_key": "member-crew-x"}
+        projection = MagicMock()
+        projection.snapshot.side_effect = lambda _slug: {"values": {PROJ_WAKE: dict(wake)}}
+        projection.append_closer_if_still_applies.side_effect = _closer_through(
+            lambda: _emit, lambda: wake
+        )
+        outcomes = iter((False, True))
+        landed: list[str] = []
+
+        def _emit(_slug, _actor, etype, _data):
+            if not next(outcomes):
+                return False
+            landed.append(etype)
+            wake.update({"patrol": "stopped", "stopped_reason": AGENT_STOP_REASON})
+            return True
+
+        with (
+            patch.object(eventlog_hooks, "member_slug_for_slot", lambda _slot: "crew-x"),
+            patch.object(eventlog_hooks, "submit", lambda fn: (queued.append(fn), True)[1]),
+            patch.object(eventlog_hooks, "emit", _emit),
+            patch("kiro_crew.eventlog.service.get_service", return_value=projection),
+        ):
+            stopped = _loop(
+                "member-crew-x",
+                active=False,
+                stopped_reason=AGENT_STOP_REASON,
+                stopped_detail="edge",
+            )
+            inst._activity_transition_for_observer.side_effect = [
+                (True, False, ""),
+                (False, False, AGENT_STOP_REASON),
+            ]
+            observer("updated", stopped)
+            stopped.stopped_detail = "queued edit"
+            observer("updated", stopped)
+            assert len(queued) == 2
+            orch.dashboard_state.broadcast_ws.assert_not_called()
+
+            queued.pop(0)()
+            orch.dashboard_state.broadcast_ws.assert_not_called()
+            queued.pop(0)()
+            await asyncio.sleep(0)
+
+        assert landed == [PATROL_STOPPED]
+        orch.dashboard_state.broadcast_ws.assert_called_once()
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert payload["loop"]["stopped_detail"] == "queued edit"
+
+    @pytest.mark.asyncio
+    async def test_failed_agent_stop_followed_by_play_leaves_projection_armed(self):
+        """Play queues a start after the failed stop and publishes the active frame."""
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog.types import PATROL_STARTED, PATROL_STOPPED, PROJ_WAKE
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, inst = await self._wire(orch)
+        queued: list[Any] = []
+        wake = {"patrol": "armed", "slot_key": "member-crew-x"}
+        projection = MagicMock()
+        projection.snapshot.side_effect = lambda _slug: {"values": {PROJ_WAKE: dict(wake)}}
+        projection.append_closer_if_still_applies.side_effect = _closer_through(
+            lambda: _emit, lambda: wake
+        )
+        attempts: list[str] = []
+
+        def _emit(_slug, _actor, etype, _data):
+            attempts.append(etype)
+            if etype == PATROL_STOPPED:
+                return False
+            wake.clear()
+            wake.update({"patrol": "armed", "slot_key": "member-crew-x"})
+            return True
+
+        with (
+            patch.object(eventlog_hooks, "member_slug_for_slot", lambda _slot: "crew-x"),
+            patch.object(eventlog_hooks, "submit", lambda fn: (queued.append(fn), True)[1]),
+            patch.object(eventlog_hooks, "emit", _emit),
+            patch("kiro_crew.eventlog.service.get_service", return_value=projection),
+        ):
+            stopped = _loop(
+                "member-crew-x",
+                active=False,
+                stopped_reason=AGENT_STOP_REASON,
+                stopped_detail="done",
+            )
+            active = _loop("member-crew-x", active=True)
+            inst._activity_transition_for_observer.side_effect = [
+                (True, False, ""),
+                (False, True, AGENT_STOP_REASON),
+            ]
+            observer("updated", stopped)
+            observer("updated", active)
+            assert len(queued) == 2
+
+            queued.pop(0)()
+            queued.pop(0)()
+            await asyncio.sleep(0)
+
+        assert attempts == [PATROL_STOPPED, PATROL_STARTED]
+        assert wake == {"patrol": "armed", "slot_key": "member-crew-x"}
+        orch.dashboard_state.broadcast_ws.assert_called_once()
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert payload["loop"]["active"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("wake", "expected_appends"),
+        [
+            ({"patrol": "armed", "slot_key": "member-crew-x"}, 1),
+            (
+                {
+                    "patrol": "stopped",
+                    "slot_key": "member-crew-x",
+                    "stopped_reason": AGENT_STOP_REASON,
+                },
+                0,
+            ),
+            ({"patrol": "armed", "slot_key": "member-crew-y"}, 0),
+        ],
+        ids=["same-slot-armed", "same-slot-stopped", "different-slot-armed"],
+    )
+    async def test_startup_reconciles_only_the_matching_armed_projection(
+        self, wake, expected_appends
+    ):
+        """Startup closes only an armed projection owned by the retained row."""
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog.types import PATROL_STOPPED, PROJ_WAKE
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        stopped = _loop(
+            "member-crew-x",
+            active=False,
+            stopped_reason=AGENT_STOP_REASON,
+            stopped_detail="done",
+        )
+        projection = MagicMock()
+        projection.snapshot.return_value = {"values": {PROJ_WAKE: wake}}
+        projection.append_closer_if_still_applies.side_effect = _closer_through(
+            lambda: _emit, lambda: wake
+        )
+        appended: list[tuple[str, str, dict]] = []
+
+        def _emit(slug, _actor, etype, data):
+            appended.append((slug, etype, data))
+            return True
+
+        with (
+            patch.object(eventlog_hooks, "member_slug_for_slot", lambda _slot: "crew-x"),
+            patch.object(eventlog_hooks, "submit", lambda fn: (fn(), True)[1]),
+            patch.object(eventlog_hooks, "emit", _emit),
+            patch("kiro_crew.eventlog.service.get_service", return_value=projection),
+        ):
+            await self._wire(orch, existing_loops=[stopped])
+
+        assert len(appended) == expected_appends
+        if appended:
+            assert appended == [
+                (
+                    "crew-x",
+                    PATROL_STOPPED,
+                    {"slot_key": "member-crew-x", "reason": AGENT_STOP_REASON},
+                )
+            ]
+        orch.dashboard_state.broadcast_ws.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("create_kind", ["legacy", "structured"])
+    async def test_non_directive_create_preserves_an_agent_stopped_row(self, tmp_path, create_kind):
+        """Dashboard-style creates retain the stopped row and its detail."""
+        from kiro_crew.autonudge import AutoNudgeService, MonitorUpdateConflict
+
+        service = AutoNudgeService(base_dir=tmp_path)
+        try:
+            first = await service.add(
+                slot_key="chat-1",
+                message="old work",
+                idle_secs=300,
+            )
+            await service.update(
+                first.id,
+                active=False,
+                stopped_reason=AGENT_STOP_REASON,
+                stopped_detail="finished deliberately",
+            )
+
+            with pytest.raises(MonitorUpdateConflict, match="already has an automation"):
+                if create_kind == "structured":
+                    await service.add_monitor(
+                        slot_key="chat-1",
+                        kind="github_pull_request",
+                        target="https://github.com/acme/widgets/pull/7",
+                        objective="review_ready",
+                        cadence_secs=300,
+                        budgets=monitor_models.MonitorBudgets(),
+                        replace_existing=False,
+                    )
+                else:
+                    await service.add(
+                        slot_key="chat-1",
+                        message="new work",
+                        idle_secs=300,
+                        replace_existing=False,
+                    )
+
+            kept = service.get_by_slot("chat-1")
+            assert kept is first
+            assert kept.active is False
+            assert kept.stopped_reason == AGENT_STOP_REASON
+            assert kept.stopped_detail == "finished deliberately"
+        finally:
+            service.stop()
+
+    @pytest.mark.asyncio
+    async def test_observer_logs_a_revived_member_patrol_as_started(self):
+        """Play revives a kept agent-stop row through ``updated`` rather than add."""
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog.types import PATROL_STARTED
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, inst = await self._wire(orch)
+        appended: list[tuple[str, str, dict]] = []
+        with (
+            patch.object(eventlog_hooks, "member_slug_for_slot", lambda slot: "crew-x"),
+            patch.object(eventlog_hooks, "submit", lambda fn: (fn(), True)[1]),
+            patch.object(
+                eventlog_hooks,
+                "emit",
+                lambda slug, _actor, etype, data: (appended.append((slug, etype, data)), True)[1],
+            ),
+        ):
+            inst._activity_transition_for_observer.return_value = (False, True, AGENT_STOP_REASON)
+            observer("updated", _loop("member-crew-x", active=True))
+        assert appended == [("crew-x", PATROL_STARTED, {"slot_key": "member-crew-x"})]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "prior_reason", [MANUAL_STOP_REASON, "max_cycles", "max_runtime", "stop_sentinel"]
+    )
+    async def test_observer_logs_no_start_for_a_resume_the_agent_did_not_stop(self, prior_reason):
+        """Only reviving an agent-stopped row logs the patrol started; every other
+        resume keeps the event log as the base wrote it."""
+        from kiro_crew import eventlog_hooks
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, inst = await self._wire(orch)
+        appended: list[tuple[str, str, dict]] = []
+        with (
+            patch.object(eventlog_hooks, "member_slug_for_slot", lambda slot: "crew-x"),
+            patch.object(eventlog_hooks, "submit", lambda fn: (fn(), True)[1]),
+            patch.object(
+                eventlog_hooks,
+                "emit",
+                lambda slug, _actor, etype, data: (appended.append((slug, etype, data)), True)[1],
+            ),
+        ):
+            inst._activity_transition_for_observer.return_value = (False, True, prior_reason)
+            observer("updated", _loop("member-crew-x", active=True))
+        assert appended == []
 
     @pytest.mark.asyncio
     async def test_observer_broadcasts_structured_state_to_owners_only(self):
@@ -559,10 +1054,63 @@ class TestAutonudgeRouterAndObserver:
         observer("stopped", None)
         orch.dashboard_state.broadcast_ws.assert_not_called()
 
+    # ═════════════════════════════════════════════════════════════════════════
+    # _fire_dashboard_nudge happy path
+    # ═════════════════════════════════════════════════════════════════════════
 
-# ═════════════════════════════════════════════════════════════════════════
-# _fire_dashboard_nudge happy path
-# ═════════════════════════════════════════════════════════════════════════
+    @pytest.mark.asyncio
+    async def test_a_patrol_rearmed_between_snapshot_and_write_is_not_closed(self):
+        """The reconcile's closer is re-asked against the episode it read.
+
+        Another writer re-arms the patrol (a new ``since``) after the reconcile's
+        snapshot and before its write: the stale stop must not land on the new
+        episode, and the stopped row's frame still publishes because nothing of
+        that stop is left to persist.
+        """
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog.types import PROJ_WAKE
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, inst = await self._wire(orch)
+        wake = {"patrol": "armed", "slot_key": "member-crew-x", "since": 1}
+        appended: list[str] = []
+
+        def _snapshot(_slug):
+            seen = {"values": {PROJ_WAKE: dict(wake)}}
+            wake["since"] = 2  # re-armed by another writer after this read
+            return seen
+
+        def _emit(_slug, _actor, etype, _data):
+            appended.append(etype)
+            return True
+
+        projection = MagicMock()
+        projection.snapshot.side_effect = _snapshot
+        projection.append_closer_if_still_applies.side_effect = _closer_through(
+            lambda: _emit, lambda: wake
+        )
+        with (
+            patch.object(eventlog_hooks, "member_slug_for_slot", lambda _slot: "crew-x"),
+            patch.object(eventlog_hooks, "submit", lambda fn: (fn(), True)[1]),
+            patch.object(eventlog_hooks, "emit", _emit),
+            patch("kiro_crew.eventlog.service.get_service", return_value=projection),
+        ):
+            stopped = _loop(
+                "member-crew-x",
+                active=False,
+                stopped_reason=AGENT_STOP_REASON,
+                stopped_detail="done",
+            )
+            inst._activity_transition_for_observer.side_effect = [
+                (False, False, AGENT_STOP_REASON),
+            ]
+            observer("updated", stopped)
+            await asyncio.sleep(0)
+
+        assert appended == []
+        assert wake["patrol"] == "armed"
+        orch.dashboard_state.broadcast_ws.assert_called_once()
 
 
 class TestFireDashboardNudgeDispatch:

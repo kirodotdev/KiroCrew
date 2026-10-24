@@ -6104,6 +6104,7 @@
       "loop_paused": "일시중지됨",
       "paused_manual": "일시중지됨 · 직접 일시중지했습니다",
       "paused_agent": "일시중지됨 · 에이전트가 중지했습니다",
+      "stopped_agent_reason": "이유: {{reason}}",
       "paused_cycle_cap": "일시중지됨 · 주기 한도 도달({{max}} 중 {{cycles}}). 재개하면 새 예산으로 다시 시작합니다.",
       "paused_runtime_budget": "일시중지됨 · 시간 한도 도달. 재개하면 새 예산으로 다시 시작합니다.",
       "paused_approval_stalled": "일시중지됨 · 승인을 기다리고 있습니다",

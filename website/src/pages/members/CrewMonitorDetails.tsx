@@ -12,6 +12,7 @@ const PROFILE_STOP_REASON_KEYS: Readonly<Record<string, string>> = {
   manual: 'pages.membersPage.profile_monitor_reason_manual',
   user_stop: 'pages.membersPage.profile_monitor_reason_manual',
   autonudge_stop: 'pages.membersPage.profile_monitor_reason_agent',
+  agent_stop: 'pages.membersPage.profile_monitor_reason_agent',
   cycle_cap: 'pages.membersPage.profile_monitor_reason_cycles',
   runtime_budget: 'pages.membersPage.profile_monitor_reason_runtime',
   agent_turn_budget: 'pages.membersPage.profile_monitor_reason_budget',
@@ -153,8 +154,17 @@ export default function CrewMonitorDetails({
   const reasonFailed = !active
     && reasonKey !== undefined
     && FAILURE_PROFILE_REASON_KEYS.has(reasonKey)
+  // The agent's own words for a stop it made itself (`agent_stop`, or a Research
+  // Lab slot's `autonudge_stop`), shown under the fixed "The agent stopped it"
+  // phrase. The normalized record carries them on `stoppedDetail`; gating matches
+  // the session popover's. Model-authored, so rendered as plain text, never markup.
+  const agentStopReason = !active
+    && automation?.kind === 'legacy_goal_loop'
+    && (automation.stoppedReason === 'agent_stop' || automation.stoppedReason === 'autonudge_stop')
+      ? (automation.stoppedDetail ?? '').trim()
+      : ''
 
-  const rows: Array<[string, string, boolean]> = [
+  const rows: Array<[string, string, boolean, string?]> = [
     [t('pages.membersPage.profile_monitor_state'), status, readFailed],
     [t('pages.membersPage.profile_monitor_type'), monitorType(automation, t), false],
     [t('pages.membersPage.profile_monitor_subject'), monitorSubject(automation), false],
@@ -163,7 +173,7 @@ export default function CrewMonitorDetails({
     [t('pages.membersPage.profile_monitor_started'), createdAt > 0 ? fmtDateTime(createdAt) : '—', false],
     [t('pages.membersPage.profile_monitor_next'), active && nextAt > 0 ? fmtDateTime(nextAt) : '—', false],
     [t('pages.membersPage.profile_monitor_runtime'), runtime, false],
-    [t('pages.membersPage.profile_monitor_stopped'), active ? '—' : reasonText, reasonFailed],
+    [t('pages.membersPage.profile_monitor_stopped'), active ? '—' : reasonText, reasonFailed, agentStopReason || undefined],
   ]
 
   const visibleRows = readFailed || noMonitor || readState === 'loading'
@@ -180,7 +190,7 @@ export default function CrewMonitorDetails({
         {t('pages.membersPage.profile_monitor')}
       </h3>
       <dl className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] gap-x-3 gap-y-1.5 text-[12px] leading-snug">
-        {visibleRows.map(([label, value, failed]) => (
+        {visibleRows.map(([label, value, failed, detail]) => (
           <div key={label} className="contents">
             <dt className="text-muted">{label}</dt>
             {failed ? (
@@ -191,7 +201,21 @@ export default function CrewMonitorDetails({
                 <ErrorNotice message={value} variant="inline" testId="crew-profile-monitor-error" />
               </dd>
             ) : (
-              <dd className="min-w-0 break-words text-right font-medium text-text" title={value}>{value}</dd>
+              <dd className="min-w-0 break-words text-right font-medium text-text" title={value}>
+                {value}
+                {/* The agent's reason for stopping, under the fixed phrase. Plain
+                    text (model-authored, server-redacted); clamped so a long
+                    reason cannot push the readout, full text in the hover title. */}
+                {detail ? (
+                  <span
+                    className="mt-0.5 block break-words font-normal text-muted line-clamp-3"
+                    data-testid="crew-profile-monitor-reason"
+                    title={detail}
+                  >
+                    {t('components.autoNudgePopover.stopped_agent_reason', { reason: detail })}
+                  </span>
+                ) : null}
+              </dd>
             )}
           </div>
         ))}

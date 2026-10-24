@@ -452,6 +452,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         is_owned_research_slot,
     )
     from kiro_crew.autonudge import (  # noqa: F401
+        AGENT_STOP_REASON,
         APPROVAL_STALL_REASON,
         AUTONUDGE_STOP_REASON,
         CONSECUTIVE_FAILURE_REASON,

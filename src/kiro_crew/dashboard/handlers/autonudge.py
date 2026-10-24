@@ -216,6 +216,10 @@ _MONITOR_WITHHELD_LEGACY_FIELDS = frozenset(
         "max_cycles",
         "cycle_count",
         "last_fire_ts",
+        # The agent's words on an ``agent_stop`` legacy row. A structured monitor's
+        # stop reason lives on ``monitor.user_stop_reason``; this field is always ""
+        # there.
+        "stopped_detail",
         # The wake judge's own state. Withheld from a STRUCTURED monitor's legacy
         # projection, and each for its own reason rather than as a block. A plain
         # loop -- which is where a judge actually lives -- does not pass through
@@ -357,6 +361,9 @@ def _autonudge_loop_reading(loop: Any) -> dict[str, Any]:
         "created_ts": loop.created_ts,
         "next_due_ts": loop.next_due_ts,
         "stopped_reason": loop.stopped_reason,
+        # Why the agent stopped it, in its own redacted and clipped words
+        # (``agent_stop``); "" for every other stop.
+        "stopped_detail": str(getattr(loop, "stopped_detail", "") or ""),
         # Active but holding: a cycle's approval went unanswered and it fires
         # nothing until a person answers one, sends a message or fires it.
         "paused_for_approval": bool(loop.approval_stalled) and not is_structured_monitor_loop(loop),

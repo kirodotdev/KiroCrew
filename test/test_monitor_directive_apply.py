@@ -34,6 +34,15 @@ from kiro_crew.monitoring.models import (
 )
 
 
+def _assert_kept_stopped(service, slot, *, reason="agent_stop", detail="done"):
+    """The legacy row survives the stop, deactivated, saying why it ended."""
+    kept = service.get_by_slot(slot)
+    assert kept is not None, "a legacy stop keeps its row"
+    assert kept.active is False
+    assert kept.stopped_reason == reason
+    assert kept.stopped_detail == detail
+
+
 @pytest.mark.asyncio
 async def test_channel_origin_survives_a_linked_dashboard_monitor_binding(tmp_path):
     service = AutoNudgeService(base_dir=tmp_path)
@@ -223,8 +232,8 @@ async def test_webex_legacy_loop_is_stopped_by_monitor_stop(tmp_path):
 
         assert not result.startswith("Error:")
         assert "stopped" in result
-        # A legacy loop is REMOVED, not retained: nothing is left to inspect.
-        assert service.get_by_slot(session_key) is None
+        # A legacy loop is KEPT, stopped, with the agent's reason for inspection.
+        _assert_kept_stopped(service, session_key)
         audit.assert_called_once_with(session_key, "monitor_stop", "success")
     finally:
         service.stop()
@@ -233,7 +242,7 @@ async def test_webex_legacy_loop_is_stopped_by_monitor_stop(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_monitor_stop_removes_a_dashboard_legacy_loop(tmp_path):
+async def test_monitor_stop_stops_a_dashboard_legacy_loop(tmp_path):
     """The defect this fix targets: monitor_stop on a legacy timer loop.
 
     monitor_stop resolved only a structured monitor, so a session that armed a
@@ -257,7 +266,7 @@ async def test_monitor_stop_removes_a_dashboard_legacy_loop(tmp_path):
 
         assert not result.startswith("Error:")
         assert "stopped" in result
-        assert service.get_by_slot("chat-1") is None
+        _assert_kept_stopped(service, "chat-1")
     finally:
         service.stop()
     assert loop is not None

@@ -100,6 +100,9 @@ export interface LegacyGoalLoop {
   nextDueAt?: number
   maxRuntimeSecs?: number
   stoppedReason: string
+  /** The agent's own words for an `agent_stop` (the REST row's and frame's
+   *  `stopped_detail`). Present only when non-empty. */
+  stoppedDetail?: string
   /** The settled outcome of the loop's own watch (`success` / `blocked`, '' while
    *  none), from the frame's `monitor_outcome`. The popover words a finished
    *  watch by it: merged, or closed without merging. */
@@ -391,6 +394,7 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
       nextDueAt: finite(loop.next_due_ts),
       maxRuntimeSecs: count(loop.max_runtime_secs),
       stoppedReason: text(loop.stopped_reason),
+      ...(text(loop.stopped_detail) ? { stoppedDetail: text(loop.stopped_detail) } : {}),
       monitorOutcome: text(loop.monitor_outcome, text(gatedRecord?.outcome)),
       monitorKind: text(loop.monitor_kind, text(gatedRecord?.kind)),
       ...(loop.approval_stalled === true ? { approvalStalled: true } : {}),

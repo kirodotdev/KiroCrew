@@ -218,6 +218,16 @@ describe('SessionAutomationPopover', () => {
     expect(screen.getByRole('button', { name: 'Clear stopped goal' })).toBeInTheDocument()
   })
 
+  it('carries an agent stop and its words through the compatibility bridge, so the popover says why and Play stays live', () => {
+    renderPopover({
+      ...activeLegacyLoop, active: false, nextDueAt: 0, stoppedReason: 'agent_stop', stoppedDetail: 'blocked on a maintainer ruling',
+    })
+    expect(screen.getByTestId('auto-nudge-title')).toHaveTextContent('Paused')
+    expect(screen.getByTestId('auto-nudge-status')).toHaveTextContent(/^Paused · the agent stopped it/)
+    expect(screen.getByTestId('auto-nudge-stop-detail')).toHaveTextContent('Reason: blocked on a maintainer ruling')
+    expect(screen.getByRole('button', { name: 'Resume loop and nudge now' })).toBeEnabled()
+  })
+
   it('carries a held loop through the compatibility bridge: it reads paused and Play resumes it', () => {
     vi.spyOn(Date, 'now').mockReturnValue(1_899_999_880_000)
     // A bridge that drops approval_stalled shows "next cycle due" and disables

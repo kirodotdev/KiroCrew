@@ -218,6 +218,50 @@ describe('CrewProfilePanel Profile tab', () => {
     expect(details).not.toHaveTextContent('future_reason')
   })
 
+  it('shows the agent\'s own reason under the fixed phrase for an agent stop', () => {
+    setup({
+      automation: {
+        ...WORK_LEDGER_MONITOR,
+        active: false,
+        stoppedReason: 'agent_stop',
+        stoppedDetail: 'The task was already complete.',
+      },
+    })
+    const details = screen.getByTestId('crew-profile-monitor')
+    expect(details).toHaveTextContent('The agent stopped it')
+    const reason = within(details).getByTestId('crew-profile-monitor-reason')
+    expect(reason).toHaveTextContent('Reason: The task was already complete.')
+    // Plain text: the full reason rides the hover title, and it is no link or control.
+    expect(reason).toHaveAttribute('title', 'The task was already complete.')
+    expect(within(reason).queryByRole('link')).toBeNull()
+    expect(within(reason).queryByRole('button')).toBeNull()
+  })
+
+  it('shows the same reason line for a Research Lab autonudge_stop', () => {
+    setup({
+      automation: {
+        ...WORK_LEDGER_MONITOR,
+        active: false,
+        stoppedReason: 'autonudge_stop',
+        stoppedDetail: 'Goal reached; nothing left to patrol.',
+      },
+    })
+    expect(within(screen.getByTestId('crew-profile-monitor')).getByTestId('crew-profile-monitor-reason'))
+      .toHaveTextContent('Reason: Goal reached; nothing left to patrol.')
+  })
+
+  it('shows no reason line when an agent stop carries none, or while the loop is active', () => {
+    setup({ automation: { ...WORK_LEDGER_MONITOR, active: false, stoppedReason: 'agent_stop' } })
+    expect(within(screen.getByTestId('crew-profile-monitor')).queryByTestId('crew-profile-monitor-reason')).toBeNull()
+    cleanup()
+    // An active loop never shows a stop reason even when a stale detail is present.
+    setup({ automation: { ...WORK_LEDGER_MONITOR, active: true, stoppedReason: 'agent_stop', stoppedDetail: 'ignored while active' } })
+    const active = screen.getByTestId('crew-profile-monitor')
+    expect(active).toHaveAttribute('data-monitor-active', 'true')
+    expect(active).not.toHaveTextContent('ignored while active')
+    expect(within(active).queryByTestId('crew-profile-monitor-reason')).toBeNull()
+  })
+
   it('fails closed when monitor state cannot be read', () => {
     setup({ automation: ACTIVE_MONITOR, monitorReadState: 'error' })
     const details = screen.getByTestId('crew-profile-monitor')

@@ -6316,6 +6316,7 @@
       "loop_paused": "Pausado",
       "paused_manual": "Pausado · você o pausou",
       "paused_agent": "Pausado · o agente o parou",
+      "stopped_agent_reason": "Motivo: {{reason}}",
       "paused_cycle_cap": "Pausado · limite de ciclos atingido ({{cycles}} de {{max}}). Retomar inicia um novo orçamento.",
       "paused_runtime_budget": "Pausado · limite de tempo atingido. Retomar inicia um novo orçamento.",
       "paused_approval_stalled": "Pausado · aguardando sua aprovação",

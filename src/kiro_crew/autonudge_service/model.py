@@ -66,13 +66,20 @@ _MIN_IDLE_SECS = 15
 _MAX_IDLE_SECS = 86400  # 24h
 
 
-# Persisted source category for a deliberate ``autonudge_stop`` directive.
-# The caller's free-form explanation is intentionally not stored on the row: it
-# is model-authored text and the watchdog only needs the deterministic source.
-# On the REMOVAL path it reaches the WARNING stop line instead, through
-# ``remove(stop_detail=...)`` (``autonudge_stop_log``); a deactivated row logs
-# its ``stopped_reason`` alone.
+# Persisted source category for a deliberate ``autonudge_stop`` directive on a
+# Research Lab slot (the auto_research watchdog reads it to tell deliberate
+# completion from crash cleanup). The caller's free-form explanation is not stored
+# on that row: the watchdog only needs the deterministic source.
 AUTONUDGE_STOP_REASON = "autonudge_stop"
+
+
+#: ``stopped_reason`` for an ordinary legacy loop the agent stopped with
+#: ``autonudge_stop`` / ``monitor_stop``. The row is KEPT, deactivated, with the
+#: agent's own reason in ``stopped_detail``, so the popover and ``monitor_inspect``
+#: can say why the loop ended. Unlike the research tombstone above it is
+#: displaceable: the agent's next ``monitor_start`` on the slot replaces it, exactly
+#: as it replaces a spent bound.
+AGENT_STOP_REASON = "agent_stop"
 
 
 # Persisted reason for a loop stopped because one of its cycles could not obtain
@@ -284,14 +291,15 @@ MANUAL_STOP_REASON = "manual"
 
 #: Stops the SYSTEM imposed on a legacy loop, which a directive re-arm may
 #: therefore displace: a lapsed approval, a spent bound, a finished subject (a
-#: merged or closed watch, or the loop's own stop file), a dropped kill switch.
-#: Everything else — a manual pause (``"manual"``), a
+#: merged or closed watch, or the loop's own stop file), a dropped kill switch --
+#: and the agent's own stop (``AGENT_STOP_REASON``), whose next arm is the agent
+#: changing its mind. Everything else — a manual pause (``"manual"``), a
 #: research tombstone (``AUTONUDGE_STOP_REASON``, consumed by the auto_research
 #: watchdog to tell deliberate completion from crash cleanup), and any reason
 #: this version does not know — is evidence some consumer may read, so it fails
 #: CLOSED to preserved.
 _REPLACEABLE_LOOP_STOP_REASONS = (
-    _TERMINAL_BOUND_REASONS | FINISHED_LOOP_REASONS | {SENTINEL_DROPPED_REASON}
+    _TERMINAL_BOUND_REASONS | FINISHED_LOOP_REASONS | {SENTINEL_DROPPED_REASON, AGENT_STOP_REASON}
 )
 
 
@@ -301,7 +309,7 @@ _REPLACEABLE_LOOP_STOP_REASONS = (
 #: keeps why the loop ended, which the popover words its state by -- and for a
 #: finished loop the reason is also what refuses the revival, so ``manual`` stamped
 #: over it would hand Play back on a loop with nothing to resume.
-_KEPT_STOP_REASONS = _TERMINAL_BOUND_REASONS | FINISHED_LOOP_REASONS
+_KEPT_STOP_REASONS = _TERMINAL_BOUND_REASONS | FINISHED_LOOP_REASONS | {AGENT_STOP_REASON}
 
 
 def reason_in(value: object, reasons: frozenset[str]) -> bool:
@@ -551,7 +559,8 @@ class NudgeLoop:
     judge_recent_verdicts: list = field(default_factory=list)
     # WHY the loop was last deactivated: "" (active / never stopped),
     # "manual" (user pause / any caller that didn't say otherwise),
-    # "autonudge_stop" (deliberate directive), "cycle_cap",
+    # "autonudge_stop" (deliberate directive on a Research Lab slot), "agent_stop"
+    # (the agent's own stop of any other legacy loop), "cycle_cap",
     # "runtime_budget", or "approval_stalled" (set by _timer's terminal
     # bounds), "stop_sentinel" (the stop file existed when _timer woke) or
     # "monitor_terminal" (the watched subject merged or closed). "approval_stalled"
@@ -562,6 +571,11 @@ class NudgeLoop:
     # indistinguishable from a budget-stopped one, and a budget raise would
     # resume unattended execution against the user's explicit pause.
     stopped_reason: str = ""
+    # The stopping caller's own words, redacted and clipped
+    # (``MAX_MONITOR_STOP_REASON_CHARS``): set with ``agent_stop`` from the
+    # ``autonudge_stop`` / ``monitor_stop`` reason, "" on every other stop and
+    # cleared on revival. Model-authored text, shown only to the loop's owner.
+    stopped_detail: str = ""
     # Evidence that a cycle in this loop's session asked for tool approval and
     # nobody answered within the window. Set by ``notify_approval_stalled`` and
     # read by ``_timer`` as a HOLD on every later wake: the loop stays active but

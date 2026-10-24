@@ -6104,6 +6104,7 @@
       "loop_paused": "已暂停",
       "paused_manual": "已暂停 · 由你暂停",
       "paused_agent": "已暂停 · 代理已将其停止",
+      "stopped_agent_reason": "原因：{{reason}}",
       "paused_cycle_cap": "已暂停 · 已达轮次上限（{{cycles}}/{{max}}）。恢复后将以新预算重新开始。",
       "paused_runtime_budget": "已暂停 · 已达时间上限。恢复后将以新预算重新开始。",
       "paused_approval_stalled": "已暂停 · 等待你的批准",

@@ -13,6 +13,7 @@ see :mod:`kiro_crew.slack.gateway_runtime`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -127,6 +128,73 @@ async def _init_autonudge(self: GatewayOrchestrator) -> None:
     controller: MonitorController | None = None
     notified_monitor_terminals: set[tuple[str, MonitorOutcome, float]] = set()
 
+    def _submit_patrol_event(
+        slug: str,
+        etype: str,
+        data: dict[str, str],
+        *,
+        publish: Callable[[], None] | None = None,
+        reconcile_stop_slot: str = "",
+    ) -> bool:
+        """Persist one patrol transition before publishing its state frame."""
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog import types as event_types
+        from kiro_crew.eventlog.service import get_service
+
+        try:
+            serving_loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            # A non-loop caller publishes from its own thread, so preserve that
+            # fallback after persistence.
+            serving_loop = None
+
+        def _emit_patrol() -> None:
+            landed = False
+            try:
+                if reconcile_stop_slot:
+                    svc = get_service()
+                    svc.ensure(slug, slug)
+                    observed = svc.snapshot(slug).get("values", {})
+                    wake = observed.get(event_types.PROJ_WAKE) or {}
+                    if (
+                        wake.get("patrol") == "armed"
+                        and wake.get("slot_key") == reconcile_stop_slot
+                    ):
+                        # Decided from a snapshot and re-asked under the write lock
+                        # against that same wake episode, so a patrol another writer
+                        # re-armed in between is left armed rather than closed. A
+                        # None answer means the patrol already moved: nothing to close.
+                        svc.append_closer_if_still_applies(
+                            slug,
+                            etype,
+                            data,
+                            still_applies=eventlog_hooks._patrol_is_still_armed_at,
+                            observed=observed,
+                        )
+                    landed = True
+                else:
+                    landed = bool(eventlog_hooks.emit(slug, None, etype, data))
+            except Exception:
+                logger.debug("patrol event-log emit failed", exc_info=True)
+            if not landed:
+                logger.debug(
+                    "patrol %s for %s was not persisted; frame withheld",
+                    etype,
+                    slug,
+                )
+                return
+            if publish is None:
+                return
+            try:
+                if serving_loop is not None:
+                    serving_loop.call_soon_threadsafe(publish)
+                else:
+                    publish()
+            except Exception:
+                logger.debug("patrol publish failed", exc_info=True)
+
+        return eventlog_hooks.submit(_emit_patrol)
+
     async def _record_terminal_notification_delivery(
         monitor_id: str,
         outcome: MonitorOutcome,
@@ -237,6 +305,14 @@ async def _init_autonudge(self: GatewayOrchestrator) -> None:
                 # REST list already.
                 "next_due_ts": loop.next_due_ts,
                 "stopped_reason": loop.stopped_reason,
+                # The agent's own words on an ``agent_stop`` row, which the popover
+                # shows under the status line; "" on every other stop. Cleaned on
+                # every write and load (``autonudge_stop_log.clean_stop_detail``),
+                # and put through this frame's own redaction too, since the frame
+                # reaches every dashboard socket.
+                "stopped_detail": (
+                    _redact_monitor_value(loop.stopped_detail) if loop.stopped_detail else ""
+                ),
                 # The settled outcome of the loop's own watch ("success" for a
                 # merged subject or an accepted work ledger, "blocked" for one
                 # closed without merging or rejected), "" while none has settled,
@@ -316,77 +392,74 @@ async def _init_autonudge(self: GatewayOrchestrator) -> None:
             try:
 
                 from kiro_crew import eventlog_hooks
+                from kiro_crew.autonudge import AGENT_STOP_REASON
                 from kiro_crew.eventlog.types import PATROL_STARTED, PATROL_STOPPED
 
                 _pslug = eventlog_hooks.member_slug_for_slot(loop.slot_key)
                 _etype2: str | None = None
-                _edata: dict = {}
-                if event == "added":
-                    _etype2, _edata = PATROL_STARTED, {"slot_key": loop.slot_key}
-                elif event in ("removed", "expired") or (
-                    # A loop FINISHED by its stop file is kept and deactivated,
-                    # so it arrives as ``updated``; the patrol is over all the
-                    # same, and a log left reading ``armed`` would never close --
-                    # the boot closer closes only a log whose row is gone. A
-                    # plain pause stays a pause: not a stop, not recorded.
+                _edata: dict[str, str] = {}
+                _reconcile_stop_slot = ""
+                _activity_edge = (
+                    self.autonudge_svc._activity_transition_for_observer(loop.id)
+                    if event == "updated" and self.autonudge_svc is not None
+                    else None
+                )
+                _agent_stop_edge = (
+                    _activity_edge is not None
+                    and _activity_edge[:2] == (True, False)
+                    and loop.stopped_reason == AGENT_STOP_REASON
+                )
+                if event == "added" or (
+                    # Play on a row the agent stopped revives it through
+                    # ``updated``, and that stop logged the patrol stopped, so
+                    # the revival logs it started. A failed stop followed by Play
+                    # leaves the projection armed because this ordered start
+                    # follows the failed stop attempt.
                     event == "updated"
-                    and not loop.active
-                    and reason_in(loop.stopped_reason, FINISHED_LOOP_REASONS)
+                    and _activity_edge == (False, True, AGENT_STOP_REASON)
+                ):
+                    _etype2, _edata = PATROL_STARTED, {"slot_key": loop.slot_key}
+                elif (
+                    _agent_stop_edge
+                    or event in ("removed", "expired")
+                    or (
+                        # A loop FINISHED by its stop file is kept and deactivated,
+                        # so it arrives as ``updated``; the patrol is over all the
+                        # same, and a log left reading ``armed`` would never close --
+                        # the boot closer closes only a log whose row is gone. A
+                        # plain pause stays a pause: not a stop, not recorded.
+                        event == "updated"
+                        and not loop.active
+                        and reason_in(loop.stopped_reason, FINISHED_LOOP_REASONS)
+                    )
                 ):
                     _reason = getattr(loop, "stopped_reason", None) or event
                     _etype2, _edata = (
                         PATROL_STOPPED,
                         {"slot_key": loop.slot_key, "reason": _reason},
                     )
+                elif (
+                    event == "updated"
+                    and not loop.active
+                    and loop.stopped_reason == AGENT_STOP_REASON
+                ):
+                    # A retained agent-stop row is the retry record. Every later
+                    # edit checks the durable projection, so a failed edge retries
+                    # and a landed edge publishes without appending a duplicate.
+                    _etype2, _edata = (
+                        PATROL_STOPPED,
+                        {"slot_key": loop.slot_key, "reason": AGENT_STOP_REASON},
+                    )
+                    _reconcile_stop_slot = loop.slot_key
                 if _pslug is not None and _etype2 is not None:
                     _ledger_owns_frame = True
-                    _pslug_s: str = _pslug
-                    _etype_s: str = _etype2
-                    try:
-                        _loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
-                    except RuntimeError:
-                        # A non-loop caller: it was already publishing from
-                        # its own thread before this, so keep that shape
-                        # rather than drop the append to preserve it.
-                        _loop = None
-
-                    def _emit_patrol(
-                        slug: str = _pslug_s, etype: str = _etype_s, data: dict = _edata
-                    ) -> None:
-                        landed = False
-                        try:
-                            landed = bool(eventlog_hooks.emit(slug, None, etype, data))
-                        except Exception:
-                            logger.debug("patrol event-log emit failed", exc_info=True)
-                        if not landed:
-                            # NOT published. The frame would assert a transition
-                            # the ledger does not hold, and the ledger is what
-                            # the drawer reads for the stop reason after a
-                            # restart -- so publishing here is the
-                            # report-success-on-a-failed-write shape that
-                            # `persist-before-you-publish` forbids. The refusal
-                            # is not silent either: the log still reads `armed`,
-                            # and `reconcile_members_at_startup` closes exactly
-                            # that state with an explicitly terminal
-                            # `interrupted`, which is the state the rule asks a
-                            # failed transition to leave behind.
-                            logger.debug(
-                                "patrol %s for %s was not persisted; frame withheld",
-                                etype,
-                                slug,
-                            )
-                            return
-                        # Published only AFTER the append landed, and from the
-                        # loop, because `broadcast_ws` is loop-affine.
-                        try:
-                            if _loop is not None:
-                                _loop.call_soon_threadsafe(_publish)
-                            else:
-                                _publish()
-                        except Exception:
-                            logger.debug("patrol publish failed", exc_info=True)
-
-                    _publish_deferred = eventlog_hooks.submit(_emit_patrol)
+                    _publish_deferred = _submit_patrol_event(
+                        _pslug,
+                        _etype2,
+                        _edata,
+                        publish=_publish,
+                        reconcile_stop_slot=_reconcile_stop_slot,
+                    )
             except Exception:
                 logger.debug("patrol event-log hook failed", exc_info=True)
             if not _publish_deferred and not _ledger_owns_frame:
@@ -649,7 +722,24 @@ async def _init_autonudge(self: GatewayOrchestrator) -> None:
     # A persisted terminal transition and its notification are separate
     # durable steps. Replay any notice not proven delivered; marking only
     # after delivery gives this boundary at-least-once crash semantics.
+    from kiro_crew import eventlog_hooks as _eventlog_hooks
+    from kiro_crew.autonudge import AGENT_STOP_REASON as _AGENT_STOP_REASON
+    from kiro_crew.eventlog.types import PATROL_STOPPED as _PATROL_STOPPED
+
     for loop in self.autonudge_svc.list_all():
+        if (
+            not loop.active
+            and loop.stopped_reason == _AGENT_STOP_REASON
+            and (_member_slug := _eventlog_hooks.member_slug_for_slot(loop.slot_key)) is not None
+        ):
+            # The retained row is the durable retry signal across process restarts.
+            # The projection check closes only a patrol still armed for this slot.
+            _submit_patrol_event(
+                _member_slug,
+                _PATROL_STOPPED,
+                {"slot_key": loop.slot_key, "reason": _AGENT_STOP_REASON},
+                reconcile_stop_slot=loop.slot_key,
+            )
         if (
             is_structured_monitor_loop(loop)
             and loop.monitor is not None

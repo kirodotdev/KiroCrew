@@ -18,6 +18,7 @@ from typing import Any
 
 from kiro_crew.apps.builtins.auto_research.session_keys import is_owned_research_slot
 from kiro_crew.autonudge import (
+    AGENT_STOP_REASON,
     APPROVAL_STALL_REASON,
     AUTONUDGE_STOP_REASON,
     CONSECUTIVE_FAILURE_REASON,
@@ -120,7 +121,7 @@ def _refuse_stale_wake_stop(session_key: str, wake_loop_id: str) -> None:
     it. Retention: a row a person paused or stopped while this wake was still
     running (``"manual"``, an empty reason, anything
     ``_stopped_row_is_replaceable`` fails closed on) is retained evidence, and a
-    legacy stop REMOVES its row, so the wake may not delete it. A row the system
+    legacy stop REWRITES its row, so the wake may not touch it. A row the system
     deactivated (cycle cap, runtime budget, terminal subject) still passes;
     ending it is the stop applier's decision.
     """
@@ -648,6 +649,8 @@ async def _monitor_update(
                     "its stop file was created, so the goal is finished and there "
                     "is nothing to resume; arm monitor_start again only for a NEW goal"
                 )
+            elif reason == AGENT_STOP_REASON:
+                bound = "you stopped it; arm monitor_start again to watch something"
             else:
                 bound = "it was paused manually; ask the user, or use monitor_start"
             raise _DirectiveDenied(
@@ -872,22 +875,26 @@ async def _stop_resolved_loop(
 
     Routing is asymmetric because the data model is. A structured monitor goes
     through ``authorize_and_stop_monitor``, which RETAINS a terminal record for
-    later inspection. A legacy loop has no such record: a research-owned slot is
-    deactivated with a tombstone reason a Research Lab consumer reads, and every
-    other legacy loop is REMOVED, leaving no row behind. So a stop of a legacy
-    loop cannot be inspected afterward -- ``monitor_inspect`` reports it as not
-    armed; only the WARNING stop line in ``gateway.log`` says why it went (the
-    agent's own explanation rides along on the removal path only). Callers that
-    need a retained terminal record must be watching a structured monitor.
+    later inspection. A legacy loop is deactivated in place: a research-owned slot
+    with the tombstone reason a Research Lab consumer reads, every other one with
+    ``agent_stop`` and the agent's own reason in ``stopped_detail``, so
+    ``monitor_inspect`` and the popover can say why it ended. ``agent_stop`` is
+    displaceable, so the agent's next ``monitor_start`` on the slot replaces it.
+    A non-research row that is ALREADY stopped is removed instead: its reason is
+    kept against later stops, so deactivating it again would record nothing. The
+    exception is a row the agent itself already stopped, which is that stop's
+    record and is left as it is.
     """
     from kiro_crew.autonudge import is_structured_monitor_loop
 
     loop_id = loop.id
-    reason = _structured_stop_reason(args)
     structured = is_structured_monitor_loop(loop)
     if structured:
         from kiro_crew.autonudge_authz import authorize_and_stop_monitor
 
+        # A structured monitor's ``user_stop_reason`` keeps its own baseline cleaner:
+        # structured monitors are outside this stop path's change.
+        reason = _structured_stop_reason(args)
         _loop, error, _status = await authorize_and_stop_monitor(
             svc=svc,
             loop_id=loop_id,
@@ -903,6 +910,12 @@ async def _stop_resolved_loop(
             + (f" (reason: {reason})" if reason else "")
             + ". No further monitor wakes will fire."
         )
+    # A legacy row holds the agent's words: the full platform policy reads the raw
+    # text before anything is clipped, so a credential cut at the bound is still
+    # whole when the policy sees it.
+    from kiro_crew import autonudge_stop_log
+
+    reason = autonudge_stop_log.clean_stop_detail(str(args.get("reason") or "").strip())
     # Research Lab consumes a persisted stop record to distinguish deliberate
     # completion from unreachable-session cleanup. The canonical name is not
     # ownership evidence: users may give an ordinary dashboard slot the same
@@ -932,26 +945,35 @@ async def _stop_resolved_loop(
         absent_outcome.append("replaced" if replaced else "gone")
 
     on_absent = guard.on_absent if guard is not None else _mark_absent
-    if is_owned_research_slot(binding, str(getattr(slot, "_app", "") or "")):
-        update_kwargs: dict[str, Any] = {
-            "active": False,
-            "stopped_reason": AUTONUDGE_STOP_REASON,
-            "on_absent": on_absent,
-        }
-        if guard is not None:
-            update_kwargs["precondition"] = guard
-        applied = await svc.update(loop_id, **update_kwargs) is not None
+    research = is_owned_research_slot(binding, str(getattr(slot, "_app", "") or ""))
+    if not research and not loop.active and loop.stopped_reason == AGENT_STOP_REASON:
+        # The agent already stopped this loop: the row is the record of that stop,
+        # with its words, so a repeat stop keeps it rather than deleting it.
+        return (
+            f"Auto-nudge loop {loop_id} was already stopped on this session; "
+            "its stop record is kept. No further nudges will fire."
+        )
+    stop_kwargs: dict[str, Any] = {"on_absent": on_absent}
+    if guard is not None:
+        stop_kwargs["precondition"] = guard
+    if not research and not loop.active:
+        # Already stopped (a person's pause, a spent bound): the row keeps the reason
+        # it has, which a later deactivation does not overwrite, so a stop here would
+        # record nothing and leave a pause the next ``monitor_start`` may not
+        # replace. So that row is removed, and the reason goes to the stop log.
+        stop_kwargs.update(stop_reason=AGENT_STOP_REASON, stop_detail=reason)
+        applied = bool(await svc.remove(loop_id, **stop_kwargs))
     else:
-        # The removal leaves no row, so the agent's own reason travels in the WARNING
-        # stop line instead (autonudge_stop_log); without it a self-stop is "removed".
-        remove_kwargs: dict[str, Any] = {
-            "stop_reason": AUTONUDGE_STOP_REASON,
-            "stop_detail": reason,
-            "on_absent": on_absent,
-        }
-        if guard is not None:
-            remove_kwargs["precondition"] = guard
-        applied = bool(await svc.remove(loop_id, **remove_kwargs))
+        # A running loop is KEPT, deactivated. A research slot's carries the
+        # tombstone its watchdog consumes; any other carries ``agent_stop`` and the
+        # agent's own reason, so the popover and ``monitor_inspect`` can say why.
+        stop_kwargs.update(
+            active=False,
+            stopped_reason=AUTONUDGE_STOP_REASON if research else AGENT_STOP_REASON,
+        )
+        if not research:
+            stop_kwargs["stopped_detail"] = reason
+        applied = await svc.update(loop_id, **stop_kwargs) is not None
     if guard is not None:
         guard.raise_unless_stopped(applied)
     elif not applied and absent_outcome != ["gone"]:

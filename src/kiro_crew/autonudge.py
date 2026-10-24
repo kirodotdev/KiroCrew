@@ -98,6 +98,7 @@ from kiro_crew.autonudge_service.model import (  # noqa: F401 -- re-exported
     _START_FAILURE_BACKOFF_AFTER,
     _START_FAILURE_STANDDOWN_AFTER,
     _TERMINAL_BOUND_REASONS,
+    AGENT_STOP_REASON,
     APPROVAL_STALL_REASON,
     AUTONUDGE_STOP_REASON,
     CONSECUTIVE_FAILURE_REASON,
@@ -199,6 +200,7 @@ from kiro_crew.monitoring.github_provider_errors import (  # noqa: F401 -- re-ex
 )
 from kiro_crew.monitoring.limits import validate_runtime_secs  # noqa: F401 -- re-exported
 from kiro_crew.monitoring.models import (  # noqa: F401 -- re-exported
+    MAX_MONITOR_STOP_REASON_CHARS,
     MONITOR_BUSY_RETRY_SECS,
     MONITOR_COMPLETION_EVIDENCE_TIMEOUT_SECS,
     MONITOR_STATE_VERSION,
@@ -681,6 +683,11 @@ class AutoNudgeService:
         self._monitor_mutation_locks: dict[str, asyncio.Lock] = {}
         self._monitor_mutation_lock_users: dict[str, int] = {}
         self._observers: list[Callable[[str, NudgeLoop | None], None]] = []
+        # ``update`` observers receive the post-mutation loop, so active=False alone
+        # cannot distinguish a real stop from a later edit of the stopped row. Keep
+        # the exact edge only for the synchronous observer call; it is neither stored
+        # nor exposed as a new event name that every subscriber would have to learn.
+        self._observer_activity_transitions: dict[str, tuple[bool, bool, str]] = {}
         self._lock = asyncio.Lock()
 
     @property
@@ -857,6 +864,32 @@ class AutoNudgeService:
         self._write_state(self._serialize_state())
 
     # ── Observer hook (for WS broadcasts) ──
+
+    def _emit_activity_update(
+        self, loop: NudgeLoop, *, was_active: bool, was_reason: str = ""
+    ) -> None:
+        """Emit ``updated`` with its active-state edge visible to observers.
+
+        The edge is ``(was_active, is_active, was_reason)``: *was_reason* is the
+        ``stopped_reason`` the row held before this update, so an observer can tell
+        the revival of an agent-stopped row from any other resume. The event name
+        stays ``updated`` for dashboard and third-party subscribers. The side channel
+        exists only while callbacks run synchronously, so a later update cannot
+        inherit an earlier edge and duplicate a patrol transition.
+        """
+        prior = self._observer_activity_transitions.get(loop.id)
+        self._observer_activity_transitions[loop.id] = (was_active, loop.active, was_reason)
+        try:
+            self._emit("updated", loop)
+        finally:
+            if prior is None:
+                self._observer_activity_transitions.pop(loop.id, None)
+            else:
+                self._observer_activity_transitions[loop.id] = prior
+
+    def _activity_transition_for_observer(self, loop_id: str) -> tuple[bool, bool, str] | None:
+        """Return the active-state edge for the synchronous ``updated`` callback."""
+        return self._observer_activity_transitions.get(loop_id)
 
     def subscribe(self, cb: Callable[[str, NudgeLoop | None], None]) -> None:
         self._observers.append(cb)
