@@ -542,6 +542,48 @@ class TestPartialDrainInAForumTopic:
             (key, 70, ["c"], 0, _entry_owner(_tg_origin(7, 70)), True),
         ]
 
+    def test_the_now_answering_receipt_shows_the_users_words_not_the_framing(self) -> None:
+        # A queued reply's receipt must show what the user typed, matching the
+        # "⏳ Queued" bubble — never the internal reply-context framing that only
+        # the agent-facing replayed turn carries.
+        from kiro_crew.context_assembly import markers as _markers
+
+        d, _cli, sess = _dispatcher({7})
+
+        async def _enqueue() -> None:
+            sess._busy = True
+            assert await d._enqueue_with_receipt(
+                self._KEY,
+                self._CHAT,
+                "ok",
+                thread=5,
+                reply_context="Option A: CSV",
+                origin=self._member(7),
+            )
+            sess._busy = False
+
+        asyncio.run(_enqueue())
+
+        answered: list[list[str]] = []
+        original_flip = d._receipt_flip_locked
+
+        async def _flip(session_key, chat_id, ans, deferred=0, *, owner):  # type: ignore[no-untyped-def]
+            answered.append(list(ans))
+
+        d._receipt_flip_locked = _flip  # type: ignore[method-assign]
+        try:
+            seen = TestDrainSenderIdentity._drain(d, self._KEY)
+        finally:
+            d._receipt_flip_locked = original_flip
+
+        # The receipt gets the raw word, with no framing.
+        assert answered == [["ok"]]
+        assert "TELEGRAM REPLY CONTEXT" not in answered[0][0]
+        # The replayed turn the agent sees DOES carry the framed parent.
+        assert len(seen) == 1
+        assert "Option A: CSV" in seen[0].text
+        assert seen[0].text.count(_markers._THREAD_FENCE_OPEN) == 1
+
 
 class TestDrainReplayContract:
     """What the drain hands ``handle_message`` for each collapsed turn."""

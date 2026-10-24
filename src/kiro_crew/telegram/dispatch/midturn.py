@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.messaging import privacy_mode
 from kiro_crew.messaging.queue_receipt import STEER_ACK_EMOJI as _STEER_ACK_EMOJI
+from kiro_crew.telegram.client import audit_reply_parent, frame_reply_context_for_message
 from kiro_crew.telegram.dispatch import origin as _origin
 
 if TYPE_CHECKING:
@@ -125,7 +126,21 @@ async def _handle_busy(
             except privacy_mode.PrivacyModeRefused:
                 return
         try:
-            steered = bool(can_steer and steer is not None and await steer(text))
+            # Frame the reply's quoted context onto the steered text so a reply
+            # that lands mid-turn reaches the running turn with its parent, the
+            # same as a reply to an idle session. Framing here is audit-free: the
+            # drop is recorded only once the steer LANDS (below), because a steer
+            # that declines falls through to the queue still carrying the raw
+            # reply_context, and that consumer frames and audits it once. Done
+            # HERE, not in _build_inbound, so it stays off the activation path;
+            # the user's own words (not the framed text) are what note_steer
+            # records for the "↪️ steered" chip.
+            steer_text = (
+                frame_reply_context_for_message(msg, text, session_key=session_key, audit=False)
+                if can_steer
+                else text
+            )
+            steered = bool(can_steer and steer is not None and await steer(steer_text))
         except asyncio.CancelledError:
             # Cancelled mid-steer: the outcome is unknown -- the steer's
             # bytes may already be with the backend -- so the mode STANDS
@@ -154,6 +169,11 @@ async def _handle_busy(
                     await privacy_mode.commit(reservation, unconfirmed=True)
             raise
         if steered:
+            # The steer LANDED, so this path is the message's one consumer:
+            # record the single prompt_injection_dropped event for a withheld
+            # parent here (framing above was audit-free). A declined steer never
+            # reaches this point, so it audits nothing and the queue consumer does.
+            audit_reply_parent(msg, session_key=session_key)
             if reservation is not None:
                 # The message is in the turn: the mode is the conversation's
                 # for good, and THIS is when the user is told so.
@@ -202,6 +222,9 @@ async def _handle_busy(
         thread=thread,
         attachments=list(msg.attachments) if msg.attachments else None,
         privacy_request=privacy_request,
+        # The reply's quoted context rides with its own entry, so the drain can
+        # frame THIS entry's parent onto its own text before collapsing a burst.
+        reply_context=getattr(msg, "reply_context", "") or "",
         # The sender and their chat ride with the entry too, because the drain
         # replays it and the reply reaches whoever the replayed envelope names.
         # Under ``dm_scope = "unified"`` two allow-listed people share ONE
@@ -264,10 +287,17 @@ async def _handle_resumed_busy(
 
     link = self._session_resume.link_for(chat_id, thread)
     mode = override_mode or str(self._live_cfg().messaging.queue_mode)
+    # Frame the reply's quoted context onto the text handed to the slot, so a
+    # reply arriving mid-turn into a resumed session reaches the agent with its
+    # parent. Framing here is audit-free; the drop is recorded only if the slot
+    # actually TAKES the message (below). A refused-and-idle hand-off falls
+    # through to _run_turn with the RAW text and the untouched message, so that
+    # single consumer frames and audits it once.
+    handoff_text = frame_reply_context_for_message(msg, text, session_key=session_key, audit=False)
     outcome = await hand_to_resumed_slot(
         getattr(self._session_resume, "dashboard_state", None),
         session_key,
-        text,
+        handoff_text,
         mode=mode,
         has_attachments=bool(msg.attachments),
         # Where a drop notice goes if the drain later refuses a queued entry,
@@ -278,6 +308,10 @@ async def _handle_resumed_busy(
         conversation_id=link.channel_id or "",
         principal=principal,
     )
+    if not outcome.refused:
+        # The slot TOOK the message (steered or queued there): this hand-off is
+        # its one consumer, so record the single drop event for a withheld parent.
+        audit_reply_parent(msg, session_key=session_key)
     if outcome.refused:
         logger.info(
             "telegram: message into busy resumed session %s refused (%s)",
@@ -300,6 +334,9 @@ async def _handle_resumed_busy(
             # so a re-entry's fresh binding resolution could land this message in
             # the native session the user just left this one for.
             await privacy_mode.hydrate_inbound(self.sessions, session_key)
+            # The hand-off refused, so it consumed nothing and audited nothing:
+            # run the RAW text and the untouched message so _run_turn is the one
+            # consumer that frames and audits the parent, exactly once.
             await self._run_turn(
                 msg,
                 text,

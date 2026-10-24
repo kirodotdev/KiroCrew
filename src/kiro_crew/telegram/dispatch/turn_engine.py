@@ -63,6 +63,7 @@ from kiro_crew.safety_override import safety_override
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.start_priority import person_priority
 from kiro_crew.telegram.attachments import process_telegram_attachments
+from kiro_crew.telegram.client import frame_reply_context_for_message
 from kiro_crew.telegram.renderer import TelegramApprovalDecider as _APPROVAL_REGISTRY
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
 
@@ -278,6 +279,14 @@ async def _run_turn(
             attachment_result = await process_telegram_attachments(self.client, msg.attachments)
             attachment_temp_paths = list(attachment_result.temp_paths)
             text = append_attachment_context(text, attachment_result)
+        # Fold the replied-to message's quoted content onto the agent-facing
+        # text HERE — after activation and command parsing, once per turn (an
+        # album arrives already merged, carrying only its head member's
+        # reply_context; a queue replay has already framed each entry and
+        # carries no reply_context). Screened, audited and fenced inside
+        # frame_reply_context; kept out of msg.text so a quoted @handle never
+        # reached the mention gate.
+        text = frame_reply_context_for_message(msg, text, session_key=session_key)
         if not text:
             return
         # Publish this turn's session identity so managed MCP tools resolve

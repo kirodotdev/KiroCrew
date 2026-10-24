@@ -160,6 +160,7 @@ BASE_MEMBERS = {
     "_flush_album": ("function", "(self, group_id: 'str') -> 'None'"),
     "_flush_all_albums": ("function", "(self) -> 'None'"),
     "_build_inbound": ("staticmethod", "(msg: 'dict') -> 'TelegramInbound'"),
+    "_reply_context_payload": ("staticmethod", "(msg: 'dict') -> 'str'"),
     "_offset_lock": ("property", "(self) -> 'asyncio.Lock'"),
     "_resolve_updates": ("function", "(self, update_ids: \"'Iterable[int]'\") -> 'None'"),
     "_persistable_offset": ("function", "(self) -> 'int'"),
