@@ -16,7 +16,7 @@ import pytest
 from knowledge_helpers import store_fixture  # noqa: F401
 
 from kiro_crew.knowledge.chunker import HeadingAwareChunker
-from kiro_crew.knowledge.extractor import EntityExtractor
+from kiro_crew.knowledge.extractor import EntityExtractor, extraction_failed
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.retrieval import ANY_EMBEDDING_SPACE, HybridRetriever, _bytes_to_floats
 
@@ -111,6 +111,15 @@ class TestHybridRetrieverExtended:
 # ---------------------------------------------------------------------------
 
 
+_EMPTY_EXTRACTION = {
+    "title": "",
+    "entities": [],
+    "relations": [],
+    "category": "document",
+    "summary": "",
+}
+
+
 class TestEntityExtractorExtended:
     def test_extract_empty_text(self):
         import asyncio
@@ -159,13 +168,42 @@ class TestEntityExtractorExtended:
 
         ext = EntityExtractor(pool=BadPool())
         result = asyncio.get_event_loop().run_until_complete(ext.extract("text"))
-        assert result == {
-            "title": "",
-            "entities": [],
-            "relations": [],
-            "category": "document",
-            "summary": "",
-        }
+        assert result == {**_EMPTY_EXTRACTION, "extraction_failed": True}
+
+    def test_blank_chunk_and_no_pool_are_empty_not_failed(self):
+        import asyncio
+
+        # Nothing was sent, so nothing failed: these must not trigger a retry.
+        assert not extraction_failed(asyncio.run(EntityExtractor(pool=None).extract("text")))
+
+        class Pool:
+            async def send_batch(self, prompts, timeout=60.0):
+                return ['{"entities": [], "relations": [], "summary": "s"}' for _ in prompts]
+
+        results = asyncio.run(EntityExtractor(pool=Pool()).extract_batch(["   ", "body"]))
+        assert [extraction_failed(r) for r in results] == [False, False]
+
+    def test_batch_marks_only_the_items_whose_call_failed(self):
+        import asyncio
+
+        class Pool:
+            async def send_batch(self, prompts, timeout=60.0):
+                # The pool's batch path turns a failed call into "".
+                return ['{"entities": [], "summary": "ok"}', "", "no json here"]
+
+        results = asyncio.run(EntityExtractor(pool=Pool()).extract_batch(["a", "b", "c"]))
+        assert [extraction_failed(r) for r in results] == [False, True, True]
+        assert results[0]["summary"] == "ok"
+
+    def test_whole_batch_exception_fails_sent_chunks_only(self):
+        import asyncio
+
+        class Pool:
+            async def send_batch(self, prompts, timeout=60.0):
+                raise RuntimeError("endpoint down")
+
+        results = asyncio.run(EntityExtractor(pool=Pool()).extract_batch(["a", "", "c"]))
+        assert [extraction_failed(r) for r in results] == [True, False, True]
 
     def test_parse_response_prose_wrapped(self):
         ext = EntityExtractor()
@@ -176,13 +214,14 @@ class TestEntityExtractorExtended:
     def test_parse_response_garbage(self):
         ext = EntityExtractor()
         result = ext._parse_response("totally invalid garbage")
-        assert result == {
-            "title": "",
-            "entities": [],
-            "relations": [],
-            "category": "document",
-            "summary": "",
-        }
+        assert result == {**_EMPTY_EXTRACTION, "extraction_failed": True}
+
+    @pytest.mark.parametrize("raw", ["{}", '{"error": "temporarily unavailable"}'])
+    def test_parse_response_dict_without_payload_is_failed(self, raw):
+        # The scanner falls back to the first dict it finds; one with no extraction
+        # field is a failed call, not "found nothing".
+        result = EntityExtractor()._parse_response(raw)
+        assert result == {**_EMPTY_EXTRACTION, "extraction_failed": True}
 
     def test_parse_response_stray_brace_in_prose(self):
         # The old greedy first-'{'-to-last-'}' regex spanned from the
@@ -197,20 +236,14 @@ class TestEntityExtractorExtended:
         assert result["category"] == "runbook"
         assert result["summary"] == "ok"
 
-    def test_parse_response_non_dict_reply_is_empty(self):
-        # A top-level array reply must yield the empty result, not leak an
+    def test_parse_response_non_dict_reply_is_failed(self):
+        # A top-level array reply must yield the failed result, not leak an
         # AttributeError out of _validate (which nuked a whole extract_batch
         # under the old direct json.loads path).
         ext = EntityExtractor()
         raw = '[{"entities": []}]'
         result = ext._parse_response(raw)
-        assert result == {
-            "title": "",
-            "entities": [],
-            "relations": [],
-            "category": "document",
-            "summary": "",
-        }
+        assert result == {**_EMPTY_EXTRACTION, "extraction_failed": True}
 
     def test_parse_response_two_different_payloads_refuse_the_guess(self):
         # The shared extractor's ambiguity contract: two DIFFERENT
@@ -218,13 +251,7 @@ class TestEntityExtractorExtended:
         ext = EntityExtractor()
         raw = '{"summary": "first"} or maybe {"summary": "second"}'
         result = ext._parse_response(raw)
-        assert result == {
-            "title": "",
-            "entities": [],
-            "relations": [],
-            "category": "document",
-            "summary": "",
-        }
+        assert result == {**_EMPTY_EXTRACTION, "extraction_failed": True}
 
     def test_validate_partial_data(self):
         ext = EntityExtractor()

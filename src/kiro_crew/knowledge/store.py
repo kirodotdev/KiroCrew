@@ -626,6 +626,7 @@ class KnowledgeStore:
     merge_entities = _entity_graph.merge_entities
     add_entity_relation = _entity_graph.add_entity_relation
     add_mention = _entity_graph.add_mention
+    clear_item_entity_links = _entity_graph.clear_item_entity_links
     get_neighbors = _entity_graph.get_neighbors
     get_entity_subgraph = _entity_graph.get_entity_subgraph
 
@@ -668,6 +669,9 @@ class KnowledgeStore:
     _serialize_item = staticmethod(_item_rows._serialize_item)
     _ITEM_COLUMNS = _item_rows._ITEM_COLUMNS
     update_item = _item_rows.update_item
+    items_with_failed_extraction = _item_rows.items_with_failed_extraction
+    mark_extraction_failed = _item_rows.mark_extraction_failed
+    complete_reextraction = _item_rows.complete_reextraction
     _delete_item_cascade = _item_rows._delete_item_cascade
     delete_item = _item_rows.delete_item
     delete_items_batch = _item_rows.delete_items_batch
