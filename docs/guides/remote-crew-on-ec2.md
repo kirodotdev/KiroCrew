@@ -219,7 +219,7 @@ gateway started from the Dock or Finder has a minimal `PATH`.
 - **`ffmpeg: not found`**: only needed for speech-to-text. Install ffmpeg into
   `/usr/local/bin` (a location Kiro Crew searches; it's not in the AL2023 repos),
   or fetch a decoder from the dashboard Speech-to-Text card
-  (Settings → Speech-to-Text, then Download now).
+  (Settings → Voice, then Download decoder).
 - **`source dir: not set`** — cosmetic. It is set from a Kiro Crew source
   checkout by `kirocrew setup`; wheel installs do not need it.
 
