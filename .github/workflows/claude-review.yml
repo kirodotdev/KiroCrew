@@ -78,7 +78,11 @@ jobs:
     # the guard is on every step, so a step added later cannot quietly run
     # against fork content.
     name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'Opus 5.5 Review' || 'Opus 5.5 Review (same-repo lane, not applicable to forks)' }}"
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     # Runaway/hang backstop only, NOT a per-review budget: a healthy review
     # self-terminates at --max-turns 180 per stage (two stages; see below)
     # long before this, so this

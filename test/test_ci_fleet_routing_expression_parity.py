@@ -117,6 +117,19 @@ _PERMANENT_EXCEPTIONS = {
     ("ci-runner-watchdog.yml", "watchdog"),
 }
 
+# A permanent exception stays OFF the CodeBuild fleet; it does not have to stay
+# on the shared standard runner. These lanes moved to the `kirocrew-runners`
+# larger-runner group, which is still a GitHub-hosted Ubuntu VM with the same
+# filesystem layout and no fleet credentials, so every isolation contract above
+# still holds. Pinned per job rather than waived: a lane that drifts to some
+# third runner must still fail this check.
+_HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
+    ("first-principles-review.yml", "first-principles-review"): {"group": "kirocrew-runners"},
+    ("ux-review.yml", "ux-review"): {"group": "kirocrew-runners"},
+    ("design-review.yml", "design-review"): {"group": "kirocrew-runners"},
+}
+_DEFAULT_HOSTED_EXCEPTION_RUNNER = "ubuntu-latest"
+
 # Fixed expectations, never inferred from the workflow contents: a route
 # silently removed or a new unreviewed fleet job must fail the inventory check.
 _EXPECTED_ROUTED_JOBS = {
@@ -336,8 +349,16 @@ def test_every_job_using_the_routing_expression_is_accounted_for() -> None:
     assert (
         set(exception_runs_on) == _PERMANENT_EXCEPTIONS
     ), f"missing hosted exceptions: {_PERMANENT_EXCEPTIONS - set(exception_runs_on)}"
+    # A key that names no exception pins nothing, so a rename would silently
+    # fall back to the default and read as a pass.
+    assert not set(_HOSTED_EXCEPTION_RUNNERS) - _PERMANENT_EXCEPTIONS, (
+        "pinned runners name jobs that are not exceptions: "
+        f"{set(_HOSTED_EXCEPTION_RUNNERS) - _PERMANENT_EXCEPTIONS}"
+    )
     wrong_runner = {
-        key: value for key, value in exception_runs_on.items() if value != "ubuntu-latest"
+        key: value
+        for key, value in exception_runs_on.items()
+        if value != _HOSTED_EXCEPTION_RUNNERS.get(key, _DEFAULT_HOSTED_EXCEPTION_RUNNER)
     }
     assert not wrong_runner, f"hosted exception changed runner: {wrong_runner}"
 

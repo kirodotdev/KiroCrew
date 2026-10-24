@@ -105,7 +105,11 @@ jobs:
   # ==========================================================================
   generate:
     name: Security Scope Review (generate)
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 30
     # No `checks:` scope and no WRITE anywhere: this job holds the Bedrock
     # credential and prompt-injection is its live risk, so it must not be able to
@@ -800,7 +804,11 @@ jobs:
   validate:
     name: Security Scope Review (validate)
     needs: generate
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 15
     permissions:
       actions: read
@@ -1396,7 +1404,11 @@ jobs:
     # scores blanks and the check-run is posted with no PR in its external id --
     # an id readiness can never match, on a lane that is supposed to block.
     needs: [generate, validate, adjudicate]
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 15
     # The only job with write scope, and the only one that never materializes or
     # runs code from either PR tree: it downloads artifacts and posts. The one

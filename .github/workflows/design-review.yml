@@ -49,7 +49,12 @@ jobs:
     # the guard is on every step, so a step added later cannot quietly run
     # against fork content.
     name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'Design Review' || 'Design Review (same-repo lane, not applicable to forks)' }}"
-    runs-on: ubuntu-latest  # Agentic reviewer reading untrusted PR diff content -- never gets fleet credentials, same isolation as claude-review.yml/codex-review.yml.
+    # Agentic reviewer reading untrusted PR diff content -- never gets fleet credentials, same isolation as claude-review.yml/codex-review.yml.
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 30
     steps:
       # persist-credentials:false stops actions/checkout from writing the

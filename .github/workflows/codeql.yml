@@ -6,8 +6,14 @@ name: CodeQL
 # a draft PR is not scanned until it is marked ready for review.
 #
 # SAME SCAN AS DEFAULT SETUP. The languages, query suite (`default`), threat
-# model (`remote`), build mode (`none`), weekly schedule and hosted runner match
-# what default setup ran (`gh api repos/<repo>/code-scanning/default-setup`).
+# model (`remote`) and build mode (`none`) match what default setup ran
+# (`gh api repos/<repo>/code-scanning/default-setup`), as does the weekly
+# schedule. The RUNNER no longer matches: default setup ran on a standard
+# hosted runner, and the `Analyze` job below now draws on the
+# `kirocrew-runners` larger-runner group (see "Larger runners for the review
+# lanes and CodeQL" in docs/ci/ci-and-reviews.md). Same 4 vCPU and
+# 16 GB as a public-repo `ubuntu-latest`, so the scan itself is unaffected;
+# only which concurrency ceiling it draws on changed.
 # The workflow name `CodeQL` and the job name `Analyze (<language>)` match its
 # check names. Each upload names `category: /language:<language>`, the category
 # default setup used, so alerts keep their history instead of opening twice
@@ -61,7 +67,11 @@ jobs:
       (github.event_name != 'pull_request' ||
        (!github.event.pull_request.draft &&
         github.event.pull_request.head.repo.full_name == github.repository))
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 60
     permissions:
       actions: read
