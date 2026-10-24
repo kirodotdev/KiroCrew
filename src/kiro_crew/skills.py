@@ -574,7 +574,7 @@ class SkillsLoader:
     _read_exact_key = _body_reads._read_exact_key
 
     def _iter(self, project_dir: str | Path | None = None) -> list[tuple[str, Path, str | None]]:
-        """Return all ``(name, skill_file, within)`` triples without walking the tree."""
+        """Return the first ``(name, skill_file, within)`` triple per key, without walking."""
         return _catalog._iter(self, project_dir)
 
     def _catalog_scope_key(self, project_dir: str | Path | None) -> str:
