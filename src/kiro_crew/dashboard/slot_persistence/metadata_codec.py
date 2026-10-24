@@ -67,6 +67,7 @@ from kiro_crew.dashboard.chat_title import (
 from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
     effective_session_key,
+    slot_history_key,
     slot_transcript_key,
 )
 from kiro_crew.dashboard.slot_buffers import (
@@ -1698,6 +1699,15 @@ def apply(
     for row in FIELDS:
         if row.read is not None and purpose.purpose in row.purposes:
             row.read(read)
+    # Record the transcript key the identity was observed under, now that the
+    # full field loop has settled ``linked_session_key`` (the fields run in
+    # FIELDS order, so ``created_at`` is read before the link is restored —
+    # resolving the key inside ``_read_created_at`` would see the unset link).
+    # The delete witnesses compare this against the current write target; a
+    # mismatch means the slot's routing has drifted to a different file, so the
+    # observed ``created_at`` must not be read as a delete-recreate.
+    if slot._disk_meta_created_at or slot._disk_meta_observed:
+        slot._disk_meta_key = slot_history_key(slot)
     # The SessionManager's override map is process-local, so a hydrated slot
     # pushes its persisted value back or the session compacts at the global one.
     if slot.autocompact_pct is not None and state.sessions:

@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         queue_persist_signature,
         register_guarded_history_write,
         slot_history_key,
+        transcript_lock_stems,
     )
 
 
@@ -324,6 +325,24 @@ def _save_slot_to_history(
         and not rewrite
     ):
         return True
+    observed_history_key = str(getattr(slot, "_disk_meta_key", "") or "")
+    if observed_history_key and not _write_guards._same_transcript(
+        observed_history_key, history_key
+    ):
+        # A drifted save verifies the observed source A before committing target B.
+        # Hold both physical lock sets across that whole check-then-write span so
+        # delete_session(A) cannot unlink A after verification and let its rows be
+        # published into B. locked_stems deduplicates and sorts the union, matching
+        # every transcript writer's order and avoiding cross-key deadlock.
+        save_lock = state.conversation_log.locked_stems(
+            (
+                *transcript_lock_stems(observed_history_key),
+                *transcript_lock_stems(history_key),
+            )
+        )
+    else:
+        # Keep the ordinary one-transcript path on its existing lock.
+        save_lock = state.conversation_log._locked(history_key)
     try:
         # Hold the SAME per-session cross-process lock that ``append`` /
         # ``append_off_loop`` / rotate / rewrite / metadata mutations take, across
@@ -333,12 +352,12 @@ def _save_slot_to_history(
         # result appended to the originating dashboard session) can land between
         # this save's snapshot of the file and its ``atomic_write`` — the save
         # then replaces the file with meta+frozen+window and silently deletes the
-        # acknowledged append. ``_locked`` serializes the two so neither is lost.
-        # On the event loop ``_locked`` makes ONE non-blocking acquire and raises
-        # ``HistoryLockTimeout`` under contention (never blocking the loop); the
-        # ``save_slot_off_loop`` helper routes on-loop callers to a worker thread
-        # so they take the patient acquire path instead of dropping the save.
-        with state.conversation_log._locked(history_key):
+        # acknowledged append. The selected lock serializes the writers so neither
+        # is lost. On the event loop it makes ONE non-blocking acquire per stem and
+        # raises ``HistoryLockTimeout`` under contention (never blocking the loop);
+        # ``save_slot_off_loop`` routes on-loop callers to a worker thread so they
+        # take the patient acquire path instead of dropping the save.
+        with save_lock:
             existing_meta, _meta_readable, _line_corrupt = _write_guards.read_line_for_save(
                 state.conversation_log, slot, history_key
             )
@@ -362,6 +381,7 @@ def _save_slot_to_history(
                 meta_readable=_meta_readable,
                 line_corrupt=_line_corrupt,
                 history_key=history_key,
+                conv_log=state.conversation_log,
             ):
                 return False
             # ── Recreate-won guard ──────────────────────────────────────────
@@ -541,6 +561,12 @@ def _save_slot_to_history(
                 # writes — even when the carried-forward metadata is legacy and
                 # has no ``created_at`` for the identity string above.
                 slot._disk_meta_observed = True
+                # The key this identity was observed under is the target just
+                # written — this block is already gated on
+                # ``slot_history_key(slot) == history_key``. The delete
+                # witnesses compare it against the live target to tell a routing
+                # drift apart from a delete-recreate.
+                slot._disk_meta_key = history_key
                 slot._frozen_prefix_cache = _post_write_cache
                 if queue_line_is_ours:
                     # The queued prompts are now on disk, so the flush's drift
