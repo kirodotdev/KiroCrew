@@ -86,10 +86,10 @@ def append_cost_sample(
     sample after its own session answered, with no tool in flight), which the
     admission gate's dedicated start projection learns from
     (:func:`read_learned_costs_checked` on ``settled_gb``, dedicated only). Written only when measured, so
-    a record without it contributes nothing there. ``mem_gb`` stays the
-    whole-run peak :func:`read_cap_costs` reads for the memory-sized count: the
-    TaskRunner's auto value, and the subagent auto cap only when the spawn
-    floor is disabled.
+    a record without it contributes nothing there; the subagent auto cap with
+    the spawn floor disabled reads the same figure through
+    :func:`read_cap_costs`. ``mem_gb`` stays the whole-run peak that function
+    reads for the TaskRunner's auto value.
     """
     if mem_gb <= 0 and cpu_cores <= 0 and settled_gb <= 0:
         return  # nothing was measured
@@ -279,7 +279,7 @@ def read_learned_costs_checked(
     (:class:`_ReadStatus`'s ``complete``) saying so. ``dedicated_only`` skips
     shared runs' records. ``settled_gb`` read this way is the per-bucket settled
     runtime size the admission gate prices a dedicated start at; ``mem_gb`` is
-    the whole-run peak that sizes the sub-agent cap. ``max_age_secs`` leaves
+    the whole-run peak that sizes the TaskRunner's auto value. ``max_age_secs`` leaves
     out every bucket whose newest sample is older than that before *now*
     (default: the wall clock); a bucket with any recent sample keeps its window.
     """
@@ -328,6 +328,9 @@ def read_cap_costs(
     *,
     window: int = _DEFAULT_WINDOW,
     min_samples: int = _DEFAULT_MIN_SAMPLES,
+    dedicated_only: bool = False,
+    max_age_secs: float | None = None,
+    now: float | None = None,
 ) -> tuple[float | None, float | None]:
     """Return ``(typical, heavy_peak)`` for *key* from one pass over the log.
 
@@ -342,8 +345,21 @@ def read_cap_costs(
     counts once however often it runs: weighting by run count would let the
     busiest agent's mix set every slot's price again, which is the swing this
     figure exists to remove; the ``heavy_peak`` reserve covers the heavy one.
+    ``dedicated_only`` and ``max_age_secs`` filter exactly as in
+    :func:`read_learned_costs_checked`.
     """
-    by_agent = _group_by_agent(_iter_samples(_ReadStatus()), key, window=window)
+    not_before = not_after = None
+    if max_age_secs is not None:
+        not_after = time.time() if now is None else now
+        not_before = not_after - max(0.0, max_age_secs)
+    by_agent = _group_by_agent(
+        _iter_samples(_ReadStatus()),
+        key,
+        window=window,
+        dedicated_only=dedicated_only,
+        not_before=not_before,
+        not_after=not_after,
+    )
     qualifying = [vals for vals in by_agent.values() if len(vals) >= min_samples]
     if not qualifying:
         return None, None

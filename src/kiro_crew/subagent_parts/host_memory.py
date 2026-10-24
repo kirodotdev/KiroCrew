@@ -604,7 +604,7 @@ def compute_max_subagents(cfg: KiroCrewConfig) -> int:
     except (AttributeError, TypeError, ValueError):
         floor_off = False
     if floor_off:
-        cap = compute_memory_sized_parallel_cap(cfg)
+        cap = compute_memory_sized_parallel_cap(cfg, settled=True)
         logger.info(
             "subagent auto cap = %d (agent.spawn_min_memory_gb disables the spawn "
             "floor, so the count is sized from host memory)",
@@ -622,7 +622,7 @@ def compute_max_subagents(cfg: KiroCrewConfig) -> int:
     return ceiling
 
 
-def compute_memory_sized_parallel_cap(cfg: KiroCrewConfig) -> int:
+def compute_memory_sized_parallel_cap(cfg: KiroCrewConfig, *, settled: bool = False) -> int:
     """A parallel-step count sized from host memory, for the TaskRunner's auto value.
 
     TaskRunner steps run on the runner lane, which no per-start memory floor
@@ -632,17 +632,23 @@ def compute_memory_sized_parallel_cap(cfg: KiroCrewConfig) -> int:
     agent.subagent_auto_max]``. CPU is deliberately not a term: over-committing
     memory ends in the OOM killer, while over-committing CPU only slows work
     down. Fails safe to the legacy 3 when memory cannot be read.
+
+    ``settled`` prices from the settled runtime instead of the whole run (see
+    :func:`_host_mem_term`): the subagent cap's disabled-floor fallback passes
+    it, since it stands in for a floor that prices starts that way. The
+    TaskRunner never does: nothing re-checks memory when a step starts, so its
+    figure keeps the whole-run reserve for what its steps build and test.
     """
     agent = cfg.agent
     hard_cap = max(_LEGACY_DEFAULT_MAX, agent.subagent_auto_max)
     lo = _LEGACY_DEFAULT_MAX
-    mem_term = _host_mem_term(cfg)
+    mem_term = _host_mem_term(cfg, settled=settled)
     if mem_term is None:
         return lo
     return max(lo, min(mem_term, hard_cap))
 
 
-def _host_mem_term(cfg: KiroCrewConfig) -> int | None:
+def _host_mem_term(cfg: KiroCrewConfig, *, settled: bool = False) -> int | None:
     """How many agents fit in this host's available memory, or None when unreadable.
 
     The one place the memory arithmetic lives, for
@@ -650,17 +656,31 @@ def _host_mem_term(cfg: KiroCrewConfig) -> int | None:
     when the spawn floor is disabled.
 
     ``floor((avail * buf - pool_size * typical - heavy_peak) / typical)``:
-    every slot is priced at a typical run (median across agents of each
+    every slot is priced at a typical agent (median across agents of each
     agent's p50), and the heaviest agent's p90 (``heavy_peak``) is reserved
-    once. The reserve is what covers that agent's growth after it starts,
-    which no per-start price models.
+    once. By default both come from the whole-run peak ``mem_gb``, so the
+    reserve covers that agent's growth after it starts, which no per-start
+    price models. With ``settled`` they come from ``settled_gb`` instead: the
+    agent's own processes -- kiro-cli and the MCP servers up once its session
+    answered, idle -- read from dedicated runs only and aged out after
+    ``SETTLED_SAMPLE_MAX_AGE_SECS``, exactly the figure the spawn floor prices
+    a start at. A run's builds and test suites are not in it, so one 132 GB
+    whole-run sample does not hold that count at its floor; growth after start
+    is left to the buffer, as the floor leaves it.
     """
     agent = cfg.agent
     avail_gb = _available_memory_gb()
     if avail_gb <= 0:
         return None
     buf = 1.0 - agent.subagent_mem_buffer_pct / 100.0
-    typical, heavy_peak = read_cap_costs("mem_gb")
+    if settled:
+        from kiro_crew.subagent_cost import SETTLED_SAMPLE_MAX_AGE_SECS
+
+        typical, heavy_peak = read_cap_costs(
+            "settled_gb", dedicated_only=True, max_age_secs=SETTLED_SAMPLE_MAX_AGE_SECS
+        )
+    else:
+        typical, heavy_peak = read_cap_costs("mem_gb")
     mem_cost = typical or agent.subagent_cost_gb or DEFAULT_SUBAGENT_COST_GB
     heavy_peak = heavy_peak or 0.0
     pool_size = cfg.session.pool_size

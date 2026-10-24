@@ -130,6 +130,69 @@ def test_auto_cap_prices_slots_at_a_typical_run(
     assert subagent.compute_max_subagents(cfg) == AgentConfig().subagent_auto_max == 32
 
 
+def _floor_off_cfg() -> types.SimpleNamespace:
+    return types.SimpleNamespace(
+        agent=types.SimpleNamespace(
+            max_subagents=0,
+            subagent_mem_buffer_pct=20,
+            subagent_cost_gb=0.315,
+            subagent_auto_max=AgentConfig().subagent_auto_max,
+            # The memory terms size the subagent cap only with the spawn floor
+            # off; with it on the cap is the ceiling whatever the terms say.
+            spawn_min_memory_gb=0,
+        ),
+        session=types.SimpleNamespace(pool_size=2),
+    )
+
+
+def test_one_huge_whole_run_peak_does_not_pin_the_cap(cost_log, monkeypatch):
+    # A 132.3 GB whole-subtree peak (a run that launched a test suite) on a
+    # host with 93 GB free. With the spawn floor off, the subagent cap prices
+    # from the runtime's own settled size, so the build's peak does not count.
+    # The TaskRunner's figure keeps the whole-run reserve: nothing re-checks
+    # memory when one of its steps starts.
+    import time
+
+    ts = time.time()
+    recs = [
+        {"agent": "kirocrew", "mem_gb": 2.0, "settled_gb": 0.9, "cpu_cores": 0.5, "ts": ts}
+        for _ in range(9)
+    ]
+    recs.append(
+        {"agent": "kirocrew", "mem_gb": 132.3, "settled_gb": 1.0, "cpu_cores": 4.0, "ts": ts}
+    )
+    # Old-shape heavy runs with no settled reading, and shared-run readings, are
+    # not the agent's own runtime and must not price a slot either.
+    recs += [{"agent": "builder", "mem_gb": 132.3, "cpu_cores": 4.0, "ts": ts} for _ in range(5)]
+    recs += [
+        {"agent": "shared", "mem_gb": 132.3, "settled_gb": 60.0, "shared": True, "ts": ts}
+        for _ in range(5)
+    ]
+    _seed(cost_log, recs)
+    monkeypatch.setattr(subagent, "_available_memory_gb", lambda: 93.0)
+    cfg = _floor_off_cfg()
+    # floor((93 * 0.8 - 2 * 0.9 - 0.91) / 0.9) = 79: p50 0.9, p90 0.91
+    assert subagent._host_mem_term(cfg, settled=True) == 79
+    assert subagent.compute_memory_sized_parallel_cap(cfg, settled=True) == 32
+    assert subagent.compute_max_subagents(cfg) == 32
+    # The TaskRunner's figure still reserves the 132.3 GB whole-run peak.
+    _mem_typical, mem_peak = sc.read_cap_costs("mem_gb")
+    assert mem_peak == pytest.approx(132.3)
+    assert subagent._host_mem_term(cfg) < 3
+    assert subagent.compute_memory_sized_parallel_cap(cfg) == 3
+
+
+def test_settled_cap_cost_ages_out_like_the_spawn_floor(cost_log, monkeypatch):
+    # A bucket whose newest settled reading is past the horizon stops pricing
+    # slots; with none left the configured cost applies.
+    old = 1_000.0
+    _seed(cost_log, [{"agent": "kirocrew", "settled_gb": 9.0, "ts": old} for _ in range(5)])
+    monkeypatch.setattr(subagent, "_available_memory_gb", lambda: 93.0)
+    assert sc.read_cap_costs("settled_gb") == (pytest.approx(9.0), pytest.approx(9.0))
+    # floor((93 * 0.8 - 2 * 0.315) / 0.315) = 234, the configured-cost fallback.
+    assert subagent._host_mem_term(_floor_off_cfg(), settled=True) == 234
+
+
 def test_typical_cost_counts_every_agent_past_the_bucket_cap(cost_log):
     # More qualifying agents than the held-bucket cap: the light majority still
     # sets the median, it is not dropped in favour of the heaviest buckets.

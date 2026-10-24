@@ -76,10 +76,12 @@ cap = 3                              when host memory cannot be read at all
   The count is then the only bound, and it is sized from host memory:
   `floor((avail_gb * buf - pool_size * typical - heavy_peak) / typical)`, with
   `buf = 1 - subagent_mem_buffer_pct / 100`, clamped to
-  `[3, agent.subagent_auto_max]` -- the same figure the TaskRunner's auto value
-  uses. `typical` and `heavy_peak` come from the learned cost store (below);
-  before any are learned, `typical` is `agent.subagent_cost_gb` and nothing is
-  reserved.
+  `[3, agent.subagent_auto_max]`. `typical` and `heavy_peak` come from the
+  learned **settled** figures (below), the agent's own kiro-cli and MCP
+  servers, which is what the disabled floor would have priced a start at; a
+  run's builds and tests are not in them, so one 132 GB whole-run sample does
+  not hold the count at 3. Before any are learned, `typical` is
+  `agent.subagent_cost_gb` and nothing is reserved.
 - **`subagent_auto_max`** — the ceiling itself (see "Why a hard cap" below).
 
 The figure the model is told -- the `{{MAX_SUBAGENTS}}` prompt token and the
@@ -102,13 +104,16 @@ Kiro Crew doesn't hard-code how much an agent costs — it measures it:
 - The memory floor prices a dedicated start of an agent at its learned settled
   figure once three runs have measured it (below). The TaskRunner's auto
   parallel-step cap (`taskrunner.max_parallel_steps = 0`) is still sized from
-  the whole-run figures, because no per-start floor prices a TaskRunner step;
-  that is the one memory-sized count left (plus the disabled-floor fallback
-  above). It prices every slot at a **typical** run -- the p50 of each agent's
-  last N samples, then the median across agent names, each agent counted once
-  -- so one build-heavy agent does not price every slot, and it **reserves the
-  heaviest agent's p90 once** to cover that agent's growth after it starts.
-  One reserve means several concurrent heavy runs are an accepted risk.
+  the whole-run figures, because no per-start floor prices a TaskRunner step
+  and nothing re-checks memory when one starts. It prices every slot at a
+  **typical** run -- the p50 of each agent's last N samples, then the median
+  across agent names, each agent counted once -- so one build-heavy agent does
+  not price every slot, and it **reserves the heaviest agent's p90 once** to
+  cover that agent's growth after it starts. One reserve means several
+  concurrent heavy runs are an accepted risk. The disabled-floor fallback
+  above prices the same way from the settled figures (dedicated runs only,
+  aged out like the floor's), leaving growth after start to the memory buffer
+  (`agent.subagent_mem_buffer_pct`), as the floor leaves it.
 
 The sample log is bounded to the last N records per agent (FIFO compaction at
 startup and periodically at runtime), so it never grows without limit. Before

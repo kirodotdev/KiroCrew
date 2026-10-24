@@ -516,7 +516,7 @@ RSS figure stands in only where PSS cannot be read. Not captured: a shared run,
 whose pid's tree holds the other tenants and the parent's own tools, and a
 dedicated run whose own children share its runtime, whose tree holds their
 per-session servers. `_record_cost` writes it as the cost record's `settled_gb`
-beside the whole-run peak `mem_gb`, which the auto cap still reads unchanged. The
+beside the whole-run peak `mem_gb`, which only the TaskRunner's auto value reads. The
 admission side reads the per-bucket p90 of dedicated `settled_gb` (at least three
 readings, the newest no older than `SETTLED_SAMPLE_MAX_AGE_SECS`) from
 `_learned_settled_gb`, which the reaper refreshes off the loop at start, after a

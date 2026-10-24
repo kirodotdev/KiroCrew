@@ -417,8 +417,16 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("_configured_max_subagents", "function", "(cfg: 'KiroCrewConfig') -> 'int'"),
         ("subagent_count_ceiling", "function", "(cfg: 'KiroCrewConfig') -> 'int'"),
         ("compute_max_subagents", "function", "(cfg: 'KiroCrewConfig') -> 'int'"),
-        ("compute_memory_sized_parallel_cap", "function", "(cfg: 'KiroCrewConfig') -> 'int'"),
-        ("_host_mem_term", "function", "(cfg: 'KiroCrewConfig') -> 'int | None'"),
+        (
+            "compute_memory_sized_parallel_cap",
+            "function",
+            "(cfg: 'KiroCrewConfig', *, settled: 'bool' = False) -> 'int'",
+        ),
+        (
+            "_host_mem_term",
+            "function",
+            "(cfg: 'KiroCrewConfig', *, settled: 'bool' = False) -> 'int | None'",
+        ),
         ("resolve_max_subagents", "function", "(cfg: 'KiroCrewConfig') -> 'int'"),
         ("_CLK_TCK", "value", "int"),
     ),
