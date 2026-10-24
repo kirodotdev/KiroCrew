@@ -164,6 +164,9 @@ class _SlackTurn:
     task: "Task"
     _turn_completed_ok: "bool"
     _working_ts: "str | None"
+    # Set by ``_deliver_answer`` once it has taken down the working indicators, so
+    # a later cancel does not clear a review-mode status it chose to keep.
+    _indicators_cleared: "bool"
 
     # Set by ``_deliver_answer`` before its first await; ``book_success`` and
     # ``book_failure`` read and set it, so the turn books exactly one verdict.
@@ -235,6 +238,10 @@ class _SlackTurn:
         self._t0 = _t0
         self.reply_ts = reply_ts
         self.session_key = session_key
+        # Bound up front: ``handle_message``'s cancel arm reads both whichever
+        # phase the cancel lands in.
+        self._working_ts = None
+        self._indicators_cleared = False
 
     if not TYPE_CHECKING:
 
@@ -263,6 +270,23 @@ class _SlackTurn:
             _close_gap = getattr(self.sessions, "close_replay_gap", None)
             if callable(_close_gap):
                 _close_gap(self.session_key)
+
+    # Clear the "…is working" thread status and delete the inline Stop block, for
+    # ``handle_message``'s cancel arm. A no-op once ``_deliver_answer`` took them
+    # down, so a review-mode status it kept stays. Each Slack call is guarded on
+    # its own, so one failure does not skip the other.
+    async def clear_working_indicators(self) -> None:
+        if self._indicators_cleared:
+            return
+        try:
+            await self.slack.set_thread_status(self.channel, self.reply_ts, "")
+        except Exception:
+            logger.debug("Failed to clear thread status after a cancel", exc_info=True)
+        if self._working_ts:
+            try:
+                await self.slack.delete_message(self.channel, self._working_ts)
+            except Exception:
+                logger.debug("Failed to delete the Stop block after a cancel", exc_info=True)
 
     def book_success(self) -> None:
         if self._verdict_booked:
@@ -380,6 +404,9 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             )
         except Exception:
             logger.warning("Failed to post inline stop button", exc_info=True)
+    # Published now, not only at the end of this phase: a cancel at any later
+    # await skips that copy, and ``handle_message``'s cancel arm reads it here.
+    turn._working_ts = _working_ts
 
     # The Slack wire this turn's answer streams to, and every flag the end of the turn
     # reads off it (``handler_runtime/stream.py``).
@@ -481,6 +508,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 except Exception:
                     pass
         _working_ts = None
+        turn._working_ts = None
         answer.thinking_ts = None
         # Visible, not persisted: the abandoned attempt records nothing, so the
         # conversation log carries this message exactly once, with the reply the

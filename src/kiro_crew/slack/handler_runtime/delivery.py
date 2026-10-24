@@ -175,6 +175,7 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
                     await slack.delete_message(channel, _working_ts)
                 except Exception:
                     pass
+            turn._indicators_cleared = True
             turn.release_permit()
             return
 
@@ -188,6 +189,10 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
                 await slack.delete_message(channel, _working_ts)
             except Exception:
                 pass
+        # A review turn keeps its status until the draft lands; a cancel before
+        # that must still clear it, so its flag is set after the draft posts.
+        if channel_activation != ACTIVATION_REVIEW:
+            turn._indicators_cleared = True
 
         # Suppress error replies for trusted bot messages to prevent echo loops
         if from_trusted_bot and turn._had_error:
@@ -334,6 +339,7 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
                     await turn.book_failure()
                 turn.release_permit()
                 return
+            turn._indicators_cleared = True
             # Persist conversation (draft counts as a turn). Best-effort: the draft
             # already reached the reader, so a persistence failure must not turn a
             # delivered draft into a failed turn — book success first, then persist.

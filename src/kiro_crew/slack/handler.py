@@ -1033,8 +1033,18 @@ async def handle_message(
         reply_ts=reply_ts,
         session_key=session_key,
     )
-    if await _dispatch_before_turn(turn) and await _run_turn(turn):
-        await _deliver_answer(turn)
+    try:
+        if await _dispatch_before_turn(turn) and await _run_turn(turn):
+            await _deliver_answer(turn)
+    except asyncio.CancelledError:
+        # A cancel (``!stop``, warm-pool reclaim, shutdown) can land at any await
+        # in any phase, and ``CancelledError`` passes every ``except Exception``
+        # arm, so the hand-listed clears in the turn and delivery phases never
+        # run. This is the one exit every phase shares. The clear is a tracked
+        # task, not an await, so the cancel re-raises at once; at gateway
+        # shutdown ``cancel_background_tasks`` may stop it, best-effort.
+        track_background_task(asyncio.create_task(turn.clear_working_indicators()))
+        raise
 
 
 # ── Slack thread auto-title ─────────────────────────────────────────────
