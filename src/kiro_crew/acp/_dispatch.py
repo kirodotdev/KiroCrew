@@ -601,6 +601,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _anchored_in_workspace,
         _workspace_call_arguments,
         build_permission_event,
+        build_relayed_permission_event,
         gate_envelope,
         identified_mcp_call,
         is_mcp_tool_approval,

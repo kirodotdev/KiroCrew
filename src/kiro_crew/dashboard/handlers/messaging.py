@@ -203,6 +203,7 @@ from kiro_crew.dashboard.messaging_api.proactive_send import (  # noqa: F401
     api_update_message,
 )
 from kiro_crew.dashboard.messaging_api.run_control import (  # noqa: F401
+    _FLOOR_RELAUNCHES,
     _log_panel_dismissal,
     _native_child_refusal,
     _queue_unreadable,
@@ -211,6 +212,7 @@ from kiro_crew.dashboard.messaging_api.run_control import (  # noqa: F401
     _queued_run,
     _queued_run_payload,
     _queued_runs,
+    _remote_run_operation_refusal,
     _retry_failed_run,
     _spawn_scope_refusal,
     api_spawn_delete,
@@ -243,7 +245,11 @@ from kiro_crew.dashboard.messaging_api.slack_workspace import (  # noqa: F401
     api_slack_reactions,
 )
 from kiro_crew.dashboard.messaging_api.spawn import (  # noqa: F401
+    _RESERVED_RUN_IDS,
+    _admit_spawn,
+    _client_run_id_refusal,
     _continue_on_loop,
+    _floored_caller_refusal,
     _qualified_model_refusal,
     _requested_backend,
     _slot_for_parent,

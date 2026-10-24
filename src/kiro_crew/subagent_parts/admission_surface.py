@@ -305,6 +305,7 @@ def spawn(
     _recovering_row: bool = False,
     _stop_before_memory_read: bool = False,
     _memory_reading: "tuple[float, str] | None" = None,
+    approval_floor: str = "",
 ) -> SubagentInfo | None:
     result = self._admission.spawn_impl(
         task,
@@ -348,6 +349,7 @@ def spawn(
         _recovering_row=_recovering_row,
         _stop_before_memory_read=_stop_before_memory_read,
         _memory_reading=_memory_reading,
+        approval_floor=approval_floor,
     )
     assert not isinstance(result, PreparedSpawn)
     # Every synchronous gate return (started, queued, or refused) receives

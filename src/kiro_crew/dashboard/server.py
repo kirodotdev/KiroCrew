@@ -310,6 +310,7 @@ from kiro_crew.dashboard.server_runtime.maintenance import (  # noqa: F401
 )
 from kiro_crew.dashboard.server_runtime.mcp_routes import (  # noqa: F401
     _deferred,
+    _deferred_remote_workspace_upload,
     _deferred_work_ledger,
     _register_mcp_routes,
 )

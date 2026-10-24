@@ -203,7 +203,7 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: Re-pinned once since: ``_governance_denial`` gained ``alias_groups`` and
 #: ``deny_aliases`` (the KAS tool-id spellings ``gate_decision`` reads as one
 #: identity), both keyword defaults, so every pre-split caller still fits.
-_BASE_SHAPE_DIGEST = "869ba96660ec8f4ea710d6c3dcbbbec3cfcd25827358d3bac7a597102d6860bb"
+_BASE_SHAPE_DIGEST = "94065763294c0fe9db8d2deffddf25ef2c0b0b5b40ddd682e23175c90e876101"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in

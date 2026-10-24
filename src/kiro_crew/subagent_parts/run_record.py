@@ -102,6 +102,12 @@ class SubagentInfo:
     # record, and the handler answers 429 from that absence.
     error_code: str = ""
     parent_session_key: str = ""
+    # Execution placement. Local runs keep the defaults; remote shadow records
+    # name the connected instance and the peer-owned run they represent. These
+    # fields carry no credential and are safe to project to the dashboard.
+    executor: str = "local"
+    instance_id: str = ""
+    remote_id: str = ""
     memory_mode: str = field(default="persistent", kw_only=True)
     _memory_mode_ready: bool = field(default=True, init=False, repr=False)
     agent: str = ""
@@ -116,6 +122,10 @@ class SubagentInfo:
     # unconstrained by the app scope.
     app: str = ""
     approval_mode: str = ""  # "auto" to skip tool approvals in the subagent session
+    # "interactive": no auto-approval of this run's tools, whatever this
+    # gateway's own yolo / config / hook fallbacks say. Set by a remote hub
+    # whose parent is not auto, so the child keeps the stricter of the two.
+    approval_floor: str = ""
     silent: bool = False  # suppress completion notification (dashboard + Slack)
     turns: int = 0
     last_tool: str = ""
