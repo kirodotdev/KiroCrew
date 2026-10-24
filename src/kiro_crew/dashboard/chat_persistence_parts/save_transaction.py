@@ -574,6 +574,7 @@ async def save_slot_off_loop(
     best_effort: bool = True,
     expected_history_key: str | None = None,
     expected_slot_name: str | None = None,
+    expected_disk_older_count: int | None = None,
     rows_only: bool = False,
     issued_by_the_retraction: bool = False,
     mutes_opened_override: bool | None = None,
@@ -622,6 +623,9 @@ async def save_slot_off_loop(
     routing pin, so this object-identity recheck under the lock stops the
     truncating snapshot from landing on the replacement's transcript.
 
+    ``expected_disk_older_count``: the ``slot._disk_older_count`` read together
+    with *messages*; see :func:`_save_slot_to_history`. A drift refuses the save.
+
     ``rows_only``: write the window but leave the metadata line's slot-owned
     fields as they stand on disk when the line was published by ANOTHER slot --
     for a caller persisting a slot's rows onto a transcript another live slot now
@@ -658,6 +662,7 @@ async def save_slot_off_loop(
             rewrite=rewrite,
             expected_history_key=expected_history_key,
             expected_slot_name=expected_slot_name,
+            expected_disk_older_count=expected_disk_older_count,
             rows_only=rows_only,
             pending_mode_slot=pending_mode_slot,
             mutes_opened_override=mutes_opened_override,

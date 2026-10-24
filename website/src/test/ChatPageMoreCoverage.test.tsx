@@ -719,17 +719,18 @@ describe('ChatPage row callbacks — quote and ask', () => {
 })
 
 describe('ChatPage row callbacks — regenerate and speak', () => {
-  it('truncates back to the last user row and asks the server to regenerate', async () => {
+  it('asks the server to regenerate and keeps the previous reply on screen', async () => {
     apiSpy('regenerateSlot').mockResolvedValue({ ok: true })
     const { store } = await renderTurn()
     expect(assistantProps!.onRegenerate).toBeTypeOf('function')
     await act(async () => { assistantProps!.onRegenerate!() })
     await waitFor(() => expect(apiMocks.regenerateSlot).toHaveBeenCalledWith('chat-1'))
-    expect(store.getState().chat.messages).toHaveLength(1)
-    expect(store.getState().chat.messages[0].role).toBe('user')
+    // The server replaces it only once the new turn produced a reply.
+    expect(store.getState().chat.messages).toHaveLength(2)
+    expect(store.getState().chat.messages[1].role).toBe('assistant')
   })
 
-  it('restores the transcript when the regenerate request fails', async () => {
+  it('keeps the transcript when the regenerate request fails', async () => {
     apiSpy('regenerateSlot').mockRejectedValue(new Error('runner busy'))
     const { store } = await renderTurn()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})

@@ -247,8 +247,11 @@ class TestPostAwaitOwnership:
             assert slot._summary_turn_mark == 0
             assert await asyncio.to_thread(log.get_cached_intent_summary, "dashboard:s1") is None
 
+    # Regenerate is not here: it writes nothing before dispatching, so it holds
+    # no await after its ownership check. Its turn-end replace write is pinned to
+    # the slot (test_regenerate_swap.py).
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("route", ["regenerate", "switch-variant"])
+    @pytest.mark.parametrize("route", ["switch-variant"])
     async def test_replacement_after_history_save_cannot_dispatch_or_broadcast(
         self, state, regen_run, monkeypatch, route
     ) -> None:

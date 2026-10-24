@@ -15,7 +15,7 @@ from chat_test_helpers import _make_app, _make_state
 
 class TestRegenerateAndVariants:
     @pytest.mark.asyncio
-    async def test_regenerate_truncates_and_stashes_variant(self, tmp_path, monkeypatch):
+    async def test_regenerate_keeps_the_reply_and_stashes_variant(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
@@ -32,7 +32,8 @@ class TestRegenerateAndVariants:
                 resp = await client.post("/api/chat/slots/s1/regenerate")
                 assert resp.status == 200
                 await asyncio.sleep(0)
-        assert [m["role"] for m in slot.messages] == ["user"]
+        # The previous reply stays until a new one replaces it.
+        assert [m["role"] for m in slot.messages] == ["user", "assistant"]
         assert len(captured) == 1
         assert captured[0]["content"] == "hello v1"
 
@@ -215,27 +216,66 @@ class TestRegenerateAndVariants:
             assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_regenerate_persists_to_disk(self, tmp_path, monkeypatch):
-        """After regenerate, on-disk history should reflect the truncation."""
+    async def test_regenerate_empty_turn_keeps_the_previous_reply(self, tmp_path, monkeypatch):
+        """A Regenerate whose turn ends before any reply -- refused,
+        cancelled, failed -- leaves the previous reply in the window and on disk."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
         slot.append("user", "hi")
         slot.append("assistant", "old")
         slot.drain()
-        # Save first so a file exists
+        from kiro_crew.dashboard import chat_runner
         from kiro_crew.dashboard.chat import _history_key_for, _save_slot_to_history
 
         _save_slot_to_history(state, slot)
-        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()):
+
+        async def _empty_turn(*a, **kw):
+            # The turn's end, as ``_end_turn_tail`` runs it, with no reply.
+            await chat_runner.settle_regenerate(state, slot)
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_empty_turn):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post("/api/chat/slots/s1/regenerate")
                 assert resp.status == 200
-        # File should now only contain the user message (assistant truncated)
-        key = _history_key_for(slot.key)
-        persisted = state.conversation_log.read_messages(key)
-        roles = [m.get("role") for m in persisted]
-        assert roles == ["user"]
+                await slot.task
+        assert [m["content"] for m in slot.messages] == ["hi", "old"]
+        persisted = state.conversation_log.read_messages(_history_key_for(slot.key))
+        assert [m.get("content") for m in persisted] == ["hi", "old"]
+        assert slot._regenerate_target is None
+        assert slot._pending_variants == []
+
+    @pytest.mark.asyncio
+    async def test_regenerate_replaces_the_reply_once_a_new_one_exists(self, tmp_path, monkeypatch):
+        """A turn that produced a reply replaces the previous one in the window and
+        on disk, and keeps it as a variant."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "old")
+        slot.drain()
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _history_key_for, _save_slot_to_history
+
+        _save_slot_to_history(state, slot)
+
+        async def _turn(*a, **kw):
+            # A reply the turn recorded, then the turn's own append-only save.
+            chat_runner._append_command_reply(slot, "new")
+            _save_slot_to_history(state, slot)
+            await chat_runner.settle_regenerate(state, slot)
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_turn):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                await slot.task
+        assert [m["content"] for m in slot.messages] == ["hi", "new"]
+        assert [v["content"] for v in slot.messages[-1]["variants"]] == ["old", "new"]
+        assert slot.messages[-1]["variant_idx"] == 1
+        persisted = state.conversation_log.read_messages(_history_key_for(slot.key))
+        assert [m.get("content") for m in persisted] == ["hi", "new"]
 
     @pytest.mark.asyncio
     async def test_save_slot_redacts_variants(self, tmp_path, monkeypatch):

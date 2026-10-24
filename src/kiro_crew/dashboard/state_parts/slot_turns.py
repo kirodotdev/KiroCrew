@@ -22,7 +22,8 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_on_question_retired``, ``_on_row``, ``_pending``, ``_preparing_count``, ``_pending_consumers``,
 ``_pending_context``, ``_pending_release_deferred``, ``_pending_variants``,
 ``_question_pending``, ``_queue``, ``_queue_persist_inflight``, ``_queue_persist_owed``,
-``_queue_persisted_sig``, ``_queue_repository``, ``_responsive``, ``_side``,
+``_queue_persisted_sig``, ``_queue_repository``, ``_regenerate_target``,
+``_responsive``, ``_side``,
 ``_stop_declined_at``, ``_stop_escalated_card_id``, ``_stop_event_id``,
 ``_stop_generation``, ``_stop_state_raw``, ``_subagent_delivery_pending``,
 ``_synthesis_recheck``, ``_task``, ``_trust``, ``_trust_reads``, ``_trust_scope``,
@@ -407,6 +408,9 @@ def init_turns_fields(self: _ChatSlot) -> None:
     self._dropped_note_ids = set()
     # Regenerate feature: variants pending attachment to next finalized assistant message
     self._pending_variants = []
+    # The previous reply a running Regenerate will replace at its turn end
+    # (``chat_turn.regenerate_swap``); ``None`` outside a Regenerate.
+    self._regenerate_target = None
     self._lock = asyncio.Lock()
     self._file_changes = (
         []

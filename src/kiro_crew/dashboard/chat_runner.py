@@ -198,6 +198,7 @@ from kiro_crew.dashboard.chat_turn.recovery import (  # noqa: F401
     _current_turn_carries_image_ref,
     _should_suppress_requeue,
 )
+from kiro_crew.dashboard.chat_turn.regenerate_swap import RegenerateTarget  # noqa: F401
 from kiro_crew.dashboard.chat_turn.segment_flush import (
     _accumulate_segment_raw,
     _flush_segment,
@@ -296,6 +297,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     mirror_is_paused,
     open_construct_at_end,
     run_to_completion,
+    variant_from_row,
 )
 from kiro_crew.dashboard.handlers import (
     MAX_PROMPT_BYTES,
