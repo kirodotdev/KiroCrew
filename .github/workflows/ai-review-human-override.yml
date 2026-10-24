@@ -110,7 +110,11 @@ jobs:
           # and the record below would then bind the edit to the wrong person.
           # Refuse it; the author, or the person who means it, posts the
           # command themselves.
-          if [ -z "$ACTOR" ] || [ "${ACTOR,,}" != "${COMMENT_AUTHOR,,}" ]; then
+          # Logins compare case-insensitively. `tr`, not bash 4's `${x,,}`:
+          # the tests run this step under macOS's /bin/bash 3.2.
+          actor_lc="$(printf '%s' "$ACTOR" | tr '[:upper:]' '[:lower:]')"
+          comment_author_lc="$(printf '%s' "$COMMENT_AUTHOR" | tr '[:upper:]' '[:lower:]')"
+          if [ -z "$ACTOR" ] || [ "$actor_lc" != "$comment_author_lc" ]; then
             post_notice "AI-review override not recorded: this comment was changed by @$ACTOR, not by its author @$COMMENT_AUTHOR. Post the command as a new comment from the person who is releasing."
             exit 1
           fi
@@ -255,7 +259,8 @@ jobs:
 
           pr_author="$(printf '%s' "$pr_json" | jq -r '.user.login // ""')"
           author_is_actor=false
-          if [ -n "$pr_author" ] && [ "${pr_author,,}" = "${ACTOR,,}" ]; then
+          pr_author_lc="$(printf '%s' "$pr_author" | tr '[:upper:]' '[:lower:]')"
+          if [ -n "$pr_author" ] && [ "$pr_author_lc" = "$actor_lc" ]; then
             author_is_actor=true
           fi
           if ! record_line="$(env CLASS="$release_class" ISSUE="$release_issue" AUTHOR_IS_ACTOR="$author_is_actor" python3 "$RELEASE_RECORD" render)"; then
