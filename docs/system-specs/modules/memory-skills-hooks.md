@@ -446,33 +446,136 @@ occupy a worker thread for minutes.
 The prompt's `## Current Semantic Memory` block is bounded too, on BOTH passes
 (the preference-only pass builds the same block): the active table is read
 whole with `get_all_semantic()`, rendered as the JSON array the model updates
-against, and the rendering is held under
+against, and the block, its omission notice included, is held under
 `_SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION = 65_536` characters
 (`_bounded_semantic_table`). A table that fits renders byte-identical to the
-uncapped form. Over the cap the most recently updated rows are kept -- the
-order the chat path's `semantic_cap` reads with no query
-([context-management](../../architecture/context-management.md)) -- and
-rendered in the same key order, followed by one `[Context budget: omitted N of
-M semantic rows ...]` line telling the model the table is partial and to
-update or delete only keys it can see. The cap bounds the prompt copy only:
-the whole table stays the `snapshot` the writers read for update-versus-create
-and the revision check, and the keys the bounded copy showed travel with the
+uncapped form, with no notice, and costs no relevance embed. Over the cap the
+block is filled from pools in order, each row taken once and priced exactly
+(`json.dumps(list, indent=1)` is additive, so a row costs its one-element render
+less two and no candidate list is re-rendered):
+
+1. a rotating slice, `_SEMANTIC_ROTATION_CHARS_PER_CONSOLIDATION` (8 KiB): the
+   rows after the last key the previous slice reached, in key order and
+   wrapping, contiguous for as long as each fits. Its first row only has to fit
+   the block, and a row wider than the whole block is passed over and counted
+   as omitted, so every slice reaches at least one row past the cursor;
+2. lessons, `_SEMANTIC_LESSON_CHARS_PER_CONSOLIDATION` (8 KiB): `lesson.*` rows by
+   relevance to the span, then recency;
+3. recency, `_SEMANTIC_RECENCY_CHARS_PER_CONSOLIDATION` (8 KiB): the other rows
+   newest first, which covers a row written with its vector deferred;
+4. relevance, the rest of the block: the other rows that score above zero, best
+   first;
+5. a backfill: whatever still fits, newest first, lessons last.
+
+What the three allowances leave unspent goes to pools 4 and 5. An allowance caps
+what its pool takes and reserves nothing: the lessons and recency pools run
+short of room only when the rotation leaves less of it than both their
+allowances. The rotation takes at most its own allowance unless it shows a
+single row wider than that, so at the 64 KiB cap they run short only on a pass
+whose rotation shows a row wider than the cap less both allowances and the
+notice, about 48,800 characters; that pass gives them what the row leaves,
+lessons first. This is deliberate. Such a row cannot fit beside full lessons and
+recency pools, so holding their allowances back as floors would leave it
+unshown for as long as they have rows to fill them, and the rotation, the one
+pool that reaches every row, would have to stall at it or pass it. As it is, such
+a row squeezes them only on a pass whose rotation shows it: once per sweep of the
+cursor, and again on any pass that repeats that slice.
+
+The kept rows
+render in the key order of the whole table, followed by one `[Context budget:
+omitted N of M semantic rows ...]` line telling the model the table is partial,
+how its rows were chosen, and to update or delete only keys it can see. It names
+relevance to the conversation only when some row scored above zero; a pass
+without scores, or whose rows all scored zero, is told its rows are the most
+recent updates and a rotating slice of the rest. The room is what the wider of
+the two lines leaves, so the line a block ends with never changes its rows. A row is
+kept whole or not at all: a single row wider than the block renders `[]` with
+the notice counting it, never a cut value. The recency pools rank rows by their
+parsed `updated_at` instant (stamps in mixed formats rank by time, an
+unparseable stamp last).
+
+Relevance is `score_consolidation_rows` (`vector_memory_runtime/consolidation_relevance.py`):
+the chat path's hybrid score of the span's user rows against each key and
+rendered value -- a lesson scores on its rule prose -- blended with the cosine
+of ONE `PRIORITY_BULK` embed of the last `_MAX_EMBED_CHARS` characters of that
+text against the stored row vectors; no row is re-embedded. Unlike a chat
+turn's, the query is many messages, so its keyword overlap leaves out a word
+held by more than `max(1, int(n * 0.1))` of the n rows
+(`_COMMON_WORD_SHARE`); a word only one row holds always counts. The query is
+the rows' content without the transcript's `[ts] ROLE:` prefix, which would match
+every `user.*` key, or the marker an image reference renders as, and a span
+with no user row is scored on every row it prompts. The embed is `_try_embed`'s,
+so a store opened before its model arrived binds it from `embed_fn_factory`
+there, as on any other embed. A store with no embedder to bind, a failed embed,
+or a vector-space change while the scan runs scores on keywords alone; a change
+since the pass read the rows, any error and any malformed result are no signal:
+the block falls back to the slice and the newest rows, so the pass never raises
+on it before it is billed. Nor does it wait without end: bulk work has no
+deadline of its own, so the pass hands the scorer one,
+`_SEMANTIC_RELEVANCE_EMBED_SECS_PER_CONSOLIDATION` (20 s) from when it asks,
+which the scorer sets as its thread's `embedding_work` around the embed (past it
+the rows score on keywords, and a re-bind's probe it cuts short binds nothing,
+for a later embed to bind after the re-bind cooldown), and stops waiting
+`_SEMANTIC_RELEVANCE_SCAN_SECS_PER_CONSOLIDATION` (10 s) later with no signal,
+logged once, even if a native call it cannot stop is still running.
+
+The cap bounds the prompt copy only: the whole table stays the `snapshot` the
+writers read for update-versus-create and the revision check, and the keys the
+block rendered -- exactly those, whichever pool kept them -- travel with the
 model's answer as `visible_keys`: a `delete` of a key the model never saw is
 withheld (logged once per key) on both write paths, the V1 writer and the
-member store's `apply_consolidation`, since keys are guessable and the notice
-alone cannot stop a blind delete. An update is not withheld: the new value's
-authority is the transcript, the store arbitrates it against the old one
-(`_write_semantic` skips a consolidation overwrite of a user-stated row; the
-member store turns a conflicting update into an owner proposal), and refusing
-it would also refuse a user's correction for a key the cap cut from the table
-while the span is marked consolidated anyway. Rows are ranked for the cut by
-their parsed `updated_at` instant (stamps in mixed formats rank by time, an
-unparseable stamp last), and a row is kept whole or not at all -- a single row
-wider than the cap renders `[]` with the notice counting it, never a cut value.
-The allowance is wider than the per-turn 12,000 because
-a pass runs rarely and merges into this table; sending only retrieval-matched
-rows was considered and not taken, since it changes which keys the model can
-dedupe against rather than how many.
+member store's `apply_consolidation`, after the `lesson.*` reroute, since keys
+are guessable and the notice alone cannot stop a blind delete. An update is not
+withheld: the new value's authority is the transcript, the store arbitrates it
+against the old one (`_write_semantic` skips a consolidation overwrite of a
+user-stated row; the member store turns a conflicting update into an owner
+proposal), and refusing it would also refuse a user's correction for a key the
+cap left out of the block while the span is marked consolidated anyway.
+
+The rotation's cursor is the last key its slice showed or passed over, kept
+under the key `consolidation.semantic_rotation_after` in the store file's
+`memory_meta` (read by `consolidation_rotation_cursor`), so it survives a
+restart; a slice resumes at the first live key past it, so a cursor whose row
+is gone is harmless, and the value is a key the file already holds. The pass
+moves it by compare-and-set (`advance_consolidation_rotation`) only after the
+model's answer is applied, on the V1 and the member path, never for a table
+that fit, an empty, unsent or discarded answer, or a receipt replay: each of
+those shows the same slice again. The advance is a write to the memory store,
+held like the pass's others (`_publication_hold_checked`): on the member path
+inside the apply's own hold, on the V1 path in a hold of its own, since an answer
+with no semantic or episodic row takes none of the writer's. So it is fenced on
+the pass's lease, and before the run's first commit it reads
+`memory.persistence_enabled` and `memory.writes_enabled`; a refused hold refuses
+the pass as any write's does, and the cursor stays. A cursor advance is a
+compare-and-set that succeeds: it moves the cursor from the key its pass read
+to the key that pass's slice reached. Two passes that read one cursor show one
+slice; the first to apply its answer advances the cursor, and the second's
+compare-and-set finds it moved and changes nothing, so a concurrent pass can
+repeat a slice but never skip one. However passes interleave, an advance moves
+the cursor over only rows its own slice showed, rows wider than the block, and
+keys added after its pass read the table; such a key is not in that slice, so
+it waits for the cursor's next sweep. The fairness bound is therefore counted in
+advances, not in completed passes: every advance moves the cursor by at least
+one row, so while the table gains no key, a row that fits the block is shown
+within N advances (N its live rows), and typically within N·(row + 2)/8,192,
+about eleven 700-character rows an advance; the rotation allowance is the knob
+for a faster sweep.
+
+Lessons have an allowance of their own rather than an exclusion. A delete is
+the one lesson verb consolidation leaves in `semantic`, and the fence withholds
+a delete of a key the block did not show, so a block without lessons could never
+retire a contradicted `on_topic` lesson (V1, tier-checked by
+`_lesson_delete_decision`) or propose a lesson `forget` (member). Ranked by
+relevance, the allowance shows the lessons a span is likeliest to contradict or
+restate, and it caps what the lessons pool takes, so that pool cannot fill the
+block ahead of the facts. The allowance
+is wider than the per-turn 12,000 because a pass runs rarely and merges into
+this table, and choosing by relevance is what makes that merge work: any cut
+decides which keys the model can dedupe against, and a newest-first cut decides
+it by write time, so the older rows a span restates or contradicts -- the
+near-duplicates and deletes the prompt asks for -- are the ones it most likely
+leaves out. The recency allowance is there for what was just written, and the
+rotation reaches in turn every other row that fits the block.
 
 The `preferences_update` / `projects_update` prompt keys and whole-file writes
 are enabled only for V1 when `memory.migrated` is false. V2 always treats its
@@ -692,13 +795,14 @@ nothing reads either. New code for a member goes to the module that owns it. In
 | `embedding_repair` | The recorded vector space, `reconcile_embedding_space` and the three NULL-vector sweeps |
 | `recall` | `recall`, its single-inference retry, and the bounded evidence payload |
 | `migration` | Legacy `lessons.jsonl` parsing, Markdown parsing through the `MemoryFiles` the store resolves, the episode clustering promotion uses, and promotion's key inference (`infer_semantic_key`) |
-| `text_scoring` | Stemming, the row-token memo, keyword and hybrid scores, MMR, the dense-script keyword floor and the list-search predicate |
+| `text_scoring` | Stemming, the row-token memo, keyword and hybrid scores, the semantic-row score the V1 fact reader and the consolidation scorer share (`_semantic_key_words`, `_semantic_row_score`), MMR, the dense-script keyword floor and the list-search predicate |
 | `write_outcomes` | What a write reports: `SemanticRejectCode`, `LessonWriteOutcome`, `EpisodicWriteOutcome` and `LessonWriteResult`, which keep `kiro_crew.vector_memory` as their `__module__` |
 | `lesson_write` | `write_lesson` (refusal screens, the scope-local dedup scan and its authority pre-pass, deferred supersede, the lesson vector) and `embed_lesson` |
 | `episodic_write` | `write_episodic` and `write_episodic_outcome` (screens, dedup, capacity, the FAISS add; the facade's `_injection_audit_snippet` redacts the injection-refusal snippet), forget, restore, cap eviction and row reads |
 | `bulk_ingest` | The writer loops of `migrate_from_markdown`, `import_memory` and `promote_episodic_patterns` |
 | `store_bookkeeping` | Record revisions and eligibility (`_record_mutation`, `with_record_metadata`, `_eligible_rows`), the `memory_events` audit trail (`_log_event`, `get_events`, `rotate_events`, `get_rejection_stats`) and the `memory_meta` helpers |
 | `derived_state` | Vector-space currency (the embedding token and the config guard a managed vector is published under) and the invalidation of both resident scoring sets |
+| `consolidation_relevance` | What a consolidation pass reads about the rows its bounded semantic table cannot show whole: each row's relevance to the span (`score_consolidation_rows`: one embed of the span's user text against the stored vectors, the chat path's hybrid score, keywords alone without a vector) and the cursor its rotating slice resumes from, the `memory_meta` key `consolidation.semantic_rotation_after` (`consolidation_rotation_cursor`, and the compare-and-set `advance_consolidation_rotation`) |
 
 Beside the facade, and bound the same way, live the owners a runtime module may not
 be: the code that opens the connection, and the code that names a relation only the

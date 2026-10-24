@@ -64,6 +64,7 @@ STORE_LOGGER = "kiro_crew.vector_memory"
 RUNTIME_MODULES = frozenset(
     {
         "bulk_ingest",
+        "consolidation_relevance",
         "derived_state",
         "embedding",
         "embedding_repair",
@@ -232,9 +233,10 @@ _STORE_MEMBERS = {
         _semantic_candidates_v2 _sqlite_data_version _sqlite_vector_search _stamp_crew_lineage
         _stamp_facets
         _touch_last_accessed _try_embed _validate_key _vector_commit _write_history
-        _write_meta _write_meta_in_transaction _write_semantic append_history
-        apply_consolidation backfill_missing_embeddings begin_space_change
-        build_faiss_index close consolidation_receipt count_by_facet count_lessons
+        _write_meta _write_meta_in_transaction _write_semantic advance_consolidation_rotation
+        append_history apply_consolidation backfill_missing_embeddings begin_space_change
+        build_faiss_index close consolidation_receipt consolidation_rotation_cursor
+        count_by_facet count_lessons
         delete_episodic delete_lesson delete_semantic embed_episodic embed_lesson
         embed_semantic embed_semantic_retirement embedding_repair_state
         find_contradiction_candidates get_all_semantic get_context_preview
@@ -247,7 +249,8 @@ _STORE_MEMBERS = {
         propose_semantic_delete read_counters read_editable_history read_history_entries
         rebuild_memory_index recall reconcile_embedding_space reconfigure
         recorded_embedding_space recorded_rebuild_generation replace_today_history
-        restore_episodic rotate_events save_faiss_index search_episodic search_memory
+        restore_episodic rotate_events save_faiss_index score_consolidation_rows
+        search_episodic search_memory
         search_semantic seed_item_if_absent set_embedding_dim set_semantic
         set_semantic_if_absent startup_lesson_query turn_lessons validate_semantic
         with_record_metadata
@@ -335,6 +338,7 @@ _STORE_SIGNATURES = {
     "_write_meta": "(self, key: 'str', value: 'str') -> 'None'",
     "_write_meta_in_transaction": "(self, key: 'str', value: 'str') -> 'None'",
     "_write_semantic": "(self, key: 'str', value_json: 'str', confidence: 'float', source: 'str', *, metadata: 'dict | None' = None, expected_revision: 'int | None' = None, correction: 'record_meta.CorrectionEvidence | None' = None, _consolidation: 'bool' = False, defer_embedding: 'bool' = False, embedding: 'list[float] | None' = None, embedding_resolved: 'bool' = False, embedding_generation: 'int | None' = None, retirement_embedding: 'list[float] | None' = None, retirement_embedding_resolved: 'bool' = False, retirement_value_json: 'str | None' = None) -> 'str | None'",
+    "advance_consolidation_rotation": "(self, expected: 'str | None', new: 'str') -> 'bool'",
     "algorithm_version": "(self) -> 'str'",
     "append_history": "(self, entry: 'str') -> 'None'",
     "apply_consolidation": "(self, *, source_id: 'str', session_key: 'str', source_total: 'int', result: 'dict', snapshot: 'dict', messages: 'list[dict]', facets: 'memory_schema.MemoryFacets | None' = None) -> 'dict'",
@@ -343,6 +347,7 @@ _STORE_SIGNATURES = {
     "build_faiss_index": "(self) -> 'int'",
     "close": "(self) -> 'None'",
     "consolidation_receipt": "(self, source_id: 'str') -> 'dict | None'",
+    "consolidation_rotation_cursor": "(self) -> 'str | None'",
     "count_by_facet": "(self, group_by: 'str', filters: 'Mapping[str, str] | None' = None, *, kind: 'str' = '') -> 'dict[str, int]'",
     "count_lessons": "(self) -> 'int'",
     "db": "(self) -> 'sqlite3.Connection'",
@@ -397,6 +402,7 @@ _STORE_SIGNATURES = {
     "restore_episodic": "(self, mem_id: 'str', source: 'str' = 'user_explicit') -> 'bool'",
     "rotate_events": "(self, max_rows: 'int' = 10000) -> 'int'",
     "save_faiss_index": "(self) -> 'None'",
+    "score_consolidation_rows": "(self, rows: 'list[dict]', texts: 'list[str]', query_text: 'str', *, deadline: 'float | None' = None) -> 'list[float] | None'",
     "search_episodic": "(self, query_embedding: 'list[float] | None' = None, query_text: 'str' = '', limit: 'int' = 8, mmr: 'bool' = True, tag_filter: 'list[str] | None' = None, relevance_filter: 'bool' = False, *, recall_query: '_RecallQuery | None' = None) -> 'list[dict]'",
     "search_memory": "(self, query: 'str', *, limit: 'int' = 5) -> 'list[dict]'",
     "search_semantic": "(self, prefix: 'str') -> 'list[dict]'",
