@@ -1024,7 +1024,7 @@ def _credential_redaction_plan(
     # disjoint; it is what the later passes subtract from.
     taken: list[_RedactionSpan] = []
     if _might_contain_credential(text):
-        for m in _credential_matches(text):
+        for m in _credential_matches(text, glued=True):
             # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of
             # the match into the warning: `_CREDENTIAL_PATTERNS` matches the raw
             # secret value itself (e.g. `ghp_…`, `sk-ant-…`), so even a short prefix
@@ -1034,8 +1034,15 @@ def _credential_redaction_plan(
             # must carry no secret bytes. The base64 / bare-secret passes below
             # likewise log length only.
             warnings.append(f"Redacted credential pattern ({len(m.group())} chars)")
-            taken.append((m.start(), m.end(), _REDACTED_CREDENTIAL_TAG))
-            rules[m.start()] = _pass1_rule(m.group())
+            # A credential glued to the one before it starts inside that span;
+            # only its part past the span is still in plaintext.
+            start = max(m.start(), taken[-1][1]) if taken else m.start()
+            if start >= m.end():
+                continue  # wholly inside a span already redacted
+            taken.append((start, m.end(), _REDACTED_CREDENTIAL_TAG))
+            rule, label = _pass1_rule(m.group())
+            # A record shows the label part still inside the clipped span.
+            rules[start] = (rule, label[start - m.start() :])
 
     # Passes 2 and 3 both scan the ORIGINAL `text` for runs of the base64
     # alphabet, and they select the SAME spans: `[A-Za-z0-9+/]{40,}` is greedy and
@@ -1454,6 +1461,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _vowel_ratio,
     )
     from kiro_crew.security.redaction_patterns import (  # noqa: F401
+        _AUTHORITY_END_RE,
+        _AWS_LABEL_PREFIX_RE,
+        _AWS_SEPARATOR_RE,
+        _AWS_VALUE_RUN_RE,
+        _BEARER_PREFIX_RE,
         _CREDENTIAL_PATTERNS,
         _CREDENTIAL_PATTERNS_NO_PEM_BLOCK,
         _CREDENTIAL_PATTERNS_SANS_JWT,
@@ -1465,16 +1477,29 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CREDENTIAL_PREFILTER_TELEGRAM_RE,
         _CREDENTIAL_PREFILTER_URI_RE,
         _CREDENTIAL_STARTS_SANS_JWT,
+        _GLUED_PROBES,
+        _GLUED_WINDOW,
         _JWT_SEGMENT_RUN_RE,
+        _PEM_END_RE,
         _PREFILTER_MIN_LEN,
+        _RUN_REST_RE,
+        _SPACED_START_RE,
+        _START_LOOKAHEAD,
         _TELEGRAM_AT_RE,
         _TELEGRAM_BRANCH,
+        _TOKEN_CHAR_RE,
+        _URI_START_RE,
         _contains_credential_pattern,
         _credential_search,
+        _glued_matches,
+        _is_aws_value_run,
         _jwt_branch_matches_at,
         _next_jwt_branch_start,
+        _pem_body_end,
+        _probe_at,
         _sans_jwt_start,
         _segment_run_end,
+        _validated_match,
         get_credential_patterns,
     )
 if TYPE_CHECKING:  # project names it serves from outside its owners, from their homes
