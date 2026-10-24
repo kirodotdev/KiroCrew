@@ -167,6 +167,9 @@ cross-home flake three tests later.
      store read. Within that window the next boot would serve the previous
      home's counts; past it, whether the next boot refreshes depends on how
      long the boots took.
+   * ``mcp_gateway.overlay_refresh._refresher`` -- the running broker's
+     overlay-refresh hook, bound to that boot's orchestrator; the broker stop
+     clears it, and this covers a boot whose teardown did not reach the stop.
    * ``metrics.inventory_gauges`` TTL cache, loader singletons and
      install-reporter claim, through its own ``reset_for_testing()`` -- the
      cached counts are the home's, and each boot claims the reporter role
@@ -286,6 +289,7 @@ from kiro_crew.dashboard import (
 from kiro_crew.dashboard.handlers import kiro_usage_api
 from kiro_crew.dashboard.handlers import updates as dashboard_updates
 from kiro_crew.diag import threads as diag_threads
+from kiro_crew.mcp_gateway import overlay_refresh
 from kiro_crew.metrics import inventory_gauges
 from kiro_crew.platform import bootstrap as platform_bootstrap
 from kiro_crew.platform import context as platform_context
@@ -798,6 +802,7 @@ def _reset_home_bound_globals() -> None:
     status_counts._counts_cache_ts = float("-inf")
     status_counts._counts_cache_failures = 0
     status_counts._counts_refresh_inflight = False
+    overlay_refresh.set_overlay_refresher(None)
     status_counts._last_counts_warn_monotonic = None
     inventory_gauges.reset_for_testing()
     with diag_threads._prev_lock:

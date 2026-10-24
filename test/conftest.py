@@ -868,6 +868,19 @@ def _reset_reasoning_effort_globals():
         _cp._reasoning_effort_ordered = saved_ordered
 
 
+@pytest.fixture(autouse=True)
+def _reset_overlay_refresher():
+    """Clear the MCP broker's overlay-refresh hook after each test.
+
+    A test that starts a broker registers its orchestrator's refresh in a module
+    global; left set, a later test's app registration would call into it.
+    """
+    yield
+    from kiro_crew.mcp_gateway import overlay_refresh
+
+    overlay_refresh.set_overlay_refresher(None)
+
+
 #: ``_isolation_root`` / ``_isolation_dirs`` / ``_isolate_kirocrew_home`` live in the
 #: ROOTDIR ``conftest.py``, not here. The data home has to be pinned for every
 #: testpath, including the ~108 test modules that ship inside the package under
