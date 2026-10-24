@@ -10,6 +10,8 @@
 // module importing this file directly would slip past their mocks. Nothing here
 // imports `api.ts`.
 
+import { isHostScopedLoginCommand } from '../../utils/pullRequestErrors'
+
 export interface ConnectResponse {
   owner: string
   repo: string
@@ -176,28 +178,36 @@ export interface GitLabGroupReviewsResponse extends GitLabGroup {
   limit: number
 }
 
-/** A failed GitLab-group request, carrying the server's `code` so the UI can say
- * what to do (`group_not_found`, `setup_required`, …) instead of echoing the
- * provider's raw message. */
+/** A failed coded request (`/gitlab-groups`, `/deps`), carrying the server's
+ * `code` so the UI can say what to do (`group_not_found`, `setup_required`,
+ * `deps_auth_required`, …) instead of echoing the provider's raw message.
+ * `loginCommand` is the sign-in remedy the gateway built from its own
+ * allowlisted host; it is never parsed out of provider text here. */
 export class GitLabGroupError extends Error {
   readonly code: string
+  readonly loginCommand: string
 
-  constructor(message: string, code: string) {
+  constructor(message: string, code: string, loginCommand = '') {
     super(message)
     this.name = 'GitLabGroupError'
     this.code = code
+    this.loginCommand = loginCommand
   }
 }
 
 export async function gitlabGroupError(r: Response): Promise<GitLabGroupError> {
-  let body: { error?: unknown; code?: unknown } = {}
+  let body: { error?: unknown; code?: unknown; loginCommand?: unknown } = {}
   try {
     body = (await r.json()) as typeof body
   } catch {
     // A non-JSON body still yields an error with the status as its message.
   }
   const message = typeof body.error === 'string' && body.error ? body.error : `HTTP ${r.status}`
-  return new GitLabGroupError(message, typeof body.code === 'string' ? body.code : '')
+  // The one shape rule, shared with utils/pullRequestErrors.ts: only a
+  // host-scoped command the gateway built is accepted, so a body cannot smuggle
+  // arbitrary text into the copyable command.
+  const loginCommand = isHostScopedLoginCommand(body.loginCommand) ? body.loginCommand : ''
+  return new GitLabGroupError(message, typeof body.code === 'string' ? body.code : '', loginCommand)
 }
 
 /** The full single-PR payload the detail pane renders — a superset of the list
@@ -969,6 +979,11 @@ export interface DepNode {
   kind: 'issue' | 'pull'
   state: 'open' | 'closed' | 'merged'
   title: string
+  /** True when the backend admitted this node without reading its own
+   * dependency links (GitLab: a link-admitted issue past the per-rebuild links
+   * cap, or one whose own `/links` call failed). Its incoming edges may be
+   * missing, so `buildNodes` never derives `ready` for it. */
+  blockers_unknown?: boolean
 }
 
 /** The `GET /api/apps/issue-radar/deps` payload. Schema-versioned so a client

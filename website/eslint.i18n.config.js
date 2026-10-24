@@ -575,6 +575,28 @@ export default [
               // residue the general class shape already accepts, caught by the
               // en-XA render gate instead.
               String.raw`^(?!.*(?:^|\s)[a-z]+\s+[a-z]+(?:\s|$))(?=(?:^|.*\s)\[&[^\]\s]*\]:)(?:[\s\-a-z0-9:/().%#\[\]]|\[(?:&|@(?:media|supports)\()[^\]\s]*\])+$`,
+              // Tailwind IMPORTANT-MODIFIER clusters, e.g. the server-detail line
+              // under a failure notice in apps/issue-radar/views/GraphView.tsx:
+              // `block text-left font-mono !text-[10px] leading-snug !text-muted …`.
+              // `!text-…` is how a caller's class wins over a same-property class the
+              // shared component sets on the same element (ErrorNotice's
+              // `messagePlacement="below"` span sets `text-[12px] text-danger-text`
+              // itself; which of two same-property utilities applies is decided by
+              // stylesheet order, not class order). The general class shape forbids
+              // `!`, and such constants live at module level under ALL-CAPS names,
+              // so `i18n-strict` looks inside them.
+              //
+              // Deliberately NARROWER than "allow ! anywhere", on three axes:
+              // (a) the first lookahead rejects any two ADJACENT bare lowercase
+              // words, the prose shape (`save failed !text-muted`) that would
+              // otherwise ride in on a single important token; (b) the second
+              // lookahead requires at least one `!`-opened token, so the general
+              // class shape still owns every cluster without one; (c) `!` is
+              // admitted ONLY at the start of a token and ONLY when a letter
+              // follows it, so an exclamation mark closing a sentence (`Saved!`,
+              // `Try again!`) never matches: copy puts `!` after a word, a
+              // utility puts it before one.
+              String.raw`^(?!.*(?:^|\s)[a-z]+\s+[a-z]+(?:\s|$))(?=(?:^|.*\s)![a-z])(?:[\s\-a-z0-9:/().%#\[\]]|(?:^|(?<=\s))![a-z])+$`,
               // Tailwind ARBITRARY-VALUE clusters whose bracketed value carries a
               // comma or underscore, e.g. the notification glass surfaces in
               // components/notifications/NotificationFeed.tsx:
