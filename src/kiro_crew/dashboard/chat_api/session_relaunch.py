@@ -666,6 +666,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     # there, never holding it across the turn), so the running reply keeps
     # its captured project and the pick applies from the next turn via the
     # deferred reset below.
+    cwd_retracted = False
     async with contextlib.AsyncExitStack() as _stack:
         await _stack.enter_async_context(slot._lock)
         if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
@@ -752,6 +753,9 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                     },
                     status=409,
                 )
+            if not project:
+                state.sessions.retract_cwd(session_key)
+                cwd_retracted = True
             # Determine whether a start that captured the OLD cwd is already
             # in flight BEFORE scheduling the replacement eager spawn, because
             # that scheduling cancels any prior eager task and roots a new one
@@ -796,5 +800,19 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
             # rather than clobbering a correct session.
             if arm_reset:
                 slot._pending_reset_history_key = session_key
+                slot._pending_reset_clears_cwd = not project
+    if cwd_retracted:
+        try:
+            await state.sessions.aflush()
+        except Exception:
+            logger.warning("Slot %s: saving the cleared project cwd failed", name, exc_info=True)
+            state.push_slots_update()
+            return web.json_response(
+                {
+                    "error": "the project clear could not be saved",
+                    "code": "project_clear_not_saved",
+                },
+                status=500,
+            )
     state.push_slots_update()
     return web.json_response({"ok": True, "project": project})

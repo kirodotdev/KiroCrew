@@ -2526,6 +2526,21 @@ envelope on a cold session.
 - `close_all()`: saves all active mappings before killing processes.
 - `start_pool()`: prunes stale entries (files deleted by kiro-cli GC).
 
+**Stored cwd after a project clear.** A resume with no `cwd` restores the
+entry's stored `cwd`, so clearing a chat's project must forget it.
+`SessionManager.retract_cwd(key)` drops it (`SessionMap.clear_cwd`, which keeps
+the sid) and sets `cwd_retracted` on the live session. A cold start already in
+flight under the key read the old `cwd` before the clear, so `retract_cwd` also
+marks its reservation (`cwd_retracted_reservations`); the session it registers
+starts flagged, and registration stores `""` for it. Any code that writes a
+live session's `provider.cwd` back into the map (registration, `close_all`,
+`commit_provider_switch_replay_sid`) must write `""` for a session with
+`cwd_retracted` set, or the removed directory comes back after a restart. A
+reservation taken after the clear, and the replacement session, start unflagged. The slot's
+`_pending_reset_clears_cwd` marks a pending reset armed by a clear, so
+`_consume_pending_reset` retracts again only for that reset and a model-only
+reset keeps the stored directory.
+
 **Module layout:** `kiro_crew.session_map` is the import path and defines `SessionMap`
 itself: the constructor, the resume rule and both stale paths (`get`, `prune`, the per-read
 repair), the session pointer and the per-conversation state, the privacy rows, and the

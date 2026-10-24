@@ -334,6 +334,8 @@ def init_session_fields(self: _ChatSlot) -> None:
     # inline because the endpoint can be reached from inside the kiro-cli
     # process group via the set_project MCP tool.
     self._pending_reset_history_key = None
+    # True only while the queued reset is a project clear's, so a model-only reset keeps the cwd.
+    self._pending_reset_clears_cwd = False
     # Set by the reset_conversation directive; consumed alongside the
     # project-change reset above. Deferred for the same reason: the tool is
     # called from inside the turn it wants to end, and the immediate route

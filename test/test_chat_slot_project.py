@@ -28,6 +28,7 @@ def _mock_state(slot: _ChatSlot | None = None) -> DashboardState:
     state.push_slots_update = MagicMock()
     state.sessions = MagicMock()
     state.sessions.reset = AsyncMock()
+    state.sessions.aflush = AsyncMock()
     # No live session and no in-flight reservation by default: the arm guard
     # reads both get_provider() and session_keys(), so a realistic empty
     # default keeps the "do not arm" cases honest. Tests that exercise an armed
