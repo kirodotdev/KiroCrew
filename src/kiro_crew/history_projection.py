@@ -27,7 +27,7 @@ from typing import IO, TYPE_CHECKING, AbstractSet, Any, Literal, overload
 
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write, replace_with_retry
+from kiro_crew.atomic_write import atomic_write, replace_with_retry  # noqa: F401 - re-exported name
 from kiro_crew.chat_attachments import (
     purge_staged_attachments,
     restore_staged_attachments,
@@ -57,6 +57,31 @@ from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
+
+
+def _split_transcript_bytes(data: bytes) -> list[str]:
+    """``read_text().splitlines(keepends=True)``, except for a damaged FIRST line.
+
+    The first line is cut at its byte newline and decoded on its own. When it
+    is not UTF-8 it comes back as a blank placeholder instead of raising, so the
+    metadata rewrite -- which replaces exactly that line -- can run; before, the
+    whole read raised and the line could never be rewritten. The rows after it
+    decode strictly, as ``read_text`` always did, so a damaged ROW still raises.
+    """
+    if not data:
+        return []
+    head, newline, rest = data.partition(b"\n")
+    try:
+        first: str | None = (head + newline).decode("utf-8")
+    except UnicodeDecodeError:
+        first = None
+    text = (first or "") + rest.decode("utf-8")
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").splitlines(keepends=True)
+    if first is None:
+        # A placeholder the caller's JSON parse rejects, so it takes the
+        # corrupt-line rewrite and replaces it with a real metadata line.
+        return ["\n", *lines]
+    return lines
 
 
 class SessionMetadataProjection:
@@ -437,10 +462,12 @@ class SessionMetadataProjection:
         """
         path = self._log._path(key)
         previous_mtime = _history_facade()._safe_mtime(path)
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True) if path.exists() else []
+        lines = _split_transcript_bytes(path.read_bytes()) if path.exists() else []
         healing_corrupt_line = False
         if lines:
             try:
+                # An undecodable first line arrives as a blank placeholder, so
+                # it fails here and is rewritten like any line that is not JSON.
                 metadata = json.loads(lines[0])
             except json.JSONDecodeError:
                 _HISTORY_LOGGER.warning(
@@ -476,28 +503,10 @@ class SessionMetadataProjection:
 
         # This hot one-line edit remains crash-atomic without paying for an
         # fsync while every other writer of the session is excluded.
-        import tempfile
-
-        data = "".join(lines).encode("utf-8")
-        descriptor, temporary = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-        try:
-            try:
-                os.write(descriptor, data)
-            finally:
-                os.close(descriptor)
-            # The shared retrying rename, not a bare ``os.replace``: on Windows the
-            # rename fails with ``PermissionError`` while any other handle -- a
-            # concurrent transcript READER -- is open on the destination, and this
-            # path is hit right after a session writes, when readers are busiest.
-            # Three unrelated test files flaked on exactly this line in five full
-            # runs; the retry is what every other tmp-plus-rename writer here has.
-            replace_with_retry(temporary, path)
-        except Exception:
-            try:
-                os.unlink(temporary)
-            except OSError:
-                pass
-            raise
+        # ``atomic_write`` writes every byte (a short write cannot publish a
+        # prefix of the transcript) and renames through the retrying replace
+        # that a concurrent Windows reader needs.
+        atomic_write(path, "".join(lines).encode("utf-8"))
         _history_facade()._restore_mtime(path, previous_mtime)
         self._log._invalidate_cache(key)
         return True

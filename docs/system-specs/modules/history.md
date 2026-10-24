@@ -1900,11 +1900,13 @@ writer:
   `get_metadata_status` answers `readable=False` for two different facts, and
   the writers tell them apart through `metadata_line_state` (`readable`,
   `transient`, `corrupt`; `METADATA_LINE_*`). A TRANSIENT failure -- the file
-  could not be opened or decoded after the bounded retries -- clears on its
-  own, so the full save raises and `_dirty` stays armed, the empty-window merge
-  and `update_metadata_if` return without writing, and the next attempt
-  re-decides. A CORRUPT first line -- bytes on disk that are not JSON, which
-  every atomic line writer makes permanent rather than a write in flight --
+  could not be opened after the bounded retries -- clears on its own, so the
+  full save raises and `_dirty` stays armed, the empty-window merge and
+  `update_metadata_if` return without writing, and the next attempt re-decides.
+  A CORRUPT first line -- bytes on disk that are not JSON, or not UTF-8 at all,
+  which every atomic line writer makes permanent rather than a write in flight
+  (the first line is read as bytes and decoded on its own, so undecodable bytes
+  are never mistaken for a read in flight) --
   never clears, and a writer that kept deferring on it would never persist a
   row again: `closed` could never land and the tab would resurrect on every
   restart. So the WRITERS rewrite it: the full save and `_update_metadata_locked`
@@ -1920,9 +1922,19 @@ writer:
   line carries no `created_at` when the title or merge writer heals it (the
   identity is unknowable, and a minted one would read to the owning slot's next
   full save as a fresh incarnation after a delete); the full save's own heal
-  stamps the slot's recorded identity. READERS are unchanged: the derivation seam
+  stamps the slot's recorded identity. `_update_metadata_locked` splits the file
+  by bytes, so an undecodable first line reaches this rewrite like one that is
+  not JSON while the rows after it still decode strictly, and it stages the
+  result through `atomic_write`, which writes every byte, so a short write never
+  publishes a prefix of the transcript. The first `append` likewise creates a
+  transcript through `atomic_write`: it appears with its whole metadata line or
+  not at all. READERS are unchanged: the derivation seam
   and every identity-sensitive reader refuse both states, a corrupt line before
   the heal because it cannot be read and after it because it is restricted.
+  `read_session_execution` names the two refusals apart: a CORRUPT line answers
+  "session record is unreadable (its first line is damaged); start a new chat
+  (memory is intact) or archive this one", because no retry reads it, and a
+  TRANSIENT one keeps the plain "session record is unreadable".
 - **A restricted line names no `memory_store`.** See
   [session.md](session.md): with no carrier written for a restricted session,
   the store name is what the restart would read as a legacy owner claim and

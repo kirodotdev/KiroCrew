@@ -868,7 +868,8 @@ def read_session_execution(session_key: str, *, required: bool = False) -> Execu
             return read_run_execution(session_key.split(":", 1)[1])
     record, readable = ConversationLog().get_metadata_status(session_key)
     if not readable:
-        raise _unavailable("session record is unreadable")
+        reason = _unreadable_record_reason(ConversationLog(), session_key)
+        raise _unavailable(reason)
     execution = execution_from_record(record, required=required)
     if execution is not None:
         # The line's own ``memory_mode`` is the file's privacy contract and a
@@ -897,6 +898,32 @@ def read_session_execution(session_key: str, *, required: bool = False) -> Execu
 _OPEN_A_NEW_CHAT_REMEDY = (
     "open a new chat with the same member (its memory is intact) or archive this one"
 )
+
+
+#: The two refusals an unreadable session record answers with. Fixed text,
+#: like every reason here, because a caller shows it to the user unredacted.
+_UNREADABLE_RECORD_REASON = "session record is unreadable"
+_DAMAGED_RECORD_REASON = (
+    "session record is unreadable (its first line is damaged); start a new chat "
+    "(memory is intact) or archive this one"
+)
+
+
+def _unreadable_record_reason(log: Any, session_key: str) -> str:
+    """The refusal reason for a session record that could not be read.
+
+    A DAMAGED first line (bytes that are not JSON or not UTF-8) is told apart
+    from a read that failed this once: no retry reads damaged bytes, so its
+    reason names the step that works instead of reading as "try again". The
+    refusal itself is unchanged -- the member binding and privacy mode the line
+    held are unknowable, so nothing runs as an ordinary or Global chat in its
+    place.
+    """
+    from kiro_crew.history import METADATA_LINE_CORRUPT
+
+    if log.metadata_line_state(session_key) == METADATA_LINE_CORRUPT:
+        return _DAMAGED_RECORD_REASON
+    return _UNREADABLE_RECORD_REASON
 
 
 def _missing_identity(remedy: str):
