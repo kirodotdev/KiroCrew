@@ -69,10 +69,10 @@ interface UserMessageProps {
    *  send while the member works is a steer), the badge would label every
    *  such send with the mechanics the surface exists to hide. */
   hideSteerBadge?: boolean
-  /** Bubble colour. `default` is the single-chat page's neutral `bg-card`
-   *  surface. `accent` fills the bubble with the theme accent and sets its text
-   *  to `--accent-fg` — the iMessage pairing a crewmate's chat uses (#17839),
-   *  where the crewmate's gray bubble sits opposite. The `user-bubble-accent`
+  /** Bubble colour. `default` is the neutral `bg-card` surface. `accent` fills
+   *  the bubble with the theme accent and sets its text to `--accent-fg` — the
+   *  user's bubble in the dashboard's chats, which a crewmate's chat pairs with
+   *  the crewmate's gray bubble (#17839). The `user-bubble-accent`
    *  hook recolours inline code and links onto `--accent-fg` (index.css), since
    *  the message-wide code and link colours assume the neutral surface. */
   tone?: 'default' | 'accent'

@@ -257,7 +257,7 @@ html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-l
    fill — so the token scope above cannot reach it; same step off the fill, by hand. (0,3,2) beats
    the (0,2,2) literal rule. */
 [data-theme="kiro-dark"] .message-bubble.crewmate-bubble :not(pre)>code{background:var(--bg-hover)}
-/* Accent-filled user bubble (`tone="accent"` on UserMessage; a crewmate's chat, #17839). The
+/* Accent-filled user bubble (`tone="accent"` on UserMessage; the main chat and a crewmate's chat, #17839). The
    bubble is `--accent` with `--accent-fg` text, and everything drawn INSIDE it was styled for the
    neutral surface: inline code, link pills, the sent quote card (`text-muted` excerpt, `bg-accent`
    bar, `border-border`, `hover:bg-bg-hover`), and whatever user-message rendering gains later.

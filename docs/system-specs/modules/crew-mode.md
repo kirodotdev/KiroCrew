@@ -3402,8 +3402,11 @@ it toward the text colour — so everything the message renders (inline code,
 link pills, the sent quote card, whatever is added later) inherits readable
 colours with no per-element rule; the fill itself reads `--bubble-accent`,
 snapshotted from the outer accent on the bubble's parent. Links keep a link
-signal (an underline) once their colour is the body colour. The single-chat
-page's user bubble is untouched.
+signal (an underline) once their colour is the body colour. The main chat
+draws the same accent user bubble, opposite its unboxed replies: the single-chat
+page's own row, the SDK's default `user` row (split panes, Side Chat, app chat
+embeds), the crew window's row and the pinned-prompt card that stands in for
+the bubble ([rfc-main-chat-accent-user-bubble](../../request-for-change/rfc-main-chat-accent-user-bubble.md)).
 Consecutive bubbles read as one speaker through their grouped corners alone.
 Corner rule on
 the run's (left) side:

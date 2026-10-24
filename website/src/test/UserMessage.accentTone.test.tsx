@@ -3,8 +3,9 @@
  * user's bubble is filled with the theme accent, the crewmate's with a neutral
  * gray. The user half is `tone="accent"` on UserMessage; the crewmate half is
  * `crewmateBubbleClass` (pinned in crewmateBubbles.test.ts). This pins the
- * user half and the single seam that turns it on: the crewmate `user` entry
- * of `createTranscriptRenderers`.
+ * user half and the seams that turn it on: the crewmate `user` entry
+ * of `createTranscriptRenderers`, and the rows the main chat's split panes,
+ * Side Chat and crew window draw.
  *
  * happy-dom performs no layout and resolves no CSS, so the pin is the class
  * contract — the `user-bubble-accent` hook `index.css` keys its token
@@ -18,6 +19,7 @@ import React from 'react'
 import UserMessage from '../pages/chat/UserMessage'
 import { mergeRenderers, resolveRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
+import { createCrewWindowRenderers } from '../pages/chat/crew-window/crewWindowRenderers'
 import type { ChatMessage } from '../types'
 import { readIndexCss } from './indexCssSource'
 
@@ -53,7 +55,7 @@ afterEach(() => {
 })
 
 describe('UserMessage tone', () => {
-  it('default keeps the neutral surface the single-chat page has always drawn', () => {
+  it('default keeps the neutral surface', () => {
     const el = renderBubble()
     expect(el.classList.contains('user-bubble')).toBe(true)
     expect(el.classList.contains('bg-card')).toBe(true)
@@ -73,9 +75,9 @@ describe('UserMessage tone', () => {
   })
 
   it('a steer drawn WITH its badge keeps the steer tint even when accent is asked for', () => {
-    // The accent fill is for a surface that hides the steer badge; the
-    // single-chat page's steer tint is a different statement and must not be
-    // overridden by the tone.
+    // The main chat draws both the accent fill and the steer badge; the
+    // steer tint is a different statement and must not be overridden by the
+    // tone.
     const el = renderBubble({ tone: 'accent', meta: { steer: true, steerState: 'settled' } })
     expect(el.classList.contains('bg-accent-subtle')).toBe(true)
     expect(el.classList.contains('user-bubble-accent')).toBe(false)
@@ -103,6 +105,25 @@ describe("the mate chat's user entry", () => {
     const plain = render(<>{resolveRenderer(userRow, badgeOnly)!.render(userRow, ctx({ messages: [userRow] }))}</>)
     expect(bubbleOf(plain.container).classList.contains('user-bubble-accent')).toBe(false)
     expect(bubbleOf(plain.container).classList.contains('bg-card')).toBe(true)
+  })
+})
+
+describe("the main chat's shared user rows", () => {
+  it('draw the accent tone in a split pane, the Side Chat and a crew window', () => {
+    // Each registry is built the way its host builds it: ChatPane passes the
+    // shared set with no crewmate, SideChat passes none, the crew window its own.
+    const hosts = {
+      splitPane: mergeRenderers(createTranscriptRenderers({ slot: 's1' })),
+      sideChat: mergeRenderers(undefined),
+      crewWindow: mergeRenderers(createCrewWindowRenderers({
+        instanceId: 'i1', name: 'Peer', key: 'k1', canRewind: () => false, onRewind: () => false,
+        regenerateRow: null, onRegenerate: () => {},
+      })),
+    }
+    for (const [host, registry] of Object.entries(hosts)) {
+      const { container } = render(<>{resolveRenderer(userRow, registry)!.render(userRow, ctx({ messages: [userRow] }))}</>)
+      expect(bubbleOf(container).classList.contains('user-bubble-accent'), host).toBe(true)
+    }
   })
 })
 

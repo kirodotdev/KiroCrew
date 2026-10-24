@@ -5,7 +5,7 @@
  * farm's rows (same wrappers, measured with the farm flag up only while it builds).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { renderHook, render as mount } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { isValidElement, type ReactElement, type ReactNode } from 'react'
 
@@ -80,6 +80,13 @@ describe('renderTurnItem', () => {
     expect(row.props.style?.maxWidth).toBe('var(--mc-content-width, 900px)')
     expect(row.props['data-content-column']).toBe('')
     expect(row.key).toContain('t3')
+  })
+
+  it("draws the user's bubble in the accent tone", () => {
+    const { result } = render()
+    const row = result.current.renderTurnItem({ kind: 'single', msg: msg('user', 'hello', 't8'), idx: 0 }, 0)
+    const bubble = mount(<>{row}</>).container.querySelector('.message-bubble')
+    expect(bubble?.classList.contains('user-bubble-accent')).toBe(true)
   })
 
   it('draws a permissions-only group as an empty wrapper', () => {
