@@ -11,6 +11,11 @@ import re
 from ..trust_patterns import ENV_ASSIGNMENT_RE
 from . import shell_normalizer as _shell
 from .denied_rules import BUILTIN_DENIED_RULES
+from .shell_normalizer_span import _close_paren_walk
+
+#: A word that is a ``NAME=`` or ``NAME+=`` assignment prefix. Matched only at a
+#: word's START (an unquoted name), so ``"x"=1`` and a bare command never count.
+_ASSIGNMENT_WORD_RE = re.compile(r"[A-Za-z_]\w*\+?=")
 
 _RM_FLOOR_RULE_IDS = {
     "root": "local-destructive-rm-rf-root",
@@ -36,6 +41,9 @@ _RM_WORD_RE = re.compile(r"(?<![\w.-])r[^\w\s/]*m(?![\w.-])")  # rm as its own w
 #: :func:`_segments` keeps a redirection and its fd prefix in one word (below).
 _HOME_WORDS = frozenset({"~", "$HOME", "${HOME}"})
 _CUT_CHARS = frozenset(";&|\n`()")
+#: An arithmetic context (``$((``, ``((``, ``$[``) opened before a ``<<`` in a
+#: span: bash reads that ``<<`` as a shift, never a heredoc (see :func:`_segments`).
+_ARITH_OPEN_RE = re.compile(r"\(\(|\$\[")
 #: A STANDALONE fd prefix (a bare number or ``{name}``) directly before a redirection
 #: operator: ``2>`` and ``{fd}>`` redirect fd 2 / a named fd, but the ``2`` in
 #: ``/tmp/2>x`` is part of the path, so the prefix counts only at a word boundary.
@@ -56,6 +64,11 @@ def _pull_trailing_fd_prefix(seg: "list[str]") -> str:
     return joined[match.start() :]
 
 
+class _UnreadSpan(ValueError):
+    """A double-quoted ``$(`` span the reader could not close before the text
+    ended. The gate's floor catches it and refuses with the unread note."""
+
+
 def _can_fire(command: str) -> bool:
     return bool(_CAN_FIRE_RE.search(command))
 
@@ -64,6 +77,69 @@ def _names_rm_word(command: str) -> bool:
     """``rm`` as its own word in *command*, or once ``${X:-…}`` defaults are resolved."""
     resolved = _shell._resolve_param_defaults(command)
     return bool(_RM_WORD_RE.search(command) or _RM_WORD_RE.search(resolved))
+
+
+def _in_assignment_value(text: str) -> bool:
+    """True when *text* -- a segment up to a double-quoted ``$(`` -- ends inside
+    the VALUE of a ``NAME=`` / ``NAME+=`` assignment, i.e. no command word has
+    started yet.
+
+    bash applies ``a=1 b=2`` as assignment prefixes only until the first word
+    that is NOT an assignment (the command); after that, a ``x=y`` word is an
+    ordinary argument. So the ``$(`` begins an assignment value exactly when the
+    current (still-open) word is an assignment word AND every completed word
+    before it was too. Decided from WORD STRUCTURE, quote-aware, so a leading
+    separator-cut space, an earlier quoted assignment (``a="p q" x="``), a
+    partial value (``x="a``) and ``+=`` are all read correctly -- a start-
+    anchored regex missed every one of those and let the synthetic home operand
+    land before a real ``rm``."""
+    in_single = in_double = False
+    word_open = False
+    word_is_assignment = False
+    word_start = 0
+    skip_target = False
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if in_single:
+            if c == "'":
+                in_single = False
+            i += 1
+            continue
+        if c == "\\":
+            if not word_open:  # a word starting with ``\`` is not ``NAME=``
+                word_open, word_is_assignment, word_start = True, False, i
+            i += 2
+            continue
+        if c in "'\"":
+            if not word_open:  # a quoted start (``"x"=1``) is not an assignment
+                word_open, word_is_assignment, word_start = True, False, i
+            if c == "'":
+                if not in_double:  # a ``'`` inside ``"…"`` is literal data
+                    in_single = True
+            else:
+                if not in_single:  # a ``"`` inside ``'…'`` is literal data
+                    in_double = not in_double
+            i += 1
+            continue
+        if c in " \t" and not in_double:
+            if word_open and not word_is_assignment:
+                # bash applies a leading redirection (and its separate target
+                # word) before the command, so it is not the command word
+                if skip_target:
+                    skip_target = False
+                else:
+                    is_redirection, skip_target = _shell._push_token_redirection(text[word_start:i])
+                    if not is_redirection:
+                        return False  # a command word completed; the ``$(`` is an arg
+            word_open = False
+            i += 1
+            continue
+        if not word_open:
+            word_open, word_start = True, i
+            word_is_assignment = bool(_ASSIGNMENT_WORD_RE.match(text, i))
+        i += 1
+    return word_open and word_is_assignment
 
 
 def _target_kind(word: str) -> "str | None":
@@ -93,9 +169,37 @@ def _segments(command: str) -> "list[str]":
             if step.state == 2 and text.startswith("$(", step.offset):
                 # bash reads "$(…)" from an unquoted start, then the double quote resumes
                 body = text[step.offset + 2 :]
-                close, proven = _shell._matching_close_paren(body, 0)
+                close, proven, _, capped = _close_paren_walk(body)
                 out.extend(_segments(body[: close - 1 if proven else close]))
-                seg.append("\0")
+                # A span the reader could not prove hid wherever its real ``)``
+                # and the operand after it are. When it ran to the END of its
+                # text -- a heredoc whose delimiter would not parse or never
+                # terminated, or an arithmetic ``<<`` before a newline -- the
+                # walk would also resume at the end and drop every command after
+                # the real ``)``: bash closes ``"$(echo $((1<<2))⏎)"`` and runs a
+                # later ``; rm -r -f $HOME``. So that case refuses the WHOLE
+                # command (the gate reads it as "could not read it").
+                # A capped span closed at a GUESS keeps segmenting after the
+                # guess, and its output is read as a home operand, which fails
+                # closed. But only in operand or command position -- a span that
+                # is a ``NAME="`` assignment VALUE feeds a variable, not an
+                # ``rm``, so synthesising a ``~`` there instead inserts a word
+                # before a real ``rm`` later in the segment and that ``rm`` is
+                # then read as an argument of the ``~``, not as the command, so
+                # its home wipe is missed.
+                if not proven and close >= len(body):
+                    raise _UnreadSpan(command)
+                # The same goes for an unproven span with a ``<<`` after an
+                # arithmetic opener: bash shifts there, but the walk skipped lines
+                # as a heredoc body and may close at a ``)`` far past the real one
+                # (``"$(echo $((1<<X))⏎)" ~ ; : '⏎X⏎)'``), hiding the ``~``. Any
+                # ``<<`` counts, not just the first: a real heredoc can come first.
+                arith = None if proven else _ARITH_OPEN_RE.search(body, 0, close)
+                if arith and body.find("<<", arith.end(), close) >= 0:
+                    raise _UnreadSpan(command)
+                fail_closed = not proven and capped
+                assignment_value = _in_assignment_value("".join(seg))
+                seg.append('\0" ~ "' if fail_closed and not assignment_value else "\0")
                 in_redirect = False
                 resume, resume_state = pos + step.offset + 2 + close, 2
                 break
