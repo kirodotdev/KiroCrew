@@ -6303,6 +6303,8 @@
       "sketch_desc": "画个草图；会附上图片和可编辑源文件",
       "optimize_failed": "无法优化提示词。已恢复原始文本。",
       "optimize_failed_elsewhere": "无法优化在另一个会话中发起的提示词。原始文本已在该会话中恢复。",
+      "cancel_optimizing": "取消优化",
+      "cancel_optimizing_short": "取消",
       "more_actions": "更多操作",
       "session_control_needs_attention": "需要处理",
       "session_control_ready": "就绪",

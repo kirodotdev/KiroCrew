@@ -6527,6 +6527,8 @@
       "sketch_desc": "Disegna uno schizzo; allega un’immagine e la sua origine modificabile",
       "optimize_failed": "Impossibile ottimizzare il prompt. Il testo originale è stato ripristinato.",
       "optimize_failed_elsewhere": "Impossibile ottimizzare il prompt avviato in un'altra sessione. Il testo originale è stato ripristinato lì.",
+      "cancel_optimizing": "Annulla l'ottimizzazione",
+      "cancel_optimizing_short": "Annulla",
       "more_actions": "Altre azioni",
       "session_control_needs_attention": "Richiede attenzione",
       "session_control_ready": "Pronto",

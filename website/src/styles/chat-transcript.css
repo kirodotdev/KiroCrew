@@ -36,6 +36,14 @@
    being hidden behind an opaque grey slab, and picks up the accent so it reads
    as a first-class app surface in every theme (light/dark/monokai/custom). */
 .optimize-overlay{background:color-mix(in srgb,var(--card) 62%,transparent);animation:ft-fade .25s ease-out both}
+/* Touch screens get no title tooltip, so the X alone does not say what it does.
+   Under a coarse pointer the button grows to a 44px-tall labelled "Cancel" chip;
+   a mouse keeps the 28px icon with its tooltip. */
+.optimize-overlay-cancel-label{display:none}
+@media (pointer: coarse){
+  .optimize-overlay-cancel{width:auto;min-width:2.75rem;height:2.75rem;padding:0 .875rem 0 .75rem;gap:.375rem;color:var(--text);background:color-mix(in srgb,var(--text) 8%,transparent)}
+  .optimize-overlay-cancel-label{display:inline}
+}
 .optimize-overlay-pill{background:color-mix(in srgb,var(--accent) 12%,var(--card));border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);box-shadow:0 8px 24px var(--accent-glow),0 1px 3px rgba(0,0,0,.12)}
 @media (prefers-reduced-motion:reduce){
   .optimize-overlay{animation:none}

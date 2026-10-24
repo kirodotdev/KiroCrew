@@ -6303,6 +6303,8 @@
       "sketch_desc": "스케치를 그리기. 이미지와 편집 가능한 원본을 첨부합니다",
       "optimize_failed": "프롬프트를 최적화할 수 없습니다. 원래 텍스트를 복원했습니다.",
       "optimize_failed_elsewhere": "다른 세션에서 시작한 프롬프트를 최적화할 수 없습니다. 원래 텍스트는 해당 세션에 복원되었습니다.",
+      "cancel_optimizing": "최적화 취소",
+      "cancel_optimizing_short": "취소",
       "more_actions": "추가 작업",
       "session_control_needs_attention": "확인 필요",
       "session_control_ready": "준비됨",

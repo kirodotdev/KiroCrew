@@ -6415,6 +6415,8 @@
       "sketch_desc": "Skizze zeichnen; hängt ein Bild plus bearbeitbare Quelle an",
       "optimize_failed": "Der Prompt konnte nicht optimiert werden. Der ursprüngliche Text wurde wiederhergestellt.",
       "optimize_failed_elsewhere": "Der in einer anderen Sitzung gestartete Prompt konnte nicht optimiert werden. Der ursprüngliche Text wurde dort wiederhergestellt.",
+      "cancel_optimizing": "Optimierung abbrechen",
+      "cancel_optimizing_short": "Abbrechen",
       "more_actions": "Weitere Aktionen",
       "session_control_needs_attention": "Aktion erforderlich",
       "session_control_ready": "Bereit",
