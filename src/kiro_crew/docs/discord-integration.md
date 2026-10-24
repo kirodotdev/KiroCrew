@@ -140,7 +140,7 @@ Portal or clear the thread allow-list and restart in DM-only mode.
 | Gateway closes with 4004 | Bad or reset token | Reset the token, update `.env`, restart |
 | Gateway closes with 4014 after adding a thread | Message Content Intent is disabled | Enable it on the Bot page, then restart |
 | DMs are ignored | User ID is missing/wrong | Add the numeric user ID; inspect `kirocrew security events` |
-| Thread is ignored but DMs work | Thread ID missing/wrong, bot cannot view it, or Message Content Intent is off | Copy the thread's Channel ID, check permissions/membership, enable the intent, restart |
+| Thread is ignored but DMs work | Thread ID missing/wrong, bot cannot view it, or Message Content Intent is off. For a thread the bot opened: its parent channel was removed from `allowed_channel_ids`, or someone else opened the thread | Copy the thread's Channel ID, check permissions/membership, enable the intent, restart. A thread a person opened needs its ID in `allowed_thread_ids` |
 | Parent channel is ignored | The channel is not in `allowed_channel_ids` | Use an approved thread, or add the parent channel ID to `allowed_channel_ids` to open public turn threads |
 | Bot can read but cannot reply in a thread | Missing guild permission or private-thread membership | Grant View Channel, Read Message History, Send Messages in Threads; add the bot to private threads |
 | Logs are silent on successful connection | `agent.log_level` is `WARNING` | Trust the Connected badge or lower the log level |
@@ -161,6 +161,14 @@ Portal or clear the thread allow-list and restart in DM-only mode.
   public thread a turn runs in, so only add a channel whose whole membership may
   read what the agent writes. Each thread the bot opens that way is recorded in
   the audit log.
+- **Opened threads survive a restart.** After a restart or update, your next
+  message or command in a thread the bot opened is answered again once Discord
+  confirms the bot opened it under a channel that is still in
+  `allowed_channel_ids`. Replies from the dashboard reach that thread again after
+  that first message. To stop the bot answering in every thread it opened
+  under a channel, remove that channel from `allowed_channel_ids` and restart
+  the gateway. A config reload alone keeps those threads answering until the
+  next restart.
 - **Slash commands answer privately.** A `/` command reply is ephemeral, so only
   the person who ran it sees it, which is what keeps a refusal or a status line
   out of a shared thread.

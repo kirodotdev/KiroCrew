@@ -41,6 +41,12 @@ from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 
+#: The thread kinds ``create_thread_from_message`` produces: an announcement
+#: thread (10) under an announcement channel, a public thread (11) otherwise.
+#: A private thread (12) is never opened by ``auto_thread``, so it is never
+#: re-admitted as one.
+_AUTO_THREAD_TYPES = frozenset({10, 11})
+
 
 def _coerce_snowflakes(value: object) -> frozenset[str] | None:
     """Rebuild one Discord id allow-list from a reloaded config value.
@@ -501,6 +507,54 @@ class DiscordTransport(MessagingTransport):
     async def disconnect(self) -> None:
         await self._client.close()
 
+    # -- Restart recovery of auto-created threads ---------------------------
+    async def readmit_own_thread(self, thread_id: str, caller: str) -> bool:
+        """Re-admit a thread ``auto_thread`` opened before this process started.
+
+        An auto-created thread is admitted in memory only, so a restart forgets
+        it. Rather than persist that grant in a file local code could write,
+        the same decision is re-derived from Discord itself: the thread is
+        admitted again only when Discord reports that THIS bot opened it, as a
+        public or announcement thread (the only kinds
+        ``create_thread_from_message`` makes), under a channel that is in
+        ``allowed_channel_ids`` right now. That is exactly the set of threads
+        the running process would already hold, minus any whose parent channel
+        an operator has since removed, so nothing is admitted that the
+        pre-restart process would have refused.
+
+        ``caller`` must be on the user roster too, and both rosters are read
+        AFTER the lookup, so a reload that removes the sender or the parent
+        while the call is in flight refuses the grant. The grant is
+        SEL-audited like the original (``thread_reauthorized``) and pushed to
+        the dispatcher's copy through the same callback. Fails closed on an
+        unknown bot identity, a failed lookup or any mismatch.
+        """
+        if not thread_id or thread_id in self._allowed_threads:
+            return bool(thread_id)
+        bot_user_id = getattr(self._client, "bot_user_id", "")
+        if not bot_user_id or not self._allowed_channels:
+            return False
+        origin = await self._client.thread_origin(thread_id)
+        if (
+            caller not in self._allowed
+            or origin is None
+            or origin.channel_type not in _AUTO_THREAD_TYPES
+            or origin.owner_id != bot_user_id
+            or origin.parent_id not in self._allowed_channels
+        ):
+            return False
+        self._allowed_threads.add(thread_id)
+        sel().log_api_access(
+            caller=caller or "unknown",
+            operation="discord_transport.auto_thread",
+            outcome="thread_reauthorized",
+            source="discord",
+            resources=f"channel={origin.parent_id},thread={thread_id}",
+        )
+        if self._on_thread_created is not None:
+            self._on_thread_created(thread_id)
+        return True
+
     # -- Inbound adapter ----------------------------------------------------
     def authorize(self, msg: InboundMessage) -> bool:
         """Owner-only, deny-by-default. Empty allow-list authorizes nobody."""
@@ -612,14 +666,19 @@ class DiscordTransport(MessagingTransport):
                 if self._on_thread_created is not None:
                     self._on_thread_created(created)
             elif inbound.channel_id not in self._allowed_threads:
-                if inbound.user_id in self._allowed:
+                # Only an approved sender can cost a REST lookup here, so
+                # background chatter in unrelated threads stays network-free.
+                if inbound.user_id not in self._allowed:
+                    return
+                if not await self.readmit_own_thread(inbound.channel_id, inbound.user_id):
                     sel().log_api_access(
                         caller=inbound.user_id,
                         operation="discord_transport.receive",
                         outcome="denied_unapproved_thread",
                         source="discord",
                     )
-                return
+                    return
+                thread_id = inbound.channel_id
             else:
                 thread_id = inbound.channel_id
         msg = DiscordInboundMessage(

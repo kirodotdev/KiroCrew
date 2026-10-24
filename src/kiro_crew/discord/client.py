@@ -201,6 +201,15 @@ _MAX_EVICTED_DM_CHANNELS = 128
 _MAX_SNOWFLAKE_LEN = 32
 
 
+@dataclass(frozen=True)
+class ThreadOrigin:
+    """A thread's type, parent channel and opener, as Discord reports them."""
+
+    channel_type: int
+    parent_id: str
+    owner_id: str
+
+
 class DiscordClient:
     """Discord Gateway + REST client with auto-reconnect and resume.
 
@@ -860,6 +869,25 @@ class DiscordClient:
         channel_type = int(result["type"])
         self._channel_types[channel_id] = channel_type
         return channel_type in _THREAD_CHANNEL_TYPES
+
+    async def thread_origin(self, channel_id: str) -> ThreadOrigin | None:
+        """Who opened thread ``channel_id`` and under which channel, from Discord.
+
+        Uncached on purpose: the answer is an authorization input, so it is read
+        from the server each time rather than from a store anything local can
+        write. ``None`` when the call fails, the id is not a thread, or Discord
+        omits either field, so a caller deciding admission on it fails closed.
+        """
+        result = await self._api("GET", f"/channels/{channel_id}", None)
+        if not isinstance(result, dict) or not isinstance(result.get("type"), int):
+            return None
+        channel_type = int(result["type"])
+        self._channel_types[channel_id] = channel_type
+        parent_id = str(result.get("parent_id") or "")
+        owner_id = str(result.get("owner_id") or "")
+        if channel_type not in _THREAD_CHANNEL_TYPES or not parent_id or not owner_id:
+            return None
+        return ThreadOrigin(channel_type=channel_type, parent_id=parent_id, owner_id=owner_id)
 
     async def edit_message_components(
         self, channel_id: str, message_id: str, components: list[dict]

@@ -1509,8 +1509,9 @@ Four properties are load-bearing:
   checked against `_allowed_threads`, the set `receive` itself gates inbound on,
   so outbound is exactly as tight as inbound. That also settles the auto-created
   thread: those ids are registered in memory only, so after a restart such a thread
-  cannot drive a turn either, and continuing to post into it would make outbound
-  the more permissive of the two. A **DM** route is checked against `_allowed` via
+  is refused outbound until an approved sender's message or command re-admits it
+  from Discord's own record (`readmit_own_thread`); posting into it earlier would
+  make outbound the more permissive of the two. A **DM** route is checked against `_allowed` via
   the principal.
 
   **Webex** has the same two, and a group space is why: a **space** route is
@@ -3607,7 +3608,28 @@ new authorized disclosure boundary appears at runtime, and without the record th
 log shows the turns that ran in the thread but never the decision that admitted
 it. The allow-set is deliberately unbounded, because each entry is a thread an
 already-approved user created, and evicting one would silently stop answering in
-a conversation they are still holding. Existing thread IDs still require a REST channel lookup confirming
+a conversation they are still holding. The grant lives in memory only, and a
+restart does not forget the thread: when an approved sender writes, or runs a
+command, in a thread missing from the roster, `DiscordTransport.readmit_own_thread`
+asks Discord for the thread (`DiscordClient.thread_origin`, an uncached
+`GET /channels/{id}`) and re-admits it only when Discord reports a public or
+announcement thread (type 10/11, the only kinds `create_thread_from_message`
+makes) whose `owner_id` is this bot and whose `parent_id` is in
+`allowed_channel_ids`, with the sender still in `allowed_user_ids`; both rosters
+are read when the answer arrives, so a reload during the lookup refuses the grant. Nothing is persisted
+locally, so no file the agent can write grants a thread; the decision rests on
+Discord's own record, and after the next restart a thread whose parent an
+operator removed stays refused. A live reload does not revoke it sooner:
+`reconfigure` unions every runtime-promoted thread back into the roster, a
+re-admitted one included, so removing the parent channel takes effect at the
+next restart (pinned by
+`test_removing_the_parent_takes_effect_at_the_next_restart`). The re-grant is audited as `discord_transport.auto_thread` /
+`thread_reauthorized` and pushed to the dispatcher's copy through
+`register_allowed_thread`, the inbound path calls it only for an approved
+sender (so unrelated chatter costs no REST call), and the dispatcher's
+`_interaction_actionable` calls it for a command or button in such a thread. Outbound
+stays as tight as inbound: until the first such message or command, a
+proactive send into the thread is still refused. Existing thread IDs still require a REST channel lookup confirming
 Discord type 10/11/12. An approved thread is a shared disclosure
 boundary: every member who can view it can read agent/tool output. Enabling any
 thread also means Discord delivers message content from every server channel
