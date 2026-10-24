@@ -4,11 +4,13 @@
  * list row also carries the whole list before and after; printing that beside
  * the chips said the same change twice, so the chips alone stand for it.
  */
+import type { ReactNode } from 'react'
 import { i18nT } from '../i18n/t'
 import { effortLabel } from '../lib/effort'
 import { fmtList } from '../i18n/format'
-import type { CardChange } from '../api/cards'
+import type { CardAddition, CardChange } from '../api/cards'
 import { CardRow } from './kindBodies'
+import { useCardAuthor } from './cardAuthor'
 import { fmtCardCron } from './scheduleText'
 
 /** Localized labels for the card fields the gateway names in `field`. */
@@ -28,6 +30,7 @@ export const FIELD_LABELS: Record<string, () => string> = {
   model: () => i18nT('components.changeCards.field_model'),
   reasoning_effort: () => i18nT('components.changeCards.field_reasoning_effort'),
   approval_mode: () => i18nT('components.changeCards.field_approval_mode'),
+  dynamic_capabilities: () => i18nT('components.changeCards.field_dynamic_capabilities'),
   sender: () => i18nT('components.changeCards.field_sender'),
   not_included: () => i18nT('components.changeCards.field_not_included'),
   not_imported: () => i18nT('components.changeCards.field_not_imported'),
@@ -122,6 +125,7 @@ const APPROVAL_MODE_HINTS: Record<string, () => string> = {
 export function changeHint(c: CardChange): string | null {
   if (c.field === 'approval_mode' && typeof c.after === 'string' && APPROVAL_MODE_HINTS[c.after]) return APPROVAL_MODE_HINTS[c.after]()
   if (c.field === 'import_approval') return i18nT('components.changeCards.approval_hint_import')
+  if (c.field === 'dynamic_capabilities' && c.after === true) return i18nT('components.changeCards.dynamic_capabilities_hint')
   return null
 }
 
@@ -136,6 +140,8 @@ export function changeLabel(c: CardChange): string {
  *  days, plus the recurrence the card must always state. */
 function changeValue(c: CardChange, v: unknown): string {
   if (c.field === 'cron_expr' && typeof v === 'string') return fmtCardCron(v)
+  // A crewmate's own "may request tools" flag: on or off, never a raw boolean.
+  if (c.field === 'dynamic_capabilities' && typeof v === 'boolean') return i18nT(v ? 'components.changeCards.tool_access_allowed' : 'components.changeCards.tool_access_not_allowed')
   // An effort level is a code identifier on the wire; "" is the inherit
   // sentinel, which the crew editor also labels as inherited.
   if (c.field === 'reasoning_effort' && typeof v === 'string') return v === '' ? i18nT('pages.kiroCrewAgentsPage.inherited') : effortLabel(v)
@@ -176,46 +182,107 @@ export function isListChange(c: CardChange): boolean {
 
 const CHIP = 'inline-flex max-w-full items-baseline rounded px-1.5 text-[12px] leading-5 text-text [overflow-wrap:anywhere]'
 
+/** Marks where an emphasised value sits inside a translated sentence. */
+const SLOT = '\u0000'
+
+/** `key` translated with `value` drawn by `wrap` in its place, so a sentence
+ *  keeps its word order in every language and the value is still emphasised. */
+function sentenceWith(key: string, vars: Record<string, unknown>, slot: string, wrap: (v: string) => ReactNode): ReactNode {
+  const parts = i18nT(key, { ...vars, [slot]: SLOT }).split(SLOT)
+  return parts.flatMap((part, i) => (i === 0 ? [part] : [<span key={i}>{wrap(String(vars[slot] ?? ''))}</span>, part]))
+}
+
+const strong = (v: string) => <strong className="font-semibold [overflow-wrap:anywhere]">{v}</strong>
+const code = (v: string) => <code className="font-mono text-[12px] [overflow-wrap:anywhere]">{v}</code>
+
+/** One addition of a capabilities card, as a plain line: what the worker gets,
+ *  where it comes from, and what runs without asking. */
+export function AdditionLine({ addition, name }: { addition: CardAddition; name: string }) {
+  if (addition.kind === 'skill') {
+    return (
+      <p data-card-row="" data-testid="change-card-addition" className="m-0 py-2 text-[13px] leading-5 text-text">
+        {sentenceWith('components.changeCards.addition_skill', { name, skill: addition.name }, 'skill', strong)}
+      </p>
+    )
+  }
+  const from = addition.origin === 'gateway'
+    ? i18nT('components.changeCards.addition_from_gateway')
+    : addition.origin === 'registry'
+      ? i18nT('components.changeCards.addition_from_registry', { id: addition.registry_id ?? '', name })
+      : i18nT('components.changeCards.addition_from_card', { name })
+  const tools = addition.auto_approve
+  return (
+    <p data-card-row="" data-testid="change-card-addition" className="m-0 py-2 text-[13px] leading-5 text-text">
+      {sentenceWith('components.changeCards.addition_server', { name, server: addition.name }, 'server', strong)}
+      {' '}{from}{' '}
+      {addition.auto_approve_all
+        ? i18nT('components.changeCards.addition_runs_all_unasked')
+        : tools.length
+        ? sentenceWith('components.changeCards.addition_runs_unasked', { tools: fmtList(tools, { style: 'narrow' }) }, 'tools', code)
+        : i18nT('components.changeCards.addition_no_new_grants')}
+    </p>
+  )
+}
+
 export function CardChanges({ changes }: { changes: CardChange[] }) {
+  const author = useCardAuthor()
+  const main = changes.filter(c => !c.detail)
+  const details = changes.filter(c => c.detail)
   return (
     <>
-      {changes.map((c, i) => (
-        <CardRow key={`${c.label}-${i}`} label={changeLabel(c)}>
-          {isListChange(c) ? (
-            <ul className="m-0 flex list-none flex-wrap gap-1.5 p-0" data-testid="change-card-items">
-              {(c.add ?? []).map((v, j) => (
-                <li key={`a${j}`} className={`${CHIP} bg-ok-subtle`}>
-                  <span aria-hidden="true">+&nbsp;</span><span className="sr-only">{i18nT('components.changeCards.added')} </span>{formatCardValue(v)}
-                </li>
-              ))}
-              {(c.remove ?? []).map((v, j) => (
-                <li key={`r${j}`} className={`${CHIP} bg-danger-subtle`}>
-                  <span aria-hidden="true">−&nbsp;</span><span className="sr-only">{i18nT('components.changeCards.removed')} </span>{formatCardValue(v)}
-                </li>
-              ))}
-            </ul>
-          ) : (c.before !== undefined || c.after !== undefined) && (
-            <>
-              <span className="inline-flex max-w-full flex-wrap items-baseline gap-x-1.5" data-testid="change-card-value">
-                {c.before !== undefined && <span className="text-muted [overflow-wrap:anywhere]">{changeValue(c, c.before)}</span>}
-                {c.before !== undefined && <span aria-hidden="true" className="text-muted">→</span>}
-                {c.before !== undefined && <span className="sr-only">{i18nT('components.changeCards.becomes')}</span>}
-                {c.after !== undefined && (
-                  <span className={`font-medium [overflow-wrap:anywhere]${c.field && FULL_TEXT_FIELDS.has(c.field) ? ' whitespace-pre-wrap' : ''}`}>
-                    {changeValue(c, c.after)}
-                  </span>
-                )}
-              </span>
-              {changeHint(c) && (
-                <span className="block text-[12px] leading-4 text-muted" data-testid="change-card-hint">{changeHint(c)}</span>
-              )}
-              {c.field === 'template_auto_approve' && (
-                <a className="block text-[12px] leading-4 text-accent underline" href={TEMPLATES_HREF} data-testid="change-card-template-link">{i18nT('components.changeCards.template_link')}</a>
-              )}
-            </>
-          )}
-        </CardRow>
-      ))}
+      {main.map((c, i) => (c.addition
+        ? <AdditionLine key={`add-${c.label}-${i}`} addition={c.addition} name={author} />
+        : <ChangeRow key={`${c.label}-${i}`} c={c} />))}
+      {details.length > 0 && (
+        <details data-card-row="" data-testid="change-card-details" className="py-2">
+          <summary className="cursor-pointer text-[12px] leading-5 text-muted hover:text-text">
+            {i18nT('components.changeCards.details')}
+          </summary>
+          <div className="[&>[data-card-row]+[data-card-row]]:border-t [&>[data-card-row]+[data-card-row]]:border-border">
+            {details.map((c, i) => <ChangeRow key={`${c.label}-${i}`} c={c} />)}
+          </div>
+        </details>
+      )}
     </>
+  )
+}
+
+function ChangeRow({ c }: { c: CardChange }) {
+  return (
+    <CardRow label={changeLabel(c)}>
+      {isListChange(c) ? (
+        <ul className="m-0 flex list-none flex-wrap gap-1.5 p-0" data-testid="change-card-items">
+          {(c.add ?? []).map((v, j) => (
+            <li key={`a${j}`} className={`${CHIP} bg-ok-subtle`}>
+              <span aria-hidden="true">+&nbsp;</span><span className="sr-only">{i18nT('components.changeCards.added')} </span>{formatCardValue(v)}
+            </li>
+          ))}
+          {(c.remove ?? []).map((v, j) => (
+            <li key={`r${j}`} className={`${CHIP} bg-danger-subtle`}>
+              <span aria-hidden="true">−&nbsp;</span><span className="sr-only">{i18nT('components.changeCards.removed')} </span>{formatCardValue(v)}
+            </li>
+          ))}
+        </ul>
+      ) : (c.before !== undefined || c.after !== undefined) && (
+        <>
+          <span className="inline-flex max-w-full flex-wrap items-baseline gap-x-1.5" data-testid="change-card-value">
+            {c.before !== undefined && <span className="text-muted [overflow-wrap:anywhere]">{changeValue(c, c.before)}</span>}
+            {c.before !== undefined && <span aria-hidden="true" className="text-muted">→</span>}
+            {c.before !== undefined && <span className="sr-only">{i18nT('components.changeCards.becomes')}</span>}
+            {c.after !== undefined && (
+              <span className={`font-medium [overflow-wrap:anywhere]${c.field && FULL_TEXT_FIELDS.has(c.field) ? ' whitespace-pre-wrap' : ''}`}>
+                {changeValue(c, c.after)}
+              </span>
+            )}
+          </span>
+          {changeHint(c) && (
+            <span className="block text-[12px] leading-4 text-muted" data-testid="change-card-hint">{changeHint(c)}</span>
+          )}
+          {c.field === 'template_auto_approve' && (
+            <a className="block text-[12px] leading-4 text-accent underline" href={TEMPLATES_HREF} data-testid="change-card-template-link">{i18nT('components.changeCards.template_link')}</a>
+          )}
+        </>
+      )}
+    </CardRow>
   )
 }

@@ -54,6 +54,7 @@
     "@kirocrew-mate/set_model",
     "@kirocrew-mate/set_approval_mode",
     "@kirocrew-mate/request_capabilities",
+    "@kirocrew-mate/find_capabilities",
     "@kirocrew-mate/goal_read",
     "@kirocrew-mate/set_goal",
     "@kirocrew-mate/set_key_results",

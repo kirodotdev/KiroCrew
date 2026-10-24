@@ -310,6 +310,118 @@ def _milestones_build(slug: str) -> Build:
     return build
 
 
+def capabilities_prompt(added: str) -> str:
+    """The hidden turn after the user applies the crewmate's capabilities card.
+
+    Without it the grant sat unused: a card press starts no turn, and a worker
+    that was already running cannot see what was added, so nothing moved until
+    the user typed. *added* is the card's title, which names what was added.
+    """
+    return crewmate_prompts.fill(
+        "goal_setup.capabilities_added", added=member_goals.scrub_text(added)
+    )
+
+
+def tool_access_prompt(raised: bool = True) -> str:
+    """The hidden turn after the user turns the crewmate's preview on (the opt-in card).
+
+    *raised* when the request that raised the card is now up as its own
+    capabilities card; otherwise the crewmate is asked to look and ask again.
+    """
+    key = "goal_setup.tool_access_on" if raised else "goal_setup.tool_access_on_ask"
+    return crewmate_prompts.text(key)
+
+
+def schedule_tool_access_nudge(
+    state: Any, slot_key: str, *, app: Any = None, session_key: str = "", card_member: str
+) -> None:
+    """Raise the held request, reload the crewmate's conductor, then wake it.
+
+    The opt-in card (``kiro_crew.mate_tool_access``) turned on this crewmate's
+    Dynamic capabilities. First the ``request_capabilities`` call that raised it
+    becomes its own capabilities card in the same thread
+    (``member_self.continue_after_opt_in``), so the crewmate does not ask again.
+    Its conductor's context now names ``find_capabilities``; a running conductor
+    keeps the session-start context it began with, so the SAME session is reloaded
+    (conversation kept, ``crewmate_worker_reload.reload_if_idle``) and then told
+    what happened.
+    Only a crewmate's own pinned thread is told, and only for a card that turned
+    on THAT crewmate's flag (*card_member*, the card's ``params.name``): a card for
+    another crewmate raised in this thread wakes nobody here.
+    """
+    from kiro_crew.dashboard.crewmate_worker_reload import reload_if_idle
+    from kiro_crew.dashboard.mate_thread_wakes import is_crewmate_thread
+
+    slot = state.get_slot(slot_key) if state is not None else None
+    if slot is None or not is_crewmate_thread(slot):
+        return
+    member = slot.agent
+    if not member or card_member != member:
+        return
+
+    async def start() -> None:
+        raised = False
+        if app is not None and session_key:
+            from kiro_crew.dashboard.handlers.member_self import continue_after_opt_in
+
+            try:
+                why = await continue_after_opt_in(app, slot_key, session_key, member)
+            except Exception:  # noqa: BLE001 - the wake below asks the crewmate again
+                logger.warning("held capabilities request of %s failed", member, exc_info=True)
+                why = "failed"
+            raised = not why
+            if why:
+                logger.info("held capabilities request of %s not raised: %s", member, why)
+        await reload_if_idle(state, slot)
+        slug = await asyncio.to_thread(members_mod.member_slug, member)
+        _schedule(
+            state,
+            f"{slug}:tool-access",
+            slug,
+            member,
+            lambda _rec, _tools: tool_access_prompt(raised),
+            "tool access on",
+        )
+
+    task = asyncio.get_running_loop().create_task(start())
+    _tasks(state)[f"{slot_key}:tool-access-start"] = task
+    task.add_done_callback(lambda _t: _tasks(state).pop(f"{slot_key}:tool-access-start", None))
+
+
+def schedule_capabilities_nudge(state: Any, slot_key: str, added: str, *, card_member: str) -> None:
+    """Tell the crewmate of thread *slot_key* that its capabilities card was applied.
+
+    Once its thread is idle, through the same wait as the other goal nudges.
+    Only a crewmate's own pinned thread is told, and only for a card that changed
+    THAT crewmate's worker (*card_member*, the card's ``params.member``): a card
+    for another crewmate raised in this thread wakes nobody here.
+    """
+    from kiro_crew.dashboard.mate_thread_wakes import is_crewmate_thread
+
+    slot = state.get_slot(slot_key) if state is not None else None
+    if slot is None or not is_crewmate_thread(slot):
+        return
+    member = slot.agent
+    if not member or card_member != member:
+        return
+
+    async def start() -> None:
+        # The slug read loads the config, so it runs off the loop.
+        slug = await asyncio.to_thread(members_mod.member_slug, member)
+        _schedule(
+            state,
+            f"{slug}:capabilities",
+            slug,
+            member,
+            lambda _rec, _tools: capabilities_prompt(added),
+            "capabilities added",
+        )
+
+    task = asyncio.get_running_loop().create_task(start())
+    _tasks(state)[f"{slot_key}:capabilities-start"] = task
+    task.add_done_callback(lambda _t: _tasks(state).pop(f"{slot_key}:capabilities-start", None))
+
+
 def removed_prompt(rec: dict[str, Any], goal_id: str, *, has_mate_tools: bool = True) -> str | None:
     """The hidden turn after the user removes goal *goal_id* on the Goals tab.
 

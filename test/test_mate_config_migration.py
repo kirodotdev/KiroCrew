@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 import kiro_crew.config.paths as paths_mod
-from kiro_crew import mate_worker
+from kiro_crew import mate_capability_catalog, mate_worker
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.mate_config_migration import _read_back, migrate_existing_crewmates
 from kiro_crew.mate_worker_kit import read_record
@@ -302,6 +302,32 @@ def test_a_crewmate_pointed_back_by_hand_stays_put(layout, persisted):
     assert again.migrated == []
     assert cfg.agents["zxc"].kiro_agent == "builder"
     assert saved == {}
+
+
+def test_carried_capabilities_read_as_already_there(layout, persisted, monkeypatch):
+    """The catalog the card path refuses ``already_has`` from lists what was carried."""
+    user, _mates = layout
+    _write(
+        user,
+        "builder",
+        _template(
+            "builder",
+            tools=["@jira"],
+            allowedTools=["@jira/search"],
+            mcpServers={"jira": JIRA},
+        ),
+    )
+    cfg = _cfg(zxc=KiroCrewAgentConfig(member_id="zxc", kiro_agent="builder"))
+    persisted(cfg)
+    assert migrate_existing_crewmates(cfg).migrated == ["zxc"]
+    monkeypatch.setattr(mate_worker, "mate_file_for_member", lambda member, config=None: member)
+    monkeypatch.setattr(mate_worker, "globally_disabled_refs", lambda names: [])
+
+    spec = mate_worker.resolve_worker_spec(dict(BASE), "zxc")
+    has = mate_capability_catalog.worker_has(spec, {})
+
+    jira = next(s for s in has["servers"] if s["name"] == "jira")
+    assert jira["runs_without_asking"] == ["get_issue", "search"]
 
 
 AUDIT_HOOK = {"postToolUse": [{"matcher": "execute_bash", "command": "audit-to-log"}]}

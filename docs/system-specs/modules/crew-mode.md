@@ -3098,7 +3098,8 @@ every gateway wake (`wake.preamble` and `reminder.*` in
 `dashboard/goal_reminder.py`; `goal_setup.*` in
 `dashboard/goal_setup.py`; `worker_report.*` in
 `dashboard/mate_thread_wakes.py`; `welcome.*` in `dashboard/mate_welcome.py`;
-`upgrade_notice` in `mate_upgrade_notice.py`). One key per
+`upgrade_notice` in `mate_upgrade_notice.py`) and the hand-off capability
+note (`dispatch.*`, `mate_capability_catalog.dispatch_summary`). One key per
 piece; its `_about` entry names where it is assembled and which placeholders
 it takes. The modules keep only the assembly: `crewmate_prompts.text(key)`
 returns a piece, `crewmate_prompts.fill(key, **values)` fills its named
@@ -3861,26 +3862,115 @@ waits for its next turn end, like a pending report
 
 **What the worker lacks, the conductor asks for.** A worker that lacks a tool or
 a skill says so in its report; it has no request tool (its spec lists
-`@kirocrew-mate/request_capabilities` in `excludedTools`,
-`mate_worker.MATE_WORKER_EXCLUDED_TOOLS`). Its source-defined prompt is the
-default prompt followed by `mate_worker.MATE_WORKER_PROMPT`
+`@kirocrew-mate/request_capabilities` and `@kirocrew-mate/find_capabilities` in
+`excludedTools`, `mate_worker.MATE_WORKER_EXCLUDED_TOOLS`). Its source-defined
+prompt is the default prompt followed by `mate_worker.MATE_WORKER_PROMPT`
 (`service_agents._install_mate_worker_agent`): a task that needs a tool, server
 or skill it does not have is reported, not worked around, on a first line
 `MISSING CAPABILITY: <what> -- <why>` (`mate_worker.MISSING_CAPABILITY_PREFIX`).
 The `[Worker report]` the crewmate's thread receives finds that line in the
 excerpt (`mate_thread_wakes.missing_capability`, Markdown emphasis and quote
-marks tolerated, bounded) and adds one line naming the gap: `request_capabilities`
-is refused on that wake turn (`not_user_turn`), so the conductor tells the user
-and asks with the card on the user's next turn. A reply line that says a step is blocked and names the
-missing tool gets the same line (`mate_thread_wakes._blocked_for_a_tool`). Before
-telling the user a source is missing, the conductor hands a worker the question
-of where it lives (`conductor.mate_tools_identity`). The card is the question
-to the user, so the chat does not ask first. Pressing it applies through `/api/agents/{name}/capabilities`, which
-for a crewmate that owns its file is `mate_capabilities.put`: the gateway
-writes `~/.kiro/mates/agents/<id>.json` in place under its optimistic lock,
-never the user's MCP config; neither the conductor nor the worker writes the
-file. The worker picks the change up at its next spawn, when the projection
-merges the file again.
+marks tolerated, bounded) and adds one line naming the gap and pointing at
+`find_capabilities` and `request_capabilities`. A worker that states the gap in
+prose instead gets the same line when one line of its reply says a step is
+blocked (or could not be done) and names the tool or server it lacked ("blocked
+on issuetracker (no issuetracker tool)"; `mate_thread_wakes._blocked_for_a_tool`);
+a blocked step that names no tool, or a tool named with no blocked step, adds
+nothing. The conductor also learns what
+its worker can use when it hands work off: the result of its own
+`session_create` and `session_send` to a worker of the same crewmate (both
+attested execution records: the caller a conductor, the target a
+`kirocrew-mate-worker` record with the same `member_id`) carries
+`worker_capabilities`, the worker's MCP servers and the servers this gateway has
+loaded that it lacks and the user has not switched off (one switched off cannot be
+added, so it is not offered; `dashboard/crewmate_dispatch_capabilities.own_worker_note`,
+`mate_capability_catalog.dispatch_summary`: steps 1 and 2 of `find_capabilities`,
+names only, cut to a plain character set and twelve per line; the registry stays
+on demand), which the MCP tool appends to its reply. Every other caller and
+target gets nothing, and nothing is added to the conductor's per-turn context
+(`test/test_crewmate_dispatch_capabilities.py`). Before telling the user a
+source is missing, the conductor checks what the worker and the gateway can
+reach, also when the ask names no system (what users said, reported or
+complained about lives in some source): `find_capabilities`, or a worker handed
+the question of where it lives (`conductor.mate_tools_identity`). The gateway
+adds nothing to a reply that says something is unavailable; the hand-off note
+above already shows the catalog. Once the catalog
+names the addition the work needs, the conductor raises the card straight away
+(its prompt and the `find_capabilities` description say so): the card is the
+question to the user, so the chat does not ask first. On the worker-report
+wake, which is not a user turn, only a card whose additions are all servers
+this gateway already runs is admitted (`member_self._gateway_servers_only`);
+any other `request_capabilities` is refused there (`not_user_turn`), so the
+conductor tells the user and raises the card on the user's next turn. The conductor reads
+the catalog with `find_capabilities` (`POST /api/member/self/capabilities`,
+`dashboard/handlers/member_capability_catalog.py`, any turn in the crewmate's
+own thread, refused `not_a_crewmate` elsewhere and `no_crewmate_file` for a
+binding that owns no file), which answers in order: `worker` -- what
+`resolve_worker_spec` projects for this crewmate (servers, the tools each runs
+without asking, the tools switched off, skills; `mate_capability_catalog.worker_has`);
+`gateway` -- servers (`mcp_discovery.list_servers`) and skills (the capability
+editor's own catalog) loaded here that the worker lacks (`gateway_lacks`); and,
+for a `query`, `registry` -- `mcp_discover.search_registry`, the search behind
+`/api/mcp/discover`, with every provider field redacted. It never returns a
+transport. The conductor then calls `request_capabilities` with a draft naming
+`additions`: `{server, source: "gateway"}` copies this gateway's own entry
+(`_find_server_spec_anywhere`, minus `autoApprove`, `disabled` and
+`disabledTools`) of a server the gateway lists as switched on
+(`member_capability_catalog._switched_on`), and only when that entry sets no
+`env` or `headers` value and nothing in it is masked by
+`agent_capabilities.safe_view` (a credential argument such as `--api-key <value>`,
+`--token=<value>` or `-e NAME=<value>`): a card's params and plan reach the proposing
+crewmate, so an entry that may hold a credential is refused
+`carries_settings` and the conductor tells the user to add it in advanced
+settings; `{server, source: "registry", registry_id}` takes the official
+registry's install plan (`mcp_discover.official_install_plan`, the spec
+`/api/mcp/discover/install` would write, under the name that install would give
+it); `{skill}` adds a loaded skill; each server may name `auto_approve` tools.
+`additions_to_draft` resolves them into `mcpServers` / `tools` / `allowedTools`
+/ `skills` operations and an `origins` map, refusing `already_has`,
+`not_on_gateway` (absent or switched off), `carries_settings`, `name_in_use` (a registry name this gateway already runs),
+`unknown_skill`, `registry_unavailable` and any other provider than the official
+registry (an edition provider installs into the user's config, not the
+crewmate's). A draft of additions takes only `additions` and `enroll`
+(`invalid_additions` otherwise): the card folds its raw rows under Details, so a
+raw operation riding along would be folded there unseen. The `crewmate.capabilities` card shows the full launch line, a
+"comes from" row per server (this gateway's only while the draft's entry still
+equals, key for key, what a file takes from the gateway's switched-on entry
+(`transport_for_file`: command, args, env, headers, cwd and the rest),
+`member_capability_catalog.gateway_matches`, re-read when the card is built; the
+registry id otherwise). The `origins` map is the gateway's own record:
+`propose_change` (`POST /api/cards/agent/propose`) refuses a
+`crewmate.capabilities` card that carries one (`invalid_param`), so only
+`request_capabilities` sets it, after resolving the additions and a "runs without
+asking" row listing exactly the approvals the preview kept after the governance
+ceiling (`mate_capability_catalog.origin_rows`). The card's main view is one
+plain line per addition (`addition_summary`: a row carrying `addition`, which
+the dashboard words in the reader's language as what the worker gets, where it
+comes from and what runs without asking, named by the crewmate's display name; an addition with no `auto_approve` says it adds no new grant to run a tool unasked and that the current approval settings still apply, never that every call asks, since the crewmate's own approval mode, Trust included, still decides);
+every raw row above is kept on the card marked `detail` and drawn under a
+collapsed Details. When every server the card adds is one this gateway already
+runs as drafted (`only_gateway_servers`), no new outside code comes in, so the
+card carries no `code_exec` and shows no third-party warning; an approval it
+would widen keeps its acknowledgement: `widen` is measured from the preview's
+impact as on any capabilities card, so an auto-approved tool or a whole-server
+grant (`@server`, worded "every tool" with `auto_approve_all` on the addition)
+needs the "runs without asking" checkbox, and each widening `allowedTools` /
+`autoApprove` row stays in the main view rather than under Details. A gateway
+addition with no new approval carries neither flag; a registry install keeps
+both. Pressing it applies through
+`/api/agents/{name}/capabilities`, which for a crewmate that owns its file is
+`mate_capabilities.put`: the gateway writes `~/.kiro/mates/agents/<id>.json` in
+place under its optimistic lock, never the user's MCP config; neither the
+conductor nor the worker writes the file. The worker picks the change up at its
+next spawn, when the projection merges the file again. A card press starts no
+turn, so once a `crewmate.capabilities` card reaches applied or partly applied
+(`handlers/change_cards._complete`), the crewmate's own thread gets one hidden
+`[Capabilities added]` turn once it is idle, when the card's `params.member` is
+that thread's crewmate (a card for another crewmate raised there wakes nobody)
+(`goal_setup.schedule_capabilities_nudge`, the goal nudges' wait, piece
+`goal_setup.capabilities_added`): it names the card's title and says a worker
+already running started without the addition, so the work that waited on it
+goes to a new worker session.
 
 **A revoked approval stays revoked.** The worker base wins for every approval
 it grants itself, so removing one in a crewmate's Approvals (an `allowedTools`
@@ -3904,6 +3994,106 @@ read-time pass (`kas_agents._ceiling_permitted`) withholds again, so an addition
 cannot lift the worker above POLICY ∩ PROFILE; a withheld grant leaves the
 server mounted and its calls prompting. Crew's PreToolUse gate evaluates every
 call regardless.
+
+### Dynamic capabilities
+
+**A per-crewmate preview, off by default.** Each crewmate's record carries
+`dynamic_capabilities` (`agents.<name>` in `config.json`,
+`KiroCrewAgentConfig.dynamic_capabilities`, a strict bool; absent or any other
+value is off). It holds only that crewmate's crewmate-driven capability path: it
+finding a skill or an MCP server for its own worker and asking for it on a card.
+There is no global key. It is set on the crewmate's own Profile card
+(`pages/members/CrewProfileSettings.tsx`: a **Dynamic capabilities** row with a
+**Preview** tag), which writes
+`PUT /api/agents/{name}` `{dynamic_capabilities}` for that crewmate alone; the
+roster serves it. `kiro_crew/crewmate_dynamic_capabilities.py` reads it per
+request: `enabled_for(member)` is the crewmate's flag,
+`restricted_for(member)` is the flag off. A check with no crewmate in
+scope (no name, not on the roster) is off. Both capability tools stay listed on
+every crewmate's conductor: the pooled `kirocrew-mate` server caches a session's
+tool policy with no way to drop it, so a tool cut there would outlive a Turn on.
+The routes read the flag on every call instead, so a change takes effect at once,
+also in a running session. Off, for that crewmate:
+
+| Entry point | Off |
+| --- | --- |
+| `member_capability_catalog.api_member_self_capabilities` | `403 dynamic_capabilities_off` for that crewmate (`find_capabilities`' route), pointing at `request_capabilities` |
+| `member_self.api_member_self_propose` | `request: capabilities` raises the Preview opt-in card on its first call (below); after that, `409 opt_in_pending` while it waits and `403 dynamic_capabilities_off` once it was declined, expired or failed; the other crewmate cards are proposed as before |
+| `handlers/change_cards.api_cards_agent_propose` (`_crewmate_drives_capabilities_off`) | 403 `dynamic_capabilities_off` for a `crewmate.capabilities` card from the crewmate's thread or its worker (judged by that worker's own crewmate; one that cannot be named counts as off); any other caller proposes it |
+| `crewmate_dispatch_capabilities._note` | no capability summary on `session_create` / `session_send` |
+| `mate_thread_wakes.report_prompt` (`_missing_capability_line`, read in `_flush` off the loop) | a worker's gap (the `MISSING CAPABILITY:` line or the prose "blocked, no X tool") gets `worker_report.missing_capability_manual`: tell the user, and ask with `request_capabilities` on their next message (no `find_capabilities`) |
+| `handlers/change_cards._complete` | no `[Capabilities added]` nudge (the card's `params.member`) |
+| `context_assembly/member.build_member_section` | `conductor.mate_tools_identity_manual` and `conductor.crew_log_section_manual`: no `find_capabilities`; a gap goes to `request_capabilities`, as before the preview |
+
+**The Preview opt-in** (`kiro_crew/mate_tool_access.py`). With the flag off,
+`request_capabilities` stays mounted, so no crewmate loses it. Its first call
+(`member_self.api_member_self_propose`, `request: capabilities`) is checked and
+resolved exactly as with the flag on (the user-turn rule, `additions_to_draft`),
+then raises ONE `crewmate.update` card instead of the capabilities card, writing
+`fields: {dynamic_capabilities: true}` for the calling crewmate alone (it adds no
+capability), titled "Allow <name> to ask you for tools its worker needs? Each
+one still needs your approval.", drawn with the Profile switch's **Preview**
+badge and the buttons **Turn on** and **Not now** (`cardRegistry.isToolAccessCard`;
+no other card wears them). The call answers that card with `opt_in: true`, and
+`mcp_mate` tells the conductor its request follows once the user turns the
+preview on, so it does not ask again. The request is held in the crewmate's
+record, written BEFORE the card is raised (`mate_tool_access.reserve_offer`,
+which also claims the one ask, so a second call at the same time gets
+`409 opt_in_pending`): a record that cannot be written raises no card
+(`503 opt_in_unrecorded`), a card that is then not raised takes the record back
+(`release_offer`), and the card's id is filled in after (`bind_card`; while it is
+missing the offer counts as waiting for `RESERVATION_GRACE_SECS`, then as a card
+the store does not hold). **Turn on** applies the card (Undo writes the flag back off); the gateway
+then raises the held request as its own `crewmate.capabilities` card in the same
+thread, resolved again against the gateway as it is now and taken once
+(`member_self.continue_after_opt_in`, `mate_tool_access.take_held`), reloads the
+conductor so its session-start context names `find_capabilities`, and wakes it with `goal_setup.tool_access_on`,
+or `goal_setup.tool_access_on_ask` when the held request could no longer be
+raised (`goal_setup.schedule_tool_access_nudge`, from
+`handlers/change_cards._complete`). Only a card that turned on the thread's OWN
+crewmate does this (its `params.name` is the thread's crewmate; a card for
+another crewmate raised in this thread wakes nobody here), and
+`continue_after_opt_in` raises nothing while that crewmate's flag is off
+(`dynamic_capabilities_off`), since the raise skips the caller's own flag check. **Not now** cancels the card. It is asked
+once per crewmate: `~/.kiro/mates/tool-access.json` records the card by crewmate
+name, and the next call records its outcome from the card store (`applied`,
+`declined` for a cancelled or undone card, `expired`, `failed`; a card the store
+has pruned counts as `expired`, and a store that cannot be read leaves the
+record waiting). While the card
+waits a call answers `409 opt_in_pending`; after any outcome, with the flag
+still off, `403 dynamic_capabilities_off` with a plain line (tell the user what
+the worker needs and that they can add it, or turn the preview on, in advanced
+settings), and no second card (`test/test_mate_tool_access.py`).
+
+Every capability approved for a crewmate (its file's additions, on or off this
+switch) is mounted on every one of its workers: the conductor picks nothing per
+hand-off, so a worker started after a grant has it. One already running is
+reloaded in place (`dashboard/crewmate_worker_reload.py`): after a
+`PUT /api/agents/{name}/capabilities` on a crewmate that owns its file (a
+`request_capabilities` card applied, or the user adding one in advanced settings),
+each of the crewmate's live workers (a `template` record on `kirocrew-mate-worker`
+with its `member_id`) is torn down with the tab menu's Reload teardown
+(`reload_slot_session`) and resumes the SAME conversation on the rebuilt spec; no
+new worker is opened. Only an idle one is reloaded; a busy one (a turn in flight,
+a queued message, attached sub-agents, or a turn that starts inside the teardown)
+is recorded as owed on the state and reloaded after its next top-level turn end
+(`note_turn_end`, from `chat_turn.queue_cycle._end_turn_tail`, a few short tries
+each re-checking idle). The busy check runs before the no-provider check, so a
+worker still cold-starting (its turn dispatched, its provider not yet
+registered, spawning on the kit it already projected) stays owed too. One not
+running reads the new spec at its next spawn.
+The `[Capabilities added]` nudge tells the conductor to send the waiting work back
+to that same worker (`test/test_crewmate_worker_reload.py`).
+
+Not this switch's, so on either way: the user adding or removing worker
+capabilities by hand in the crewmate's advanced settings
+(`/api/agents/{member}/capabilities` through `mate_capabilities.put`, and the
+custom agent template through `/api/agents/{member}/worker-kit`), the worker kit
+built from base, template and what the user added, the conductor, the hand-off,
+heartbeat and the Dashboard. The suite runs with every crewmate's
+flag on (`test/conftest.py::_crewmate_dynamic_capabilities_on`, the module's
+`_override` seam); `test/test_crewmate_dynamic_capabilities.py` pins the
+per-crewmate reads.
 
 ## Selection: the `select_crew` contract
 

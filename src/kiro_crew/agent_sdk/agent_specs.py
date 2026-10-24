@@ -1,7 +1,7 @@
 """Read a Crew agent spec from application code without importing the ACP layer.
 
 The crewmate modules (``mate_config``, ``mate_worker``, ``mate_worker_kit``,
-``mate_config_migration``, and the heartbeat's ``goal_reminder``) read
+``mate_capability_catalog``, ``mate_config_migration``, and the heartbeat's ``goal_reminder``) read
 custom-agent specs the way a session would: the hardened reader in
 ``acp.kas_agents`` and the per-session MCP switch-off in ``acp.session_mcp``.
 Application code may not import ``kiro_crew.acp``

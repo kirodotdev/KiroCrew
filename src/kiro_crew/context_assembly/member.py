@@ -331,6 +331,11 @@ _MEMBER_HOW_YOU_WORK = _MEMBER_HOW_YOU_WORK_COMMON + _MEMBER_BRIEFING_ITEM + _ME
 #: the ``kirocrew-mate`` tools (:func:`member_mate_tools.binding_has_mate_tools`).
 _MATE_TOOLS_IDENTITY = _prompt("conductor.mate_tools_identity")
 
+#: The same sentence while the crewmate's Dynamic capabilities preview is off
+#: (``kiro_crew.crewmate_dynamic_capabilities``): no find_capabilities or
+#: request_capabilities, and a worker's gap goes to the user as one line.
+_MATE_TOOLS_IDENTITY_MANUAL = _prompt("conductor.mate_tools_identity_manual")
+
 #: The same sentence for a crewmate whose sessions do not load those tools: the
 #: user makes each of these changes on the crewmate's own pages.
 _NO_MATE_TOOLS_IDENTITY = _prompt("conductor.no_mate_tools_identity")
@@ -508,8 +513,16 @@ def build_member_section(
         # (Tool Search defers their schemas): what is its to change at once and
         # what is the user's to grant through a card. Only when its sessions
         # actually load them: a spec without the server gets the pages instead.
+        from kiro_crew import crewmate_dynamic_capabilities
+
+        # This crewmate's own Dynamic capabilities preview, off by default.
+        manual = crewmate_dynamic_capabilities.restricted_for(member)
         identity.append(
-            (_MATE_TOOLS_IDENTITY if has_mate_tools else _NO_MATE_TOOLS_IDENTITY)
+            (
+                (_MATE_TOOLS_IDENTITY_MANUAL if manual else _MATE_TOOLS_IDENTITY)
+                if has_mate_tools
+                else _NO_MATE_TOOLS_IDENTITY
+            )
             + _prompt("conductor.tracking")
         )
 
@@ -532,7 +545,18 @@ def build_member_section(
             + _MEMBER_DASHBOARD_ITEM
         )
         # Every crewmate-only concept and tool, named once in one compact block.
-        parts.append(_prompt("conductor.crew_log_section"))
+        # Its worker line names request_capabilities only while this crewmate's
+        # Dynamic capabilities preview is on
+        # (``kiro_crew.crewmate_dynamic_capabilities``).
+        from kiro_crew import crewmate_dynamic_capabilities
+
+        parts.append(
+            _prompt(
+                "conductor.crew_log_section_manual"
+                if crewmate_dynamic_capabilities.restricted_for(member)
+                else "conductor.crew_log_section"
+            )
+        )
     if rules:
         # The header names what it outranks. Without the protocol layer there
         # is no "working protocol above" to name, so that clause goes with it.

@@ -271,6 +271,17 @@ class KiroCrewAgentConfig:
             "standard levels. An explicit effort on the call wins.",
         ),
     )
+    dynamic_capabilities: bool = field(
+        default=False,
+        metadata=_meta(
+            "Dynamic capabilities",
+            "Preview, per crewmate: this crewmate can find "
+            "new skills or tools for its worker and ask for them on a card in its "
+            "chat. Off (the default): only you add them, in this crewmate's "
+            "advanced settings, and it tells you when its worker lacks one. "
+            "Read per request, so a change reaches the crewmate's next session.",
+        ),
+    )
     approval_mode: str = field(
         default="",
         metadata=_meta(

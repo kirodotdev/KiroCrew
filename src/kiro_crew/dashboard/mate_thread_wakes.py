@@ -53,8 +53,16 @@ _MISSING_CAPABILITY_CHARS = 240
 _LINE_DECORATION = " \t*_`#>-"
 
 
-def _missing_capability_line(missing: str) -> str:
-    """The line under a worker's gap: ask the user for it on a card."""
+def _missing_capability_line(missing: str, manual: bool = False) -> str:
+    """The line under a worker's gap: find it and raise the card, or ask the user.
+
+    *manual* when the crewmate's Dynamic capabilities preview is off
+    (``kiro_crew.crewmate_dynamic_capabilities``): its conductor has
+    neither find_capabilities nor request_capabilities, so it is told to ask the
+    user to add the capability in its advanced settings, in one plain line, no card.
+    """
+    if manual:
+        return crewmate_prompts.fill("worker_report.missing_capability_manual", missing=missing)
     return crewmate_prompts.fill("worker_report.missing_capability", missing=missing)
 
 
@@ -201,8 +209,20 @@ def _excerpt(text: str) -> tuple[str, bool]:
     return clean[:MAX_REPORT_CHARS].rstrip(), True
 
 
-def report_prompt(reports: list[dict[str, Any]], member: str = "") -> str:
-    """The hidden turn that hands crewmate *member* its workers' latest replies."""
+def report_prompt(
+    reports: list[dict[str, Any]], member: str = "", *, manual: bool | None = None
+) -> str:
+    """The hidden turn that hands crewmate *member* its workers' latest replies.
+
+    *manual* is *member*'s Dynamic capabilities preview being off
+    (``crewmate_dynamic_capabilities.restricted_for``), which picks the gap line;
+    when not given it is read here (a config read), and no crewmate named reads
+    as off. The wake loop reads it off the event loop and passes it in.
+    """
+    if manual is None:
+        from kiro_crew import crewmate_dynamic_capabilities
+
+        manual = crewmate_dynamic_capabilities.restricted_for(member)
     lines = [WORKER_REPORT_PREFIX + " " + _PREAMBLE.rstrip(), ""]
     for report in reports:
         turns = report["turns"]
@@ -227,7 +247,7 @@ def report_prompt(reports: list[dict[str, Any]], member: str = "") -> str:
             lines.extend([_BEGIN, text, _END])
             missing = missing_capability(text)
             if missing:
-                lines.append(_missing_capability_line(missing))
+                lines.append(_missing_capability_line(missing, manual))
         lines.append("")
     lines.append(_GUIDANCE)
     return "\n".join(lines)
@@ -351,7 +371,20 @@ async def _flush(state: Any, key: str) -> None:
         # The Dashboard line reads the page store: off the loop, before the idle check.
         slug = (members_mod.slug_from_dm_slot_key(key) or "") if reports else ""
         page = await asyncio.to_thread(page_line, slug) if slug else ""
-        if slug and (
+        # The crewmate's own Dynamic capabilities preview picks the gap line. It is
+        # a config read, so it runs off the loop too, and only when a report names a
+        # gap; the re-check below covers both reads.
+        manual = False
+        gap = False
+        if reports:
+            gap = any(missing_capability(_excerpt(r["reply"])[0]) for r in reports.values())
+        if gap:
+            from kiro_crew import crewmate_dynamic_capabilities
+
+            manual = await asyncio.to_thread(
+                crewmate_dynamic_capabilities.restricted_for, slot.agent
+            )
+        if (slug or gap) and (
             state.get_slot(key) is not slot
             or not is_crewmate_thread(slot)
             or getattr(slot, "is_closing", False)
@@ -366,7 +399,7 @@ async def _flush(state: Any, key: str) -> None:
             dispatch_hidden_turn(
                 state,
                 slot,
-                with_page(report_prompt(list(reports.values()), slot.agent), page),
+                with_page(report_prompt(list(reports.values()), slot.agent, manual=manual), page),
                 human_seen=False,
             )
             logger.info("worker report woke %s (%d worker(s))", key, len(reports))

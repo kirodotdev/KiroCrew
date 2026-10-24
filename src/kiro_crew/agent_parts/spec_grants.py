@@ -50,7 +50,9 @@ _MATE_SERVER = "kirocrew-mate"
 #: the gateway admits only a turn the user sent in the crewmate's own chat, and
 #: the change lands in that chat as one row the user can undo. The three ``set_*``
 #: / ``request_*`` tools only OFFER a change card, inert until the user presses
-#: it.
+#: it (with the crewmate's Dynamic capabilities off, ``request_capabilities``
+#: offers the Preview opt-in card first). ``find_capabilities`` only reads the
+#: worker's tools and the catalog.
 #: ``save_notes`` writes only the calling crewmate's own briefing, the file it
 #: has always kept for itself, admitted only in its own thread. A tool
 #: added to the server is not in this tuple, so it asks first until it is
@@ -60,6 +62,7 @@ _MATE_AUTO_GRANTS = (
     f"@{_MATE_SERVER}/set_model",
     f"@{_MATE_SERVER}/set_approval_mode",
     f"@{_MATE_SERVER}/request_capabilities",
+    f"@{_MATE_SERVER}/find_capabilities",
     f"@{_MATE_SERVER}/goal_read",
     f"@{_MATE_SERVER}/set_goal",
     f"@{_MATE_SERVER}/set_key_results",

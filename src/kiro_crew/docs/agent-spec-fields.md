@@ -848,7 +848,8 @@ same terms: always emitted, no `autoApprove`, and exactly the tools in
 writes the calling mate's name, description or ghost face on the user's word
 and leaves one undoable row in its chat; `set_model`, `set_approval_mode`,
 `request_capabilities`, `set_goal`, `set_key_results` and `set_check_ins`, which only offer a
-change card; `goal_read`, `key_result_progress` and `save_goal_report`, which
+change card; `find_capabilities`, which reads what the crewmate's worker has and
+could be given; `goal_read`, `key_result_progress` and `save_goal_report`, which
 read and write the calling
 crewmate's own goal record directly; `save_notes`, which replaces its own
 briefing). An existing spec gains

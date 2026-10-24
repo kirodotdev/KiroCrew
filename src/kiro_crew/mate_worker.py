@@ -130,8 +130,11 @@ def conductor_mcp_servers() -> frozenset[str]:
 
 #: The conductor-only ``kirocrew-mate`` tools the worker does not mount: the
 #: worker does the work, and a capability it lacks is reported back to the
-#: conductor, which alone asks the user for an addition.
-MATE_WORKER_EXCLUDED_TOOLS = ("@kirocrew-mate/request_capabilities",)
+#: conductor, which alone reads the catalog and asks the user for an addition.
+MATE_WORKER_EXCLUDED_TOOLS = (
+    "@kirocrew-mate/request_capabilities",
+    "@kirocrew-mate/find_capabilities",
+)
 
 #: The parts of a crewmate's file that extend the worker. A template copied in as
 #: the worker's extra kit (``mate_worker_kit``) copies exactly these.

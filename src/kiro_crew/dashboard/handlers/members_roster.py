@@ -319,6 +319,9 @@ async def api_members(request: web.Request) -> web.Response:
                 # crewmate's own model; the effort is load-time coerced.
                 "worker_model": _roster_mask(agent_cfg.worker_model),
                 "worker_reasoning_effort": agent_cfg.worker_reasoning_effort,
+                # The per-crewmate Dynamic capabilities preview, the profile
+                # card's switch (``kiro_crew.crewmate_dynamic_capabilities``).
+                "dynamic_capabilities": bool(getattr(agent_cfg, "dynamic_capabilities", False)),
                 # Presentation-only, but `_safe_avatar` pins only the SHAPE:
                 # its `traits` and `expressions` values are free text, so the
                 # avatar is masked leaf-by-leaf (`_roster_avatar`) rather than

@@ -628,6 +628,10 @@ async def _end_turn_tail(
     if turn_exit.depth == 0:
         # A crewmate's worker reports back to the crewmate's thread on its own.
         _note_mate_wakes(state, slot, outcome.nudge_facts["reply_text"] if outcome else None)
+        # A crewmate session owed a reload onto an updated spec while it was busy.
+        from kiro_crew.dashboard.crewmate_worker_reload import note_turn_end
+
+        note_turn_end(state, slot)
     if turn_exit.reached_provider:
         slot._cycle_reached_provider = True
     memory_admitted = (

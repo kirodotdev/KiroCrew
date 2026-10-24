@@ -2,7 +2,7 @@ import { useContext, useEffect, useRef, useState, type KeyboardEvent, type React
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Check, Gauge, Loader2, Lock, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
+import { Check, Gauge, Loader2, Lock, Puzzle, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
 import { api, type MemberRosterRow } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
@@ -166,6 +166,23 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
     : lockFlip.isError
       ? t(lockFlip.variables ? 'pages.membersPage.profile_dashboard_lock_failed' : 'pages.membersPage.profile_dashboard_unlock_failed')
       : null
+
+  // Dynamic capabilities: a per-crewmate preview, off by default, stored on the
+  // crewmate's own record (`kiro_crew/crewmate_dynamic_capabilities.py`). On, the
+  // crewmate may find skills or tools for its worker and ask for them on a card.
+  const dynFlip = useMutation({
+    mutationFn: (want: boolean) => api.updateKirocrewAgent(member.name, { dynamic_capabilities: want }),
+    // The saved value lands in the roster cache, so `member` carries it; a later
+    // change from elsewhere (an applied card) reaches the switch the same way.
+    onSuccess: (_r, want) => {
+      queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
+        rows?.map((r) => (r.name === member.name ? { ...r, dynamic_capabilities: want } : r)))
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY }),
+  })
+  const dynOn = dynFlip.isPending
+    ? (dynFlip.variables ?? false)
+    : member.dynamic_capabilities === true
 
   const save = async (key: Setting, next: string) => {
     if (inFlight.current || waiting) return
@@ -486,6 +503,34 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
         </RowStatic>
       </RowGroup>
       <ErrorNotice message={lockError} testId="crew-profile-dashboard-lock-error" />
+      {/* Its own group, so its caption (what the preview lets the crewmate do)
+          sits under it rather than under the lock's. */}
+      <RowGroup caption={t('pages.membersPage.profile_dynamic_capabilities_hint', { name })}>
+        <RowStatic
+          icon={<Puzzle size={16} />}
+          tone="accent"
+          label={t('pages.membersPage.profile_dynamic_capabilities')}
+          sub={t('pages.membersPage.profile_dynamic_capabilities_switch', { name })}
+          testId="crew-profile-dynamic-capabilities"
+        >
+          <span
+            className="shrink-0 rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-accent"
+            data-testid="crew-profile-dynamic-capabilities-preview"
+          >
+            {t('pages.membersPage.profile_preview_tag')}
+          </span>
+          <Toggle
+            checked={dynOn}
+            onChange={(v) => dynFlip.mutate(v)}
+            disabled={dynFlip.isPending}
+            label={t('pages.membersPage.profile_dynamic_capabilities_switch', { name })}
+          />
+        </RowStatic>
+      </RowGroup>
+      <ErrorNotice
+        message={dynFlip.isError ? t('pages.membersPage.profile_dynamic_capabilities_failed') : null}
+        testId="crew-profile-dynamic-capabilities-error"
+      />
       {!page && notices}
     </section>
   )

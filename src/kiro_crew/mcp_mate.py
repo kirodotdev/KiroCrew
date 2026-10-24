@@ -9,6 +9,9 @@ tiers that follow who owns the field:
   nothing waits on a card. Only when the user has just asked for the change:
   the tool description says so, and the gateway admits only a turn the user
   sent (:mod:`kiro_crew.dashboard.handlers.member_self`).
+* **Catalog** -- ``find_capabilities`` reads what the crewmate's worker has and
+  what it could be given (:mod:`kiro_crew.dashboard.handlers.member_capability_catalog`);
+  a read, admitted on any turn in the crewmate's own thread.
 * **Goals** -- ``goal_read``, ``key_result_progress`` and ``save_goal_report``
   read the goal, record key-result readings and file a weekly or monthly
   report at once, with no card: a reading is the crewmate's own measurement
@@ -204,12 +207,40 @@ def _tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "find_capabilities",
+            "description": (
+                "Read what your worker can use and what it could be given: first the "
+                "MCP servers, tools that run without asking and skills your worker "
+                "already has; then the servers and skills this gateway has loaded that "
+                "your worker lacks; then, when you pass a query, matching servers from "
+                "the MCP registry. Call it when a piece of work needs something your "
+                "worker reports it does not have. It changes nothing; when it names "
+                "the addition the work needs, call request_capabilities with it "
+                "straight away: the card is how the user is asked. While your Dynamic "
+                "capabilities (a Preview) is off it is refused; ask with "
+                "request_capabilities."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "maxLength": 200}},
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "request_capabilities",
             "description": (
-                "Ask the user for a change to your tools, tool approvals, MCP servers "
-                "or skills. draft is {operations: [{section, id, action, value?}], "
-                "enroll?} in the shape get_member_capabilities (kirocrew-guide) "
-                "returns for you; call that first. " + _CARD_NOTE
+                "Ask the user for a change to your worker's tools, tool approvals, MCP "
+                "servers or skills. To add something find_capabilities listed, pass "
+                "draft {additions: [{server, source: gateway | registry, registry_id?, "
+                "auto_approve?: [tool]} | {skill}]}: the card names where each comes "
+                "from and exactly which tools would run without asking, and the "
+                "worker gets it: one already running is reloaded with it, conversation kept. "
+                "Any other change is draft "
+                "{operations: [{section, id, action, value?}], enroll?} in the shape "
+                "get_member_capabilities (kirocrew-guide) returns for you. While your "
+                "Dynamic capabilities (a Preview) is off, the first call shows the user "
+                "a card asking to turn it on instead, and your request follows once they "
+                "do; after a Not now it answers in words. " + _CARD_NOTE
             ),
             "inputSchema": {
                 "type": "object",
@@ -445,7 +476,13 @@ def _tool_definitions() -> list[dict[str, Any]]:
 
 
 def _list_tools() -> list[dict[str, Any]]:
-    """Unconditional: reaching this process means a spec granted the set."""
+    """Unconditional: reaching this process means a spec granted the set.
+
+    Dynamic capabilities is per crewmate
+    (``kiro_crew.crewmate_dynamic_capabilities``) and read at each capability
+    tool's route, not here: a pooled server serves many crewmates and caches a
+    session's tool policy, so a cut in the list would outlive a Turn on.
+    """
     return _tool_definitions()
 
 
@@ -579,6 +616,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"{refused}\nYour notes were not saved; do not say they were."
         return _render({**d, "next": "Saved; they open your next turn."})
 
+    if name == "find_capabilities":
+        d = _post("/api/member/self/capabilities", {"query": args.get("query", "")}, session_key=sk)
+        refused = _error_for(name, d)
+        return refused or _render(d)
+
     if name == "update_self":
         fields = {k: args[k] for k in ("display_name", "description", "avatar") if k in args}
         if not fields:
@@ -614,6 +656,18 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     refused = _error_for(name, d)
     if refused:
         return f"{refused}\nNo card was shown; answer in words."
+    if d.get("opt_in"):
+        # The crewmate's Dynamic capabilities is off: its first request raised the
+        # Preview opt-in card, and the request itself waits on the user's answer.
+        return _render(
+            {
+                **d,
+                "next": "This is a Preview opt-in card, not your request: it asks the "
+                "user to turn on Dynamic capabilities for you. If they press Turn on, "
+                "your request becomes its own card on its own; do not ask again. "
+                "Refer to the card once and end your turn.",
+            }
+        )
     return _render(
         {
             **d,
