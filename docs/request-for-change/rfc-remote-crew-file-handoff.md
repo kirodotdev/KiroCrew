@@ -3,8 +3,8 @@ title: Remote crew file hand-off — attachments past the upload cap, and files 
 status: draft
 author: koenvincent
 created: 2026-10-12
-last-audited: 2026-10-12
-audited-at: d866dd2607
+last-audited: 2026-10-24
+audited-at: 69e016c117
 doc-pr: 19460
 implementation-prs: []
 tracking-issues: [19405]
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Remote crew file hand-off
 
-Status: draft. Nothing built. Every code reference below was read at `d866dd2607`.
+Status: draft. Nothing built. Every code reference below was read at `69e016c117`.
 
 This document lands on its own, before any implementation, because it changes what a
 user can attach and where those bytes go, and because part 2 adds a surface the
@@ -127,7 +127,11 @@ snapshot but never write or list one, so one compromised session cannot change w
 other sessions start from.
 
 Retention: inbox and outbox copies held by a provider expire after a configurable period.
-Shared snapshots do not expire.
+Shared snapshots do not expire. The default tunnel-hop copies under
+`uploads/handoff/<slot>/` have no age limit: on the peer, a transfer's inbox stays for
+the life of the slot and is removed with it, and an outbox is removed once the hub has
+fetched and verified it; on the hub, a fetched outbox is kept like any composer
+attachment, and main prunes nothing under `uploads` by age.
 
 ## 4. Prior art
 
