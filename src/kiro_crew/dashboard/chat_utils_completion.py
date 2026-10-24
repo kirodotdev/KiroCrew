@@ -1,5 +1,6 @@
 """Describing the end of a turn: the chunk generation stamped on every stream frame, the
-attached sub-agent probes and synthesis verdict a turn's end consults, and ``chat_done_payload``.
+attached sub-agent probes and synthesis verdict a turn's end consults, whether background
+work will wake the session again, and ``chat_done_payload``.
 
 Served through :mod:`kiro_crew.dashboard.chat_utils`, which callers and tests import and
 patch; this module never imports it.
@@ -195,6 +196,71 @@ def _attached_verdict(running: Any, queued: int, slot: _ChatSlot | None) -> bool
     return bool(running is None or running or queued or inflight)
 
 
+async def background_wake_pending(state: DashboardState, slot: _ChatSlot, operation: str) -> bool:
+    """Whether something outside the finished turn will start another one here.
+
+    The four owners of a later turn in this session: a pending post-fan-out
+    synthesis, attached sub-agent children (running, queued or still
+    delivering), unfinished workflow runs, and an active monitor loop. One
+    predicate for every caller that asks "will this session wake on its own?",
+    so the completion sound and the deferred-follow-up notice cannot disagree.
+
+    A probe failure RAISES rather than answering False: each caller decides
+    which way unknown activity must fail.
+    """
+    if slot._pending_synthesis:
+        return True
+    session_key = effective_session_key(slot)
+    if await subagents_attached_async(state, slot, session_key, operation):
+        return True
+    workflows = getattr(state, "workflow_service", None)
+    if workflows is not None and workflows.registry.has_pending_work_for(session_key):
+        return True
+    # Avoid a circular import: autonudge's slot lookup imports dashboard.state.
+    from kiro_crew.autonudge import get_instance
+
+    service = get_instance()
+    loop = service.get_by_slot(slot.key) if service is not None else None
+    return bool(loop is not None and loop.active)
+
+
+async def background_wake_absent(state: DashboardState, slot: _ChatSlot) -> bool:
+    """True only when nothing PROVABLY owns a later turn in this session.
+
+    For a caller about to tell the person nothing will wake the session. On top
+    of :func:`background_wake_pending` it counts in-memory sub-agent work still
+    owed to this session (a pending follow-up watcher) and an enabled scheduled job this
+    session created or whose runs land in this session: a cron job is not "continuing" work for the completion
+    sound, but it is a wake. A probe that fails answers False, so an unknown
+    state never becomes that claim.
+    """
+    try:
+        if await background_wake_pending(state, slot, "deferred_followup"):
+            return False
+        # A spawn in its dispatch window, a run still tearing down, or a live
+        # ``spawn_steer(mode="follow_up")`` watcher will still report back here.
+        # Anything but a definite False counts as pending work.
+        subs = getattr(state, "subagents", None)
+        if subs is not None and (
+            subs.has_in_memory_pending_work_for(effective_session_key(slot)) is not False
+        ):
+            return False
+        crons = getattr(state, "crons", None)
+        if crons is None:
+            return True
+        owners = {effective_session_key(slot), slot.key} - {""}
+        jobs = await crons.list_jobs_async(include_disabled=False)
+        # A job wakes this session when this session created it, or when this
+        # session IS the job's own transcript (a ``cron:<id>`` tab).
+        return not any(
+            getattr(job, "session_key", "") in owners or f"cron:{getattr(job, 'id', '')}" in owners
+            for job in jobs
+        )
+    except Exception:
+        logger.debug("Background wake probe failed for slot %s", slot.key, exc_info=True)
+        return False
+
+
 async def chat_done_payload(
     state: DashboardState,
     slot: _ChatSlot,
@@ -231,25 +297,11 @@ async def chat_done_payload(
     turn = slot._turn_generation
     turn_gen = chunk_generation()
 
-    # Avoid a circular import: autonudge's slot lookup imports dashboard.state.
-    from kiro_crew.autonudge import get_instance
-
     try:
-        service = get_instance()
-        loop = service.get_by_slot(slot.key) if service is not None else None
-        workflows = getattr(state, "workflow_service", None)
         continuing = bool(
             continuing
-            or slot._pending_synthesis
             or (slot.queue_depth and not queue_held and not slot._last_turn_auth_required)
-            or await subagents_attached_async(
-                state, slot, effective_session_key(slot), "completion_sound"
-            )
-            or (
-                workflows is not None
-                and workflows.registry.has_pending_work_for(effective_session_key(slot))
-            )
-            or (loop is not None and loop.active)
+            or await background_wake_pending(state, slot, "completion_sound")
         )
     except Exception:
         # Unknown activity must not announce a finished conversation, but a

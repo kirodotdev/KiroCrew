@@ -506,6 +506,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     SUBAGENT_COMPLETION_KIND,
     SYNTHESIS_CLEAR,
     SYNTHETIC_RECOVERY_KIND,
+    background_wake_absent,
     should_recover_promise_only,
     subagents_attached_async,
     synthesis_fire_verdict,

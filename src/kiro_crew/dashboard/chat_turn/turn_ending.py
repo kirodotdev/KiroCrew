@@ -1,6 +1,7 @@
 """The if/elif chain that decides how a dashboard turn ends (``_turn_ending_chain``): the leaked
 tool-call notice, the L1 infrastructure retry, the promise-only and false-blocker recoveries,
-the spent-budget and progress-claim notices, and the compaction-dropped leak card."""
+the spent-budget, progress-claim and deferred follow-up notices, and the compaction-dropped
+leak card."""
 
 from __future__ import annotations
 
@@ -8,8 +9,10 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.dashboard.chat_utils import (
     _PROMISE_ONLY_CONTINUE_MSG,
+    DEFERRED_FOLLOWUP_NOTICE,
     FALSE_TOOL_BLOCKER_REPLAY_KIND,
     RecoveryPayload,
+    has_deferred_followup_promise,
     has_unfinished_progress_claim,
     is_false_current_tool_blocker,
     is_promise_only_terminal,
@@ -17,6 +20,7 @@ from kiro_crew.dashboard.chat_utils import (
     should_notice_leaked_tool_call,
     should_notice_mixed_turn_leak,
     tool_calls_are_read_only_preparation,
+    turn_armed_a_wake,
 )
 from kiro_crew.dashboard.recovery_replays import replays_of
 from kiro_crew.recovery.ladder import L1_TOOL_CALL, InfraError, default_ladder
@@ -27,6 +31,7 @@ if TYPE_CHECKING:
         STOP_REASON_END_TURN,
         SYNTHETIC_RECOVERY_KIND,
         ReplayFamily,
+        background_wake_absent,
         build_infra_retry_prompt,
         effective_session_key,
         logger,
@@ -530,6 +535,28 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
             "otherwise send a message to resume.",
             "msg msg-info",
         )
+    # A turn that closes on a DEFERRED follow-up promise ("I'll report back
+    # when the build finishes") while nothing will wake this session: no
+    # wake-arming tool ran this turn and no monitor, child run, workflow,
+    # synthesis or owned cron job owns a later turn. The promise is honest
+    # wording and a lie about the runtime, so say so. Notice-only: the turn may
+    # have run side effects, and arming a wake on the model's behalf is a cost
+    # and authority decision this arm does not make. An unreadable probe fails
+    # quiet (no notice), never toward claiming nothing is scheduled.
+    elif (
+        _prompt_depth == 0
+        and bool(turn.assistant_text.strip())
+        and _stop_reason == STOP_REASON_END_TURN
+        and not _refusal_reasons
+        and not _should_suppress_requeue(slot)
+        and getattr(slot, "_stop_generation", _stop_gen_turn_start) == _stop_gen_turn_start
+        and not _has_user_queued_followup(slot)
+        and not getattr(slot, "_pending_steers", None)
+        and has_deferred_followup_promise(turn.assistant_text)
+        and not turn_armed_a_wake(tuple(_turn_tool_identities))
+        and await background_wake_absent(state, slot)
+    ):
+        slot.append("notice", DEFERRED_FOLLOWUP_NOTICE, "msg msg-info")
     # OUTSIDE the chain above, deliberately. Every arm in it owns the turn's
     # outcome -- it un-lands, re-drives or re-queues -- and two of them are
     # RECOVERIES (the L1 infrastructure retry and the promise-only guard).

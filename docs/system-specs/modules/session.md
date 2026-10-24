@@ -1286,6 +1286,29 @@ against sweep completeness, and are torn down at `close_all`.
   the siblings set (`leak_already_noticed`) rather than by position. It needs no
   tool-count gate (that gate protects un-landing, and there is nothing here to
   un-land).
+- **Deferred follow-up notice** (dashboard chat runner, which Slack-born turns
+  share; depth-0 turns only, issue #23243): a normal turn whose closing two
+  sentences promise to come back LATER ("I'll report back when the build
+  finishes", "I'll keep an eye on the pipeline") while nothing will wake the
+  session gets one notice saying no follow-up is scheduled. "Nothing will wake
+  it" means both: no call this turn to a wake-arming tool
+  (`chat_utils.WAKE_ARMING_TOOLS`: monitor, cron, hook, spawn, workflow and
+  task-runner starts, matched on the bare tool name; `wait` is excluded because
+  it blocks inside the turn; a call whose frame names no tool, as on
+  claude-agent-acp and opencode, counts as a wake), and `background_wake_absent` proves no active
+  monitor loop, attached child run, pending follow-up watcher, pending
+  workflow, pending synthesis or
+  enabled cron job this session created or whose runs land in it owns a later
+  turn. A probe failure
+  answers "something may be scheduled", so the notice never makes a claim the
+  runtime could not check. Detection (`has_deferred_followup_promise`) needs a
+  first-person future commitment followed by a follow-up verb, strips quoted
+  code and the `[OPTIONS:]` trailer first, and skips a follow-up gated on the
+  person's own next message ("let me know when you're ready and I'll report
+  back") or a negated one. Notice-only: the turn may have run tools with side
+  effects, and arming a wake on the model's behalf is a cost and authority
+  choice this arm does not make. It is an `elif` after the foreground-progress
+  notice, so one turn gets at most one of the two.
 - **False current-tool-blocker recovery** (dashboard chat runner, depth-0 turns
   only): a normal turn that successfully completed only host-owned read/search/fetch
   preparation tools and then claims that *this turn* exhausted its tool budget or
