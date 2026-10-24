@@ -645,6 +645,7 @@ async def _start_kiro_runtime_impl(
                 or getattr(section, "kiro_cloud_profiles", None)
                 or getattr(section, "sprites_profiles", None)
                 or getattr(section, "boxd_profiles", None)
+                or getattr(section, "fargate_profiles", None)
             )
             or await asyncio.to_thread(_choices_file_may_exist, session_key)
         )

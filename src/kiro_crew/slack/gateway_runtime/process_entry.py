@@ -282,10 +282,11 @@ def _kas_floor_gates_spawns(cfg: KiroCrewConfig) -> tuple[bool, bool]:
 
 
 def _start_coder_retention(cfg: KiroCrewConfig) -> None:
-    """Maintain configured environments and persisted VMs after readiness.
+    """Maintain configured environments, persisted VMs and Fargate tasks after readiness.
 
-    A gateway with neither configuration nor a VM registry never imports the
-    subsystem. Profile removal leaves archived-row sweeps and shutdown active.
+    A gateway with neither configuration nor a VM or task registry never imports
+    the subsystem. Profile removal leaves archived-row sweeps, existing tasks,
+    pending stops and shutdown active.
     """
     global _CODER_RETENTION_TASK
     from kiro_crew.session_environment import session_environments_enabled
@@ -301,6 +302,7 @@ def _start_coder_retention(cfg: KiroCrewConfig) -> None:
             section.coder_url
             or getattr(section, "sprites_profiles", None)
             or getattr(section, "boxd_profiles", None)
+            or getattr(section, "fargate_profiles", None)
         )
 
     def has_vm_registry() -> bool:
@@ -309,8 +311,9 @@ def _start_coder_retention(cfg: KiroCrewConfig) -> None:
 
         try:
             home = data_home()
-            # Every VM provider's registry, without importing a provider.
-            for name in VM_REGISTRY_FILES.values():
+            # Every VM provider's registry and the Fargate task registry,
+            # without importing a provider.
+            for name in (*VM_REGISTRY_FILES.values(), "fargate/session-tasks.json"):
                 try:
                     (home / name).stat()
                 except FileNotFoundError:
@@ -350,13 +353,16 @@ async def _stop_session_environments() -> None:
     try:
         from kiro_crew.coder.retention import (
             SHUTDOWN_STOP_SECS,
+            close_fargate_forwards,
             stop_for_shutdown,
             stop_on_shutdown_enabled,
         )
 
         if not await stop_on_shutdown_enabled():
             # Fast restarts chosen: each guest still stops on its own once no gateway
-            # reaches it (the worker's orphan timeout).
+            # reaches it (the worker's orphan timeout); the gateway's own Fargate SSM
+            # forward processes still end with it.
+            await asyncio.wait_for(close_fargate_forwards(), timeout=SHUTDOWN_STOP_SECS)
             return
         await asyncio.wait_for(stop_for_shutdown(), timeout=SHUTDOWN_STOP_SECS)
     except asyncio.TimeoutError:

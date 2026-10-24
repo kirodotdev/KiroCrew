@@ -375,6 +375,7 @@ def test_every_vm_provider_is_wired_to_launch_and_the_move_guard():
     assert set(se.PROVIDER_IDS) == {
         session_launch.PROVIDER_ID,
         session_launch.KIRO_CLOUD_PROVIDER_ID,
+        session_launch.FARGATE_PROVIDER_ID,
         *wired,
     }
     assert session_launch.CHOICE_PROVIDERS == frozenset(se.PROVIDER_IDS)

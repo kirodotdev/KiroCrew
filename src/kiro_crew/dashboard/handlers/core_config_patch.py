@@ -119,12 +119,13 @@ def _session_environment_key_validators() -> dict[str, Any]:
         "kiro_cloud_profiles": _keep_kiro_cloud_profiles,
         "sprites_profiles": _keep_vm_profiles("sprites_profiles"),
         "boxd_profiles": _keep_vm_profiles("boxd_profiles"),
+        "fargate_profiles": _keep_vm_profiles("fargate_profiles"),
         "stop_on_shutdown": validate_stop_on_shutdown,
     }
 
 
 def _keep_vm_profiles(key: str) -> Callable[[object], list[dict[str, Any]]]:
-    """The saved Sprites or boxd profiles the loader keeps, entry by entry.
+    """The saved Sprites, boxd or Fargate profiles the loader keeps, entry by entry.
 
     The same rule as :func:`_keep_kiro_cloud_profiles`: one malformed or duplicate
     entry is dropped, the valid ones (and a default naming one) are carried.
@@ -132,10 +133,15 @@ def _keep_vm_profiles(key: str) -> Callable[[object], list[dict[str, Any]]]:
     from kiro_crew.config.session_environments import (
         SessionEnvironmentsError,
         load_boxd_profiles,
+        load_fargate_profiles,
         load_sprites_profiles,
     )
 
-    load = {"sprites_profiles": load_sprites_profiles, "boxd_profiles": load_boxd_profiles}[key]
+    load = {
+        "sprites_profiles": load_sprites_profiles,
+        "boxd_profiles": load_boxd_profiles,
+        "fargate_profiles": load_fargate_profiles,
+    }[key]
 
     def keep(value: object) -> list[dict[str, Any]]:
         if not isinstance(value, list):

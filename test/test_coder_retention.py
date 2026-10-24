@@ -6,6 +6,7 @@ import asyncio
 import functools
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -301,13 +302,15 @@ async def test_the_sweeper_logs_a_repeated_failure_once_and_keeps_running(monkey
     down = CoderClientError("down")
     results = iter([1, down, down, RuntimeError("bug"), 0, down, asyncio.CancelledError()])
 
-    async def sweep_once():
+    async def sweep_once(**_kwargs):
         value = next(results)
         if isinstance(value, BaseException):
             raise value
         return value
 
     monkeypatch.setattr(retention, "sweep_once", sweep_once)
+    # The Fargate heartbeat runs on its own loop; it is not what this test logs.
+    monkeypatch.setattr(retention, "keep_alive_once", AsyncMock(return_value=0))
     caplog.set_level("INFO", logger=retention.logger.name)
     with pytest.raises(asyncio.CancelledError):
         await retention.run_sweeper(interval=0, initial_delay=0)
@@ -548,15 +551,18 @@ async def test_the_unsaved_work_notice_says_whether_files_outlive_a_stop(monkeyp
 async def test_archive_warns_with_the_bound_profile_storage(tmp_path, monkeypatch):
     fake, envs, _ = await _started(tmp_path)
     envs._config.profiles[0].compute_survives_stop = False
-    seen: list[bool] = []
+    seen: list[tuple[bool, bool]] = []
 
-    async def warn(keys, notify, *, survives_stop=True):
-        seen.append(survives_stop)
+    async def coder_envs():
+        return envs
+
+    async def warn(keys, notify, *, survives_stop=True, ephemeral=False):
+        seen.append((survives_stop, ephemeral))
 
     _serve(monkeypatch, envs)
     monkeypatch.setattr(retention, "warn_unsaved_work", warn)
     await retention._archive(((KEY, retention.session_lifecycle(KEY), 0),))
-    assert seen == [False]
+    assert seen == [(False, False)]
     assert "stop" not in fake.verbs()[-1:]
 
 

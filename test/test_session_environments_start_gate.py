@@ -25,7 +25,9 @@ KEY = "dashboard:chat-gate"
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
-    section = SimpleNamespace(coder_url="", profiles=[], sprites_profiles=[], boxd_profiles=[])
+    section = SimpleNamespace(
+        coder_url="", profiles=[], sprites_profiles=[], boxd_profiles=[], fargate_profiles=[]
+    )
     monkeypatch.setattr(paths, "data_home", lambda: tmp_path)
     monkeypatch.setattr(live, "snapshot", lambda: SimpleNamespace(session_environments=section))
     runtime = MagicMock(spawn=AsyncMock(side_effect=RuntimeError("spawn reached")))
@@ -161,3 +163,17 @@ async def test_removing_the_last_profile_never_starts_its_session_locally(
     assert choices.get(KEY) == "saved-vm"
     runtime.spawn.assert_not_awaited()
     runtime.set_remote_workspace.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configured", [False, True])
+async def test_fargate_profiles_alone_resolve_placement(setup, monkeypatch, configured):
+    """A gateway with only Fargate profiles still asks where the session runs."""
+    section, provider, runtime = setup
+    provider._client.backend = ACP_BACKEND_KAS
+    section.fargate_profiles = [object()] if configured else []
+    prepare = AsyncMock(return_value=None)
+    monkeypatch.setattr(session_launch, "prepare_for_session", prepare)
+    with pytest.raises(RuntimeError, match="spawn reached"):
+        await asyncio.wait_for(start._start_kiro_runtime_impl(provider, {}, {}), 30)
+    assert prepare.await_count == configured

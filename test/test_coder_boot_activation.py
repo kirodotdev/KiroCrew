@@ -103,6 +103,7 @@ def test_config_applier_subscribes_the_activation_callback(monkeypatch):
             "session_environments.coder_url",
             "session_environments.sprites_profiles",
             "session_environments.boxd_profiles",
+            "session_environments.fargate_profiles",
         ),
         owner._on_session_environment_config_change,
     ) in callbacks
@@ -176,6 +177,28 @@ async def test_boxd_profiles_alone_activates_retention(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fargate_profiles_alone_activates_retention(monkeypatch):
+    from kiro_crew.coder import retention
+
+    started = asyncio.Event()
+    parked = asyncio.Event()
+
+    async def sweep():
+        started.set()
+        await parked.wait()
+
+    monkeypatch.setattr(gateway, "_CODER_RETENTION_TASK", None)
+    monkeypatch.setattr(retention, "run_sweeper", sweep)
+    try:
+        gateway._start_coder_retention(config(fargate_profiles=[{"id": "p"}]))
+        await asyncio.wait_for(started.wait(), 30)
+    finally:
+        parked.set()
+        if gateway._CODER_RETENTION_TASK is not None:
+            await asyncio.wait_for(gateway._CODER_RETENTION_TASK, 30)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["sprites", "boxd"])
 @pytest.mark.parametrize("live_id", ["owned-id", "replacement-id"])
 async def test_registry_only_boot_sweeps_and_shutdown_keeps_owned_vms(
@@ -236,8 +259,8 @@ async def test_registry_only_boot_sweeps_and_shutdown_keeps_owned_vms(
     run_sweeper = retention.run_sweeper
     counts = []
 
-    async def observe_sweep():
-        counts.append(await sweep_once())
+    async def observe_sweep(**kwargs):
+        counts.append(await sweep_once(**kwargs))
         swept.set()
         return counts[-1]
 
@@ -282,7 +305,10 @@ async def test_registry_only_boot_sweeps_and_shutdown_keeps_owned_vms(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("registry", ["sprites/session-sprites.json", "boxd/session-machines.json"])
+@pytest.mark.parametrize(
+    "registry",
+    ["sprites/session-sprites.json", "boxd/session-machines.json", "fargate/session-tasks.json"],
+)
 async def test_registry_metadata_failure_keeps_retention_enabled(tmp_path, monkeypatch, registry):
     import threading
     from pathlib import Path
@@ -320,7 +346,7 @@ async def test_registry_metadata_failure_keeps_retention_enabled(tmp_path, monke
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider", ["coder", "sprites", "boxd"])
+@pytest.mark.parametrize("provider", ["coder", "sprites", "boxd", "fargate"])
 async def test_config_save_during_registry_probe_still_activates_retention(
     tmp_path, monkeypatch, provider
 ):

@@ -46,6 +46,7 @@ def _profiles() -> list[dict[str, object]]:
             sorted(ambiguous),
         )
     out: list[dict[str, object]] = []
+
     if section.coder_url:
         for p in section.profiles:
             if p.id in ambiguous:
@@ -84,6 +85,17 @@ def _profiles() -> list[dict[str, object]]:
                         "workdir": item.get("workdir") or "",
                     }
                 )
+    # Fargate profiles need no Coder URL either.
+    for item in getattr(section, "fargate_profiles", None) or []:
+        if isinstance(item, dict) and item.get("id") and item["id"] not in ambiguous:
+            out.append(
+                {
+                    "id": item["id"],
+                    "name": item.get("name") or item["id"],
+                    "provider": "fargate",
+                    "workdir": item.get("workdir") or "",
+                }
+            )
     return out
 
 
@@ -111,6 +123,40 @@ def _fixed_by_provider(profile: str, session_key: str) -> bool:
         return True
 
 
+async def _check_fargate(section: object) -> list[dict[str, object]]:
+    """Per Fargate profile: can this gateway start its session tasks? Starts nothing.
+
+    Reads the task definition, which proves the profile's AWS credentials work
+    and refuses a container ``entryPoint`` the bootstrap cannot replace, and
+    confirms the Session Manager plugin the port forward needs is installed.
+    """
+    profiles = [p for p in getattr(section, "fargate_profiles", None) or [] if isinstance(p, dict)]
+    if not profiles:
+        return []
+    from kiro_crew.cloud import ssm
+    from kiro_crew.fargate_session import tasks
+    from kiro_crew.session_environment import SessionEnvironmentUnavailable
+
+    plugin = await asyncio.to_thread(ssm.session_manager_plugin_installed)
+    out: list[dict[str, object]] = []
+    for profile in profiles:
+        if not plugin:
+            out.append(
+                {
+                    "id": profile.get("id"),
+                    "ok": False,
+                    "error": "the AWS Session Manager plugin is not installed on the gateway",
+                }
+            )
+            continue
+        try:
+            await tasks.task_container(profile)
+            out.append({"id": profile.get("id"), "ok": True})
+        except SessionEnvironmentUnavailable as exc:
+            out.append({"id": profile.get("id"), "ok": False, "error": str(exc)[:200]})
+    return out
+
+
 async def api_session_environments_check(request: web.Request) -> web.Response:
     """Is the saved setup ready to run?
 
@@ -121,11 +167,13 @@ async def api_session_environments_check(request: web.Request) -> web.Response:
          "profiles": [{"id", "ok", "error"?}],
          "sprites": [{"id", "ok", "error"?}],
          "boxd": [{"id", "ok", "error"?}],
+         "fargate": [{"id", "ok", "error"?}],
          "git": {host: "signed_in" | "not_signed_in" | "unchecked" | "withheld" | "unsupported"}}
 
     The Sprites check lists at most one sprite per profile (proving its token);
-    the boxd check runs one ``boxd machine list`` (proving the CLI's login).
-    Neither creates or wakes anything.
+    the boxd check runs one ``boxd machine list`` (proving the CLI's login); the
+    Fargate check reads each profile's task definition. None creates, wakes or
+    starts anything, and each is answered whether or not a Coder URL is saved.
     """
     if (
         refusal := await require_owner_dashboard_request(request, "session_environments.check")
@@ -140,7 +188,11 @@ async def api_session_environments_check(request: web.Request) -> web.Response:
 
     section = (await asyncio.to_thread(KiroCrewConfig.load)).session_environments
     git = await git_readiness()
-    others = {"sprites": await _check_sprites(section), "boxd": await _check_boxd(section)}
+    others = {
+        "sprites": await _check_sprites(section),
+        "boxd": await _check_boxd(section),
+        "fargate": await _check_fargate(section),
+    }
     if not section.coder_url:
         return web.json_response(
             {
@@ -271,7 +323,8 @@ async def _check_boxd(section: Any) -> list[dict[str, object]]:
 
 async def api_session_environments_workspaces_get(request: web.Request) -> web.Response:
     """``GET /api/session-environments/workspaces``: owner-only, registry-only (no
-    Coder command) state and deletion date per owned workspace."""
+    Coder or AWS command) state and deletion date per owned Coder workspace or
+    Fargate task, tagged with its ``provider``."""
     if (
         refusal := await require_owner_dashboard_request(request, "session_environments.workspaces")
     ) is not None:
@@ -280,9 +333,11 @@ async def api_session_environments_workspaces_get(request: web.Request) -> web.R
     def _read() -> list[dict[str, object]]:
         from kiro_crew.coder.registry import WorkspaceBindingRegistry, WorkspaceRegistryCorrupt
         from kiro_crew.config.paths import data_home
+        from kiro_crew.fargate_session.launch import SessionTaskRegistry
         from kiro_crew.session_environment import SessionEnvironmentUnavailable
 
-        registry = WorkspaceBindingRegistry(data_home() / "coder" / "session-envs.json")
+        home = data_home()
+        registry = WorkspaceBindingRegistry(home / "coder" / "session-envs.json")
         try:
             rows = registry.list_bindings()
         except (OSError, WorkspaceRegistryCorrupt):
@@ -298,6 +353,27 @@ async def api_session_environments_workspaces_get(request: web.Request) -> web.R
                 return ""
 
         out: list[dict[str, object]] = list(_persistent_workspaces(data_home()))
+        try:
+            session_tasks = SessionTaskRegistry(
+                data_home() / "fargate" / "session-tasks.json"
+            ).all()
+        except SessionEnvironmentUnavailable:
+            session_tasks = []
+        for task in session_tasks:
+            out.append(
+                {
+                    # The card names the provider, so no English rides here.
+                    "workspace": task.task_id[:12],
+                    "provider": "fargate",
+                    "kind": "session",
+                    "slot": _slot_of(task.session_key),
+                    "profile": task.profile_id,
+                    "state": "running" if task.runtime_id else "starting",
+                    "template": task.profile_id,
+                    "created_at": "",
+                    "deletion_due_at": "",
+                }
+            )
         for row in rows:
             out.append(
                 {
@@ -374,9 +450,10 @@ def _environment_locked(slot: object) -> bool:
 
 
 def _remote_workspace_created(session_key: str) -> bool:
-    """Whether a verified workspace exists; an unreadable registry says yes."""
+    """Whether a verified workspace or a Fargate task exists; an unreadable registry says yes."""
     from kiro_crew.coder.registry import WorkspaceBindingRegistry, WorkspaceRegistryCorrupt
     from kiro_crew.config.paths import data_home
+    from kiro_crew.fargate_session.launch import SessionTaskRegistry
     from kiro_crew.session_environment import SessionEnvironmentUnavailable
 
     home = data_home()
@@ -387,6 +464,11 @@ def _remote_workspace_created(session_key: str) -> bool:
                 return True
         except SessionEnvironmentUnavailable:
             return True
+    try:
+        if SessionTaskRegistry(home / "fargate" / "session-tasks.json").get(session_key):
+            return True
+    except SessionEnvironmentUnavailable:
+        return True
     registry = WorkspaceBindingRegistry(home / "coder" / "session-envs.json")
     try:
         binding = registry.get_by_session(session_key)

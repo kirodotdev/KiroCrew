@@ -279,6 +279,10 @@ _CODE_EXEC_SETTINGS: frozenset[str] = frozenset(
         # The default binds every new chat to a saved profile, which can be a
         # Kiro Cloud profile outside the tool gate or a Coder workspace.
         "session_environments.default_profile",
+        # A Fargate profile picks the AWS identity, task definition and network
+        # a session's commands run under, and the gateway sends git credentials
+        # to that task.
+        "session_environments.fargate_profiles",
     }
 )
 

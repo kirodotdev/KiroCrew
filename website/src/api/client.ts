@@ -972,12 +972,14 @@ export interface SessionEnvironmentsCheck {
   boxd?: { id: string; ok: boolean; error?: string }[]
   /** Absent from a gateway that predates the git rows. */
   git?: Record<string, GitLoginStatus>
+  /** Per saved AWS Fargate profile: task definition readable and usable. Older gateways omit it. */
+  fargate?: { id: string; ok: boolean; error?: string }[]
 }
 
 export interface SessionEnvironmentWorkspace {
   workspace: string
   /** Older gateways omit it; those rows are Coder workspaces. */
-  provider?: 'coder' | 'sprites' | 'boxd'
+  provider?: 'coder' | 'sprites' | 'boxd' | 'fargate'
   slot: string
   /** The profile the chat is bound to; empty when unknown. */
   profile?: string

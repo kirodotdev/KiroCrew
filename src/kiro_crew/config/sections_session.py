@@ -538,6 +538,17 @@ class SessionEnvironmentsConfig:
         ),
     )
 
+    fargate_profiles: list[dict[str, Any]] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Fargate Profiles",
+            "Named AWS Fargate profiles (at most 20), each {id, name, aws_profile, region, "
+            "cluster, task_definition, subnets, security_groups, assign_public_ip, workdir}. "
+            "References only: aws_profile names a profile of the gateway's AWS CLI, and no "
+            "credential is stored.",
+        ),
+    )
+
     default_profile: str = field(
         default="",
         metadata=_meta(
@@ -566,6 +577,7 @@ class SessionEnvironmentsConfig:
         from kiro_crew.config.session_environments import (
             load_boxd_profiles,
             load_default_profile,
+            load_fargate_profiles,
             load_kiro_cloud_profiles,
             load_session_environments,
             load_sprites_profiles,
@@ -581,6 +593,7 @@ class SessionEnvironmentsConfig:
             kiro_cloud_profiles=load_kiro_cloud_profiles(section),
             sprites_profiles=load_sprites_profiles(section),
             boxd_profiles=load_boxd_profiles(section),
+            fargate_profiles=load_fargate_profiles(section),
             default_profile=load_default_profile(section),
             stop_on_shutdown=load_stop_on_shutdown(section),
         )

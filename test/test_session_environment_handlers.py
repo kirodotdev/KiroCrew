@@ -417,9 +417,10 @@ async def test_check_endpoint_reports_sign_in_and_each_profile(tmp_path, monkeyp
             "coder": {"ok": False, "error": "no Coder URL is saved"},
             "profiles": [],
             "git": git,
-            # No Sprites or boxd profile: their rows are empty, never omitted.
+            # No Sprites, boxd or Fargate profile: their rows are empty, never omitted.
             "sprites": [],
             "boxd": [],
+            "fargate": [],
         }
         body = await (await client.post("/check")).json()
         # Coder's own words, not a guess that it is a sign-in problem (a timeout
@@ -431,6 +432,7 @@ async def test_check_endpoint_reports_sign_in_and_each_profile(tmp_path, monkeyp
             "git": git,
             "sprites": [],
             "boxd": [],
+            "fargate": [],
         }
         fake.signed_in = True
         body = await (await client.post("/check")).json()

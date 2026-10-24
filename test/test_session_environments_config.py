@@ -25,6 +25,7 @@ _DEFAULTS = {
     "kiro_cloud_profiles": [],
     "sprites_profiles": [],
     "boxd_profiles": [],
+    "fargate_profiles": [],
     "default_profile": "",
     "stop_on_shutdown": True,
 }
@@ -188,6 +189,7 @@ class TestLoader:
             "kiro_cloud_profiles": [],
             "sprites_profiles": [],
             "boxd_profiles": [],
+            "fargate_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
         }
