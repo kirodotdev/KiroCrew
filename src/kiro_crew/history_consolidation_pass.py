@@ -61,6 +61,7 @@ from kiro_crew.history_consolidation_span import (
     _consolidation_head_content,
     _ConsolidationNotDispatched,
     _ConsolidationRefusedSentinel,
+    _ConsolidationReplyUnusable,
     _fmt_message,
     _head_exceeds_budget,
     _head_slice_ceiling_reached,
@@ -769,6 +770,7 @@ async def _consolidate(
         prompt_parts.append("\n\nRespond with ONLY valid JSON, no markdown fences.")
         prompt = "".join(prompt_parts)
 
+        failure = "LLM turn failed"
         try:
             result = (
                 await self._call_llm(prompt, memory_store=store_name, session_key=key)
@@ -776,15 +778,19 @@ async def _consolidate(
                 else await self._call_llm(prompt, session_key=key)
             )
         except _ConsolidationNotDispatched as exc:
-            # Nothing was sent, so nothing was billed. Charging this to the
-            # attempt cap would let a handful of environment failures abandon
-            # the span — writing the durable marker over messages no LLM has
+            # Nothing was billed: the prompt never went out, or the provider
+            # sent nothing back. Charging this to the attempt cap would let a
+            # handful of environment failures or throttled turns abandon the
+            # span — writing the durable marker over messages no LLM has
             # ever read, which is the exact false-abandonment this accounting
             # exists to prevent. Arm the backoff only, so a broken host retries
             # on a widening interval instead of on every 60s tick.
             if include_history:
                 await self._note_environment_failure(key, str(exc))
             return None
+        except _ConsolidationReplyUnusable as exc:
+            result = None
+            failure = str(exc)
         billed = True
         if not result:
             # The turn reached the provider and produced nothing usable, so it
@@ -794,7 +800,7 @@ async def _consolidate(
             # unconsolidated: the span re-bills a full turn every idle window,
             # and immediately after every restart. Charge the attempt.
             if include_history and not await self._note_failed_attempt(
-                key, attempted, "empty LLM result", lease
+                key, attempted, failure, lease
             ):
                 # The lease went to a peer: nothing was charged, and this
                 # is not a completed pass.
@@ -1227,18 +1233,25 @@ async def _call_llm(
 ) -> dict | None:
     """Call LLM for extraction via a dedicated, idle-expirable session.
 
-    Returns the parsed JSON dict, or ``None`` when the turn reached the
-    provider but produced nothing usable (a failed or unparsable answer).
+    Returns the parsed JSON dict, or ``None`` when the turn raised after the
+    prompt was sent.
 
-    Raises :class:`_ConsolidationNotDispatched` when the prompt never reached
-    the provider at all — no session manager, or the background session could
-    not be acquired because kiro-cli is missing, not logged in, or failing to
-    start. That case is signalled separately rather than folded into ``None``
+    Raises :class:`_ConsolidationNotDispatched` when the turn spent nothing: the
+    prompt never reached the provider at all — no session manager, or the
+    background session could not be acquired because kiro-cli is missing, not
+    logged in, or failing to start — or the provider sent back no text and
+    billed nothing, as a throttled provider does once its own retries run out.
+    Billing that reads zero counts as nothing only on a provider whose
+    ``reports_turn_usage`` is True; elsewhere an empty reply is charged.
+    That case is signalled separately rather than folded into ``None``
     because the two cost different things: a spent turn costs money and must
-    consume the caller's retry budget, while a prompt that was never sent costs
-    nothing and must not, or a broken host would abandon spans it never read.
-    An exception (rather than a flag beside the result) is used so a caller
-    cannot silently drop the distinction.
+    consume the caller's retry budget, while a turn that spent nothing must
+    not, or a broken host or a throttled provider would abandon spans no model
+    read. An exception (rather than a flag beside the result) is used so a
+    caller cannot silently drop the distinction.
+
+    Raises :class:`_ConsolidationReplyUnusable` when the provider answered
+    without a usable JSON object; the caller charges it like ``None``.
 
     Once ``stream_and_collect_json`` is entered the prompt counts as sent: a
     failure inside it may still have been billed, so it returns ``None`` and is
@@ -1286,6 +1299,15 @@ async def _call_llm(
             raise _ConsolidationNotDispatched("background session unavailable") from exc
         t_acquired = _time.monotonic()
         wait_s = t_acquired - t_start
+        # Function-local: a module-level name here would join the facade's served surface.
+        from kiro_crew.llm_helpers import (
+            _billing_stats,
+            provider_last_turn_usage,
+            usage_has_billing,
+        )
+
+        stats_before = _billing_stats(client)
+        reply: list[str] = []
         # Reject all tools: this is a text/JSON-only generation turn. kiro
         # scopes the kirocrew-lite session to tools:[] via set_mode, but the
         # Claude Code backend skips set_mode and injects the full
@@ -1297,6 +1319,7 @@ async def _call_llm(
                 client,
                 prompt,
                 approval_policy=ToolApprovalPolicy.REJECT_ALL,
+                on_chunk=reply.append,
                 model_fallback=True,
                 # History ABOUT a session: a path in it is quoted, never an
                 # attachment, so no readable file may become an image block.
@@ -1321,7 +1344,27 @@ async def _call_llm(
             _time.monotonic() - t_start,
             result is not None,
         )
-        return result
+        if result:
+            return result
+        text = "".join(reply)
+        if not text.strip():
+            # background_turn records this total after the turn, so it is read uncleared.
+            turn_usage = provider_last_turn_usage(client, since=stats_before, consume=False)
+            # Zero usage proves nothing billed only on a backend that reports usage at all.
+            reports_usage = getattr(client, "reports_turn_usage", False) is True
+            if reports_usage and not usage_has_billing(turn_usage):
+                raise _ConsolidationNotDispatched("provider returned no output")
+            raise _ConsolidationReplyUnusable("empty reply")
+        closing = "" if text.rstrip().endswith("}") else ", no closing brace"
+        reason = f"unparsable reply ({len(text)} chars{closing})"
+        # The reply may quote the user's chat, credentials included, so none of it is logged.
+        self._logger.warning(
+            "LLM consolidation reply held no usable JSON object (model=%s prompt_chars=%d): %s",
+            str(getattr(client, "served_model", "") or "") or "unknown",
+            len(prompt),
+            reason,
+        )
+        raise _ConsolidationReplyUnusable(reason)
     # Reached only if the exit stack suppresses an exception. The prompt was
     # already sent by then, so the turn may have been billed: report it as a
     # spent-but-unusable result rather than a non-dispatch, which would hand

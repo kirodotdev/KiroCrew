@@ -159,7 +159,18 @@ class AttemptedSpan(NamedTuple):
 
 
 class _ConsolidationNotDispatched(Exception):
-    """A consolidation prompt never reached the provider."""
+    """A consolidation turn that spent nothing.
+
+    Its prompt never reached the provider, or the provider sent back no text and billed
+    nothing.
+    """
+
+
+class _ConsolidationReplyUnusable(Exception):
+    """The provider answered a consolidation turn without a usable JSON object.
+
+    The message is the reason the caller charges the attempt with.
+    """
 
 
 class _PersistenceDisabledMidRun(Exception):

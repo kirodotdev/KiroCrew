@@ -595,6 +595,7 @@ async def stream_and_collect_json(
     *,
     approval_policy: ToolApprovalPolicy = ToolApprovalPolicy.AUTO_APPROVE,
     hooks: HookManager | None = None,
+    on_chunk: Callable[[str], None] | None = None,
     model_fallback: bool = False,
     allow_image: bool = True,
 ) -> dict | None:
@@ -608,6 +609,7 @@ async def stream_and_collect_json(
         message,
         approval_policy=approval_policy,
         hooks=hooks,
+        on_chunk=on_chunk,
         model_fallback=model_fallback,
         allow_image=allow_image,
     )

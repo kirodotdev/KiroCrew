@@ -58,7 +58,8 @@ _BASE_MODULE_NAMES = frozenset("""
     _CONSOLIDATION_MAX_ATTEMPTS _CONSOLIDATION_MAX_HEAD_SLICES _CONSOLIDATION_META_KEYS
     _CONSOLIDATION_PROMPT_BUDGET_CHARS _CONSOLIDATION_REFUSED
     _CONSOLIDATION_SUBOFFSET_META_KEYS _CONSOLIDATION_THRESHOLD
-    _ConsolidationNotDispatched _ConsolidationRefusedSentinel _CountClaim
+    _ConsolidationNotDispatched _ConsolidationRefusedSentinel _ConsolidationReplyUnusable
+    _CountClaim
     _EMBED_BUDGET_SECS_PER_PASS _EmbedBudget _HISTORY_LOGGER _INHERIT_GLOBAL
     _InheritGlobal _LessonDeleteDecision _LESSON_PASSTHROUGH_FIELDS
     _MAX_EPISODIC_PER_CONSOLIDATION

@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
 from kiro_crew.history_consolidation_span import (
     _ConsolidationNotDispatched,
+    _ConsolidationReplyUnusable,
     _fmt_message,
     _prompt_rows,
     _RunCommitState,
@@ -379,10 +380,11 @@ async def _run_skill_detection(
     )
     try:
         result = await self._call_llm(prompt)
-    except _ConsolidationNotDispatched:
+    except (_ConsolidationNotDispatched, _ConsolidationReplyUnusable):
         # Skill detection is best-effort and owns no retry accounting, so an
-        # unreachable provider is simply no detection this pass. The marker
-        # below is still recorded, matching the existing failed-turn path.
+        # unreachable provider or an unusable reply is simply no detection this
+        # pass. The marker below is still recorded, matching the existing
+        # failed-turn path.
         result = None
     # Record the (generation, count) marker regardless of outcome so an
     # unchanged session isn't re-evaluated on every subsequent

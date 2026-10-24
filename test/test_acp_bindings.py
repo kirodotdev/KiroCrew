@@ -135,6 +135,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "reapply_live_effort": ("function", True, "581451d2b011", "acp_model_effort"),
     "reject_tool": ("function", True, "84bed4474307", "acp"),
     "reports_effort_support": ("data", False, "", ""),
+    "reports_turn_usage": ("property", False, "a6632a57e602", "acp"),
     "served_model": ("property", False, "bb418bb7ece8", "acp"),
     "session_id": ("property", False, "bb418bb7ece8", "acp"),
     "set_model": ("function", True, "9c3df1e3fc63", "acp_model_effort"),

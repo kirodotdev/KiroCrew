@@ -587,6 +587,15 @@ class LLMProvider(ABC):
         """
         return None
 
+    @property
+    def reports_turn_usage(self) -> bool:
+        """True when a turn's billing always reaches :meth:`billing_stats`.
+
+        Only then does a turn that reports none prove it billed nothing. The safe
+        default is False: a provider that never meters shows zero for a billed turn too.
+        """
+        return False
+
     # ── Turn-control and capability surface (harness-parity H14) ──
     # The session, shutdown-drain, steer, and dashboard layers read these off a
     # provider. Declaring them here with a safe default means a provider that

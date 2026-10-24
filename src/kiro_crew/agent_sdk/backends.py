@@ -190,6 +190,9 @@ with no row here.
    * - ``ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR``
      - driver-internal (whether an adapter-authored text chunk that ends a turn
        is the turn's provider failure rather than an answer)
+   * - ``ACP_BACKENDS_REPORT_USAGE``
+     - semantic question (whether a turn that reports no usage billed nothing,
+       read through the provider's ``reports_turn_usage``)
    * - ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL``
      - driver-internal (whether a kindless permission frame takes the preceding
        tool_call's ``kind``; read per frame by the session handle's wire accessor)
@@ -890,6 +893,7 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_LOCAL_CLEAR,
     ACP_BACKENDS_NATIVE_TODOS,
+    ACP_BACKENDS_REPORT_USAGE,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
     ACP_BACKENDS_STEERING_REQUEST,

@@ -3,8 +3,8 @@ command, and report how the turn ended.
 
 The three steering channels, the three answers to a full context and the inline
 ``/compact`` done signal, the slash-command memberships (``_kiro.dev`` commands,
-``/todos``, a locally answered ``/clear``), and how a refusal or a terminal provider
-failure is reported.
+``/todos``, a locally answered ``/clear``), how a refusal or a terminal provider
+failure is reported, and whether a turn reports what it cost.
 
 One of the owners of the harness vocabulary in :mod:`kiro_crew.agent_sdk.backends`,
 which re-exports every name defined here and is the import path callers use. Like that
@@ -604,3 +604,15 @@ ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # opencode, goose, pi and deepseek are not members: none of them was read writing a
 # provider failure as message text.
 ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR = frozenset({ACP_BACKEND_CODEX})
+
+# Each lands its turns' billing or token counts in TurnUsage (agent-host-contract.md §6), so a
+# turn reporting none billed none. §6 establishes no count for codex or pi; deepseek reports occupancy.
+ACP_BACKENDS_REPORT_USAGE = frozenset(
+    {
+        ACP_BACKEND_KIRO,
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_GOOSE,
+    }
+)

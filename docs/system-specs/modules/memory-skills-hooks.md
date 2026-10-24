@@ -3345,7 +3345,12 @@ Consolidation failures before a provider call, including invalid member memory
 or essential context, record a durable environment backoff. They do not consume
 the billed-attempt budget or mark unread transcript spans as processed. Repeated
 environment failures widen the retry interval to its existing ceiling instead
-of producing a traceback on every idle tick.
+of producing a traceback on every idle tick. On a backend in
+`ACP_BACKENDS_REPORT_USAGE`, a turn the provider ends with no text and no
+billing, as a throttled provider does once its own retries run out, takes the
+same backoff and spends no attempt. Any other empty reply, one that billed or
+one from a backend outside that set, consumes an attempt as `empty reply`, and
+so does a reply that does not parse.
 
 ### Cross-Platform
 

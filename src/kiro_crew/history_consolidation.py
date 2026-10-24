@@ -565,9 +565,10 @@ class HistoryConsolidator:
         return True
 
     async def _note_environment_failure(self, key: str, reason: str) -> None:
-        """Arm the backoff for a consolidation that never reached the provider.
+        """Arm the backoff for a consolidation turn that spent nothing.
 
-        Deliberately does NOT touch the attempt cap. A pre-dispatch failure spends
+        Deliberately does NOT touch the attempt cap. A pre-dispatch failure, or a
+        turn the provider sent nothing back for and billed nothing, spends
         nothing, so abandoning the span over one would write the durable marker
         over messages no LLM has ever read — losing a memory pass to a broken
         kiro-cli install rather than to a genuinely unprocessable span. The
@@ -1247,6 +1248,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _consolidation_head_content,
         _ConsolidationNotDispatched,
         _ConsolidationRefusedSentinel,
+        _ConsolidationReplyUnusable,
         _fmt_message,
         _head_exceeds_budget,
         _head_slice_ceiling_reached,

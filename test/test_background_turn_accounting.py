@@ -646,6 +646,44 @@ class TestBilledAttemptsSurviveARetry(unittest.IsolatedAsyncioTestCase):
         # Cleared even though it was rejected, so a third read cannot see it.
         self.assertFalse(hasattr(provider, _TURN_BILLED_ATTR))
 
+    async def test_a_consolidation_turn_that_checks_its_billing_still_writes_its_row(self):
+        """Consolidation reads an empty reply's billing before ``background_turn``
+        records the turn. Consuming the total there would leave the recording read
+        only the retry's live stats, so the abandoned attempt's spend would never
+        reach the usage store."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.history_consolidation import (
+            HistoryConsolidator,
+            _ConsolidationReplyUnusable,
+        )
+        from kiro_crew.providers.base import EVENT_COMPLETE
+
+        class _RetriedClient(_Client):
+            # A backend in ACP_BACKENDS_REPORT_USAGE, where the billing read decides the charge.
+            reports_turn_usage = True
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls = 0
+
+            async def stream(self, message: str, *, allow_image: bool = True):
+                self.calls += 1
+                self.begin_turn(2.0 if self.calls == 1 else 0.0)
+                if self.calls == 1:
+                    raise AcpError("transient error (http 5xx)")
+                yield SimpleNamespace(kind=EVENT_COMPLETE, text="")
+
+        consolidator = HistoryConsolidator.__new__(HistoryConsolidator)
+        consolidator._sessions = _Sessions(_RetriedClient())
+        with (
+            patch(_USAGE_TARGET) as persist,
+            patch("kiro_crew.llm_helpers.transient_retry_delay", return_value=0),
+            self.assertRaises(_ConsolidationReplyUnusable),
+        ):
+            await consolidator._call_llm("extract")
+
+        self.assertEqual([call.args[2].credits for call in persist.await_args_list], [2.0])
+
 
 if __name__ == "__main__":
     unittest.main()

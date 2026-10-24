@@ -9,7 +9,10 @@ resurrects a deleted session. The shared helpers come from
 """
 
 import asyncio
+import contextlib
+import logging
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,12 +27,40 @@ from windows_sim import replace_sharing_violation
 
 from kiro_crew import atomic_write as aw
 from kiro_crew import history as history_mod
-from kiro_crew import platform_compat
+from kiro_crew import history_consolidation, platform_compat
 from kiro_crew.history import (
     _CONSOLIDATION_BACKOFF_BASE_SECS,
     _CONSOLIDATION_MAX_ATTEMPTS,
     ConversationLog,
 )
+from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+
+class _OneTurnProvider:
+    """Streams *text* as one turn, on fresh stats that bill *credits*, as a runner does."""
+
+    served_model = "test-model"
+    # A backend in ACP_BACKENDS_REPORT_USAGE, whose zero billing means nothing was billed.
+    reports_turn_usage = True
+
+    def __init__(self, text: str, credits: float) -> None:
+        self._text = text
+        self._credits = credits
+        self.last_prompt_stats = SimpleNamespace(credits=0.0)
+
+    async def stream(self, _message: str, *, allow_image: bool = True):
+        self.last_prompt_stats = SimpleNamespace(credits=self._credits)
+        if self._text:
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=self._text)
+        yield LLMEvent(kind=EVENT_COMPLETE)
+
+
+def _background_turn_on(provider: _OneTurnProvider):
+    @contextlib.asynccontextmanager
+    async def _turn(_sessions, **_kwargs):
+        yield provider
+
+    return _turn
 
 
 def _plant_raw_meta(log: ConversationLog, key: str, raw_fields: str) -> None:
@@ -207,7 +238,7 @@ class TestAttemptCap:
         with patch.object(c, "_call_llm", AsyncMock(return_value=None)):
             await c._consolidate(KEY, include_history=True)
 
-        assert seen == [(KEY, 3, "empty LLM result")]
+        assert seen == [(KEY, 3, "LLM turn failed")]
 
     @pytest.mark.asyncio
     async def test_a_failed_attempt_below_the_cap_reports_nothing(self, tmp_path):
@@ -630,6 +661,117 @@ class TestOnlyASentTurnConsumesTheCap:
             await c._consolidate(KEY, include_history=True)
 
         assert log.consolidation_retry_state(KEY)[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_reply_with_no_text_and_no_billing_does_not_consume_an_attempt(self, tmp_path):
+        """A throttled provider ends the turn with no text and bills nothing: no model
+        read the span, so a charge at the cap would drop it from memory unread."""
+        log = _seed_log(tmp_path)
+        c = _make_consolidator(log, sessions=object())
+        abandoned: list[tuple] = []
+        c.on_abandoned = lambda *args, **kwargs: abandoned.append(args)
+        with history_mod.allow_on_loop_persist():
+            log.update_metadata(
+                KEY,
+                {
+                    "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS - 1,
+                    "consolidation_retry_at": 0.0,
+                },
+            )
+
+        provider = _OneTurnProvider("", credits=0.0)
+        with patch.object(history_consolidation, "background_turn", _background_turn_on(provider)):
+            await c._consolidate(KEY, include_history=True)
+
+        attempts, retry_at = log.consolidation_retry_state(KEY)
+        assert attempts == _CONSOLIDATION_MAX_ATTEMPTS - 1
+        assert retry_at > time.time()
+        assert abandoned == []
+        assert log.unconsolidated_count(KEY) == 3
+
+    @pytest.mark.asyncio
+    async def test_an_empty_unbilled_reply_from_a_backend_without_usage_is_charged(self, tmp_path):
+        """A backend that reports no usage shows none for a billed turn too, so taking its
+        empty reply as free would retry a dead span forever and never abandon it."""
+
+        class _UnmeteredProvider(_OneTurnProvider):
+            reports_turn_usage = False
+
+        log = _seed_log(tmp_path)
+        c = _make_consolidator(log, sessions=object())
+        seen: list[tuple[str, int, str]] = []
+        c.on_abandoned = lambda key, count, reason, char_count=0, last_slice=False: seen.append(
+            (key, count, reason)
+        )
+        with history_mod.allow_on_loop_persist():
+            log.update_metadata(
+                KEY,
+                {
+                    "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS - 1,
+                    "consolidation_retry_at": 0.0,
+                },
+            )
+
+        provider = _UnmeteredProvider("", credits=0.0)
+        with patch.object(history_consolidation, "background_turn", _background_turn_on(provider)):
+            await c._consolidate(KEY, include_history=True)
+
+        assert seen == [(KEY, 3, "empty reply")]
+        assert log.unconsolidated_count(KEY) == 0
+
+    @pytest.mark.asyncio
+    async def test_an_empty_reply_whose_turn_billed_still_consumes_an_attempt(self, tmp_path):
+        """Only a turn that billed nothing is free. The billing here is on an attempt a
+        transient error abandoned, and the retry's fresh stats show none of it."""
+        from kiro_crew.acp.client import AcpError
+
+        class _BilledThenRetried(_OneTurnProvider):
+            def __init__(self) -> None:
+                super().__init__("", credits=0.0)
+                self.calls = 0
+
+            async def stream(self, _message: str, *, allow_image: bool = True):
+                self.calls += 1
+                if self.calls == 1:
+                    self.last_prompt_stats = SimpleNamespace(credits=2.0)
+                    raise AcpError("transient error (http 5xx)")
+                async for event in super().stream(_message, allow_image=allow_image):
+                    yield event
+
+        log = _seed_log(tmp_path)
+        c = _make_consolidator(log, sessions=object())
+        provider = _BilledThenRetried()
+        with (
+            patch.object(history_consolidation, "background_turn", _background_turn_on(provider)),
+            patch("kiro_crew.llm_helpers.transient_retry_delay", return_value=0),
+        ):
+            await c._consolidate(KEY, include_history=True)
+
+        assert provider.calls == 2
+        assert log.consolidation_retry_state(KEY)[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_an_unparsable_reply_is_charged_and_logged_without_its_text(
+        self, tmp_path, caplog
+    ):
+        """The reply can quote the chat being consolidated, credentials included, so the
+        WARNING carries its size and shape and no slice of its text, head or tail."""
+        reply = '{"history_entry": "' + "the user pasted a key " * 30
+        log = _seed_log(tmp_path)
+        c = _make_consolidator(log, sessions=object())
+
+        provider = _OneTurnProvider(reply, credits=9.6)
+        with (
+            patch.object(history_consolidation, "background_turn", _background_turn_on(provider)),
+            caplog.at_level(logging.WARNING, logger="kiro_crew.history"),
+        ):
+            await c._consolidate(KEY, include_history=True)
+
+        assert log.consolidation_retry_state(KEY)[0] == 1
+        warnings = "\n".join(r.getMessage() for r in caplog.records)
+        assert "model=test-model prompt_chars=" in warnings
+        assert f"unparsable reply ({len(reply)} chars, no closing brace)" in warnings
+        assert "the user pasted" not in warnings
 
     @pytest.mark.asyncio
     async def test_no_session_manager_is_reported_as_not_dispatched(self, tmp_path):
