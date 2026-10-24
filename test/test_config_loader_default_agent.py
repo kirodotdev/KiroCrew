@@ -353,6 +353,48 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
         assert event.resources == "agent:pkg"
         assert event.metadata == {"template": "captain", "reset_to": "default"}
 
+    def test_the_edition_lookup_with_no_context_does_not_re_enter_itself(self):
+        # With no installed context, the edition lookup builds one, which loads
+        # config, which can reach the lookup again. Unguarded, that runs to the
+        # recursion limit, where a GC finalizer fails whichever test is running.
+        import kiro_crew.config.loader as loader
+        import kiro_crew.platform.context as context
+
+        real = context.current_context
+        depth = [0]
+        peak = [0]
+
+        def counting():
+            depth[0] += 1
+            peak[0] = max(peak[0], depth[0])
+            try:
+                return real()
+            finally:
+                depth[0] -= 1
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": "captain"}},
+                "pkg",
+                {"kirocrew.json": {"name": "kirocrew"}, "captain.json": {"name": "captain"}},
+            )
+            p1, p2 = self._patched(config, d)
+            with (
+                p1,
+                p2,
+                unittest.mock.patch("kiro_crew.sel.sel"),
+                unittest.mock.patch.object(context, "_ACTIVE", None),
+                unittest.mock.patch.object(context, "current_context", counting),
+            ):
+                loader.refresh_materialized_agents(heal_default=True)
+                (d / "captain.json").unlink()
+                with self.assertLogs("kiro_crew.config.loader", level="WARNING"):
+                    loader.refresh_materialized_agents(heal_default=True)
+            on_disk = self._on_disk(config)
+        assert on_disk["default_agent"] == "default"
+        assert peak[0] == 1
+
     def test_an_unreadable_crewmate_file_is_not_removal_evidence(self):
         # The default is a crewmate whose own file sits in the crewmate folder.
         # That file turning unreadable leaves the user-level scan complete, but

@@ -889,6 +889,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _CONFIG_TIMEZONE,
         _CONFIG_TIMEZONE_LOCK,
         _CONFIG_TIMEZONE_TICKET,
+        _EDITION_LOOKUP,
         _MATERIALIZED_AGENTS,
         _MATERIALIZED_AGENTS_GENERATION,
         _MATERIALIZED_AGENTS_LOCK,

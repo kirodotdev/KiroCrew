@@ -587,6 +587,9 @@ def _workspace_declares(template: str, workspace_dir: Path) -> bool:
     return not complete or template in names
 
 
+_EDITION_LOOKUP = threading.local()
+
+
 def _edition_agent_names() -> frozenset[str]:
     """Names of the agents the edition contributes beside the on-disk specs.
 
@@ -594,11 +597,22 @@ def _edition_agent_names() -> frozenset[str]:
     edition's agent catalog, so the healer and the agent listing agree on which
     rows exist: its failure handling (none on an adapter error) and its row
     validation apply here unchanged. The public edition contributes none.
+
+    Re-entry on the same thread answers none, the same answer as an adapter
+    error. With no installed context the lookup builds one, which loads config,
+    which can reach this lookup again. Unguarded, that cycle runs to the
+    recursion limit, and a GC finalizer at that depth fails whatever is running.
     """
+    if getattr(_EDITION_LOOKUP, "active", False):
+        return frozenset()
     # Deferred: agent_discovery imports this package's paths at load time.
     from kiro_crew.agent_discovery import _with_edition_agents
 
-    return frozenset(agent.name for agent in _with_edition_agents([]))
+    _EDITION_LOOKUP.active = True
+    try:
+        return frozenset(agent.name for agent in _with_edition_agents([]))
+    finally:
+        _EDITION_LOOKUP.active = False
 
 
 def _dangling_template(kiro_agent: object, names: frozenset[str]) -> str | None:
