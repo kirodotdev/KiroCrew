@@ -1078,8 +1078,12 @@ its app (the flat path is the namespaced directory itself), when the name is
 reserved (`_RESERVED_SKILL_DIRS`, i.e. `auto`), and when a real directory of that
 name already exists; an existing flat link is repointed, so when two apps ship a
 same-named skill it resolves to the one registered last. A `skill://` mapping of
-an app skill therefore names the namespaced path, as
-`src/kiro_crew/docs/agent-spec-fields.md` (Resources) documents. Each link is a
+an app skill therefore names the namespaced path, one skill or `<app>/*/SKILL.md`
+for all of them, as `src/kiro_crew/docs/agent-spec-fields.md` (Resources)
+documents. The catalog lists each skill once, under whichever link its walk reached
+first; `_alias_selected` in `skill_runtime/catalog.py` still selects a row listed
+under its flat link when the namespaced link one level under the mapping's literal
+prefix resolves to the same target. Each link is a
 symlink on POSIX and a **directory junction** on Windows, via
 `platform_compat.symlink_or_junction`.
 

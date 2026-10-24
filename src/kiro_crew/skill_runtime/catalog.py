@@ -888,6 +888,65 @@ def _iter_visible(
     ]
 
 
+def _alias_selected(
+    entries: list[_ScopedSkillEntry],
+    selected: list[_ScopedSkillEntry],
+    only: list[str],
+    heads: dict[str, str | None],
+    canonicals: dict[str, str],
+    loader_roots: list[Path],
+    real_roots: list[str],
+) -> list[_ScopedSkillEntry]:
+    """Catalog rows a mapping names through a second link to the same skill.
+
+    An app skill is linked twice under the skills directory, at
+    ``<app>/<skill>`` and usually at a flat ``<skill>``, and the catalog walk
+    keeps only the spelling it reaches first. For a skill whose name sorts
+    before the app's that is the flat link, which ``<app>/*/SKILL.md`` alone
+    does not match. A row the globs missed is still selected when the path one level
+    under the mapping's literal prefix, named like the row's directory,
+    matches the mapping and resolves to the row's target. Only prefixes inside
+    a loader-owned root, spelled or validated and resolved, are tried: the
+    catalog walk already resolved those links, and a project tree is never
+    resolved before consent.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    roots = (*(os.path.abspath(root) for root in loader_roots), *real_roots)
+    candidates: list[tuple[Path, list[str]]] = []
+    for pattern in only:
+        parts, literal = _literal_split(pattern)
+        if literal == 0 or literal != len(parts) - 2 or parts[-1] != "SKILL.md":
+            continue
+        globs = list(dict.fromkeys([pattern, canonicals[pattern]]))
+        for prefix in dict.fromkeys([str(Path(*parts[:literal])), heads[pattern]]):
+            if prefix and sk._within_any(os.path.abspath(prefix), roots):
+                candidates.append((Path(prefix), globs))
+    if not candidates:
+        return []
+    taken = {id(entry) for entry in selected}
+    found: list[_ScopedSkillEntry] = []
+    for entry in entries:
+        if id(entry) in taken or entry.project_root is not None:
+            # A confined project row is never resolved: its path may be a
+            # swapped link or junction, and project paths stay lexical.
+            continue
+        path = Path(entry[1])
+        target: str | None = None
+        for base, globs in candidates:
+            alias = base / path.parent.name / "SKILL.md"
+            if not any(fnmatch.fnmatch(str(alias), g) for g in globs):
+                continue
+            if not os.path.lexists(alias):
+                continue
+            if target is None:
+                target = os.path.normcase(os.path.realpath(path))
+            if os.path.normcase(os.path.realpath(alias)) == target:
+                found.append(entry)
+                break
+    return found
+
+
 def _scoped_entries(
     loader: SkillsLoader,
     project_dir: str | Path | None,
@@ -924,6 +983,9 @@ def _scoped_entries(
     # rows or probe a project skills junction before consent admission.
     excluded = tuple(
         dict.fromkeys([*(os.path.abspath(path) for path in catalog_roots), *real_roots])
+    )
+    selected.extend(
+        _alias_selected(entries, selected, only, heads, canonicals, loader_roots, real_roots)
     )
     # Mapping paths are spec-owned, never caller-supplied read keys. Walk the
     # literal prefix through the same provider/sensitive-path fence as the

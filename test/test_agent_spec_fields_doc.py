@@ -267,9 +267,9 @@ def test_app_skill_mapping_names_the_namespaced_path(
         Path.home() / ".kiro/crew/skills/design-critique/plain/SKILL.md"
     )
 
-    # Per-skill entries select every skill. The app-wide wildcard drops ``a-first``,
-    # whose flat link sorts before the app's directory and is the path the catalog
-    # keeps. The second assertion pins that wrong answer, which the page warns about.
+    # Per-skill entries and the app-wide wildcard both select every skill, once.
+    # ``a-first`` sorts before the app's directory, so the catalog keeps its flat
+    # link; the wildcard must still find it through the namespaced link.
     monkeypatch.setattr(catalog_mod, "_disabled_app_names", lambda: frozenset())
     loader = opened(SkillsLoader(skills_path=skills_root, install_builtins=False))
     walked = loader._request_catalog_refresh("")
@@ -281,14 +281,18 @@ def test_app_skill_mapping_names_the_namespaced_path(
         return sorted(Path(e[1]).parent.name for e in loader._scoped_entries(None, only))
 
     assert selected(per_skill) == sorted(names)
-    assert selected(wildcard) == sorted(set(names) - {"a-first"})
+    assert sorted(e[0] for e in loader._iter_visible(None)).count("a-first") == 1
+    assert selected(wildcard) == sorted(names)
+    # A mapping that names one skill through the wildcard's shape picks only it.
+    assert selected([str(skills_root / "design-critique" / "a-*" / "SKILL.md")]) == ["a-first"]
+    # The flat-link sibling outside the app's directory is not an alias.
+    assert selected([str(skills_root / "other-app" / "*" / "SKILL.md")]) == []
 
     paragraph = doc_text.split("To map an installed app's skills", 1)[1]
     paragraph = paragraph.split("`file://<glob>`", 1)[0]
     for claim in (
         "`skill://~/.kiro/crew/skills/<app>/<skill>/SKILL.md`",
-        "Do not map an app with the wildcard\n`<app>/*/SKILL.md` yet",
-        "left out with no error",
+        "`skill://~/.kiro/crew/skills/<app>/*/SKILL.md`",
         "home, not `KIROCREW_HOME`",
         "same name as its app",
         "reserved\n(`auto`)",
@@ -296,3 +300,102 @@ def test_app_skill_mapping_names_the_namespaced_path(
         "Never map an app skill by its flat path.",
     ):
         assert claim in paragraph, f"§Resources app-skill rule lost {claim!r}"
+
+
+def test_app_wildcard_alias_never_resolves_a_project_row(tmp_path, monkeypatch):
+    """A project row sharing a leaf with an app skill is never resolved."""
+    import os
+
+    from kiro_crew.skill_runtime import catalog as catalog_mod
+    from kiro_crew.skills import _ScopedSkillEntry
+
+    skills_root = tmp_path / "skills"
+    (skills_root / "app" / "leaf").mkdir(parents=True)
+    (skills_root / "app" / "leaf" / "SKILL.md").write_text("x", encoding="utf-8")
+    project_file = tmp_path / "project" / ".kiro" / "skills" / "leaf" / "SKILL.md"
+    project_file.parent.mkdir(parents=True)
+    project_file.write_text("x", encoding="utf-8")
+    row = _ScopedSkillEntry("leaf", project_file, str(tmp_path / "project"))
+    pattern = str(skills_root / "app" / "*" / "SKILL.md")
+    resolved: list[str] = []
+    real = os.path.realpath
+
+    def spy(path, *args, **kwargs):
+        resolved.append(os.path.abspath(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(catalog_mod.os.path, "realpath", spy)
+    found = catalog_mod._alias_selected(
+        [row], [], [pattern], {pattern: None}, {pattern: pattern}, [skills_root], []
+    )
+    assert found == []
+    assert os.path.abspath(project_file) not in resolved
+
+
+def _alias_case(tmp_path):
+    """A skills root holding a flat ``a-first`` row and an ``app`` prefix to map."""
+    from kiro_crew.skills import _ScopedSkillEntry
+
+    skills_root = tmp_path / "skills"
+    target = tmp_path / "bundle" / "a-first"
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_text("x", encoding="utf-8")
+    (skills_root / "app").mkdir(parents=True)
+    row = _ScopedSkillEntry("a-first", skills_root / "a-first" / "SKILL.md", None)
+    pattern = str(skills_root / "app" / "*" / "SKILL.md")
+    return skills_root, target, row, pattern
+
+
+def test_app_wildcard_selects_a_flat_row_through_its_namespaced_link(tmp_path):
+    """A flat row is selected when ``<app>/<leaf>`` resolves to the same skill."""
+    from kiro_crew.skill_runtime import catalog as catalog_mod
+    from kiro_crew.testing.links import make_dir_link
+
+    skills_root, target, row, pattern = _alias_case(tmp_path)
+    make_dir_link(skills_root / "a-first", target)
+    make_dir_link(skills_root / "app" / "a-first", target)
+    found = catalog_mod._alias_selected(
+        [row], [], [pattern], {pattern: None}, {pattern: pattern}, [skills_root], []
+    )
+    assert found == [row]
+
+
+def test_app_wildcard_skips_an_alias_with_a_different_target(tmp_path):
+    """An ``<app>/<leaf>`` path that is a different skill does not select the flat row."""
+    from kiro_crew.skill_runtime import catalog as catalog_mod
+    from kiro_crew.testing.links import make_dir_link
+
+    skills_root, target, row, pattern = _alias_case(tmp_path)
+    make_dir_link(skills_root / "a-first", target)
+    other = skills_root / "app" / "a-first"
+    other.mkdir()
+    (other / "SKILL.md").write_text("y", encoding="utf-8")
+    found = catalog_mod._alias_selected(
+        [row], [], [pattern], {pattern: None}, {pattern: pattern}, [skills_root], []
+    )
+    assert found == []
+
+
+def test_app_wildcard_selects_a_flat_row_under_a_linked_loader_root(tmp_path):
+    """A resolved mapping selects a flat row spelled through a linked loader root."""
+    from kiro_crew import skills as sk
+    from kiro_crew.skill_runtime import catalog as catalog_mod
+    from kiro_crew.testing.links import make_dir_link
+
+    skills_root, target, _, _ = _alias_case(tmp_path)
+    make_dir_link(skills_root / "a-first", target)
+    make_dir_link(skills_root / "app" / "a-first", target)
+    linked_root = tmp_path / "linked-skills"
+    make_dir_link(linked_root, skills_root)
+    row = sk._ScopedSkillEntry("a-first", linked_root / "a-first" / "SKILL.md", None)
+    loader_roots = [linked_root]
+    real_roots = [real for root in loader_roots if (real := sk.validate_file_path(str(root)))]
+    assert len(real_roots) == 1 and not real_roots[0].startswith(str(linked_root))
+    pattern = str(Path(real_roots[0]) / "app" / "*" / "SKILL.md")
+    head = catalog_mod._canonical_prefix(pattern, None)
+    canonical = catalog_mod._glob_with_prefix(pattern, head)
+
+    found = catalog_mod._alias_selected(
+        [row], [], [pattern], {pattern: head}, {pattern: canonical}, loader_roots, real_roots
+    )
+    assert found == [row]
