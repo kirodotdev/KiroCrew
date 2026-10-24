@@ -33,6 +33,7 @@ from kiro_crew.sandbox_argv import (
 from kiro_crew.sandbox_cgroup import _probe_cgroup_scope
 from kiro_crew.sandbox_delegation import kiro_internal_sandbox_enabled
 from kiro_crew.sandbox_probe import _inside_kirocrew_sandbox, _macos_sandbox_state
+from kiro_crew.sandbox_python_env import run_as_provisioning
 from kiro_crew.sandbox_rlimit import run_limited
 from kiro_crew.sandbox_slice import cgroup_scope_argv
 from kiro_crew.sandbox_tiers import (
@@ -396,6 +397,7 @@ async def wrap_argv_async(
     exec_cwd: str = "",
     is_kiro_cli: bool | None = None,
     first_party_fixed_argv: bool = False,
+    provisioning: bool = False,
     _prepare: Callable[..., tuple[list[str], str | None]] | None = None,
 ) -> tuple[list[str], str | None]:
     """Cancellation-safe, off-loop sandbox preparation for async spawn paths.
@@ -407,6 +409,10 @@ async def wrap_argv_async(
     launcher/profile before propagating cancellation. ``_prepare`` preserves
     each caller's module-local test seam; production callers pass their imported
     :func:`wrap_argv`, and the default is this module's implementation.
+
+    ``provisioning`` marks a gateway-run step that installs Python packages into the
+    gateway's own environment; only such a spawn keeps write access to it (see
+    :func:`~kiro_crew.sandbox_python_env.run_as_provisioning`).
     """
     options: dict[str, Any] = {"mode": mode}
     if strip_python_env:
@@ -430,6 +436,8 @@ async def wrap_argv_async(
     if first_party_fixed_argv:
         options["first_party_fixed_argv"] = True
     prepare = functools.partial(wrap_argv if _prepare is None else _prepare, argv, **options)
+    if provisioning:
+        prepare = functools.partial(run_as_provisioning, prepare)
 
     def _prepare_wrapped() -> tuple[list[str], dict[str, str], str | None]:
         wrapped, cleanup = prepare()

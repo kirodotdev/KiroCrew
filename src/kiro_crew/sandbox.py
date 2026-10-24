@@ -80,6 +80,15 @@ from kiro_crew.constants import (  # noqa: F401
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES  # noqa: F401
 from kiro_crew.pinned_fs import fd_real_path  # noqa: F401
 from kiro_crew.platform import current_context  # noqa: F401
+from kiro_crew.sandbox_python_env import (  # noqa: F401
+    provisioning_spawn_requested,
+)
+from kiro_crew.sandbox_python_env import (  # noqa: F401
+    resolved_python_env_targets as _resolved_python_env_targets,
+)
+from kiro_crew.sandbox_python_env import (  # noqa: F401
+    run_as_provisioning,
+)
 from kiro_crew.terminal_safe import safe_terminal_line  # noqa: F401
 
 try:

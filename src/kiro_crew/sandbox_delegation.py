@@ -21,6 +21,7 @@ from kiro_crew.sandbox_argv import (
     _sandbox_env_unset_args,
 )
 from kiro_crew.sandbox_precreate import _DELEGATED_OVERLAP_LEAF_REASONS
+from kiro_crew.sandbox_python_env import resolved_python_env_targets as _resolved_python_env_targets
 from kiro_crew.sandbox_tiers import (
     _IN_SANDBOX_MARKER,
     _resolved_install_root_targets,
@@ -222,7 +223,8 @@ def delegated_workspace_exposes_sealed_target(
     example the strict no-alias config leaf ``cloud.json``, which names the container
     image a Fargate launch runs and therefore the image the task's execution role hands
     the model credential to. The gateway's packaged install tree
-    (:func:`_resolved_install_root_targets`) is a target too: it is the code the
+    (:func:`_resolved_install_root_targets`) and the Python environment around it
+    (:func:`_resolved_python_env_targets`) are targets too: they are the code the
     gateway runs on its next start.
 
     A spawn delegated to kiro-cli's internal sandbox (macOS with that sandbox
@@ -256,7 +258,8 @@ def delegated_workspace_exposes_sealed_target(
     )
     if not delegated:
         return None
-    install_targets = _resolved_install_root_targets()
+    env_targets = _resolved_python_env_targets()
+    install_targets = _resolved_install_root_targets() + env_targets
     targets = _resolved_kiro_agents_targets() + [
         os.path.join(str(config_dir()), leaf) for leaf in _DELEGATED_OVERLAP_LEAF_REASONS
     ]
@@ -280,8 +283,9 @@ def delegated_workspace_exposes_sealed_target(
         # refuses a workspace that contains it.
         remedy = f"Choose a workspace that does not contain '{target}'."
         if named is None and target in install_targets:
+            kind = "Python environment" if target in env_targets else "install directory"
             named = (
-                "Kiro Crew install directory",
+                f"Kiro Crew {kind}",
                 "the agent could change the code the gateway runs on its next start",
             )
             remedy = f"Choose a workspace outside '{target}'."
