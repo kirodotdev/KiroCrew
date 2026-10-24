@@ -17,6 +17,7 @@ from __future__ import annotations
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -155,6 +156,7 @@ ACP_BACKENDS_ACP_CLIENT_SPAWNABLE = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_PI,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_COPILOT,
     }
 )
 
@@ -232,6 +234,15 @@ ACP_BACKENDS_SERIAL_SESSION_STARTS = frozenset({ACP_BACKEND_KIRO})
 # from the id alone through its own session map, replaying the conversation as
 # ``user_message_chunk`` / ``agent_message_chunk`` updates before answering
 # (``test/fixtures/acp_frames/pi/session-load-live.jsonl``).
+#
+# copilot is a member: Copilot CLI 1.0.100 advertises ``loadSession`` and, in a
+# SECOND process, resolved a ``session/load`` from the id alone, replaying the
+# conversation as ``user_message_chunk`` / ``tool_call`` updates before answering
+# with ``configOptions`` and ``modes``; the next prompt answered out of the restored
+# history (``test/fixtures/acp_frames/copilot/session-load-live.jsonl``). The
+# restored session came back with ``allow_all`` as it was LEFT -- ``on`` after a
+# ``/allow-all on`` -- which is why the routing write runs after a load too. It is
+# NOT in ``ACP_BACKENDS_LOAD_WITHOUT_MODES``: that same load answer carries ``modes``.
 ACP_BACKENDS_HARNESS_OWNED_SESSIONS = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -240,6 +251,7 @@ ACP_BACKENDS_HARNESS_OWNED_SESSIONS = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_COPILOT,
     }
 )
 

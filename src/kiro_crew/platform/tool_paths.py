@@ -217,9 +217,11 @@ def is_workspace_edit_call(tool_kind: str, diff_path: str = "") -> bool:
     keep printing on one. This predicate is that narrower reading, so the badge
     consumer does not carry a private notion of an edit keyed on the ``kind``
     alone (the diff block still routes a kindless edit here) and the gates keep
-    theirs. Two readings, one module, both named for what they decide.
+    theirs. Two readings, one module, both named for what they decide. A
+    ``delete`` or ``move`` that ALSO carries a diff block (Copilot CLI's per-file
+    write prompt names one) is still not "easy to put back", so its kind wins.
     """
-    return tool_kind == "edit" or bool(diff_path)
+    return tool_kind == "edit" or (bool(diff_path) and tool_kind not in ("delete", "move"))
 
 
 def _is_literal_absolute(path: str) -> bool:

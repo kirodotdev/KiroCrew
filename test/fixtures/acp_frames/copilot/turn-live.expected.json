@@ -1,0 +1,759 @@
+[
+  {
+    "agent_capabilities": {
+      "auth": {
+        "logout": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "list": {}
+      }
+    },
+    "agent_version": "1.0.100",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot.",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Default agent mode for conversational interactions",
+            "name": "Agent",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#agent"
+          },
+          {
+            "description": "Plan mode for creating and executing multi-step plans",
+            "name": "Plan",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#plan"
+          },
+          {
+            "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)",
+            "name": "Autopilot",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "permissions",
+        "currentValue": "off",
+        "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs.",
+        "id": "allow_all",
+        "name": "Allow All",
+        "options": [
+          {
+            "description": "Automatically approve all tool, path, and URL requests",
+            "name": "On",
+            "value": "on"
+          },
+          {
+            "description": "Require approval for tool, path, and URL requests",
+            "name": "Off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "https://agentclientprotocol.com/protocol/session-modes#agent",
+      "ids": [
+        "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "https://agentclientprotocol.com/protocol/session-modes#plan",
+        "https://agentclientprotocol.com/protocol/session-modes#autopilot"
+      ]
+    },
+    "session_id": "copilot-session-1"
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot.",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Default agent mode for conversational interactions",
+            "name": "Agent",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#agent"
+          },
+          {
+            "description": "Plan mode for creating and executing multi-step plans",
+            "name": "Plan",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#plan"
+          },
+          {
+            "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)",
+            "name": "Autopilot",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "permissions",
+        "currentValue": "off",
+        "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs.",
+        "id": "allow_all",
+        "name": "Allow All",
+        "options": [
+          {
+            "description": "Automatically approve all tool, path, and URL requests",
+            "name": "On",
+            "value": "on"
+          },
+          {
+            "description": "Require approval for tool, path, and URL requests",
+            "name": "Off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      13717,
+      272000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "echo hi > made.txt",
+          "description": "Write hi to made.txt"
+        },
+        "title": "Write hi to made.txt",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"command\": \"echo hi > made.txt\",\n  \"description\": \"Write hi to made.txt\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "Write hi to made.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Allow once"
+          },
+          {
+            "id": "allow_always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject_once",
+            "label": "Deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "echo hi > made.txt",
+          "description": "Write hi to made.txt"
+        },
+        "shell_classified": true,
+        "title": "Write hi to made.txt",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"command\": \"echo hi > made.txt\",\n  \"description\": \"Write hi to made.txt\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-1",
+        "tool_final": true,
+        "tool_output": "\n<shellId: 0 completed with exit code 0>",
+        "tool_output_bytes": 40,
+        "tool_output_digest": "514b5e176085469045e3ae0129b238a94d01c8f4bb45e15f9efb86521e359f27",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      13806,
+      272000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 10,
+    "prompt_tokens": [
+      24975,
+      57,
+      20116,
+      4853
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      13859,
+      272000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "path": "/work/copilot-probe/notes.txt",
+          "view_range": [
+            1,
+            1
+          ]
+        },
+        "title": "Viewing /work/copilot-probe/notes.txt",
+        "tool_call_id": "call-2",
+        "tool_input": "{\n  \"path\": \"/work/copilot-probe/notes.txt\",\n  \"view_range\": [\n    1,\n    1\n  ]\n}",
+        "tool_kind": "read",
+        "wire_title": "Viewing /work/copilot-probe/notes.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-2",
+        "tool_final": true,
+        "tool_output": "{\"content\": \"banana split notes\", \"detailedContent\": \"\\ndiff --git a/work/copilot-probe/notes.txt b/work/copilot-probe/notes.txt\\nindex 0000000..0000000 100644\\n--- a/work/copilot-probe/notes.txt\\n+++ b/work/copilot-probe/notes.txt\\n@@ -1,1 +1,1 @@\\n banana split notes\\n\"}",
+        "tool_output_bytes": 273,
+        "tool_output_digest": "c06812ece7f38172615b92c5c80efc3deca9eb5e6952b634bb5057786dcca8a9",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      13928,
+      272000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "banana"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "banana",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 11,
+    "prompt_tokens": [
+      50147,
+      127,
+      45118,
+      5017
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      14003,
+      272000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "I"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "I",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " don"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " don",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "’t"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "’t",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " have"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " have",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " access"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " access",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " to"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " to",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " a"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " a",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " marker"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " marker",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " tool"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " tool",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " in"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " in",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " this"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " this",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " session"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " session",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": ".",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 12,
+    "prompt_tokens": [
+      62813,
+      198,
+      57728,
+      5070
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      14128,
+      272000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "echo bye > denied.txt",
+          "description": "Write bye to denied.txt"
+        },
+        "title": "Write bye to denied.txt",
+        "tool_call_id": "call-3",
+        "tool_input": "{\n  \"command\": \"echo bye > denied.txt\",\n  \"description\": \"Write bye to denied.txt\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "Write bye to denied.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Allow once"
+          },
+          {
+            "id": "allow_always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject_once",
+            "label": "Deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "echo bye > denied.txt",
+          "description": "Write bye to denied.txt"
+        },
+        "request_id": 1,
+        "shell_classified": true,
+        "title": "Write bye to denied.txt",
+        "tool_call_id": "call-3",
+        "tool_input": "{\n  \"command\": \"echo bye > denied.txt\",\n  \"description\": \"Write bye to denied.txt\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-3",
+        "tool_output": "{\"message\": \"The user rejected this tool call.\", \"code\": \"rejected\"}",
+        "tool_output_bytes": 68,
+        "tool_output_digest": "03679889631b89710474b9fa00636eadd3bf117dc70a0d72753d7cf90748a64d",
+        "tool_status": "failed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Info: Operation cancelled by user"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Info: Operation cancelled by user",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 13,
+    "prompt_tokens": [
+      75552,
+      251,
+      70391,
+      5143
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      13457,
+      272000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Compacted conversation history and removed 12 messages and 0 tokens."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Compacted conversation history and removed 12 messages and 0 tokens.",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 14,
+    "prompt_tokens": [
+      75552,
+      251,
+      70391,
+      5143
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      14390,
+      272000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "banana"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "banana",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 15,
+    "prompt_tokens": [
+      88674,
+      256,
+      82787,
+      5866
+    ],
+    "stop_reason": "end_turn"
+  }
+]

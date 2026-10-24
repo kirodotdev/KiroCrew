@@ -33,6 +33,7 @@ from kiro_crew.acp.harness import KasHarness, KiroHarness
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -54,6 +55,7 @@ from kiro_crew.acp.types import (
     PROVIDER_LABEL_BY_BACKEND,
     PROVIDER_LABEL_CLAUDE,
     PROVIDER_LABEL_CODEX,
+    PROVIDER_LABEL_COPILOT,
     PROVIDER_LABEL_DEEPSEEK,
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_GOOSE,
@@ -551,6 +553,7 @@ def test_every_known_backend_has_a_label() -> None:
         (ACP_BACKEND_PI, PROVIDER_LABEL_PI),
         (ACP_BACKEND_GOOSE, PROVIDER_LABEL_GOOSE),
         (ACP_BACKEND_DEEPSEEK, PROVIDER_LABEL_DEEPSEEK),
+        (ACP_BACKEND_COPILOT, PROVIDER_LABEL_COPILOT),
     ):
         assert labels[backend] == label
 
@@ -814,7 +817,7 @@ def test_codex_resolves_its_own_adapter_and_declares_its_own_handshake() -> None
 #: harness. Declared rather than discovered so a DELETED splice fails the test below
 #: -- codex is absent because this PR moved its seam onto the harness, and kiro-cli
 #: has none (``--agent`` carries its servers).
-_MCP_SEAM_HOOKS = ["claude", "deepseek", "goose", "opencode", "pi"]
+_MCP_SEAM_HOOKS = ["claude", "copilot", "deepseek", "goose", "opencode", "pi"]
 
 
 def test_each_mcp_seam_is_spliced_only_for_its_own_harness() -> None:

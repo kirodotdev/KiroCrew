@@ -18,12 +18,15 @@ in ``VOCABULARY_PATHS``, which is what lets its ``ACP_BACKEND*`` names be define
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from enum import Enum
 from typing import FrozenSet
 
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -379,6 +382,10 @@ ACP_BACKEND_ROUTING: dict = {
     # extension Crew composes, which is this member, and the frame corpus carries the
     # live capture (``test/fixtures/acp_frames/deepseek/permission-request-live``).
     ACP_BACKEND_DEEPSEEK: Routing.VERIFIED_GATE_EXTENSION,
+    # Copilot CLI asks per tool call unless its own allow-all is on, and it states
+    # that switch as an ACP v1 session config option (``allow_all``) on every
+    # session/new and session/load -- Codex's mechanism, applied the same way.
+    ACP_BACKEND_COPILOT: Routing.SESSION_CONFIG,
 }
 
 
@@ -396,6 +403,14 @@ ACP_BACKEND_ROUTING: dict = {
 #: token store.
 ACP_BACKEND_PERMISSION_CONFIG: dict = {
     ACP_BACKEND_CODEX: ("mode", "read-only"),
+    # Copilot CLI's ``allow_all`` option: ``off`` is "Require approval for tool,
+    # path, and URL requests", its own default -- but a user default (the
+    # ``COPILOT_ALLOW_ALL`` environment variable, ``--allow-all`` in a wrapper, a
+    # restored session left on) can turn it on, so Crew writes ``off`` rather than
+    # trusting the default. Measured on Copilot CLI 1.0.100. Passive reads inside
+    # the session's directory run without asking, which is the same residual Codex
+    # has and the same OS credential mask compensates for.
+    ACP_BACKEND_COPILOT: ("allow_all", "off"),
 }
 
 
@@ -485,6 +500,174 @@ ACP_BACKEND_GATE_READBACK: dict = {
     ACP_BACKEND_PI: Readback.COMMAND_REGISTRY,
     ACP_BACKEND_DEEPSEEK: Readback.LOAD_MARKER,
 }
+
+
+#: Harness id -> the slash commands Crew lets reach it as the start of a prompt.
+#:
+#: A member's prompt handler RUNS a prompt that begins with ``/<name>`` as its own
+#: command instead of sending it to the model, and some of those commands move the
+#: harness's permission state with no frame Crew can act on in time. Copilot CLI
+#: 1.0.100 is the member, measured: a prompt of ``/allow-all on``, ``/yolo`` (an
+#: alias its ``available_commands_update`` does not even list) or ``/permissions
+#: allow-all`` turned its ``allow_all`` option on, and the ``config_option_update``
+#: saying so arrived only on the NEXT config write, after tools would already have
+#: run unasked. Its parser strips leading whitespace (space, tab, newline, NBSP,
+#: ideographic space all measured), folds case (``/YOLO``), takes the token up to
+#: the next whitespace as the name, and does NOT run a token carrying other
+#: punctuation (``/yolo.``, ``/yolo/x``, ``//yolo``, ``/ yolo`` all reached the
+#: model). A prompt, though, is text anyone upstream of the harness can author --
+#: a channel message, a sub-agent task another model wrote, a cron body -- so the
+#: command a prompt may start with is an ALLOWLIST: the ones that only read or
+#: compact. ``/plan`` and ``/research`` are left out: plan mode ends in an offer to
+#: continue in autopilot, which this build has not measured over ACP. Every other command-shaped first token is refused before the wire, so a
+#: command this build has never seen fails closed rather than open. The
+#: ``allow_all`` write at session start (``ACP_BACKEND_PERMISSION_CONFIG``) is the
+#: other half: it is what undoes a value a restored session was left in.
+ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST: dict = {
+    ACP_BACKEND_COPILOT: frozenset(
+        {
+            "compact",
+            "context",
+            "env",
+            "init",
+            "list-dirs",
+            "rename",
+            "review",
+            "security-review",
+            "usage",
+        }
+    ),
+}
+
+#: Harness id -> the session modes that a SESSION_CONFIG member must never be seen in.
+#:
+#: The routing write proves the permission option's value when a session opens, and
+#: the prompt allowlist keeps Crew's own prompts from moving it. Neither holds a
+#: session there if the HARNESS moves itself, which is why a member here is watched
+#: for the whole session (``AcpClient._tripwire_session_config``): a
+#: ``config_option_update`` reporting the permission option off its required value,
+#: or a ``current_mode_update`` naming one of these modes, stops the harness. Copilot
+#: CLI 1.0.100's ``autopilot`` mode is described by the harness as one that "enables
+#: allow-all and runs until task completion without user interaction", and a
+#: ``mode`` write of it was measured turning ``allow_all`` on. Crew never writes a
+#: mode to this harness, so seeing it means something other than Crew moved it.
+ACP_BACKEND_FORBIDDEN_MODES: dict = {
+    ACP_BACKEND_COPILOT: frozenset(
+        {"https://agentclientprotocol.com/protocol/session-modes#autopilot"}
+    ),
+}
+
+
+def session_config_drift_issue(backend: str, update: object) -> str:
+    """Why a ``session/update`` *update* shows *backend* leaving its routed state, or ``""``.
+
+    Pure. A backend with no :data:`ACP_BACKEND_FORBIDDEN_MODES` row is never refused,
+    so this reads nothing for a harness outside the table (harness-parity H13).
+    """
+    forbidden = ACP_BACKEND_FORBIDDEN_MODES.get(backend)
+    if forbidden is None or not isinstance(update, dict):
+        return ""
+    kind = update.get("sessionUpdate")
+    if kind == "current_mode_update":
+        mode = update.get("currentModeId")
+        if isinstance(mode, str) and mode in forbidden:
+            return f"the harness switched itself to mode {mode!r}, which approves tools on its own"
+        return ""
+    if kind != "config_option_update":
+        return ""
+    option_id, required = ACP_BACKEND_PERMISSION_CONFIG.get(backend, ("", ""))
+    options = update.get("configOptions")
+    if not option_id or not isinstance(options, list):
+        return ""
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        if option.get("id") == option_id and option.get("currentValue") != required:
+            return (
+                f"the harness reported {option_id}={option.get('currentValue')!r} mid-session; "
+                f"Kiro Crew requires {required!r}"
+            )
+        if option.get("category") == "mode" and option.get("currentValue") in forbidden:
+            return (
+                f"the harness reported mode {option.get('currentValue')!r} mid-session, "
+                "which approves tools on its own"
+            )
+    return ""
+
+
+#: The command-name grammar a member's parser runs: a word of letters, digits, ``-``
+#: and ``_``. A first token outside it (a path such as ``/etc/hosts``, ``/yolo.``) is
+#: not run as a command, so it is not refused either.
+_PROMPT_COMMAND_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+#: What may precede the slash and still leave a command for the harness to run. Its
+#: parser strips Unicode whitespace; the zero-width format characters are stripped
+#: here too although a measured ``\u200b/allow-all on`` did NOT run, because the
+#: cost of reading one as a command is a refused prompt and the cost of the
+#: opposite mistake is a gate turned off.
+_PROMPT_LEADING_FILLER = re.compile(r"^[\s\u200b\u200c\u200d\u2060\ufeff]*")
+
+
+def prompt_command_issue(backend: str, texts: Iterable[str]) -> str:
+    """Why *backend* must not be sent a prompt made of *texts*, or ``""``.
+
+    Pure and harness-neutral: it reads :data:`ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST`,
+    so a backend without a row is never refused. Every text block is checked, not
+    only the first, so the order a prompt builder lays blocks out in cannot decide
+    which one the harness parses.
+    """
+    allowed = ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST.get(backend)
+    if allowed is None:
+        return ""
+    for text in texts:
+        if not isinstance(text, str):
+            continue
+        body = _PROMPT_LEADING_FILLER.sub("", text, count=1)
+        if not body.startswith("/"):
+            continue
+        rest = body[1:]
+        if not rest or rest[0].isspace():
+            continue
+        if not rest[0].isascii():
+            # A character right after the slash that the two runtimes may not agree
+            # on (``/\ufeffyolo``): the harness may strip it and run the command.
+            return (
+                f"'/' is followed by {rest[0]!r}, which the harness may strip before "
+                f"reading a command name, so the prompt could run as the harness's own "
+                f"command rather than reach the model. To send the text to the model, "
+                f"start it without the slash."
+            )
+        # The name is read the way the harness reads it: the longest run of name
+        # characters. What follows decides whether that run is a command. Nothing, or
+        # whitespace -- U+FEFF included, which JavaScript's ``\s`` matches and
+        # Python's ``split()`` does not -- ends a command name; an ASCII character
+        # that is not whitespace (``/yolo.``, ``/etc/hosts``) makes it a path, never
+        # run; any other character is one the two runtimes may disagree about, so the
+        # prompt is refused rather than guessed at.
+        match = _PROMPT_COMMAND_NAME.match(rest)
+        if match is None:
+            continue
+        token = match.group(0)
+        following = rest[match.end() : match.end() + 1]
+        if following and not (following.isspace() or following == "\ufeff"):
+            if following.isascii():
+                continue
+            return (
+                f"'/{token}' is followed by {following!r}, a character the harness may "
+                f"read as the end of a command name, so it could run as the harness's "
+                f"own command rather than reach the model. Kiro Crew forwards only these "
+                f"commands to it: {', '.join('/' + name for name in sorted(allowed))}. "
+                f"To send the text to the model, start it without the slash."
+            )
+        if token.casefold() in allowed:
+            continue
+        return (
+            f"'/{token}' would run as the harness's own command rather than reach the "
+            f"model, and Kiro Crew forwards only these commands to it: "
+            f"{', '.join('/' + name for name in sorted(allowed))}. Permissions are set "
+            f"with Kiro Crew's own approval mode. To send the text to the model, "
+            f"start it without the slash."
+        )
+    return ""
 
 
 def routing_for(backend: str) -> "Routing":

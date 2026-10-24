@@ -757,6 +757,29 @@ def self_served_install_command(backend: str) -> str:
     return launch_for(backend).install_command
 
 
+def self_served_wrong_version(backend: str) -> str:
+    """The release *backend*'s binary would run, when it is not the one Crew verified.
+
+    ``""`` when the binary does not resolve, when its release cannot be read, when it
+    is the verified one, and for every harness with no single verified release. Only
+    Copilot CLI has one (``COPILOT_VERIFIED_VERSION``): a session on any other release
+    is refused at the handshake, so an install row that only looked for the binary
+    would call a harness ready that refuses every chat. Read from the install's own
+    manifest, never by running it.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_COPILOT, COPILOT_VERIFIED_VERSION
+
+    if backend == ACP_BACKEND_COPILOT:
+        from kiro_crew.acp.client import _resolve_self_served_bin
+        from kiro_crew.acp.harness.copilot import copilot_installed_version
+
+        binary, _searched_path = _resolve_self_served_bin(backend)
+        version = copilot_installed_version(binary) if binary else ""
+        if version and version != COPILOT_VERIFIED_VERSION:
+            return version
+    return ""
+
+
 def pi_components_resolve() -> tuple[bool, bool]:
     """``(adapter, pi_cli)`` -- the pi backend's two halves, separately.
 

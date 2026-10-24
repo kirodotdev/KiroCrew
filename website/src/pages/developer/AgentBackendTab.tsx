@@ -1057,6 +1057,11 @@ export function AgentBackendTab() {
   const status = (value: string): string => {
     const row = probe(value)
     if (buildExcluded(value)) return i18nT('pages.developer.agentBackendTab.not_offered_by_this_build')
+    if (row?.installed === 'missing' && row.found_version)
+      return i18nT('components.kiroPrerequisiteGate.agent_wrong_version_detail', {
+        name: nameOf(value),
+        version: row.found_version,
+      })
     if (row?.installed === 'missing')
       return i18nT('pages.developer.agentBackendTab.missing_components', {
         components: row.missing_components.join(', '),

@@ -22,6 +22,7 @@ from typing import Mapping
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -378,6 +379,15 @@ def effort_config_option_levels(backend: str, values: list[str]) -> list[str]:
 # values are JSON-encoded ``[provider, model]`` pairs drawn from the harness's live
 # service catalog. Nothing can spell one of those from a stored bare model name, so
 # a pick that did not come from the capture is a pick the session refuses.
+#
+# ``ACP_BACKEND_COPILOT`` is a member for the capture half, and for what membership
+# keeps OFF its picker. Copilot CLI 1.0.100 advertises no model select and no
+# ``models`` block on ``session/new``; ``/model list`` answered "only Auto mode is
+# available on your plan" on the recording account. A non-member's picker is read
+# from kiro-cli's ``--list-models`` catalog, which names models this harness does not
+# serve, so membership is what makes ``GET /api/models`` answer from copilot's own
+# namespace -- ``auto`` alone until a session advertises more, which a session on a
+# plan with model choice can, through the same capture every member uses.
 ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -386,6 +396,7 @@ ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_COPILOT,
     }
 )
 
@@ -501,6 +512,11 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     # other harness spells, so a shared bucket would offer the picker ids that only
     # one backend can accept.
     ACP_BACKEND_DEEPSEEK: "deepseek",
+    # copilot gets its own key: its ids are the Copilot service's catalog
+    # (``auto``, ``claude-sonnet-4.5``, ``gpt-5.4`` ...) as that account is entitled
+    # to them, so sharing the ``acp`` bucket would let a Copilot session replace the
+    # list the picker offers for kiro-cli with models kiro-cli cannot serve.
+    ACP_BACKEND_COPILOT: "copilot",
 }
 
 

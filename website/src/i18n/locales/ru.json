@@ -7641,6 +7641,8 @@
       "agent_not_installed": "Не установлен",
       "agent_restart_needed": "Установлен, пока не активен",
       "agent_unverified": "Проверка не удалась",
+      "agent_wrong_version": "Неверная версия",
+      "agent_wrong_version_detail": "На этом хосте {{name}} {{version}}, а {{productName}} эту версию не проверял. Установи проверенную версию, чтобы им пользоваться.",
       "agent_install_on_host": "Установи {{name}} на хост шлюза.",
       "agent_missing_components": "Не хватает компонентов: {{components}}",
       "agent_install_then_check": "После установки нажми «Проверить снова», чтобы шлюз снова поискал {{name}}.",

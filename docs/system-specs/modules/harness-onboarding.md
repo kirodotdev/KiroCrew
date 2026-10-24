@@ -908,3 +908,55 @@ per-backend facts every harness has supplied — its spawn plan, its spawn label
 its stderr label — now one adapter file (`acp/harness/<name>.py`) and one registry
 row (`process_adapter_for`) rather than three sites in `acp/client.py`. Those are the
 only recurring edit points left that a membership set does not already absorb.
+
+## Worked example: GitHub Copilot CLI
+
+The run to read for what a harness's OWN repository configuration costs, and for a
+permission switch the harness reports too late to act on. It is in
+`ACP_BACKENDS_KNOWN` and it IS selectable.
+
+| Stage | State |
+|---|---|
+| 1 vocabulary | Done — `ACP_BACKEND_COPILOT`, `PROVIDER_LABEL_COPILOT`, policy name mapped, its own `copilot` model namespace. |
+| 2 capability sets | Decided for every set against Copilot CLI **1.0.100**. In the session MCP array, `ACP_BACKENDS_COMPACT`, `ACP_BACKENDS_INLINE_COMPACTION`, `ACP_BACKENDS_HARNESS_OWNED_SESSIONS`, `ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP`, `ACP_BACKENDS_LOCAL_CLEAR` and the advertised-model capture. Not a steering member: a second `session/prompt` mid-turn REPLACED the first (`stopReason: cancelled`), and `_session/steering` answered `-32601`. Not in the zero-tool ban: a file view inside the session's own directory runs without asking. |
+| 3 spawn path | Done — one native binary, `copilot --acp --stdio --no-auto-update --disable-builtin-mcps --disallow-temp-dir`, off the shared self-served ladder (`acp/harness/copilot.py`). Its stdio MCP servers ride a launch file, not the wire array. |
+| 4 handshake | Done — integer `1`. |
+| 5 auth declaration | Done — `own_credential_file`, one leaf (`~/.copilot/config.json`), `COPILOT_HOME` re-anchored, spared from the mask. It also falls back to the GitHub CLI's own login, which is how the corpus was recorded. |
+| 6 install probe | Done — no probe of its own; the self-served record names `copilot` and `npm i -g @github/copilot@1.0.100`, pinned to `COPILOT_VERIFIED_VERSION` so a new install lands on the verified release. |
+| 7 selectability | **Selectable**, on `Routing.SESSION_CONFIG` — Codex's mechanism, `allow_all=off`. |
+| 8 live spill | Reached. A corpus live for all seven classes (`test/fixtures/acp_frames/copilot/`), and a dashboard session that streamed, asked before its shell call, left a declined call's file unwritten, served `auto` alone on the model picker and answered from its restored history after a gateway restart. |
+| verified range | Copilot CLI **1.0.100** exactly (`COPILOT_VERIFIED_VERSION`, the one constant the install hint and the handshake refusal both read). Fail closed on another release: the `allow_all` read-back, the `allow_all`/`autopilot` tripwire, the edit-target seeding (a frame naming no readable absolute target is denied) and the MCP identity recovery (an ambiguous title is refused). Fail open: the prompt slash-command allowlist, the project-config refusal list and the dropped child env vars, which are lists read off this release's bundle. Because those three would fail open, a session on any other release, or on one that names no version, is refused at the handshake with the pinned install command (`_refuse_unverified_copilot_version` reads `agentInfo.version` off `initialize`), so upgrading Copilot CLI turns the harness off until Crew verifies the new release. The refusal is two sentences: the release found, then the install command. The install row says the same before any chat is started: the probe reads the release out of `@github/copilot`'s own `package.json` (`copilot_installed_version`, never by running the binary), and an npm install on another release is reported `missing` with `found_version` set, which the Agent Harness list shows as **Wrong version** beside the pinned install command. A build with no readable manifest stays `installed`, and the handshake decides. Raising the range is one PR by whoever maintains the harness: re-record the frame corpus against the new release (`test/fixtures/acp_frames/copilot/README.md`), re-read its bundle for the three lists and re-drive the repo-hook refusal, then bump `COPILOT_VERIFIED_VERSION` (the install hint follows it). |
+
+Three things this run produced that the checklist did not ask for.
+
+**The first is a switch the harness reports too late.** A prompt beginning `/yolo`,
+`/allow-all` or `/permissions allow-all` turns `allow_all` on, and the
+`config_option_update` that says so arrives only on the NEXT config write — after the
+tools it unlocked would already have run. So the route is held in three places rather
+than one: a prompt whose first token is a slash command outside a short allowlist is
+refused before the wire (`ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST`), the write's own
+answer is read back, and a frame or config answer reporting `allow_all` on or the
+`autopilot` mode stops the harness, in a turn's reader or before the next prompt
+(`ACP_BACKEND_FORBIDDEN_MODES`). A permission state a harness can move by prompt text
+is a prompt-path concern, not only a session-start one.
+
+**The second is configuration the REPOSITORY brings.** An independent review read the
+harness's bundle and asked whether a repository's hooks load; driven live, a
+`.github/hooks/*.json` ran its `sessionStart` and `preToolUse` commands with no
+permission request, in a trusted folder and an untrusted one, and the harness's own
+`disableAllHooks` did not stop it. No switch reachable from Crew turns that off, so a
+session is refused where such a file exists, together with the other project files the
+harness acts on — a workspace `.mcp.json`, extensions, plugins, LSP configs
+(`copilot_repo_config_issue`) — the fail-closed answer, chosen over a documented
+residual. Ask what a harness reads out
+of the project it is pointed at, and drive it, before trusting its permission prompt
+to be the only door.
+
+**The third is a credential file with a short life.** The launch MCP config carries a
+session credential, so it is written into the data home's `auth-store-staging`
+directory -- masked whole in every agent sandbox and fenced from agents' file tools,
+the place the gateway already stages its own credential-bearing files -- and handed
+back read-only to the one Copilot CLI child it is for (`extra_expose_files`). It is
+removed as soon as `initialize` answers (measured safe: the harness reads it at boot),
+and on a failed handshake, a failed write or a refused spawn too. An existing masked
+directory whose purpose fits was the answer, not a new entry on a sandbox list.

@@ -7,7 +7,7 @@ are twelve such points, and a host that answers eleven of them is a host that
 starts and then behaves like a different one.
 
 ``AcpClient`` starts one process per session, and the hosts it launches that way
-(claude-agent-acp, OpenCode, goose, pi, the DeepSeek Harness) each answer the spawn
+(claude-agent-acp, OpenCode, goose, pi, the DeepSeek Harness, Copilot CLI) each answer the spawn
 half of that contract in their own file too -- binary, argv, labels, masks, gates
 and the child's environment -- so adding or fixing one is one adapter file.
 
@@ -33,6 +33,7 @@ from kiro_crew.acp.harness.base import (
 )
 from kiro_crew.acp.harness.claude import ClaudeLaunch
 from kiro_crew.acp.harness.codex import CodexHarness
+from kiro_crew.acp.harness.copilot import CopilotLaunch
 from kiro_crew.acp.harness.deepseek import DeepseekLaunch
 from kiro_crew.acp.harness.goose import GooseLaunch
 from kiro_crew.acp.harness.kas import KasHarness
@@ -42,6 +43,7 @@ from kiro_crew.acp.harness.pi import PiLaunch
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -53,6 +55,7 @@ from kiro_crew.acp.types import (
 __all__ = [
     "ClaudeLaunch",
     "CodexHarness",
+    "CopilotLaunch",
     "DeepseekLaunch",
     "GooseLaunch",
     "HarnessAdapter",
@@ -114,6 +117,7 @@ _PROCESS_ADAPTERS: dict[str, type[ProcessAdapter]] = {
     ACP_BACKEND_GOOSE: GooseLaunch,
     ACP_BACKEND_PI: PiLaunch,
     ACP_BACKEND_DEEPSEEK: DeepseekLaunch,
+    ACP_BACKEND_COPILOT: CopilotLaunch,
 }
 
 

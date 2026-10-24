@@ -18,6 +18,7 @@ from __future__ import annotations
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -212,6 +213,12 @@ ACP_BACKENDS_STEERING_REQUEST = frozenset(
 #
 # Not ``ACP_BACKENDS_STEER``: a deny notice cannot ride this verb, because the
 # denial already ended the turn it was meant for.
+#
+# copilot is NOT a member, on measurement against Copilot CLI 1.0.100: a second
+# ``session/prompt`` sent four seconds into a running turn REPLACED it -- the first
+# request answered ``stopReason: cancelled`` the moment the second arrived, and only
+# the second ran -- so it interrupts rather than joins. It is in no steer set:
+# ``_session/steering`` answered ``-32601``, and it advertises no other channel.
 ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 
 # Backends that can serve a MANUAL ``/compact`` (the user-typed slash command).
@@ -311,6 +318,15 @@ ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 # ``session/prompt`` with ``rawOutput`` ``preTokens`` 31250 -> ``postTokens`` 4148,
 # then ``end_turn`` with no status frame. The next ordinary turn read 26171.
 #
+# copilot is a member on a LIVE drive against Copilot CLI 1.0.100. Over three large
+# turns its ``usage_update.used`` climbed 22058 -> 30579 -> 39041. A ``/compact``
+# prompt then answered its own ``Compacted conversation history ...`` chunk, read
+# ``used: 19913`` and returned ``stopReason: end_turn`` with no status frame after
+# it, and the next ORDINARY turn read 20843, below the pre-compact peak
+# (``test/fixtures/acp_frames/copilot/compact-live.jsonl``). ``compact`` is in its
+# ``available_commands_update`` and in ``ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST``, so
+# the prompt guard lets it through.
+#
 # deepseek is the one non-member:
 # :data:`ACP_BACKENDS_CONTEXT_RECYCLE` carries the consequence, because deepseek
 # reports no compaction at all, so a decline leaves its context unbounded.
@@ -323,6 +339,7 @@ ACP_BACKENDS_COMPACT = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_KAS,
         ACP_BACKEND_PI,
+        ACP_BACKEND_COPILOT,
     }
 )
 
@@ -449,6 +466,9 @@ ACP_BACKENDS_CONTEXT_RECYCLE = frozenset({ACP_BACKEND_DEEPSEEK})
 # pi is a member on the capture recorded on ``ACP_BACKENDS_COMPACT``: its ``/compact``
 # turn carries the ``Compaction completed`` chunk and ends with ``stopReason:
 # end_turn``, with no status frame after it.
+# copilot is a member on its capture recorded on ``ACP_BACKENDS_COMPACT``: the
+# ``/compact`` turn's own chunk and ``usage_update`` land before its ``end_turn``,
+# and nothing follows it.
 ACP_BACKENDS_INLINE_COMPACTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -456,6 +476,7 @@ ACP_BACKENDS_INLINE_COMPACTION = frozenset(
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_PI,
+        ACP_BACKEND_COPILOT,
     }
 )
 
@@ -535,6 +556,10 @@ ACP_BACKENDS_NATIVE_TODOS = frozenset({ACP_BACKEND_CLAUDE})
 #   steering, follow-up, changelog; anything else goes to ``session.prompt``.
 # - deepseek: the ``dsh-acp`` bridge admits every prompt block as a user message
 #   with no slash parsing at all.
+# - copilot: Copilot CLI 1.0.100's ``available_commands_update`` lists no ``clear``,
+#   and its ACP reference says a command it does not list is sent to the model as
+#   an ordinary prompt. ``clear`` is also outside its prompt-command allowlist, so a
+#   ``/clear`` that reached the client would be refused rather than sent.
 #
 # goose is NOT a member: its prompt handler runs ``/clear`` itself
 # (``CompactionOperation.run_command`` returns an empty conversation), so it keeps
@@ -548,6 +573,7 @@ ACP_BACKENDS_LOCAL_CLEAR = frozenset(
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_COPILOT,
     }
 )
 

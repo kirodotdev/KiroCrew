@@ -7393,6 +7393,8 @@
       "agent_not_installed": "Nicht installiert",
       "agent_restart_needed": "Installiert, noch nicht aktiv",
       "agent_unverified": "Prüfung fehlgeschlagen",
+      "agent_wrong_version": "Falsche Version",
+      "agent_wrong_version_detail": "Auf diesem Host ist {{name}} {{version}} installiert, das {{productName}} nicht geprüft hat. Installiere die geprüfte Version, um es zu verwenden.",
       "agent_install_on_host": "Installiere {{name}} auf dem Gateway-Host.",
       "agent_missing_components": "Fehlende Komponenten: {{components}}",
       "agent_install_then_check": "Drücke nach der Installation „Erneut prüfen“, damit das Gateway erneut nach {{name}} sucht.",

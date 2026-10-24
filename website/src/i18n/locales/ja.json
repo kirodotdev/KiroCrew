@@ -7269,6 +7269,8 @@
       "agent_not_installed": "未インストール",
       "agent_restart_needed": "インストール済み、まだ有効ではありません",
       "agent_unverified": "確認に失敗",
+      "agent_wrong_version": "バージョンが違います",
+      "agent_wrong_version_detail": "このホストの {{name}} は {{version}} で、{{productName}} が検証していないバージョンです。使用するには検証済みのリリースをインストールします。",
       "agent_install_on_host": "ゲートウェイホストに {{name}} をインストールします。",
       "agent_missing_components": "不足しているコンポーネント：{{components}}",
       "agent_install_then_check": "インストール後に「再度確認」を押すと、ゲートウェイが {{name}} をもう一度探します。",

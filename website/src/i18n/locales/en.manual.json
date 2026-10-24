@@ -2745,6 +2745,8 @@
       "agent_not_installed": "Not installed",
       "agent_restart_needed": "Installed, not active yet",
       "agent_unverified": "Check failed",
+      "agent_wrong_version": "Wrong version",
+      "agent_wrong_version_detail": "This host has {{name}} {{version}}, which {{productName}} has not verified. Install the verified release to use it.",
       "agent_install_on_host": "Install {{name}} on the gateway host.",
       "agent_missing_components": "Missing: {{components}}",
       "agent_install_then_check": "After installing, press Check again so the gateway looks for {{name}} again.",

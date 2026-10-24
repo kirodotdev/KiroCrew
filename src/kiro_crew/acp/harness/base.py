@@ -145,6 +145,7 @@ class ProcessSession(Protocol):
     _pi_steer_channel: Any
     _deepseek_gate_nonce: str
     _deepseek_read_only_issue: str
+    _copilot_mcp_config_path: str
 
     def _agent_env_for_spawn(self) -> dict[str, str]:
         """``agent.env`` for the spawn in progress, read at most once per spawn: a
@@ -165,6 +166,9 @@ class ProcessSession(Protocol):
 
     def _pooled_mcp_servers(self) -> list[dict[str, Any]]:
         """The pooled broker stubs the session/new array appends (blocking)."""
+
+    async def _discard_copilot_mcp_config(self) -> None:
+        """Remove this session's Copilot CLI launch MCP config, if one was written."""
 
     async def _seed_session_settings(self) -> None:
         """Seed the session's own settings file, best-effort."""

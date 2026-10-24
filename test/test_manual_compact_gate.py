@@ -29,6 +29,7 @@ from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -63,6 +64,7 @@ class TestCompactCapabilitySet:
                 ACP_BACKEND_GOOSE,
                 ACP_BACKEND_KAS,
                 ACP_BACKEND_PI,
+                ACP_BACKEND_COPILOT,
             }
         )
         # deepseek is the one known harness outside the set: its ACP surface carries

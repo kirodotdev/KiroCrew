@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import threading
 from unittest.mock import MagicMock
 
@@ -262,6 +263,100 @@ class TestSelfServedVerdicts:
         assert state.installed == probe.MISSING
         assert state.missing_components == (launch_for(backend).binary,)
         assert state.install_command == driver.self_served_install_command(backend)
+
+
+def _npm_copilot(root, version: str, *, name: str = "@github/copilot") -> str:
+    """Lay down an npm global install of Copilot CLI under *root*; return its bin link."""
+    package = root / "lib" / "node_modules" / "@github" / "copilot"
+    package.mkdir(parents=True)
+    (package / "package.json").write_text(json.dumps({"name": name, "version": version}))
+    (package / "npm-loader.js").write_text("// loader\n")
+    bin_dir = root / "bin"
+    bin_dir.mkdir()
+    link = bin_dir / "copilot"
+    link.symlink_to(package / "npm-loader.js")
+    return str(link)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="npm bin links are symlinks on POSIX")
+class TestCopilotWrongVersion:
+    """UX: a Copilot CLI on any release but the verified one refuses every chat at
+    the handshake, so the row must not call it Installed.
+
+    Read from the install's own manifest, so each case lays down a real npm layout
+    and lets the spawn's resolver find it.
+    """
+
+    def _probe(self, monkeypatch, binary: str):
+        from kiro_crew.acp import client
+        from kiro_crew.acp_backends import ACP_BACKEND_COPILOT
+
+        _stub_resolvers(monkeypatch, self_served={ACP_BACKEND_COPILOT: (binary, "/usr/bin")})
+        monkeypatch.setattr(client, "_self_served_bin_caches", {})
+        return probe.probe_backend(ACP_BACKEND_COPILOT)
+
+    def test_another_release_is_missing_the_verified_one(self, monkeypatch, tmp_path):
+        from kiro_crew.agent_sdk.backends import COPILOT_VERIFIED_VERSION
+
+        state = self._probe(monkeypatch, _npm_copilot(tmp_path, "1.0.103"))
+        assert state.installed == probe.MISSING
+        assert state.found_version == "1.0.103"
+        assert state.missing_components == (f"copilot {COPILOT_VERIFIED_VERSION}",)
+        assert state.install_command == f"npm i -g @github/copilot@{COPILOT_VERIFIED_VERSION}"
+
+    def test_the_verified_release_is_installed(self, monkeypatch, tmp_path):
+        from kiro_crew.agent_sdk.backends import COPILOT_VERIFIED_VERSION
+
+        state = self._probe(monkeypatch, _npm_copilot(tmp_path, COPILOT_VERIFIED_VERSION))
+        assert state.installed == probe.INSTALLED
+        assert state.found_version == ""
+
+    def test_an_unreadable_release_is_not_a_wrong_one(self, monkeypatch, tmp_path):
+        """A standalone build carries no manifest: the handshake still decides."""
+        standalone = tmp_path / "copilot"
+        standalone.write_text("#!/bin/sh\n")
+        assert self._probe(monkeypatch, str(standalone)).installed == probe.INSTALLED
+
+    def test_another_packages_manifest_is_not_read(self, monkeypatch, tmp_path):
+        state = self._probe(monkeypatch, _npm_copilot(tmp_path, "9.9.9", name="not-copilot"))
+        assert state.installed == probe.INSTALLED
+
+    def test_a_windows_shim_reads_the_prefix_package(self, tmp_path):
+        from kiro_crew.acp.harness.copilot import copilot_installed_version
+
+        package = tmp_path / "node_modules" / "@github" / "copilot"
+        package.mkdir(parents=True)
+        (package / "package.json").write_text(
+            json.dumps({"name": "@github/copilot", "version": "1.0.102"})
+        )
+        (tmp_path / "copilot.cmd").write_text("@echo off\n")
+        assert copilot_installed_version(str(tmp_path / "copilot.cmd")) == "1.0.102"
+
+    @pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_SELF_SERVED_ACP - {"copilot"}))
+    def test_no_other_harness_reads_a_version(self, backend, monkeypatch):
+        from kiro_crew.agent_sdk.drivers import acp as driver
+
+        monkeypatch.setattr(
+            "kiro_crew.acp.client._resolve_self_served_bin", MagicMock(side_effect=AssertionError)
+        )
+        assert driver.self_served_wrong_version(backend) == ""
+
+    def test_the_status_row_carries_the_release_on_a_missing_verdict_only(self):
+        from kiro_crew.dashboard.handlers.acp_backend_status import _row
+
+        wrong = probe.BackendInstallState(
+            "copilot",
+            "copilot",
+            probe.MISSING,
+            ("copilot 1.0.100",),
+            "npm i",
+            found_version="1.0.103",
+        )
+        clamped = probe.BackendInstallState(
+            "copilot", "copilot", probe.INSTALLED, found_version="1.0.103"
+        )
+        assert _row(wrong, frozenset())["found_version"] == "1.0.103"
+        assert _row(clamped, frozenset())["found_version"] == ""
 
 
 class TestPiVerdicts:
@@ -918,6 +1013,7 @@ class TestEndpointPayloadShape:
         assert [r["policy_id"] for r in rows] == [
             "claude",
             "codex",
+            "copilot",
             "deepseek",
             "goose",
             "kas",
@@ -934,6 +1030,8 @@ class TestEndpointPayloadShape:
                 "installed",
                 "missing_components",
                 "install_command",
+                # Non-empty only on a wrong-release MISSING verdict (Copilot's pin).
+                "found_version",
                 "restart_required",
                 "auth",
                 # The capability card, spread into the row rather than nested:
@@ -985,6 +1083,7 @@ class TestEndpointPayloadShape:
             "installed": "installed",
             "missing_components": [],
             "install_command": "",
+            "found_version": "",
             "restart_required": False,
             # Compared against the declaration rather than a literal copy of the
             # remedy: the string is rendered verbatim by the panel, so a literal

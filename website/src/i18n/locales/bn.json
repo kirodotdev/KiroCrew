@@ -7393,6 +7393,8 @@
       "agent_not_installed": "ইনস্টল করা নেই",
       "agent_restart_needed": "ইনস্টল করা আছে, এখনও সক্রিয় নয়",
       "agent_unverified": "পরীক্ষা ব্যর্থ হয়েছে",
+      "agent_wrong_version": "ভুল সংস্করণ",
+      "agent_wrong_version_detail": "এই হোস্টে {{name}} {{version}} আছে, যা {{productName}} যাচাই করেনি। এটি ব্যবহার করতে যাচাই করা রিলিজটি ইনস্টল করো।",
       "agent_install_on_host": "গেটওয়ে হোস্টে {{name}} ইনস্টল করো।",
       "agent_missing_components": "যে কম্পোনেন্টগুলো নেই: {{components}}",
       "agent_install_then_check": "ইনস্টল করার পর “আবার পরীক্ষা করো” চাপো, যাতে গেটওয়ে আবার {{name}} খুঁজে দেখে।",

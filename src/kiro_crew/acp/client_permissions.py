@@ -8,17 +8,19 @@ Each function here whose first parameter is ``self`` is an ``AcpClient`` method:
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_permission_gate_events``, ``_permission_options``,
+Instance fields written: ``_drain_mode_reports``, ``_mcp_notifications``,
+``_mcp_report_frame_floor``, ``_permission_gate_events``, ``_permission_options``,
 ``_pi_gate_asked_ids``, ``_pi_gate_denied_ids``, ``_pi_gate_request_tool``,
-``_turn_permission_denied``.
+``_routing_answer_floor``, ``_turn_permission_denied``.
 
-Instance fields read: ``_acp_config_options``, ``_agent``, ``_deepseek_gate_nonce``,
+Instance fields read: ``_acp_config_options``, ``_agent``,
+``_copilot_ambiguous_mcp_calls``, ``_deepseek_gate_nonce``,
 ``_deepseek_read_only_issue``, ``_pi_gate_nonce``, ``_session_id``, ``_session_key``,
-``_side_read_only``,
-``_spec_denied_tools``, ``_tool_call_diff_path``, ``_tool_call_harness_tool_name``,
-``_tool_call_identity_unreadable``, ``_tool_call_input_redacted``,
-``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
-``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_call_unclassified``.
+``_side_read_only``, ``_spec_denied_tools``, ``_tool_call_diff_path``,
+``_tool_call_harness_tool_name``, ``_tool_call_identity_unreadable``,
+``_tool_call_input_redacted``, ``_tool_call_inputs``, ``_tool_call_is_shell``,
+``_tool_call_mcp_server``, ``_tool_call_params``, ``_tool_call_tool_name``,
+``_tool_call_unclassified``.
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ from kiro_crew.acp._dispatch import (
     parse_session_modes,
 )
 from kiro_crew.acp.harness import pi as pi_mod
+from kiro_crew.acp.harness.copilot import COPILOT_IDENTITY_OVERFLOW
 from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -55,7 +58,11 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
 )
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_FORBIDDEN_MODES,
+    ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
+    session_config_drift_issue,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.trust_patterns import GrantDeadline, GrantEnded, grant_deadline_guard
 
@@ -167,6 +174,31 @@ async def _apply_session_permission_routing(self: AcpClient) -> None:
         except acp_tool_gate.ToolGateUnroutable as gate_exc:
             raise AcpToolGateUnroutable(str(gate_exc)) from exc
         return
+
+    if backend in ACP_BACKEND_FORBIDDEN_MODES:
+        # Read the write back rather than trusting "no error": the response carries
+        # the session's configOptions, and a harness whose higher-ranked permission
+        # source wins could accept the write and still report the option on.
+        drift = session_config_drift_issue(
+            backend,
+            {"sessionUpdate": "config_option_update", "configOptions": self._acp_config_options},
+        )
+        if drift:
+            try:
+                acp_tool_gate.enforce_runtime_routing(
+                    backend,
+                    f"after Kiro Crew's write, {drift}",
+                    verdict=acp_tool_gate.Verdict.BYPASSED,
+                    remedy=acp_tool_gate.remediation_for(backend),
+                )
+            except acp_tool_gate.ToolGateUnroutable as gate_exc:
+                raise AcpToolGateUnroutable(str(gate_exc)) from None
+            return
+        # Frames buffered while the write was in flight can still name the value the
+        # session was restored in (measured -- a restored ``allow_all on`` is reported
+        # once more just before the write's own answer). The answer supersedes them;
+        # everything read after it is live and is checked.
+        self._routing_answer_floor = len(self._mcp_notifications)
 
     logger.info(
         "ACP permission route armed: %s=%s (%s)",
@@ -291,6 +323,8 @@ async def approve_tool(
     pi_gate_tool = getattr(self, "_pi_gate_request_tool", {}).pop(str(request_id), None)
     resolved_id = option_id
     recorded: dict[str, str] | None = None
+    # Read before the pop below: the Copilot downgrade needs the offered ids.
+    offered = (self._permission_options.get(request_id) or {}) if self._is_copilot else {}
     if resolved_id is None:
         recorded = self._permission_options.pop(request_id, None)
         # A recorded entry may carry only a "reject" id (a request that
@@ -299,6 +333,15 @@ async def approve_tool(
         resolved_id = (recorded or {}).get("always" if always else "once")
         if resolved_id is None:
             resolved_id = OPTION_ALLOW_ALWAYS if always else OPTION_ALLOW_ONCE
+    if self._is_copilot and resolved_id in (OPTION_ALLOW_ALWAYS, offered.get("always")):
+        # Copilot CLI's allow-always stops it asking about that tool for the rest
+        # of the session, so every later call -- each later file of a patch
+        # included -- would run with no permission frame for Crew's gates to
+        # judge. Crew keeps its own approval memory; Copilot is answered once,
+        # with its own once id, or the canonical one when the frame recorded
+        # allow-always in that slot too.
+        once = offered.get("once")
+        resolved_id = once if once and once != offered.get("always") else OPTION_ALLOW_ONCE
     # The wait for the write lock is the last await before the answer goes
     # out, so the withdrawal is read again under that lock.
     recheck: dict[str, Callable[[], None]] = {}
@@ -496,9 +539,31 @@ async def _refuse_identity_drift(self: AcpClient, event: AcpEvent) -> bool:
     session. Gated on ``ACP_BACKENDS_META_IDENTITY`` up front so no other backend
     gains a call; each predicate below keeps its own narrower scope as well.
 
+    Copilot CLI publishes no identity channel; its MCP identity is recovered from the
+    ``tool_call`` title (``_recover_copilot_mcp_identity``), and a title two placed
+    servers could both have produced is refused here, before any gate reads it.
+
     Returns True when the request was refused (rejected on the wire and audited),
     False when it was left to the caller. A False means "not refused BY THIS".
     """
+    ambiguous: set[str] = getattr(self, "_copilot_ambiguous_mcp_calls", set())
+    if self._is_copilot and (
+        COPILOT_IDENTITY_OVERFLOW in ambiguous
+        or (event.tool_call_id and event.tool_call_id in ambiguous)
+    ):
+        logger.warning(
+            "session MCP: refusing a Copilot CLI tool approval whose tool_call title "
+            "more than one placed server could have produced, so the call's MCP "
+            "server cannot be named and its governance cannot be applied [session=%s]",
+            self._session_id,
+        )
+        self._audit_spec_restriction(
+            tool_name="mcp__ambiguous__unknown",
+            outcome="denied",
+            reason="spec_disabled_tool_ambiguous_server",
+        )
+        await self.reject_tool(event.request_id)
+        return True
     if self.backend not in ACP_BACKENDS_META_IDENTITY:
         return False
     if self._unclassified_tool_call(event):
@@ -751,6 +816,134 @@ async def _tripwire_goose_mode(self: AcpClient, msg: JsonRpcMessage) -> None:
         )
     except acp_tool_gate.ToolGateUnroutable as exc:
         raise AcpToolGateUnroutable(str(exc)) from None
+
+
+async def _tripwire_permission_state(self: AcpClient, msg: JsonRpcMessage) -> None:
+    """The one frame-path check that a harness's own permission state has not moved.
+
+    Each enforced harness whose asking a session-level state can turn off names that
+    state in exactly one place: goose its seeded mode (``_tripwire_goose_mode``), a
+    session-config harness with a ``ACP_BACKEND_FORBIDDEN_MODES`` row its permission
+    option and forbidden modes (``_tripwire_session_config``). Both are membership
+    tests, so every other backend -- kiro-cli included -- reads the frame and returns.
+    """
+    if self._is_goose:
+        await self._tripwire_goose_mode(msg)
+    elif self.backend in ACP_BACKEND_FORBIDDEN_MODES:
+        await self._tripwire_session_config(msg)
+
+
+async def _tripwire_session_config(self: AcpClient, msg: JsonRpcMessage) -> None:
+    """Stop a session-config-routed harness that reports leaving its routed state.
+
+    The routing write (``_apply_session_permission_routing``) proves the permission
+    option's value when the session opens; it cannot hold the session there if the
+    harness moves itself. Copilot CLI 1.0.100 reports such a move as a
+    ``config_option_update`` (``allow_all`` on) or a ``current_mode_update``
+    (``autopilot``) on the session's own connection, so either is treated as the
+    open-time check treats the same state: the harness is stopped and the turn fails
+    with the gate's reason. A table lookup first (``ACP_BACKEND_FORBIDDEN_MODES``),
+    so a harness outside it -- kiro-cli included -- gains no work (harness-parity H13).
+    """
+    if self.backend not in ACP_BACKEND_FORBIDDEN_MODES:
+        return
+    params = msg.params if isinstance(msg.params, dict) else {}
+    issue = session_config_drift_issue(self.backend, params.get("update"))
+    if not issue:
+        return
+    logger.error(
+        "%s routing: %s; stopping the harness before it approves on its own [session=%s]",
+        self.backend,
+        issue,
+        self._session_id,
+    )
+    try:
+        sel_module.sel().log_tool_invocation(
+            session_key=self._session_key or "",
+            source="acp",
+            tool_name="session/set_config_option",
+            tool_kind="other",
+            outcome="denied",
+            metadata={
+                "reason": "session_config_tripwire",
+                "backend": self.backend,
+                "issue": _scrub_observed(issue),
+            },
+        )
+    except Exception:  # pragma: no cover - audit is best-effort
+        logger.debug("session-config tripwire: audit failed", exc_info=True)
+    await self._kill_process(force=True)
+    try:
+        acp_tool_gate.enforce_runtime_routing(
+            self.backend,
+            issue,
+            remedy=acp_tool_gate.remediation_for(self.backend),
+        )
+    except acp_tool_gate.ToolGateUnroutable as exc:
+        raise AcpToolGateUnroutable(str(exc)) from None
+
+
+def _drop_superseded_config_frames(self: AcpClient) -> None:
+    """Before the start's drain, drop the config reports the routing answer superseded.
+
+    The drain applies every ``config_option_update`` it finds, buffered or live. One
+    buffered while the routing write was in flight still names the state the
+    session was restored in, and applying it would put that stale value back over
+    the write's own answer. Only those frames -- config and mode reports from before
+    the answer -- are dropped; every other buffered frame (an OAuth request, an MCP
+    server's status) is left for the drain, and everything read after the answer is
+    applied and then checked (``_refuse_session_config_drift``). Called only for a
+    member of ``ACP_BACKEND_FORBIDDEN_MODES`` (the caller tests that, H13).
+    """
+    floor = min(getattr(self, "_routing_answer_floor", 0), len(self._mcp_notifications))
+    # Only config reports: the routing write moves ``allow_all`` and not the mode,
+    # so a mode report from before its answer is still the session's mode.
+    superseded = {"config_option_update"}
+
+    def _is_superseded(msg: JsonRpcMessage) -> bool:
+        update = msg.params.get("update") if isinstance(msg.params, dict) else None
+        return isinstance(update, dict) and update.get("sessionUpdate") in superseded
+
+    head = self._mcp_notifications[:floor]
+    kept = [msg for msg in head if not _is_superseded(msg)]
+    # The MCP report's own floor indexes into the same buffer; it falls by the
+    # frames removed below it so it still marks the same frame.
+    report_floor = getattr(self, "_mcp_report_frame_floor", 0)
+    removed_below = sum(1 for msg in head[:report_floor] if _is_superseded(msg))
+    self._mcp_notifications[:floor] = kept
+    self._mcp_report_frame_floor = max(0, report_floor - removed_below)
+    self._routing_answer_floor = 0
+
+
+async def _refuse_session_config_drift(self: AcpClient) -> None:
+    """Before a prompt, stop a harness whose last known state left its routed values.
+
+    The in-turn readers run :func:`_tripwire_session_config` on each frame they
+    read. Frames that arrive while a request outside a turn is waited on (an effort
+    or model write, a compaction wait) are only buffered, and a config write's
+    answer replaces the cached options without the reader seeing it -- and Copilot
+    CLI reports an ``allow_all`` move only on the NEXT config write. So the cached
+    options and every frame buffered since the start's drain are read here, before
+    the next prompt can run a tool. Called only for a member (the caller tests it).
+    """
+    pending = [
+        msg.params.get("update")
+        for msg in self._mcp_notifications
+        if isinstance(msg.params, dict) and isinstance(msg.params.get("update"), dict)
+    ]
+    # Mode reports the start's drain read (it applies none and clears its buffer).
+    pending.extend(self._drain_mode_reports)
+    self._drain_mode_reports = []
+    current = {"sessionUpdate": "config_option_update", "configOptions": self._acp_config_options}
+    for update in [*pending, current]:
+        issue = session_config_drift_issue(self.backend, update)
+        if issue:
+            await self._tripwire_session_config(
+                JsonRpcMessage(
+                    method="session/update",
+                    params={"sessionId": self._session_id, "update": update},
+                )
+            )
 
 
 async def _tripwire_pi_gate(self: AcpClient, msg: JsonRpcMessage) -> None:
@@ -1089,46 +1282,55 @@ def _build_permission_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
     classification distinguishable from a cache miss and preserves cached
     raw parameters across repeated permission frames for the same tool call.
     """
+    restore = None
+    if self._is_copilot:
+        self._confirm_copilot_mcp_identity(msg)
+        restore = self._seed_copilot_edit_targets(msg)
     # Compat-shaped like the caches below: an instance built without ``__init__``
     # has no nonce, and no nonce means no dialog is ever read as a gate envelope.
     _gate_nonce = getattr(self, "_pi_gate_nonce", "")
-    event, recorded = build_permission_event(
-        msg,
-        tool_input_cache=self._tool_call_inputs,
-        # ``AcpClient`` predates this same-key provenance cache.  Normal
-        # instances initialize it in __init__, while legacy/minimal
-        # constructions (including embedders that allocate with __new__)
-        # may not.  The shared builder treats a missing map/key as
-        # redacted/unknown, so this compatibility fallback stays
-        # fail-closed for durable trust instead of inventing provenance.
-        tool_input_redacted_cache=getattr(self, "_tool_call_input_redacted", None),
-        shell_cache=self._tool_call_is_shell,
-        raw_params_cache=self._tool_call_params,
-        # Same compatibility shape as the redaction map above.
-        diff_path_cache=getattr(self, "_tool_call_diff_path", None),
-        mcp_server_name_cache=self._tool_call_mcp_server,
-        tool_name_cache=self._tool_call_tool_name,
-        harness_tool_name_cache=getattr(self, "_tool_call_harness_tool_name", None),
-        # Handed only on the KAS harness, the same gate as the kind carry (H13).
-        identity_unreadable_cache=(
-            getattr(self, "_tool_call_identity_unreadable", None)
-            if self.backend in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL
-            else None
-        ),
-        # Set only for a session running Kiro Crew's gate extension, whose
-        # dialogs carry the nonce this spawn issued; ``None`` everywhere else,
-        # so no other harness's permission frame is ever read as an envelope.
-        # Same compatibility shape as the maps above: an instance built without
-        # ``__init__`` has no nonce, and no nonce means no envelope is trusted.
-        gate_envelope_nonce=_gate_nonce or None,
-        kas_consent_meta=self.backend == ACP_BACKEND_KAS,
-        harness_backend=self.backend,
-        harness_mcp_servers=self._harness_mcp_server_names(),
-        side_read_only=getattr(self, "_side_read_only", False),
-        deepseek_read_only_issue=getattr(
-            self, "_deepseek_read_only_issue", "the harness composition was not read back"
-        ),
-    )
+    try:
+        event, recorded = build_permission_event(
+            msg,
+            tool_input_cache=self._tool_call_inputs,
+            # ``AcpClient`` predates this same-key provenance cache.  Normal
+            # instances initialize it in __init__, while legacy/minimal
+            # constructions (including embedders that allocate with __new__)
+            # may not.  The shared builder treats a missing map/key as
+            # redacted/unknown, so this compatibility fallback stays
+            # fail-closed for durable trust instead of inventing provenance.
+            tool_input_redacted_cache=getattr(self, "_tool_call_input_redacted", None),
+            shell_cache=self._tool_call_is_shell,
+            raw_params_cache=self._tool_call_params,
+            # Same compatibility shape as the redaction map above.
+            diff_path_cache=getattr(self, "_tool_call_diff_path", None),
+            mcp_server_name_cache=self._tool_call_mcp_server,
+            tool_name_cache=self._tool_call_tool_name,
+            harness_tool_name_cache=getattr(self, "_tool_call_harness_tool_name", None),
+            # Handed only on the KAS harness, the same gate as the kind carry (H13).
+            identity_unreadable_cache=(
+                getattr(self, "_tool_call_identity_unreadable", None)
+                if self.backend in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL
+                else None
+            ),
+            # Set only for a session running Kiro Crew's gate extension, whose
+            # dialogs carry the nonce this spawn issued; ``None`` everywhere else,
+            # so no other harness's permission frame is ever read as an envelope.
+            # Same compatibility shape as the maps above: an instance built without
+            # ``__init__`` has no nonce, and no nonce means no envelope is trusted.
+            gate_envelope_nonce=_gate_nonce or None,
+            kas_consent_meta=self.backend == ACP_BACKEND_KAS,
+            harness_backend=self.backend,
+            harness_mcp_servers=self._harness_mcp_server_names(),
+            side_read_only=getattr(self, "_side_read_only", False),
+            deepseek_read_only_issue=getattr(
+                self, "_deepseek_read_only_issue", "the harness composition was not read back"
+            ),
+        )
+    finally:
+        # The event holds its own copy of the seeded targets; none is retained.
+        if restore is not None:
+            self._restore_copilot_edit_seed(restore)
     if event is None:
         return None
     if recorded is not None:

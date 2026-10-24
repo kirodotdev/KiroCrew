@@ -7517,6 +7517,8 @@
       "agent_not_installed": "Non installato",
       "agent_restart_needed": "Installato, non ancora attivo",
       "agent_unverified": "Controllo non riuscito",
+      "agent_wrong_version": "Versione errata",
+      "agent_wrong_version_detail": "Questo host ha {{name}} {{version}}, che {{productName}} non ha verificato. Installa la versione verificata per usarlo.",
       "agent_install_on_host": "Installa {{name}} sull’host del gateway.",
       "agent_missing_components": "Componenti mancanti: {{components}}",
       "agent_install_then_check": "Dopo l’installazione, premi Controlla di nuovo perché il gateway cerchi di nuovo {{name}}.",

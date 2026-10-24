@@ -7517,6 +7517,8 @@
       "agent_not_installed": "Non installé",
       "agent_restart_needed": "Installé, pas encore actif",
       "agent_unverified": "Vérification échouée",
+      "agent_wrong_version": "Mauvaise version",
+      "agent_wrong_version_detail": "Cet hôte a {{name}} {{version}}, que {{productName}} n’a pas vérifiée. Installe la version vérifiée pour l’utiliser.",
       "agent_install_on_host": "Installe {{name}} sur l’hôte de la passerelle.",
       "agent_missing_components": "Composants manquants : {{components}}",
       "agent_install_then_check": "Après l’installation, appuie sur Revérifier pour que la passerelle recherche à nouveau {{name}}.",

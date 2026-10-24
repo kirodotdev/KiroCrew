@@ -7269,6 +7269,8 @@
       "agent_not_installed": "未安装",
       "agent_restart_needed": "已安装，尚未启用",
       "agent_unverified": "检查失败",
+      "agent_wrong_version": "版本不符",
+      "agent_wrong_version_detail": "此主机上的 {{name}} 版本为 {{version}}，{{productName}} 未验证过该版本。请安装已验证的版本后再使用。",
       "agent_install_on_host": "在网关主机上安装 {{name}}。",
       "agent_missing_components": "缺少组件：{{components}}",
       "agent_install_then_check": "安装后点击“重新检查”，让网关重新查找 {{name}}。",

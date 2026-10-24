@@ -7393,6 +7393,8 @@
       "agent_not_installed": "इंस्टॉल नहीं",
       "agent_restart_needed": "इंस्टॉल है, अभी सक्रिय नहीं",
       "agent_unverified": "जाँच विफल",
+      "agent_wrong_version": "गलत संस्करण",
+      "agent_wrong_version_detail": "इस होस्ट पर {{name}} {{version}} है, जिसे {{productName}} ने सत्यापित नहीं किया है। इसे इस्तेमाल करने के लिए सत्यापित रिलीज़ इंस्टॉल करो।",
       "agent_install_on_host": "गेटवे होस्ट पर {{name}} इंस्टॉल करो।",
       "agent_missing_components": "ये कॉम्पोनेंट नहीं मिले: {{components}}",
       "agent_install_then_check": "इंस्टॉल करने के बाद “फिर से जाँचें” दबाओ, ताकि गेटवे {{name}} को फिर से खोजे।",

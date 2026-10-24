@@ -7269,6 +7269,8 @@
       "agent_not_installed": "설치 안 됨",
       "agent_restart_needed": "설치됨, 아직 활성 아님",
       "agent_unverified": "확인 실패",
+      "agent_wrong_version": "잘못된 버전",
+      "agent_wrong_version_detail": "이 호스트의 {{name}}은(는) {{version}}이며, {{productName}}에서 검증하지 않은 버전입니다. 사용하려면 검증된 릴리스를 설치하세요.",
       "agent_install_on_host": "게이트웨이 호스트에 {{name}}을(를) 설치하세요.",
       "agent_missing_components": "누락된 구성 요소: {{components}}",
       "agent_install_then_check": "설치한 후 다시 확인을 눌러 게이트웨이가 {{name}}을(를) 다시 찾도록 하세요.",

@@ -103,6 +103,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "is_alive": ("function", False, "a6632a57e602", "acp"),
     "is_claude_backend": ("property", False, "a6632a57e602", "acp"),
     "is_codex_backend": ("property", False, "a6632a57e602", "acp"),
+    "is_copilot_backend": ("property", False, "a6632a57e602", "acp"),
     "is_deepseek_backend": ("property", False, "a6632a57e602", "acp"),
     "is_goose_backend": ("property", False, "a6632a57e602", "acp"),
     "is_kas_backend": ("property", False, "a6632a57e602", "acp"),

@@ -13,7 +13,8 @@ Instance fields written: ``_jsonl_pos``, ``_stale_eligible``, ``_tool_call_diff_
 ``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
 ``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_dispatched``.
 
-Instance fields read: ``_active_tool_calls``, ``_agent``, ``_audit_source``,
+Instance fields read: ``_active_tool_calls``, ``_agent``, ``_audit_source``, ``_copilot_ambiguous_mcp_calls``,
+``_copilot_unmatched_titles``,
 ``_observed_tool_calls``, ``_session_id``, ``_session_key``,
 ``_tool_call_harness_tool_name``, ``_tool_call_unclassified``, ``last_prompt_stats``.
 """
@@ -41,6 +42,13 @@ from kiro_crew.acp._dispatch import (
     tool_call_content_text,
 )
 from kiro_crew.acp.client_timeouts import _SEL_AUDIT_TIMEOUT_SECONDS
+from kiro_crew.acp.harness.copilot import (
+    COPILOT_IDENTITY_OVERFLOW,
+    COPILOT_IDENTITY_RECORDS_MAX,
+    COPILOT_TITLE_MAX_CHARS,
+    TOOL_CALL_CACHE_MAX_KEY_CHARS,
+    note_copilot_identity_record,
+)
 from kiro_crew.acp.types import (
     ACP_BACKEND_DEEPSEEK,
     EVENT_TOOL_CALL,
@@ -373,6 +381,12 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
         # kind + adapter-authored MCP markers, never the kind alone (see
         # _dispatch.classify_tool_call).
         identity = classify_tool_call(update)
+        # What the emitted event names. The classifier's verdict, unless Copilot's
+        # title recovery (below) attributes the call to a server Crew placed.
+        event_tool_name = identity.tool_name
+        event_mcp_server = identity.mcp_server_name
+        event_tool_trusted = identity.tool_identity_trusted
+        event_mcp_trusted = identity.identity_trusted
         note_tool_call_started(
             tool_call_id,
             kind=kind,
@@ -505,6 +519,18 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
                 and self.backend in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL
             ):
                 self._tool_call_identity_unreadable[tool_call_id] = True
+            # Copilot only (H13): it names an MCP call nowhere but its title.
+            if self._is_copilot and not identity.mcp_server_name and not is_shell:
+                self._recover_copilot_mcp_identity(tool_call_id, update)
+                # The same attribution the permission event inherits, so the
+                # turn loop resolves a directive (``kirocrew-core`` +
+                # ``reset_conversation``) and records its input digest; the
+                # hyphenated wire title alone resolves no directive.
+                recovered_server = self._tool_call_mcp_server.get(tool_call_id, "")
+                if recovered_server:
+                    event_mcp_server = recovered_server
+                    event_tool_name = self._tool_call_tool_name.get(tool_call_id, "")
+                    event_tool_trusted = event_mcp_trusted = True
         title = _select_tool_title(title, raw_input, kind, is_shell=is_shell) or ""
         if title:
             from kiro_crew.security import redact
@@ -536,13 +562,79 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             # LLM-authored title). Earned only when an identity pair was
             # actually extracted from such a source: a frame with no marker
             # populates nothing and asserts no provenance.
-            tool_name=identity.tool_name,
-            mcp_server_name=identity.mcp_server_name,
-            tool_identity_trusted=identity.tool_identity_trusted,
-            mcp_identity_trusted=identity.identity_trusted,
+            tool_name=event_tool_name,
+            mcp_server_name=event_mcp_server,
+            tool_identity_trusted=event_tool_trusted,
+            mcp_identity_trusted=event_mcp_trusted,
             diff_path=_diff_path,
         )
     return None
+
+
+def _recover_copilot_mcp_identity(self: AcpClient, tool_call_id: str, update: dict) -> None:
+    """Recover a Copilot CLI MCP call's server and tool from its ``tool_call`` title.
+
+    Copilot CLI 1.0.100 carries no ``_meta`` identity: its ``tool_call`` frame titles a
+    served tool ``<server>-<tool>`` (``probe-marker``, measured in
+    ``mcp-stdio-mount-live.jsonl``) and its permission frame names the bare tool
+    (``marker``). Without the server, the gate judged the call by its title and never
+    asked the ``mcp`` scope, so a ceiling denying ``@probe/marker`` permitted it. The
+    title is matched against the names Crew itself placed on this session's array --
+    the whole server universe Copilot was handed, its built-in MCP servers being off
+    (``--disable-builtin-mcps``) -- and a unique match is cached as the trusted identity
+    the permission event inherits, exactly as a ``_meta`` channel would fill it. A
+    title two placed names could both have produced (``a`` serving ``b-c`` and ``a-b``
+    serving ``c``) is recorded as ambiguous, and its permission request is refused
+    (:func:`~kiro_crew.acp.client_permissions._refuse_identity_drift`): judging it as
+    either server could permit what the other's rule denies. A title matching no
+    placed name is not an MCP call and keeps the shared reading.
+    """
+    title = update.get("title")
+    if update.get("kind") != "other" or not isinstance(title, str) or not title:
+        return
+    ambiguous = getattr(self, "_copilot_ambiguous_mcp_calls", None)
+    if ambiguous is None:
+        return
+    try:
+        elements = self._session_mcp_servers()
+    except Exception:  # noqa: BLE001 - a missing array means nothing to match
+        elements = []
+    placed: set[str] = set()
+    for element in elements:
+        name = element.get("name") if isinstance(element, dict) else None
+        if isinstance(name, str) and name:
+            placed.add(name)
+    matches = sorted(
+        name for name in placed if title.startswith(f"{name}-") and len(title) > len(name) + 1
+    )
+    if len(matches) > 1:
+        note_copilot_identity_record(ambiguous, ambiguous, tool_call_id)
+        return
+    ambiguous.discard(tool_call_id)
+    unmatched = getattr(self, "_copilot_unmatched_titles", None)
+    if not matches:
+        # Kept so the permission frame can show this was a served tool after all
+        # (``<anything>-<its bare name>``) whose server no placed name matched.
+        if unmatched is not None and "-" in title:
+            if len(title) > COPILOT_TITLE_MAX_CHARS:
+                # Too long to keep whole, and a cut title could not be matched
+                # against the permission frame: refused rather than judged blind.
+                note_copilot_identity_record(ambiguous, ambiguous, tool_call_id)
+            elif len(tool_call_id) > TOOL_CALL_CACHE_MAX_KEY_CHARS or (
+                len(unmatched) >= COPILOT_IDENTITY_RECORDS_MAX and tool_call_id not in unmatched
+            ):
+                ambiguous.add(COPILOT_IDENTITY_OVERFLOW)
+            else:
+                unmatched[tool_call_id] = title
+        return
+    if unmatched is not None:
+        unmatched.pop(tool_call_id, None)
+    server = matches[0]
+    self._tool_call_mcp_server[tool_call_id] = server
+    self._tool_call_tool_name[tool_call_id] = title[len(server) + 1 :]
+    unclassified = getattr(self, "_tool_call_unclassified", None)
+    if unclassified is not None:
+        unclassified[tool_call_id] = False
 
 
 def _extract_tool_call_update(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None:
@@ -568,6 +660,11 @@ def _extract_tool_call_update(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent 
     tool_use_id = update.get("toolCallId", "")
     if not tool_use_id:
         return None
+    if self._is_copilot and update.get("status") in ("completed", "failed"):
+        # A finished call asks nothing more, so its identity records are released;
+        # this is what keeps them bounded by the calls still in flight.
+        getattr(self, "_copilot_unmatched_titles", {}).pop(tool_use_id, None)
+        getattr(self, "_copilot_ambiguous_mcp_calls", set()).discard(tool_use_id)
     # A terminal status is useful even when output parsing finds no text: it
     # closes the observed round-trip without claiming a result body. A
     # non-terminal status leaves the clock running for the real completion.

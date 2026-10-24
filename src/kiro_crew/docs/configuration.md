@@ -135,6 +135,7 @@ provider.
 | `pi` | Pi | Uses `pi-acp` and its Pi gate extension. |
 | `goose` | goose | Uses goose's native ACP server. |
 | `deepseek` | DeepSeek Harness | Runs `dsh --profile acp` with Kiro Crew's gate plugin; provider keys come from `agent.deepseek_env`. |
+| `copilot` | GitHub Copilot CLI | Runs `copilot --acp --stdio`; signs in with its own login. A project carrying Copilot CLI's own hooks, settings or MCP config is refused. |
 
 Codex runs with `~/.aws/credentials` and `~/.aws/sso/cache` hidden on purpose,
 and only `~/.aws/config` readable. Codex on Amazon Bedrock therefore needs a

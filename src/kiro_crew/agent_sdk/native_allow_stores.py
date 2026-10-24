@@ -22,6 +22,7 @@ from pathlib import PurePosixPath
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -81,6 +82,15 @@ NATIVE_ALLOW_STORES: Mapping[str, tuple[NativeAllowStore, ...]] = {
     ACP_BACKEND_CODEX: (NativeAllowStore(".codex/config.toml", (("CODEX_HOME", "config.toml"),)),),
     # extensions: code pi loads into its own process.
     ACP_BACKEND_PI: (_pi("settings.json"), _pi("extensions")),
+    # Its permission settings (allowed tools and URLs, trusted folders, its own hooks)
+    # live in config.json, which is already refused to the file tools for reading and
+    # writing as its credential leaf (``host_auth``), so it is not listed again here.
+    # mcp-config.json: its MCP servers, started at the next spawn without a prompt.
+    # installed-plugins: plugins it loads, whose hooks and MCP servers run unasked.
+    ACP_BACKEND_COPILOT: tuple(
+        NativeAllowStore(f".copilot/{name}", (("COPILOT_HOME", name),))
+        for name in ("mcp-config.json", "installed-plugins")
+    ),
 }
 
 #: Harnesses with no row above, and why.

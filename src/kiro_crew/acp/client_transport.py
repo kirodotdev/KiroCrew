@@ -7,7 +7,7 @@ Each function here whose first parameter is ``self`` is an ``AcpClient`` method:
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_activated_model``, ``_last_activity``,
+Instance fields written: ``_activated_model``, ``_drain_mode_reports``, ``_last_activity``,
 ``_last_substitution_model``, ``_mcp_notifications``, ``_mcp_report_frame_floor``,
 ``_mode_frame_superseded``, ``_next_id``, ``_oauth_emitted_servers``,
 ``_pending_oauth_requests``, ``_stdin_lock``, ``_stdin_stalled``.
@@ -58,9 +58,11 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_UPDATE,
     METHOD_SET_MODEL,
     UPDATE_CONFIG_OPTION,
+    UPDATE_CURRENT_MODE,
     JsonRpcMessage,
     JsonRpcRequest,
 )
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_FORBIDDEN_MODES
 from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -614,6 +616,16 @@ async def _drain_notifications(
         update = params.get("update", {})
         if isinstance(update, dict) and update.get("sessionUpdate") == UPDATE_CONFIG_OPTION:
             self._handle_config_option_update(msg)
+        elif (
+            isinstance(update, dict)
+            and update.get("sessionUpdate") == UPDATE_CURRENT_MODE
+            and self.backend in ACP_BACKEND_FORBIDDEN_MODES
+        ):
+            # The drain applies no mode report, and clears the buffer it read; a
+            # harness whose routing a mode can undo keeps them for the drift check
+            # that follows (``_refuse_session_config_drift``). A membership test, so
+            # the Kiro path gains no work (harness-parity H13).
+            self._drain_mode_reports.append(update)
 
     def _capture_agent_switched(msg: JsonRpcMessage) -> None:
         if msg.is_method(METHOD_AGENT_SWITCHED):
