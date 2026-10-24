@@ -419,8 +419,8 @@ def install() -> None:
     application-support directory.
 
     The domain is explicit, so an install from SSH lands where ``restart``
-    and ``stop`` address it (``is_active`` and ``status`` read the caller's
-    domain and do not see it from SSH). When ``gui/<uid>`` does
+    and ``stop`` address it, and where ``is_active`` and ``status`` probe.
+    When ``gui/<uid>`` does
     not exist (SSH with nobody logged in at the desktop) the agent goes into
     ``user/<uid>`` instead, where a legacy ``load -w`` put it, and the domain
     used is logged. ``enable`` stands in for
@@ -493,19 +493,57 @@ def uninstall() -> None:
         pass
 
 
+def _probe() -> tuple[str | None, subprocess.CompletedProcess[str]]:
+    """``launchctl print <domain>/<label>`` over the domains :func:`install` uses.
+
+    Returns ``(domain, result)`` for the first domain that answers rc 0, or
+    ``(None, result)`` with the most telling refusal when none does: a refusal
+    other than "not found" / ``125`` wins over those, so ``status`` shows the
+    real failure rather than a generic absence.
+
+    The legacy ``launchctl list <label>`` reads only the caller's domain, and
+    for a ``gui/<uid>`` agent it can exit non-zero with empty output while the
+    agent is serving; naming the domain makes the probe address the job the
+    same way ``restart`` and ``stop`` act on it.
+    """
+    refusal: subprocess.CompletedProcess[str] | None = None
+    last: subprocess.CompletedProcess[str] | None = None
+    for domain in _legacy_domains():
+        res = _launchctl("print", f"{domain}/{LAUNCHD_LABEL}")
+        if res.returncode == 0:
+            return domain, res
+        last = res
+        if refusal is None and not (_pod_launchd._service_absent(res) or _domain_unavailable(res)):
+            refusal = res
+    chosen = refusal or last
+    assert chosen is not None  # _legacy_domains() is never empty
+    return None, chosen
+
+
 def is_active() -> bool:
-    """Return True if launchd reports the agent loaded with a PID."""
-    res = _launchctl("list", LAUNCHD_LABEL)
-    if res.returncode != 0:
-        return False
-    # `launchctl list <label>` prints a plist-ish dict with PID = <int>;
-    # an unloaded agent returns nonzero. A loaded-but-not-running agent
-    # has PID = "-" instead of a number.
-    for line in res.stdout.splitlines():
-        line = line.strip()
-        if line.startswith('"PID"'):
-            return "=" in line and line.split("=")[-1].strip().rstrip(";").isdigit()
-    return True  # `list <label>` succeeded; treat as active even if PID line absent
+    """Return True if launchd holds the agent in ``gui/<uid>`` or ``user/<uid>``.
+
+    A zero exit from ``launchctl print`` counts as active even when the agent
+    is loaded but not running (``state = not running``): callers must not take
+    the no-service path for an agent launchd still manages, e.g. between
+    ``KeepAlive`` respawns. Unlike :func:`is_loaded`, any non-zero answer reads
+    as inactive, which is the contract the ``list``-based probe had.
+    """
+    domain, _res = _probe()
+    return domain is not None
+
+
+def is_up() -> bool:
+    """Return True only when launchd reports the agent ``state = running``.
+
+    The UP predicate for ``kirocrew service status``'s exit code, as
+    :func:`kiro_crew.service.linux.is_up` is on Linux: an agent loaded but not
+    running (a ``KeepAlive`` crash loop between respawns) is reachable to
+    ``stop`` through :func:`is_active`, yet must read as DOWN to a script gating
+    on the exit code.
+    """
+    domain, res = _probe()
+    return domain is not None and _launchctl_print_value(res.stdout or "", "state") == "running"
 
 
 def stop() -> bool:
@@ -527,9 +565,7 @@ def is_loaded() -> bool:
 
     Probes ``launchctl print <domain>/<label>`` over ``gui/<uid>`` then
     ``user/<uid>``, naming each domain, so the answer is the same from SSH as
-    from the desktop. :func:`is_active` reads the caller's domain instead and
-    from SSH misses a ``gui/<uid>`` job, which is why the restart path gates on
-    this. Only a definite "not found" (or ``125`` from a missing domain) counts
+    from the desktop. Only a definite "not found" (or ``125`` from a missing domain) counts
     as absent; any other answer is treated as loaded so a managed agent is
     never replaced by a foreground gateway on a flaky probe.
     """
@@ -573,8 +609,35 @@ def restart() -> bool:
 
 
 def status() -> str:
-    """Return a human-readable status block from launchctl."""
-    res = _launchctl("list", LAUNCHD_LABEL)
-    if res.returncode != 0:
-        return f"kirocrew service is not loaded ({res.stderr.strip() or 'no entry'})\n"
-    return res.stdout
+    """Return a human-readable status block from launchctl.
+
+    Probes like :func:`is_active`, but renders a terse summary rather than the
+    multi-kilobyte ``print`` dump: domain, state, pid, the last exit code when
+    it is non-zero, and the plist path.
+    """
+    domain, res = _probe()
+    if domain is None:
+        # launchctl's refusal can land on either stream (pod/launchd.py's
+        # _service_absent scans both for the same reason); take the first
+        # stdout line before degrading to the generic fallback.
+        reason = (res.stderr or "").strip()
+        if not reason and (res.stdout or "").strip():
+            reason = res.stdout.strip().splitlines()[0]
+        return f"kirocrew service is not loaded ({reason or 'no entry'})\n"
+    printed = res.stdout or ""
+    state = _launchctl_print_value(printed, "state")
+    pid = _launchctl_print_value(printed, "pid")
+    path = _launchctl_print_value(printed, "path") or str(PLIST_PATH)
+    lines = [f"{LAUNCHD_LABEL}: {state or 'loaded'} ({domain})"]
+    if pid:
+        lines.append(f"  pid: {pid}")
+    # Loaded and not running says nothing about WHY without the exit code.
+    # Both launchd spellings are read; the numeric check keeps placeholders
+    # such as `(never exited)` out.
+    last_exit = _launchctl_print_value(printed, "last exit code") or _launchctl_print_value(
+        printed, "last exit status"
+    )
+    if last_exit and last_exit.removeprefix("-").isdecimal() and last_exit != "0":
+        lines.append(f"  last exit: {last_exit}")
+    lines.append(f"  plist: {path}")
+    return "\n".join(lines) + "\n"

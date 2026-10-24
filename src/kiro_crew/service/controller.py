@@ -223,7 +223,8 @@ def service_status() -> int:
     reachable to ``kirocrew stop``, and must read as DOWN to a script gating on
     this exit code, since a gateway that never started is the failure `status`
     exists to expose. The headline above the exit code prints the real state
-    either way.
+    either way. macOS splits the same way: :func:`macos.is_up` (``state =
+    running``) for the exit code, :func:`macos.is_active` (loaded) for reach.
     """
     plat = current_platform()
     if plat == Platform.SYSTEMD:
@@ -231,7 +232,7 @@ def service_status() -> int:
         return 0 if linux.is_up() else 1
     if plat == Platform.LAUNCHD:
         print(macos.status())
-        return 0 if macos.is_active() else 1
+        return 0 if macos.is_up() else 1
     _unsupported_message()
     return 2
 
@@ -323,9 +324,8 @@ def stop_service() -> bool:
             return True
         return False
     if plat == Platform.LAUNCHD:
-        # No is_active() gate: its ``list`` probe reads the CALLER's domain, so
-        # from SSH it misses a gui/<uid> job. stop() searches both domains and
-        # returns False when nothing is loaded or launchd refused the bootout.
+        # No is_active() gate: stop() searches both domains itself and returns
+        # False when nothing is loaded or launchd refused the bootout.
         return macos.stop()
     return False
 
@@ -348,10 +348,10 @@ def restart_service() -> RestartReport:
             return linux.restart()
         return RestartReport()
     if plat == Platform.LAUNCHD:
-        # Gated on is_loaded(), not is_active(): the latter's ``list`` probe
-        # reads the CALLER's domain and from SSH misses a gui/<uid> job, which
-        # would send `kirocrew restart` to the foreground path and spawn an
-        # unmanaged gateway beside the KeepAlive one.
+        # Gated on is_loaded(), not is_active(): is_loaded() reads an unclear
+        # probe answer as loaded, so a flaky probe cannot send `kirocrew
+        # restart` to the foreground path and spawn an unmanaged gateway
+        # beside the KeepAlive one.
         if macos.is_loaded():
             ok = macos.restart()
             return RestartReport(

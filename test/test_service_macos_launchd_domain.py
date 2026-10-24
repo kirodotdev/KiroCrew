@@ -113,7 +113,9 @@ class FakeLaunchctl:
         if verb == "print":
             present = self._job_in(domain)
             self._settle(domain)
-            return ok if present else missing
+            if not present:
+                return missing
+            return subprocess.CompletedProcess(argv, 0, "\tstate = running\n\tpid = 4242\n", "")
         if verb == "kickstart":
             return ok if domain in self.loaded else missing
         raise AssertionError(f"unexpected launchctl verb: {argv}")
@@ -168,8 +170,9 @@ def test_kirocrew_stop_from_ssh_boots_out_the_gui_job(mac):
         patch("kiro_crew.service.controller.current_platform", return_value=Platform.LAUNCHD),
     ):
         mac.install()
-        assert mac.is_active() is False  # the caller-domain probe misses it
+        assert mac.is_active() is True
         assert controller.stop_service() is True
+        assert mac.is_active() is False
     assert fake.loaded == set()
 
 
@@ -350,3 +353,76 @@ def test_stop_service_propagates_the_launchd_answer(stopped):
         patch.object(svc_macos, "stop", return_value=stopped),
     ):
         assert controller.stop_service() is stopped
+
+
+# -- is_active / status probe the same domains the write verbs act on -------
+
+
+@pytest.mark.parametrize("session", [GUI, USER])
+def test_status_and_is_active_see_the_gui_job_from_any_session(mac, session):
+    """The reported shape: the gateway serves from gui/<uid>, and the
+    caller-domain `list` misses it. The probe must find it from the desktop
+    and from SSH alike, and `kirocrew service status` must exit 0."""
+    fake = FakeLaunchctl(session=session)
+    with (
+        _run(fake),
+        patch("kiro_crew.service.controller.current_platform", return_value=Platform.LAUNCHD),
+    ):
+        mac.install()
+        fake.session = "none"  # `list` from here on sees nothing, as reported
+        assert mac.is_active() is True
+        assert controller.is_service_active() is True
+        out = mac.status()
+        assert "not loaded" not in out
+        assert f"({GUI})" in out
+        assert controller.service_status() == 0
+    assert not any(c[1] == "list" for c in fake.calls), fake.calls
+
+
+def test_status_and_is_active_see_a_user_domain_job_without_a_desktop(mac):
+    """No desktop login: install falls back to user/<uid>, and the probe must
+    follow it there instead of reporting the agent as not loaded."""
+    fake = FakeLaunchctl(session=USER, desktop=False)
+    with _run(fake):
+        mac.install()
+        assert fake.loaded == {USER}
+        assert mac.is_active() is True
+        assert f"({USER})" in mac.status()
+
+
+def test_a_legacy_user_domain_job_is_seen_from_the_desktop(mac):
+    """An older `load -w` from SSH left the job in user/<uid>; a probe from
+    the desktop must still see it, as stop and restart already do."""
+    fake = FakeLaunchctl(session=GUI)
+    fake.loaded.add(USER)
+    with _run(fake):
+        assert mac.is_active() is True
+        assert f"({USER})" in mac.status()
+
+
+@pytest.mark.parametrize("desktop", [True, False])
+def test_nothing_loaded_reads_as_inactive_with_the_not_found_reason(mac, desktop):
+    fake = FakeLaunchctl(session=USER, desktop=desktop)
+    with (
+        _run(fake),
+        patch("kiro_crew.service.controller.current_platform", return_value=Platform.LAUNCHD),
+    ):
+        assert mac.is_active() is False
+        out = mac.status()
+        assert out.startswith("kirocrew service is not loaded (")
+        assert "Could not find service" in out
+        assert controller.service_status() == 1
+
+
+def test_status_surfaces_a_real_refusal_over_a_later_not_found(mac):
+    """A gui/<uid> probe that fails for another reason is the one to show;
+    the user/<uid> "not found" after it says nothing about the gui job."""
+
+    def fake(argv, **_kwargs):
+        if argv[2].startswith("gui/"):
+            return subprocess.CompletedProcess(argv, 1, "", "Operation not permitted")
+        return subprocess.CompletedProcess(argv, 113, "", NOT_FOUND)
+
+    with _run(fake):
+        assert mac.is_active() is False
+        assert "Operation not permitted" in mac.status()
