@@ -770,20 +770,21 @@ def test_git_diff_view_does_not_run_a_repository_textconv(tmp_path):
         subprocess.run(["git", "-C", str(root), *args], check=True, env=env, cwd=root)
 
     git("init", "-q")
-    (root / ".gitattributes").write_text("*.txt diff=probe\n")
-    (root / "f.txt").write_text("one\n")
+    (root / ".gitattributes").write_text("*.txt diff=probe\n", newline="\n")
+    (root / "f.txt").write_text("one\n", newline="\n")
     git("add", ".")
     git("commit", "-q", "-m", "first")
     script = tmp_path / "probe.py"
     script.write_text(
         "import pathlib, sys\n"
         f"pathlib.Path({str(marker)!r}).write_text('ran')\n"
-        "sys.stdout.write(open(sys.argv[1]).read())\n"
+        "sys.stdout.write(open(sys.argv[1]).read())\n",
+        newline="\n",
     )
     git(
         "config", "diff.probe.textconv", f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}"
     )
-    (root / "f.txt").write_text("two\n")
+    (root / "f.txt").write_text("two\n", newline="\n")
     diff = wt.browse(wt.Workspace(str(root)), {"op": "git_bodies", "path": "f.txt"})
     assert diff["git"] is True and diff["old"] == "one\n" and diff["new"] == "two\n"
     assert not marker.exists()
@@ -932,11 +933,11 @@ def test_a_diff_of_a_key_with_a_middle_line_removed_shows_no_key_line(tmp_path):
     blob = base64.b64encode(secrets.token_bytes(600)).decode()
     body = [blob[i : i + 32] for i in range(0, len(blob), 32)]
     pem = [PEM_BEGIN_RSA, *body, PEM_END_RSA]
-    (root / "id_rsa").write_text("\n".join(pem) + "\n")
+    (root / "id_rsa").write_text("\n".join(pem) + "\n", newline="\n")
     git(root, "add", ".")
     git(root, "commit", "-q", "-m", "key")
     del pem[len(pem) // 2]
-    (root / "id_rsa").write_text("\n".join(pem) + "\n")
+    (root / "id_rsa").write_text("\n".join(pem) + "\n", newline="\n")
     # The trigger is real: git's own patch carries header-free key lines that
     # the shared redactor, read a line at a time, leaves untouched.
     raw = git(root, "diff", "HEAD", "--", "id_rsa")
@@ -1048,10 +1049,10 @@ def test_old_git_refuses_only_bodies_in_a_partial_clone(tmp_path, monkeypatch, o
     from kiro_crew.remote_session import workspace_tools as wt
 
     root, git = _plain_git_repo(tmp_path)
-    (root / "f.txt").write_text("one\n", encoding="utf-8")
+    (root / "f.txt").write_text("one\n", encoding="utf-8", newline="\n")
     git(root, "add", "f.txt")
     git(root, "commit", "-q", "-m", "seed")
-    (root / "f.txt").write_text("two\n", encoding="utf-8")
+    (root / "f.txt").write_text("two\n", encoding="utf-8", newline="\n")
     if key is not None:
         git(root, "config", key, value)
     real_run = wt._run_grouped
