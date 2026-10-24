@@ -199,6 +199,18 @@ with no row here.
        answers the three hook methods; no consumer above the boundary asks it)
    * - ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS``
      - semantic question (``SessionCapabilities.crew_fires_spec_hooks``)
+   * - ``ACP_BACKENDS_NATIVE_SPEC_PROMPT``
+     - driver-internal (whether the harness itself loads a custom agent spec's
+       own ``prompt``; read only by the ACP runtime, which records the loaded
+       copy in ``native_context_documents`` on these backends alone. The prompt
+       builder asks for that recorded copy, never the set or a provider flag)
+   * - ``ACP_BACKENDS_NATIVE_SPEC_PROMPT_ACROSS_COMPACTION``
+     - driver-internal (whether the harness is shown to keep that ``prompt`` as
+       the system prompt across its own compaction, read only by the session
+       providers' ``native_spec_prompt_across_compaction`` together with the
+       release floor ``NATIVE_SPEC_PROMPT_ACROSS_COMPACTION_MIN_KIRO_CLI_VERSION``;
+       the post-compaction turn asks that ``ContextPromptProvider`` property,
+       never the set)
    * - ``ACP_BACKENDS_HOST_AUTH_CALLBACK``
      - driver-internal (whether the reader loop may answer the engine's
        ``_kiro/auth/getAccessToken`` from Crew's own vault)
@@ -814,12 +826,16 @@ from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported 
     ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
+    ACP_BACKENDS_NATIVE_SPEC_PROMPT,
+    ACP_BACKENDS_NATIVE_SPEC_PROMPT_ACROSS_COMPACTION,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
     ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY,
+    NATIVE_SPEC_PROMPT_ACROSS_COMPACTION_MIN_KIRO_CLI_VERSION,
     overlay_project_scope,
+    spec_prompt_retention_verified,
 )
 from kiro_crew.agent_sdk.backends_members import (  # noqa: E402,F401 - re-exported vocabulary
     ACP_BACKENDS_MATE_WORKER_KIT,

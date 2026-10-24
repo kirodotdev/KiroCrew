@@ -303,6 +303,7 @@ def build_message(
                 is_cc=is_cc,
                 private_owner=bool(_private_owner),
                 session_start=True,
+                native_prompt_snapshot=ctx._native_prompt_snapshot(context_provider, agent),
             )
         )
         if agent_prompt:

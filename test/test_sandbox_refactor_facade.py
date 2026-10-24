@@ -235,10 +235,10 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _DSH_GATE_ARTIFACT_SUFFIXES _PI_GATE_DIR_ARTIFACTS _LEGACY_LAUNCHER_DIR
         _resolve_agent_executable _ssh_supports_accept_new namespace_launcher_script_dir
         _ensure_run_dir _LAUNCHER_INTERPRETER_FLAGS _launcher_script_of _log_refusals
-        _carveout_probes _plan_cwd _live_plan_host _spawn_plan _build_launcher_script
-        _build_seatbelt_profile namespace_argv _pinned_env_bin sandbox_exec_argv
-        _sandbox_env_scrub_keys _sandbox_env_unset_args cleanup_stale_sandbox_profiles
-        _ENV_BINARY_CANDIDATES _unset_env_argv
+        _carveout_probes _plan_cwd _live_plan_host sandbox_may_hide_path _spawn_plan
+        _build_launcher_script _build_seatbelt_profile namespace_argv _pinned_env_bin
+        sandbox_exec_argv _sandbox_env_scrub_keys _sandbox_env_unset_args
+        cleanup_stale_sandbox_profiles _ENV_BINARY_CANDIDATES _unset_env_argv
         """.split()),
     "kiro_crew.sandbox_delegation": tuple("""
         _KIRO_INTERNAL_SETTINGS_PATH _KIRO_INTERNAL_SANDBOX_KEY _kiro_delegation_warned

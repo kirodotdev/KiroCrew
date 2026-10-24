@@ -789,6 +789,9 @@ async def _finish_create_session(
     if refusal:
         await self.terminate_session(session_id)
         raise AcpRuntimeError(refusal)
+    # The persona pair the set_mode bracket read around its request, handed
+    # to the recorder below; None on every branch that sends no set_mode.
+    set_mode_persona: tuple[str, str] | None = None
     if mode_agent and mode_wire and self._mode_available(mode_wire, resp):
         # Measured BEFORE the request goes out, which is the only moment the
         # answer is unambiguous: everything queued right now initialized
@@ -800,13 +803,14 @@ async def _finish_create_session(
         staged_before_switch = handle.queued_frame_count()
         # Only the frame THIS activation sends may be judged afterwards.
         self._switched_model_record().pop(session_id, None)
-        activated_alias = await self._activate_mode_bracketed(
+        activated_alias, set_mode_persona = await self._activate_mode_bracketed(
             session_id,
             mode_agent,
             budget=budget,
             payload_snapshot=payload_snapshot,
             wire_registered=kas_agents is not None,
             mode_id=mode_wire,
+            handle=handle,
         )
         set_mode_ran = True
         handle.active_agent = mode_agent
@@ -859,13 +863,14 @@ async def _finish_create_session(
             handle, set_mode_ran=set_mode_ran, activated_alias=activated_alias
         )
     handle.native_context_documents.update(projected_sources)
-    # Inline prompt bytes and file resources come from the same activated
-    # wire definition. Conditional and indexed resources remain native.
-    for definition in kas_agents or ():
-        if definition.get("id") == active_agent and isinstance(definition.get("prompt"), str):
-            handle.native_context_documents[f"template://{active_agent}#prompt"] = definition[
-                "prompt"
-            ]
+    # After the launch and projected sources, on purpose: the helper's
+    # one-record-per-document guard reads what they recorded, and it is the
+    # map's one writer for the persona (the set_mode bracket only returns its
+    # pair), so a member launch that already recorded the persona under its
+    # source path is not given a second record under the prompt key.
+    await self._record_native_persona_snapshot(
+        handle, active_agent, kas_agents, set_mode_persona=set_mode_persona
+    )
 
     # Each session start forks another agent process under the root, and
     # its MCP servers have just reported, so scan again: the spawn snapshot

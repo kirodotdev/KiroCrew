@@ -433,6 +433,10 @@ async def load_session(
     if refusal:
         await self.terminate_session(resume_sid)
         raise AcpRuntimeError(refusal)
+    # As in _finish_create_session: the pair the set_mode bracket read around
+    # its request, for the recorder after the launch-record copy; None
+    # otherwise.
+    set_mode_persona: tuple[str, str] | None = None
     if mode_agent and mode_wire and self._mode_available(mode_wire, resp):
         # Measured BEFORE the request goes out, which is the only moment the
         # answer is unambiguous: everything queued right now initialized
@@ -443,13 +447,14 @@ async def load_session(
         # "no report" for the rest of the session.
         staged_before_switch = handle.queued_frame_count()
         self._switched_model_record().pop(resume_sid, None)
-        activated_alias = await self._activate_mode_bracketed(
+        activated_alias, set_mode_persona = await self._activate_mode_bracketed(
             resume_sid,
             mode_agent,
             budget=budget,
             payload_snapshot=payload_snapshot,
             wire_registered=kas_agents is not None,
             mode_id=mode_wire,
+            handle=handle,
         )
         set_mode_ran = True
         handle.active_agent = mode_agent
@@ -497,6 +502,18 @@ async def load_session(
         self._copy_native_launch_sources(
             handle, set_mode_ran=set_mode_ran, activated_alias=activated_alias
         )
+    # Mirrors _finish_create_session: KAS got its payload re-sent, and on
+    # kiro-cli this runtime read the spec when its process spawned (a fresh
+    # runtime respawns for a resume) and re-read it at the set_mode above, so
+    # the snapshot the prompt builder's dedup compares against is recorded for
+    # a resume too. After the launch-record copy, as on the create path: the
+    # recorder is the map's one writer for the persona, its one-record guard
+    # reads what that copy recorded, and it prefers the pair the bracket read
+    # around set_mode over the spawn copy. A resume records no projected
+    # sources.
+    await self._record_native_persona_snapshot(
+        handle, active_agent, kas_agents, set_mode_persona=set_mode_persona
+    )
 
     # A resume re-initializes the MCP servers and forks the same agent
     # processes a fresh session does, so it needs the same scan; without it

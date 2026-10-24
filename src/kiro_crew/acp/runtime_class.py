@@ -189,6 +189,9 @@ class AcpRuntime:
     _served_default_after_mode = _rt_mode._served_default_after_mode
     _refuse_if_view_superseded = _rt_mode._refuse_if_view_superseded
     _activate_mode_bracketed = _rt_mode._activate_mode_bracketed
+    _native_persona_text = _rt_mode._native_persona_text
+    _spawn_persona_text = _rt_mode._spawn_persona_text
+    _record_native_persona_snapshot = _rt_mode._record_native_persona_snapshot
     # JSON-RPC over the child's stdin: ``kiro_crew.acp.runtime_wire``.
     send_request = _rt_wire.send_request
     send_notification = _rt_wire.send_notification
@@ -403,6 +406,13 @@ class AcpRuntime:
         # the bracket. ``None`` until a spawn takes it, and ``None`` for every agent
         # that mirrors no other spec.
         self._derived_spec_snapshot: Any = None
+        # ``(agent, persona text)`` kiro-cli loaded at spawn, set by
+        # ``_spawn_admitted`` from the spec named at ``--agent``, read just
+        # before the launch; ``None`` before a spawn and when that copy could
+        # not be read. A runtime built with ``__new__`` (the projection tests'
+        # shape) has no such field, and the persona recorder reads it with a
+        # ``None`` default, so it records nothing for one.
+        self._spawn_persona_snapshot: tuple[str, str] | None = None
 
         # Recycling thresholds — see _is_stale(). Long-lived multiplexed
         # runtimes (e.g. the kirocrew-lite background runtime) have no

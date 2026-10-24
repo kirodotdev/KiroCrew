@@ -79,6 +79,7 @@ from kiro_crew.context_assembly import turn as _turn  # noqa: F401 - loaded eage
 from kiro_crew.context_assembly import turn_message as _turn_message  # noqa: F401 - loaded eagerly
 from kiro_crew.context_assembly.agent_spec import (  # noqa: F401
     _load_steering_resources,
+    _native_prompt_snapshot,
     _read_include_crew_context,
     _read_prompt_file,
     steering_target_admissible,

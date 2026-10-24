@@ -130,7 +130,7 @@ class TestConductorCarriesTheWidgetBlock:
     to a ledger, not a person, and gets no pointer."""
 
     @staticmethod
-    def _contract(tmp_path, monkeypatch, agent, session_key, *, private_owner):
+    def _contract(tmp_path, monkeypatch, agent, session_key, *, private_owner, snapshot=None):
         import json
 
         from kiro_crew.agent_parts.spec_prompts import (
@@ -164,6 +164,7 @@ class TestConductorCarriesTheWidgetBlock:
                 is_cc=False,
                 private_owner=private_owner,
                 session_start=True,
+                native_prompt_snapshot=snapshot,
             )
 
     def test_the_spec_prompts_carry_no_unresolved_placeholder(self):
@@ -212,6 +213,54 @@ class TestConductorCarriesTheWidgetBlock:
         )
         assert "# Kiro Crew Worker" in contract
         assert "Inline Widgets" not in contract
+
+    @pytest.mark.parametrize("agent", ["kirocrew-conductor", "kirocrew-ledger-conductor"])
+    def test_a_conductor_the_harness_holds_keeps_only_the_pointer(
+        self, tmp_path, monkeypatch, agent
+    ):
+        # kiro-cli loaded this exact spec prompt (the activation snapshot), so the
+        # block repeats none of it and carries the pointer alone.
+        from kiro_crew.agent_parts.spec_prompts import _CONDUCTOR_SYSTEM_PROMPT
+
+        contract = self._contract(
+            tmp_path,
+            monkeypatch,
+            agent,
+            "dashboard:abc",
+            private_owner=False,
+            snapshot=_CONDUCTOR_SYSTEM_PROMPT,
+        )
+        assert "## Inline Widgets" in contract
+        assert "The frame is themed" in contract
+        assert "# Kiro Crew Conductor" not in contract
+        assert "{{WIDGET_BLOCK}}" not in contract
+
+    def test_a_conductor_the_harness_holds_gets_no_block_off_the_dashboard(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.agent_parts.spec_prompts import _CONDUCTOR_SYSTEM_PROMPT
+
+        contract = self._contract(
+            tmp_path,
+            monkeypatch,
+            "kirocrew-conductor",
+            "slack:C123:123.456",
+            private_owner=False,
+            snapshot=_CONDUCTOR_SYSTEM_PROMPT,
+        )
+        assert contract == ""
+
+    def test_a_conductor_edited_after_activation_keeps_its_whole_block(self, tmp_path, monkeypatch):
+        contract = self._contract(
+            tmp_path,
+            monkeypatch,
+            "kirocrew-conductor",
+            "dashboard:abc",
+            private_owner=False,
+            snapshot="You are the conductor this session started with.",
+        )
+        assert "# Kiro Crew Conductor" in contract
+        assert "## Inline Widgets" in contract
 
 
 class TestMaxSubagentsPlaceholder:

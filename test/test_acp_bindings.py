@@ -128,6 +128,8 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "model_pin_partial": ("property", False, "bb418bb7ece8", "acp"),
     "model_pin_refused": ("property", False, "bb418bb7ece8", "acp"),
     "native_context_documents": ("property", False, "8cab7a4db01b", "acp"),
+    # Whether the harness keeps a custom agent's spec prompt across its own compaction.
+    "native_spec_prompt_across_compaction": ("property", False, "a6632a57e602", "acp"),
     "native_steering": ("property", False, "a6632a57e602", "acp"),
     "new_conversation": ("function", True, "b60c5fea256e", "acp"),
     "process_instance": ("property", False, "bb418bb7ece8", "acp"),

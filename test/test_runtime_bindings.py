@@ -63,7 +63,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_ROOT_UNREACHED_REASON_BY_VERDICT": ("data", False, "", "runtime_class"),
     # Takes ``launch_agent``: the app launch copy kiro-cli is asked for (``apps.agent_launch``).
     "__init__": ("function", False, "933ec8f4a25b", "runtime_class"),
-    "_activate_mode_bracketed": ("function", True, "3dc699e8b0af", "runtime_mode_activation"),
+    "_activate_mode_bracketed": ("function", True, "0b6220ddca25", "runtime_mode_activation"),
     "_activates_agent_by_mode": ("function", False, "a6632a57e602", "runtime_mode_activation"),
     "_adopt_skill_projection": ("function", False, "5c4748bee6c5", "runtime_mode_activation"),
     "_adopted_skill_projection_generation": (
@@ -120,6 +120,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_mirrored_spec_check_needed": ("function", False, "3cd7cb3cf81a", "runtime_session_setup"),
     "_mode_available": ("staticmethod", False, "08e0d5cbf178", "runtime_mode_activation"),
     "_mount_member_panel": ("function", True, "bcc6c7135aaa", "runtime_session_setup"),
+    "_native_persona_text": ("function", False, "d155a7c55d32", "runtime_mode_activation"),
     "_note_dropped_frame": ("function", False, "65da3cb3ad9e", "runtime_frame_accounting"),
     "_note_reaped": ("function", False, "65a401984277", "runtime_liveness"),
     "_note_reaped_after_kill": ("function", False, "0d4bde9dbb0a", "runtime_liveness"),
@@ -138,6 +139,12 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_reader_has_buffered_input": ("function", False, "a6632a57e602", "runtime_liveness"),
     "_reader_loop": ("function", True, "b60c5fea256e", "runtime_reader_loop"),
     "_reap_after_cancelled_tracking": ("function", True, "ae883e772e9f", "runtime_liveness"),
+    "_record_native_persona_snapshot": (
+        "function",
+        True,
+        "91c8fe45987e",
+        "runtime_mode_activation",
+    ),
     "_record_tree_before_failed_start_kill": (
         "function",
         True,
@@ -173,6 +180,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_spawn_admitted_rederiving_once": ("function", True, "b60c5fea256e", "runtime_spawn_entry"),
     "_spawn_agent_not_loaded_reason": ("function", True, "46026981236a", "runtime_mode_activation"),
     "_spawn_answer_task": ("function", True, "3c88fb3b5f4d", "runtime_host_requests"),
+    "_spawn_persona_text": ("function", False, "2e34b912ca8a", "runtime_mode_activation"),
     "_stage_init_frame": ("function", False, "87459833bc5c", "runtime_session_registry"),
     "_stale_by_age": ("function", False, "a6632a57e602", "runtime_liveness"),
     "_start_mount_check": ("function", False, "3e413c5306a5", "runtime_session_setup"),

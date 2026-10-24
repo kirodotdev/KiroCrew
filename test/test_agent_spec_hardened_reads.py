@@ -1156,6 +1156,11 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # can raise the banner that triggers it.
     "kiro_crew/mcp_oauth_discovery.py": [("mcp_oauth_discovery", "unknown")],
     "kiro_crew/member_essential_context.py": [
+        # native_spec_prompt_copy: the read of a custom agent's spec taken around
+        # the two moments kiro-cli loads it (process spawn, session/set_mode) to
+        # snapshot the persona a natively-loading harness delivered.
+        # It is a prompt read, so it carries the session-start prompt read's label.
+        ("agent_prompt", "context"),
         ("member_essentials", "context"),
         ("member_essentials", "context"),
     ],

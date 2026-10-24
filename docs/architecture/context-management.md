@@ -48,7 +48,7 @@ begin on its own line; the assembly newline-terminates the caller's
 
 | # | Block | Fed by | Condition |
 |--:|---|---|---|
-| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md`; `_load_agent_prompt` for a custom agent | skipped on a slim resume |
+| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md`; `_load_agent_prompt` for a custom agent | skipped on a slim resume; withheld for a custom agent when the live provider's `native_context_documents` holds the copy the harness loaded at activation (recorded by the ACP runtime on kiro-cli and KAS only) and the block would repeat it word for word, recorded at `session/new` and again at `session/load` on a resume (`native_context_documents["template://<agent>#prompt"]`); a spec edited since, or no recorded copy, keeps the block |
 | 2 | `[CRITICAL RULES]` | `_critical_rules_for` (runtime-conditional) | unless the agent sets `includeCrewContext: false` |
 | 3 | `[CURRENT DATE]` | `get_local_tz` + `KiroCrewConfig.timezone` | always |
 | 4 | `[CURRENT AGENT]` / `[RUNTIME]` | `_runtime_display_name`, trusted `runtime_source` from the dispatcher | when a session key exists |
@@ -367,6 +367,16 @@ re-adds, once:
    like the cap figure, read at session start only: the full section while
    browsing is set up on the host (or that cannot be read), a short pointer while
    it is not.
+   A custom persona the harness delivers itself is withheld here by the same
+   rule as at session start plus one condition: the harness is shown to keep
+   its own copy across a compaction (`native_spec_prompt_across_compaction`;
+   kiro-cli on the 2.28.0 transcript and only from that release, read off the
+   handshake's `agentInfo.version`, KAS not, so a KAS session and a kiro-cli
+   below the floor are sent the block once after a compaction). The comparison
+   is against the copy it loaded
+   at activation (recorded again at `session/load`, so a resumed session
+   compacts the same way), so a spec edited mid-session gets the block back
+   with its current text.
 6. `[REINJECTED AFTER COMPACTION — work ledger]` — the session's open
    [`[work ledger]` snapshot](#the-work-ledger-snapshot), via
    `context_assembly/turn.py` → `ledger_reinjection_part`; withheld on minimal and

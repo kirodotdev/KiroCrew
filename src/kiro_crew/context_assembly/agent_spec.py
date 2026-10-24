@@ -33,7 +33,7 @@ import re
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.context_assembly import sections as _sections
 
@@ -212,6 +212,28 @@ def _read_prompt_file(pp: Path) -> str:
                 "Shipped prompt %s could not be read (%s); no agent prompt", fallback, exc2
             )
             return ""
+
+
+def _native_prompt_snapshot(context_provider: Any, agent: str | None) -> str | None:
+    """The persona the live harness loaded for *agent* at activation, or ``None``.
+
+    Read off the provider's ``native_context_documents`` under
+    ``template://<agent>#prompt``, which the runtime records when the session is
+    activated (from the KAS wire definition, or on kiro-cli from the spec it
+    loads at spawn and ``session/set_mode``). The runtime writes that key only
+    on a harness that loads a spec itself, so a present value is the whole
+    report that the harness delivers the prompt; no separate provider flag is
+    asked. Both the session-start build and the post-compaction reinjection
+    read it live, so a compaction later in the session still compares the block
+    against what was loaded, not against the file as it reads now
+    (kirodotdev/KiroCrew#13305).
+    """
+    if context_provider is None or not agent:
+        return None
+    from kiro_crew.member_essential_context import native_prompt_document_key
+
+    value = context_provider.native_context_documents.get(native_prompt_document_key(agent))
+    return value if isinstance(value, str) else None
 
 
 def _substitute_bot_name(self, prompt: str) -> str:
@@ -481,19 +503,34 @@ def _load_agent_prompt(
     *,
     owner_template: str = "",
     spec_path: Path | None = None,
+    native_copy_out: list[bool] | None = None,
 ) -> str:
     """Read the resolved execution prompt, excluding an owner source in essentials.
 
     *spec_path* is the file a pinned session runs from (``skill_scope_pin``), read
     by its path instead of resolving *agent* by name project-first.
+
+    *native_copy_out*, when given, receives one bool: whether the returned text
+    is exactly the copy a harness that loads the agent's spec delivers itself.
+    The shape that qualifies is ``native_spec_prompt_shape``'s (a user-level
+    spec's inline ``prompt`` or absolute, non-``~`` ``file://`` that no sandbox
+    mask may cover), the same rule
+    the activation snapshot in ``acp/runtime_mode_activation.py`` reads by, so the two cannot
+    drift apart. The managed contract replaces the stub or pointer the harness
+    reads; a relative ``file://`` resolves against the spec's own directory,
+    while the activation snapshot reads a path only as the spec spells it; and a project-level
+    spec is not the one a harness reading only the user level runs. So none
+    of those can be shown identical (kirodotdev/KiroCrew#13305).
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_discovery import _read_agent_spec
     from kiro_crew.member_essential_context import (
+        native_spec_prompt_shape,
         resolve_relative_prompt_path,
         resolve_template_path,
     )
 
+    native_copy = False
     try:
         path = spec_path or resolve_template_path(agent, project)
         if path is None:
@@ -516,6 +553,10 @@ def _load_agent_prompt(
             return _read_prompt_file(ctx._prompt_path())
         if agent == owner_template:
             return ""
+        # The one layer every harness that loads specs natively reads, judged
+        # by the shared shape rule. Guarded on its own: a failure here may
+        # only cost the dedup, never the prompt.
+        native_copy = native_spec_prompt_shape(prompt, path)
         if prompt.startswith("file://"):
             source = Path(prompt[7:]).expanduser()
             if not source.is_absolute():
@@ -531,7 +572,11 @@ def _load_agent_prompt(
             return ctx.safe_read_file(str(source))
         return prompt
     except (OSError, ValueError, ctx.FileTooLargeError):
+        native_copy = False
         return ""
+    finally:
+        if native_copy_out is not None:
+            native_copy_out.append(native_copy)
 
 
 def _resolve_agent_prompt(
@@ -544,6 +589,7 @@ def _resolve_agent_prompt(
     is_cc: bool,
     private_owner: bool,
     session_start: bool,
+    native_prompt_snapshot: str | None = None,
 ) -> str:
     """Return the agent contract for the ``[AGENT SYSTEM PROMPT]`` block, or "".
 
@@ -551,11 +597,29 @@ def _resolve_agent_prompt(
     contract a compacted session gets back is the one it started with. Only
     a session start takes a fresh reading of the delegation cap; the call
     that restores the block reuses the session's own.
+
+    *native_prompt_snapshot* is the copy of a custom spec's own ``prompt``
+    the live harness actually loaded when the agent was activated
+    (``native_context_documents``, see ``_native_prompt_snapshot``). The
+    runtime records it only on a harness that loads a spec itself (kiro-cli,
+    KAS), so its presence is the whole report that the harness delivers the
+    prompt. The block is then withheld only when it would
+    repeat that copy word for word: the loaded text has the harness's own shape
+    (``_load_agent_prompt``), equals the snapshot, and resolving Crew's
+    placeholders leaves it unchanged. A spec edited after activation differs
+    from the snapshot and keeps the block with the current text; no snapshot
+    keeps it too. Anything not shown identical keeps the block, since a wrong
+    guess drops the persona outright (kirodotdev/KiroCrew#13305).
+
+    A ``WIDGET_BLOCK_AGENTS`` prompt also carries the widget pointer, which the
+    harness does not hold: when the rest would repeat the snapshot, the block
+    keeps that pointer alone, as a crewmate's does.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_files import is_kirocrew_default_agent
 
     is_custom = bool(agent) and not is_kirocrew_default_agent(agent)
+    native_copy: list[bool] = []
     agent_prompt: str
     if is_cc and not is_custom:
         # CC gets the same Kiro Crew persona prompt as kiro — including
@@ -578,11 +642,15 @@ def _resolve_agent_prompt(
             project,
             owner_template=(agent or "") if private_owner else "",
             spec_path=ctx.pinned_session_skill_spec(session_key),
+            native_copy_out=native_copy,
         )
     else:
         pp = ctx._prompt_path()
         logger.debug("Prompt selection: mode=%r → %s", mode, pp)
         agent_prompt = _read_prompt_file(pp)
+    # The spec's own text, which a native harness may already hold; the widget
+    # pointer below is Crew's alone.
+    spec_prompt = agent_prompt
     # A built-in spec whose own prompt asks for widgets gets the widget pointer
     # here rather than as a token in its spec: kiro-cli loads that spec prompt
     # natively and a crewmate's essentials deliver it verbatim, and neither path
@@ -618,6 +686,7 @@ def _resolve_agent_prompt(
         if _sections.BROWSER_BEGIN in agent_prompt
         else None
     )
+    loaded = agent_prompt
     agent_prompt = self._resolve_prompt_templates(
         agent_prompt, session_key or "", cap_figure, computer_use=computer_use, browser=browser
     )
@@ -625,4 +694,18 @@ def _resolve_agent_prompt(
     # that held only the pointer empty: no block rather than a blank one.
     if not agent_prompt.strip():
         return ""
-    return self._substitute_bot_name(agent_prompt)
+    agent_prompt = self._substitute_bot_name(agent_prompt)
+    if (
+        native_copy == [True]
+        and native_prompt_snapshot is not None
+        and spec_prompt == native_prompt_snapshot
+    ):
+        if agent_prompt == loaded:
+            return ""
+        # The widget pointer appended above is the one part the harness lacks.
+        # When resolving left the spec's own text unchanged, the block keeps
+        # just the pointer, as a crewmate's does.
+        if loaded == f"{spec_prompt}\n\n{_WIDGET_TOKEN}" and agent_prompt.startswith(spec_prompt):
+            pointer = agent_prompt[len(spec_prompt) :]
+            return pointer.lstrip("\n") if pointer.strip() else ""
+    return agent_prompt

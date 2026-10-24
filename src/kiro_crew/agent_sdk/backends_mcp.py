@@ -266,6 +266,76 @@ def overlay_project_scope(backend: str, work_dir: Any) -> dict[str, Any]:
 # it on day one.
 ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
+#: Backends whose session receives a custom agent spec's own ``prompt`` from the
+#: harness itself, so the ``[AGENT SYSTEM PROMPT]`` block must not repeat it
+#: (kirodotdev/KiroCrew#13305). kiro-cli reads the field off disk when
+#: ``--agent`` or ``session/set_mode`` activates the agent (inline text, or the
+#: file a ``file://`` names) and NOT at a plain ``session/new``: a live probe on
+#: kiro-cli 2.28.0, linked from kirodotdev/KiroCrew#17172 (Manual verification),
+#: rewrote the spec mid-process and got the old text from ``session/new`` and the
+#: new text from ``session/set_mode``. KAS is handed it on ``session/new``
+#: (``acp.kas_agents.resolve_prompt``). Every other harness reads no kiro spec,
+#: so the block is the only channel its session has for a persona. Whether the
+#: harness still holds the field after ITS OWN compaction is a separate claim,
+#: ``ACP_BACKENDS_NATIVE_SPEC_PROMPT_ACROSS_COMPACTION`` below.
+#:
+#: Membership says only that the harness carries the field. Read only by the ACP
+#: runtime, which records the copy the harness loaded in the session's
+#: ``native_context_documents`` on these backends alone. Whether the copy
+#: Crew would inject is the SAME text stays the prompt builder's call
+#: (``ContextBuilder._resolve_agent_prompt``, which asks for that recorded copy,
+#: never the set): the managed contract, a relative
+#: ``file://``, a project-level spec and a prompt that uses Crew's placeholders
+#: all keep the block. A harness added later stays out until it is shown to
+#: deliver the field itself, because a wrong membership drops a persona outright.
+ACP_BACKENDS_NATIVE_SPEC_PROMPT: FrozenSet[str] = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
+#: Backends shown to keep a custom agent spec's ``prompt`` as the system prompt
+#: ACROSS THEIR OWN COMPACTION, so the post-compaction turn may withhold the
+#: ``[AGENT SYSTEM PROMPT]`` block too (kirodotdev/KiroCrew#13305). Session start
+#: is ``ACP_BACKENDS_NATIVE_SPEC_PROMPT``'s question; this set answers only the
+#: turn after a compaction. kiro-cli is in on a live transcript, taken on
+#: kiro-cli 2.28.0 and linked from kirodotdev/KiroCrew#17172 (Manual
+#: verification): a compaction forced through the runtime's compact request,
+#: the spec prompt still held, zero duplicate blocks, the same role answer before
+#: and after. That transcript is the whole basis of the membership, and its
+#: release is the floor ``NATIVE_SPEC_PROMPT_ACROSS_COMPACTION_MIN_KIRO_CLI_VERSION``
+#: below: the providers' property holds only at or above it, so a kiro-cli
+#: below it, and a handshake with no parsable version, are sent the block, a
+#: duplicate of a prompt the harness may still hold, which costs tokens and
+#: nothing else. No list of verified releases is kept. KAS is
+#: OUT: nothing in the code or docs states that its summarization keeps the spec
+#: prompt, and no KAS transcript exists, so a KAS session re-sends the block
+#: after a compaction exactly as a harness that reads no spec does. A wrong
+#: membership here drops a persona for the rest of the session, so a harness
+#: joins only on such a transcript. Read only by the session providers'
+#: ``native_spec_prompt_across_compaction``.
+ACP_BACKENDS_NATIVE_SPEC_PROMPT_ACROSS_COMPACTION: FrozenSet[str] = frozenset({ACP_BACKEND_KIRO})
+
+#: The kiro-cli release the across-compaction transcript was taken on, and the
+#: floor for ``native_spec_prompt_across_compaction``: the property holds only
+#: at or above it, through :func:`spec_prompt_retention_verified`. A floor, not
+#: a list: nothing is maintained per release, and the failure mode below it is
+#: a duplicate block, never a dropped persona. Moving it is a one-line change on
+#: a new transcript, the same shape as ``MCP_HOT_RELOAD_MIN_KIRO_CLI_VERSION``.
+NATIVE_SPEC_PROMPT_ACROSS_COMPACTION_MIN_KIRO_CLI_VERSION: tuple[int, int, int] = (2, 28, 0)
+
+
+def spec_prompt_retention_verified(version: tuple[int, int, int] | None) -> bool:
+    """Whether *version* (a parsed ``agentInfo.version``) is at or above the floor.
+
+    Pure, and deliberately backend-blind: the caller has already asked
+    ``ACP_BACKENDS_NATIVE_SPEC_PROMPT_ACROSS_COMPACTION``. ``None`` (no
+    handshake yet, or an unparsable version string) is False: an unknown
+    release is not "probably new enough", because a wrong True drops the
+    persona for the rest of the session while a wrong False costs one
+    duplicate block.
+    """
+    return (
+        version is not None and version >= NATIVE_SPEC_PROMPT_ACROSS_COMPACTION_MIN_KIRO_CLI_VERSION
+    )
+
+
 # Backends on which an agent spec's ``"tools": []`` is honoured as a total ban --
 # no MCP server AND no harness-native tool (Bash, file edit, ...) is callable --
 # rather than merely an MCP-server allowlist that leaves native tools reachable.

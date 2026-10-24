@@ -17,8 +17,9 @@ Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``
 ``_native_launch_sources``, ``_native_launch_view_alias``, ``_native_skill_projection``,
 ``_pid``, ``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_prompt_capabilities``, ``_reader_task``, ``_sandbox_cleanup``, ``_scope_unit``,
-``_skill_projection_generation``, ``_spawn_monotonic``, ``_spawn_skill_projection``,
-``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_tool_search_wire``.
+``_skill_projection_generation``, ``_spawn_monotonic``, ``_spawn_persona_snapshot``,
+``_spawn_skill_projection``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``,
+``_tool_search_wire``.
 
 ``_with_mcp_sign_in_storage`` (a plain function handed the runtime) also writes
 ``_mcp_secret_server``.
@@ -464,6 +465,9 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             # on the identity; kiro-cli is handed the launch copy instead.
             argv = list(argv)
             argv[argv.index("--agent") + 1] = self._launch_agent
+        # What ``--agent`` names: the launch copy when this runtime runs one, else
+        # the authored name, which a view prepared below replaces with its alias.
+        spawn_transport = self._launch_agent or self._agent
         if self.acp_backend == ACP_BACKEND_KIRO:
             from kiro_crew.acp.skill_projection import prepare_native_skill_projection
 
@@ -527,6 +531,12 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
                     # any prepared view, so the session's control plane and the
                     # launch steering record below are judged from it.
                     await asyncio.to_thread(_adopt_launch_copy_view, projection, self._launch_agent)
+                # The name kiro-cli is given: the launch copy when this runtime
+                # runs one, else its skill-view alias when a view was prepared,
+                # else the authored name. The persona read below reads THAT
+                # spec, because it is the copy the process loads; a launch copy
+                # is not alias-shaped, so that read records nothing for it.
+                spawn_transport = argv[agent_position]
                 if not self._member_context and not self._native_launch_sources:
                     if not await asyncio.to_thread(
                         acp_driver.inherits_default_resources, self._work_dir
@@ -696,6 +706,16 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
         # databases) keeps its own copy under this process's scratch directory.
         _point_private_state_at_scratch(env, plan.private_state_env, self._scratch_dir)
 
+    # The persona kiro-cli is about to load, read from the spec named at
+    # ``--agent`` (its skill-view alias when one was prepared) immediately
+    # before the launch. One read, before: an edit landing between it and
+    # the process's own read leaves the file different from this text, so
+    # the block is sent rather than withheld; an inline alias prompt cannot
+    # change under its name at all. ``None`` (no agent, no native prompt,
+    # unreadable copy) records nothing, which keeps the block.
+    self._spawn_persona_snapshot = await self._to_thread_guarding_sandbox(
+        self._spawn_persona_text, spawn_transport
+    )
     launched = await launch(
         self,
         LaunchRequest(
