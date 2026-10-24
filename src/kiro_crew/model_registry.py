@@ -782,15 +782,24 @@ def resolve_wire_model_id(model_id: str, provider: str) -> str:
     return preferred_advertised_spelling(matches)
 
 
+def _is_version_less(alias: str) -> bool:
+    """Whether *alias* carries no version digit — a bare family name like ``opus``.
+
+    The single definition of the "version-less alias" test. A versioned alias
+    (``claude-opus-4.8``) names a specific model; a version-less one names the
+    family, which is what both the bare-family set (:func:`_build_indices`) and
+    the wire-fold fallback (:func:`_family_alias_matches`) key on.
+    """
+    return not any(ch.isdigit() for ch in alias)
+
+
 def _family_alias_matches(model_id: str, provider: str, adv: Sequence[str]) -> list[str]:
     """Advertised ids that are a version-less alias of ``model_id``'s registry entry."""
     key = _resolve_canonical(model_id, provider)
     if key is None:
         return []
     family = {
-        alias.lower()
-        for alias in _REGISTRY[key].get("aliases", [])
-        if not any(ch.isdigit() for ch in alias)
+        alias.lower() for alias in _REGISTRY[key].get("aliases", []) if _is_version_less(alias)
     }
     return [a for a in adv if a.lower() in family]
 
@@ -819,6 +828,15 @@ _CANONICAL_INDEX: dict[str, dict[str, str]] = {}
 _CANONICAL_INDEX_FOLDED: dict[str, dict[str, str]] = {}
 # canonical key -> default flag, for cheap default resolution per provider.
 _DEFAULTS: dict[str, str] = {}
+# Version-less ``claude_code`` aliases (``sonnet``, ``opus``, ``fable``): a bare
+# FAMILY name the registry lists only so the adapter's advertised ids fold onto
+# a canonical for dropdown dedup. On the claude_code WIRE path these resolve
+# against the advertised-model cache to the current served model of the family
+# instead of the entry's hand-maintained pinned id, so the alias tracks what the
+# account serves rather than a version that goes stale on every release (see
+# :func:`to_provider_id` / :func:`_resolve_bare_family_claude_code`). A versioned
+# alias (``claude-opus-4.8``) names a specific model and is NOT in this set.
+_CLAUDE_CODE_BARE_FAMILY_ALIASES: set[str] = set()
 
 
 def _build_indices() -> None:
@@ -826,6 +844,7 @@ def _build_indices() -> None:
     _CANONICAL_INDEX.clear()
     _CANONICAL_INDEX_FOLDED.clear()
     _DEFAULTS.clear()
+    _CLAUDE_CODE_BARE_FAMILY_ALIASES.clear()
     for key, entry in _REGISTRY.items():
         for provider, pid in entry.get("providers", {}).items():
             idx = _CANONICAL_INDEX.setdefault(provider, {})
@@ -836,6 +855,11 @@ def _build_indices() -> None:
                 idx.setdefault(alias, key)  # alias -> canonical (first wins)
             if entry.get("default"):
                 _DEFAULTS.setdefault(provider, key)
+        # A version-less alias of a claude_code entry is a bare family name.
+        if entry.get("providers", {}).get("claude_code"):
+            for alias in entry.get("aliases", []):
+                if _is_version_less(alias):
+                    _CLAUDE_CODE_BARE_FAMILY_ALIASES.add(alias)
     for provider, idx in _CANONICAL_INDEX.items():
         folded = _CANONICAL_INDEX_FOLDED.setdefault(provider, {})
         for spelling, key in idx.items():
@@ -843,6 +867,98 @@ def _build_indices() -> None:
 
 
 _build_indices()
+
+
+def _is_bare_family_alias(canonical_or_id: str) -> bool:
+    """Whether *canonical_or_id* is a version-less ``claude_code`` family alias.
+
+    ``sonnet`` / ``opus`` / ``fable`` are the registry's bare family names on the
+    claude_code column; a versioned alias (``claude-opus-4.8``) is not. The set
+    is rebuilt from the registry by :func:`_build_indices`, so a new bare family
+    alias needs no edit here.
+    """
+    return canonical_or_id in _CLAUDE_CODE_BARE_FAMILY_ALIASES
+
+
+def _claude_code_family_stem(bare_alias: str) -> str:
+    """The ``claude-<family>-`` prefix a bare claude_code family alias names.
+
+    ``sonnet`` resolves to canonical ``sonnet-4.6-1m``, whose claude_code
+    provider id is ``global.anthropic.claude-sonnet-4-6[1m]``; its normalized key
+    is ``claude-sonnet-4-6``, and the family stem is ``claude-sonnet-``. An
+    advertised id of the same family (``global.anthropic.claude-sonnet-5-5[1m]``)
+    normalizes to ``claude-sonnet-5-5``, which starts with that stem. Returns
+    ``""`` when the alias has no claude_code entry or the provider id carries no
+    recognizable version, so the caller falls back rather than matching loosely.
+    """
+    key = _resolve_canonical(bare_alias, "claude_code")
+    if key is None:
+        return ""
+    pid = _REGISTRY[key].get("providers", {}).get("claude_code", "")
+    norm = _normalize_advertised_key(pid)  # e.g. "claude-sonnet-4-6"
+    # Strip the trailing version segment(s) back to the first numeric group, so
+    # "claude-sonnet-4-6" -> "claude-sonnet-". A stem with no numeric tail (the
+    # provider id was itself version-less) is too loose to match a family on.
+    m = re.match(r"^([a-z]+(?:-[a-z]+)*)-\d", norm)
+    return m.group(1) + "-" if m else ""
+
+
+def _family_version(normalized_key: str, stem: str) -> tuple[int, ...]:
+    """The numeric version tuple a family member's normalized key carries.
+
+    ``claude-sonnet-5-5`` under stem ``claude-sonnet-`` yields ``(5, 5)``;
+    ``claude-sonnet-4-6`` yields ``(4, 6)``. The tuple compares the way a reader
+    means "newer": ``(5, 5) > (4, 6)``.
+
+    Only the LEADING short version groups count. A Bedrock-style dated id
+    (``claude-sonnet-4-20250514-v1:0`` normalizes to
+    ``claude-sonnet-4-20250514-v1-0``) would otherwise parse as ``(4, 20250514)``
+    and beat a genuine newer ``(5, 5)``. So a run of 5+ digits (a date) and a
+    ``-v`` revision marker end the version: the dated id reads as ``(4,)`` and a
+    real ``(5, 5)`` still wins. A member with no leading numeric group yields
+    ``()``, which sorts below every versioned sibling, so a version-less spelling
+    never beats a versioned one.
+    """
+    tail = normalized_key[len(stem) :] if normalized_key.startswith(stem) else normalized_key
+    version: list[int] = []
+    for seg in tail.split("-"):
+        if not seg.isdigit():
+            break  # a non-numeric segment (e.g. a "v" revision marker) ends the version
+        if len(seg) >= 5:
+            break  # a 5+-digit run is a date stamp, not a version component
+        version.append(int(seg))
+    return tuple(version)
+
+
+def _resolve_bare_family_claude_code(bare_alias: str) -> str:
+    """Resolve a bare claude_code family alias to the CURRENT served model id.
+
+    Folds ``sonnet`` / ``opus`` / ``fable`` onto the HIGHEST-version advertised id
+    of that family, then prefers a 1M-window spelling of that version via
+    :func:`preferred_advertised_spelling`, so the wire value is an id the
+    adapter's ``availableModels`` allowlist actually carries, at the right
+    window, rather than a hand-maintained id that goes stale on every Claude
+    release. Version wins over window: a new family version at 200K still beats an
+    older one at 1M, because the user asked for the current model, and the 1M
+    preference only breaks a tie between two spellings of ONE version.
+
+    Falls back to the registry entry's pinned provider id when the advertised
+    cache is cold or lists nothing in the family — that pinned id is a valid,
+    allowlisted answer, so the result is never worse than the pre-fix behavior.
+    """
+    key = _resolve_canonical(bare_alias, "claude_code")
+    pinned = _REGISTRY[key].get("providers", {}).get("claude_code", "") if key is not None else ""
+    adv = advertised_models("claude_code")
+    stem = _claude_code_family_stem(bare_alias)
+    if adv and stem:
+        family = [a for a in adv if _normalize_advertised_key(a).startswith(stem)]
+        if family:
+            top = max(_family_version(_normalize_advertised_key(a), stem) for a in family)
+            newest = [
+                a for a in family if _family_version(_normalize_advertised_key(a), stem) == top
+            ]
+            return preferred_advertised_spelling(newest) or pinned
+    return pinned
 
 
 def _resolve_canonical(canonical_or_id: str, provider: str) -> str | None:
@@ -912,9 +1028,29 @@ def to_provider_id(canonical_or_id: str, provider: str) -> str:
       (The empty/unset case is handled upstream in the factory, which falls back
       to the registry default before calling this — so "" here only ever means
       an explicit Auto.)
+
+    On the ``claude_code`` provider a BARE FAMILY ALIAS (``sonnet``, ``opus``,
+    ``fable`` — a version-less alias the registry lists only to fold the
+    adapter's advertised ids onto a canonical for dropdown dedup) resolves to
+    the CURRENT advertised model of that family rather than the entry's fixed
+    pinned id. The registry's ``claude_code`` provider ids are hand-maintained,
+    so folding ``sonnet`` onto ``global.anthropic.claude-sonnet-4-6[1m]`` pins a
+    session to a model that goes stale on every Claude release while the user
+    asked for "the current Sonnet". When the account advertised that family
+    (:func:`seed_available_models`'s cache is warm), the newest advertised id in
+    it wins, preferring a 1M-window spelling — so the wire value is an id the
+    adapter's ``availableModels`` allowlist actually carries, at the right
+    window. When the cache is cold the entry's pinned provider id is the only
+    valid answer and is used unchanged, never worse than before. The versioned
+    aliases (``claude-opus-4.8``, ``claude-sonnet-4.6``, …) still resolve to
+    their specific pinned model, because those name a model an AIM-managed agent
+    deliberately pins. ``from_provider_id`` dropdown dedup, the window table and
+    the kiro (``acp``) path all read the alias as before.
     """
     if canonical_or_id == "":
         return ""
+    if provider == "claude_code" and _is_bare_family_alias(canonical_or_id):
+        return _resolve_bare_family_claude_code(canonical_or_id)
     key = _resolve_canonical(canonical_or_id, provider)
     if key is not None:
         return _REGISTRY[key].get("providers", {}).get(provider, "")
