@@ -162,6 +162,16 @@ async def _cron_run_sequence(
     # next step's reply replaces it; the stored result carries all of them.
     _seq_mcp_notes: list[str] = []
     _seq_downgraded = False
+    # A rescope ends every step key's old conversation and commits the
+    # marker clear BEFORE the first turn: a marker still set after the steps
+    # have started work would make the next wake end those keys again, and
+    # with them the children the steps left running in the new project. A
+    # declined end or a store that cannot take the clear fails the wake here,
+    # while nothing has started yet.
+    if cap.rescoped:
+        for _seq_key in dict.fromkeys(s.session_key for s in steps):
+            await self._end_rescoped_conversation(job, _seq_key)
+        await self._settle_rescope(job, cap)
     # Run-scoped: a sequence where one agent got a tool through has
     # done work, even if a later agent was blocked outright.
     _gate = _GateTally()
@@ -212,6 +222,12 @@ async def _cron_run_sequence(
                     step.crew,
                     execution=_seq_execution,
                     replace_execution=True,
+                    cron_cwd=cap.cron_cwd,
+                    rescoped=cap.rescoped,
+                    previous_cwd=cap.scope_snapshot[1] or None,
+                    # Every step key was ended above, before the first turn;
+                    # the claim is only checked to be rooted where it must.
+                    pre_ended=True,
                 )
                 _seq_downgraded = _seq_downgraded or _downgraded
                 _acq = True
@@ -249,6 +265,10 @@ async def _cron_run_sequence(
                     resumed=_resumed,
                     needs_reinjection=_seq_reinjection,
                     minimal_context=job.minimal_context,
+                    # The [PROJECT] line names the directory the session
+                    # is rooted in, exactly as for an interactive chat
+                    # scoped to the project; unset stays unset.
+                    project=cap.cron_cwd,
                 )
                 # Wall clock for the cron agent turn: acp never assigns
                 # TurnUsage.duration_ms, so the row falls back to this.
@@ -583,10 +603,19 @@ async def _cron_run_single(
                 rebind_cron_session_template, session_key, cron_execution, job.name
             )
         client, is_new, _resumed, _model_downgraded = await self._acquire_with_model_fallback(
-            job, cron_execution, session_key, _dispatch_agent, _single_cwd, _single_crew
+            job,
+            cron_execution,
+            session_key,
+            _dispatch_agent,
+            _single_cwd,
+            _single_crew,
+            cron_cwd=cap.cron_cwd,
+            rescoped=cap.rescoped,
+            previous_cwd=cap.scope_snapshot[1] or None,
         )
         _acquired = True
         _run_provider = client
+        await self._settle_rescope(job, cap)
         # Same identity publish as the sequential site above — the
         # single-agent cron turn must publish its pidfile mapping or
         # spawn_run's parent resolution has no source to walk to.
@@ -620,6 +649,10 @@ async def _cron_run_single(
             needs_reinjection=_needs_reinjection,
             provider_type=_provider,
             minimal_context=job.minimal_context,
+            # The [PROJECT] line names the directory the session is
+            # rooted in, exactly as for an interactive chat scoped to
+            # the project; unset stays unset.
+            project=cap.cron_cwd,
         )
 
         # Wall clock for the cron agent turn — see the sequential site

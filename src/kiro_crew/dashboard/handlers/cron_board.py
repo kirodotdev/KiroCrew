@@ -142,6 +142,14 @@ async def api_crons(request: web.Request) -> web.Response:
             "silent": j.silent,
             "strict_schedule": j.strict_schedule,
             "hide_in_chat": j.hide_in_chat,
+            # The per-job project directory (agent jobs; "" = gateway default).
+            # Settable from chat via MCP cron_add, so LLM-controllable: redacted
+            # like every other such string this row publishes.
+            "project_dir": (
+                redact_credentials(redact_exfiltration_urls(j.project_dir)[0])[0]
+                if isinstance(getattr(j, "project_dir", ""), str) and j.project_dir
+                else ""
+            ),
             # Returned so the edit form can show the job's real setting instead
             # of defaulting the control to off and silently clearing the flag on
             # the next save.

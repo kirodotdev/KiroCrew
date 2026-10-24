@@ -13,12 +13,14 @@ The store transaction around them -- lock, reload, save -- is the service's.
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 import time
 import uuid
-from typing import Any
+from typing import Any, Sequence
 
-from kiro_crew import cron_script
+from kiro_crew import cron_script, security
 from kiro_crew.cron_service.execution import _SUBPROC_CLEANUP_ALLOWANCE_SECS
 from kiro_crew.cron_service.model import (
     _AUTO_PAUSE_THRESHOLD,
@@ -32,7 +34,20 @@ from kiro_crew.cron_service.schedule import (
     validate_cron_expr,
 )
 from kiro_crew.cron_service.store import _is_representable_number
-from kiro_crew.validation import CHANNEL_MAX_LEN, MAX_CRON_MESSAGE, MAX_SHORT_STRING
+from kiro_crew.hooks import _screen_windows_links, is_unc_shape
+from kiro_crew.validation import (
+    CHANNEL_MAX_LEN,
+    MAX_CRON_MESSAGE,
+    MAX_PROJECT_DIR_LEN,
+    MAX_SHORT_STRING,
+)
+
+#: Windows follows a link's target when resolving a path; the link screen below
+#: runs only there (POSIX symlinks hold no network path).
+_IS_WINDOWS = os.name == "nt"
+
+#: The cron service's logger: operators filter, and tests ``caplog``, on ``kiro_crew.cron``.
+logger = logging.getLogger("kiro_crew.cron")
 
 _MIN_INTERVAL_SECS = 60
 
@@ -42,6 +57,213 @@ _CHAT_FOLDER_NEEDS_PERSISTENT = (
     "Filing runs into a chat folder needs a persistent session: a stateless job "
     "has no job-wide tab to file. Clear the chat folder, or keep the session."
 )
+
+# A project directory scopes an AGENT job's session; a script/command job
+# never launches an agent, so the field would be dead configuration there.
+_PROJECT_DIR_NEEDS_AGENT_JOB = (
+    "project_dir applies only to an agent (message) job: a --script/--command "
+    "job runs no agent session, so there is no session to scope to a project."
+)
+
+
+class CronProjectDirOutOfScope(ValueError):
+    """The canonical ``project_dir`` lies outside the roots the caller may name.
+
+    Raised by :func:`validate_cron_project_dir` when *allowed_roots* is given,
+    which only an AGENT-facing surface passes (the MCP ``cron_add`` /
+    ``cron_update`` tools); operator surfaces pass ``None`` and are not
+    confined. A distinct type so that surface can record the refusal as an
+    authorization denial rather than a validation error; ``canonical`` is the
+    resolved path that was judged, for that record (redact before logging).
+    """
+
+    def __init__(self, message: str, *, canonical: str) -> None:
+        super().__init__(message)
+        self.canonical = canonical
+
+
+PROJECT_DIR_OUT_OF_SCOPE = (
+    "project_dir must be under a configured agent.subagent_cwd_allowed_roots entry "
+    "(the same allowlist spawn_run's cwd answers to)"
+)
+
+
+def _project_dir_within(canonical: str, allowed_roots: Sequence[str]) -> bool:
+    """Whether *canonical* is one of *allowed_roots* or below one, by path component.
+
+    *canonical* is the resolution the caller is about to PERSIST, so it is judged
+    as that string (``normcase``/``normpath`` only, no filesystem): resolving it
+    again here would judge a second, later reading of the directory -- a
+    component swapped for a link between the two readings could be admitted
+    under the allowed roots while the persisted spelling, restored afterwards,
+    names a directory outside them. The roots are the configured spellings and
+    are canonicalised the same way the candidate was (``realpath``), so a link
+    spelling of a root cannot smuggle it in or out and a sibling sharing a
+    root's string prefix is outside it. Not ``agent_policy.validate_cwd``: that
+    re-resolves the candidate by name, which is the second reading this check
+    exists to avoid.
+    """
+    key = os.path.normcase(os.path.normpath(canonical))
+    for root in allowed_roots:
+        if not isinstance(root, str) or not root:
+            continue
+        root_key = os.path.normcase(os.path.realpath(os.path.expanduser(root)))
+        if key == root_key or key.startswith(root_key.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
+def _deny_project_dir(path: str, *, error: str, audit_caller: str) -> None:
+    """Record a SECURITY refusal of *path* in the SEL (best-effort).
+
+    A sensitive location and a network spelling are permission decisions
+    rather than input validation, so each is recorded as a denial under
+    ``cron.project_dir`` for the invoking surface -- the same audit the
+    dashboard's chat-folder validator emits for its sensitive-path refusal.
+    """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
+    try:
+        seams.sel.sel().log_api_access(
+            caller=audit_caller,
+            operation="cron.project_dir",
+            outcome="denied",
+            resources=path,
+            error=error,
+        )
+    except Exception:
+        logger.debug("SEL logging failed for cron.project_dir denial", exc_info=True)
+
+
+def validate_cron_project_dir(
+    raw: str | None,
+    *,
+    audit_caller: str = "cron_store",
+    allowed_roots: Sequence[str] | None = None,
+    revalidate: bool = False,
+) -> str:
+    """Normalize and validate a cron job's per-job project directory.
+
+    Returns the resolved absolute path, or ``""`` when *raw* is empty (the
+    job keeps the gateway's default working directory). Raises ``ValueError``
+    for anything a session could not be rooted at: a relative path, a
+    UNC/network spelling, a path under a sensitive location (``~/.ssh``, the
+    Kiro Crew data home, ...), or a directory that does not exist. The same
+    absolute/realpath/sensitive/isdir rule the dashboard's chat-folder
+    validator applies to a folder's project directory.
+
+    Applied HERE at the persistence owner so every create/update surface (MCP
+    ``cron_add``/``cron_update``, ``kirocrew cron add``/``update``, the
+    dashboard REST routes) shares one check, and again by the wake before it
+    roots a session (``audit_caller="cron:<id>"``), so a directory removed or
+    made sensitive since authoring fails the wake rather than running it
+    elsewhere. The stored value is the REALPATH so the fire-time comparison
+    against the live session's cwd (``provider.cwd``) is a plain string
+    equality.
+
+    *revalidate* is for that fire-time check of a value THIS function already
+    produced: *raw* is then the canonical spelling itself, and the fresh
+    resolution must spell the same directory -- a component replaced by a
+    link since authoring is refused as a SEL-audited ``moved`` denial rather
+    than followed, so the authoring-time judgement (including the agent-scope
+    confinement below, which the wake does not repeat) stays binding.
+
+    The sensitive-path and network-spelling refusals are SEL-audited as
+    denials under ``cron.project_dir`` for the invoking surface named by
+    ``audit_caller`` (``cli``, an MCP session key, a dashboard user,
+    ``cron:<id>`` at fire time); the default is the store itself. The gate is
+    ``is_sensitive_canonical_path`` on the realpath computed here, not the
+    pool-bounded ``is_sensitive_path``, so a resolver-budget miss under
+    simultaneous fires cannot refuse a healthy directory.
+
+    *allowed_roots*, when given, confines the CANONICAL value to those roots
+    (:class:`CronProjectDirOutOfScope` otherwise). It is judged here, on the
+    very value the store goes on to persist, inside the same locked operation:
+    a containment judged by a caller on its own resolution of the raw string
+    and a store that then re-resolves that string are two passes, and a link
+    retargeted between them persists a root the first pass never saw. Only an
+    agent-facing surface passes roots; ``None`` (operator surfaces) confines
+    nothing.
+    """
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        raise ValueError("project_dir must be a string")
+    # Authoring input is trimmed; a REVALIDATION is handed the canonical
+    # spelling the store persisted and must judge exactly that string, since a
+    # trailing-space component trimmed here would resolve a sibling directory
+    # the authoring-time confinement never saw.
+    value = raw if revalidate else raw.strip()
+    if not value:
+        return ""
+    if len(value) > MAX_PROJECT_DIR_LEN:
+        raise ValueError(f"project_dir exceeds {MAX_PROJECT_DIR_LEN} characters")
+    caller = audit_caller or "cron_store"
+    if is_unc_shape(value):
+        # Judged before realpath: resolving a network spelling is what would
+        # contact the host.
+        _deny_project_dir(value, error="network path", audit_caller=caller)
+        raise ValueError("project_dir must be a local path, not a UNC/network path")
+    if not os.path.isabs(value) and not value.startswith("~"):
+        raise ValueError("project_dir must be an absolute path")
+    expanded = os.path.expanduser(value)
+    if is_unc_shape(expanded):
+        # ``~`` skipped the check above and expands from the profile
+        # variables; a UNC-rooted profile would otherwise reach realpath.
+        _deny_project_dir(expanded, error="network path", audit_caller=caller)
+        raise ValueError("project_dir must be a local path, not a UNC/network path")
+    if not os.path.isabs(expanded):
+        # An unknown ``~user`` (or a home-less process) leaves it relative, and
+        # a relative path would resolve against the gateway's own cwd.
+        raise ValueError("project_dir must be an absolute path")
+    if _IS_WINDOWS:
+        # ``realpath`` FOLLOWS every link on the way, so a local spelling whose
+        # ancestor or leaf links to a UNC share would make the resolution
+        # itself the SMB probe (Windows authenticates to the server as the
+        # gateway account), and the lexical UNC checks above never see a
+        # link's target. The shared screen reads each link's own reparse data
+        # without traversing it, rewrites a local target in place and refuses
+        # a UNC, device, drive-relative or ``..``-climbing one, so ``realpath``
+        # below resolves only the screened local target. POSIX symlinks hold
+        # no network path, so there the resolution is harmless.
+        screened = _screen_windows_links(expanded)
+        if screened is None:
+            _deny_project_dir(expanded, error="network path", audit_caller=caller)
+            raise ValueError(
+                "project_dir must be a local path: a link along it targets a network, "
+                "device or relative location, or could not be read"
+            )
+        expanded = screened
+    resolved = os.path.realpath(expanded)
+    if is_unc_shape(resolved):
+        # A mapped drive or ``subst`` letter can canonicalise to its share
+        # spelling; persisting that would pass authoring and then fail the
+        # fire-time re-check on every wake, so it is refused here instead.
+        _deny_project_dir(resolved, error="network path", audit_caller=caller)
+        raise ValueError("project_dir must be a local path, not a UNC/network path")
+    # The cap bounds the value RETAINED, and canonicalisation can lengthen
+    # it (a Windows 8.3 short-name spelling expands; ``~`` expands), so the
+    # check on the input above is not enough on its own.
+    if len(resolved) > MAX_PROJECT_DIR_LEN:
+        raise ValueError(f"project_dir exceeds {MAX_PROJECT_DIR_LEN} characters")
+    if revalidate and os.path.normcase(resolved) != os.path.normcase(value):
+        # A plain string compare against the canonical spelling persisted at
+        # authoring (``normcase`` only, so a case-insensitive host does not
+        # refuse its own spelling).
+        _deny_project_dir(resolved, error="moved", audit_caller=caller)
+        raise ValueError(
+            "project_dir no longer resolves to the directory that was validated "
+            "(a component was moved, replaced or relinked since); re-set it"
+        )
+    if security.is_sensitive_canonical_path(resolved):
+        _deny_project_dir(resolved, error="sensitive path", audit_caller=caller)
+        raise ValueError("project_dir refers to a sensitive path")
+    if not os.path.isdir(resolved):
+        raise ValueError("project_dir must be an existing directory")
+    if allowed_roots is not None and not _project_dir_within(resolved, allowed_roots):
+        raise CronProjectDirOutOfScope(PROJECT_DIR_OUT_OF_SCOPE, canonical=resolved)
+    return resolved
+
 
 # Table-driven string-field caps for the persistence chokepoint. Every
 # caller-supplied string field persisted by _build_job/_update_job_locked
@@ -68,6 +290,7 @@ _CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
     # Written by the app bridge alone (a sha256 hex digest); listed so the
     # create and update gates type-check it like every other persisted string.
     ("app_manifest_digest", MAX_SHORT_STRING),
+    ("project_dir", MAX_PROJECT_DIR_LEN),
     # Secret-grant fields have no boundary FieldSpec: the pins are sha256 hex
     # digests computed server-side by the grant endpoint / cron_secret_request
     # tool (grant validity is enforced by pin equality at fire time, not by
@@ -204,12 +427,17 @@ def build_job(
     timeout_secs: int = 0,
     app_manifest_digest: str = "",
     auto_pause_after_failures: int | None = None,
+    project_dir: str = "",
+    audit_caller: str = "",
+    project_dir_allowed_roots: Sequence[str] | None = None,
 ) -> CronJob:
-    """Validate inputs and construct the :class:`CronJob` (no I/O, no lock).
+    """Validate inputs and construct the :class:`CronJob` (no lock, no store I/O).
 
     Shared by :meth:`add_job` and :meth:`add_job_async` so both perform
-    identical validation on the event loop before any disk work. Raises
-    ``ValueError`` on an invalid schedule or approval mode.
+    identical validation before any disk work. Touches the filesystem only
+    to resolve ``project_dir`` (realpath/isdir), which is why the async
+    caller runs this off the loop. Raises ``ValueError`` on an invalid
+    schedule or approval mode.
 
     ``timeout_secs`` is the per-wake execution budget (the
     ``asyncio.wait_for`` deadline in ``_execute_with_timeout``); ``0`` means
@@ -265,6 +493,7 @@ def build_job(
             "script": script,
             "timezone": timezone,
             "app_manifest_digest": app_manifest_digest,
+            "project_dir": project_dir,
         },
         required=frozenset({"name", "message"}),
     )
@@ -276,6 +505,17 @@ def build_job(
         if auto_pause_after_failures is None
         else validate_auto_pause_after_failures(auto_pause_after_failures)
     )
+    # Resolved (realpath) and checked at the persistence owner: every
+    # create surface shares the one rule, and the stored value is what the
+    # gateway compares the live session's cwd against at fire time. Read
+    # through the facade: that is the name tests patch.
+    project_dir = seams.validate_cron_project_dir(
+        project_dir,
+        audit_caller=audit_caller or "cron_store",
+        allowed_roots=project_dir_allowed_roots,
+    )
+    if project_dir and (command or script):
+        raise ValueError(_PROJECT_DIR_NEEDS_AGENT_JOB)
     if timezone and not is_valid_timezone(timezone):
         raise ValueError(f"Invalid timezone: {timezone!r}")
     skip_dates = skip_dates or []
@@ -327,11 +567,17 @@ def build_job(
         timeout_secs=int(timeout_secs) if timeout_secs else seams._JOB_TIMEOUT_SECS,
         app_manifest_digest=app_manifest_digest or "",
         auto_pause_after_failures=_auto_pause,
+        project_dir=project_dir,
     )
 
 
 def apply_job_update(
-    job: CronJob, kwargs: dict[str, Any], chat_folder_out: dict[str, str] | None
+    job: CronJob,
+    kwargs: dict[str, Any],
+    chat_folder_out: dict[str, str] | None,
+    *,
+    audit_caller: str = "cron_store",
+    project_dir_allowed_roots: Sequence[str] | None = None,
 ) -> None:
     """Validate the update ``kwargs`` against ``job``, then apply it.
 
@@ -339,7 +585,12 @@ def apply_job_update(
     ``ValueError`` with ``job`` untouched. ``chat_folder_out`` is the caller's
     transition sink (see :meth:`CronService._update_job_locked`): filled with the
     prior ``chat_folder_id`` only when this update actually changes it.
+    ``audit_caller`` names the surface for the SEL event a sensitive
+    ``project_dir`` refusal emits; ``project_dir_allowed_roots`` confines an
+    agent-authored ``project_dir`` (see :func:`validate_cron_project_dir`).
     """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
     # Validate approval_mode if provided
     if "approval_mode" in kwargs:
         valid_approval_modes = ("", "auto")
@@ -400,6 +651,26 @@ def apply_job_update(
     if "timezone" in kwargs and kwargs["timezone"]:
         if not is_valid_timezone(kwargs["timezone"]):
             raise ValueError(f"Invalid timezone: {kwargs['timezone']!r}")
+    # Per-job project directory: resolved+checked here with the other
+    # pre-mutation gates so a refused path strands nothing. "" clears
+    # (the job returns to the gateway default cwd). Refused for a job
+    # that is, or this update makes, a script/command job -- it launches
+    # no session, so the field would be stored and never read.
+    _project_dir_next: str | None = None
+    if "project_dir" in kwargs:
+        _project_dir_next = seams.validate_cron_project_dir(
+            kwargs["project_dir"],
+            audit_caller=audit_caller,
+            allowed_roots=project_dir_allowed_roots,
+        )
+        if _project_dir_next and (job.command or job.script):
+            raise ValueError(_PROJECT_DIR_NEEDS_AGENT_JOB)
+    # The marker is store-managed (copied by the rescope below); the only
+    # value a caller may write is the empty one. Judged HERE, before the
+    # first assignment: refused after another field was written, the
+    # partially-applied job would persist on a later successful save.
+    if "project_dir_was" in kwargs and kwargs["project_dir_was"] not in ("", None):
+        raise ValueError("project_dir_was is store-managed; only clearing it is accepted")
     if "skip_dates" in kwargs and kwargs["skip_dates"]:
         for _d in kwargs["skip_dates"]:
             if not is_valid_skip_date(_d):
@@ -573,6 +844,20 @@ def apply_job_update(
         # operator surface (dashboard, MCP, CLI) forwards this key, so the
         # only caller is the bridge re-applying a changed ``app.json`` entry.
         job.app_manifest_digest = str(kwargs["app_manifest_digest"] or "")
+    if _project_dir_next is not None:
+        if job.project_dir and _project_dir_next != job.project_dir and not job.project_dir_was:
+            # A rescope (changed or cleared). The conversation that
+            # began under the old project is still rooted there;
+            # the gateway reads this marker at the next wake, ends
+            # that conversation, and clears it. Not overwritten by a
+            # second rescope before that wake: the FIRST old project
+            # is the one a stored conversation may still sit in.
+            job.project_dir_was = job.project_dir
+        job.project_dir = _project_dir_next
+    if "project_dir_was" in kwargs:
+        # The gateway's clear once the rescoped conversation has been
+        # re-rooted (validated above: only "" reaches this line).
+        job.project_dir_was = ""
     if "secret_env" in kwargs and kwargs["secret_env"] is not None:
         job.secret_env = dict(kwargs["secret_env"])
         # Pin travels with the grant; a revoke (empty map) clears it.

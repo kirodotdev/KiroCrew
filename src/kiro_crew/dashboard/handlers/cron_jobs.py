@@ -554,6 +554,17 @@ async def api_crons_create(request: web.Request) -> web.Response:
         from kiro_crew.apps.cron_sdk import owner_tag
 
         add_kwargs["created_by"] = owner_tag(app_claim)
+    # Per-job project directory. Type-checked here (a non-string JSON value
+    # would otherwise reach .strip() as a 500); the path itself -- absolute,
+    # existing, not sensitive, agent job only -- is resolved and refused by the
+    # store inside the same locked add, surfacing as the ValueError 400 below.
+    project_dir_raw = body.get("project_dir")
+    if project_dir_raw is not None and not isinstance(project_dir_raw, str):
+        return web.json_response(
+            {"error": "project_dir must be a string", "code": "invalid_project_dir"}, status=400
+        )
+    if project_dir_raw:
+        add_kwargs["project_dir"] = project_dir_raw.strip()
     # Which schedule this job carries. Resolved to kwargs FIRST, then handed to a
     # single add_job_async call: one call site means the store-failure handling
     # below is written once and cannot drift between the three schedule shapes.
@@ -586,7 +597,13 @@ async def api_crons_create(request: web.Request) -> web.Response:
         job = await _persist_holding_folder(
             state,
             chat_folder_id,
-            lambda: state.crons.add_job_async(name, message, **schedule_kwargs, **add_kwargs),
+            lambda: state.crons.add_job_async(
+                name,
+                message,
+                **schedule_kwargs,
+                **add_kwargs,
+                audit_caller=str(request.get("user") or "dashboard"),
+            ),
         )
     except _ChatFolderGone:
         return _unknown_chat_folder_response()
@@ -844,6 +861,16 @@ async def api_cron_update(request: web.Request) -> web.Response:
         kwargs["channel"] = ch
         if ch and (len(ch) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(ch)):
             return web.json_response({"error": "invalid channel ID format"}, status=400)
+    # Per-job project directory: string or null (-> "" clears). The path rules
+    # live in the store (see api_cron_create); a refusal is the ValueError 400.
+    if "project_dir" in body:
+        project_dir_raw = body["project_dir"]
+        if project_dir_raw is not None and not isinstance(project_dir_raw, str):
+            return web.json_response(
+                {"error": "project_dir must be a string", "code": "invalid_project_dir"},
+                status=400,
+            )
+        kwargs["project_dir"] = (project_dir_raw or "").strip()
     # Schedule: accept cron_expr or every (seconds)
     if "cron" in body:
         kwargs["cron_expr"] = body["cron"]
@@ -887,7 +914,9 @@ async def api_cron_update(request: web.Request) -> web.Response:
         job = await _persist_holding_folder(
             state,
             str(kwargs.get("chat_folder_id") or ""),
-            lambda: state.crons.update_job_async(job_id, **kwargs),
+            lambda: state.crons.update_job_async(
+                job_id, audit_caller=str(request.get("user") or "dashboard"), **kwargs
+            ),
         )
     except _ChatFolderGone:
         return _unknown_chat_folder_response()

@@ -561,7 +561,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_acquire_with_model_fallback",
             "async method",
-            "(self, job: 'CronJob', cron_execution: 'ExecutionContext', key: 'str', agent_id: 'str | None', cwd: 'str | None' = None, crew_agent: 'str | None' = None, *, execution: 'ExecutionContext | None' = None, replace_execution: 'bool' = False) -> \"'tuple[LLMProvider, bool, bool, bool]'\"",
+            "(self, job: 'CronJob', cron_execution: 'ExecutionContext', key: 'str', agent_id: 'str | None', cwd: 'str | None' = None, crew_agent: 'str | None' = None, *, execution: 'ExecutionContext | None' = None, replace_execution: 'bool' = False, cron_cwd: 'str | None' = None, rescoped: 'bool' = False, previous_cwd: 'str | None' = None, pre_ended: 'bool' = False) -> \"'tuple[LLMProvider, bool, bool, bool]'\"",
         ),
         (
             "_retained_session_agent_mismatch",
@@ -570,6 +570,16 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_announce_cron_quarantine", "method", "(self) -> 'None'"),
         ("_start_cron_after_memory_ready", "async method", "(self) -> 'None'"),
+        (
+            "_end_rescoped_conversation",
+            "async method",
+            "(self, job: 'CronJob', key: 'str') -> 'None'",
+        ),
+        (
+            "_settle_rescope",
+            "async method",
+            "(self, job: 'CronJob', cap: '_CronCapture') -> 'None'",
+        ),
     ),
     "cron_exec": (
         ("_cron_run_command", "async method", "(self, job: 'CronJob') -> 'str | None'"),

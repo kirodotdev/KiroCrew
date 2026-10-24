@@ -20,7 +20,8 @@ import re
 import stat
 from pathlib import Path
 
-from kiro_crew.cron import CronJob, lookup_cron_folder_id
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.cron import CronJob, CronProjectDirOutOfScope, lookup_cron_folder_id
 from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.mcp_core import _post, _resolve_session_key
 from kiro_crew.mcp_cron_shell_scan import (
@@ -783,6 +784,37 @@ def _log_cron_denial(tool_name: str, error: str) -> None:
         )
     except Exception:
         logger.debug("SEL logging failed for cron denial", exc_info=True)
+
+
+def _agent_cwd_allowed_roots() -> list[str]:
+    """The roots an AGENT-supplied ``project_dir`` may name; empty when unreadable (fail closed).
+
+    The store admits any existing, non-sensitive directory, which is the right
+    rule for an operator at the dashboard or the CLI. This tool is called by
+    an agent, and ``cron_add`` is auto-approved by default, so a directory it
+    names here is a root a future session runs in with no human between the
+    two. The same LLM-supplied choice for ``spawn_run``'s ``cwd`` is confined
+    to ``agent.subagent_cwd_allowed_roots``; this is that confinement and
+    nothing wider (in particular this PROCESS's working directory is not a
+    root: the tool may run inside the gateway or a pooled backend, whose cwd
+    is the operator's, not the caller's). The roots are handed to the store,
+    which judges containment on the canonical value it persists, inside the
+    same locked operation (``validate_cron_project_dir``); a refusal comes
+    back as :class:`CronProjectDirOutOfScope` and is audited here as an
+    authorization denial, since the generic tool-call row redacts every
+    argument and carries no denial class.
+    """
+    try:
+        return list(KiroCrewConfig.load().agent.subagent_cwd_allowed_roots)
+    except Exception:
+        return []
+
+
+def _audit_project_dir_scope_refusal(tool_name: str, exc: CronProjectDirOutOfScope) -> None:
+    _log_cron_denial(
+        tool_name,
+        f"project_dir outside the allowed roots: {redact_log_via_context(exc.canonical)}",
+    )
 
 
 _CRON_FOLDER_ID_RE = re.compile(r"[0-9a-f]{8}")

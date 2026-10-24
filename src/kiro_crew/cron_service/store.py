@@ -204,8 +204,12 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
 
     - **Required identity/payload** (``id``, ``name``, ``message``,
       ``schedule.kind``) and **execution selectors** (``script``, ``command``,
-      ``agent_id``, plus the ``agent_sequence`` / ``skip_dates`` lists) raise
-      ``TypeError`` on a non-string value, so the record is skipped whole.
+      ``agent_id``, ``project_dir`` / ``project_dir_was``, plus the
+      ``agent_sequence`` / ``skip_dates`` lists) raise ``TypeError`` on a
+      non-string value, so the record is skipped whole. A project scope
+      coerced to ``""`` would run the job UNSCOPED -- the wake skips the
+      project check for an empty field -- in the fallback directory without
+      the repository's steering, and the next save would persist the loss.
       Coercing a selector instead would fail OPEN: a script job whose
       ``script`` degraded to ``""`` silently becomes an LLM agent job
       (``_cron_callback`` picks the mode from which selector is non-empty),
@@ -406,6 +410,8 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         folder_id=_guard_str("folder_id"),
         chat_folder_id=_guard_str("chat_folder_id"),
         model=_guard_str("model"),
+        project_dir=_selector_str("project_dir"),
+        project_dir_was=_selector_str("project_dir_was"),
         last_retry_count=_guard_num("last_retry_count", 0),
         last_retry_run_ts=_guard_num("last_retry_run_ts", 0.0),
         run_generation=_guard_num("run_generation", 0),
@@ -603,6 +609,8 @@ def job_record(j: CronJob) -> dict[str, Any]:
         "folder_id": j.folder_id,
         "chat_folder_id": j.chat_folder_id,
         "model": j.model,
+        "project_dir": j.project_dir,
+        "project_dir_was": j.project_dir_was,
         "last_retry_count": j.last_retry_count,
         "last_retry_run_ts": j.last_retry_run_ts,
         "run_generation": j.run_generation,
