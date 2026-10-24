@@ -397,8 +397,15 @@ class BackgroundSessionRuntime:
                     getattr(self._owner, "spawn_identity_reader", None)
                 )
                 await provider.start()
-            except Exception:
-                logger.warning("Failed to create background session", exc_info=True)
+            except Exception as exc:
+                # No kiro-cli is the expected state right after a fresh install,
+                # and the dashboard answers it with its Set up Kiro page; the
+                # message already names the directories searched and the fix,
+                # so a traceback would only bury it.
+                if getattr(exc, "kiro_cli_missing", False) is True:
+                    logger.warning("Background session not started: %s", exc)
+                else:
+                    logger.warning("Failed to create background session", exc_info=True)
                 return
             # Best-effort spawn-account record; see flag_identity_stamp_mismatches.
             # A cancellation landing in this read would leak the started
