@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins } from 'lucide-react'
 import { Badge, EmptyState, ContentSkeleton } from '../../components/ui'
 import Clickable from '../../components/Clickable'
+import { uiLocation } from '../../uiLocations/uiLocation'
 import { knowledgeApi } from './api'
 import { formatRelativeDate, FALLBACK_SUPPORTED_FORMATS } from './helpers'
 import { parseSourceProps, shouldShowWordCount, syncStatusLabel } from './knowledgeUtils'
@@ -443,7 +444,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
         <span>{i18nT('pages.knowledge.sourcesList.indexing_uses_kiro_requests_each_source_costs_mo')}</span>
       </div>
       <div className="flex justify-end">
-        <button onClick={() => setShowAdd(true)} className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded-md hover:bg-accent/80">{i18nT('pages.knowledge.sourcesList.add_source')}</button>
+        <button onClick={() => setShowAdd(true)} className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded-md hover:bg-accent/80" {...uiLocation('knowledge.add-source')}>{i18nT('pages.knowledge.sourcesList.add_source')}</button>
       </div>
 
       {showAdd && (

@@ -31,6 +31,7 @@ const STATUS_LABEL_KEY = {
 } as const
 
 import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { editableEventTarget } from '../../utils/editableTarget'
 const KnowledgeGraph = lazy(() => import('./KnowledgeGraph'))
@@ -565,12 +566,22 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
       {/* Tabs — horizontally scrollable on narrow viewports so the active
           underline never spills past the container. */}
       <div className="flex gap-1 px-4 md:px-6 border-b border-border overflow-x-auto">
-        {TABS.map(t => (
-          <button key={t} onClick={() => { setTab(t); setSelectedId(null); setSelectedItems(new Set()) }}
-            className={`flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium border-b-2 transition-all bg-transparent cursor-pointer shrink-0 whitespace-nowrap ${tab === t ? 'border-accent text-text font-semibold' : 'border-transparent text-muted hover:text-text'}`}>
-            {TAB_ICON[t]} {i18nT(TAB_LABEL_KEY[t])}
-          </button>
-        ))}
+        {TABS.map(t => {
+          const onClick = () => { setTab(t); setSelectedId(null); setSelectedItems(new Set()) }
+          const className = `flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium border-b-2 transition-all bg-transparent cursor-pointer shrink-0 whitespace-nowrap ${tab === t ? 'border-accent text-text font-semibold' : 'border-transparent text-muted hover:text-text'}`
+          // Sources is registered with find_ui (uiLocations/areas/capabilities.ts):
+          // a registered row needs its own branch, with its label key written
+          // out, so the index can read the label from this render site.
+          return t === 'sources' ? (
+            <button key={t} onClick={onClick} className={className} {...uiLocation('knowledge.sources-tab')}>
+<FolderSync size={14} /> {i18nT('pages.knowledge.index.sources_tab')}
+            </button>
+          ) : (
+            <button key={t} onClick={onClick} className={className}>
+              {TAB_ICON[t]} {i18nT(TAB_LABEL_KEY[t])}
+            </button>
+          )
+        })}
         {embedded && (
           <span className="ml-auto self-center shrink-0 pb-0.5">
             <Btn onClick={() => setShowHelp(true)}><HelpCircle size={14} /> {i18nT('pages.knowledge.index.help')}</Btn>
