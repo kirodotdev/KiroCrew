@@ -233,6 +233,12 @@ const EMPTY_HOLDS: ReadonlyMap<string, AllowHold> = new Map()
 let allowHolds: ReadonlyMap<string, ReadonlyMap<string, AllowHold>> = new Map()
 const holdListeners = new Set<() => void>()
 
+/** A per-reply counter, so a reply with no message time gets its OWN fallback
+ *  hold key instead of sharing one slot-wide key with every other untimestamped
+ *  reply in the slot (which would let one reply's outcome and cleanup reach
+ *  another's card). */
+let replyFallbackSeq = 0
+
 function subscribeHolds(cb: () => void): () => void {
   holdListeners.add(cb)
   return () => { holdListeners.delete(cb) }
@@ -278,8 +284,16 @@ interface RedactionUi {
   firstCredential: number
   blockedLinks: readonly BlockedLink[]
   slotKey?: string
-  /** Names this reply for the allow holds (slot and message time). */
+  /** Names this reply for the allow holds (slot and message time). Used for
+   *  the reload-restore, which must match the reloaded row by its timestamp,
+   *  so it is undefined when the reply carries no message time. */
   replyKey?: string
+  /** Where this reply's allow outcome is kept so "Allowed · Undo" survives the
+   *  card closing and reopening. `replyKey` when the reply has a message time;
+   *  otherwise a slot-scoped fallback, so a reply with no timestamp (a streamed
+   *  or interrupted reply) still keeps its outcome. The fallback is deliberately
+   *  not `replyKey`, so the timestamp-matched reload-restore never reads it. */
+  holdKey?: string
   /** This reply's message time, so an allow or undo can ask the reload to
    *  re-serve this row even when it is above the newest page (#17023). */
   messageTs?: string
@@ -313,10 +327,18 @@ export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey
   coached?: boolean
   children: React.ReactNode
 }) {
+  // Where this reply keeps its allow outcome. With a message time that is the
+  // same key the reload-restore uses, so a reloaded row reopens its held card.
+  // Without one, a per-reply fallback key (not slot-wide), so a reply with no
+  // timestamp keeps "Allowed · Undo" across a card close without one reply's
+  // outcome or cleanup reaching another untimestamped reply in the same slot.
+  const fallbackId = useRef<number>()
+  if (fallbackId.current === undefined) fallbackId.current = replyFallbackSeq++
+  const holdKey = replyKey ?? (slotKey ? `${slotKey}|~${fallbackId.current}` : undefined)
   // A reply that remounts while a card of an allowed host is held (the reload
   // after Allow can rebuild the row) reopens that card, so Undo stays up.
   const [openId, setOpenId] = useState<string | null>(() => {
-    const held = replyKey ? allowHolds.get(replyKey) : undefined
+    const held = holdKey ? allowHolds.get(holdKey) : undefined
     const first = held ? held.values().next().value : undefined
     return first ? first.cardId : null
   })
@@ -337,13 +359,27 @@ export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey
       return id
     })
   }, [])
-  // A hold lasts while its card is open: closing it, or opening another card
-  // of this reply, lets the reply render from its own records again.
-  const holds = useAllowHolds(replyKey)
+  // A timestamped reply's hold lasts while its card is open: closing it, or
+  // opening another card of this reply, lets the reply render from its own
+  // records again, because the reload has restored the links as plain links.
+  // A reply with NO message time is never reloaded, so its fallback hold is
+  // not cleared on close — it is the only thing that carries the "Allowed ·
+  // Undo" outcome back when the card reopens.
+  const holds = useAllowHolds(holdKey)
   useEffect(() => {
     if (!replyKey) return
     for (const [domain, hold] of holds) if (openId !== hold.cardId) setAllowHold(replyKey, domain, null)
   }, [openId, replyKey, holds])
+  // A timestamped reply's holds outlive this mount on purpose: the reload
+  // remounts the reply and reopens the held card. A fallback-key reply is not
+  // reloaded, so its holds have no next mount to belong to — drop them when it
+  // leaves the DOM, so the module-global store does not accumulate them.
+  useEffect(() => {
+    if (!holdKey || holdKey === replyKey) return
+    return () => {
+      for (const domain of allowHolds.get(holdKey)?.keys() ?? []) setAllowHold(holdKey, domain, null)
+    }
+  }, [holdKey, replyKey])
   useEffect(() => {
     if (openId === null) return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
@@ -353,8 +389,8 @@ export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey
   const value = useMemo(() => {
     const map = new Map(credentials.map(r => [r.ordinal, r]))
     const first = credentials.length ? Math.min(...credentials.map(r => r.ordinal)) : -1
-    return { credentials: map, firstCredential: first, blockedLinks, slotKey, replyKey, messageTs, coached, openId, triggerRef, toggle, close }
-  }, [credentials, blockedLinks, slotKey, replyKey, messageTs, coached, openId, toggle, close])
+    return { credentials: map, firstCredential: first, blockedLinks, slotKey, replyKey, holdKey, messageTs, coached, openId, triggerRef, toggle, close }
+  }, [credentials, blockedLinks, slotKey, replyKey, holdKey, messageTs, coached, openId, toggle, close])
   return <RedactionUiCtx.Provider value={value}>{children}</RedactionUiCtx.Provider>
 }
 
@@ -1251,64 +1287,35 @@ function MarkedUrl({ url }: { url: string }) {
   )
 }
 
-type Confirming = null | 'open' | 'allow'
-type Feedback = null | { kind: 'opened' } | { kind: 'allowed'; workspace: string } | { kind: 'undone' }
+type OpenFeedback = null | { kind: 'opened' }
+type AllowFeedback = null | { kind: 'allowed'; workspace: string } | { kind: 'undone' }
 
-function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: string }) {
-  const { slotKey, replyKey, messageTs, blockedLinks } = useRedactionUi()
-  const hold = useAllowHolds(replyKey).get(record.domain)
-  const [confirming, setConfirming] = useState<Confirming>(null)
-  // A card that re-renders after the reply reloads picks its outcome up from
-  // the hold, so "Allowed · Undo" stays on screen.
-  const [feedback, setFeedback] = useState<Feedback>(() => hold ? (hold.outcome === 'allowed' ? { kind: 'allowed', workspace: hold.workspace } : { kind: 'undone' }) : null)
+/**
+ * One blocked link in the card: its address, why it was blocked, and the
+ * per-link actions (review the URL, copy it, open it once). Allow is NOT
+ * here: it acts on the host, not on one link, so the card owns it once (see
+ * BlockedLinkCard). An entry with several siblings therefore never shows a
+ * second, stale Allow button.
+ */
+function BlockedLinkEntry({ record }: { record: BlockedLink }) {
+  const [confirming, setConfirming] = useState(false)
+  const [feedback, setFeedback] = useState<OpenFeedback>(null)
   const [error, setError] = useState<string | null>(null)
-  const shownFeedback = useLast(feedback)
   const shownError = useLast(error)
-  const panel = confirming ?? (error !== null ? 'error' : feedback ? `feedback-${feedback.kind}` : null)
+  const panel = confirming ? 'open' : (error !== null ? 'error' : feedback ? 'feedback-opened' : null)
   const shownPanel = useLast(panel)
   const cancelRef = useRef<HTMLButtonElement>(null)
   useEffect(() => { if (confirming) cancelRef.current?.focus() }, [confirming])
   const url = record.url
-  const allowable = url !== null && ALLOWABLE_RULES.has(record.rule) && !!slotKey
   const openOnce = () => {
     // Re-derived at the click, so what opens is the address on screen and it
     // passes the same shape check. noopener/noreferrer: the page gets no handle
     // on this window and does not learn which conversation it came from.
     const target = openableBlockedLinkUrl(record.url, record.domain)
-    setConfirming(null)
+    setConfirming(false)
     if (target === null) return
     window.open(target, '_blank', 'noopener,noreferrer')
     setFeedback({ kind: 'opened' })
-  }
-  // The confirmation stays up until the request settles and is then replaced
-  // by its outcome in one step, so the area swaps in place instead of
-  // closing and reopening a moment later.
-  const allow = async () => {
-    if (!slotKey) { setConfirming(null); return }
-    try {
-      const res = await api.redactionAllowHost(slotKey, record.domain)
-      setError(null)
-      setFeedback({ kind: 'allowed', workspace: res.workspace })
-      // The reply reloads with this host's links shown as links again; the
-      // hold keeps this card open over them with its Undo.
-      if (replyKey) setAllowHold(replyKey, record.domain, { workspace: res.workspace, records: blockedLinksForDomain(blockedLinks, record.domain), outcome: 'allowed', cardId })
-      window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, messageTs } }))
-    } catch {
-      setError(i18nT('components.redaction.link_allow_failed'))
-    }
-    setConfirming(null)
-  }
-  const undo = async (workspace: string) => {
-    try {
-      await api.redactionRevokeHost(workspace, record.domain)
-      setError(null)
-      setFeedback({ kind: 'undone' })
-      if (replyKey && hold) setAllowHold(replyKey, record.domain, { ...hold, outcome: 'undone' })
-      if (slotKey) window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, messageTs } }))
-      setTimeout(() => setFeedback(null), 1600)
-    } catch {
-      setError(i18nT('components.redaction.link_undo_failed'))
-    }
   }
   return (
     <div data-testid="blocked-link-entry">
@@ -1346,14 +1353,9 @@ function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: str
                 return ok
               }}
             />
-            <button type="button" className={btnCls} data-testid="blocked-link-open-once" onClick={() => setConfirming('open')}>
+            <button type="button" className={btnCls} data-testid="blocked-link-open-once" onClick={() => setConfirming(true)}>
               {i18nT('components.redaction.link_open_once')}
             </button>
-            {allowable && (
-              <button type="button" className={btnWarnCls} data-testid="blocked-link-allow" onClick={() => setConfirming('allow')}>
-                {i18nT('components.redaction.link_allow')}
-              </button>
-            )}
           </div>
         </>
       ) : (
@@ -1361,8 +1363,8 @@ function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: str
           {i18nT(record.url_withheld === 'length' ? 'components.redaction.link_withheld_length' : 'components.redaction.link_withheld_credential')}
         </div>
       )}
-      {/* One area for the step after a button: a confirmation, then what it
-          did. Moving from one to the next swaps the content in place, so the
+      {/* One area for the step after an open-once: the confirmation, then what
+          it did. Moving from one to the next swaps the content in place, so the
           card changes height once instead of one panel closing while another
           opens. */}
       <Reveal show={panel !== null} contentKey={shownPanel ?? undefined}>
@@ -1373,25 +1375,109 @@ function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: str
             ? i18nT('components.redaction.link_open_confirm_body', { chars: record.query_chars })
             : i18nT('components.redaction.link_open_confirm_body_plain')}
           <div className="mt-2 flex flex-wrap gap-2">
-            <button ref={confirming === 'open' ? cancelRef : undefined} type="button" className={btnPrimaryCls} onClick={() => setConfirming(null)}>{i18nT('components.redaction.cancel')}</button>
+            <button ref={confirming ? cancelRef : undefined} type="button" className={btnPrimaryCls} onClick={() => setConfirming(false)}>{i18nT('components.redaction.cancel')}</button>
             <button type="button" className={btnCls} data-testid="blocked-link-open-confirmed" onClick={openOnce}>{i18nT('components.redaction.link_open')}</button>
           </div>
         </div></>)}
-        {shownPanel === 'allow' && (<><div role="alertdialog" aria-label={i18nT('components.redaction.link_allow_confirm_aria')} className="mt-2 rounded-lg border border-border bg-bg p-2.5 text-[12px] leading-[18px]" data-testid="blocked-link-allow-confirm">
-          <b>{i18nT('components.redaction.link_allow_confirm_title', { host: record.domain })}</b>
+        {shownPanel === 'error' && shownError && <ErrorLine testId="blocked-link-error" message={shownError} />}
+        {shownPanel === 'feedback-opened' && (
+          <StatusLine testId="blocked-link-feedback">
+            <span>{i18nT('components.redaction.link_opened')}</span>
+          </StatusLine>
+        )}
+      </Reveal>
+    </div>
+  )
+}
+
+/**
+ * The card's one Allow control and its outcome, below the host's entries.
+ * Allow puts the host on the workspace allow-list, which covers every link
+ * the card lists, so the card offers it once and shows one "Allowed · Undo"
+ * line. The outcome is kept in the reply's hold, so it survives the card
+ * closing and reopening, and a reply with no message time keeps it under a
+ * slot-scoped fallback key (see RedactionProvider's holdKey).
+ */
+function BlockedLinkAllow({ domain, records, cardId }: { domain: string; records: readonly BlockedLink[]; cardId: string }) {
+  const { slotKey, holdKey, messageTs, blockedLinks } = useRedactionUi()
+  const hold = useAllowHolds(holdKey).get(domain)
+  const [confirming, setConfirming] = useState(false)
+  // Seed the outcome only from an ALLOWED hold: a remounted card that reads a
+  // stale 'undone' hold would otherwise open showing "Undone" beside a fresh
+  // Allow button for as long as the reply stays mounted.
+  const [feedback, setFeedback] = useState<AllowFeedback>(() => hold?.outcome === 'allowed' ? { kind: 'allowed', workspace: hold.workspace } : null)
+  const [error, setError] = useState<string | null>(null)
+  const shownFeedback = useLast(feedback)
+  const shownError = useLast(error)
+  const panel = confirming ? 'confirm' : (error !== null ? 'error' : feedback ? `feedback-${feedback.kind}` : null)
+  const shownPanel = useLast(panel)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => { if (confirming) cancelRef.current?.focus() }, [confirming])
+  // The confirmation stays up until the request settles and is then replaced
+  // by its outcome in one step, so the area swaps in place instead of
+  // closing and reopening a moment later.
+  const allow = async () => {
+    if (!slotKey) { setConfirming(false); return }
+    try {
+      const res = await api.redactionAllowHost(slotKey, domain)
+      setError(null)
+      setFeedback({ kind: 'allowed', workspace: res.workspace })
+      // The reply reloads with this host's links shown as links again; the
+      // hold keeps this card open over them with its Undo.
+      if (holdKey) setAllowHold(holdKey, domain, { workspace: res.workspace, records: blockedLinksForDomain(blockedLinks, domain), outcome: 'allowed', cardId })
+      window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, messageTs } }))
+    } catch {
+      setError(i18nT('components.redaction.link_allow_failed'))
+    }
+    setConfirming(false)
+  }
+  const undo = async (workspace: string) => {
+    try {
+      await api.redactionRevokeHost(workspace, domain)
+      setError(null)
+      setFeedback({ kind: 'undone' })
+      // Drop the hold: the host is no longer allowed, so a later remount must
+      // not reopen the card from it, and no stale 'undone' hold should linger.
+      // The "Undone" line is shown from local state and clears on its own.
+      if (holdKey) setAllowHold(holdKey, domain, null)
+      if (slotKey) window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, messageTs } }))
+      setTimeout(() => setFeedback(null), 1600)
+    } catch {
+      setError(i18nT('components.redaction.link_undo_failed'))
+    }
+  }
+  // Allowable once for the host: at least one listed link has an openable
+  // address under a rule the host exemption relaxes, and we have a slot to
+  // save against.
+  const relaxable = records.filter(r => r.url !== null && ALLOWABLE_RULES.has(r.rule))
+  const allowable = relaxable.length > 0 && !!slotKey
+  // The button only shows while the host is not yet allowed; once allowed, the
+  // "Allowed · Undo" outcome takes its place.
+  const allowed = feedback?.kind === 'allowed'
+  return (
+    <>
+      {allowable && !allowed && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button type="button" className={btnWarnCls} data-testid="blocked-link-allow" onClick={() => setConfirming(true)}>
+            {i18nT('components.redaction.link_allow')}
+          </button>
+        </div>
+      )}
+      <Reveal show={panel !== null} contentKey={shownPanel ?? undefined}>
+        {shownPanel === 'confirm' && (<><div role="alertdialog" aria-label={i18nT('components.redaction.link_allow_confirm_aria')} className="mt-2 rounded-lg border border-border bg-bg p-2.5 text-[12px] leading-[18px]" data-testid="blocked-link-allow-confirm">
+          <b>{i18nT('components.redaction.link_allow_confirm_title', { host: domain })}</b>
           <br />
           <Trans i18nKey="components.redaction.link_allow_confirm_body" components={[<b key="0" />, <b key="1" />]} />
           <div className="mt-2 flex flex-wrap gap-2">
-            <button ref={confirming === 'allow' ? cancelRef : undefined} type="button" className={btnPrimaryCls} onClick={() => setConfirming(null)}>{i18nT('components.redaction.cancel')}</button>
+            <button ref={confirming ? cancelRef : undefined} type="button" className={btnPrimaryCls} onClick={() => setConfirming(false)}>{i18nT('components.redaction.cancel')}</button>
             <button type="button" className={btnWarnCls} data-testid="blocked-link-allow-confirmed" onClick={() => void allow()}>{i18nT('components.redaction.link_allow_short')}</button>
           </div>
         </div></>)}
-        {shownPanel === 'error' && shownError && <ErrorLine testId="blocked-link-error" message={shownError} />}
+        {shownPanel === 'error' && shownError && <ErrorLine testId="blocked-link-allow-error" message={shownError} />}
         {shownPanel?.startsWith('feedback') && (<>{shownFeedback && (
           <StatusLine testId="blocked-link-feedback">
             <span>
-              {shownFeedback.kind === 'opened' && i18nT('components.redaction.link_opened')}
-              {shownFeedback.kind === 'allowed' && i18nT('components.redaction.link_allowed', { host: record.domain })}
+              {shownFeedback.kind === 'allowed' && i18nT('components.redaction.link_allowed', { host: domain })}
               {shownFeedback.kind === 'undone' && i18nT('components.redaction.link_undone')}
             </span>
             {shownFeedback.kind === 'allowed' && (
@@ -1403,27 +1489,32 @@ function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: str
           </StatusLine>
         )}</>)}
       </Reveal>
-    </div>
+    </>
   )
 }
 
 function BlockedLinkCard({ id }: { id: string }) {
   useLanguageGeneration()
-  const { blockedLinks } = useRedactionUi()
+  const { blockedLinks, holdKey } = useRedactionUi()
   const domain = blockedLinkCardDomain(id)
   const group = blockedLinksForDomain(blockedLinks, domain)
+  const hold = useAllowHolds(holdKey).get(domain)
   if (group.length === 0) return null
+  // The title comes from the same allowed state as the Allow control, so the
+  // two cannot disagree: once the host is allowed, the card no longer calls
+  // its links "blocked".
+  const allowed = hold?.outcome === 'allowed'
   // The host's distinct blocked links in this reply, in record order: nothing the
   // reply carries ties a chip to one record, so no entry is put first, and a
-  // lone record is listed the same way, under its own address, with a title
-  // that speaks of the host's blocked links rather than "this link".
+  // lone record is listed the same way, under its own address.
   return (
-    <CardShell id={id} title={i18nT('components.redaction.link_title_host')} testId="blocked-link-card">
+    <CardShell id={id} title={i18nT(allowed ? 'components.redaction.link_title_host_allowed' : 'components.redaction.link_title_host')} testId="blocked-link-card">
       {group.map((record, i) => (
         <div key={i} className={i > 0 ? 'mt-2 border-t border-border pt-2' : undefined}>
-          <BlockedLinkEntry record={record} cardId={id} />
+          <BlockedLinkEntry record={record} />
         </div>
       ))}
+      <BlockedLinkAllow domain={domain} records={group} cardId={id} />
       <Foot>
         <ReportLink rule={group[0].rule} kind="link" label={i18nT('components.redaction.link_report')} />
         <AboutLink label={i18nT('components.redaction.about_blocked_links')} />
@@ -1434,14 +1525,14 @@ function BlockedLinkCard({ id }: { id: string }) {
 
 /** Where a block's cards open: right after the block holding their markers. */
 export function RedactionCardSlot({ ids }: { ids: string }) {
-  const { openId, credentials, coached, firstCredential, slotKey, replyKey } = useRedactionUi()
+  const { openId, credentials, coached, firstCredential, slotKey, holdKey } = useRedactionUi()
   const list = ids.split(' ')
   // A held card this slot mounts with is the one already on screen before the
   // reload, so it shows without animating open again.
   const [heldAtMount] = useState(() => {
-    if (openId === null || !list.includes(openId) || !replyKey) return false
+    if (openId === null || !list.includes(openId) || !holdKey) return false
     const domain = blockedLinkCardDomain(openId)
-    const hold = allowHolds.get(replyKey)?.get(domain)
+    const hold = allowHolds.get(holdKey)?.get(domain)
     return hold?.cardId === openId
   })
   // The coach follows the first block holding a removed value, before any card.
