@@ -11,6 +11,8 @@ import {
   pinPushTravel,
   computeLiveCardH,
   computePinnedCardMaxH,
+  computePinnedTopReserve,
+  PINNED_RESERVE_CLEARANCE_PX,
   ROW_PAD_Y,
   DEFAULT_PINNED_CARD_H,
   PINNED_PREVIEW_LINES,
@@ -455,5 +457,42 @@ describe('computePinnedCardMaxH', () => {
 
   it('never goes negative when the fold itself is below the floor', () => {
     expect(computePinnedCardMaxH(500, 400)).toBe(0)
+  })
+})
+
+describe('computePinnedTopReserve', () => {
+  // The top-edge mirror of the dock reserve (#15820): the scroller gives back
+  // the card's strip from its TOP so the first readable row starts below the
+  // card instead of under it. The card sits ROW_PAD_Y below the fold and stands
+  // `bannerH` tall, and the clearance adds the same gap the dock leaves at the
+  // bottom — so the reserve is ROW_PAD_Y + bannerH + PINNED_RESERVE_CLEARANCE_PX.
+  it('reserves the card top offset, its resting height, and the clearance', () => {
+    expect(computePinnedTopReserve(60)).toBe(ROW_PAD_Y + 60 + PINNED_RESERVE_CLEARANCE_PX)
+    expect(PINNED_RESERVE_CLEARANCE_PX).toBeGreaterThan(0)
+  })
+
+  it('reserves nothing when nothing is pinned, so the layout is unchanged', () => {
+    // The hook passes 0 when `pinned` is null; the reserve must be exactly 0 so
+    // the scroller carries no top margin and an unpinned transcript is identical.
+    expect(computePinnedTopReserve(0)).toBe(0)
+  })
+
+  it('reserves nothing for a degenerate negative height', () => {
+    expect(computePinnedTopReserve(-10)).toBe(0)
+  })
+
+  it('grows with the resting height, so a taller card reserves more', () => {
+    expect(computePinnedTopReserve(90)).toBeGreaterThan(computePinnedTopReserve(60))
+    // Monotone, by exactly the height difference.
+    expect(computePinnedTopReserve(90) - computePinnedTopReserve(60)).toBe(30)
+  })
+
+  it('sits one clearance below the card bottom, mirroring the dock reserve', () => {
+    // Card bottom relative to the fold is ROW_PAD_Y + bannerH; the reserve is
+    // that plus the clearance, so the first row starts PINNED_RESERVE_CLEARANCE_PX
+    // below the card — never butting its ring.
+    const bannerH = 52
+    const cardBottomFromFold = ROW_PAD_Y + bannerH
+    expect(computePinnedTopReserve(bannerH) - cardBottomFromFold).toBe(PINNED_RESERVE_CLEARANCE_PX)
   })
 })
