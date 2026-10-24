@@ -22,6 +22,7 @@ import { useAppRailOrder } from './nav/appRail'
 import { setRailWidth, railWidthFor } from '../hooks/useRailWidth'
 import { useFocusChrome } from './focus/focusChrome'
 import { useNativeNotification } from '../hooks/useNativeNotification'
+import { useMarkOpenCronChatRead } from '../hooks/useMarkOpenCronChatRead'
 import { useNotificationSound } from '../hooks/useNotificationSound'
 import { recordSessionStart } from '../rum'
 import { api, isAuthBannerShown } from '../api/client'
@@ -775,6 +776,8 @@ export function useAppShell() {
 
   // Browser push notification on new notification — see src/hooks/useNativeNotification.ts
   useNativeNotification(botName, avatar)
+  // Opening a cron job's chat marks that job's bell notes read (#23564).
+  useMarkOpenCronChatRead()
 
   // Nav-rail "Report issue" → the shared diagnostics flow. Held at shell level
   // (not in the rail) so the modal is not unmounted when the rail collapses.
