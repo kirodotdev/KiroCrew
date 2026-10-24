@@ -52,7 +52,9 @@ const {
   shutdownCrewCompanion,
   suspendCrewCompanion,
   resumeCrewCompanion,
+  hostsDashboard,
 } = require("./crew-companion/index");
+const { createDeepLinkHandler, installDeepLinks, installNavigateReady } = require("./deep-link-handler");
 
 // An update install stops the gateway and quits the app. Close the Crew
 // Companion overlay at dispatch so it does not float orphaned over the vanished
@@ -265,6 +267,35 @@ function readInternalSecret(gatewayUrl) {
 let isQuitting = false;
 let desktopMetricsRecorder = null;
 let windows = null;
+// The kirocrew:// deep-link handler (armed by the single-instance winner below).
+let deepLinks = null;
+
+/** The main window's dashboard view webContents, or null while there is none. */
+function mainDashboardContents() {
+  const win = windows && windows.getMainWindow();
+  if (!win || win.isDestroyed() || !win._mcView) return null;
+  const wc = win._mcView.webContents;
+  return wc && !wc.isDestroyed() ? wc : null;
+}
+
+/**
+ * Deliver a resolved kirocrew:// route to the main window, the one connected
+ * to this machine's gateway, which is where a slot key names a session. An
+ * empty route only raises it. A session route is sent only while the view
+ * serves the gateway's origin -- the Crew Companion's own routing check -- and
+ * the window is raised only then, so an undeliverable link moves nothing and
+ * stays held.
+ */
+function deliverDeepLink(route) {
+  if (!windows) return false;
+  if (!route) return windows.showMainWindow({ focus: true });
+  const wc = mainDashboardContents();
+  if (!wc || !hostsDashboard(wc, BACKEND_URL)) return false;
+  windows.showMainWindow({ focus: true });
+  wc.send("navigate", route);
+  return true;
+}
+
 // Whether a dashboard document has finished loading in this run, owned by the
 // GPU-crash fallback (the single-instance winner arms it below). The dead-
 // renderer dialog reads it to tell a renderer that never started from one
@@ -415,9 +446,32 @@ if (!app.requestSingleInstanceLock()) {
   });
   dashboardLoaded = gpuFallback.dashboardLoaded;
 
-  app.on("second-instance", () => {
-    // Relaunch is explicit intent to see the existing window. The window owner
-    // cancels a pending fullscreen/tray hide before restore/show/focus.
+  // kirocrew:// deep links: bare `kirocrew://` raises the window and
+  // `kirocrew://chat?sid=<slot>` opens that session. A session link is held
+  // until the dashboard document reports `navigate-ready` (its `navigate`
+  // listener is mounted), so a link that LAUNCHED the app is applied once the
+  // SPA can take it. Registered here, before `whenReady`, because macOS
+  // delivers a launching URL through `open-url` during startup and drops it
+  // when no listener is attached.
+  deepLinks = createDeepLinkHandler({ deliver: deliverDeepLink, log: glog });
+  installDeepLinks({ app, handler: deepLinks, log: glog });
+  installNavigateReady({
+    app,
+    ipcMain,
+    handler: deepLinks,
+    isDashboardContents: (contents) => Boolean(contents) && contents === mainDashboardContents(),
+  });
+  // On Windows and Linux the URL that launched THIS instance is in its own
+  // argv; `second-instance` fires only for later launches. macOS argv carries
+  // no URL, so this finds nothing there.
+  deepLinks.handleArgv(process.argv);
+
+  app.on("second-instance", (_event, argv) => {
+    // On Windows and Linux a kirocrew:// link launches a second copy with the
+    // URL in argv; route to it. Otherwise a relaunch is explicit intent to see
+    // the existing window. The window owner cancels a pending fullscreen/tray
+    // hide before restore/show/focus.
+    if (deepLinks && deepLinks.handleArgv(argv)) return;
     windows?.showMainWindow({ focus: true });
   });
 }

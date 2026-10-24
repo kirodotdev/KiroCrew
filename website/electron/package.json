@@ -29,6 +29,14 @@
   "build": {
     "appId": "com.amazon.kiro.crew",
     "productName": "KiroCrew",
+    "protocols": [
+      {
+        "name": "KiroCrew",
+        "schemes": [
+          "kirocrew"
+        ]
+      }
+    ],
     "toolsets": {
       "appimage": "1.0.3"
     },
@@ -240,6 +248,8 @@
       "browser-annotate.js",
       "browser-agent-channel.js",
       "external-scheme.js",
+      "deep-link.js",
+      "deep-link-handler.js",
       "validation.js",
       "context-menu.js",
       "preload.js",

@@ -349,6 +349,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew learn add/list/remove` | Manage learned corrections |
 | `kirocrew run TASK.md` | Run an autonomous task from a spec file |
 | `kirocrew token` | Print a dashboard access URL with auth token |
+| `kirocrew open [SESSION] [--print]` | Open the Kiro Crew desktop app on a session through its `kirocrew://chat?sid=<key>` URL scheme, or bring the app forward with no session. `--print` writes the URL and opens nothing. The key is checked against the same grammar as the desktop resolver (`website/electron/deep-link.js`) and a refused key exits 2. On macOS and Linux the URL goes to `/usr/bin/open` / `/usr/bin/xdg-open` and the command exits 1 when the launcher reports that no application handles the scheme; Windows uses `os.startfile`. The scheme is registered by the desktop app's installer. |
 | `kirocrew logout` | Revoke all active dashboard sessions, refresh chains included |
 | `kirocrew manifest` | Generate Slack manifest with user alias auto-populated |
 | `kirocrew update` | Update to latest version (git fetch, pin the upstream commit, refuse a revision whose `requires-python` this venv fails, hard reset to the pinned commit + rebuild; a diverged checkout is refused — `--force` discards its local commits) |
