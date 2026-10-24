@@ -10301,6 +10301,14 @@
         "tool_search_label": "Ricerca strumenti",
         "tool_search_description": "Carica su richiesta le specifiche degli strumenti MCP differite."
       }
+    },
+    "uninstalledBuiltinSkillsList": {
+      "title": "Skill integrate disinstallate",
+      "hint": "Skill integrate che hai eliminato. Restano rimosse dopo riavvii e aggiornamenti finché non le ripristini.",
+      "load_failed": "Impossibile caricare le skill integrate disinstallate.",
+      "restore": "Ripristina",
+      "restoring": "Ripristino…",
+      "restore_failed": "Impossibile ripristinare questa skill. Riprova."
     }
   },
   "hooks": {

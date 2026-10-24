@@ -10301,6 +10301,14 @@
         "tool_search_label": "Búsqueda de herramientas",
         "tool_search_description": "Cargar especificaciones de herramientas MCP diferidas bajo demanda."
       }
+    },
+    "uninstalledBuiltinSkillsList": {
+      "title": "Habilidades integradas desinstaladas",
+      "hint": "Habilidades integradas que eliminaste. Siguen eliminadas tras reinicios y actualizaciones hasta que las restaures.",
+      "load_failed": "No se pudieron cargar las habilidades integradas desinstaladas.",
+      "restore": "Restaurar",
+      "restoring": "Restaurando…",
+      "restore_failed": "No se pudo restaurar esta habilidad. Inténtalo de nuevo."
     }
   },
   "hooks": {

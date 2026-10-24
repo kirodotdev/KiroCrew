@@ -263,6 +263,66 @@ def _match_package_row(
     return None
 
 
+async def api_skills_uninstalled(request: web.Request) -> web.Response:
+    """GET /api/skills/-/uninstalled — shipped skills the user deleted.
+
+    A shipped skill deleted from the dashboard is recorded so the gateway's
+    builtin sync stops reinstalling it; this lists that record (filtered to
+    names the package still ships) so the dashboard can offer a restore.
+    """
+    state: DashboardState = request.app["state"]
+    skills = _get_skills(state)
+    names = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), skills.uninstalled_builtins
+    )
+    return web.json_response({"uninstalled": names})
+
+
+async def api_skill_restore_builtin(request: web.Request) -> web.Response:
+    """POST /api/skills/-/restore-builtin — body {name}. Reinstall a deleted shipped skill."""
+    denied = _deny_non_owner_skill_operation(request, "skill_restore_builtin")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    skills = _get_skills(state)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    name = str(body.get("name", "")).strip()
+    if not name:
+        return web.json_response({"error": "name required", "code": "name_required"}, status=400)
+    try:
+        ok = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), _under_skill_write_lock, skills.restore_builtin, name
+        )
+    except Exception:
+        logger.exception("Restoring shipped skill %s failed", name)
+        ok = None
+    try:
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_restore_builtin",
+            tool_kind="skill",
+            outcome="ok" if ok else ("error" if ok is None else "rejected"),
+            metadata={"name": name},
+        )
+    except Exception:  # noqa: BLE001 — never 500 on an audit write
+        logger.debug("Could not audit skill restore outcome", exc_info=True)
+    if ok is None:
+        return web.json_response({"error": "internal error", "code": "internal_error"}, status=500)
+    if not ok:
+        return web.json_response(
+            {"error": f"'{name}' is not an uninstalled shipped skill", "code": "not_uninstalled"},
+            status=404,
+        )
+    return web.json_response({"ok": True})
+
+
 async def api_skill_detail(request: web.Request) -> web.Response:
     """GET/PUT/DELETE /api/skills/{name} — get, update, or delete a skill."""
     state: DashboardState = request.app["state"]
@@ -304,7 +364,11 @@ async def api_skill_detail(request: web.Request) -> web.Response:
         # the ACL and renames it into place. On network-backed storage either can
         # stall long enough to matter to every other session sharing this loop, so
         # both go to a thread the way discover.py already routes the same two calls.
-        ok = await asyncio.to_thread(skills.delete_skill, name)
+        # Under the write lock: deleting a built-in also records it as uninstalled,
+        # and restore re-runs the builtin sync under this same lock. Without it a
+        # restore's sync could read the record before this delete lands and then
+        # reinstall the skill this request just removed.
+        ok = await asyncio.to_thread(_under_skill_write_lock, skills.delete_skill, name)
         try:
             _sel().log_tool_invocation(
                 session_key="",

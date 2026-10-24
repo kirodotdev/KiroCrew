@@ -143,10 +143,10 @@ _LOADER_MEMBERS = {
         load_skill pending_candidate_is_staged preview_pending_update prune_pending
         read_auto_skill_body read_scoped_skill read_scoped_skill_page reconfigure
         resolve_dollar_skills
-        resolve_ledger_aliases resolve_tool_read_keys restore_auto_skill
+        resolve_ledger_aliases resolve_tool_read_keys restore_auto_skill restore_builtin
         run_skill_lifecycle scoped_skills search_skills search_skills_report
         set_inject_on_trigger set_pinned split_triggered stage_skill_candidate sync_builtins trigger_hint
-        update_auto_skill update_skill
+        uninstalled_builtins update_auto_skill update_skill
     """,
     "static": """
         _auto_slug_from_name _candidate_has_symlink _catalog_fingerprints_for
@@ -280,6 +280,7 @@ _LOADER_SIGNATURES = {
     "resolve_ledger_aliases": "(self) -> 'dict[str, list[str]]'",
     "resolve_tool_read_keys": "(self, tool_name: 'str' = '', raw_params: 'dict | None' = None, command: 'str | None' = None) -> 'list[str]'",
     "restore_auto_skill": "(self, slug: 'str') -> 'str | None'",
+    "restore_builtin": "(self, name: 'str') -> 'bool'",
     "run_skill_lifecycle": "(self, *, max_auto_skills: 'int', stale_after_days: 'int', archive_after_days: 'int', cron_referenced: 'set[str] | None' = None, exempt: 'set[str] | None' = None, now: 'float | None' = None) -> 'dict'",
     "scoped_skills": "(self, *, project_dir: 'str | Path | None' = None, only: 'list[str] | None' = None) -> 'list[dict]'",
     "search_skills": "(self, query: 'str', limit: 'int' = 20, *, project_dir: 'str | Path | None' = None, only: 'list[str] | None' = None, offset: 'int' = 0, browse: 'bool' = False) -> 'list[dict]'",
@@ -292,6 +293,7 @@ _LOADER_SIGNATURES = {
     "sync_builtins": "(self) -> 'None'",
     "trigger_hint": "(self, names: 'list[str]', project_dir: 'str | Path | None' = None) -> 'str'",
     "update_auto_skill": "(self, name: 'str', *, description: 'str', triggers: 'str', procedure_md: 'str', provenance: 'AutoSkillProvenance') -> 'bool'",
+    "uninstalled_builtins": "(self) -> 'list[str]'",
     "update_skill": "(self, name: 'str', content: 'str') -> 'bool'",
 }
 

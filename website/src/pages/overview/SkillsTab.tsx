@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download, Loader2, RefreshCw, Sparkles } from 'lucide-react'
 import { api, ApiError, type SkillScriptValidation } from '../../api/client'
 import ProjectSkillsTrustList from '../../components/ProjectSkillsTrustList'
+import UninstalledBuiltinSkillsList from '../../components/UninstalledBuiltinSkillsList'
 import AskAgentButton from '../../components/AskAgentButton'
 import { Badge, Card, Btn, SearchInput, EmptyState, Toggle } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
@@ -331,6 +332,8 @@ export default function SkillsTab() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['skills'] })
+      // A deleted built-in now has a restore row; show it without a reload.
+      queryClient.invalidateQueries({ queryKey: ['skills-uninstalled'] })
     },
   })
 
@@ -469,6 +472,9 @@ export default function SkillsTab() {
   return (<>
     <PendingSkillsPanel />
     <ProjectSkillsTrustList />
+    {/* No hand-off while an edit is latched: the chat navigation unmounts this
+      * tab and the latched formData is the only copy of the draft. */}
+    <UninstalledBuiltinSkillsList askAgent={!detailEditing} />
     {/* Create Skill Modal */}
     {/* The gate reads the SANITIZED name and category, not the raw ones and not
         the combined path: a segment that sanitizes to nothing (typically one

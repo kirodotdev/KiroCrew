@@ -117,6 +117,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         READONLY_SKILL_KEY_PREFIXES,
         _under_skill_write_lock,
         api_skill_inject_on_trigger,
+        api_skill_restore_builtin,
+        api_skills_uninstalled,
     )
     from kiro_crew.dashboard.handlers.prompts_skill_pending import api_skills_pending  # noqa: F401
     from kiro_crew.dashboard.handlers.prompts_skill_pending import (  # noqa: F401

@@ -256,6 +256,7 @@ from kiro_crew.skills_selection import (  # noqa: F401
     _SHORT_DESC_CHARS,
     _packaged_skill_names,
 )
+from kiro_crew.skills_uninstalled import mark_uninstalled, read_uninstalled, unmark_uninstalled
 from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP, trigger_score, words_of  # noqa: F401
 
 logger = logging.getLogger(__name__)
@@ -835,8 +836,49 @@ class SkillsLoader:
         elif is_link_or_junction(skill_dir):
             return False
         shutil.rmtree(skill_dir)
+        if name in _packaged_skill_names():
+            # Recorded after the rmtree succeeds, so a failed delete never
+            # leaves a record that would hide a still-installed skill's
+            # future updates. Without it the next start reinstalls the skill.
+            mark_uninstalled(self._dir, name)
         self._invalidate_iter_cache()  # so the removal is reflected in list_skills() now
         logger.info("Deleted skill: %s", name)
+        return True
+
+    def uninstalled_builtins(self) -> list[str]:
+        """Shipped skills the user deleted that this package still ships, sorted."""
+        return sorted(read_uninstalled(self._dir) & _packaged_skill_names())
+
+    def restore_builtin(self, name: str) -> bool:
+        """Reinstall a shipped skill the user deleted. Returns whether it was uninstalled.
+
+        Clears the record, then runs the same syncs a gateway start runs, so
+        the restored copy is the packaged one with fresh provenance.
+        """
+        if name not in _packaged_skill_names():
+            return False
+        if not unmark_uninstalled(self._dir, name):
+            return False
+        from kiro_crew.deploy import _SKILLS_DIR as deploy_skills_dir
+        from kiro_crew.deploy import _register_core_skills
+
+        try:
+            _ensure_builtin_skills(self._dir)
+            # The deploy installer always targets the home's skills dir, so run it
+            # only when that is this loader's dir; otherwise it would install into
+            # a tree this loader does not own.
+            if (deploy_skills_dir / name).is_dir() and self._dir.resolve() == (
+                config_dir() / "skills"
+            ).resolve():
+                _register_core_skills(only=name)
+        except Exception:
+            # Keep the skill listed as uninstalled so the user can retry from
+            # the same row instead of losing it until the next gateway start.
+            mark_uninstalled(self._dir, name)
+            raise
+        finally:
+            self._invalidate_iter_cache()
+        logger.info("Restored shipped skill: %s", name)
         return True
 
     # ── Auto skill creation ──

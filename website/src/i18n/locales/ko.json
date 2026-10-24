@@ -10013,6 +10013,14 @@
         "tool_search_label": "도구 검색",
         "tool_search_description": "지연된 MCP 도구 사양을 필요할 때 로드합니다."
       }
+    },
+    "uninstalledBuiltinSkillsList": {
+      "title": "제거된 기본 제공 스킬",
+      "hint": "삭제한 기본 제공 스킬입니다. 복원하기 전까지는 재시작하거나 업데이트해도 제거된 상태로 유지됩니다.",
+      "load_failed": "제거한 기본 제공 스킬을 불러오지 못했습니다.",
+      "restore": "복원",
+      "restoring": "복원 중…",
+      "restore_failed": "이 스킬을 복원하지 못했습니다. 다시 시도하세요."
     }
   },
   "hooks": {
