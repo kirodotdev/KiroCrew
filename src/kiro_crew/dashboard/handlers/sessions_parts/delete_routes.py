@@ -43,7 +43,10 @@ from kiro_crew.dashboard.handlers.sessions_parts.delete_claim import (
     _rollback_ledger_exclusion,
     _unstrand_shared_ledger_unit,
 )
-from kiro_crew.dashboard.handlers.sessions_parts.history_reads import _open_slot_transcript_keys
+from kiro_crew.dashboard.handlers.sessions_parts.history_reads import (
+    _is_user_listed_row,
+    _open_slot_transcript_keys,
+)
 from kiro_crew.dashboard.handlers.sessions_parts.slot_teardown import _remove_slot_for_history_key
 from kiro_crew.dashboard.state import DashboardState
 
@@ -195,7 +198,12 @@ async def _delete_claimed_session(
 
 
 async def api_sessions_clear(request: web.Request) -> web.Response:
-    """DELETE /api/sessions — permanently delete closed history sessions only."""
+    """DELETE /api/sessions — permanently delete closed history sessions only.
+
+    ``user_only=1`` narrows the clear to the rows ``GET /api/sessions?user_only=1``
+    lists, which is what the Older Sessions "Delete all" sends. Without
+    it every closed session is cleared, as before.
+    """
     refusal = _app_bulk_history_refusal(request, "sessions_clear")
     if refusal is not None:
         return refusal
@@ -204,7 +212,9 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
         return web.json_response({"error": "no conversation log"}, status=400)
 
     log = state.conversation_log
-    clearable, skipped, unreadable = await asyncio.to_thread(_clearable_history_keys, state, log)
+    clearable, skipped, unreadable = await asyncio.to_thread(
+        _clearable_history_keys, state, log, user_only=_user_only_query(request)
+    )
 
     # One strict owner scan covers the whole selection. A known cron-store
     # failure refuses before any transcript is unlinked.
@@ -355,11 +365,22 @@ async def _clear_history_rows(
     )
 
 
+def _user_only_query(request: web.Request) -> bool:
+    """The ``user_only`` flag, parsed exactly as ``GET /api/sessions`` parses it."""
+    return (request.query.get("user_only") or "").lower() in ("1", "true", "yes")
+
+
 def _clearable_history_keys(
     state: DashboardState,
     log: Any,
+    *,
+    user_only: bool = False,
 ) -> tuple[list[str], int, list[str]]:
     """The history sessions a bulk clear would remove.
+
+    With *user_only*, a row the ``user_only`` listing hides (a machine
+    namespace, or a never-used session) is left out entirely: it is neither
+    cleared nor counted as skipped, because the reader never saw it.
 
     ONE implementation, shared by ``api_sessions_clear`` and the clearable-count
     endpoint, so the number a confirmation displays cannot drift from the set the
@@ -394,6 +415,8 @@ def _clearable_history_keys(
     for row in log.list_sessions():
         key = row.get("key", "")
         if not key:
+            continue
+        if user_only and not _is_user_listed_row(log, row):
             continue
         if key in open_keys:
             skipped += 1
@@ -439,8 +462,9 @@ async def api_sessions_clearable_count(request: web.Request) -> web.Response:
     destructive verb means a caller that drops the flag deletes instead of
     counting, while a GET cannot delete however it is called.
 
-    Takes no parameters. The count is of exactly the set ``DELETE /api/sessions``
-    removes, because that delete accepts no cutoff — see
+    Takes one parameter, ``user_only``, read the same way the DELETE reads it.
+    The count is of exactly the set ``DELETE /api/sessions`` removes for the same
+    flag, because that delete accepts no cutoff — see
     :func:`_clearable_history_keys` for why offering one here would report a
     subset of what the delete actually takes.
     """
@@ -454,7 +478,10 @@ async def api_sessions_clearable_count(request: web.Request) -> web.Response:
         )
 
     clearable, _skipped, _unreadable = await asyncio.to_thread(
-        _clearable_history_keys, state, state.conversation_log
+        _clearable_history_keys,
+        state,
+        state.conversation_log,
+        user_only=_user_only_query(request),
     )
     return web.json_response({"sessions": len(clearable)})
 

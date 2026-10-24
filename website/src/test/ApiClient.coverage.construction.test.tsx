@@ -164,6 +164,14 @@ describe('query-string builders', () => {
     expect(call().url).toBe('/api/instances/cd-1/status?diagnose=1')
   })
 
+  it('clearSessions sends user_only only when asked', async () => {
+    await api.clearSessions()
+    expect(call().url).toBe('/api/sessions')
+    await api.clearSessions(true)
+    expect(call(1).url).toBe('/api/sessions?user_only=1')
+    expect(call(1).method).toBe('DELETE')
+  })
+
   it('sessions/search/episodic pass their paging and tag filters through', async () => {
     await api.sessions()
     expect(call().url).toBe('/api/sessions?limit=30&offset=0')

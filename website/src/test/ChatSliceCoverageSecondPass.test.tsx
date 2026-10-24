@@ -1691,6 +1691,8 @@ describe('chatSlice thunks', () => {
     const store = makeStore()
     await store.dispatch(clearHistorySessions())
     expect(chat(store).undeletableHistory).toBeNull()
+    // The clear is scoped to the rows the user_only listing shows.
+    expect(apiMock.clearSessions).toHaveBeenCalledWith(true)
   })
 
   it('names the rows a 200 Delete all left behind and counts the failed ones', async () => {

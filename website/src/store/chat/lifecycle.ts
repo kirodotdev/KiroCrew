@@ -318,7 +318,9 @@ export const clearHistorySessions = createAsyncThunk<
   async (_, { getState, rejectWithValue }) => {
     let body: unknown
     try {
-      body = await api.clearSessions()
+      // `user_only`, the same flag `fetchHistory` lists with: Delete all removes
+      // only rows this pane could show, never hidden machine transcripts.
+      body = await api.clearSessions(true)
     } catch (e) {
       const errBody = (e as { body?: unknown } | null)?.body
       const code = parseErrorCode(typeof errBody === 'string' ? errBody : undefined) ?? ''

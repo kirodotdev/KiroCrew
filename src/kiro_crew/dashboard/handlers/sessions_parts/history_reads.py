@@ -145,6 +145,34 @@ def _is_machine_only_session(key: str) -> bool:
     return any(_in_namespace(key, ns) for ns in _MACHINE_NAMESPACES)
 
 
+def _has_user_content(log: object, row: dict) -> bool:
+    """True when *row* has something a reader could resume: a title or a message.
+
+    ``list_sessions`` titles a session from its metadata or its first user
+    message, and falls back to the key itself. A titled row is kept without a
+    read, even when it has no messages: a title is a user signal. Only a row
+    whose title IS its key pays for a file read.
+    """
+    key = row.get("key", "")
+    if row.get("title", key) != key:
+        return True
+    try:
+        return bool(log.has_messages(key))  # type: ignore[attr-defined]
+    except OSError:
+        # Unreadable is not empty: never hide what could not be read.
+        return True
+
+
+def _is_user_listed_row(log: object, row: dict) -> bool:
+    """True when the ``user_only`` listing shows *row*.
+
+    ONE predicate, shared by ``GET /api/sessions?user_only=1`` and the
+    ``user_only`` bulk clear, so the Older Sessions "Delete all" removes only
+    rows the reader could see in that pane.
+    """
+    return not _is_machine_only_session(row.get("key", "")) and _has_user_content(log, row)
+
+
 _SHORT_SLOT_NAME_RE = re.compile(r"chat-\d+")
 _DASHBOARD_SLOT_STEM_RE = re.compile(r"dashboard_(chat-\d+)-(\d+)")
 
@@ -253,20 +281,6 @@ async def api_sessions(request: web.Request) -> web.Response:
     if user_only:
         log = state.conversation_log
 
-        def _has_content(row: dict) -> bool:
-            # ``list_sessions`` titles a session from its metadata or its first
-            # user message, and falls back to the key itself. A titled row is kept
-            # without a read, even when it has no messages: a title is a user
-            # signal. Only a row whose title IS its key pays for a file read.
-            key = row.get("key", "")
-            if row.get("title", key) != key:
-                return True
-            try:
-                return log.has_messages(key)
-            except OSError:
-                # Unreadable is not empty: never hide what could not be read.
-                return True
-
         def _user_rows(sessions: list[dict]) -> list[dict]:
             if request_app:
                 owned: list[dict] = []
@@ -276,16 +290,14 @@ async def api_sessions(request: web.Request) -> web.Response:
                         continue
                     try:
                         with log._locked(key):
-                            if _app_owns_transcript(log, request_app, key) and _has_content(row):
+                            if _app_owns_transcript(log, request_app, key) and _has_user_content(
+                                log, row
+                            ):
                                 owned.append(row)
                     except HistoryLockTimeout:
                         continue
                 return owned
-            return [
-                s
-                for s in sessions
-                if not _is_machine_only_session(s.get("key", "")) and _has_content(s)
-            ]
+            return [s for s in sessions if _is_user_listed_row(log, s)]
 
         all_sessions = await asyncio.to_thread(_user_rows, all_sessions)
     # Count AFTER the exclusion so the page, ``total`` and ``has_more`` describe
