@@ -10016,6 +10016,11 @@
         "tool_search_label": "工具搜索",
         "tool_search_description": "按需加载延迟的 MCP 工具规范。"
       }
+    },
+    "unscannedDownload": {
+      "title": "文件太大，无法扫描",
+      "body": "{{name}} 大小为 {{size}}。超过 {{limit}} 的文件在下载前不会检查其中是否含有密钥等机密信息。",
+      "download_anyway": "仍要下载"
     }
   },
   "hooks": {

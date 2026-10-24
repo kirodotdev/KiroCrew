@@ -10160,6 +10160,11 @@
         "tool_search_label": "Werkzeugsuche",
         "tool_search_description": "Zurückgestellte MCP-Tool-Spezifikationen bei Bedarf laden."
       }
+    },
+    "unscannedDownload": {
+      "title": "Zu groß zum Prüfen",
+      "body": "{{name}} ist {{size}} groß. Dateien über {{limit}} werden vor dem Download nicht auf Geheimnisse geprüft.",
+      "download_anyway": "Trotzdem herunterladen"
     }
   },
   "hooks": {

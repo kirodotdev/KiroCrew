@@ -292,6 +292,54 @@ class _OpenedFile(NamedTuple):
     data: bytes
 
 
+def _open_refusal(denied: _OpenDenied, *, tool_name: str) -> _OpenRefusal:
+    """Audit one :func:`_open_checked_file` refusal and build its response.
+
+    The one mapping of the open-and-check codes onto the whole-read envelope's
+    SEL vocabulary and response bodies, shared by :func:`_open_checked` and by
+    the streamed ``/api/file-download``, so the two cannot drift apart.
+    """
+
+    def _log(outcome: str, res: str, error: str = "") -> None:
+        kw = {"error": error} if error else {}
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            tool_name=tool_name,
+            outcome=outcome,
+            resources=res,
+            **kw,
+        )
+
+    code, res = denied.code, denied.path
+    if code == "invalid_path":
+        _log("denied", res)
+        return _OpenRefusal(web.json_response({"error": "invalid or forbidden path"}, status=400))
+    if code == "sensitive_path":
+        _log("denied", res, "sensitive_path")
+        return _OpenRefusal(web.json_response({"error": "sensitive path blocked"}, status=403))
+    if code == "not_found":
+        _log("not_found", res)
+        return _OpenRefusal(web.json_response({"error": "not found"}, status=404))
+    if code == "symlink_refused":
+        _log("denied", res, "symlink_rejected")
+        return _OpenRefusal(web.json_response({"error": "symlinks not allowed"}, status=403))
+    if code == "file_too_large":
+        # Reachable only through a caller that passes fstat_cap; mapped so
+        # a policy refusal can never masquerade as the 500 below.
+        _log("denied", res, "file_too_large")
+        return _OpenRefusal(
+            web.json_response({"error": "file too large", "code": "file_too_large"}, status=413)
+        )
+    # read_failed: the residual code. (The whole-read envelope's own size
+    # guard is its bounded read, because an fstat pre-check races a
+    # concurrent writer while reading at most cap+1 bytes bounds memory
+    # unconditionally -- the same shape as _load_sheet_payload's guard.)
+    _log("failure", res)
+    return _OpenRefusal(
+        web.json_response({"error": "cannot read file", "code": "read_failed"}, status=500)
+    )
+
+
 def _open_checked(
     raw_path: str,
     *,
@@ -338,36 +386,7 @@ def _open_checked(
 
     checked = _open_checked_file(raw_path, tool_name=tool_name)
     if isinstance(checked, _OpenDenied):
-        code, res = checked.code, checked.path
-        if code == "invalid_path":
-            _log("denied", res)
-            return _OpenRefusal(
-                web.json_response({"error": "invalid or forbidden path"}, status=400)
-            )
-        if code == "sensitive_path":
-            _log("denied", res, "sensitive_path")
-            return _OpenRefusal(web.json_response({"error": "sensitive path blocked"}, status=403))
-        if code == "not_found":
-            _log("not_found", res)
-            return _OpenRefusal(web.json_response({"error": "not found"}, status=404))
-        if code == "symlink_refused":
-            _log("denied", res, "symlink_rejected")
-            return _OpenRefusal(web.json_response({"error": "symlinks not allowed"}, status=403))
-        if code == "file_too_large":
-            # Reachable only through a caller that passes fstat_cap; mapped so
-            # a policy refusal can never masquerade as the 500 below.
-            _log("denied", res, "file_too_large")
-            return _OpenRefusal(
-                web.json_response({"error": "file too large", "code": "file_too_large"}, status=413)
-            )
-        # read_failed: the residual code. (This envelope's own size guard is
-        # the bounded read below, because an fstat pre-check races a
-        # concurrent writer while reading at most cap+1 bytes bounds memory
-        # unconditionally -- the same shape as _load_sheet_payload's guard.)
-        _log("failure", res)
-        return _OpenRefusal(
-            web.json_response({"error": "cannot read file", "code": "read_failed"}, status=500)
-        )
+        return _open_refusal(checked, tool_name=tool_name)
 
     path = checked.path
     try:

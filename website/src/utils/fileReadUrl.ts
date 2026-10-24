@@ -1,5 +1,7 @@
 import { i18nT } from '../i18n/t'
-import { downloadBlob } from './download'
+import { downloadBlob, downloadUrl } from './download'
+import { confirmUnscannedDownload } from './unscannedDownload'
+import { pathBasename } from './pathBasename'
 
 /** Append resolve=1 for relative paths. The backend resolves such paths
  * against KIROCREW_PROJECT_DIR; absolute and ~-paths pass through unchanged. */
@@ -47,9 +49,13 @@ export function fileReadUrl(filePath: string): string {
  *
  * Use this instead of fileReadUrl when saving a file to disk. fileReadUrl
  * decodes content as UTF-8 with errors='replace', which corrupts binary
- * files (.docx, .pdf, images) by replacing non-text bytes with U+FFFD. */
-export function fileDownloadUrl(filePath: string): string {
-  return withResolve('/api/file-download?path=' + encodeURIComponent(filePath), filePath)
+ * files (.docx, .pdf, images) by replacing non-text bytes with U+FFFD.
+ *
+ * `confirmUnscanned` adds `confirm_unscanned=1`: the owner's yes to a file over
+ * the server's scan limit, which it then sends without the credential scan. */
+export function fileDownloadUrl(filePath: string, opts?: { confirmUnscanned?: boolean }): string {
+  const url = withResolve('/api/file-download?path=' + encodeURIComponent(filePath), filePath)
+  return opts?.confirmUnscanned ? url + '&confirm_unscanned=1' : url
 }
 
 /** Fetch a file's raw bytes through /api/file-download and hand them to the
@@ -71,6 +77,11 @@ export function fileDownloadUrl(filePath: string): string {
  * is how the owner releases a flagged file of their own. Either way the
  * refusal is surfaced through `onError`, never defeated -- the bytes are not
  * reached another way.
+ *
+ * A file over the server's scan limit answers 409 `large_file_unscanned` and
+ * sends nothing. The owner is asked (`confirmUnscannedDownload`), and only a
+ * yes downloads it, as a plain browser download of the confirmed URL so a
+ * multi-GB file streams to disk instead of filling page memory as a blob.
  */
 export async function downloadFileToDisk(
   filePath: string,
@@ -79,6 +90,14 @@ export async function downloadFileToDisk(
   try {
     const res = await fetch(fileDownloadUrl(filePath))
     if (!res.ok) {
+      let body: { code?: unknown; size?: unknown; limit?: unknown } = {}
+      try { body = (await res.clone().json()) ?? {} } catch { /* non-JSON body */ }
+      if (body.code === 'large_file_unscanned') {
+        const name = downloadFileName(filePath)
+        const yes = await confirmUnscannedDownload({ name, size: Number(body.size) || 0, limit: Number(body.limit) || 0 })
+        if (yes) downloadUrl(fileDownloadUrl(filePath, { confirmUnscanned: true }), name)
+        return
+      }
       // eslint-disable-next-line no-console -- surface download failures for diagnostics
       console.error('downloadFileToDisk failed', res.status, res.statusText)
       // The credential gate aborts a flagged file with `code: content_redacted`
@@ -86,8 +105,7 @@ export async function downloadFileToDisk(
       // that body code, not the status: the endpoint returns 400 for
       // invalid/out-of-project paths too, and those must not read as a
       // credential accusation. A body that will not parse falls back to generic.
-      let code = ''
-      try { code = (await res.clone().json())?.code ?? '' } catch { /* non-JSON body */ }
+      const code = typeof body.code === 'string' ? body.code : ''
       onError(i18nT(code === 'content_redacted'
         ? 'components.markdownPanel.download_blocked_credentials'
         : 'components.markdownPanel.download_failed'))
@@ -106,7 +124,7 @@ export async function downloadFileToDisk(
  *  the fetch above and by the side panel's last-copy download, which hands the
  *  buffer of a file no longer on disk to `downloadBlob` under the same name. */
 export function downloadFileName(filePath: string): string {
-  return filePath.split('/').pop() || 'download'
+  return pathBasename(filePath) || 'download'
 }
 
 /** Build the /api/file-stream URL — Range-capable audio/video serving.

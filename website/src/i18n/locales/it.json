@@ -10304,6 +10304,11 @@
         "tool_search_label": "Ricerca strumenti",
         "tool_search_description": "Carica su richiesta le specifiche degli strumenti MCP differite."
       }
+    },
+    "unscannedDownload": {
+      "title": "Troppo grande per essere analizzato",
+      "body": "{{name}} pesa {{size}}. I file oltre {{limit}} non vengono controllati alla ricerca di segreti prima del download.",
+      "download_anyway": "Scarica comunque"
     }
   },
   "hooks": {
