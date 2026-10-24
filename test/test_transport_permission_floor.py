@@ -19,11 +19,11 @@ import logging
 import threading
 import time
 from collections import Counter
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from source_corpus import parsed_candidates, src_root
 
 from kiro_crew.acp.types import (
     EVENT_PERMISSION_REQUEST,
@@ -825,13 +825,16 @@ _TRANSPORT_ADAPTER_APPROVAL_CALLERS = Counter(
 
 
 def test_every_production_approval_consumer_is_reviewed_for_identity_gate():
-    source_root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+    source_root = src_root()
     callers = Counter()
-    for path in source_root.rglob("*.py"):
+    # A counted call spells ``approve_tool`` as its attribute, so only files whose
+    # text holds it are parsed.
+    for path, _text, tree in parsed_candidates(
+        require_any=("approve_tool",), skip_syntax_errors=False
+    ):
         relative = path.relative_to(source_root)
         if "tests" in relative.parts:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         parents = {
             child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
         }
@@ -853,12 +856,13 @@ def test_every_production_approval_consumer_is_reviewed_for_identity_gate():
 
 
 def test_production_approval_results_are_not_discarded():
-    source_root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+    source_root = src_root()
     discarded = []
-    for path in source_root.rglob("*.py"):
+    for path, _text, tree in parsed_candidates(
+        require_any=("approve_tool",), skip_syntax_errors=False
+    ):
         if "tests" in path.relative_to(source_root).parts:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         parents = {
             child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
         }

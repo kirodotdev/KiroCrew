@@ -424,7 +424,9 @@ The recurring wins, in order of leverage:
    tests land on; five full runs measured eighteen ratchet modules each re-scanning on
    3–5 workers, ~22 CPU-minutes per run. Add
    `pytestmark = pytest.mark.xdist_group(name="tree_scan_<module>")` — one group per
-   file, never one shared group — and the scan runs once per run.
+   file, never one shared group — and the scan runs once per run. The group also
+   carries the tree-scan timeout: `test/conftest.py` gives every test in a `tree_scan`
+   group with no timeout of its own 300 s instead of the suite's 120 s.
 
 **After any speedup, mutate the production code the test covers and confirm the test
 still FAILS.** A test made faster by checking less is a regression. Restore from a copy

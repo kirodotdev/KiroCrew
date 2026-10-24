@@ -446,15 +446,16 @@ class TestListenerKeyedCredentialFile:
         site, so a direct call reintroduced in any coroutine fails here.
         """
         import ast
-        from pathlib import Path as _Path
 
-        root = _Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
+        from source_corpus import parsed_candidates, src_root
+
+        root = src_root()
         offenders: list[str] = []
-        for py in root.rglob("*.py"):
-            try:
-                tree = ast.parse(py.read_text(encoding="utf-8"))
-            except (OSError, SyntaxError):  # pragma: no cover - unreadable source
-                continue
+        # A flagged callee's spelling ends in one of the two names, so only the files
+        # whose text holds one are parsed.
+        for py, _text, tree in parsed_candidates(
+            require_any=("clear_marker", "clear_late_marker_write")
+        ):
             for fn in ast.walk(tree):
                 if not isinstance(fn, ast.AsyncFunctionDef):
                     continue

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -755,11 +754,15 @@ class TestStoreOffLoop:
         """
         import ast
 
+        from source_corpus import parsed_candidates
+
         allowed = {("chat_utils_completion.py", "_queued_depth_off_loop", "_queued_depth")}
-        src = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
         offenders: list[str] = []
-        for path in sorted(src.rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+        # A flagged call spells one of the two names as its Name or Attribute, so only
+        # the files whose text holds one are parsed.
+        for path, _text, tree in parsed_candidates(
+            require_any=("subagents_attached", "_queued_depth"), skip_syntax_errors=False
+        ):
 
             class _Visitor(ast.NodeVisitor):
                 def __init__(self) -> None:

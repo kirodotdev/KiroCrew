@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import ast
 import functools
-from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+from source_corpus import parsed_candidates, src_root
+
+SRC = src_root()
 
 #: (path under src/kiro_crew, enclosing function) -> why it cannot race.
 ALLOWED = {
@@ -74,11 +75,14 @@ def _racy_functions(tree: ast.AST) -> set[str]:
 @functools.lru_cache(maxsize=1)
 def _racy_sites() -> frozenset[tuple[str, str]]:
     found: set[tuple[str, str]] = set()
-    for path in SRC.rglob("*.py"):
+    # A flagged open passes ``dir_fd`` by keyword and spells ``O_CREAT`` in its flags
+    # or in the assignment they name, so a file lacking either text cannot hold one.
+    for path, _text, tree in parsed_candidates(
+        require_all=("dir_fd", "O_CREAT"), skip_syntax_errors=False
+    ):
         rel = path.relative_to(SRC).as_posix()
         if "/tests/" in f"/{rel}" or path.name.startswith("test_"):
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
         found.update((rel, fn) for fn in _racy_functions(tree))
     return frozenset(found)
 

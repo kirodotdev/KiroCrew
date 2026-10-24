@@ -38,6 +38,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from source_corpus import parsed_candidates
 
 from kiro_crew import acp_backends, security
 from kiro_crew.acp import types as acp_types
@@ -584,10 +585,13 @@ def test_no_current_driver_implements_the_login_protocol() -> None:
     for a harness whose login Kiro Crew drives -- and none of them has one yet.
     """
     implementers: list[str] = []
-    for source in sorted(SRC.rglob("kiro_crew/**/*.py")):
+    # A matched class defines every protocol method, so only the files whose text
+    # holds all of their names are parsed.
+    for source, _text, tree in parsed_candidates(
+        require_all=sorted(_LOGIN_PROTOCOL_METHODS), skip_syntax_errors=False
+    ):
         if source == HOST_AUTH_PY:
             continue
-        tree = ast.parse(source.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.ClassDef):
                 continue

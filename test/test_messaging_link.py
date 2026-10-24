@@ -484,9 +484,8 @@ class TestUnbindReasonVocabulary:
         The planted sample proves the scanner fires at all.
         """
         import ast
-        from pathlib import Path
 
-        import kiro_crew
+        from source_corpus import parsed_candidates, src_root
 
         binding_calls = {
             "clear_mirror_link",
@@ -512,12 +511,17 @@ class TestUnbindReasonVocabulary:
         planted = ast.parse('s.clear_mirror_link(key, reason="made_up")\n')
         assert len(_bare_reasons(planted)) == 1, "the scanner does not fire"
 
-        pkg = Path(kiro_crew.__file__).resolve().parent
+        pkg = src_root()
+        # A flagged call names a binding method and passes ``reason=``, so only the
+        # files whose text holds both are parsed.
+        candidates = parsed_candidates(
+            require_all=("reason",), require_any=sorted(binding_calls), skip_syntax_errors=False
+        )
         offenders = [
             f"{path.relative_to(pkg)}:{line}"
-            for path in pkg.rglob("*.py")
+            for path, _text, tree in candidates
             if "_vendor" not in path.parts
-            for line in _bare_reasons(ast.parse(path.read_text(encoding="utf-8")))
+            for line in _bare_reasons(tree)
         ]
         assert not offenders, (
             "unbind reasons must come from messaging.link's UNBIND_REASON_* "

@@ -5663,6 +5663,34 @@ Two more, from a 5x full-suite run whose per-test probe recorded wall time and R
   with the splitter names the pattern has to spell) and it is a dozen files; the
   general rule is that a module-level walk must cost a few files, not the tree, because
   nothing bounds where it runs.
+- **A whole-tree scan that outgrows the suite timeout.** A slow scan takes 30-50 s of
+  CPU on a fast host and about three times that on a hosted runner, past the
+  suite-wide `--timeout=120`. In order of preference:
+  1. Narrow it. Read the tree through `test/source_corpus.py`'s `parsed_candidates`
+     with the literals a hit must spell (`require_all` / `require_any`), so only the
+     files that can match are parsed. A narrowed scan is not a whole-tree scan.
+     Those literals narrow a scan of names (identifiers, attributes, keywords), never
+     a scan of `str` values: an escape (`\x31`), a backslash-newline or adjacent
+     literals (`'1' '4'`) spell a value the source text does not hold, and the corpus
+     matches NFKC-folded text, which Python applies to names only. A value scan
+     parses every file and takes step 2, as `test/test_memory.py`'s history decay
+     gate does.
+  2. Otherwise put the module in its own `tree_scan_<module>` group (above).
+     `test/conftest.py` gives every test in a `tree_scan` group that has no
+     `pytest.mark.timeout` the group default, `TREE_SCAN_TIMEOUT_SECS` (300 s, eight
+     times 37.5 s). Nothing else is needed. A timeout mark that names no seconds
+     (`timeout(method="thread")`) takes the closest explicit value at any level (a
+     module's `timeout(600)`), or the default when there is none.
+  3. If the scan takes more than 37.5 s of CPU alone on a fast host (`-n 0`, the
+     first caller of any cache), give it an explicit `pytest.mark.timeout` of at
+     least eight times its cost. Five times its cost timed out on a loaded host.
+
+  `test/test_tree_scan_budget.py` pins the hook. The hook reads the closest
+  `xdist_group`, so a `tree_scan` group on one test gives that test alone the
+  default. Nothing finds scans or measures cost, so the eight-times rule in step 3 is
+  the author's job. A slow scan with no `tree_scan` group still runs at 120 s and
+  nothing flags it: narrow it (step 1), which is the fix for the cost itself, or
+  group it (step 2).
 
 Neither of these shows up as a *failure*, which is why they survive: the suite is
 green, just three times slower than it needs to be, and every timing-sensitive test

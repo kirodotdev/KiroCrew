@@ -662,6 +662,56 @@ def _isolate_aim_skills_dir(_floor_monkeypatch):
     _floor_monkeypatch.setattr(DefaultMcpToolingProvider, "extra_skills", lambda self: [])
 
 
+#: The per-test timeout of every test in a ``tree_scan_*`` xdist group that carries no
+#: ``pytest.mark.timeout`` of its own. Those groups hold the gates that parse or walk a
+#: whole tree. Most take 10-37 s of CPU alone on a fast host, and a hosted runner is
+#: about three times slower, which is past the suite-wide ``--timeout=120``. 300 s is
+#: eight times 37.5 s. A scan measured above 37.5 s carries its own larger timeout.
+#: ``test/test_tree_scan_budget.py`` pins this hook.
+TREE_SCAN_TIMEOUT_SECS = 300
+
+
+def in_tree_scan_group(item: pytest.Item) -> bool:
+    """Whether *item*'s closest ``xdist_group`` mark names a ``tree_scan`` group."""
+    marker = item.get_closest_marker("xdist_group")
+    if marker is None:
+        return False
+    name = marker.kwargs.get("name", marker.args[0] if marker.args else "")
+    return isinstance(name, str) and name.startswith("tree_scan")
+
+
+def timeout_mark_value(marker: pytest.Mark) -> object:
+    """The seconds a ``pytest.mark.timeout`` names, positional or ``timeout=``; None if none."""
+    return marker.args[0] if marker.args else marker.kwargs.get("timeout")
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Give each ``tree_scan`` test with no timeout of its own the group default.
+
+    pytest-timeout reads only the closest ``timeout`` mark. An explicit value is left
+    alone, so a scan that needs more than the default keeps its own budget. A closest
+    mark with no value (``timeout(method="thread")``) would fall back to the suite-wide
+    ``--timeout``, so it takes the closest explicit value at any level (a module's
+    ``timeout(600)``), or the default when there is none. That value is put in front
+    of it and its ``method`` is kept.
+    """
+    for item in items:
+        closest = item.get_closest_marker("timeout")
+        if closest is not None and timeout_mark_value(closest) is not None:
+            continue
+        if not in_tree_scan_group(item):
+            continue
+        kwargs: dict[str, object] = {}
+        seconds: object = TREE_SCAN_TIMEOUT_SECS
+        if closest is not None:
+            kwargs = {k: v for k, v in closest.kwargs.items() if k != "timeout"}
+            if len(closest.args) >= 2:
+                kwargs["method"] = closest.args[1]
+            valued = (timeout_mark_value(m) for m in item.iter_markers("timeout"))
+            seconds = next((v for v in valued if v is not None), TREE_SCAN_TIMEOUT_SECS)
+        item.add_marker(pytest.mark.timeout(seconds, **kwargs), append=False)
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Pre-import ``tracemalloc`` so pytest's unraisable hook can't crash on it.
 

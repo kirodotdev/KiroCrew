@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import ast
+import re
+from collections.abc import Iterable, Iterator
+from pathlib import Path
+
 import pytest
+from source_corpus import iter_source_texts
 
 from conftest import make_dir_link, plant_day_link
 from kiro_crew.memory import MemoryStore
@@ -617,45 +623,82 @@ class TestUnreadableActivityTolerance:
         assert "\r" not in activity
 
 
+#: The boundary every history decay description opens with. A copy is found where it
+#: stands once whitespace runs fold to one space, so a copy's value holds each word whole.
+_DECAY_OPENING = "14 full days"
+
+
+def _decay_copies(text: str, length: int) -> list[str]:
+    """The *length* characters from each decay opening in *text*, whitespace runs folded."""
+    normalized = re.sub(r"\s+", " ", text)
+    copies = []
+    start = 0
+    while (index := normalized.find(_DECAY_OPENING, start)) >= 0:
+        copies.append(normalized[index : index + length])
+        start = index + len(_DECAY_OPENING)
+    return copies
+
+
+def _source_decay_copies(
+    sources: Iterable[tuple[Path, str]], length: int
+) -> Iterator[tuple[Path, str]]:
+    """``(path, copy)`` for each decay copy in a ``str`` constant of the *sources* modules.
+
+    *sources* are ``(path, text)`` pairs, and every module is parsed. A copy is a ``str``
+    value, which an escape, a backslash-newline or adjacent literals can spell without
+    the module's text holding its words, so no text filter can narrow this scan.
+    """
+    for path, text in sources:
+        for node in ast.walk(ast.parse(text, filename=str(path))):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                for copy in _decay_copies(node.value, length):
+                    yield path, copy
+
+
 class TestHistoryDecayWording:
     PHRASE = "14 full days, then decayed summaries and counts to day 180"
+    #: A drifted copy, planted below as adjacent literals and as escaped digits.
+    DRIFTED = "14 full days, then summaries to day 90"
 
+    # No text can narrow a scan of ``str`` values (see ``_source_decay_copies``), so this
+    # parses every module: 15 s of CPU on a fast host. Its tree_scan group gives it 300 s
+    # (test/conftest.py).
+    @pytest.mark.xdist_group(name="tree_scan_test_memory")
     def test_every_history_decay_description_matches_the_tiers(self):
         """Every source and documentation copy states the exact decay boundary."""
-        import ast
-        import re
-        from pathlib import Path
-
         repo = Path(__file__).resolve().parents[1]
-        paths = list((repo / "src" / "kiro_crew").rglob("*.py"))
-        paths.append(repo / "src" / "kiro_crew" / "docs" / "configuration.md")
-        paths.extend((repo / "docs").rglob("*.md"))
+        documents = {repo / "src" / "kiro_crew" / "docs" / "configuration.md"}
+        documents.update((repo / "docs").rglob("*.md"))
 
-        copies: list[tuple[str, str]] = []
-        for path in sorted(set(paths)):
-            source = path.read_text(encoding="utf-8")
-            if path.suffix == ".py":
-                candidates = (
-                    node.value
-                    for node in ast.walk(ast.parse(source))
-                    if isinstance(node, ast.Constant) and isinstance(node.value, str)
-                )
-            else:
-                candidates = (source,)
-            for candidate in candidates:
-                normalized = re.sub(r"\s+", " ", candidate)
-                start = 0
-                while (index := normalized.find("14 full days", start)) >= 0:
-                    copies.append(
-                        (
-                            path.relative_to(repo).as_posix(),
-                            normalized[index : index + len(self.PHRASE)],
-                        )
-                    )
-                    start = index + len("14 full days")
+        copies = [
+            (path.relative_to(repo).as_posix(), copy)
+            for path, copy in _source_decay_copies(iter_source_texts(), len(self.PHRASE))
+        ]
+        copies.extend(
+            (path.relative_to(repo).as_posix(), copy)
+            for path in sorted(documents)
+            for copy in _decay_copies(path.read_text(encoding="utf-8"), len(self.PHRASE))
+        )
 
         assert copies, "no history decay descriptions found"
         assert all(copy == self.PHRASE for _, copy in copies), copies
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            pytest.param(f"'1' '{DRIFTED[1:]}'", id="adjacent-literals"),
+            pytest.param(rf"'\x31\x34{DRIFTED[2:]}'", id="escaped-digits"),
+        ],
+    )
+    def test_the_scan_sees_copies_the_text_does_not_spell(self, spelling: str) -> None:
+        """A drifted copy in adjacent literals or escaped digits still reaches the gate.
+
+        Neither planted module's text holds ``14``, so a filter on that text would skip
+        both and the gate would pass.
+        """
+        module = [(Path("planted.py"), f"NOTE = (\n    {spelling}\n)\n")]
+        found = [copy for _, copy in _source_decay_copies(module, len(self.PHRASE))]
+        assert found == [self.DRIFTED]
 
     def test_history_decay_boundaries(self, tmp_path):
         """The full, summary, count, and exclusion tiers meet their stated ages."""

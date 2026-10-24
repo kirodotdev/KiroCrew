@@ -26,6 +26,11 @@ import pytest
 # spread across workers and each worker re-pays that scan -- measured at 5 workers x 40-75s
 # per full run for this file alone. Grouping keeps the cache single-copy per run.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_test_ci_surface_tests")
+
+#: ``test_posix_scope_is_unfiltered`` collects the backend scope twice, 40 s of CPU
+#: alone on a fast host. Eight times that is over the ``tree_scan`` group default
+#: (``TREE_SCAN_TIMEOUT_SECS`` in ``conftest.py``), so it carries its own budget.
+POSIX_SCOPE_TIMEOUT_SECS = 360
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO_ROOT / "scripts" / "ci-surface-tests.py"
 
@@ -531,6 +536,7 @@ def test_windows_scope_names_nothing_on_the_ignore_list(selector, monkeypatch) -
     assert not offenders, f"Windows scope names uncollectable suites: {offenders}"
 
 
+@pytest.mark.timeout(POSIX_SCOPE_TIMEOUT_SECS)
 def test_posix_scope_is_unfiltered(selector, monkeypatch) -> None:
     """The filter is Windows-only -- POSIX coverage must not shrink."""
     monkeypatch.setattr(selector, "_is_windows", lambda: False)

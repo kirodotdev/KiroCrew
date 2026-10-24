@@ -30,6 +30,11 @@ import pytest
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 
+# A gate here parses a whole tree, so the module has its own ``tree_scan`` group
+# and takes that group's per-test timeout (``TREE_SCAN_TIMEOUT_SECS`` in conftest.py).
+pytestmark = pytest.mark.xdist_group(name="tree_scan_persistence_writer_inventory")
+
+
 #: Methods that commit something to a persistent memory store.
 _WRITE_PRIMITIVES = frozenset(
     {

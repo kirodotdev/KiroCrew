@@ -736,22 +736,22 @@ class TestAConcurrentEditIsNeverLost:
         requiring each to be the field-scoped one.
         """
         import ast as _ast
-        import pathlib as _pathlib
 
-        src_root = _pathlib.Path(__file__).resolve().parents[1] / "src/kiro_crew"
+        from source_corpus import parsed_candidates
+        from source_corpus import src_root as corpus_root
+
+        src_root = corpus_root()
         # `load` is a read and is always fine. Anything ELSE that is not `apply_update`
         # fails, including a write method added later under a name nobody here foresaw --
         # that is what makes this a closed set rather than a list of the two callers a
         # reviewer happened to name.
         allowed = {"apply_update", "load"}
         offenders: list[str] = []
-        for f in sorted(src_root.rglob("*.py")):
+        # A flagged call's receiver is spelled ``CloudConfig``, so only the files whose
+        # text holds it are parsed.
+        for f, _text, tree in parsed_candidates(require_any=("CloudConfig",)):
             if f.name == "config.py" and f.parent.name == "cloud":
                 continue  # the implementation itself
-            try:
-                tree = _ast.parse(f.read_text(encoding="utf-8"))
-            except SyntaxError:
-                continue
             for n in _ast.walk(tree):
                 if not (isinstance(n, _ast.Call) and isinstance(n.func, _ast.Attribute)):
                     continue

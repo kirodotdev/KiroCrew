@@ -225,11 +225,6 @@ async def test_every_refused_publish_returns_before_the_history_append():
     assert blocks[0].handlers, "the publish write is unguarded, so a failure cannot be refused"
 
 
-# On this test alone, not on ``pytestmark``: it is the only item here that reads
-# ``test/source_corpus.py``'s shared text cache, and grouping the module's other
-# tests with it would cost them their parallelism to buy a de-duplication that
-# cannot happen -- a single corpus reader lands on one worker either way.
-@pytest.mark.xdist_group(name="tree_scan_test_agent_panel_routes")
 async def test_the_history_append_has_exactly_one_call_site():
     """``on_panel_published`` is called from exactly one place in the package.
 

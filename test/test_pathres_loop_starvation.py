@@ -283,13 +283,20 @@ _EXPECTED_CONTAINMENT_CALL_SITES: dict[str, int] = {
 
 
 def _call_sites(gate: str) -> dict[str, int]:
-    """Every call of *gate* under ``src``, by module, counting hand-offs by name."""
+    """Every call of *gate* under ``src``, by module, counting hand-offs by name.
+
+    Both shapes it counts spell *gate* as an identifier -- the called Name or
+    Attribute, or a Name passed as an argument -- so only files whose text holds it
+    are parsed. Parsing every module instead cost ~20 s of CPU per call on a fast
+    host, and one composition test makes two such calls under one timeout.
+    """
     import ast
+
+    from source_corpus import parsed_candidates
 
     src = Path(skills_mod.__file__).resolve().parents[1]
     sites: dict[str, int] = {}
-    for path in sorted(src.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+    for path, _source, tree in parsed_candidates(require_any=(gate,), skip_syntax_errors=False):
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -321,10 +328,15 @@ def _containment_claim_sites() -> dict[str, int]:
     """
     import ast
 
+    from source_corpus import parsed_candidates
+
+    # A counted call spells both the callee and the keyword as identifiers, so a
+    # file that lacks either text cannot hold one.
     src = Path(skills_mod.__file__).resolve().parents[1]
     sites: dict[str, int] = {}
-    for path in sorted(src.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+    for path, _source, tree in parsed_candidates(
+        require_all=("path_contains_sensitive", "pre_resolved"), skip_syntax_errors=False
+    ):
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue

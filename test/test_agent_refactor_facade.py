@@ -39,6 +39,11 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 _AGENT_FILE = Path(agent.__file__)
 _OWNER_DIR = Path(agent_materialization.__file__).parent
 _SRC = _AGENT_FILE.parent
+
+# A gate here parses a whole tree, so the module has its own ``tree_scan`` group
+# and takes that group's per-test timeout (``TREE_SCAN_TIMEOUT_SECS`` in conftest.py).
+pytestmark = pytest.mark.xdist_group(name="tree_scan_agent_refactor_facade")
+
 _REPO = _SRC.parents[1]
 
 
