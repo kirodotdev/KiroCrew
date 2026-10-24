@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, fields
 from typing import Any, Protocol, TypedDict
 
@@ -30,10 +31,31 @@ _MAX_URL_LENGTH = 2048
 BITBUCKET_SERVER_PROVIDER = "bitbucket_server"
 
 
+#: The shape a vault secret name may take when it rides on an error as its own
+#: field: an upper-case identifier, the form every built-in provider names its
+#: token with (``BITBUCKET_SERVER_TOKEN_<HEX>``). The bound fits that name for
+#: the longest listable host, a 253-character hostname with a port: 23 + 2 x 259
+#: characters. Anything else is dropped, so the client can show the field as
+#: copyable text as-is.
+SECRET_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,639}")
+
+
+def safe_secret_name(value: object) -> str:
+    """*value* when it is a well-formed vault secret name, else ``""``."""
+    return value if isinstance(value, str) and SECRET_NAME_RE.fullmatch(value) else ""
+
+
 class SourceProviderError(RuntimeError):
     """A provider CLI could not return the requested source data."""
 
-    def __init__(self, message: str, *, reason: str = "", login_command: str = "") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str = "",
+        login_command: str = "",
+        secret_name: str = "",
+    ) -> None:
         super().__init__(message)
         self.reason = reason
         # The command that fixes this failure when it is an expired sign-in the
@@ -41,6 +63,10 @@ class SourceProviderError(RuntimeError):
         # HTTP layer ships it as its own field, so the client never has to parse
         # a command back out of provider-controlled text.
         self.login_command = login_command
+        # The vault secret the message tells the reader to store or replace,
+        # shipped as its own field for the same reason: a per-host name is long
+        # enough that copying it out of a wrapped sentence is error-prone.
+        self.secret_name = safe_secret_name(secret_name)
 
 
 class SourceCapacityError(SourceProviderError):

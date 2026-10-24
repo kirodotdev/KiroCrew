@@ -2308,6 +2308,13 @@
       "copy": "Copy {{label}} {{branch}}",
       "copy_2": "Copy {{label}}"
     },
+    "secretNameCopy": {
+      "label": "Store the token under this name in Settings > Secrets",
+      "copy": "Copy name",
+      "copied": "Copied",
+      "copy_failed": "Copy failed. Select the name above and copy it yourself.",
+      "ask_agent_about_copy": "Ask the agent about the failed copy"
+    },
     "diffBlock": {
       "added": "added",
       "binary": "binary",
